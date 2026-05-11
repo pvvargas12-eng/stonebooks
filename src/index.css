@@ -1,0 +1,5 @@
+/* App.jsx injects its own complete stylesheet via <style>{css}</style>.
+   This file is intentionally minimal — just a hard reset. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; width: 100%; }
