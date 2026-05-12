@@ -779,9 +779,8 @@ const CARVE_TYPES = [
   {
     code: 'vase',
     label: 'Vase',
-    blurb: 'Granite vase add-on — one or two, sized to the base.',
+    blurb: 'Granite vase add-on — one or two, sized to the base. Fit-checked.',
     freeWithStone: false,
-    comingSoon: true,
   },
   {
     code: 'bling',
@@ -910,6 +909,129 @@ const BLING_EXAMPLES = [
   { code: 'wedding-rings',         mapsTo: 'wedding-rings', label: 'Wedding rings — front',   photo: BLING_EXAMPLES_BUCKET + 'Wedding-Rings-full-front-350x250.jpg' },
 ]
 const blingExamplesFor = (optionCode) => BLING_EXAMPLES.filter(e => e.mapsTo === optionCode)
+
+// ---- Sprint 3p.3 — Vase configurator data ---------------------------------
+// 6 sizes × 18 shapes × 21 colors. Color upcharge mirrors GRANITE_COLORS.premium
+// (same source of truth as BLING).
+const VASE_SIZES = [
+  { code: '4x4x10', label: '4 × 4 × 10', w: 4, d: 4, h: 10, volCi: 160, basePrice: 190 },
+  { code: '5x4x9',  label: '5 × 4 × 9',  w: 5, d: 4, h: 9,  volCi: 180, basePrice: 205 },
+  { code: '5x5x9',  label: '5 × 5 × 9',  w: 5, d: 5, h: 9,  volCi: 225, basePrice: 245 },
+  { code: '6x6x10', label: '6 × 6 × 10', w: 6, d: 6, h: 10, volCi: 360, basePrice: 365 },
+  { code: '8x6x10', label: '8 × 6 × 10', w: 8, d: 6, h: 10, volCi: 480, basePrice: 465 },
+  { code: '8x8x12', label: '8 × 8 × 12', w: 8, d: 8, h: 12, volCi: 768, basePrice: 705 },
+]
+
+const VASE_BUCKET = 'https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Vase%20Shapes%20%26%20Styles/'
+
+// 18 shape thumbnails. 6 "size-named" jpgs (kept first for visual grouping)
+// + 12 "vase-shape" pngs. Generic Shape A-F + Shape 1-12 labels since the
+// images don't carry human-friendly names.
+const VASE_SHAPES = [
+  { code: 'shape-a',       label: 'Shape A',  photo: VASE_BUCKET + '4-4-10-297x405.jpg' },
+  { code: 'shape-b',       label: 'Shape B',  photo: VASE_BUCKET + '5-4-9-297x405.jpg' },
+  { code: 'shape-c',       label: 'Shape C',  photo: VASE_BUCKET + '5-5-9-297x405.jpg' },
+  { code: 'shape-d',       label: 'Shape D',  photo: VASE_BUCKET + '6-6-10-297x405.jpg' },
+  { code: 'shape-e',       label: 'Shape E',  photo: VASE_BUCKET + '8-6-10-297x405.jpg' },
+  { code: 'shape-f',       label: 'Shape F',  photo: VASE_BUCKET + '8-8-1-297x405.jpg' },
+  { code: 'vase-shape-1',  label: 'Shape 1',  photo: VASE_BUCKET + 'vase-shape1-258x405.png' },
+  { code: 'vase-shape-2',  label: 'Shape 2',  photo: VASE_BUCKET + 'vase-shape2-288x405.png' },
+  { code: 'vase-shape-3',  label: 'Shape 3',  photo: VASE_BUCKET + 'vase-shape3-298x405.png' },
+  { code: 'vase-shape-4',  label: 'Shape 4',  photo: VASE_BUCKET + 'vase-shape4-293x405.png' },
+  { code: 'vase-shape-5',  label: 'Shape 5',  photo: VASE_BUCKET + 'vase-shape5-360x270.png' },
+  { code: 'vase-shape-6',  label: 'Shape 6',  photo: VASE_BUCKET + 'vase-shape6-305x405.png' },
+  { code: 'vase-shape-7',  label: 'Shape 7',  photo: VASE_BUCKET + 'vase-shape7-281x405.png' },
+  { code: 'vase-shape-8',  label: 'Shape 8',  photo: VASE_BUCKET + 'vase-shape8-291x405.png' },
+  { code: 'vase-shape-9',  label: 'Shape 9',  photo: VASE_BUCKET + 'vase-shape9-241x405.png' },
+  { code: 'vase-shape-10', label: 'Shape 10', photo: VASE_BUCKET + 'vase-shape10-296x405.png' },
+  { code: 'vase-shape-11', label: 'Shape 11', photo: VASE_BUCKET + 'vase-shape11-298x405.png' },
+  { code: 'vase-shape-12', label: 'Shape 12', photo: VASE_BUCKET + 'vase-shape12-300x405.png' },
+]
+
+const vaseColorUpcharge = (colorCode) => {
+  if (!colorCode) return 0
+  const c = GRANITE_COLORS.find(x => x.code === colorCode)
+  return c?.premium ?? 0
+}
+const computeVasePrice = (sizeCode, colorCode) => {
+  const s = VASE_SIZES.find(x => x.code === sizeCode)
+  if (!s) return 0
+  return Math.round(s.basePrice * (1 + vaseColorUpcharge(colorCode)))
+}
+
+// ---- Vase fit verification math (locked, per CLAUDE.md) -------------------
+// Symmetric 2-vase layout: [outer][vase][gap][die][gap][vase][outer]
+// Floor = absolute minimum (1.5" per gap). Ideal = recommendation target
+// (aims for 2" per gap). Depth: base_D ≥ vase_D + 2".
+const dieWidthFromOrder = (order) => {
+  const shape = SHAPES.find(s => s.code === order.shape)
+  if (!shape) return null
+  const stdSize = order.standardSizeCode
+    ? shape.standardSizes?.find(s => s.code === order.standardSizeCode)
+    : null
+  const w = stdSize?.w ?? Number(order.width)
+  return Number.isFinite(w) && w > 0 ? w : null
+}
+const baseWidthFromOrder = (order) => {
+  if (!order.baseConfig?.include) return null
+  if (order.baseConfig.sizeCode === 'custom') {
+    const w = Number(order.baseConfig.width)
+    return Number.isFinite(w) && w > 0 ? w : null
+  }
+  const bs = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
+  return bs?.w ?? null
+}
+const baseDepthFromOrder = (order) => {
+  if (!order.baseConfig?.include) return null
+  if (order.baseConfig.sizeCode === 'custom') {
+    const d = Number(order.baseConfig.depth)
+    return Number.isFinite(d) && d > 0 ? d : null
+  }
+  const bs = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
+  return bs?.d ?? null
+}
+
+// Recommended base width to fit n vases of width vaseW alongside the die.
+const recommendedBaseWidth = (dieW, vaseW, n) => {
+  if (!dieW) return null
+  if (n <= 0) return Math.ceil(dieW + 12)
+  if (n === 1) return Math.ceil(dieW + vaseW + 4)
+  return Math.ceil(dieW + 2 * vaseW + 8)
+}
+
+// Per-size fit check at a given configuration (numVasesAfter = the count
+// after adding this vase). Returns { status, requiredW, requiredD }.
+const computeVaseFit = (vaseSize, order, numVasesAfter) => {
+  const v = VASE_SIZES.find(s => s.code === vaseSize)
+  if (!v) return { status: 'unknown' }
+  const dieW = dieWidthFromOrder(order)
+  const baseW = baseWidthFromOrder(order)
+  const baseD = baseDepthFromOrder(order)
+  if (!dieW || !baseW) {
+    return { status: 'unknown', missingBase: !baseW, missingDie: !dieW }
+  }
+  const n = Math.max(1, numVasesAfter)
+  const widthFloor = n === 1 ? dieW + v.w + 3 : dieW + 2 * v.w + 6
+  const widthIdeal = n === 1 ? dieW + v.w + 4 : dieW + 2 * v.w + 8
+  const depthFloor = v.d + 2
+  const depthOk = baseD == null ? true : baseD >= depthFloor
+  if (baseW < widthFloor || !depthOk) {
+    return { status: 'red', floorMet: false, requiredW: widthFloor, requiredD: depthFloor, dieW, vaseW: v.w, vaseD: v.d, n }
+  }
+  if (baseW < widthIdeal) {
+    return { status: 'yellow', floorMet: true, requiredW: widthIdeal, dieW, vaseW: v.w, vaseD: v.d, n }
+  }
+  return { status: 'green', floorMet: true, dieW, vaseW: v.w, vaseD: v.d, n }
+}
+
+// Recommended vase size given die width (independent of base fit).
+const dieRecommendedVaseSize = (dieW) => {
+  if (!dieW) return '5x5x9'
+  if (dieW <= 36) return '4x4x10'
+  if (dieW <= 48) return '5x5x9'
+  if (dieW <= 60) return '6x6x10'
+  return '8x8x12'
+}
 
 // ---- Shape-carved designs (only shown when Shape Carved is selected) ------
 // Prices from the pricing sheet.
@@ -4474,10 +4596,11 @@ function CarvingsSection({ order, update, updateAddOn }) {
 
   // Picker-open state for the multi-item types. The card click flips
   // these to reveal the picker; the ✓ check on the card still derives from
-  // shapeOn/laserOn/blingOn (= "user has actually picked something").
+  // shapeOn/laserOn/blingOn/vaseOn (= "user has actually picked something").
   const [shapeOpen, setShapeOpen] = useState(false)
   const [laserOpen, setLaserOpen] = useState(false)
   const [blingOpen, setBlingOpen] = useState(false)
+  const [vaseOpen,  setVaseOpen]  = useState(false)
 
   // Detect what's on by checking add-ons
   const flatOn     = order.addOns.some(a => a.code === 'flat-carve')
@@ -4485,6 +4608,7 @@ function CarvingsSection({ order, update, updateAddOn }) {
   const sculptedOn = order.addOns.some(a => a.code === 'hand-sculpted')
   const laserOn    = order.addOns.some(a => a.code?.startsWith('laser-'))
   const blingOn    = order.addOns.some(a => a.code?.startsWith('bling-'))
+  const vaseOn     = order.addOns.some(a => a.code?.startsWith('vase-'))
 
   const isOn = (code) =>
     code === 'flat'     ? flatOn
@@ -4492,6 +4616,7 @@ function CarvingsSection({ order, update, updateAddOn }) {
   : code === 'sculpted' ? sculptedOn
   : code === 'laser'    ? laserOn
   : code === 'bling'    ? blingOn
+  : code === 'vase'     ? vaseOn
   : false
 
   // ---- Toggle handlers (per type) ------------------------------------------
@@ -4546,12 +4671,24 @@ function CarvingsSection({ order, update, updateAddOn }) {
       setBlingOpen(true)
     }
   }
+  const toggleVase = () => {
+    if (vaseOpen || vaseOn) {
+      // Close: hide the picker AND clear any picked vases (close-clears).
+      setVaseOpen(false)
+      if (vaseOn) {
+        update({ addOns: order.addOns.filter(a => !a.code?.startsWith('vase-')) })
+      }
+    } else {
+      setVaseOpen(true)
+    }
+  }
   const toggleByCode = (code) =>
     code === 'flat'     ? toggleFlat()
   : code === 'shape'    ? toggleShape()
   : code === 'sculpted' ? toggleSculpted()
   : code === 'laser'    ? toggleLaser()
   : code === 'bling'    ? toggleBling()
+  : code === 'vase'     ? toggleVase()
   : null
 
   // ---- Shape-Carved design picker ------------------------------------------
@@ -4785,6 +4922,11 @@ function CarvingsSection({ order, update, updateAddOn }) {
       {/* ---- BLING configurator (Sprint 3p.2) ---- */}
       {(blingOn || blingOpen) && (
         <BlingConfigurator order={order} update={update} updateAddOn={updateAddOn} />
+      )}
+
+      {/* ---- Vase configurator (Sprint 3p.3) ---- */}
+      {(vaseOn || vaseOpen) && (
+        <VaseConfigurator order={order} update={update} updateAddOn={updateAddOn} />
       )}
     </Section>
 
@@ -5119,6 +5261,407 @@ function BlingConfigurator({ order, update, updateAddOn }) {
           </div>
         )
       })()}
+    </div>
+  )
+}
+
+// =============================================================================
+// VASE CONFIGURATOR (Sprint 3p.3) — size → shape → color, fit-checked, multi-add
+// =============================================================================
+function VaseConfigurator({ order, update, updateAddOn }) {
+  // Config currently being built. Active starts null — user picks a size to begin.
+  const [active, setActive] = useState(null)
+  // Inline 21-color picker visibility
+  const [showColors, setShowColors] = useState(false)
+  // Fit-warning modal payload (null = closed)
+  const [fitWarning, setFitWarning] = useState(null)
+  // Soft inline notice after "Adjust base" — tells user the required width
+  const [adjustNotice, setAdjustNotice] = useState(null)
+
+  const picked = order.addOns.filter(a => a.code?.startsWith('vase-'))
+  const stoneColorCode = order.graniteColor || null
+  const stoneColor = stoneColorCode ? GRANITE_COLORS.find(c => c.code === stoneColorCode) : null
+
+  const dieW = dieWidthFromOrder(order)
+  const baseW = baseWidthFromOrder(order)
+  const baseD = baseDepthFromOrder(order)
+
+  // The fit count to validate against = current vase count + 1 (the one being added).
+  // Clamped to 2 for layout purposes (cemetery convention is 0/1/2 symmetric).
+  const numVasesAfter = Math.min(2, picked.length + 1)
+
+  // Die-driven pre-suggested size (used for the "Recommended" badge).
+  const recommendedSizeCode = dieRecommendedVaseSize(dieW)
+
+  // Live recommendation: largest vase among active + already-picked determines width math.
+  const widestActiveVaseW = (() => {
+    const fromPicked = picked
+      .map(a => VASE_SIZES.find(s => s.code === a.vaseSize)?.w)
+      .filter(Boolean)
+    const fromActive = active?.size
+      ? [VASE_SIZES.find(s => s.code === active.size)?.w].filter(Boolean)
+      : []
+    const all = [...fromPicked, ...fromActive]
+    return all.length ? Math.max(...all) : null
+  })()
+  const liveRecommendedBaseW = widestActiveVaseW != null
+    ? recommendedBaseWidth(dieW, widestActiveVaseW, numVasesAfter)
+    : null
+  const exceedsCurrentBase = liveRecommendedBaseW != null && baseW != null && liveRecommendedBaseW > baseW
+
+  const startConfig = (sizeCode) => {
+    setActive({ size: sizeCode, shape: null, matchStone: true, color: null })
+    setShowColors(false)
+    setAdjustNotice(null)
+  }
+  const pickShape = (shapeCode) => {
+    setActive(prev => prev ? { ...prev, shape: shapeCode } : prev)
+  }
+  const setMatchStone = (val) => {
+    setActive(prev => prev ? { ...prev, matchStone: val, color: val ? null : prev.color } : prev)
+    if (val) setShowColors(false)
+  }
+  const pickColor = (code) => {
+    setActive(prev => prev ? { ...prev, color: code, matchStone: false } : prev)
+    setShowColors(false)
+  }
+
+  const activeColorCode = active && (active.matchStone ? stoneColorCode : active.color)
+  const activePrice = active ? computeVasePrice(active.size, activeColorCode) : 0
+  const activeUpcharge = activeColorCode ? vaseColorUpcharge(activeColorCode) : 0
+
+  const commitVase = (overrideNote = false) => {
+    if (!active || !active.shape) return
+    let idx = 1
+    while (order.addOns.some(a => a.code === `vase-${active.size}-${active.shape}-${idx}`)) idx++
+    const colorCodeFinal = active.matchStone ? stoneColorCode : active.color
+    const colorRec = colorCodeFinal ? GRANITE_COLORS.find(c => c.code === colorCodeFinal) : null
+    const shape = VASE_SHAPES.find(s => s.code === active.shape)
+    const sizeRec = VASE_SIZES.find(s => s.code === active.size)
+    const colorLabel = active.matchStone
+      ? `match stone${colorRec ? ` (${colorRec.label})` : ''}`
+      : (colorRec?.label ?? '—')
+    const newAddOn = {
+      code: `vase-${active.size}-${active.shape}-${idx}`,
+      label: `Vase · ${sizeRec?.label ?? active.size} · ${shape?.label ?? active.shape} (${colorLabel})`,
+      qty: 1,
+      price: activePrice,
+      notes: '',
+      vaseSize: active.size,
+      vaseShape: active.shape,
+      vaseMatchStone: active.matchStone,
+      vaseColor: colorCodeFinal,
+    }
+    const patch = { addOns: [...order.addOns, newAddOn] }
+    if (overrideNote) {
+      const today = new Date().toISOString().slice(0, 10)
+      const stamp = `[OVERRIDE: Vase base clearance below 1.5" minimum on ${today}]`
+      patch.notes = order.notes ? `${stamp}\n${order.notes}` : stamp
+    }
+    update(patch)
+    setActive(null)
+    setShowColors(false)
+    setFitWarning(null)
+  }
+
+  const handleAdd = () => {
+    if (!active || !active.shape) return
+    const fit = computeVaseFit(active.size, order, numVasesAfter)
+    if (fit.status === 'red' && fit.floorMet === false) {
+      const sizeLabel = VASE_SIZES.find(s => s.code === active.size)?.label ?? active.size
+      setFitWarning({
+        requiredW: fit.requiredW,
+        requiredD: fit.requiredD,
+        currentW: baseW,
+        currentD: baseD,
+        vaseSizeLabel: sizeLabel,
+        n: fit.n,
+        missingBase: fit.missingBase,
+      })
+      return
+    }
+    commitVase(false)
+  }
+
+  const handleAdjust = () => {
+    if (fitWarning) {
+      setAdjustNotice({ requiredW: fitWarning.requiredW, requiredD: fitWarning.requiredD })
+    }
+    setFitWarning(null)
+  }
+  const handleOverride = () => commitVase(true)
+  const closeFitWarning = () => handleAdjust()  // backdrop / × == Adjust
+
+  return (
+    <div className="sm-carve-config sm-vase-config">
+      <div className="sm-carve-config-eyebrow">
+        Vase · pick size → shape → color, fit-checked against the base
+      </div>
+
+      {/* Live recommendation eyebrow */}
+      <div className="sm-vase-rec-row">
+        {dieW && (
+          <span className="sm-vase-rec-text">
+            Die width: <strong>{dieW}″</strong>
+            {baseW != null
+              ? <> · Current base width: <strong>{baseW}″</strong></>
+              : <> · <em>no base added yet</em></>}
+            {liveRecommendedBaseW != null && (
+              <> · Recommended for {numVasesAfter}-vase layout: <strong>{liveRecommendedBaseW}″</strong></>
+            )}
+          </span>
+        )}
+        {!dieW && (
+          <span className="sm-vase-rec-text sm-vase-rec-warn">
+            Set the upright width on the Size step first so fit can be checked.
+          </span>
+        )}
+      </div>
+
+      {exceedsCurrentBase && !adjustNotice && (
+        <div className="sm-vase-soft-notice">
+          ⚠ Recommendation now requires a wider base ({liveRecommendedBaseW}″). Current base is {baseW}″.
+        </div>
+      )}
+      {adjustNotice && (
+        <div className="sm-vase-soft-notice sm-vase-soft-notice-strong">
+          ⚠ Adjust the base width to at least <strong>{adjustNotice.requiredW}″</strong>
+          {adjustNotice.requiredD && baseD != null && baseD < adjustNotice.requiredD && (
+            <> and depth to at least <strong>{adjustNotice.requiredD}″</strong></>
+          )}
+          {' '}in the Size / Base step above, then return to add this vase.
+          <button type="button" className="sm-link-btn" onClick={() => setAdjustNotice(null)}
+            style={{ marginLeft: 8 }}>Dismiss</button>
+        </div>
+      )}
+
+      {/* Step 1 — size picker */}
+      <div className="sm-bling-step-label">1 · Size</div>
+      <div className="sm-vase-size-grid">
+        {VASE_SIZES.map(s => {
+          const fit = computeVaseFit(s.code, order, numVasesAfter)
+          const isRecommended = s.code === recommendedSizeCode
+          const isActive = active?.size === s.code
+          const disabled = fit.status === 'red' && fit.floorMet === false
+          return (
+            <button key={s.code} type="button"
+              className={`sm-vase-size-card sm-fit-${fit.status} ${isActive ? 'on' : ''}`}
+              onClick={() => !disabled && startConfig(s.code)}
+              disabled={disabled}
+            >
+              {isRecommended && <div className="sm-vase-rec-badge">Recommended</div>}
+              <div className="sm-vase-size-name">{s.label}</div>
+              <div className="sm-vase-size-vol">{s.volCi} ci</div>
+              <div className="sm-vase-size-price">${s.basePrice.toLocaleString()}</div>
+              <div className="sm-vase-size-fit">
+                {fit.status === 'green'   && <span className="sm-fit-ok">✓ Fits</span>}
+                {fit.status === 'yellow'  && <span className="sm-fit-warn">⚠ Tight fit</span>}
+                {fit.status === 'red'     && fit.floorMet === false && (
+                  <span className="sm-fit-bad">
+                    ✗ Won't fit · increase base to {fit.requiredW}″
+                  </span>
+                )}
+                {fit.status === 'unknown' && (
+                  <span className="sm-fit-unknown">
+                    {fit.missingBase ? '— add a base first' : '— set die width first'}
+                  </span>
+                )}
+              </div>
+              {!isActive && fit.status !== 'red' && <div className="sm-vase-size-add">+ Start</div>}
+              {isActive && <div className="sm-vase-size-on">✓ Active</div>}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Step 2 — shape picker (revealed once a size is being configured) */}
+      {active && (
+        <>
+          <div className="sm-bling-step-label">2 · Shape</div>
+          <div className="sm-vase-shape-grid">
+            {VASE_SHAPES.map(s => {
+              const on = active.shape === s.code
+              return (
+                <button key={s.code} type="button"
+                  className={`sm-vase-shape-card ${on ? 'on' : ''}`}
+                  onClick={() => pickShape(s.code)}
+                >
+                  <div className="sm-vase-shape-thumb">
+                    <img src={s.photo} alt={s.label} loading="lazy"
+                      onError={ev => { ev.currentTarget.style.display = 'none' }} />
+                  </div>
+                  <div className="sm-vase-shape-label">{s.label}</div>
+                  {on && <div className="sm-vase-shape-check">✓</div>}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Step 3 — color picker (revealed once a shape is picked) */}
+      {active && active.shape && (
+        <>
+          <div className="sm-bling-step-label">3 · Color</div>
+          <div className="sm-bling-color-row">
+            <label className="sm-bling-match-toggle">
+              <input type="checkbox" checked={active.matchStone}
+                onChange={ev => setMatchStone(ev.target.checked)} />
+              <span>Match stone color</span>
+              {active.matchStone && stoneColor && (
+                <span className="sm-bling-stone-name"> · {stoneColor.label}</span>
+              )}
+              {active.matchStone && !stoneColor && (
+                <span className="sm-bling-stone-empty"> · no stone color picked yet (base price)</span>
+              )}
+            </label>
+            {!active.matchStone && active.color && (
+              <div className="sm-bling-color-current">
+                <strong>{GRANITE_COLORS.find(c => c.code === active.color)?.label ?? active.color}</strong>
+                {activeUpcharge > 0 && (
+                  <span className="sm-bling-color-upcharge"> · +{Math.round(activeUpcharge * 100)}%</span>
+                )}
+              </div>
+            )}
+            <button type="button" className="sm-link-btn"
+              onClick={() => setShowColors(v => !v)}>
+              {showColors ? 'Hide colors' : 'Change'}
+            </button>
+          </div>
+
+          {showColors && (
+            <div className="sm-bling-color-grid">
+              {GRANITE_COLORS.map(c => (
+                <button key={c.code} type="button"
+                  className={`sm-bling-color-card ${active.color === c.code ? 'on' : ''}`}
+                  onClick={() => pickColor(c.code)}>
+                  <div className="sm-bling-color-swatch">
+                    <img src={`/granite/${c.file}`} alt={c.label} loading="lazy" />
+                  </div>
+                  <div className="sm-bling-color-info">
+                    <div className="sm-bling-color-name">{c.label}</div>
+                    {c.premium > 0 && (
+                      <div className="sm-bling-color-prem">+{Math.round(c.premium * 100)}%</div>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="sm-bling-add-row">
+            <div className="sm-bling-add-price">
+              <span className="sm-bling-add-eyebrow">This vase:</span>
+              <span className="sm-bling-add-amt">${activePrice.toLocaleString()}</span>
+              {activeUpcharge > 0 && (
+                <span className="sm-bling-add-upcharge"> · +{Math.round(activeUpcharge * 100)}% color</span>
+              )}
+            </div>
+            <button type="button" className="sm-bling-add-btn"
+              onClick={handleAdd} disabled={!active.shape}>
+              + Add to Order
+            </button>
+            <button type="button" className="sm-link-btn"
+              onClick={() => { setActive(null); setShowColors(false) }}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Per-instance editor rows — same fixed-layout pattern as BLING post-Pass-1 */}
+      {picked.length > 0 && (
+        <div className="sm-bling-instances">
+          <div className="sm-bling-step-label">Added to this order ({picked.length})</div>
+          {picked.map(a => {
+            const shape = VASE_SHAPES.find(s => s.code === a.vaseShape)
+            const sz = VASE_SIZES.find(s => s.code === a.vaseSize)
+            const colorRec = a.vaseColor ? GRANITE_COLORS.find(c => c.code === a.vaseColor) : null
+            return (
+              <div key={a.code} className="sm-carve-design-config sm-bling-instance-row">
+                <div className="sm-carve-design-config-label sm-bling-instance-header">
+                  {shape && (
+                    <span className="sm-bling-instance-thumb-inline">
+                      <img src={shape.photo} alt={shape.label}
+                        onError={ev => { ev.currentTarget.style.display = 'none' }} />
+                    </span>
+                  )}
+                  <span className="sm-bling-instance-text">
+                    <span className="sm-bling-instance-label-main">
+                      Vase · {sz?.label ?? a.vaseSize} · {shape?.label ?? a.vaseShape}
+                    </span>
+                    <span className="sm-bling-instance-sub">
+                      {a.vaseMatchStone
+                        ? `Match stone${colorRec ? ` (${colorRec.label})` : ''}`
+                        : (colorRec?.label ?? '—')}
+                    </span>
+                  </span>
+                  <button type="button" className="sm-link-btn sm-link-btn-danger"
+                    onClick={() => update({ addOns: order.addOns.filter(x => x.code !== a.code) })}
+                    style={{ marginLeft: 'auto' }}>
+                    Remove
+                  </button>
+                </div>
+                <div className="sm-addon-config-grid">
+                  <Field label="Qty">
+                    <TextInput type="number" value={a.qty}
+                      onChange={v => updateAddOn(a.code, { qty: Math.max(1, Number(v) || 1) })} />
+                  </Field>
+                  <Field label="Price each">
+                    <TextInput type="number" value={a.price}
+                      onChange={v => updateAddOn(a.code, { price: Number(v) || 0 })} />
+                  </Field>
+                  <Field label="Total">
+                    <TextInput value={'$' + ((a.price || 0) * (a.qty || 1)).toLocaleString()}
+                      onChange={() => {}} disabled />
+                  </Field>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Fit-warning modal — reuses sm-pdf-preview-overlay shell */}
+      {fitWarning && (
+        <div className="sm-pdf-preview-overlay" onClick={closeFitWarning}>
+          <div className="sm-vase-fit-warning-modal" onClick={ev => ev.stopPropagation()}>
+            <div className="sm-pdf-preview-head">
+              <div className="sm-pdf-preview-title">Base too narrow for this vase configuration</div>
+              <div className="sm-pdf-preview-actions">
+                <button type="button" className="sm-link-btn" onClick={closeFitWarning}>
+                  Close ×
+                </button>
+              </div>
+            </div>
+            <div className="sm-vase-fit-warning-body">
+              <p>
+                Current base width: <strong>{fitWarning.currentW != null ? `${fitWarning.currentW}″` : 'not set'}</strong>.
+                {' '}Required: at least <strong>{fitWarning.requiredW}″</strong>
+                {' '}for {fitWarning.n}× {fitWarning.vaseSizeLabel} vase{fitWarning.n > 1 ? 's' : ''}
+                {' '}at the 1.5″ minimum clearance.
+              </p>
+              {fitWarning.requiredD && fitWarning.currentD != null && fitWarning.currentD < fitWarning.requiredD && (
+                <p>
+                  Base depth also too shallow: <strong>{fitWarning.currentD}″</strong> current,
+                  {' '}<strong>{fitWarning.requiredD}″</strong> required.
+                </p>
+              )}
+              <div className="sm-vase-fit-warning-actions">
+                <button type="button" className="sm-bling-add-btn" onClick={handleAdjust}>
+                  Adjust base
+                </button>
+                <button type="button" className="sm-vase-override-btn" onClick={handleOverride}>
+                  Override (accept under-clearance)
+                </button>
+              </div>
+              <p className="sm-vase-fit-warning-fine">
+                Override prepends a timestamped note to order notes so the back office sees the exception.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -11488,6 +12031,166 @@ const styles = `
 .sm-bling-examples-enlarged { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .sm-bling-examples-enlarged img { max-width: 100%; max-height: 60vh; object-fit: contain; }
 .sm-bling-examples-caption { font-size: 13px; color: var(--text-mid); }
+
+/* ---- Sprint 3p.3 — Vase configurator --------------------------------- */
+.sm-vase-config { padding-top: 6px; }
+.sm-vase-rec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--sm-cream-mid);
+  border: 1px solid var(--sm-border);
+  border-radius: 6px;
+  margin: 8px 0 14px;
+  font-size: 13px;
+  color: var(--sm-navy);
+}
+.sm-vase-rec-text { line-height: 1.5; }
+.sm-vase-rec-text strong { color: var(--sm-navy); font-weight: 700; }
+.sm-vase-rec-text em { color: var(--text-mid); font-style: italic; }
+.sm-vase-rec-warn { color: #b54040; font-weight: 600; }
+
+.sm-vase-soft-notice {
+  padding: 10px 14px;
+  background: #fff8ed;
+  border: 1px solid #e6c79a;
+  border-left: 4px solid var(--sm-gold);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--sm-navy);
+}
+.sm-vase-soft-notice-strong {
+  background: #fff4e0;
+  border-color: var(--sm-gold);
+}
+
+.sm-vase-size-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+@media (min-width: 760px) { .sm-vase-size-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 1100px) { .sm-vase-size-grid { grid-template-columns: repeat(6, 1fr); } }
+.sm-vase-size-card {
+  position: relative;
+  background: #fff;
+  border: 1.5px solid var(--sm-border-dark);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit; color: inherit;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: all 0.15s;
+}
+.sm-vase-size-card:hover:not(:disabled) { border-color: var(--sm-gold); background: var(--sm-gold-pale); }
+.sm-vase-size-card.on { border-color: var(--sm-navy); background: var(--sm-gold-pale); }
+.sm-vase-size-card:disabled { opacity: 0.55; cursor: not-allowed; background: #f5f3ed; }
+.sm-vase-size-card.sm-fit-yellow:not(.on) { border-color: #d9a64a; }
+.sm-vase-size-card.sm-fit-red { border-color: #b54040; }
+.sm-vase-size-card.sm-fit-green:not(.on) { border-color: #6a9a4a; }
+.sm-vase-rec-badge {
+  position: absolute;
+  top: 6px; right: 6px;
+  background: var(--sm-bronze, #b08d57);
+  color: #fff;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+}
+.sm-vase-size-name { font-family: var(--font-d), serif; font-size: 14px; font-weight: 600; color: var(--sm-navy); margin-top: 4px; }
+.sm-vase-size-vol { font-size: 11px; color: var(--text-mid); letter-spacing: 0.04em; text-transform: uppercase; }
+.sm-vase-size-price { font-size: 14px; font-weight: 700; color: var(--sm-navy); margin-top: 4px; }
+.sm-vase-size-fit { font-size: 11px; margin-top: 4px; min-height: 14px; }
+.sm-fit-ok { color: #2d8a4f; font-weight: 600; }
+.sm-fit-warn { color: #b87f1a; font-weight: 600; }
+.sm-fit-bad { color: #b54040; font-weight: 600; }
+.sm-fit-unknown { color: var(--text-mid); font-style: italic; }
+.sm-vase-size-add { margin-top: 4px; font-size: 11px; letter-spacing: 0.05em; color: var(--sm-gold); font-weight: 700; text-transform: uppercase; }
+.sm-vase-size-on { margin-top: 4px; font-size: 11px; letter-spacing: 0.05em; color: #2d8a4f; font-weight: 700; text-transform: uppercase; }
+
+.sm-vase-shape-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+@media (min-width: 720px) { .sm-vase-shape-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 1100px) { .sm-vase-shape-grid { grid-template-columns: repeat(6, 1fr); } }
+.sm-vase-shape-card {
+  position: relative;
+  background: #fff;
+  border: 1.5px solid var(--sm-border);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+  text-align: center;
+  font: inherit; color: inherit;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: all 0.15s;
+  overflow: hidden;
+}
+.sm-vase-shape-card:hover { border-color: var(--sm-gold-light); transform: translateY(-1px); }
+.sm-vase-shape-card.on { border-color: var(--sm-navy); box-shadow: 0 4px 12px rgba(30,45,61,0.18); }
+.sm-vase-shape-thumb {
+  width: 100%; aspect-ratio: 3 / 4;
+  background: #f0ede6;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.sm-vase-shape-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.sm-vase-shape-label { font-size: 12px; color: var(--sm-navy); line-height: 1.3; padding: 0 2px 4px; }
+.sm-vase-shape-check {
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--sm-navy); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+  box-shadow: 0 2px 6px rgba(30,45,61,0.3);
+}
+
+.sm-vase-fit-warning-modal {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 500px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  border-top: 4px solid #b54040;
+}
+.sm-vase-fit-warning-body { padding: 18px 24px 22px; font-size: 13px; color: var(--sm-navy); line-height: 1.55; }
+.sm-vase-fit-warning-body p { margin: 0 0 10px; }
+.sm-vase-fit-warning-body strong { color: var(--sm-navy); font-weight: 700; }
+.sm-vase-fit-warning-actions {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  margin: 14px 0 8px;
+}
+.sm-vase-override-btn {
+  background: #fff;
+  color: var(--sm-navy);
+  border: 1.5px solid var(--sm-border-dark);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font: inherit; font-weight: 600; font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sm-vase-override-btn:hover { background: var(--sm-cream-mid); border-color: var(--sm-gold); }
+.sm-vase-fit-warning-fine {
+  font-size: 11px;
+  color: var(--text-mid);
+  font-style: italic;
+  margin-top: 6px !important;
+}
 
 /* ---- SPRINT 3i — Payment tracking ------------------------------------- */
 .sm-payment-summary {

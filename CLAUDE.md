@@ -33,7 +33,7 @@ React + Supabase. Internal use only.
 - Today dashboard with action items
 - Customers, Orders, Calendar (cemetery deadlines + target dates)
 - Reports
-- Full Sales wizard
+- Full Sales wizard (6 carving/add-on categories: Flat Carve, Shape Carve, Hand Sculpted, Laser Etching, Vase, BLING — all configurable end-to-end)
 - Theming, auth
 
 ## Sprint 3o — SHIPPED
@@ -62,34 +62,35 @@ Full Supabase URLs:
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/key%20bling%20photo%20.jpg
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/Vase%20Key%20Photo%20.jpg
 
-## Current sprint — 3p (in progress)
+## Sprint 3p — SHIPPED
 
-Add Vase + BLING as add-on cards #5 and #6. Categories: Flat Carve, Shape Carve, Hand Sculpted, Laser Etching, Vase, BLING.
+Added Vase + BLING as add-on cards #5 and #6. Final add-on categories: Flat Carve, Shape Carve, Hand Sculpted, Laser Etching, Vase, BLING.
 
 ### Phases
 
 - **3p.1** — ✅ SHIPPED. `MARKETING_PHOTOS` constants block; hand-sculpted + laser-etching photos refactored to read from it; BLING + Vase added as cards #5 and #6 with "Coming Soon" placeholder modal.
 - **3p.2** — ✅ SHIPPED. BLING configurator: 3 sizes (Small $695, Medium $745, Large $795), 20 design options, 11 installed-example reference photos, 21-color picker defaulting to "Match stone color" with inline "Change" link. Color upcharge derives from `GRANITE_COLORS.premium` (single source of truth). Examples gallery modal reuses the `sm-pdf-preview-overlay` shell.
-- **3p.3** — PENDING. Vase configurator. Three-step flow: size → shape → color. 6 sizes (text options, recommended size pre-selected based on die size). 17 unique shape thumbnails on the shape step regardless of size. Color step defaults to stone match, inline change opens 21-color picker.
+- **3p.3** — ✅ SHIPPED. Vase configurator. Three-step flow: size → shape → color. 6 sizes with locked pricing, 18 shape thumbnails, 21-color picker (same Match-stone Pattern A as BLING). Live base-width recommendation eyebrow updates reactively as vases are added/sized. Per-size fit indicators (✓ green / ⚠ yellow tight / ✗ red disabled). Fit-warning modal with Adjust / Override actions; override prepends a dated `[OVERRIDE: …]` stamp to `order.notes`. Die-width-driven recommended size carries a bronze "Recommended" badge.
 
-### Vase pricing (locked)
+### Vase pricing (as-shipped)
 
 | Size | Volume (ci) | Price |
 |---|---|---|
-| 4×4×10 | 160 | $195 |
-| 5×4×9 | 180 | $210 |
-| 5×5×9 | 225 | $250 |
-| 6×6×10 | 360 | $375 |
-| 8×6×10 | 480 | $475 |
-| 8×8×12 | 768 | $725 |
+| 4×4×10 | 160 | $190 |
+| 5×4×9 | 180 | $205 |
+| 5×5×9 | 225 | $245 |
+| 6×6×10 | 360 | $365 |
+| 8×6×10 | 480 | $465 |
+| 8×8×12 | 768 | $705 |
 
 ### Vase color upcharge
 
 Granite schedule: Jet Black +25%, Bahama Blue +30%, Imperial Red / Mahogany / Royal Pink / Cats Eye +35%, rest at base.
 
-### Vase shape thumbnails (17 unique URLs)
+### Vase shape thumbnails (18 unique URLs — as shipped)
 
 https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Vase%20Shapes%20%26%20Styles/4-4-10-297x405.jpg
+https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Vase%20Shapes%20%26%20Styles/5-4-9-297x405.jpg
 https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Vase%20Shapes%20%26%20Styles/5-5-9-297x405.jpg
 https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Vase%20Shapes%20%26%20Styles/6-6-10-297x405.jpg
 https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Vase%20Shapes%20%26%20Styles/8-6-10-297x405.jpg
@@ -123,7 +124,7 @@ Supplier cuts to whatever spec we give. Recommendation rounds up to nearest whol
 ## Open items still needing Paul's input
 
 - Zelle QR upload (for 3q Zelle integration)
-- baseWidth migration strategy for existing pre-3p uprights (options: derive/backfill, leave null and prompt, or default to die_W + 12" adjustable)
+- baseWidth migration: ✅ resolved in 3p.3 by deriving width/depth from existing `order.baseConfig` (no new field added; legacy uprights without a base trigger an "add a base first" hint inside the Vase fit indicator)
 
 ## Deferred / known issues
 
