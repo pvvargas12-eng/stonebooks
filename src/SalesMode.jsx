@@ -4723,6 +4723,8 @@ function CarvingsSection({ order, update, updateAddOn }) {
               const price = computeLaserPrice(size.code, stoneSqIn)
               const isWhole = size.computeFromStone
               const wholeOn = isWhole && order.addOns.some(a => a.code === `laser-${size.code}-1`)
+              const rate = LASER_BASE_PER_SQIN * (1 - size.discount)
+              const showPrice = !(isWhole && !stoneSqIn)
               return (
                 <button key={size.code} type="button"
                   className={`sm-laser-size-card ${wholeOn ? 'on' : ''}`}
@@ -4733,11 +4735,11 @@ function CarvingsSection({ order, update, updateAddOn }) {
                   <div className="sm-laser-size-dim">{size.dim}</div>
                   <div className="sm-laser-size-blurb">{size.blurb}</div>
                   <div className="sm-laser-size-price">
-                    {isWhole && !stoneSqIn
-                      ? '— pick a stone size first'
-                      : `$${price.toLocaleString()}`}
-                    {size.discount > 0 && (
-                      <span className="sm-laser-size-disc"> ({Math.round(size.discount * 100)}% off)</span>
+                    {showPrice ? `$${price.toLocaleString()}` : '— pick a stone size first'}
+                    {showPrice && (
+                      <span className="sm-laser-size-disc">
+                        {' (' + (size.discount > 0 ? `${Math.round(size.discount * 100)}% off · ` : '') + `$${rate.toFixed(2)}/sq in)`}
+                      </span>
                     )}
                   </div>
                   {!wholeOn && <div className="sm-laser-size-add">+ Add</div>}
