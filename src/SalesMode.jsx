@@ -4408,6 +4408,12 @@ function CarvingsSection({ order, update, updateAddOn }) {
   // for now this inlines the sm-pdf-preview-overlay pattern.
   const [comingSoonType, setComingSoonType] = useState(null)
 
+  // Picker-open state for the two multi-item types. The card click flips
+  // these to reveal the picker; the ✓ check on the card still derives from
+  // shapeOn/laserOn (= "user has actually picked something").
+  const [shapeOpen, setShapeOpen] = useState(false)
+  const [laserOpen, setLaserOpen] = useState(false)
+
   // Detect what's on by checking add-ons
   const flatOn     = order.addOns.some(a => a.code === 'flat-carve')
   const shapeOn    = order.addOns.some(a => SHAPE_CARVED_CODES.includes(a.code))
@@ -4432,11 +4438,15 @@ function CarvingsSection({ order, update, updateAddOn }) {
     }
   }
   const toggleShape = () => {
-    if (shapeOn) {
-      // Remove all shape-carved designs
-      update({ addOns: order.addOns.filter(a => !SHAPE_CARVED_CODES.includes(a.code)) })
+    if (shapeOpen || shapeOn) {
+      // Close: hide the picker AND clear any picked designs (close-clears).
+      setShapeOpen(false)
+      if (shapeOn) {
+        update({ addOns: order.addOns.filter(a => !SHAPE_CARVED_CODES.includes(a.code)) })
+      }
+    } else {
+      setShapeOpen(true)
     }
-    // No "add" action — turning Shape on just opens the picker; user picks designs to actually add
   }
   const toggleSculpted = () => {
     if (sculptedOn) {
@@ -4448,10 +4458,15 @@ function CarvingsSection({ order, update, updateAddOn }) {
     }
   }
   const toggleLaser = () => {
-    if (laserOn) {
-      update({ addOns: order.addOns.filter(a => !a.code?.startsWith('laser-')) })
+    if (laserOpen || laserOn) {
+      // Close: hide the picker AND clear any picked sizes (close-clears).
+      setLaserOpen(false)
+      if (laserOn) {
+        update({ addOns: order.addOns.filter(a => !a.code?.startsWith('laser-')) })
+      }
+    } else {
+      setLaserOpen(true)
     }
-    // No "add" action — turning Laser on opens the size picker
   }
   const toggleByCode = (code) =>
     code === 'flat'     ? toggleFlat()
@@ -4539,7 +4554,7 @@ function CarvingsSection({ order, update, updateAddOn }) {
       })()}
 
       {/* ---- Shape Carved design picker ---- */}
-      {shapeOn && (
+      {(shapeOn || shapeOpen) && (
         <div className="sm-carve-config">
           <div className="sm-carve-config-eyebrow">Shape Carved · pick one or more designs</div>
           <div className="sm-shape-design-grid">
@@ -4611,7 +4626,7 @@ function CarvingsSection({ order, update, updateAddOn }) {
       })()}
 
       {/* ---- Laser Etching ---- */}
-      {laserOn && (
+      {(laserOn || laserOpen) && (
         <div className="sm-carve-config">
           <div className="sm-carve-config-eyebrow">
             Laser Etching · base ${LASER_BASE_PER_SQIN.toFixed(2)}/sq in for 12×12 · larger sizes get a discount
