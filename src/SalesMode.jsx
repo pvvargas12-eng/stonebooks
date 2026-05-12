@@ -786,9 +786,8 @@ const CARVE_TYPES = [
   {
     code: 'bling',
     label: 'BLING',
-    blurb: 'Decorative inlay accent — three sizes, 21-color picker.',
+    blurb: 'Decorative inlay accent — three sizes, 20 designs, 21-color picker.',
     freeWithStone: false,
-    comingSoon: true,
   },
 ]
 
@@ -846,6 +845,71 @@ function stoneFaceArea(order) {
   }
   return d ? w * d : null
 }
+
+// ---- Sprint 3p.2 — BLING configurator data --------------------------------
+// 3 sizes, 20 option designs, color upcharge that mirrors GRANITE_COLORS.premium.
+const BLING_SIZES = [
+  { code: 'small',  label: 'Small',  dim: '12″ × 12″', basePrice: 695 },
+  { code: 'medium', label: 'Medium', dim: '18″ × 18″', basePrice: 745 },
+  { code: 'large',  label: 'Large',  dim: '24″ × 24″', basePrice: 795 },
+]
+
+// Color upcharge = the granite color's `premium` (same schedule). Keep this
+// derivation in one place so the BLING price never drifts from the granite
+// premium schedule defined on GRANITE_COLORS.
+const blingColorUpcharge = (colorCode) => {
+  if (!colorCode) return 0
+  const c = GRANITE_COLORS.find(x => x.code === colorCode)
+  return c?.premium ?? 0
+}
+const computeBlingPrice = (sizeCode, colorCode) => {
+  const s = BLING_SIZES.find(x => x.code === sizeCode)
+  if (!s) return 0
+  return Math.round(s.basePrice * (1 + blingColorUpcharge(colorCode)))
+}
+
+const BLING_BUCKET = 'https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Bling%20Options/'
+const BLING_EXAMPLES_BUCKET = 'https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/Bling%20Examples/'
+
+const BLING_OPTIONS = [
+  { code: 'basketball',      label: 'Basketball',           photo: BLING_BUCKET + 'Basketball-400x405.png' },
+  { code: 'bible-book',      label: 'Bible / Book',         photo: BLING_BUCKET + 'Bible-Book-319x405.png' },
+  { code: 'bird',            label: 'Bird',                 photo: BLING_BUCKET + 'Bird-411x405.png' },
+  { code: 'blue-jay',        label: 'Blue Jay',             photo: BLING_BUCKET + 'Blue-Jay-350x250.png' },
+  { code: 'butterfly',       label: 'Butterfly',            photo: BLING_BUCKET + 'Butterfly-540x400.png' },
+  { code: 'cat',             label: 'Cat',                  photo: BLING_BUCKET + 'Cat-540x243.png' },
+  { code: 'cross',           label: 'Cross',                photo: BLING_BUCKET + 'Cross-399x405.png' },
+  { code: 'dove',            label: 'Dove',                 photo: BLING_BUCKET + 'Dove-383x405.png' },
+  { code: 'fire-department', label: 'Fire Department',      photo: BLING_BUCKET + 'Fire-Department-402x405.png' },
+  { code: 'football',        label: 'Football',             photo: BLING_BUCKET + 'Football-540x313.png' },
+  { code: 'horse',           label: 'Horse',                photo: BLING_BUCKET + 'Horse-299x405.png' },
+  { code: 'medical',         label: 'Medical',              photo: BLING_BUCKET + 'Medical-389x405.png' },
+  { code: 'music',           label: 'Music',                photo: BLING_BUCKET + 'Music-422x405.png' },
+  { code: 'roses',           label: 'Roses',                photo: BLING_BUCKET + 'Roses2-e1485975767337-273x405.png' },
+  { code: 'teacher-1',       label: 'Teacher (Style 1)',    photo: BLING_BUCKET + 'Teacher1-419x405.png' },
+  { code: 'teacher-2',       label: 'Teacher (Style 2)',    photo: BLING_BUCKET + 'Teacher2-286x405.png' },
+  { code: 'teacher-3',       label: 'Teacher (Style 3)',    photo: BLING_BUCKET + 'Teacher3-298x405.png' },
+  { code: 'teddy-bear-1',    label: 'Teddy Bear (Style 1)', photo: BLING_BUCKET + 'Teddy-Bear-363x405.png' },
+  { code: 'teddy-bear-2',    label: 'Teddy Bear (Style 2)', photo: BLING_BUCKET + 'Teddy-Bear2-415x405.png' },
+  { code: 'wedding-rings',   label: 'Wedding Rings',        photo: BLING_BUCKET + 'Wedding-Rings-410x405.png' },
+]
+
+// Installed-on-stone reference photos. Some BLING options have a matching
+// example; others don't (per Option-2 design in 3p.2 spec).
+const BLING_EXAMPLES = [
+  { code: 'cross-bevel',           mapsTo: 'cross',         label: 'Cross — bevel install',   photo: BLING_EXAMPLES_BUCKET + 'Cross-Bevel-350x250.jpg' },
+  { code: 'dove-bevel',            mapsTo: 'dove',          label: 'Dove — bevel install',    photo: BLING_EXAMPLES_BUCKET + 'Dove-Bevel-350x250.jpg' },
+  { code: 'holy-bible-3',          mapsTo: 'bible-book',    label: 'Holy Bible',              photo: BLING_EXAMPLES_BUCKET + 'Holy-Bible3-350x250.jpg' },
+  { code: 'horse-head',            mapsTo: 'horse',         label: 'Horse head',              photo: BLING_EXAMPLES_BUCKET + 'Horse-Head-350x250.jpg' },
+  { code: 'large-roses',           mapsTo: 'roses',         label: 'Large roses — front',     photo: BLING_EXAMPLES_BUCKET + 'Large-Roses-full-front-350x250.jpg' },
+  { code: 'medical-full',          mapsTo: 'medical',       label: 'Medical — full front',    photo: BLING_EXAMPLES_BUCKET + 'Medical-full-front-350x250.jpg' },
+  { code: 'music-note',            mapsTo: 'music',         label: 'Music note',              photo: BLING_EXAMPLES_BUCKET + 'Music-Note-350x250.jpg' },
+  { code: 'teacher',               mapsTo: 'teacher-1',     label: 'Teacher',                 photo: BLING_EXAMPLES_BUCKET + 'Teacher-350x250.jpg' },
+  { code: 'teddy-bear',            mapsTo: 'teddy-bear-1',  label: 'Teddy bear',              photo: BLING_EXAMPLES_BUCKET + 'Teddy-Bear-350x250.jpg' },
+  { code: 'teddy-bear-woodpecker', mapsTo: 'teddy-bear-1',  label: 'Teddy bear + woodpecker', photo: BLING_EXAMPLES_BUCKET + 'Teddy-Bear-and-Woodpecker-350x250.jpg' },
+  { code: 'wedding-rings',         mapsTo: 'wedding-rings', label: 'Wedding rings — front',   photo: BLING_EXAMPLES_BUCKET + 'Wedding-Rings-full-front-350x250.jpg' },
+]
+const blingExamplesFor = (optionCode) => BLING_EXAMPLES.filter(e => e.mapsTo === optionCode)
 
 // ---- Shape-carved designs (only shown when Shape Carved is selected) ------
 // Prices from the pricing sheet.
@@ -4408,23 +4472,26 @@ function CarvingsSection({ order, update, updateAddOn }) {
   // for now this inlines the sm-pdf-preview-overlay pattern.
   const [comingSoonType, setComingSoonType] = useState(null)
 
-  // Picker-open state for the two multi-item types. The card click flips
+  // Picker-open state for the multi-item types. The card click flips
   // these to reveal the picker; the ✓ check on the card still derives from
-  // shapeOn/laserOn (= "user has actually picked something").
+  // shapeOn/laserOn/blingOn (= "user has actually picked something").
   const [shapeOpen, setShapeOpen] = useState(false)
   const [laserOpen, setLaserOpen] = useState(false)
+  const [blingOpen, setBlingOpen] = useState(false)
 
   // Detect what's on by checking add-ons
   const flatOn     = order.addOns.some(a => a.code === 'flat-carve')
   const shapeOn    = order.addOns.some(a => SHAPE_CARVED_CODES.includes(a.code))
   const sculptedOn = order.addOns.some(a => a.code === 'hand-sculpted')
   const laserOn    = order.addOns.some(a => a.code?.startsWith('laser-'))
+  const blingOn    = order.addOns.some(a => a.code?.startsWith('bling-'))
 
   const isOn = (code) =>
     code === 'flat'     ? flatOn
   : code === 'shape'    ? shapeOn
   : code === 'sculpted' ? sculptedOn
   : code === 'laser'    ? laserOn
+  : code === 'bling'    ? blingOn
   : false
 
   // ---- Toggle handlers (per type) ------------------------------------------
@@ -4468,11 +4535,23 @@ function CarvingsSection({ order, update, updateAddOn }) {
       setLaserOpen(true)
     }
   }
+  const toggleBling = () => {
+    if (blingOpen || blingOn) {
+      // Close: hide the picker AND clear any picked BLINGs (close-clears).
+      setBlingOpen(false)
+      if (blingOn) {
+        update({ addOns: order.addOns.filter(a => !a.code?.startsWith('bling-')) })
+      }
+    } else {
+      setBlingOpen(true)
+    }
+  }
   const toggleByCode = (code) =>
     code === 'flat'     ? toggleFlat()
   : code === 'shape'    ? toggleShape()
   : code === 'sculpted' ? toggleSculpted()
   : code === 'laser'    ? toggleLaser()
+  : code === 'bling'    ? toggleBling()
   : null
 
   // ---- Shape-Carved design picker ------------------------------------------
@@ -4700,6 +4779,11 @@ function CarvingsSection({ order, update, updateAddOn }) {
           ))}
         </div>
       )}
+
+      {/* ---- BLING configurator (Sprint 3p.2) ---- */}
+      {(blingOn || blingOpen) && (
+        <BlingConfigurator order={order} update={update} updateAddOn={updateAddOn} />
+      )}
     </Section>
 
     {comingSoonType && (
@@ -4722,6 +4806,337 @@ function CarvingsSection({ order, update, updateAddOn }) {
       </div>
     )}
     </>
+  )
+}
+
+// =============================================================================
+// BLING CONFIGURATOR (Sprint 3p.2) — size → shape → color, multi-add
+// =============================================================================
+function BlingConfigurator({ order, update, updateAddOn }) {
+  // The config currently being built. null = no active build; the size grid
+  // just sits there waiting. Picking a size starts a fresh config.
+  const [active, setActive] = useState(null)
+  // Examples gallery modal: null | { mode: 'option' | 'all', optionCode?: string }
+  const [examplesModal, setExamplesModal] = useState(null)
+  // Enlarged example inside the gallery (null = grid view)
+  const [enlarged, setEnlarged] = useState(null)
+  // Whether the 21-color picker is currently expanded inline
+  const [showColors, setShowColors] = useState(false)
+
+  const picked = order.addOns.filter(a => a.code?.startsWith('bling-'))
+  const stoneColorCode = order.graniteColor || null
+  const stoneColor = stoneColorCode ? GRANITE_COLORS.find(c => c.code === stoneColorCode) : null
+
+  const startConfig = (sizeCode) => {
+    setActive({ size: sizeCode, shape: null, matchStone: true, color: null })
+    setShowColors(false)
+  }
+  const pickShape = (optionCode) => {
+    setActive(prev => prev ? { ...prev, shape: optionCode } : prev)
+  }
+  const setMatchStone = (val) => {
+    setActive(prev => prev ? { ...prev, matchStone: val, color: val ? null : prev.color } : prev)
+    if (val) setShowColors(false)
+  }
+  const pickColor = (code) => {
+    setActive(prev => prev ? { ...prev, color: code, matchStone: false } : prev)
+    setShowColors(false)
+  }
+
+  const activeColorCode = active && (active.matchStone ? stoneColorCode : active.color)
+  const activePrice = active ? computeBlingPrice(active.size, activeColorCode) : 0
+  const activeUpcharge = activeColorCode ? blingColorUpcharge(activeColorCode) : 0
+
+  const commit = () => {
+    if (!active || !active.shape) return
+    // Same (size, shape) combo can be added multiple times; suffix with an idx
+    // so each instance gets its own editable row (matches the Laser pattern).
+    let idx = 1
+    while (order.addOns.some(a => a.code === `bling-${active.size}-${active.shape}-${idx}`)) idx++
+    const colorCodeFinal = active.matchStone ? stoneColorCode : active.color
+    const colorRec = colorCodeFinal ? GRANITE_COLORS.find(c => c.code === colorCodeFinal) : null
+    const option = BLING_OPTIONS.find(o => o.code === active.shape)
+    const sizeRec = BLING_SIZES.find(s => s.code === active.size)
+    const colorLabel = active.matchStone
+      ? `match stone${colorRec ? ` (${colorRec.label})` : ''}`
+      : (colorRec?.label ?? '—')
+    update({ addOns: [...order.addOns, {
+      code: `bling-${active.size}-${active.shape}-${idx}`,
+      label: `BLING · ${sizeRec?.label ?? active.size} · ${option?.label ?? active.shape} (${colorLabel})`,
+      qty: 1,
+      price: activePrice,
+      notes: '',
+      blingSize: active.size,
+      blingShape: active.shape,
+      blingMatchStone: active.matchStone,
+      blingColor: colorCodeFinal,
+    }]})
+    setActive(null)
+    setShowColors(false)
+  }
+
+  const closeModal = () => { setExamplesModal(null); setEnlarged(null) }
+
+  return (
+    <div className="sm-carve-config sm-bling-config">
+      <div className="sm-carve-config-eyebrow">BLING · pick size → shape → color, add multiple</div>
+
+      {/* Step 1 — size picker (always visible) */}
+      <div className="sm-bling-step-label">1 · Size</div>
+      <div className="sm-bling-size-grid">
+        {BLING_SIZES.map(s => {
+          const on = active?.size === s.code
+          return (
+            <button key={s.code} type="button"
+              className={`sm-bling-size-card ${on ? 'on' : ''}`}
+              onClick={() => startConfig(s.code)}
+            >
+              <div className="sm-bling-size-name">{s.label}</div>
+              <div className="sm-bling-size-dim">{s.dim}</div>
+              <div className="sm-bling-size-price">${s.basePrice.toLocaleString()}</div>
+              {!on && <div className="sm-bling-size-add">+ Start</div>}
+              {on  && <div className="sm-bling-size-on">✓ Active</div>}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Step 2 — shape picker (revealed once a size is being configured) */}
+      {active && (
+        <>
+          <div className="sm-bling-step-label">2 · Shape</div>
+          <div className="sm-bling-shape-grid">
+            {BLING_OPTIONS.map(o => {
+              const on = active.shape === o.code
+              return (
+                <button key={o.code} type="button"
+                  className={`sm-bling-shape-card ${on ? 'on' : ''}`}
+                  onClick={() => pickShape(o.code)}
+                >
+                  <div className="sm-bling-shape-thumb">
+                    <img src={o.photo} alt={o.label} loading="lazy"
+                      onError={ev => { ev.currentTarget.style.display = 'none' }} />
+                  </div>
+                  <div className="sm-bling-shape-label">{o.label}</div>
+                  {on && <div className="sm-bling-shape-check">✓</div>}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Step 2a — per-option preview (the Option-2 examples model) */}
+          {active.shape && (() => {
+            const matchingExamples = blingExamplesFor(active.shape)
+            const firstExample = matchingExamples[0]
+            return (
+              <div className="sm-bling-preview">
+                <div className="sm-bling-preview-eyebrow">Installed example</div>
+                {firstExample ? (
+                  <>
+                    <div className="sm-bling-preview-img">
+                      <img src={firstExample.photo} alt={firstExample.label}
+                        onError={ev => { ev.currentTarget.style.display = 'none' }} />
+                    </div>
+                    <div className="sm-bling-preview-caption">{firstExample.label}</div>
+                    <button type="button" className="sm-link-btn"
+                      onClick={() => setExamplesModal({ mode: 'option', optionCode: active.shape })}>
+                      See more examples
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="sm-bling-preview-empty">
+                      No installed example yet for this design.
+                    </div>
+                    <button type="button" className="sm-link-btn"
+                      onClick={() => setExamplesModal({ mode: 'all' })}>
+                      See all examples
+                    </button>
+                  </>
+                )}
+              </div>
+            )
+          })()}
+        </>
+      )}
+
+      {/* Step 3 — color picker (revealed once a shape is picked) */}
+      {active && active.shape && (
+        <>
+          <div className="sm-bling-step-label">3 · Color</div>
+          <div className="sm-bling-color-row">
+            <label className="sm-bling-match-toggle">
+              <input type="checkbox" checked={active.matchStone}
+                onChange={ev => setMatchStone(ev.target.checked)} />
+              <span>Match stone color</span>
+              {active.matchStone && stoneColor && (
+                <span className="sm-bling-stone-name"> · {stoneColor.label}</span>
+              )}
+              {active.matchStone && !stoneColor && (
+                <span className="sm-bling-stone-empty"> · no stone color picked yet (base price)</span>
+              )}
+            </label>
+            {!active.matchStone && active.color && (
+              <div className="sm-bling-color-current">
+                <strong>{GRANITE_COLORS.find(c => c.code === active.color)?.label ?? active.color}</strong>
+                {activeUpcharge > 0 && (
+                  <span className="sm-bling-color-upcharge"> · +{Math.round(activeUpcharge * 100)}%</span>
+                )}
+              </div>
+            )}
+            <button type="button" className="sm-link-btn"
+              onClick={() => setShowColors(v => !v)}>
+              {showColors ? 'Hide colors' : 'Change'}
+            </button>
+          </div>
+
+          {showColors && (
+            <div className="sm-bling-color-grid">
+              {GRANITE_COLORS.map(c => (
+                <button key={c.code} type="button"
+                  className={`sm-bling-color-card ${active.color === c.code ? 'on' : ''}`}
+                  onClick={() => pickColor(c.code)}>
+                  <div className="sm-bling-color-swatch">
+                    <img src={`/granite/${c.file}`} alt={c.label} loading="lazy" />
+                  </div>
+                  <div className="sm-bling-color-info">
+                    <div className="sm-bling-color-name">{c.label}</div>
+                    {c.premium > 0 && (
+                      <div className="sm-bling-color-prem">+{Math.round(c.premium * 100)}%</div>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="sm-bling-add-row">
+            <div className="sm-bling-add-price">
+              <span className="sm-bling-add-eyebrow">This BLING:</span>
+              <span className="sm-bling-add-amt">${activePrice.toLocaleString()}</span>
+              {activeUpcharge > 0 && (
+                <span className="sm-bling-add-upcharge"> · +{Math.round(activeUpcharge * 100)}% color</span>
+              )}
+            </div>
+            <button type="button" className="sm-bling-add-btn"
+              onClick={commit} disabled={!active.shape}>
+              + Add this BLING to order
+            </button>
+            <button type="button" className="sm-link-btn"
+              onClick={() => { setActive(null); setShowColors(false) }}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Per-instance editor rows for BLINGs already added */}
+      {picked.length > 0 && (
+        <div className="sm-bling-instances">
+          <div className="sm-bling-step-label">Added to this order ({picked.length})</div>
+          {picked.map(a => {
+            const opt = BLING_OPTIONS.find(o => o.code === a.blingShape)
+            const sz = BLING_SIZES.find(s => s.code === a.blingSize)
+            const colorRec = a.blingColor ? GRANITE_COLORS.find(c => c.code === a.blingColor) : null
+            return (
+              <div key={a.code} className="sm-bling-instance">
+                <div className="sm-bling-instance-thumb">
+                  {opt && <img src={opt.photo} alt={opt.label}
+                    onError={ev => { ev.currentTarget.style.display = 'none' }} />}
+                </div>
+                <div className="sm-bling-instance-meta">
+                  <div className="sm-bling-instance-label">
+                    {sz?.label ?? a.blingSize} · {opt?.label ?? a.blingShape}
+                  </div>
+                  <div className="sm-bling-instance-sub">
+                    {a.blingMatchStone
+                      ? `Match stone${colorRec ? ` (${colorRec.label})` : ''}`
+                      : (colorRec?.label ?? '—')}
+                  </div>
+                </div>
+                <div className="sm-bling-instance-controls">
+                  <Field label="Qty">
+                    <TextInput type="number" value={a.qty}
+                      onChange={v => updateAddOn(a.code, { qty: Math.max(1, Number(v) || 1) })} />
+                  </Field>
+                  <Field label="Price each">
+                    <TextInput type="number" value={a.price}
+                      onChange={v => updateAddOn(a.code, { price: Number(v) || 0 })} />
+                  </Field>
+                  <Field label="Total">
+                    <TextInput value={'$' + ((a.price || 0) * (a.qty || 1)).toLocaleString()}
+                      onChange={() => {}} disabled />
+                  </Field>
+                </div>
+                <button type="button" className="sm-link-btn sm-link-btn-danger"
+                  onClick={() => update({ addOns: order.addOns.filter(x => x.code !== a.code) })}>
+                  Remove
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Examples gallery modal — reuses sm-pdf-preview-overlay shell */}
+      {examplesModal && (() => {
+        const list = examplesModal.mode === 'option'
+          ? blingExamplesFor(examplesModal.optionCode)
+          : BLING_EXAMPLES
+        const optLabel = examplesModal.mode === 'option'
+          ? (BLING_OPTIONS.find(o => o.code === examplesModal.optionCode)?.label ?? '')
+          : null
+        const headerLabel = examplesModal.mode === 'option'
+          ? `${optLabel} — installed examples`
+          : 'All installed BLING examples'
+        return (
+          <div className="sm-pdf-preview-overlay" onClick={closeModal}>
+            <div className="sm-bling-examples-modal" onClick={ev => ev.stopPropagation()}>
+              <div className="sm-pdf-preview-head">
+                <div className="sm-pdf-preview-title">{headerLabel}</div>
+                <div className="sm-pdf-preview-actions">
+                  {enlarged && (
+                    <button type="button" className="sm-link-btn" onClick={() => setEnlarged(null)}>
+                      ← Back to grid
+                    </button>
+                  )}
+                  <button type="button" className="sm-link-btn" onClick={closeModal}>
+                    Close ×
+                  </button>
+                </div>
+              </div>
+              <div className="sm-bling-examples-body">
+                {enlarged ? (
+                  <div className="sm-bling-examples-enlarged">
+                    <img src={enlarged.photo} alt={enlarged.label}
+                      onError={ev => { ev.currentTarget.style.display = 'none' }} />
+                    <div className="sm-bling-examples-caption">{enlarged.label}</div>
+                  </div>
+                ) : (
+                  <div className="sm-bling-examples-grid">
+                    {list.length === 0 && (
+                      <div className="sm-bling-examples-empty">
+                        No installed examples for this design yet.
+                      </div>
+                    )}
+                    {list.map(ex => (
+                      <button key={ex.code} type="button" className="sm-bling-examples-card"
+                        onClick={() => setEnlarged(ex)}>
+                        <div className="sm-bling-examples-thumb">
+                          <img src={ex.photo} alt={ex.label}
+                            onError={ev => { ev.currentTarget.style.display = 'none' }} />
+                        </div>
+                        <div className="sm-bling-examples-card-label">{ex.label}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+    </div>
   )
 }
 
@@ -10862,6 +11277,229 @@ const styles = `
   z-index: 2;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
 }
+
+/* ---- Sprint 3p.2 — BLING configurator -------------------------------- */
+.sm-bling-config { padding-top: 6px; }
+.sm-bling-step-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sm-gold);
+  font-weight: 700;
+  margin: 14px 0 8px;
+}
+.sm-bling-size-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.sm-bling-size-card {
+  background: #fff;
+  border: 1.5px solid var(--sm-border-dark);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit; color: inherit;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: all 0.15s;
+}
+.sm-bling-size-card:hover { border-color: var(--sm-gold); background: var(--sm-gold-pale); }
+.sm-bling-size-card.on { border-color: var(--sm-navy); background: var(--sm-gold-pale); }
+.sm-bling-size-name { font-family: var(--font-d), serif; font-size: 15px; font-weight: 600; color: var(--sm-navy); }
+.sm-bling-size-dim { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mid, #666); }
+.sm-bling-size-price { font-size: 14px; font-weight: 700; color: var(--sm-navy); margin-top: 6px; }
+.sm-bling-size-add { margin-top: 4px; font-size: 11px; letter-spacing: 0.05em; color: var(--sm-gold); font-weight: 700; text-transform: uppercase; }
+.sm-bling-size-on { margin-top: 4px; font-size: 11px; letter-spacing: 0.05em; color: #2d8a4f; font-weight: 700; text-transform: uppercase; }
+
+.sm-bling-shape-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+@media (min-width: 720px) { .sm-bling-shape-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 1100px) { .sm-bling-shape-grid { grid-template-columns: repeat(5, 1fr); } }
+.sm-bling-shape-card {
+  position: relative;
+  background: #fff;
+  border: 1.5px solid var(--sm-border);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+  text-align: center;
+  font: inherit; color: inherit;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: all 0.15s;
+  overflow: hidden;
+}
+.sm-bling-shape-card:hover { border-color: var(--sm-gold-light); transform: translateY(-1px); }
+.sm-bling-shape-card.on { border-color: var(--sm-navy); box-shadow: 0 4px 12px rgba(30,45,61,0.18); }
+.sm-bling-shape-thumb {
+  width: 100%; aspect-ratio: 1 / 1;
+  background: #f0ede6;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.sm-bling-shape-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.sm-bling-shape-label { font-size: 12px; color: var(--sm-navy); line-height: 1.3; padding: 0 2px 4px; }
+.sm-bling-shape-check {
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--sm-navy); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+  box-shadow: 0 2px 6px rgba(30,45,61,0.3);
+}
+
+.sm-bling-preview {
+  margin-top: 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--sm-border);
+  border-radius: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sm-bling-preview-eyebrow {
+  font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--sm-gold); font-weight: 700;
+}
+.sm-bling-preview-img {
+  width: 100%; max-width: 320px;
+  aspect-ratio: 7 / 5;
+  background: #f0ede6; border-radius: 6px; overflow: hidden;
+}
+.sm-bling-preview-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-bling-preview-caption { font-size: 12px; color: var(--text-mid); }
+.sm-bling-preview-empty { font-size: 13px; color: var(--text-mid); font-style: italic; }
+
+.sm-bling-color-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid var(--sm-border);
+  border-radius: 8px;
+}
+.sm-bling-match-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--sm-navy); cursor: pointer; }
+.sm-bling-match-toggle input { margin: 0; cursor: pointer; }
+.sm-bling-stone-name { font-weight: 600; color: var(--sm-navy); }
+.sm-bling-stone-empty { color: var(--text-mid); font-style: italic; font-size: 12px; }
+.sm-bling-color-current { font-size: 13px; color: var(--sm-navy); }
+.sm-bling-color-upcharge { color: var(--sm-gold); font-weight: 700; }
+
+.sm-bling-color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.sm-bling-color-card {
+  position: relative;
+  background: #fff;
+  border: 2px solid var(--sm-border);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit; color: inherit;
+  padding: 0;
+  display: flex; flex-direction: column;
+  transition: all 0.15s;
+  overflow: hidden;
+}
+.sm-bling-color-card:hover { border-color: var(--sm-gold-light); }
+.sm-bling-color-card.on { border-color: var(--sm-navy); box-shadow: 0 3px 8px rgba(30,45,61,0.18); }
+.sm-bling-color-swatch { width: 100%; aspect-ratio: 4 / 3; background: #f0ede6; overflow: hidden; }
+.sm-bling-color-swatch img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-bling-color-info { padding: 6px 8px 8px; }
+.sm-bling-color-name { font-size: 12px; font-weight: 600; color: var(--sm-navy); line-height: 1.2; }
+.sm-bling-color-prem { font-size: 10px; color: var(--sm-gold); font-weight: 700; margin-top: 2px; }
+
+.sm-bling-add-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--sm-gold-pale);
+  border: 1px solid var(--sm-border);
+  border-radius: 8px;
+}
+.sm-bling-add-price { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.sm-bling-add-eyebrow { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-mid); }
+.sm-bling-add-amt { font-family: var(--font-d), serif; font-size: 20px; font-weight: 700; color: var(--sm-navy); }
+.sm-bling-add-upcharge { font-size: 12px; color: var(--sm-gold); font-weight: 600; }
+.sm-bling-add-btn {
+  background: var(--sm-navy);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 18px;
+  font: inherit; font-weight: 700; font-size: 13px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sm-bling-add-btn:hover:not(:disabled) { background: var(--sm-gold); transform: translateY(-1px); }
+.sm-bling-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sm-bling-instances {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--sm-border-dark);
+}
+.sm-bling-instance {
+  display: grid;
+  grid-template-columns: 64px 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--sm-border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.sm-bling-instance-thumb { width: 64px; height: 64px; background: #f0ede6; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.sm-bling-instance-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.sm-bling-instance-meta { min-width: 0; }
+.sm-bling-instance-label { font-family: var(--font-d), serif; font-size: 14px; font-weight: 600; color: var(--sm-navy); }
+.sm-bling-instance-sub { font-size: 12px; color: var(--text-mid); margin-top: 2px; }
+.sm-bling-instance-controls { display: flex; gap: 8px; }
+.sm-bling-instance-controls .sm-field { min-width: 80px; }
+
+.sm-bling-examples-modal {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+.sm-bling-examples-body { padding: 16px; overflow-y: auto; }
+.sm-bling-examples-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.sm-bling-examples-card {
+  background: #fff;
+  border: 1.5px solid var(--sm-border);
+  border-radius: 8px;
+  padding: 0;
+  cursor: pointer;
+  font: inherit; color: inherit;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  transition: all 0.15s;
+}
+.sm-bling-examples-card:hover { border-color: var(--sm-gold); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(30,45,61,0.12); }
+.sm-bling-examples-thumb { width: 100%; aspect-ratio: 7 / 5; background: #f0ede6; overflow: hidden; }
+.sm-bling-examples-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-bling-examples-card-label { padding: 8px 10px; font-size: 12px; color: var(--sm-navy); line-height: 1.3; }
+.sm-bling-examples-empty { padding: 24px; text-align: center; color: var(--text-mid); font-style: italic; }
+.sm-bling-examples-enlarged { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.sm-bling-examples-enlarged img { max-width: 100%; max-height: 60vh; object-fit: contain; }
+.sm-bling-examples-caption { font-size: 13px; color: var(--text-mid); }
 
 /* ---- SPRINT 3i — Payment tracking ------------------------------------- */
 .sm-payment-summary {

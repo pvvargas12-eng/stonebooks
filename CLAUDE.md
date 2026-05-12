@@ -36,14 +36,14 @@ React + Supabase. Internal use only.
 - Full Sales wizard
 - Theming, auth
 
-## Current sprint — 3o (in progress)
+## Sprint 3o — SHIPPED
 
-Four items, not yet shipped:
+All four items closed:
 
-1. **Shape Carved bug** — prices/clicking broken
-2. **Laser Etching bug** — add-on broken entirely
-3. **Hand Sculpted photo** — drop key photo into existing card
-4. **Laser Etching photo** — drop key photo into existing card
+1. **Shape Carved bug** — ✅ fixed in 3o cleanup commit (`shapeOpen` picker state added)
+2. **Laser Etching bug** — ✅ same fix, shared root cause (`laserOpen` picker state added)
+3. **Hand Sculpted photo** — ✅ folded into Sprint 3p.1 (`MARKETING_PHOTOS.sculpted`)
+4. **Laser Etching photo** — ✅ folded into Sprint 3p.1 (`MARKETING_PHOTOS.laser`)
 
 Photo URLs (note the spacing/casing — fine for now, slugify before SaaS):
 
@@ -62,15 +62,15 @@ Full Supabase URLs:
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/key%20bling%20photo%20.jpg
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/Vase%20Key%20Photo%20.jpg
 
-## Next sprint — 3p (fully spec'd, ready to start)
+## Current sprint — 3p (in progress)
 
-Add Vase + BLING as add-on cards #5 and #6. Categories will be: Flat Carve, Shape Carve, Hand Sculpted, Laser Etching, Vase, BLING.
+Add Vase + BLING as add-on cards #5 and #6. Categories: Flat Carve, Shape Carve, Hand Sculpted, Laser Etching, Vase, BLING.
 
 ### Phases
 
-- **3p.1** — Add `MARKETING_PHOTOS` constants block. Refactor existing hand-sculpted and laser-etching photos to read from it. Add BLING and Vase as cards #5 and #6 in the add-ons grid (photo + name only, click opens "coming soon" placeholder modal).
-- **3p.2** — BLING configurator: 3 sizes (Small $695, Medium $745, Large $795), 21-color picker, defaults to "match stone color" with inline "change" link (Pattern A).
-- **3p.3** — Vase configurator. Three-step flow: size → shape → color. 6 sizes (text options, recommended size pre-selected based on die size). 17 unique shape thumbnails on the shape step regardless of size. Color step defaults to stone match, inline change opens 21-color picker.
+- **3p.1** — ✅ SHIPPED. `MARKETING_PHOTOS` constants block; hand-sculpted + laser-etching photos refactored to read from it; BLING + Vase added as cards #5 and #6 with "Coming Soon" placeholder modal.
+- **3p.2** — ✅ SHIPPED. BLING configurator: 3 sizes (Small $695, Medium $745, Large $795), 20 design options, 11 installed-example reference photos, 21-color picker defaulting to "Match stone color" with inline "Change" link. Color upcharge derives from `GRANITE_COLORS.premium` (single source of truth). Examples gallery modal reuses the `sm-pdf-preview-overlay` shell.
+- **3p.3** — PENDING. Vase configurator. Three-step flow: size → shape → color. 6 sizes (text options, recommended size pre-selected based on die size). 17 unique shape thumbnails on the shape step regardless of size. Color step defaults to stone match, inline change opens 21-color picker.
 
 ### Vase pricing (locked)
 
@@ -122,10 +122,12 @@ Supplier cuts to whatever spec we give. Recommendation rounds up to nearest whol
 
 ## Open items still needing Paul's input
 
-- BLING Medium and Large prices confirmation (current assumption: $745 / $795)
-- BLING shapes catalog + reference photos
 - Zelle QR upload (for 3q Zelle integration)
 - baseWidth migration strategy for existing pre-3p uprights (options: derive/backfill, leave null and prompt, or default to die_W + 12" adjustable)
+
+## Deferred / known issues
+
+- **Design step tab — Slant filter bug.** Deferred during Sprint 3p.2 (filter on the Slant shape misbehaves in the Design step tab). Details TBD — pick up in a focused diagnosis session, same approach as the 3o Shape Carved / Laser Etching bug hunt.
 
 ## Feature backlog after 3p
 
