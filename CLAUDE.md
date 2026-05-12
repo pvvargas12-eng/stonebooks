@@ -47,12 +47,16 @@ Four items, not yet shipped:
 
 Photo URLs (note the spacing/casing — fine for now, slugify before SaaS):
 
+- Flat Carve: `Flat Carving Key Photo.jpeg`
+- Shape Carve: `Shape Carving Key Photo.jpeg`
 - Hand Sculpted: `hand sculpted key photo.jpg`
 - Laser Etching: `laser-etching-key photo.jpg`
 - BLING: `key bling photo .jpg` (trailing space)
 - Vase: `Vase Key Photo .jpg` (trailing space)
 
 Full Supabase URLs:
+- https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/Flat%20Carving%20Key%20Photo.jpeg
+- https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/Shape%20Carving%20Key%20Photo.jpeg
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/hand%20sculpted%20key%20photo.jpg
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/laser-etching-key%20photo.jpg
 - https://ibekfollqnytxcuyekad.supabase.co/storage/v1/object/public/key%20photos/key%20bling%20photo%20.jpg
