@@ -6684,13 +6684,16 @@ async function generateEstimatePDF(order, opts = {}) {
   y += 2
   doc.setDrawColor(...GOLD)
   doc.setLineWidth(0.4)
-  doc.line(W - M - 80, y, W - M, y)
+  // Sprint 3s.3 — deposit block label column widened from 60mm to 90mm so
+  // 'Balance (at delivery / installation)' no longer overflows into the
+  // right-aligned value. Gold divider widened to match the new label width.
+  doc.line(W - M - 90, y, W - M, y)
   y += 5
 
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(11)
   doc.setTextColor(...GOLD)
-  doc.text(isContract ? 'DUE TODAY (50% DEPOSIT)' : 'DEPOSIT AT SIGNING (50%)', W - M - 60, y)
+  doc.text(isContract ? 'DUE TODAY (50% DEPOSIT)' : 'DEPOSIT AT SIGNING (50%)', W - M - 90, y)
   doc.setTextColor(...NAVY)
   doc.text(fmtUSD(deposit), W - M, y, { align: 'right' })
   y += 5
@@ -6698,7 +6701,7 @@ async function generateEstimatePDF(order, opts = {}) {
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
   doc.setTextColor(...GREY)
-  doc.text('Balance (at delivery / installation)', W - M - 60, y)
+  doc.text('Balance (at delivery / installation)', W - M - 90, y)
   doc.setTextColor(...TEXT)
   doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
   y += 7
