@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3s`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -136,9 +136,24 @@ Replaced the hidden "Match shape + color / Browse all" toggle in DesignStep with
 ### Part B — BLING tab
 Added a 7th "BLING" tab. When active, the design grid is hidden and `<BlingConfigurator />` renders inline. Picks flow into `order.addOns` with the same `bling-{size}-{shape}` code pattern as the Add-Ons step — picks made in either surface show up in both. BLING tab has a gold accent and a picks-count badge instead of a catalog-count. BLING is never the default tab — only catalog categories map from `order.shape`. `updateAddOn` is defined locally inside DesignStep (same pattern as AddOnsStep:4399); no dispatcher changes.
 
+### 3r follow-up — Tab data mapping fix
+The cats values in the live monuments table use `upright-single` / `upright-double` / `flat` — the tab codes were originally written as `single-upright` / `double-upright` / `flat-marker` and hid **1222 designs** across three tabs (0 counts). Fixed in commit `bedfc16`. Same naming-mismatch was present in the pre-3r `matchesShape` helper too — so the original "Slant filter bug" from 3p.2 was actually "everything except Slants and Custom is empty."
+
+## Sprint 3r.2 — SHIPPED
+
+### Part A — All tab as default
+Replaces the shape-derived default tab with a stable `'All'` tab at position 0 (full ~1648-design catalog). The fragile `SHAPE_TO_DESIGN_CAT` mapping is retired entirely. Tab strip: All · Slants · Double Slants · Uprights · Double Uprights · Flat Markers · Custom Shape · BLING. Default `activeCategory` is `'all'`. The Match-granite-color checkbox layers on top of any tab including All.
+
+### Part B — Multi-select designs (6 max, primary + alternates)
+Single `designId` / `designSnapshot` are replaced by `order.designs[]` — array of `{ id, snapshot }`, max 6. `designs[0]` is the PRIMARY (carver replicates this); `designs[1..5]` are ALTERNATES (inspiration only). Toggle behavior on card click; 3-second non-blocking cap notice on overage. New Selected-Designs panel shows per-entry thumb, role badge (gold PRIMARY / navy Alternate N), Make-primary on alternates, Remove, Clear-all. Removing the primary silently shifts `designs[1]` into the primary slot. Design grid cards wear matching role badges + bordered states.
+
+**Schema change.** Orders table now has a `designs` JSONB column. The legacy `design_id` and `design_snapshot` columns are kept for backward read-compatibility — `toOrderRow` mirrors `designs[0]` into them on every save. `fromOrderRow` prefers `row.designs` when populated and falls back to the legacy columns for pre-migration orders. Migration SQL lives at `supabase/multi_design_migration.sql` and was written for manual execution (the app's anon key cannot run DDL).
+
+**Estimate vs. contract.** Estimate continues to render the primary design only, relabeled "Design Reference (Primary)". Alternates do not appear in the estimate. **Contracts no longer render the design block at all** (per user direction in 3r.2 spec).
+
 ## Deferred / known issues
 
-(none currently — the Slant filter bug carried over from Sprint 3p.2 was resolved by Sprint 3r Part A)
+- **Supabase migration not yet executed.** `supabase/multi_design_migration.sql` is committed but must be run manually against the Shevchenko Supabase project before pre-3r.2 orders can take advantage of the new array column. New orders work either way (the app writes both old and new columns; reads tolerate both shapes).
 
 ## Feature backlog after 3p
 
