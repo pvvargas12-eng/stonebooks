@@ -8808,6 +8808,14 @@ function ContinueLater({ order, update }) {
         </div>
       </div>
 
+      {/* Sprint 3s — Designer handoff: surface picked designs + free-text notes
+          so the layout team has everything they need on the saved-order page.
+          Designer handoff fields stay editable post-signing (production info,
+          not contractual). The bound field is order.designPreferences, the
+          existing "Describe what they want" textarea from step 7 — single
+          source of truth, no new column. */}
+      <DesignerHandoffSection order={order} update={update} />
+
       <Section title="Estimate PDF" eyebrow="Print or email to the customer">
         <PdfDownloadButton order={order} />
       </Section>
@@ -8820,6 +8828,91 @@ function ContinueLater({ order, update }) {
 
       <CancelOrderSection order={order} update={update} />
     </div>
+  )
+}
+
+// Sprint 3s — Designs + designer notes for the layout team. Lives on step 12
+// (Saved) so the production handoff has everything it needs at a glance.
+// Reuses order.designPreferences (set in step 7) — both surfaces edit the
+// same field. Stays editable after contract signing on purpose: production
+// info changes do not affect what the customer signed.
+function DesignerHandoffSection({ order, update }) {
+  const designs = order.designs || []
+  const thumb = (url) => {
+    if (!url) return url
+    if (url.includes('drive.google.com')) return url.replace(/sz=w\d+/i, 'sz=w400')
+    return url
+  }
+  const cleanId = (rawId) => {
+    if (!rawId) return ''
+    const m = String(rawId).match(/^local_([A-Z]+)(\d+)\.(?:jpg|jpeg|png|webp)/i)
+    if (m) return m[1].toUpperCase() + parseInt(m[2], 10)
+    const s = String(rawId)
+    return s.length > 10 ? s.slice(0, 10) : s
+  }
+  const altCount = designs.length - 1
+  const footerText = designs.length === 0
+    ? null
+    : designs.length === 1
+      ? 'Primary only'
+      : designs.length === 6
+        ? '1 primary + 5 alternates (max)'
+        : `1 primary + ${altCount} alternate${altCount === 1 ? '' : 's'}`
+
+  return (
+    <Section title="Designs for the layout team" eyebrow="Production handoff — editable even after the contract is signed">
+      {designs.length === 0 ? (
+        <div className="sm-selected-empty">
+          No designs picked. Go back to step 7 to add up to 6 designs.
+        </div>
+      ) : (
+        <>
+          <div className="sm-handoff-grid">
+            {designs.map((d, i) => {
+              const s = d.snapshot || {}
+              const isPrimary = i === 0
+              return (
+                <div
+                  key={d.id}
+                  className={`sm-handoff-card ${isPrimary ? 'primary' : 'alternate'}`}
+                >
+                  <div className={`sm-selected-role ${isPrimary ? 'primary' : 'alternate'}`}>
+                    {isPrimary ? 'PRIMARY' : `Alternate ${i + 1}`}
+                  </div>
+                  <div className="sm-handoff-thumb">
+                    {s.img && <img src={thumb(s.img)} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+                  </div>
+                  <div className="sm-handoff-info">
+                    <div className="sm-selected-id">{cleanId(s.id || d.id)}</div>
+                    {(s.lastname || s.name) && (
+                      <div className="sm-selected-name">{s.lastname || s.name}</div>
+                    )}
+                    {s.granite_color && (
+                      <div className="sm-selected-tags">
+                        <span className="sm-modal-tag">{s.granite_color}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="sm-selected-footer">{footerText}</div>
+        </>
+      )}
+
+      <div className="sm-handoff-notes">
+        <div className="sm-handoff-notes-eyebrow">
+          Designer notes — describe what the customer wants, which aspects of the designs to emphasize, anything specific for layout
+        </div>
+        <TextArea
+          value={order.designPreferences || ''}
+          onChange={v => update({ designPreferences: v })}
+          rows={5}
+          placeholder="e.g., emphasize the dove from the primary design but use the lettering style from alternate 2…"
+        />
+      </div>
+    </Section>
   )
 }
 
@@ -10945,6 +11038,45 @@ const styles = `
 }
 .sm-design-role-badge.primary   { background: var(--sm-gold); }
 .sm-design-role-badge.alternate { background: var(--sm-navy); }
+
+/* Sprint 3s — Designer handoff section on step 12 (Saved) */
+.sm-handoff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.sm-handoff-card {
+  position: relative;
+  background: #fff;
+  border: 2px solid var(--sm-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.sm-handoff-card.primary  { border-color: var(--sm-gold); }
+.sm-handoff-card.alternate { border-color: var(--sm-navy); }
+.sm-handoff-thumb {
+  width: 100%; aspect-ratio: 4/3;
+  background: #fff;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.sm-handoff-thumb img {
+  width: 100%; height: 100%; object-fit: contain;
+}
+.sm-handoff-info {
+  padding: 10px 12px;
+}
+.sm-handoff-notes {
+  margin-top: 18px;
+}
+.sm-handoff-notes-eyebrow {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sm-gold);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
 
 /* ---- INSCRIPTION STEP ----------------------------------------------------- */
 .sm-photo-preview {
