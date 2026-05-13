@@ -1068,8 +1068,11 @@ const ADD_ONS_CATALOG = [
   // Design step. Custom price (starts at $175); salesperson can adjust.
   { code: 'custom-design',  label: 'Custom Design Fee',         category: 'Custom design', price: 175, custom: true },
 
-  // Vase
-  { code: 'unitized-vase',  label: '24x14 M Unitized Vase Panel', category: 'Vase',    price: 175  },
+  // Vase entries are owned by the Sprint 3p.3 Vase configurator (sizes/shapes/
+  // colors with fit verification). The old '24x14 M Unitized Vase Panel'
+  // catalog row was retired in Sprint 3s. Existing saved orders that already
+  // had 'unitized-vase' in their addOns still render fine — buildLineItems
+  // falls back to the addon's own label when the catalog lookup misses.
 
   // Lettering (mainly for inscription services on existing stones)
   { code: 'lett-year',      label: 'Lettering: Year Only',       category: 'Lettering', price: 495 },
