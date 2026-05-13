@@ -1320,8 +1320,10 @@ function makeBlankOrder() {
     },
 
     // Design pick (Sprint 2)
-    designId: null,             // monuments.id
-    designSnapshot: null,       // jsonb cache of the chosen monument record
+    // Sprint 3r.2 — multi-select designs (up to 6).
+    // designs[0] is the PRIMARY (carver replicates this); designs[1..5] are
+    // ALTERNATES (inspiration / reference only).
+    designs: [],                // [{ id, snapshot }, ...] — see supabase/multi_design_migration.sql
     elementFilters: [],         // SYMBOLS[].code list, used during design browse
     designPreferences: '',      // free-text "describe what you want" notes
     useCustomDesign: false,     // Sprint 3c — true when "Custom Design" is picked
@@ -1754,8 +1756,11 @@ function orderToRow(order) {
     custom_shape_desc: order.customShapeDescription || null,
     base_config: order.baseConfig || {},
 
-    design_id: order.designId || null,
-    design_snapshot: order.designSnapshot || null,
+    // Sprint 3r.2 — designs[] is the source of truth; design_id/design_snapshot
+    // mirror designs[0] for backward read-compatibility only.
+    designs: order.designs || [],
+    design_id: order.designs?.[0]?.id || null,
+    design_snapshot: order.designs?.[0]?.snapshot || null,
     element_filters: order.elementFilters || [],
     design_preferences: order.designPreferences || null,
     use_custom_design: order.useCustomDesign || false,
@@ -1852,8 +1857,11 @@ function rowToOrder(row, customerRow, cemeteryRow) {
       heightCode: null, polishMargin2in: false, sides: null,
     },
 
-    designId: row.design_id || null,
-    designSnapshot: row.design_snapshot || null,
+    // Sprint 3r.2 — prefer the multi-design column; fall back to the legacy
+    // single-design columns for orders saved before the migration ran.
+    designs: Array.isArray(row.designs) && row.designs.length > 0
+      ? row.designs
+      : (row.design_id ? [{ id: row.design_id, snapshot: row.design_snapshot }] : []),
     elementFilters: row.element_filters || [],
     designPreferences: row.design_preferences || '',
     useCustomDesign: row.use_custom_design || false,
@@ -3677,16 +3685,50 @@ function DesignStep({ order, update }) {
     })
   }, [baseList, order.elementFilters, searchText])
 
-  const pickDesign = (m) => {
+  // Sprint 3r.2 — multi-select with 6-cap. designs[0] is the PRIMARY.
+  const DESIGNS_MAX = 6
+  const [capNotice, setCapNotice] = useState(false)
+  const capTimerRef = useRef(null)
+
+  const designs = order.designs || []
+  const designIndexById = useMemo(() => {
+    const m = new Map()
+    designs.forEach((d, i) => m.set(d.id, i))
+    return m
+  }, [designs])
+
+  const togglePick = (m) => {
+    const idx = designIndexById.get(m.id)
+    if (idx != null) {
+      // Already picked → remove. If primary is removed, designs[1] shifts to
+      // become the new primary automatically (just a left-shift on the array).
+      update({ designs: designs.filter((_, i) => i !== idx) })
+      return
+    }
+    if (designs.length >= DESIGNS_MAX) {
+      if (capTimerRef.current) clearTimeout(capTimerRef.current)
+      setCapNotice(true)
+      capTimerRef.current = setTimeout(() => setCapNotice(false), 3000)
+      return
+    }
     const snapshot = {
       id: m.id, lastname: m.lastname, name: m.name, img: m.img,
       carve_type: m.carve_type, granite_color: m.granite_color,
       cats: m.cats, tags: m.tags, description: m.description,
     }
-    update({ designId: m.id, designSnapshot: snapshot })
+    update({ designs: [...designs, { id: m.id, snapshot }] })
   }
 
-  const clearDesign = () => update({ designId: null, designSnapshot: null })
+  const removeDesign = (id) => update({ designs: designs.filter(d => d.id !== id) })
+  const clearAllDesigns = () => update({ designs: [] })
+  const makePrimary = (id) => {
+    const idx = designs.findIndex(d => d.id === id)
+    if (idx <= 0) return
+    const next = [...designs]
+    const [picked] = next.splice(idx, 1)
+    next.unshift(picked)
+    update({ designs: next })
+  }
 
   const thumb = (url) => {
     if (!url) return url
@@ -3694,28 +3736,37 @@ function DesignStep({ order, update }) {
     return url
   }
 
-  const renderCard = (m) => (
-    <button
-      key={m.id}
-      type="button"
-      className={`sm-design-card ${order.designId === m.id ? 'on' : ''}`}
-      onClick={() => pickDesign(m)}
-    >
-      <div className="sm-design-thumb">
-        {m.img ? <img src={thumb(m.img)} alt="" loading="lazy" referrerPolicy="no-referrer" />
-               : <span className="sm-design-no-img">🪨</span>}
-      </div>
-      <div className="sm-design-info">
-        <div className="sm-design-id">{cleanCatalogId(m.id)}</div>
-        {m.lastname && <div className="sm-design-name">{m.lastname}</div>}
-        <div className="sm-design-tags">
-          {m.carve_type && <span className="sm-modal-tag sm-modal-tag-carve">{m.carve_type}</span>}
-          {m.granite_color && <span className="sm-modal-tag sm-modal-tag-color">{m.granite_color}</span>}
+  const renderCard = (m) => {
+    const idx = designIndexById.get(m.id)
+    const isPicked = idx != null
+    const isPrimary = idx === 0
+    return (
+      <button
+        key={m.id}
+        type="button"
+        className={`sm-design-card ${isPicked ? 'on' : ''} ${isPrimary ? 'primary' : ''}`}
+        onClick={() => togglePick(m)}
+      >
+        {isPicked && (
+          <div className={`sm-design-role-badge ${isPrimary ? 'primary' : 'alternate'}`}>
+            {isPrimary ? 'PRIMARY' : `Alternate ${idx + 1}`}
+          </div>
+        )}
+        <div className="sm-design-thumb">
+          {m.img ? <img src={thumb(m.img)} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                 : <span className="sm-design-no-img">🪨</span>}
         </div>
-      </div>
-      {order.designId === m.id && <div className="sm-design-check">✓</div>}
-    </button>
-  )
+        <div className="sm-design-info">
+          <div className="sm-design-id">{cleanCatalogId(m.id)}</div>
+          {m.lastname && <div className="sm-design-name">{m.lastname}</div>}
+          <div className="sm-design-tags">
+            {m.carve_type && <span className="sm-modal-tag sm-modal-tag-carve">{m.carve_type}</span>}
+            {m.granite_color && <span className="sm-modal-tag sm-modal-tag-color">{m.granite_color}</span>}
+          </div>
+        </div>
+      </button>
+    )
+  }
 
   return (
     <div className="sm-step">
@@ -3735,29 +3786,71 @@ function DesignStep({ order, update }) {
         onToggle={toggleCustomDesign}
       />
 
-      {/* ---- Selected design (sticky-ish at the top) ----------------------- */}
-      {order.designSnapshot && (
-        <Section title="Selected design" eyebrow={order.useCustomDesign ? 'Reference for the custom design' : 'Currently picked'}
-          right={<button type="button" className="sm-link-btn" onClick={clearDesign}>Clear pick</button>}
-        >
-          <div className="sm-selected-design">
-            <div className="sm-selected-thumb">
-              {order.designSnapshot.img && <img src={thumb(order.designSnapshot.img)} alt="" />}
-            </div>
-            <div className="sm-selected-info">
-              <div className="sm-selected-id">{cleanCatalogId(order.designSnapshot.id)}</div>
-              <div className="sm-selected-name">{order.designSnapshot.lastname || order.designSnapshot.name}</div>
-              {order.designSnapshot.lastname && order.designSnapshot.name && (
-                <div className="sm-selected-sub">{order.designSnapshot.name}</div>
-              )}
-              <div className="sm-selected-tags">
-                {order.designSnapshot.carve_type && <span className="sm-modal-tag">{order.designSnapshot.carve_type}</span>}
-                {order.designSnapshot.granite_color && <span className="sm-modal-tag">{order.designSnapshot.granite_color}</span>}
-              </div>
-            </div>
+      {/* ---- Selected designs (Sprint 3r.2 multi-select) -------------------- */}
+      <Section
+        title="Selected designs"
+        eyebrow="Primary is the design the carver replicates. Alternates are inspiration only."
+        right={designs.length > 0 ? (
+          <button type="button" className="sm-link-btn" onClick={clearAllDesigns}>Clear all</button>
+        ) : null}
+      >
+        {designs.length === 0 ? (
+          <div className="sm-selected-empty">
+            No designs selected yet. Tap up to {DESIGNS_MAX} designs below to pick a primary and alternates.
           </div>
-        </Section>
-      )}
+        ) : (
+          <>
+            <div className="sm-selected-designs">
+              {designs.map((d, i) => {
+                const s = d.snapshot || {}
+                const isPrimary = i === 0
+                return (
+                  <div
+                    key={d.id}
+                    className={`sm-selected-card ${isPrimary ? 'primary' : 'alternate'}`}
+                  >
+                    <div className={`sm-selected-role ${isPrimary ? 'primary' : 'alternate'}`}>
+                      {isPrimary ? 'PRIMARY' : `Alternate ${i + 1}`}
+                    </div>
+                    <div className="sm-selected-thumb">
+                      {s.img && <img src={thumb(s.img)} alt="" />}
+                    </div>
+                    <div className="sm-selected-info">
+                      <div className="sm-selected-id">{cleanCatalogId(s.id || d.id)}</div>
+                      <div className="sm-selected-name">{s.lastname || s.name}</div>
+                      {s.granite_color && (
+                        <div className="sm-selected-tags">
+                          <span className="sm-modal-tag">{s.granite_color}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="sm-selected-actions">
+                      {!isPrimary && (
+                        <button type="button" className="sm-link-btn" onClick={() => makePrimary(d.id)}>
+                          Make primary
+                        </button>
+                      )}
+                      <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => removeDesign(d.id)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="sm-selected-footer">
+              {designs.length === 1
+                ? 'Primary only — pick more for alternates.'
+                : `1 primary + ${designs.length - 1} alternate${designs.length - 1 === 1 ? '' : 's'}.`}
+            </div>
+          </>
+        )}
+        {capNotice && (
+          <div className="sm-design-cap-notice" role="status">
+            Maximum {DESIGNS_MAX} designs selected. Remove one to add another.
+          </div>
+        )}
+      </Section>
 
       {/* ---- Free-text describe -------------------------------------------- */}
       <Section title="Describe what they want" eyebrow="In their own words">
@@ -6397,15 +6490,20 @@ async function generateEstimatePDF(order, opts = {}) {
   }
 
   // ============================ DESIGN ===================================
-  const designRef = order.designSnapshot?.lastname || order.designSnapshot?.id
-  if (designRef || order.elementFilters?.length || order.designPreferences) {
+  // Sprint 3r.2 — contracts no longer render the design reference (per
+  // user direction). Estimates still show the PRIMARY design only;
+  // alternates are inspiration for the carver and don't appear in either PDF.
+  const primaryDesign = order.designs?.[0]?.snapshot || null
+  const primaryRef = primaryDesign?.lastname || primaryDesign?.id
+  const showDesignBlock = !isContract && (primaryRef || order.elementFilters?.length || order.designPreferences)
+  if (showDesignBlock) {
     sectionHeader('Design')
     if (order.elementFilters?.length) {
       const symLabels = order.elementFilters.map(c => SYMBOLS.find(s => s.code === c)?.label || c)
       kvRow('Symbols', symLabels.join(', '))
     }
-    if (designRef) {
-      kvRow('Reference', `Catalog #${designRef}`)
+    if (primaryRef) {
+      kvRow('Design Reference (Primary)', `Catalog #${primaryRef}`)
     }
     if (order.designPreferences) {
       ensure(8)
@@ -8659,11 +8757,17 @@ function ContinueLater({ order, update }) {
             </>
           )}
 
-          {order.designSnapshot && (
+          {order.designs && order.designs.length > 0 && (
             <div>
-              <div className="sm-summary-lab">Design pick</div>
+              <div className="sm-summary-lab">Designs</div>
               <div className="sm-summary-val">
-                {order.designSnapshot.lastname || order.designSnapshot.id}
+                {(() => {
+                  const primary = order.designs[0]?.snapshot
+                  const primaryName = primary?.lastname || primary?.id || '—'
+                  const altCount = order.designs.length - 1
+                  if (altCount === 0) return `${primaryName} · 1 design (primary only)`
+                  return `${primaryName} · 1 primary + ${altCount} alternate${altCount === 1 ? '' : 's'}`
+                })()}
               </div>
             </div>
           )}
@@ -10759,6 +10863,88 @@ const styles = `
   margin-bottom: 8px;
 }
 .sm-selected-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* Sprint 3r.2 — multi-select designs panel */
+.sm-selected-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-light);
+  font-style: italic;
+  font-size: 14px;
+  border: 1.5px dashed var(--sm-border);
+  border-radius: 6px;
+  background: var(--sm-cream-light, #fafaf7);
+}
+.sm-selected-designs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.sm-selected-card {
+  position: relative;
+  display: flex; gap: 10px;
+  padding: 10px 10px 10px 12px;
+  background: #fff;
+  border: 2px solid var(--sm-border);
+  border-radius: 6px;
+}
+.sm-selected-card.primary  { border-color: var(--sm-gold); }
+.sm-selected-card.alternate { border-color: var(--sm-navy); }
+.sm-selected-card .sm-selected-thumb {
+  width: 80px; aspect-ratio: 4/3;
+}
+.sm-selected-role {
+  position: absolute;
+  top: -8px; left: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.sm-selected-role.primary   { background: var(--sm-gold); }
+.sm-selected-role.alternate { background: var(--sm-navy); }
+.sm-selected-actions {
+  display: flex; flex-direction: column; gap: 4px;
+  align-self: center;
+  flex-shrink: 0;
+}
+.sm-selected-footer {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-mid);
+  font-style: italic;
+}
+.sm-design-cap-notice {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fef3c7;
+  border: 1px solid #fbbf24;
+  border-radius: 6px;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Design grid card — primary-design override (navy is the base .on style) */
+.sm-design-card.on.primary { border-color: var(--sm-gold); }
+.sm-design-role-badge {
+  position: absolute;
+  top: 6px; left: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fff;
+  z-index: 1;
+  pointer-events: none;
+}
+.sm-design-role-badge.primary   { background: var(--sm-gold); }
+.sm-design-role-badge.alternate { background: var(--sm-navy); }
 
 /* ---- INSCRIPTION STEP ----------------------------------------------------- */
 .sm-photo-preview {
