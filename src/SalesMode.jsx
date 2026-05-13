@@ -3480,40 +3480,25 @@ function CustomDesignPanel({ on, onToggle }) {
 
 // Sprint 3r — category tab definitions for the Design step.
 // Filter tabs select monuments where m.cats includes the tab's code.
+// The leading 'all' tab skips the cats filter (whole catalog).
 // The trailing BLING tab is a configurator surface, not a catalog filter.
 const DESIGN_CATEGORIES = [
+  { code: 'all',             label: 'All',             kind: 'all' },
   { code: 'slant',           label: 'Slants' },
   { code: 'double-slant',    label: 'Double Slants' },
   { code: 'upright-single',  label: 'Uprights' },
   { code: 'upright-double',  label: 'Double Uprights' },
   { code: 'flat',            label: 'Flat Markers' },
   { code: 'custom-shape',    label: 'Custom Shape' },
-  { code: 'bling',           label: 'BLING', kind: 'configurator' },
+  { code: 'bling',           label: 'BLING',           kind: 'configurator' },
 ]
-// Maps the wizard's order.shape codes onto the actual monument-catalog cats
-// values. grass / hickey / bronze all collapse to 'flat' because the catalog
-// has only a single 'flat' tag (no grass/hickey/bronze sub-tags) — splitting
-// would require a catalog retag, on the backlog.
-const SHAPE_TO_DESIGN_CAT = {
-  slant: 'slant',
-  'double-slant': 'double-slant',
-  die: 'upright-single',
-  'double-die': 'upright-double',
-  grass: 'flat',
-  hickey: 'flat',
-  bronze: 'flat',
-  custom: 'custom-shape',
-}
 
 function DesignStep({ order, update }) {
   const [allMonuments, setAllMonuments] = useState(null)
   const [loading, setLoading] = useState(true)
-  // Sprint 3r — visible category tab strip replaces the old hidden
-  // "Match shape + color / Browse all" toggle. Default the tab to whatever
-  // the customer's stone shape maps to; unknown shape → Slants.
-  const [activeCategory, setActiveCategory] = useState(
-    () => SHAPE_TO_DESIGN_CAT[order.shape] || 'slant'
-  )
+  // Sprint 3r.2 — 'All' is the default tab; staff can narrow with the strip.
+  // No shape-based pre-selection — staff browse the full catalog first.
+  const [activeCategory, setActiveCategory] = useState('all')
   // The color side of the old toggle was a real filter (matchesColorFamily),
   // so preserve it as an opt-in checkbox under the tabs. Default OFF — staff
   // see the full category instead of an invisibly-narrowed slice.
@@ -3640,7 +3625,8 @@ function DesignStep({ order, update }) {
     if (!allMonuments) return []
     let list = allMonuments
     const hasSymbolFilters = (order.elementFilters || []).length > 0 && !searchText.trim()
-    if (!hasSymbolFilters) {
+    // 'all' tab skips the cats filter entirely — return the full catalog.
+    if (activeCategory !== 'all' && !hasSymbolFilters) {
       list = list.filter(m => m.cats?.includes(activeCategory))
     }
     if (matchColor && order.graniteColor) {
@@ -3654,20 +3640,21 @@ function DesignStep({ order, update }) {
   }, [allMonuments, activeCategory, matchColor, order.graniteColor, searchText, order.elementFilters])
 
   // Precompute counts per category for the tab badges. Cheap — single pass
-  // over the full catalog. Configurator-style tabs (BLING) skip the catalog
-  // count and instead report how many picks the customer has already added.
+  // over the full catalog. The 'all' tab shows the total count; configurator-
+  // style tabs (BLING) skip the catalog count and instead report how many
+  // picks the customer has already added.
   const blingPickCount = (order.addOns || []).filter(a => a.code?.startsWith('bling-')).length
   const categoryCounts = useMemo(() => {
     if (!allMonuments) return {}
-    const counts = {}
+    const counts = { all: allMonuments.length }
     for (const cat of DESIGN_CATEGORIES) {
-      if (cat.kind === 'configurator') continue
+      if (cat.kind === 'configurator' || cat.kind === 'all') continue
       counts[cat.code] = 0
     }
     for (const m of allMonuments) {
       if (!m.cats) continue
       for (const cat of DESIGN_CATEGORIES) {
-        if (cat.kind === 'configurator') continue
+        if (cat.kind === 'configurator' || cat.kind === 'all') continue
         if (m.cats.includes(cat.code)) counts[cat.code]++
       }
     }
