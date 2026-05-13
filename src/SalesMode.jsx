@@ -3478,10 +3478,43 @@ function CustomDesignPanel({ on, onToggle }) {
   )
 }
 
+// Sprint 3r — category tab definitions for the Design step.
+// Each tab filters monuments where m.cats includes its `cat` value.
+const DESIGN_CATEGORIES = [
+  { code: 'slant',           label: 'Slants' },
+  { code: 'double-slant',    label: 'Double Slants' },
+  { code: 'single-upright',  label: 'Uprights' },
+  { code: 'double-upright',  label: 'Double Uprights' },
+  { code: 'flat-marker',     label: 'Flat Markers' },
+  { code: 'custom-shape',    label: 'Custom Shape' },
+]
+// Maps the wizard's order.shape codes onto the design-catalog category codes.
+// grass / hickey / bronze all collapse to flat-marker today (catalog retag is
+// a backlog item — splitting that out is a separate sprint).
+const SHAPE_TO_DESIGN_CAT = {
+  slant: 'slant',
+  'double-slant': 'double-slant',
+  die: 'single-upright',
+  'double-die': 'double-upright',
+  grass: 'flat-marker',
+  hickey: 'flat-marker',
+  bronze: 'flat-marker',
+  custom: 'custom-shape',
+}
+
 function DesignStep({ order, update }) {
   const [allMonuments, setAllMonuments] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [autoFilter, setAutoFilter] = useState(true)
+  // Sprint 3r — visible category tab strip replaces the old hidden
+  // "Match shape + color / Browse all" toggle. Default the tab to whatever
+  // the customer's stone shape maps to; unknown shape → Slants.
+  const [activeCategory, setActiveCategory] = useState(
+    () => SHAPE_TO_DESIGN_CAT[order.shape] || 'slant'
+  )
+  // The color side of the old toggle was a real filter (matchesColorFamily),
+  // so preserve it as an opt-in checkbox under the tabs. Default OFF — staff
+  // see the full category instead of an invisibly-narrowed slice.
+  const [matchColor, setMatchColor] = useState(false)
   const [searchText, setSearchText] = useState('')
   // Per-section "Show more" counts — keyed by section symbol code
   const [sectionLimits, setSectionLimits] = useState({})
@@ -3572,19 +3605,6 @@ function DesignStep({ order, update }) {
     }
   }
 
-  const matchesShape = (m, shapeCode) => {
-    if (!m.cats) return false
-    // Map our internal shape codes onto the catalog's category names
-    const codeToCat = {
-      slant: 'slant', 'double-slant': 'double-slant',
-      die: 'single-upright', 'double-die': 'double-upright',
-      grass: 'flat-marker', hickey: 'flat-marker', bronze: 'flat-marker',
-      custom: 'custom-shape',
-    }
-    const cat = codeToCat[shapeCode]
-    return cat ? m.cats.includes(cat) : false
-  }
-
   const matchesColorFamily = (m, family) => {
     if (!m.granite_color) return false
     const gc = m.granite_color.toLowerCase()
@@ -3599,19 +3619,19 @@ function DesignStep({ order, update }) {
     return false
   }
 
-  // The base list — auto-filtered by shape+color when toggle is on,
-  // then optionally narrowed by the free-text search.
-  // Sprint 3j: when the user picks element/symbol filters they're explicitly
-  // saying "show me this symbol" — that intent should override the
-  // "stones like this shape" auto-filter, so symbols pull from all shapes.
+  // Sprint 3r — the base list is filtered by the active category tab.
+  // When the user picks element/symbol filters they're explicitly saying
+  // "show me this symbol" — that intent overrides the category narrowing,
+  // so symbols pull from the full catalog (across all shapes).
+  // The "Also match granite color" checkbox layers on top when ON.
   const baseList = useMemo(() => {
     if (!allMonuments) return []
     let list = allMonuments
     const hasSymbolFilters = (order.elementFilters || []).length > 0 && !searchText.trim()
-    if (autoFilter && order.shape && !hasSymbolFilters) {
-      list = list.filter(m => matchesShape(m, order.shape))
+    if (!hasSymbolFilters) {
+      list = list.filter(m => m.cats?.includes(activeCategory))
     }
-    if (autoFilter && order.graniteColor) {
+    if (matchColor && order.graniteColor) {
       const colorRec = GRANITE_COLORS.find(c => c.code === order.graniteColor)
       if (colorRec) list = list.filter(m => matchesColorFamily(m, colorRec.family))
     }
@@ -3619,7 +3639,22 @@ function DesignStep({ order, update }) {
       list = list.filter(m => matchesQuery(m, searchText))
     }
     return list
-  }, [allMonuments, autoFilter, order.shape, order.graniteColor, searchText, order.elementFilters])
+  }, [allMonuments, activeCategory, matchColor, order.graniteColor, searchText, order.elementFilters])
+
+  // Precompute counts per category for the tab badges. Cheap — single pass
+  // over the full catalog on data load / category change.
+  const categoryCounts = useMemo(() => {
+    if (!allMonuments) return {}
+    const counts = {}
+    for (const cat of DESIGN_CATEGORIES) counts[cat.code] = 0
+    for (const m of allMonuments) {
+      if (!m.cats) continue
+      for (const cat of DESIGN_CATEGORIES) {
+        if (m.cats.includes(cat.code)) counts[cat.code]++
+      }
+    }
+    return counts
+  }, [allMonuments])
 
   // Group results — search and symbols are independent layers. When searching,
   // we collapse to one results section. Otherwise group by symbols if any are picked.
@@ -3761,23 +3796,40 @@ function DesignStep({ order, update }) {
         </p>
       </Section>
 
+      {/* ---- Category tabs (Sprint 3r) ------------------------------------- */}
+      <Section title="Browse by category" eyebrow="Tab matches the stone shape by default — switch any time">
+        <div className="sm-design-tabs" role="tablist">
+          {DESIGN_CATEGORIES.map(cat => {
+            const count = categoryCounts[cat.code] ?? 0
+            return (
+              <button
+                key={cat.code}
+                type="button"
+                role="tab"
+                aria-selected={activeCategory === cat.code}
+                className={`sm-design-tab ${activeCategory === cat.code ? 'on' : ''}`}
+                onClick={() => setActiveCategory(cat.code)}
+              >
+                <span className="sm-design-tab-label">{cat.label}</span>
+                <span className="sm-design-tab-count">{count}</span>
+              </button>
+            )
+          })}
+        </div>
+        {order.graniteColor && (
+          <label className="sm-design-match-color">
+            <input
+              type="checkbox"
+              checked={matchColor}
+              onChange={e => setMatchColor(e.target.checked)}
+            />
+            <span>Also match my granite color ({order.graniteColor})</span>
+          </label>
+        )}
+      </Section>
+
       {/* ---- Element filter chips ------------------------------------------ */}
-      <Section title="Symbols & elements" eyebrow="Pick what they want — each gets its own row below"
-        right={
-          <div className="sm-toggle-group">
-            <button
-              type="button"
-              className={`sm-toggle-btn ${autoFilter ? 'on' : ''}`}
-              onClick={() => setAutoFilter(true)}
-            >Match shape + color</button>
-            <button
-              type="button"
-              className={`sm-toggle-btn ${!autoFilter ? 'on' : ''}`}
-              onClick={() => setAutoFilter(false)}
-            >Browse all</button>
-          </div>
-        }
-      >
+      <Section title="Symbols & elements" eyebrow="Pick what they want — each gets its own row below">
         <div className="sm-symbol-grid">
           {SYMBOLS.map(s => (
             <button
@@ -3814,7 +3866,7 @@ function DesignStep({ order, update }) {
           >
             {section.list.length === 0 ? (
               <div className="sm-design-empty-mini">
-                No designs match. {autoFilter && <>Try "Browse all" above or remove some symbols.</>}
+                No designs match. Try a different category tab{matchColor ? ', turn off "Also match my granite color",' : ''} or remove some symbols.
               </div>
             ) : (
               <>
@@ -10477,6 +10529,59 @@ const styles = `
   background: #fff; color: var(--sm-navy);
   box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px var(--sm-border);
 }
+
+/* Sprint 3r — Design step category tab strip */
+.sm-design-tabs {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.sm-design-tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  border: 1.5px solid var(--sm-border);
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px; font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-mid);
+  transition: all 0.18s;
+}
+.sm-design-tab:hover {
+  border-color: var(--sm-gold-light);
+  background: var(--sm-gold-pale);
+  color: var(--sm-navy);
+}
+.sm-design-tab.on {
+  background: var(--sm-navy);
+  color: #fff;
+  border-color: var(--sm-navy);
+}
+.sm-design-tab-count {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.06);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sm-design-tab.on .sm-design-tab-count {
+  background: rgba(255,255,255,0.18);
+  color: #fff;
+}
+.sm-design-match-color {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-mid);
+  cursor: pointer;
+  user-select: none;
+}
+.sm-design-match-color input { cursor: pointer; }
 
 .sm-symbol-grid {
   display: grid;

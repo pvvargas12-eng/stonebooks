@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:ibekfollqnytxcuyekad.supabase.co)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Sprint 3r Part A: replace hidden Design step filter toggle with visible category tab strip *)"
+    ]
+  }
+}
