@@ -3,7 +3,14 @@
     "allow": [
       "WebFetch(domain:ibekfollqnytxcuyekad.supabase.co)",
       "Bash(git add *)",
-      "Bash(git commit -m 'Sprint 3r Part A: replace hidden Design step filter toggle with visible category tab strip *)"
+      "Bash(git commit -m 'Sprint 3r Part A: replace hidden Design step filter toggle with visible category tab strip *)",
+      "Bash(npx vite *)",
+      "Bash(git commit -m 'Sprint 3r Part B: add BLING tab to Design step \\(reuses BlingConfigurator, single addOn source of truth\\) *)",
+      "Bash(git push *)",
+      "Bash(git commit -m 'Sprint 3r: update CLAUDE.md — mark 3r shipped, retire resolved deferred bug, add Flat Markers split to backlog *)",
+      "Bash(npm run *)",
+      "Bash(node *)",
+      "Bash(git commit -m 'Sprint 3r follow-up: fix category tab data mapping \\(cats values upright-single/upright-double/flat were swapped/mis-suffixed; 1222 designs were silently hidden across Uprights/Double Uprights/Flat Markers\\) *)"
     ]
   }
 }

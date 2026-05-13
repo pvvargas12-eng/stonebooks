@@ -146,7 +146,7 @@ Added a 7th "BLING" tab. When active, the design grid is hidden and `<BlingConfi
 2. Sign step restructure (preview first, then signature)
 3. Hand Sculpted quote-request flow
 4. Remote contract signing
-5. **Split Flat Markers into Grass / Hickey / Bronze** — today the Flat Markers tab in the Design step lumps all three together because the monument catalog uses a single `flat-marker` cat for all of them. Requires catalog retag (data migration) before the tabs can be split.
+5. **Split Flat Markers into Grass / Hickey / Bronze** — today the Flat Markers tab in the Design step covers all three because the monument catalog has only a single generic `flat` tag (no grass/hickey/bronze sub-tags exist in the data at all). Requires a from-scratch catalog retag of all 141 flat-marker entries before the tabs can be split — not just a rename, an actual sub-classification pass.
 
 ## Git / GitHub
 

@@ -3484,23 +3484,24 @@ function CustomDesignPanel({ on, onToggle }) {
 const DESIGN_CATEGORIES = [
   { code: 'slant',           label: 'Slants' },
   { code: 'double-slant',    label: 'Double Slants' },
-  { code: 'single-upright',  label: 'Uprights' },
-  { code: 'double-upright',  label: 'Double Uprights' },
-  { code: 'flat-marker',     label: 'Flat Markers' },
+  { code: 'upright-single',  label: 'Uprights' },
+  { code: 'upright-double',  label: 'Double Uprights' },
+  { code: 'flat',            label: 'Flat Markers' },
   { code: 'custom-shape',    label: 'Custom Shape' },
   { code: 'bling',           label: 'BLING', kind: 'configurator' },
 ]
-// Maps the wizard's order.shape codes onto the design-catalog category codes.
-// grass / hickey / bronze all collapse to flat-marker today (catalog retag is
-// a backlog item — splitting that out is a separate sprint).
+// Maps the wizard's order.shape codes onto the actual monument-catalog cats
+// values. grass / hickey / bronze all collapse to 'flat' because the catalog
+// has only a single 'flat' tag (no grass/hickey/bronze sub-tags) — splitting
+// would require a catalog retag, on the backlog.
 const SHAPE_TO_DESIGN_CAT = {
   slant: 'slant',
   'double-slant': 'double-slant',
-  die: 'single-upright',
-  'double-die': 'double-upright',
-  grass: 'flat-marker',
-  hickey: 'flat-marker',
-  bronze: 'flat-marker',
+  die: 'upright-single',
+  'double-die': 'upright-double',
+  grass: 'flat',
+  hickey: 'flat',
+  bronze: 'flat',
   custom: 'custom-shape',
 }
 
