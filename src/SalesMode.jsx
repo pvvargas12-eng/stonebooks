@@ -3479,7 +3479,8 @@ function CustomDesignPanel({ on, onToggle }) {
 }
 
 // Sprint 3r — category tab definitions for the Design step.
-// Each tab filters monuments where m.cats includes its `cat` value.
+// Filter tabs select monuments where m.cats includes the tab's code.
+// The trailing BLING tab is a configurator surface, not a catalog filter.
 const DESIGN_CATEGORIES = [
   { code: 'slant',           label: 'Slants' },
   { code: 'double-slant',    label: 'Double Slants' },
@@ -3487,6 +3488,7 @@ const DESIGN_CATEGORIES = [
   { code: 'double-upright',  label: 'Double Uprights' },
   { code: 'flat-marker',     label: 'Flat Markers' },
   { code: 'custom-shape',    label: 'Custom Shape' },
+  { code: 'bling',           label: 'BLING', kind: 'configurator' },
 ]
 // Maps the wizard's order.shape codes onto the design-catalog category codes.
 // grass / hickey / bronze all collapse to flat-marker today (catalog retag is
@@ -3538,6 +3540,15 @@ function DesignStep({ order, update }) {
       elementFilters: has
         ? order.elementFilters.filter(c => c !== code)
         : [...order.elementFilters, code],
+    })
+  }
+
+  // Sprint 3r — BlingConfigurator (reused from the Add-Ons step's CarvingsSection)
+  // needs an updateAddOn callback. Same pattern as line 4399 in AddOnsStep —
+  // picks land in order.addOns so they show up in the Add-Ons step automatically.
+  const updateAddOn = (code, patch) => {
+    update({
+      addOns: order.addOns.map(a => a.code === code ? { ...a, ...patch } : a),
     })
   }
 
@@ -3642,14 +3653,20 @@ function DesignStep({ order, update }) {
   }, [allMonuments, activeCategory, matchColor, order.graniteColor, searchText, order.elementFilters])
 
   // Precompute counts per category for the tab badges. Cheap — single pass
-  // over the full catalog on data load / category change.
+  // over the full catalog. Configurator-style tabs (BLING) skip the catalog
+  // count and instead report how many picks the customer has already added.
+  const blingPickCount = (order.addOns || []).filter(a => a.code?.startsWith('bling-')).length
   const categoryCounts = useMemo(() => {
     if (!allMonuments) return {}
     const counts = {}
-    for (const cat of DESIGN_CATEGORIES) counts[cat.code] = 0
+    for (const cat of DESIGN_CATEGORIES) {
+      if (cat.kind === 'configurator') continue
+      counts[cat.code] = 0
+    }
     for (const m of allMonuments) {
       if (!m.cats) continue
       for (const cat of DESIGN_CATEGORIES) {
+        if (cat.kind === 'configurator') continue
         if (m.cats.includes(cat.code)) counts[cat.code]++
       }
     }
@@ -3800,18 +3817,23 @@ function DesignStep({ order, update }) {
       <Section title="Browse by category" eyebrow="Tab matches the stone shape by default — switch any time">
         <div className="sm-design-tabs" role="tablist">
           {DESIGN_CATEGORIES.map(cat => {
-            const count = categoryCounts[cat.code] ?? 0
+            const isConfigurator = cat.kind === 'configurator'
+            const count = isConfigurator
+              ? (cat.code === 'bling' ? blingPickCount : 0)
+              : (categoryCounts[cat.code] ?? 0)
             return (
               <button
                 key={cat.code}
                 type="button"
                 role="tab"
                 aria-selected={activeCategory === cat.code}
-                className={`sm-design-tab ${activeCategory === cat.code ? 'on' : ''}`}
+                className={`sm-design-tab ${activeCategory === cat.code ? 'on' : ''} ${isConfigurator ? 'configurator' : ''}`}
                 onClick={() => setActiveCategory(cat.code)}
               >
                 <span className="sm-design-tab-label">{cat.label}</span>
-                <span className="sm-design-tab-count">{count}</span>
+                {(count > 0 || !isConfigurator) && (
+                  <span className="sm-design-tab-count">{count}</span>
+                )}
               </button>
             )
           })}
@@ -3845,14 +3867,19 @@ function DesignStep({ order, update }) {
         </div>
       </Section>
 
+      {/* ---- BLING configurator surface (Sprint 3r) ------------------------ */}
+      {activeCategory === 'bling' && (
+        <BlingConfigurator order={order} update={update} updateAddOn={updateAddOn} />
+      )}
+
       {/* ---- Sectioned results --------------------------------------------- */}
-      {loading && (
+      {activeCategory !== 'bling' && loading && (
         <Section title="Catalog" eyebrow="Loading…">
           <div className="sm-design-loading">Loading designs from the catalog…</div>
         </Section>
       )}
 
-      {!loading && sections.map(section => {
+      {activeCategory !== 'bling' && !loading && sections.map(section => {
         const isAllSection = section.code === 'all'
         const limit = isAllSection ? allLimit : (sectionLimits[section.code] || 6)
         const visible = section.list.slice(0, limit)
@@ -10571,6 +10598,18 @@ const styles = `
 }
 .sm-design-tab.on .sm-design-tab-count {
   background: rgba(255,255,255,0.18);
+  color: #fff;
+}
+.sm-design-tab.configurator {
+  border-color: var(--sm-gold);
+  color: var(--sm-gold-dark, var(--sm-navy));
+}
+.sm-design-tab.configurator:hover {
+  background: var(--sm-gold-pale);
+}
+.sm-design-tab.configurator.on {
+  background: var(--sm-gold);
+  border-color: var(--sm-gold);
   color: #fff;
 }
 .sm-design-match-color {
