@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3s`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -126,9 +126,19 @@ Supplier cuts to whatever spec we give. Recommendation rounds up to nearest whol
 - Zelle QR upload (for 3q Zelle integration)
 - baseWidth migration: ✅ resolved in 3p.3 by deriving width/depth from existing `order.baseConfig` (no new field added; legacy uprights without a base trigger an "add a base first" hint inside the Vase fit indicator)
 
+## Sprint 3r — SHIPPED
+
+Two-part sprint addressing the Design step filter bug and unifying BLING access.
+
+### Part A — Category tabs
+Replaced the hidden "Match shape + color / Browse all" toggle in DesignStep with a visible 6-tab category strip (Slants, Double Slants, Uprights, Double Uprights, Flat Markers, Custom Shape). Default tab derives from `order.shape` via the same code map as the retired `matchesShape` helper. Each tab shows a live count of matching designs. The color half of the old toggle was a real filter (`matchesColorFamily`) — preserved as an explicit "Also match my granite color" checkbox that only appears when a granite color is picked (opt-in, not silent narrowing).
+
+### Part B — BLING tab
+Added a 7th "BLING" tab. When active, the design grid is hidden and `<BlingConfigurator />` renders inline. Picks flow into `order.addOns` with the same `bling-{size}-{shape}` code pattern as the Add-Ons step — picks made in either surface show up in both. BLING tab has a gold accent and a picks-count badge instead of a catalog-count. BLING is never the default tab — only catalog categories map from `order.shape`. `updateAddOn` is defined locally inside DesignStep (same pattern as AddOnsStep:4399); no dispatcher changes.
+
 ## Deferred / known issues
 
-- **Design step tab — Slant filter bug.** Deferred during Sprint 3p.2 (filter on the Slant shape misbehaves in the Design step tab). Details TBD — pick up in a focused diagnosis session, same approach as the 3o Shape Carved / Laser Etching bug hunt.
+(none currently — the Slant filter bug carried over from Sprint 3p.2 was resolved by Sprint 3r Part A)
 
 ## Feature backlog after 3p
 
@@ -136,6 +146,7 @@ Supplier cuts to whatever spec we give. Recommendation rounds up to nearest whol
 2. Sign step restructure (preview first, then signature)
 3. Hand Sculpted quote-request flow
 4. Remote contract signing
+5. **Split Flat Markers into Grass / Hickey / Bronze** — today the Flat Markers tab in the Design step lumps all three together because the monument catalog uses a single `flat-marker` cat for all of them. Requires catalog retag (data migration) before the tabs can be split.
 
 ## Git / GitHub
 
