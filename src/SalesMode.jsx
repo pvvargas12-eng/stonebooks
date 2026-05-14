@@ -9737,11 +9737,38 @@ function SignatureCanvas({ value, onChange, label, disabled }) {
 function SignStep({ order, update }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const [previewUrl, setPreviewUrl] = useState(null)
+  const [previewErr, setPreviewErr] = useState(null)
 
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
   const customerSig = order.customerSignature || order.customerSignatureUrl
   const repSig = order.repSignature || order.repSignatureUrl
   const ready = customerSig && repSig && !isLocked
+
+  // Sprint 3v Part A — inline contract preview. Reuses generateContractPDF
+  // (forces mode:'contract'), so the preview is the exact contract layout —
+  // single source of truth, no duplicated rendering. Regenerates only when the
+  // lock state flips, so the locked view picks up the embedded signatures.
+  // NOT regenerated on every signature stroke — PDF generation is expensive.
+  useEffect(() => {
+    let cancelled = false
+    let createdUrl = null
+    setPreviewErr(null)
+    generateContractPDF(order, { returnDoc: true })
+      .then(({ doc }) => {
+        if (cancelled) return
+        createdUrl = URL.createObjectURL(doc.output('blob'))
+        setPreviewUrl(createdUrl)
+      })
+      .catch(e => {
+        if (cancelled) return
+        setPreviewErr(e.message || 'Contract preview failed to render')
+      })
+    return () => {
+      cancelled = true
+      if (createdUrl) URL.revokeObjectURL(createdUrl)
+    }
+  }, [isLocked])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateSig = (which, dataUrl) => {
     if (which === 'customer') update({ customerSignature: dataUrl })
@@ -9828,6 +9855,21 @@ function SignStep({ order, update }) {
           Pricing is locked.
         </div>
       )}
+
+      <Section title="Contract preview" eyebrow="Customer should review before signing">
+        {previewErr ? (
+          <div className="sm-pdf-err">⚠ {previewErr}</div>
+        ) : previewUrl ? (
+          <iframe
+            src={previewUrl}
+            className="sm-pdf-preview-frame"
+            title="Contract preview"
+            style={{ height: 600, borderRadius: 6 }}
+          />
+        ) : (
+          <div className="sm-helper">Building contract preview…</div>
+        )}
+      </Section>
 
       <Section title="Customer signature" eyebrow={isLocked ? 'Captured' : 'Required'}>
         <SignatureCanvas
