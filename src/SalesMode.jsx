@@ -3024,28 +3024,6 @@ function DeceasedCard({ idx, d, onChange, onRemove, isOnly }) {
     )
   }
 
-  // Build a natural-language join: "Father", "Father & Husband", "Father, Husband, & Brother"
-  const joinRelations = (rels) => {
-    const r = (rels || []).filter(Boolean)
-    if (r.length === 0) return ''
-    if (r.length === 1) return r[0]
-    if (r.length === 2) return `${r[0]} & ${r[1]}`
-    return `${r.slice(0, -1).join(', ')}, & ${r[r.length - 1]}`
-  }
-
-  // Update title field — auto-build "Prefix Relation" when picking from dropdowns,
-  // but allow free-text override in the final field.
-  const setPrefix = (v) => {
-    const newTitle = [v, joinRelations(d.titleRelations)].filter(Boolean).join(' ')
-    onChange({ titlePrefix: v, title: newTitle })
-  }
-  const toggleRelation = (rel) => {
-    const cur = d.titleRelations || []
-    const next = cur.includes(rel) ? cur.filter(r => r !== rel) : [...cur, rel]
-    const newTitle = [d.titlePrefix, joinRelations(next)].filter(Boolean).join(' ')
-    onChange({ titleRelations: next, title: newTitle })
-  }
-
   return (
     <div className="sm-deceased-card">
       <div className="sm-deceased-head">
@@ -3076,41 +3054,6 @@ function DeceasedCard({ idx, d, onChange, onRemove, isOnly }) {
         </Field>
         <Field label="Last name">
           <TextInput value={d.lastName} onChange={v => onChange({ lastName: v })} placeholder="Friedman" />
-        </Field>
-      </div>
-
-      <div className="sm-title-builder">
-        <div className="sm-title-builder-eyebrow">
-          Title for the stone <span className="sm-title-builder-hint">(pick a prefix + one or more relations — they'll join naturally with commas)</span>
-        </div>
-        <Field label="Prefix" hint="English options first, Spanish at the bottom">
-          <SelectInput
-            value={d.titlePrefix}
-            onChange={setPrefix}
-            options={TITLE_PREFIXES.map(p => ({ value: p, label: p }))}
-            placeholder="— pick a prefix —"
-          />
-        </Field>
-        <Field label="Relations (multi-select)" wide hint="Click as many as apply — e.g. Father + Husband + Brother → 'Beloved Father, Husband, & Brother'">
-          <div className="sm-rel-chips">
-            {TITLE_RELATIONS.map(rel => (
-              <button
-                key={rel}
-                type="button"
-                className={`sm-chip-btn sm-chip-btn-small ${(d.titleRelations || []).includes(rel) ? 'on' : ''}`}
-                onClick={() => toggleRelation(rel)}
-              >
-                {rel}
-              </button>
-            ))}
-          </div>
-        </Field>
-        <Field label="Final title (edit freely if needed)" wide hint="This is what goes on the stone">
-          <TextInput
-            value={d.title}
-            onChange={v => onChange({ title: v })}
-            placeholder="e.g. Beloved Father, Husband, & Brother"
-          />
         </Field>
       </div>
 
@@ -4160,6 +4103,71 @@ const INSCRIPTION_TYPES = [
   { code: 'year',  label: 'Year Only',        blurb: 'Add the year of death.' },
 ]
 
+// Sprint L2 Phase 2 Commit 2 — per-person Title builder, relocated here from
+// DeceasedCard (Tab 4). Logic (joinRelations / setPrefix / toggleRelation) is
+// identical to the old DeceasedCard implementation; d.title stays free-text-
+// editable so staff overrides still flow through to the PDF (Commit 1).
+function InscriptionTitleBuilder({ d, idx, onChange }) {
+  const joinRelations = (rels) => {
+    if (!rels || rels.length === 0) return ''
+    if (rels.length === 1) return rels[0]
+    if (rels.length === 2) return rels.join(' & ')
+    return rels.slice(0, -1).join(', ') + ', & ' + rels[rels.length - 1]
+  }
+
+  const setPrefix = (v) => {
+    const newTitle = [v, joinRelations(d.titleRelations)].filter(Boolean).join(' ')
+    onChange({ titlePrefix: v, title: newTitle })
+  }
+
+  const toggleRelation = (rel) => {
+    const cur = d.titleRelations || []
+    const next = cur.includes(rel) ? cur.filter(r => r !== rel) : [...cur, rel]
+    const newTitle = [d.titlePrefix, joinRelations(next)].filter(Boolean).join(' ')
+    onChange({ titleRelations: next, title: newTitle })
+  }
+
+  const personName = [d.firstName, d.lastName].filter(Boolean).join(' ')
+  const personLabel = `Person ${idx + 1}${personName ? ' — ' + personName : ''}`
+
+  return (
+    <div className="sm-title-builder">
+      <div className="sm-title-builder-eyebrow">
+        {personLabel} <span className="sm-title-builder-hint">(pick a prefix + one or more relations — appears above the name)</span>
+      </div>
+      <Field label="Prefix" hint="English options first, Spanish at the bottom">
+        <SelectInput
+          value={d.titlePrefix}
+          onChange={setPrefix}
+          options={TITLE_PREFIXES.map(p => ({ value: p, label: p }))}
+          placeholder="— pick a prefix —"
+        />
+      </Field>
+      <Field label="Relations (multi-select)" wide hint="Click as many as apply">
+        <div className="sm-rel-chips">
+          {TITLE_RELATIONS.map(rel => (
+            <button
+              key={rel}
+              type="button"
+              className={`sm-chip-btn sm-chip-btn-small ${(d.titleRelations || []).includes(rel) ? 'on' : ''}`}
+              onClick={() => toggleRelation(rel)}
+            >
+              {rel}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Final title (edit freely if needed)" wide hint="This is what goes on the stone">
+        <TextInput
+          value={d.title}
+          onChange={v => onChange({ title: v })}
+          placeholder="e.g. Beloved Father, Husband, & Brother"
+        />
+      </Field>
+    </div>
+  )
+}
+
 function InscriptionStep({ order, update }) {
   const isInscriptionOnly = useMemo(() => {
     const inscrAndAddon = ['INSCRIPTION', 'ACID_WASH', 'REPAIR', 'ADD_PHOTO']
@@ -4195,9 +4203,33 @@ function InscriptionStep({ order, update }) {
         <p className="sm-step-lede">
           {isInscriptionOnly
             ? 'Inscription on an existing stone — quick job. Confirm the type and what goes on, snap a photo of the existing marker if you have one.'
-            : 'What goes on the stone besides the name and dates already captured. Title is set per-person on the Memorial step.'}
+            : 'Set the title and inscription details for each person on the stone.'}
         </p>
       </div>
+
+      <Section title="Title / Relationship" eyebrow="Pick a prefix + relations per person — appears on the stone above each name">
+        {(order.deceased || []).map((d, idx) => {
+          // Critical: map over FULL deceased array, skip reserved with null
+          // so idx stays aligned to the real array position. updateDeceased(idx, ...)
+          // would patch the wrong person if we .filter() first.
+          if (d.isReserved) return null
+          return (
+            <InscriptionTitleBuilder
+              key={idx}
+              d={d}
+              idx={idx}
+              onChange={patch => update({
+                deceased: (order.deceased || []).map((x, i) => i === idx ? { ...x, ...patch } : x)
+              })}
+            />
+          )
+        })}
+        {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
+          <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
+            Add at least one person on the Memorial step (step 4) to set their inscription title here.
+          </div>
+        )}
+      </Section>
 
       {/* Inscription-only-specific: type picker + photo upload */}
       {isInscriptionOnly && (
