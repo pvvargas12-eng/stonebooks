@@ -7151,10 +7151,10 @@ async function generateContractPDF(order, opts = {}) {
   return generateEstimatePDF(order, { ...opts, mode: 'contract' })
 }
 
-// Sprint 3j — Receipt PDF. paymentType is 'deposit' or 'balance'.
-// Each payment generates its own receipt showing what was paid + the
-// running running running.
-async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
+// Sprint 3j — Receipt PDF. Sprint M2 Phase 2: takes a payment object from
+// order.payments[] (was paymentType 'deposit'|'balance'). Renders that single
+// payment's receipt; running totals sum the whole non-voided payments[] array.
+async function generateReceiptPDF(order, payment, opts = {}) {
   let JsPDF
   try {
     JsPDF = await loadJsPDF()
@@ -7177,7 +7177,11 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
   const NAVY = [30, 45, 61], GOLD = [140, 109, 63], GREY = [110, 110, 110]
   const TEXT = [42, 42, 42], LIGHT_RULE = [220, 220, 220]
   const fmtUSD = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '—'
+  // Slice to the date part + force local-midnight parsing so YYYY-MM-DD values
+  // (the new payment.receivedAt format) don't shift a day in negative-UTC zones.
+  const fmtDate = (iso) => iso
+    ? new Date(String(iso).slice(0, 10) + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : '—'
 
   let y = M
   // Sprint 3u Part D — thin binding of the shared ensureBlock helper. The
@@ -7206,13 +7210,17 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
   const cc  = order.pricing?.applyCCSurcharge ? (taxBase + tax) * CC_SURCHARGE : 0
   const grandTotal = taxBase + tax + cc
 
-  const isDeposit = paymentType === 'deposit'
-  const paymentAmount = Number(isDeposit ? order.depositAmount : order.balanceAmount) || 0
-  const paymentMethod = isDeposit ? order.depositMethod : order.balanceMethod
-  const paymentRef    = isDeposit ? order.depositRef : order.balanceRef
-  const paymentDate   = isDeposit ? order.depositReceivedAt : order.balanceReceivedAt
-  const totalPaidToDate = (Number(order.depositAmount) || 0) +
-    (isDeposit ? 0 : (Number(order.balanceAmount) || 0))
+  // Sprint M2 Phase 2 — this-payment fields come from the passed payment
+  // object; running totals sum the whole non-voided payments[] array (the
+  // legacy deposit/balance slots are no longer authoritative).
+  const paymentAmount = Number(payment?.amount) || 0
+  const paymentMethod = payment?.method
+  const paymentRef    = payment?.ref
+  const paymentDate   = payment?.receivedAt
+  const nonVoidedPayments = Array.isArray(order.payments)
+    ? order.payments.filter(p => !p.voided)
+    : []
+  const totalPaidToDate = nonVoidedPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const balanceRemaining = Math.max(0, grandTotal - totalPaidToDate)
   const isFullyPaid = balanceRemaining < 0.01
 
@@ -7241,7 +7249,9 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
   y += 6
 
   // ============================ HEADER ===================================
-  const receiptNo = `R-${order.orderNumber || 'DRAFT'}-${isDeposit ? 'D' : 'B'}`
+  // Sprint M2 Phase 2 — per-payment receipt number from a short id fragment so
+  // two receipts for the same order don't collide. Phase 3 formalizes labeling.
+  const receiptNo = `R-${order.orderNumber || 'DRAFT'}-${String(payment?.id || 'P').slice(-6)}`
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(10)
   doc.setTextColor(...NAVY)
@@ -7285,7 +7295,8 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(11)
   doc.setTextColor(...GOLD)
-  doc.text(isDeposit ? 'PAYMENT RECEIVED — DEPOSIT (50%)' : 'PAYMENT RECEIVED — FINAL BALANCE', M, y)
+  // Sprint M2 Phase 2 — generic label; Phase 3 adds first/middle/final logic.
+  doc.text('PAYMENT RECEIPT', M, y)
   y += 7
 
   // Payment details table
@@ -9560,15 +9571,16 @@ function PaymentTrackingSection({ order, update }) {
   )
 }
 
-// Sprint 3j — Receipt action toolbar (Preview / Download / Email / Print)
-function ReceiptActions({ order, paymentType }) {
+// Sprint 3j — Receipt action toolbar (Preview / Download / Email / Print).
+// Sprint M2 Phase 2: takes a specific payment object (was paymentType).
+function ReceiptActions({ order, payment }) {
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
   const [previewUrl, setPreviewUrl] = useState(null)
   const [previewFilename, setPreviewFilename] = useState('')
 
   const buildDoc = async () => {
-    return await generateReceiptPDF(order, paymentType, { returnDoc: true })
+    return await generateReceiptPDF(order, payment, { returnDoc: true })
   }
 
   const handlePreview = async () => {
@@ -9603,10 +9615,10 @@ function ReceiptActions({ order, paymentType }) {
       const firstName = order.customer?.firstName || 'there'
       const orderNum = order.orderNumber || 'DRAFT'
       const repName = order.salesRep || 'the Shevchenko team'
-      const subject = `Receipt for ${paymentType === 'deposit' ? 'deposit' : 'balance'} payment — ${orderNum}`
+      const subject = `Payment receipt — ${orderNum}`
       const body = [
         `Hello ${firstName},`, '',
-        `Attached is your receipt for the ${paymentType} payment on order ${orderNum} — file: ${filename}`,
+        `Attached is your payment receipt for order ${orderNum} — file: ${filename}`,
         '',
         `Thank you for your business.`,
         '',
@@ -9623,7 +9635,7 @@ function ReceiptActions({ order, paymentType }) {
   return (
     <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #d4cfc4' }}>
       <div className="sm-helper" style={{ marginBottom: 8 }}>
-        <strong>Receipt:</strong> for this {paymentType} payment
+        <strong>Receipt:</strong> for this payment
       </div>
       <div className="sm-pdf-actions">
         <button type="button" className="sm-btn sm-btn-ghost sm-pdf-btn" onClick={handlePreview} disabled={busy !== null}>
