@@ -7168,6 +7168,13 @@ async function generateContractPDF(order, opts = {}) {
 // order.payments[] (was paymentType 'deposit'|'balance'). Renders that single
 // payment's receipt; running totals sum the whole non-voided payments[] array.
 async function generateReceiptPDF(order, payment, opts = {}) {
+  // Phase 4 — defensive guard. ReceiptActions UI is gated to hide receipts on
+  // voided payments, but if generateReceiptPDF is somehow called with a voided
+  // payment (stale reference, future agent call), fail loudly via the existing
+  // async error-handling chain rather than render a garbage receipt.
+  if (payment?.voided) {
+    throw new Error('Cannot generate a receipt for a voided payment.')
+  }
   let JsPDF
   try {
     JsPDF = await loadJsPDF()
@@ -9454,27 +9461,68 @@ function DesignerHandoffSection({ order, update }) {
 // Sprint M2 Phase 2.1 — confirmation modal for Edit / Remove of a LOCKED
 // (submitted) payment. Parameterized by `type`; reuses the .sm-unlock-modal*
 // CSS from Sprint 3v.
+// Sprint M2 Phase 4 — the 'remove' variant is now a soft-delete (void): it
+// captures a required reason via a textarea. onConfirm(reason?) — edit ignores
+// the arg, remove passes the trimmed reason.
 function PaymentConfirmModal({ open, type, onConfirm, onCancel }) {
+  const [reason, setReason] = useState('')
+
+  // Phase 4 — the modal is always mounted (open toggles), so clear any stale
+  // reason text from a previous void each time it (re)opens.
+  useEffect(() => {
+    if (open) setReason('')
+  }, [open])
+
   if (!open) return null
+
   const config = type === 'edit'
     ? {
         title: 'Edit this submitted payment?',
         body: 'This will mark the payment as a draft and remove it from the running totals until you re-submit. You can cancel the edit to keep the original values.',
         confirmLabel: 'Yes, Edit',
+        needsReason: false,
       }
     : {
-        title: 'Remove this submitted payment?',
-        body: 'This will permanently remove the payment from this order. This cannot be undone.',
-        confirmLabel: 'Yes, Remove',
+        title: 'Void this payment?',
+        body: 'This will void the payment — it stays in the order history for audit purposes but no longer counts toward the running totals. Enter a reason for voiding this payment (required).',
+        confirmLabel: 'Yes, Void Payment',
+        needsReason: true,
       }
+
+  const canConfirm = !config.needsReason || reason.trim().length > 0
+
+  const handleConfirm = () => {
+    if (!canConfirm) return
+    if (config.needsReason) onConfirm(reason.trim())
+    else onConfirm()
+  }
+
   return (
     <div className="sm-pdf-preview-overlay" onClick={onCancel}>
       <div className="sm-unlock-modal" onClick={e => e.stopPropagation()}>
         <div className="sm-unlock-modal-title">{config.title}</div>
         <div className="sm-unlock-modal-body">{config.body}</div>
+        {config.needsReason && (
+          <textarea
+            className="sm-textinput"
+            style={{ width: '100%', minHeight: '80px', marginTop: '8px', fontFamily: 'inherit', resize: 'vertical' }}
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="e.g. Customer charge-back / entered in error / duplicate payment"
+            autoFocus
+          />
+        )}
         <div className="sm-unlock-modal-actions">
           <button type="button" className="sm-link-btn" onClick={onCancel}>Cancel</button>
-          <button type="button" className="sm-unlock-modal-confirm" onClick={onConfirm}>{config.confirmLabel}</button>
+          <button
+            type="button"
+            className="sm-unlock-modal-confirm"
+            onClick={handleConfirm}
+            disabled={!canConfirm}
+            style={!canConfirm ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+          >
+            {config.confirmLabel}
+          </button>
         </div>
       </div>
     </div>
@@ -9692,17 +9740,30 @@ function PaymentTrackingSection({ order, update }) {
     setConfirmModal(null)
   }
 
-  // Phase 2.1 — Remove on a LOCKED payment requires confirmation. Hard-delete
-  // in Phase 2.1 (Phase 4 → soft-delete with reason).
+  // Phase 4 — "Remove" on a LOCKED payment is now a soft-delete (void): the
+  // payment stays in payments[] for audit but is excluded from totals.
+  // Requires a reason, captured via the modal textarea.
   const handleRemoveClick = (paymentId) => {
     setConfirmModal({ type: 'remove', paymentId })
   }
-  const handleRemoveConfirm = () => {
+  const handleRemoveConfirm = (reason) => {
     if (!confirmModal) return
+    if (!reason || !reason.trim()) return  // defensive — the modal also gates the button
     const id = confirmModal.paymentId
-    const newPayments = (order.payments || []).filter(p => p.id !== id)
-    // Phase 3 — reactive: removing a locked payment drops the locked sum; if it
-    // falls below grandTotal, statusPatchFor reverts paid_in_full.
+    const newPayments = (order.payments || []).map(p =>
+      p.id === id
+        ? {
+            ...p,
+            voided: true,
+            voidedReason: reason.trim(),
+            voidedAt: new Date().toISOString(),
+            voidedBy: order.salesRep || null,
+          }
+        : p
+    )
+    // Phase 3 reactivity preserved — statusPatchFor already filters !p.voided,
+    // so a voided payment drops out of the locked sum and status reverts if
+    // that takes the order below grandTotal.
     update({ payments: newPayments, ...statusPatchFor(newPayments) })
     if (editingId === id) setEditingId(null)
     setConfirmModal(null)
@@ -9795,7 +9856,7 @@ function PaymentTrackingSection({ order, update }) {
                 </div>
                 <div className="sm-payment-row-actions">
                   <button type="button" className="sm-link-btn" onClick={() => handleEditClick(payment.id)}>Edit</button>
-                  <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => handleRemoveClick(payment.id)}>Remove</button>
+                  <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => handleRemoveClick(payment.id)}>Void</button>
                 </div>
                 {payment.locked && <ReceiptActions order={order} payment={payment} />}
               </div>
