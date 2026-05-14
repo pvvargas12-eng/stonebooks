@@ -1225,6 +1225,21 @@ function makeBlankDeceased(position = 0, isReserved = false) {
     isPreNeed: false,
     relationship: '',
     notes: '',
+    // Sprint L2 — per-person inscription style controls (set on Tab 8). Defaults
+    // are conservative — name shows in standard form, dates as long-form, no
+    // style treatment, all custom slots empty.
+    // nameDisplayVariant: 'full_legal' | 'first_middle_last' | 'first_m_last'
+    //   | 'first_last' | 'nickname' | 'maiden' | 'custom'
+    // dateFormat: 'month_day_year' | 'abbreviated' | 'slash' | 'dot'
+    //   | 'year_only' | 'custom'
+    // styleTreatment: 'plain' | 'scroll' | 'banner' | 'skin_frosted' | 'panel'
+    //   | 'double_panel' | 'panel_chip' | 'old_english' | 'special_font' | 'custom'
+    nameDisplayVariant: 'first_middle_last',
+    nameDisplayCustom: '',
+    dateFormat: 'month_day_year',
+    dateFormatCustom: '',
+    styleTreatment: 'plain',
+    styleTreatmentCustom: '',
     position,
   }
 }
@@ -1342,6 +1357,15 @@ function makeBlankOrder() {
       customFontDescription: '',
       preExistingPhotoUrl: '',  // photo of existing marker (Storage URL)
       preExistingPhotoPath: '', // storage path for delete on retry
+      // Sprint L2 — order-level inscription layout controls (set on Tab 8 §1).
+      // layoutStyle: 'side_by_side' | 'top_bottom' | 'stacked'
+      //   | 'centered_last' | 'custom'
+      // sideArrangement: 'p1_left_p2_right' | 'p1_top_p2_bottom' | 'unknown'
+      layoutStyle: 'side_by_side',
+      layoutCustom: '',
+      sideArrangement: 'p1_left_p2_right',
+      sideToConfirm: false,
+      sideNote: '',
     },
 
     // Add-ons (Sprint 3) — array of { code, qty, price, notes }
@@ -1925,8 +1949,18 @@ function rowToOrder(row, customerRow, cemeteryRow) {
 
     matchingToDescription: row.matching_to_description || '',
 
+    // Sprint L2 — defensive ?? defaults on per-person inscription fields so
+    // legacy rows (saved before L2) get sensible values rather than undefined.
     deceased: (row.deceased && row.deceased.length > 0)
-      ? row.deceased
+      ? row.deceased.map(d => ({
+          ...d,
+          nameDisplayVariant: d.nameDisplayVariant ?? 'first_middle_last',
+          nameDisplayCustom: d.nameDisplayCustom ?? '',
+          dateFormat: d.dateFormat ?? 'month_day_year',
+          dateFormatCustom: d.dateFormatCustom ?? '',
+          styleTreatment: d.styleTreatment ?? 'plain',
+          styleTreatmentCustom: d.styleTreatmentCustom ?? '',
+        }))
       : [makeBlankDeceased(0)],
 
     shape: row.shape || null,
@@ -1957,9 +1991,24 @@ function rowToOrder(row, customerRow, cemeteryRow) {
     designPreferences: row.design_preferences || '',
     useCustomDesign: row.use_custom_design || false,
 
-    inscription: row.inscription || {
-      type: null, epitaph: '', customNotes: '', customFont: false,
-      customFontDescription: '', preExistingPhotoUrl: '', preExistingPhotoPath: '',
+    // Sprint L2 — defensive merge on order-level inscription fields so legacy
+    // rows get sensible defaults for new L2 keys without losing existing data.
+    // The ...row.inscription spread MUST come last so real values win.
+    inscription: {
+      type: null,
+      epitaph: '',
+      customNotes: '',
+      customFont: false,
+      customFontDescription: '',
+      preExistingPhotoUrl: '',
+      preExistingPhotoPath: '',
+      // Sprint L2 additions
+      layoutStyle: 'side_by_side',
+      layoutCustom: '',
+      sideArrangement: 'p1_left_p2_right',
+      sideToConfirm: false,
+      sideNote: '',
+      ...(row.inscription || {}),
     },
 
     addOns: row.add_ons || [],
