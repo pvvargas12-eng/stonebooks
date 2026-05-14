@@ -9566,19 +9566,24 @@ function PaymentTrackingSection({ order, update }) {
   // { type: 'edit' | 'remove', paymentId } | null
   const [confirmModal, setConfirmModal] = useState(null)
 
-  // Ledger order: oldest first, by createdAt. The !voided filter is inert in
-  // Phase 2 (no void UI yet) but correct for Phase 4.
+  // Phase 4 — visiblePayments now includes VOIDED payments (they render with
+  // audit styling — see the three-way branch in the row map). activePayments
+  // is the math source: voided excluded. Both are ledger-ordered (oldest
+  // first by createdAt).
   const visiblePayments = useMemo(
     () => (order.payments || [])
-      .filter(p => !p.voided)
+      .slice()
       .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '')),
     [order.payments]
   )
+  const activePayments = useMemo(
+    () => visiblePayments.filter(p => !p.voided),
+    [visiblePayments]
+  )
 
-  // Phase 2.1 — only LOCKED payments contribute to the collected total. Drafts
-  // render in the list (visiblePayments stays !voided only) but never affect
-  // the money math.
-  const collected = visiblePayments
+  // Phase 2.1 — only LOCKED payments contribute to the collected total. Phase 4
+  // — sourced from activePayments so voided payments never affect the math.
+  const collected = activePayments
     .filter(p => p.locked ?? true)
     .reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const remaining = Math.max(0, grandTotal - collected)
@@ -9639,7 +9644,10 @@ function PaymentTrackingSection({ order, update }) {
   }
 
   const addPayment = () => {
-    const defaultAmount = visiblePayments.length === 0
+    // Phase 4 — base the default on activePayments (voided excluded): an order
+    // whose only prior payments are voided still defaults the first real
+    // payment to 50%.
+    const defaultAmount = activePayments.length === 0
       ? Math.round(grandTotal * 0.5 * 100) / 100
       : Math.max(0, Math.round((grandTotal - collected) * 100) / 100)
     const newPayment = {
@@ -9796,8 +9804,10 @@ function PaymentTrackingSection({ order, update }) {
         </div>
       ) : (
         <div className="sm-payment-list">
-          {visiblePayments.map(payment => (
-            editingId === payment.id ? (
+          {visiblePayments.map(payment => {
+            // Phase 4 — three-way branch: editing / voided / locked-collapsed.
+            if (editingId === payment.id) {
+              return (
               <div key={payment.id} className={`sm-payment-row sm-payment-row-editing ${!payment.locked ? 'sm-payment-row-draft' : ''}`}>
                 <div className="sm-payment-draft-pill">DRAFT</div>
                 <div className="sm-grid-2">
@@ -9846,7 +9856,28 @@ function PaymentTrackingSection({ order, update }) {
                   </button>
                 </div>
               </div>
-            ) : (
+              )
+            }
+            if (payment.voided) {
+              // Phase 4 — voided payment: collapsed, frozen, audit-styled. No
+              // Edit/Void buttons, no ReceiptActions — it's a permanent record
+              // that this payment was voided.
+              return (
+              <div key={payment.id} className="sm-payment-row sm-payment-row-voided">
+                <div className="sm-payment-row-summary">
+                  <span className="sm-payment-voided-pill">VOIDED</span>
+                  <strong style={{ textDecoration: 'line-through' }}>${(Number(payment.amount) || 0).toFixed(2)}</strong>
+                  <span>— {methodLabel(payment.method)}</span>
+                  {payment.ref && <span>#{payment.ref}</span>}
+                  <span>· {formatPaymentDate(payment.receivedAt)}</span>
+                </div>
+                <div className="sm-payment-voided-audit">
+                  Voided by {payment.voidedBy || 'staff'} on {formatPaymentDate(payment.voidedAt)}: {payment.voidedReason}
+                </div>
+              </div>
+              )
+            }
+            return (
               <div key={payment.id} className="sm-payment-row sm-payment-row-collapsed">
                 <div className="sm-payment-row-summary">
                   <strong>${(Number(payment.amount) || 0).toFixed(2)}</strong>
@@ -9858,10 +9889,10 @@ function PaymentTrackingSection({ order, update }) {
                   <button type="button" className="sm-link-btn" onClick={() => handleEditClick(payment.id)}>Edit</button>
                   <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => handleRemoveClick(payment.id)}>Void</button>
                 </div>
-                {payment.locked && <ReceiptActions order={order} payment={payment} />}
+                {payment.locked && !payment.voided && <ReceiptActions order={order} payment={payment} />}
               </div>
             )
-          ))}
+          })}
         </div>
       )}
 
@@ -13915,6 +13946,31 @@ const styles = `
 .sm-submit-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ---- SPRINT M2 Phase 4 — voided payment rows ------------------------- */
+.sm-payment-row-voided {
+  opacity: 0.6;
+  background: rgba(179, 38, 30, 0.05);
+  border-color: #b3261e;
+}
+.sm-payment-voided-pill {
+  display: inline-block;
+  background: #b3261e;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-right: 8px;
+  text-transform: uppercase;
+}
+.sm-payment-voided-audit {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #b3261e;
+  font-style: italic;
 }
 
 /* ---- SPRINT 3i — Cancel order ---------------------------------------- */
