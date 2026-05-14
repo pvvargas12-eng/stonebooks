@@ -9936,7 +9936,7 @@ function SignStep({ order, update }) {
             src={previewUrl}
             className="sm-pdf-preview-frame"
             title="Contract preview"
-            style={{ height: 600, borderRadius: 6 }}
+            style={{ minHeight: 850, width: '100%', borderRadius: 6 }}
           />
         ) : (
           <div className="sm-helper">Building contract preview…</div>
