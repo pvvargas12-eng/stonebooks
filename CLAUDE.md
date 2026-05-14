@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -279,6 +279,17 @@ Three commits (`bd818cb`, `c840b87`, + the CLAUDE.md commit). Adds an explicit *
 - **`statusPatchFor`** filter changed to `!p.voided && (p.locked ?? true)`; called from `addPayment`, `updatePayment`, and the new `submitPayment`. Still one-directional — no auto-revert when the locked sum drops (Phase 3 makes status fully reactive).
 - **Draft visual:** `.sm-payment-row-draft` — gold-dashed border + soft bronze tint + a "DRAFT" pill. `.sm-submit-btn` — navy, gold on hover. `ReceiptActions` gated by `payment.locked`.
 - **Receipt PDF signature block removed:** `generateReceiptPDF` no longer renders the customer/rep acknowledgment underlines or the "Received by" stamp. The closing note (thank-you / balance-due message) is kept; the section comment is relabeled `CLOSING NOTE`.
+
+### M2 Phase 3 — SHIPPED — consumer updates + reactive status + receipt labels
+
+Three commits (`ef9a38b`, `2624654`, + the CLAUDE.md commit). **Migration required** — `supabase/status_before_paid_in_full_migration.sql` adds `status_before_paid_in_full text` on `orders`; **must be run manually in Supabase Studio**.
+
+- **New column / field:** `orders.status_before_paid_in_full` (text, nullable) ↔ `order.statusBeforePaidInFull` (camelCase). Stores the prior status when a payments-driven `paid_in_full` flip occurs; null otherwise. Plumbed through `makeBlankOrder` / `orderToRow` / `rowToOrder`.
+- **`statusPatchFor` is now fully reactive** (was a one-directional flip). It reconciles `order.status` against the locked-payment sum: flips to `paid_in_full` + snapshots the prior status when `lockedSum >= grandTotal` (and `grandTotal > 0`, and not already paid, and not `closed`); **reverts** to `statusBeforePaidInFull` (or `'contracted'` fallback) when the sum drops below `grandTotal`; clears a stale `statusBeforePaidInFull` when status is no longer `paid_in_full`. The pre-existing vacuous `'completed'` guard (a non-existent status) was replaced with the real terminal status `'closed'`. `$0` grand totals never auto-flip.
+- **Three handler gaps closed:** `cancelDraft`'s fresh-delete branch, `handleEditConfirm`, and `handleRemoveConfirm` now all call `statusPatchFor` — every payment-composition change reconciles status. `addPayment`/`updatePayment`/`submitPayment` already called it.
+- **`OrderStatusChanger`** does NOT snapshot on manual `paid_in_full` — accepted; the `'contracted'` revert fallback covers those orders. `statusPatchFor`'s stale-snapshot cleanup handles a manually-changed status leaving a lingering snapshot.
+- **`CustomersTab.jsx`:** `'payments'` added to the `.select()` column list; the per-customer `_totalCollected` rollup (was a raw `deposit_amount + balance_amount` sum) now uses `rowTotalPaid(o)`. Other CustomersTab sites + OrdersTab + dashboard already routed through the patched `stonebooksData.js` helpers and `select('*')` — no other consumer changes needed.
+- **`generateReceiptPDF` receipt labels:** `nonVoidedPayments` filter tightened to require `(p.locked ?? true)` (drafts don't shift numbering or totals). The header label is now derived from the payment's position in the chronological non-voided-locked sequence + whether the order is fully paid *right now*: `DEPOSIT RECEIPT` (first), `PARTIAL PAYMENT RECEIPT #N` (middle, N = index among non-deposit), `FINAL PAYMENT RECEIPT — PAID IN FULL` (last AND total ≥ grandTotal), `DEPOSIT & FINAL PAYMENT — PAID IN FULL` (a lone payment that fully pays). "Final" requires the order to be fully paid *at render time* — a multi-payment order still short of grandTotal has no FINAL. Receipts regenerate on demand and carry no historical state, so the label always reflects the current ledger.
 
 ## Deferred / known issues
 

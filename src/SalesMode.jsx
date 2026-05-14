@@ -7230,8 +7230,11 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   const paymentMethod = payment?.method
   const paymentRef    = payment?.ref
   const paymentDate   = payment?.receivedAt
+  // Phase 3 — count only non-voided LOCKED payments. Drafts don't get receipts
+  // (ReceiptActions is gated by payment.locked) and must not shift the
+  // deposit/partial/final numbering or the running totals.
   const nonVoidedPayments = Array.isArray(order.payments)
-    ? order.payments.filter(p => !p.voided)
+    ? order.payments.filter(p => !p.voided && (p.locked ?? true))
     : []
   const totalPaidToDate = nonVoidedPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const balanceRemaining = Math.max(0, grandTotal - totalPaidToDate)
@@ -7305,11 +7308,42 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   doc.line(M, y, W - M, y)
   y += 6
 
+  // Sprint M2 Phase 3 — label derived from this payment's position in the
+  // chronological non-voided locked sequence + whether the order is fully paid
+  // as of now. Receipts regenerate on demand and carry no historical state, so
+  // the label always reflects the current ledger: if a "final" payment is
+  // later voided/removed, a fresh receipt for the new last payment re-derives.
+  const sortedPayments = [...nonVoidedPayments].sort((a, b) =>
+    (a.createdAt || '').localeCompare(b.createdAt || '')
+  )
+  const thisIndex = sortedPayments.findIndex(p => p.id === payment?.id)
+  const isFirst = thisIndex === 0
+  const isLast = thisIndex === sortedPayments.length - 1
+  const isFullyPaidNow = totalPaidToDate >= grandTotal && grandTotal > 0
+  // "Final" = chronologically last locked payment AND the order is fully paid
+  // right now. A multi-payment order still short of grandTotal has no FINAL —
+  // its last payment is a PARTIAL, because more is still expected.
+  const isFinalPayment = isLast && isFullyPaidNow
+
+  let receiptLabel
+  if (isFirst && isFinalPayment && sortedPayments.length === 1) {
+    receiptLabel = 'DEPOSIT & FINAL PAYMENT — PAID IN FULL'
+  } else if (isFirst) {
+    receiptLabel = 'DEPOSIT RECEIPT'
+  } else if (isFinalPayment) {
+    receiptLabel = 'FINAL PAYMENT RECEIPT — PAID IN FULL'
+  } else {
+    // Middle payment. Index 0 is always the deposit, so a payment at index N
+    // is "Partial Payment Receipt #N" (1-indexed among non-deposit payments).
+    receiptLabel = `PARTIAL PAYMENT RECEIPT #${thisIndex}`
+  }
+
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(11)
   doc.setTextColor(...GOLD)
-  // Sprint M2 Phase 2 — generic label; Phase 3 adds first/middle/final logic.
-  doc.text('PAYMENT RECEIPT', M, y)
+  // Sprint M2 Phase 3 — label derived from payment position + fully-paid state.
+  // Regenerated on demand; reflects current ledger state.
+  doc.text(receiptLabel, M, y)
   y += 7
 
   // Payment details table
