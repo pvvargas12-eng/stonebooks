@@ -6446,22 +6446,38 @@ async function generateEstimatePDF(order, opts = {}) {
   // ============================ DUE DATE ================================
   // Sprint 3u — contract only. Estimates skip this block entirely.
   if (isContract) {
-    // Sprint 3w — prefer the stored targetCompletionDate (set / auto-populated
-    // on step 10). Fall back to calculateDueDate for legacy orders that pre-date
-    // Sprint 3w OR mausoleum / no-timeline orders where staff hasn't set a date.
+    // Sprint 3w / S1 — prefer the stored dates (set / auto-populated on step
+    // 10). Mausoleum orders with BOTH range dates set render an
+    // "earliest – latest" range; other orders render a single date. Falls back
+    // to calculateDueDate for legacy orders that pre-date Sprint 3w or that
+    // have no stored date.
+    const isMausoleum = (order.serviceTypes || []).includes('MAUSOLEUM')
+    const hasRange = isMausoleum && order.targetCompletionDate && order.targetCompletionEndDate
     let due
-    if (order.targetCompletionDate) {
+    if (hasRange) {
       // 'T00:00:00' forces local-midnight parsing — without it, 'YYYY-MM-DD' is
       // read as UTC and shifts back a day in negative-UTC timezones.
+      const start = new Date(order.targetCompletionDate + 'T00:00:00')
+      const end = new Date(order.targetCompletionEndDate + 'T00:00:00')
+      const fmt = (d) => d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+      due = { dateText: `${fmt(start)} – ${fmt(end)}`, months: null, isRange: true }
+    } else if (order.targetCompletionDate) {
       const d = new Date(order.targetCompletionDate + 'T00:00:00')
       due = {
         dateText: d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
         months: null,
+        isRange: false,
       }
     } else {
       due = calculateDueDate(order)
+      due.isRange = false
     }
-    const deliveryDisclaimer = 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
+    // Sprint S1 — for a mausoleum range, the disclaimer says "within the
+    // due-date window" instead of "on the due date"; the rest is identical.
+    const deliveryDisclaimer = (due.isRange
+      ? 'To be delivered within the due-date window or as near that time as existing circumstances of trade and freighting facilities will permit. '
+      : 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. ')
+      + 'All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
     // Measure the disclaimer at its render font size (9pt) for an accurate line count.
     doc.setFont('helvetica', 'italic')
     doc.setFontSize(9)
@@ -6476,7 +6492,8 @@ async function generateEstimatePDF(order, opts = {}) {
     y += 5
 
     // Unsigned preview — the date is provisional until signing locks the anchor.
-    if (!order.signedAt) {
+    // Suppressed for mausoleum ranges: those are staff-entered, not calculated.
+    if (!order.signedAt && !due.isRange) {
       doc.setFont('helvetica', 'italic')
       doc.setFontSize(8)
       doc.setTextColor(...GREY)

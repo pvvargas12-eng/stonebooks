@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → S2`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -219,9 +219,25 @@ The contract PDF's DUE DATE block now **prefers `order.targetCompletionDate`** �
 
 **Behavior change:** the dashboard, calendar, and customer list will start showing target completion dates on orders that previously had blank ones — as staff open those orders to step 10 and the auto-populate fires.
 
+## Sprint S1 — SHIPPED
+
+**Mausoleum due date range.** Two commits. **Migration required** — `supabase/mausoleum_target_range_migration.sql` adds the new `target_completion_end_date` (`date`) column; **must be run manually in Supabase Studio**.
+
+### Part A+B — range field + migration + step 10 range UI (`bb3b366`)
+New field `order.targetCompletionEndDate` / column `target_completion_end_date` (added to `makeBlankOrder` + both row mappers). For mausoleum orders, `targetCompletionDate` is the **earliest** date in the completion window and `targetCompletionEndDate` is the **latest**; for non-mausoleum orders `targetCompletionEndDate` stays null.
+
+`ProductionTimelineSection` branches on `isMausoleum`:
+- **Mausoleum:** a `sm-grid-2` with two date inputs ("Target completion — earliest" / "— latest") and one recalc button on the latest field that resets BOTH dates. A new `useEffect` auto-populates the range on first visit when both dates are empty + unlocked: `earliest = anchor + 6mo`, `latest = anchor + 8mo` (`anchor` = `signedAt` or today), formatted from local date components. Dual null-check — clearing one date won't re-fire; clearing both re-fires as an intentional "reset to auto" path.
+- **Non-mausoleum:** zero behavior change — the 3w single-date input, `calculateDueDateRaw`-driven auto-populate, and TBD-hidden recalc button are untouched. Mausoleum self-excludes the 3w effect via its existing `isTBD` check.
+
+### Part C — contract PDF renders the range (committed together with this CLAUDE.md update)
+The contract PDF DUE DATE block detects `isMausoleum && both range dates set` → renders `"Month D, YYYY – Month D, YYYY"` in the Estimated Due Date line. For the range case it also **suppresses** the "Calculated from today" unsigned-preview note (the range is staff-entered, not calculated) and **rewords** the delivery disclaimer from "on the due date" to "within the due-date window". Non-range / non-mausoleum contracts are unchanged.
+
+**Propagation scope:** only the contract PDF renders the range. CalendarTab, CustomersTab, the dashboard, and the receipt PDF all keep reading `targetCompletionDate` (the start date) as a single date — no changes, no breakage. Extending those surfaces to show the range is left for a future sprint.
+
 ## Deferred / known issues
 
-- **Mausoleum due-date math** — shows "TBD — contact office" until the 6–8 month range-picker UI is built (deferred from 3u).
+- **Mausoleum range on calendar/customer-list/receipt** — those surfaces show only `targetCompletionDate` (the range start); the `targetCompletionEndDate` is not yet surfaced there. Future sprint if needed.
 - **Two-color companion stones** — not supported; single `graniteColor` per order drives due-date math. Would need a data-model change.
 - **Sprint 3t (remote contract signing)** is parked pending the Vercel env-var fix — `VITE_APP_MODE`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` need to be set in the `stonebooks-beta` Vercel project for prod to render the staff wizard instead of the public catalog.
 
