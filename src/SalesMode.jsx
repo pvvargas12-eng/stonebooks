@@ -6174,6 +6174,60 @@ function pdfDeceasedLines(order) {
   return out
 }
 
+// Sprint 3u — contract due-date calculation. The lead time is keyed off the
+// order's service types and, for new stone, the granite color.
+//
+// IMPORTANT: the 5-month "fast" bucket is the literal pair
+// 'medium-barre-grey' + 'mountain-rose', per explicit user direction. This is
+// NOT the GRANITE_COLORS 'gray' family (mountain-rose is family:'pink'), and it
+// intentionally diverges from the CLAUDE.md 3u spec table. Do not "fix" this to
+// family === 'gray' without checking with Paul first.
+function calculateDueDate(order, anchorDate) {
+  const anchor = anchorDate
+    ? new Date(anchorDate)
+    : (order.signedAt ? new Date(order.signedAt) : new Date())
+
+  const serviceTypes = order.serviceTypes || []
+
+  // Mausoleum has no fixed lead time — always defer to the office.
+  if (serviceTypes.includes('MAUSOLEUM')) {
+    return { dateText: 'TBD — contact office', months: null }
+  }
+
+  // Per-service lead time. null = no defined timeline for that service.
+  const offsets = serviceTypes.map(svc => {
+    if (svc === 'NEW_STONE') {
+      const fast = order.graniteColor === 'medium-barre-grey' || order.graniteColor === 'mountain-rose'
+      return { unit: 'months', value: fast ? 5 : 6 }
+    }
+    if (svc === 'BRONZE')      return { unit: 'months', value: 4 }
+    if (svc === 'INSCRIPTION') return { unit: 'weeks',  value: 8 }
+    if (svc === 'ACID_WASH')   return { unit: 'weeks',  value: 8 }
+    if (svc === 'REPAIR')      return { unit: 'months', value: 3 }
+    // CIVIC_MEMORIAL, ADD_PHOTO, OTHER — no defined timeline
+    return null
+  }).filter(Boolean)
+
+  if (offsets.length === 0) {
+    return { dateText: 'TBD — contact office', months: null }
+  }
+
+  // Mixed orders take the longest lead time. Compare in days
+  // (months x 30.4 vs weeks x 7).
+  const longest = offsets.reduce((max, cur) => {
+    const maxDays = max.unit === 'months' ? max.value * 30.4 : max.value * 7
+    const curDays = cur.unit === 'months' ? cur.value * 30.4 : cur.value * 7
+    return curDays > maxDays ? cur : max
+  })
+
+  const due = new Date(anchor)
+  if (longest.unit === 'months') due.setMonth(due.getMonth() + longest.value)
+  else                          due.setDate(due.getDate() + longest.value * 7)
+
+  const dateText = due.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  return { dateText, months: longest }
+}
+
 // Generate the estimate PDF for the given order. Async because we lazy-load jsPDF.
 // Convert a URL (Supabase Storage) into a data URL for jsPDF.addImage
 async function urlToDataURL(url) {
@@ -6351,6 +6405,35 @@ async function generateEstimatePDF(order, opts = {}) {
   doc.setTextColor(...GREY)
   doc.text(isContract ? `Signed ${dateStr}` : dateStr, W - M, y, { align: 'right' })
   y += 6
+
+  // ============================ DUE DATE ================================
+  // Sprint 3u — contract only. Estimates skip this block entirely.
+  if (isContract) {
+    const due = calculateDueDate(order)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(10)
+    doc.setTextColor(...NAVY)
+    doc.text(`Due Date: ${due.dateText}`, M, y)
+    y += 5
+
+    // Unsigned preview — the date is provisional until signing locks the anchor.
+    if (!order.signedAt) {
+      doc.setFont('helvetica', 'italic')
+      doc.setFontSize(8)
+      doc.setTextColor(...GREY)
+      doc.text('Calculated from today. Final due date set at signing.', M, y)
+      y += 4
+    }
+
+    // Delivery disclaimer — exact legal text, contract only (signed or unsigned).
+    doc.setFont('helvetica', 'italic')
+    doc.setFontSize(9)
+    doc.setTextColor(...GREY)
+    const deliveryDisclaimer = 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
+    const ddLines = doc.splitTextToSize(deliveryDisclaimer, W - M - M)
+    doc.text(ddLines, M, y)
+    y += 4 * ddLines.length + 2
+  }
 
   // ============================ CUSTOMER ================================
   sectionHeader('Prepared for')
