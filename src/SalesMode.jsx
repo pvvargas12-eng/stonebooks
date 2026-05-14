@@ -1724,6 +1724,17 @@ function cemeteryToRow(c) {
 }
 
 function orderToRow(order) {
+  // Sprint M2 Phase 2 — authority reversal: payments[] is authoritative, the
+  // legacy deposit_*/balance_* columns are mirrored from the first two entries.
+  // For payments.length 3+, only the first 2 are reflected in legacy columns;
+  // consumers that need accurate totals must read from payments[] directly. The
+  // stonebooksData.js helpers were patched in this same commit to sum payments[]
+  // when present, closing the consumer-undercount window for the most-trafficked
+  // surfaces.
+  const payments = Array.isArray(order.payments) ? order.payments : []
+  const p0 = payments[0] || null
+  const p1 = payments[1] || null
+
   return {
     status: order.status,
     sales_rep: order.salesRep || null,
@@ -1793,18 +1804,17 @@ function orderToRow(order) {
     target_completion_end_date: order.targetCompletionEndDate || null,
     cemetery_deadline: order.cemeteryDeadline || null,
     timeline_notes: order.timelineNotes || null,
-    deposit_amount: order.depositAmount ?? null,
-    deposit_method: order.depositMethod || null,
-    deposit_ref: order.depositRef || null,
-    deposit_received_at: order.depositReceivedAt || null,
-    balance_amount: order.balanceAmount ?? null,
-    balance_method: order.balanceMethod || null,
-    balance_ref: order.balanceRef || null,
-    balance_received_at: order.balanceReceivedAt || null,
-    // Sprint M2 Phase 1 — additive shadow column. The legacy deposit_*/balance_*
-    // fields above stay authoritative; the UI still writes them directly.
-    // payments[] is just carried through here until Phase 2 reverses authority.
-    payments: order.payments || [],
+    // Sprint M2 Phase 2 — legacy columns derived FROM payments[] (see header
+    // comment). payments[] is the source of truth; these are write-shadow.
+    deposit_amount: p0 ? p0.amount : null,
+    deposit_method: p0 ? p0.method : null,
+    deposit_ref: p0 ? p0.ref : null,
+    deposit_received_at: p0 ? p0.receivedAt : null,
+    balance_amount: p1 ? p1.amount : null,
+    balance_method: p1 ? p1.method : null,
+    balance_ref: p1 ? p1.ref : null,
+    balance_received_at: p1 ? p1.receivedAt : null,
+    payments: payments,
     cancelled_at: order.cancelledAt || null,
     cancel_reason: order.cancelReason || null,
     cancel_notes: order.cancelNotes || null,
@@ -1814,6 +1824,13 @@ function orderToRow(order) {
     deceased: order.deceased || [],
     staff_notes: order.staffNotes || [],
   }
+}
+
+// Sprint M2 Phase 2 — the single source of payment ids. crypto.randomUUID()
+// is available in the Vite build environment and all evergreen browsers; if a
+// future environment lacks it, this is the one place to patch.
+function newPaymentId() {
+  return crypto.randomUUID()
 }
 
 // Sprint M2 Phase 1 — synthesize a payments[] array from the legacy

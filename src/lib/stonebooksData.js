@@ -196,9 +196,31 @@ export function rowGrandTotal(order) {
   return Math.round(taxBase + tax + cc)
 }
 
-export function rowDepositPaid(order)  { return Number(order?.deposit_amount) || 0 }
-export function rowBalancePaid(order)  { return Number(order?.balance_amount) || 0 }
-export function rowTotalPaid(order)    { return rowDepositPaid(order) + rowBalancePaid(order) }
+// Sprint M2 Phase 2 — payment helpers prefer the payments[] array when it's
+// populated (sum of non-voided entries), and fall back to the legacy
+// deposit_amount/balance_amount columns for rows that pre-date the payments[]
+// migration or weren't fetched with the payments column. The `!p.voided`
+// filter is a no-op in Phase 2 (no void UI yet) but is written now so Phase 4
+// doesn't have to re-touch these.
+function rowNonVoidedPayments(order) {
+  return Array.isArray(order?.payments) ? order.payments.filter(p => !p.voided) : []
+}
+export function rowDepositPaid(order) {
+  const ps = rowNonVoidedPayments(order)
+  if (ps.length > 0) return Number(ps[0].amount) || 0
+  return Number(order?.deposit_amount) || 0
+}
+export function rowBalancePaid(order) {
+  const ps = rowNonVoidedPayments(order)
+  if (ps.length >= 2) return ps.slice(1).reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  if (ps.length === 1) return 0
+  return Number(order?.balance_amount) || 0
+}
+export function rowTotalPaid(order) {
+  const ps = rowNonVoidedPayments(order)
+  if (ps.length > 0) return ps.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  return (Number(order?.deposit_amount) || 0) + (Number(order?.balance_amount) || 0)
+}
 export function rowBalanceDue(order)   { return Math.max(0, rowGrandTotal(order) - rowTotalPaid(order)) }
 
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
