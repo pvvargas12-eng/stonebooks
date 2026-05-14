@@ -203,7 +203,13 @@ export function rowGrandTotal(order) {
 // filter is a no-op in Phase 2 (no void UI yet) but is written now so Phase 4
 // doesn't have to re-touch these.
 function rowNonVoidedPayments(order) {
-  return Array.isArray(order?.payments) ? order.payments.filter(p => !p.voided) : []
+  // Sprint M2 Phase 2.1 — defensive `?? true`: stonebooksData reads rows
+  // directly via select('*'), bypassing rowToOrder's read-time auto-lock. A
+  // payment missing the `locked` field (Phase 2-era data) counts as locked
+  // here too; only explicit `locked: false` drafts are excluded from totals.
+  return Array.isArray(order?.payments)
+    ? order.payments.filter(p => !p.voided && (p.locked ?? true))
+    : []
 }
 export function rowDepositPaid(order) {
   const ps = rowNonVoidedPayments(order)

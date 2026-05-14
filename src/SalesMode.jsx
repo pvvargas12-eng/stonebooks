@@ -1732,8 +1732,12 @@ function orderToRow(order) {
   // when present, closing the consumer-undercount window for the most-trafficked
   // surfaces.
   const payments = Array.isArray(order.payments) ? order.payments : []
-  const p0 = payments[0] || null
-  const p1 = payments[1] || null
+  // Sprint M2 Phase 2.1 — only LOCKED non-voided payments are mirrored to the
+  // legacy deposit_*/balance_* columns. Drafts persist in the payments[] JSONB
+  // but never appear in the legacy columns until they're submitted (locked).
+  const lockedPayments = payments.filter(p => p.locked && !p.voided)
+  const p0 = lockedPayments[0] || null
+  const p1 = lockedPayments[1] || null
 
   return {
     status: order.status,
@@ -1854,6 +1858,7 @@ function synthesizePaymentsFromLegacy(row) {
       createdAt: row.created_at || new Date(0).toISOString(),  // best-effort — order creation time
       createdBy: null,  // unknown for legacy data
       note: null,
+      locked: true,     // Sprint M2 Phase 2.1 — legacy data = already recorded
       voided: false,
       voidedReason: null,
       voidedAt: null,
@@ -1874,6 +1879,7 @@ function synthesizePaymentsFromLegacy(row) {
       createdAt: row.created_at || new Date(0).toISOString(),
       createdBy: null,
       note: null,
+      locked: true,     // Sprint M2 Phase 2.1 — legacy data = already recorded
       voided: false,
       voidedReason: null,
       voidedAt: null,
@@ -1988,8 +1994,11 @@ function rowToOrder(row, customerRow, cemeteryRow) {
     // the payments column when populated, otherwise synthesize from the legacy
     // deposit_*/balance_* columns. The UI keeps reading the legacy fields above
     // in Phase 1; payments[] is a shadow until Phase 2.
+    // Sprint M2 Phase 2.1 — read-time auto-lock: any payment missing the
+    // `locked` field (Phase 2-era data) normalizes to locked. ?? true (not
+    // || true) so explicit `locked: false` drafts survive the read.
     payments: Array.isArray(row.payments) && row.payments.length > 0
-      ? row.payments
+      ? row.payments.map(p => ({ ...p, locked: p.locked ?? true }))
       : synthesizePaymentsFromLegacy(row),
     cancelledAt: row.cancelled_at || null,
     cancelReason: row.cancel_reason || null,
