@@ -9732,6 +9732,78 @@ function SignatureCanvas({ value, onChange, label, disabled }) {
   )
 }
 
+// Sprint 3v Part B — modal wrapper around SignatureCanvas. The customer taps
+// the signature box, this opens, they draw, "Save signature" commits the data
+// URL back to the order. Backdrop click cancels.
+function SignatureModal({ open, onSave, onCancel }) {
+  const [draft, setDraft] = useState(null)
+  // Reset the draft each time the modal opens so a fresh canvas starts blank.
+  useEffect(() => {
+    if (open) setDraft(null)
+  }, [open])
+  if (!open) return null
+  return (
+    <div className="sm-pdf-preview-overlay" onClick={onCancel}>
+      <div className="sm-signature-modal" onClick={e => e.stopPropagation()}>
+        <div className="sm-pdf-preview-head">
+          <div className="sm-pdf-preview-title">Customer signature</div>
+        </div>
+        <div style={{ padding: 18 }}>
+          <SignatureCanvas value={null} onChange={setDraft} label="Sign below" />
+          <div className="sm-signature-modal-actions">
+            <button type="button" className="sm-link-btn" onClick={onCancel}>Cancel</button>
+            <button
+              type="button"
+              className="sm-btn sm-btn-navy"
+              onClick={() => onSave(draft)}
+              disabled={!draft}
+            >Save signature</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Sprint 3v Part B — customer signature surface. Empty → a "Tap to sign" box
+// that opens SignatureModal. Filled → the signature image with a Clear button.
+// Returns null when locked (the locked view leans on the contract preview
+// iframe instead — see the rationale comment in SignStep).
+function CustomerSignatureBox({ value, onChange, locked }) {
+  const [modalOpen, setModalOpen] = useState(false)
+  if (locked) return null
+  if (value) {
+    return (
+      <div className="sm-sigbox-filled">
+        <img src={value} alt="Customer signature" />
+        {/* Pre-conversion Clear is just "oops, redo" — no warning needed. The
+            warning is for the post-conversion Unlock flow in Part C. */}
+        <button
+          type="button"
+          className="sm-sigbox-clear-btn"
+          onClick={() => onChange(null)}
+        >✕ Clear</button>
+      </div>
+    )
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className="sm-sigbox-empty"
+        onClick={() => setModalOpen(true)}
+      >
+        <span className="sm-sigbox-prompt">✎ Tap to sign</span>
+      </button>
+      <SignatureModal
+        open={modalOpen}
+        onSave={(dataUrl) => { onChange(dataUrl); setModalOpen(false) }}
+        onCancel={() => setModalOpen(false)}
+      />
+    </>
+  )
+}
+
 // New wizard step — captures signatures and converts Estimate → Contract.
 // Shows lock-banner if order is already in CONTRACT state.
 function SignStep({ order, update }) {
@@ -9871,23 +9943,30 @@ function SignStep({ order, update }) {
         )}
       </Section>
 
-      <Section title="Customer signature" eyebrow={isLocked ? 'Captured' : 'Required'}>
-        <SignatureCanvas
-          value={order.customerSignature || order.customerSignatureUrl}
-          onChange={(d) => updateSig('customer', d)}
-          label={`${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || 'Customer'}
-          disabled={isLocked}
-        />
-      </Section>
+      {/* Sign section hidden when locked — the iframe preview above shows the signed contract
+          with both signatures inline. Avoiding duplicate signature UI in the locked view. */}
+      {!isLocked && (
+        <Section title="Shevchenko Monuments representative" eyebrow="Required">
+          <SignatureCanvas
+            value={order.repSignature || order.repSignatureUrl}
+            onChange={(d) => updateSig('rep', d)}
+            label={order.salesRep || 'Sales representative'}
+            disabled={isLocked}
+          />
+        </Section>
+      )}
 
-      <Section title="Shevchenko Monuments representative" eyebrow={isLocked ? 'Captured' : 'Required'}>
-        <SignatureCanvas
-          value={order.repSignature || order.repSignatureUrl}
-          onChange={(d) => updateSig('rep', d)}
-          label={order.salesRep || 'Sales representative'}
-          disabled={isLocked}
-        />
-      </Section>
+      {/* Sign section hidden when locked — the iframe preview above shows the signed contract
+          with both signatures inline. Avoiding duplicate signature UI in the locked view. */}
+      {!isLocked && (
+        <Section title="Customer signature" eyebrow="Required">
+          <CustomerSignatureBox
+            value={order.customerSignature}
+            onChange={(v) => update({ customerSignature: v })}
+            locked={isLocked}
+          />
+        </Section>
+      )}
 
       {!isLocked && (
         <Section title="Convert to Contract" eyebrow="Locks pricing — final, binding">
@@ -11877,6 +11956,85 @@ const styles = `
   letter-spacing: 0.06em;
   color: #2d8a4f;
   font-weight: 700;
+}
+
+/* Sprint 3v Part B — customer signature box (tap-to-open) + signature modal */
+.sm-sigbox-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 340px;
+  height: 150px;
+  background: #fff;
+  border: 2px dashed var(--sm-border-dark);
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  transition: all 0.18s;
+}
+.sm-sigbox-empty:hover {
+  border-color: var(--sm-gold);
+  background: var(--sm-gold-pale);
+}
+.sm-sigbox-prompt {
+  color: var(--sm-border-dark);
+  font-style: italic;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  transition: color 0.18s;
+}
+.sm-sigbox-empty:hover .sm-sigbox-prompt {
+  color: var(--sm-gold);
+}
+.sm-sigbox-filled {
+  position: relative;
+  width: 100%;
+  max-width: 340px;
+  height: 150px;
+  background: #fff;
+  border: 2px solid var(--sm-border-dark);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.sm-sigbox-filled img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.sm-sigbox-clear-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 9px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--sm-border-dark);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-mid, #555);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sm-sigbox-clear-btn:hover {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+.sm-signature-modal {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 560px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.sm-signature-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .sm-locked-banner {
