@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3t / 3u → 3v`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -169,56 +169,31 @@ PDF deposit/balance row overlap fix. The deposit block's label column at `W - M 
 
 Widened the deposit-block label column to 90mm (`W - M - 90` = 109.9mm) and widened the gold divider above it to match. Right-aligned value position at `W - M` is unchanged. Other PDF rows in the upper totals block (Subtotal, NJ Tax, CC Surcharge, GRAND TOTAL) still use 60mm — their labels fit comfortably, so they were intentionally left alone. **Potential follow-up:** GRAND TOTAL's left edge is now 30mm to the right of the deposit/balance labels directly below it. Vertical misalignment is cosmetic, not a bug — only fix if the PDF reads visually off.
 
-## Sprint 3u — PLANNED, NOT STARTED
+## Sprint 3u — SHIPPED
 
-**Contract document overhaul.** Specced in detail below; do NOT begin until the user gives explicit go.
+**Contract document overhaul.** Four parts, six commits.
 
-### 1. Due date field on contract PDF
-Calculated from contract signature date (`order.signedAt`), placed near the top of the contract PDF (before line items). Per-service-type duration:
+### Part A — Estimated Due Date + delivery disclaimer (`2ae77ab`, revision `4c2750a`)
+`calculateDueDate(order, anchorDate)` helper. Anchors on `order.signedAt` (or today for unsigned previews). Per-service lead times — NEW_STONE 5mo for `medium-barre-grey`/`mountain-rose` else 6mo, BRONZE 4mo, INSCRIPTION/ACID_WASH 8wk, REPAIR 3mo. CIVIC_MEMORIAL/ADD_PHOTO/OTHER have no defined timeline. MAUSOLEUM and all-null orders → "TBD — contact office". Mixed orders take the longest lead time. Contract-only PDF block after the order#/date row; estimates skip it. Unsigned previews show an italic "calculated from today" note. Delivery disclaimer (exact legal text) renders below.
 
-| Service / variant | Due-date offset from `signedAt` |
-|---|---|
-| New stone — gray granite (Barre Grey, Medium Barre Grey, Legacy Gray, Cloud Gray, St. Cloud Grey) | **5 months** |
-| New stone — any non-gray color (imported) | **6 months** |
-| Inscription service | **8 weeks** |
-| Repair | **3 months** |
-| Acid wash | **8 weeks** |
-| Bronze | **4 months** |
-| Mausoleum | **6–8 months** (needs new UI to pick the range) |
+- **Label is "Estimated Due Date"** (not "Due Date" as the original spec said) — an under-promise / over-deliver buffer, applied across all three cases (signed, unsigned, mausoleum TBD).
+- **Domestic granites are `medium-barre-grey` and `mountain-rose` ONLY** — this is a *supplier-confidence risk buffer*, NOT the granite `family === 'gray'` rule. Everything else gets the conservative 6-month buffer, including the other grays (`legacy-gray`, `st-cloud-grey`, `cloud-gray`). `mountain-rose` is `family: 'pink'`. The rule is intentional and documented inline in `calculateDueDate`.
+- **Mausoleum-specific due-date math is deferred** — currently shows "Estimated Due Date: TBD — contact office". The 6–8 month range picker UI was not built.
+- **Two-color companion stones are not supported** — the order model has a single `graniteColor`, which drives the due-date math.
 
-Mixed orders → **use the longest applicable due date** across the order's service types.
+### Part B — 4-column line items (`464ac1a`)
+2-column (Description/Amount) → 4-column (Description/Color/Qty/Rate) on both estimates and contracts. `buildLineItems` only returns `{code,label,amount}`, so Color and Qty are cross-referenced back out of `order.addOns`: `base-stone`/`color-premium` take `order.graniteColor`; addon rows take their own `blingColor`/`vaseColor`. The " × N" suffix `buildLineItems` bakes into addon labels is stripped from the Description (the Qty column carries it now). **Estimates show an em-dash for every per-item Rate** — protects per-item pricing from competitor lookup; the final total stays visible.
 
-**Open question for the user (must answer before build):** Where does Mausoleum service get tagged today? `order.serviceTypes`? A specific code? Or does it come in through `mausoleum_intake`? Confirm the source-of-truth field for "is this a mausoleum order" before writing the due-date math.
+### Part C — Legal terms paragraph (`28b0c23`)
+Contract `acceptText` replaced with 5 legal paragraphs (8pt, dark `TEXT` color, justified): 50% non-refundable deposit + balance due before carving work (carving work precisely defined), ownership until paid in full, removal authorization + reinstall $500 fee + legal fees on contested removal, change-order clause, 14-day acceptance window, finality + photography permission. Estimate branch keeps the "valid for 30 days" notice untouched.
 
-### 2. Delivery disclaimer (next to due date)
-> "To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. All agreements made contingent upon strikes, fires, accidents or other causes beyond our control."
-
-### 3. Line item structure on contract
-Columns: **Description | Color | Quantity | Rate**. (Today the estimate uses a Label / Amount pair; this is a column-set change for contract layout specifically.)
-
-### 4. Legal terms paragraph (above signatures)
-- 50% non-refundable deposit upfront.
-- Balance due before commencement of "carving work" — **define "carving work" precisely** so it isn't ambiguous. Note that materials may be ordered before balance is paid; Shevchenko bears the material cost at customer's risk in that case.
-- Ownership of the memorial remains with Shevchenko Monuments until paid in full.
-- Removal authorization clause with no liability for emotional distress or consequential damages. Cemetery entry rights. Customer pays legal fees if contested.
-- Change-order clause — post-signing changes require written agreement, may incur cost, may reset the production timeline.
-- 14-day acceptance period after delivery/installation. After that window, work is deemed accepted.
-- $500 reinstall fee — applies if the memorial is removed for non-payment and customer subsequently requests reinstallation.
-- Photography permission — Shevchenko may use photos of the completed memorial for display, portfolio, advertising.
-
-### 5. Company name styling
-**SHEVCHENKO MONUMENTS LLC** on first mention (full legal name, all-caps).
-*Shevchenko Monuments* — title case — for all subsequent mentions in the contract body.
-
-### 6. PDF layout rule
-Signatures may share a page with pricing, **but** pricing sections must never split ugly across pages. If a pricing section would break mid-row, push the whole section to the next page (the jspdf equivalent of `page-break-inside: avoid`). Concretely: each "block" — line items table, totals block, deposit block, legal terms, signature pair — needs an upfront `ensure(blockHeight)` call before rendering, where `blockHeight` accounts for the full vertical footprint.
-
-### Sequencing note
-Sprint 3t (remote contract signing) is parked pending Vercel env-var fix. 3t and 3u are independent — 3u can ship first if 3t is still blocked tomorrow.
+### Part D — Page-break discipline (`682828d`)
+Module-level `ensureBlock(doc, y, blockHeight, opts)` helper. Both PDF generators' local `ensure()` are now thin bindings of it. Per-block height reservations added in `generateEstimatePDF` (due date, stone specs, line items table, totals block; legal terms + signatures already reserved together by Part C) and `generateReceiptPDF` (payment-details table, running-totals block). **`ensureBlock` is reusable for any future PDF surface.**
 
 ## Deferred / known issues
 
-- **Sprint 3u is fully spec'd and ready to execute.** See "Sprint 3u — PLANNED, NOT STARTED" above. One open question: confirm the source-of-truth field for "is this a mausoleum order" before due-date math is wired.
+- **Mausoleum due-date math** — shows "TBD — contact office" until the 6–8 month range-picker UI is built (deferred from 3u).
+- **Two-color companion stones** — not supported; single `graniteColor` per order drives due-date math. Would need a data-model change.
 - **Sprint 3t (remote contract signing)** is parked pending the Vercel env-var fix — `VITE_APP_MODE`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` need to be set in the `stonebooks-beta` Vercel project for prod to render the staff wizard instead of the public catalog.
 
 ## Feature backlog after 3p
