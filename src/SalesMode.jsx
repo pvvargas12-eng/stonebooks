@@ -9393,6 +9393,36 @@ function DesignerHandoffSection({ order, update }) {
   )
 }
 
+// Sprint M2 Phase 2.1 — confirmation modal for Edit / Remove of a LOCKED
+// (submitted) payment. Parameterized by `type`; reuses the .sm-unlock-modal*
+// CSS from Sprint 3v.
+function PaymentConfirmModal({ open, type, onConfirm, onCancel }) {
+  if (!open) return null
+  const config = type === 'edit'
+    ? {
+        title: 'Edit this submitted payment?',
+        body: 'This will mark the payment as a draft and remove it from the running totals until you re-submit. You can cancel the edit to keep the original values.',
+        confirmLabel: 'Yes, Edit',
+      }
+    : {
+        title: 'Remove this submitted payment?',
+        body: 'This will permanently remove the payment from this order. This cannot be undone.',
+        confirmLabel: 'Yes, Remove',
+      }
+  return (
+    <div className="sm-pdf-preview-overlay" onClick={onCancel}>
+      <div className="sm-unlock-modal" onClick={e => e.stopPropagation()}>
+        <div className="sm-unlock-modal-title">{config.title}</div>
+        <div className="sm-unlock-modal-body">{config.body}</div>
+        <div className="sm-unlock-modal-actions">
+          <button type="button" className="sm-link-btn" onClick={onCancel}>Cancel</button>
+          <button type="button" className="sm-unlock-modal-confirm" onClick={onConfirm}>{config.confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Sprint 3i — Track deposit + balance payments
 function PaymentTrackingSection({ order, update }) {
   // Compute current grand total so we can show balance owed
@@ -9420,6 +9450,16 @@ function PaymentTrackingSection({ order, update }) {
   // mirrors them from payments[] on write). One row editable at a time.
   const [editingId, setEditingId] = useState(null)
 
+  // Phase 2.1 — track which drafts are "fresh" (added via Add payment) vs
+  // "re-opened" (from Edit-unlock). Fresh drafts can be deleted on Cancel;
+  // re-opened drafts restore their pre-edit snapshot and re-lock instead.
+  const [freshDraftIds, setFreshDraftIds] = useState(() => new Set())
+  // Pre-edit snapshots of locked payments unlocked via Edit, keyed by id.
+  const [editSnapshots, setEditSnapshots] = useState(() => new Map())
+  // Confirmation modal for Edit / Remove of a locked payment.
+  // { type: 'edit' | 'remove', paymentId } | null
+  const [confirmModal, setConfirmModal] = useState(null)
+
   // Ledger order: oldest first, by createdAt. The !voided filter is inert in
   // Phase 2 (no void UI yet) but correct for Phase 4.
   const visiblePayments = useMemo(
@@ -9429,7 +9469,12 @@ function PaymentTrackingSection({ order, update }) {
     [order.payments]
   )
 
-  const collected = visiblePayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  // Phase 2.1 — only LOCKED payments contribute to the collected total. Drafts
+  // render in the list (visiblePayments stays !voided only) but never affect
+  // the money math.
+  const collected = visiblePayments
+    .filter(p => p.locked ?? true)
+    .reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const remaining = Math.max(0, grandTotal - collected)
 
   const methodLabel = (m) => ({ cash: 'Cash', check: 'Check', card: 'Card', other: 'Other' }[m] || 'Payment')
@@ -9444,7 +9489,7 @@ function PaymentTrackingSection({ order, update }) {
   // reaches the grand total, flip to 'paid_in_full'. No auto-revert on delete
   // or edit-down (locked decision T6 — Phase 3 makes it fully reactive).
   const statusPatchFor = (payments) => {
-    const sum = payments.filter(p => !p.voided).reduce((s, p) => s + (Number(p.amount) || 0), 0)
+    const sum = payments.filter(p => !p.voided && (p.locked ?? true)).reduce((s, p) => s + (Number(p.amount) || 0), 0)
     return (sum >= grandTotal && order.status !== 'paid_in_full' && order.status !== 'completed')
       ? { status: 'paid_in_full' }
       : {}
@@ -9463,6 +9508,7 @@ function PaymentTrackingSection({ order, update }) {
       createdAt: new Date().toISOString(),                // full ISO, ledger-sort key
       createdBy: order.salesRep || null,
       note: null,
+      locked: false,    // Phase 2.1 — new payments start as drafts
       voided: false,
       voidedReason: null,
       voidedAt: null,
@@ -9472,6 +9518,7 @@ function PaymentTrackingSection({ order, update }) {
     // Phase 2, but written defensively).
     const newPayments = [...(order.payments || []), newPayment]
     update({ payments: newPayments, ...statusPatchFor(newPayments) })
+    setFreshDraftIds(prev => new Set([...prev, newPayment.id]))  // mark as fresh
     setEditingId(newPayment.id)  // open it immediately for edit
   }
 
@@ -9480,12 +9527,85 @@ function PaymentTrackingSection({ order, update }) {
     update({ payments: newPayments, ...statusPatchFor(newPayments) })
   }
 
-  const deletePayment = (id) => {
-    if (!confirm('Remove this payment?')) return
+  // Phase 2.1 — submit a draft: flip locked false → true. This is the explicit
+  // commit step; only now does the payment count toward totals + get a receipt.
+  const submitPayment = (id) => {
+    const newPayments = (order.payments || []).map(p =>
+      p.id === id ? { ...p, locked: true } : p
+    )
+    update({ payments: newPayments, ...statusPatchFor(newPayments) })
+    setEditingId(null)
+    setFreshDraftIds(prev => {
+      const next = new Set(prev); next.delete(id); return next
+    })
+    setEditSnapshots(prev => {
+      const next = new Map(prev); next.delete(id); return next
+    })
+  }
+
+  // Phase 2.1 — Cancel on a draft. Fresh drafts (from Add payment) are deleted
+  // entirely — no money was recorded, no confirmation. Re-opened drafts (from
+  // Edit-unlock) restore their pre-edit snapshot and re-lock.
+  const cancelDraft = (id) => {
+    if (freshDraftIds.has(id)) {
+      const newPayments = (order.payments || []).filter(p => p.id !== id)
+      update({ payments: newPayments })
+      setEditingId(null)
+      setFreshDraftIds(prev => {
+        const next = new Set(prev); next.delete(id); return next
+      })
+    } else {
+      const snapshot = editSnapshots.get(id)
+      const newPayments = (order.payments || []).map(p =>
+        p.id === id
+          ? (snapshot ? { ...snapshot, locked: true } : { ...p, locked: true })
+          : p
+      )
+      update({ payments: newPayments, ...statusPatchFor(newPayments) })
+      setEditingId(null)
+      setEditSnapshots(prev => {
+        const next = new Map(prev); next.delete(id); return next
+      })
+    }
+  }
+
+  // Phase 2.1 — Edit on a LOCKED payment requires confirmation; the row stays
+  // collapsed/locked-looking until the user confirms.
+  const handleEditClick = (paymentId) => {
+    setConfirmModal({ type: 'edit', paymentId })
+  }
+  const handleEditConfirm = () => {
+    if (!confirmModal) return
+    const id = confirmModal.paymentId
+    const payment = (order.payments || []).find(p => p.id === id)
+    if (!payment) { setConfirmModal(null); return }
+    // Snapshot the current (locked) state BEFORE unlocking, so Cancel can revert.
+    setEditSnapshots(prev => {
+      const next = new Map(prev); next.set(id, { ...payment }); return next
+    })
+    // Flip to draft and open for edit. Status stays non-reactive in Phase 2.1
+    // (no auto-revert when the locked sum drops — Phase 3 makes it reactive).
+    const newPayments = (order.payments || []).map(p =>
+      p.id === id ? { ...p, locked: false } : p
+    )
+    update({ payments: newPayments })
+    setEditingId(id)
+    setConfirmModal(null)
+  }
+
+  // Phase 2.1 — Remove on a LOCKED payment requires confirmation. Hard-delete
+  // in Phase 2.1 (Phase 4 → soft-delete with reason).
+  const handleRemoveClick = (paymentId) => {
+    setConfirmModal({ type: 'remove', paymentId })
+  }
+  const handleRemoveConfirm = () => {
+    if (!confirmModal) return
+    const id = confirmModal.paymentId
     const newPayments = (order.payments || []).filter(p => p.id !== id)
-    // No auto-revert of status on delete in Phase 2 (locked decision T6).
+    // No auto-revert of status on delete in Phase 2.1 (locked decision T6).
     update({ payments: newPayments })
     if (editingId === id) setEditingId(null)
+    setConfirmModal(null)
   }
 
   return (
@@ -9517,7 +9637,8 @@ function PaymentTrackingSection({ order, update }) {
         <div className="sm-payment-list">
           {visiblePayments.map(payment => (
             editingId === payment.id ? (
-              <div key={payment.id} className="sm-payment-row sm-payment-row-editing">
+              <div key={payment.id} className={`sm-payment-row sm-payment-row-editing ${!payment.locked ? 'sm-payment-row-draft' : ''}`}>
+                <div className="sm-payment-draft-pill">DRAFT</div>
                 <div className="sm-grid-2">
                   <Field label="Amount">
                     <TextInput
@@ -9555,7 +9676,12 @@ function PaymentTrackingSection({ order, update }) {
                   </Field>
                 </div>
                 <div className="sm-payment-row-actions">
-                  <button type="button" className="sm-link-btn" onClick={() => setEditingId(null)}>Done</button>
+                  <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => cancelDraft(payment.id)}>
+                    {freshDraftIds.has(payment.id) ? 'Cancel' : 'Cancel edit'}
+                  </button>
+                  <button type="button" className="sm-submit-btn" onClick={() => submitPayment(payment.id)}>
+                    Submit payment
+                  </button>
                 </div>
               </div>
             ) : (
@@ -9567,15 +9693,22 @@ function PaymentTrackingSection({ order, update }) {
                   <span>· {formatPaymentDate(payment.receivedAt)}</span>
                 </div>
                 <div className="sm-payment-row-actions">
-                  <button type="button" className="sm-link-btn" onClick={() => setEditingId(payment.id)}>Edit</button>
-                  <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => deletePayment(payment.id)}>Remove</button>
+                  <button type="button" className="sm-link-btn" onClick={() => handleEditClick(payment.id)}>Edit</button>
+                  <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => handleRemoveClick(payment.id)}>Remove</button>
                 </div>
-                <ReceiptActions order={order} payment={payment} />
+                {payment.locked && <ReceiptActions order={order} payment={payment} />}
               </div>
             )
           ))}
         </div>
       )}
+
+      <PaymentConfirmModal
+        open={confirmModal !== null}
+        type={confirmModal?.type}
+        onConfirm={confirmModal?.type === 'edit' ? handleEditConfirm : handleRemoveConfirm}
+        onCancel={() => setConfirmModal(null)}
+      />
     </Section>
   )
 }
@@ -13583,6 +13716,43 @@ const styles = `
   background: var(--sm-cream-mid);
   border: 1px dashed var(--sm-border);
   border-radius: 6px;
+}
+
+/* ---- SPRINT M2 Phase 2.1 — draft payment treatment + submit button ----- */
+.sm-payment-row-draft {
+  border: 1px dashed var(--sm-gold);
+  background: rgba(140, 109, 63, 0.05);  /* soft bronze tint — --sm-gold at low alpha */
+}
+.sm-payment-draft-pill {
+  display: inline-block;
+  background: var(--sm-gold);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+.sm-submit-btn {
+  background: var(--sm-navy);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sm-submit-btn:hover {
+  background: var(--sm-gold);
+}
+.sm-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ---- SPRINT 3i — Cancel order ---------------------------------------- */
