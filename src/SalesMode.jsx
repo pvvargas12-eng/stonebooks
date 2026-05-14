@@ -7360,7 +7360,9 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   }
   y += 6
 
-  // ============================ SIGNATURE / NOTES =======================
+  // ============================ CLOSING NOTE ============================
+  // Sprint M2 Phase 2.1 — the customer/rep signature acknowledgment block was
+  // removed from the receipt. The closing note below is kept.
   ensure(20)
   doc.setDrawColor(...LIGHT_RULE); doc.line(M, y, W - M, y); y += 6
   doc.setFont('helvetica', 'normal')
@@ -7371,17 +7373,6 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     : `Thank you for your payment. Balance of ${fmtUSD(balanceRemaining)} is due ${order.targetCompletionDate ? `by ${fmtDate(order.targetCompletionDate)}` : 'at delivery / installation'}.`
   const wrapped = doc.splitTextToSize(note, W - M - M)
   doc.text(wrapped, M, y); y += 4 * wrapped.length + 8
-
-  // Customer acknowledgment line
-  ensure(20)
-  const colW = (W - M - M - 8) / 2
-  doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
-  doc.line(M, y + 12, M + colW, y + 12)
-  doc.setFontSize(8); doc.setTextColor(...GREY)
-  doc.text('Customer acknowledgment', M, y + 16)
-  doc.line(M + colW + 8, y + 12, W - M, y + 12)
-  doc.text(`Received by — ${order.salesRep || 'Shevchenko Monuments'}`, M + colW + 8, y + 16)
-  y += 22
 
   // Footer
   const yF = H - 10

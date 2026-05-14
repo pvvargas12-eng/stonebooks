@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P3`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -266,6 +266,19 @@ Three commits (`55b6748`, `c8bf0bc`, + the CLAUDE.md commit). **Authority revers
 - **`ReceiptActions`** takes `order` + `payment` (was `order` + `paymentType`); renders one toolbar per payment row.
 - **Known limitation:** `CustomersTab.jsx` does not yet fetch the `payments` column (its explicit `.select()` list excludes it), so for orders with 3+ payments it shows only the first two in its totals until Phase 3 adds `'payments'` to that select. Every other consumer routes through `select('*')` or the patched `stonebooksData.js` helpers and is accurate.
 - **Legacy-`id`'d synthesized entries** (`legacy-deposit-*`/`legacy-balance-*`) are preserved across edits — not re-`id`'d.
+
+### M2 Phase 2.1 — SHIPPED — submit/lock model + receipt signature removal
+
+Three commits (`bd818cb`, `c840b87`, + the CLAUDE.md commit). Adds an explicit **submit step** for payments — auto-save alone was wrong for money records.
+
+- **`locked: boolean` field** on every payment. **Drafts** (`locked: false`) render in the list but don't count toward `collected`/totals and have no receipt; **locked** payments count and get a receipt. New payments start as drafts; **synthesized legacy entries** get `locked: true` (already recorded).
+- **Read-time auto-lock:** `rowToOrder` maps `row.payments` with `locked: p.locked ?? true` — Phase 2-era payments (no `locked` field) normalize to locked, while explicit `locked: false` drafts survive. `stonebooksData` helpers also use `?? true` defensively, since they read rows directly via `select('*')` and bypass `rowToOrder`. **No DB migration** — read-time normalization + the defensive `?? true` cover every path.
+- **`orderToRow` mirror filters to locked:** the legacy `deposit_*`/`balance_*` columns derive from `payments.filter(p => p.locked && !p.voided)` — drafts persist in the `payments[]` JSONB but never reach the legacy columns until submitted.
+- **`PaymentTrackingSection`:** `collected` filters to `locked` payments (`visiblePayments` stays `!voided` only — drafts must render). New `submitPayment` flips `locked` false→true (the explicit commit). New `cancelDraft` — **fresh drafts** (from "Add payment", tracked in `freshDraftIds` Set) are deleted on Cancel; **re-opened drafts** (from Edit-unlock) restore a pre-edit snapshot (`editSnapshots` Map) and re-lock. Both `freshDraftIds` and `editSnapshots` are local component state, not persisted.
+- **Confirmation modals:** Edit and Remove on a *locked* payment both open a parameterized **`PaymentConfirmModal`** (reuses the `.sm-unlock-modal*` CSS from Sprint 3v). Edit → confirm → snapshots the payment, flips it to draft, opens the editor. Remove → confirm → hard-delete (Phase 4 → soft-delete with reason). The row stays collapsed/locked-looking until the user confirms.
+- **`statusPatchFor`** filter changed to `!p.voided && (p.locked ?? true)`; called from `addPayment`, `updatePayment`, and the new `submitPayment`. Still one-directional — no auto-revert when the locked sum drops (Phase 3 makes status fully reactive).
+- **Draft visual:** `.sm-payment-row-draft` — gold-dashed border + soft bronze tint + a "DRAFT" pill. `.sm-submit-btn` — navy, gold on hover. `ReceiptActions` gated by `payment.locked`.
+- **Receipt PDF signature block removed:** `generateReceiptPDF` no longer renders the customer/rep acknowledgment underlines or the "Received by" stamp. The closing note (thank-you / balance-due message) is kept; the section comment is relabeled `CLOSING NOTE`.
 
 ## Deferred / known issues
 
