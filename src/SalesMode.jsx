@@ -7347,7 +7347,7 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   y += 7
 
   // Payment details table
-  const methodLabels = { check: 'Check', cash: 'Cash', card: 'Credit / Debit Card', other: 'Other' }
+  const methodLabels = { check: 'Check', cash: 'Cash', card: 'Credit / Debit Card', zelle: 'Zelle', other: 'Other' }
   const rows = [
     ['Amount paid', fmtUSD(paymentAmount)],
     ['Method', methodLabels[paymentMethod] || paymentMethod || '—'],
@@ -7397,6 +7397,35 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     y += big ? 7 : 5
   }
   y += 6
+
+  // ============================ PAY BY ZELLE ============================
+  // Sprint M2 Phase 4 — Zelle pay-by instructions. Renders only when a balance
+  // remains. Reads naturally between "what's left" and the thank-you note.
+  if (!isFullyPaid) {
+    ensure(18)
+
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(11)
+    doc.setTextColor(...NAVY)
+    doc.text('PAY THE BALANCE BY ZELLE', M, y)
+    y += 5
+
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+    doc.setTextColor(...TEXT)
+    doc.text('To pay the remaining balance, send via Zelle to:', M, y)
+    y += 5
+
+    doc.setFont('helvetica', 'bold')
+    doc.setTextColor(...GOLD)
+    doc.text('shevcoteam@gmail.com', M, y)
+    y += 5
+
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(...TEXT)
+    doc.text(`Include order #${order.orderNumber || 'DRAFT'} in the memo.`, M, y)
+    y += 7
+  }
 
   // ============================ CLOSING NOTE ============================
   // Sprint M2 Phase 2.1 — the customer/rep signature acknowledgment block was
@@ -9506,7 +9535,7 @@ function PaymentTrackingSection({ order, update }) {
     .reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const remaining = Math.max(0, grandTotal - collected)
 
-  const methodLabel = (m) => ({ cash: 'Cash', check: 'Check', card: 'Card', other: 'Other' }[m] || 'Payment')
+  const methodLabel = (m) => ({ cash: 'Cash', check: 'Check', card: 'Card', zelle: 'Zelle', other: 'Other' }[m] || 'Payment')
   const formatPaymentDate = (iso) => {
     if (!iso) return '—'
     const datePart = String(iso).slice(0, 10)  // handles 'YYYY-MM-DD' and full ISO timestamps
@@ -9726,15 +9755,16 @@ function PaymentTrackingSection({ order, update }) {
                         { value: 'check', label: 'Check' },
                         { value: 'cash',  label: 'Cash' },
                         { value: 'card',  label: 'Credit / debit card' },
+                        { value: 'zelle', label: 'Zelle' },
                         { value: 'other', label: 'Other' },
                       ]}
                     />
                   </Field>
-                  <Field label="Reference (check #, last 4, etc.)">
+                  <Field label={payment.method === 'zelle' ? 'Zelle confirmation #' : 'Reference (check #, last 4, etc.)'}>
                     <TextInput
                       value={payment.ref || ''}
                       onChange={v => updatePayment(payment.id, { ref: v })}
-                      placeholder="check #4421"
+                      placeholder={payment.method === 'zelle' ? 'e.g. 1234567890' : 'check #4421'}
                     />
                   </Field>
                   <Field label="Date received">
