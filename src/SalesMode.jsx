@@ -6647,13 +6647,43 @@ async function generateEstimatePDF(order, opts = {}) {
   // Custom items
   const customItems = order.pricing?.customLineItems || []
 
+  // Sprint 3u — 4-column line items: Description | Color | Qty | Rate.
+  // buildLineItems flattens to {code,label,amount} only, so Color and Qty are
+  // cross-referenced back out of order.addOns here. base-stone/color-premium
+  // take the order's granite color; addon rows take their own bling/vase color.
+  const descX = M                 // 16   — Description left edge, wraps at 72mm
+  const colorX = M + 74           // 90   — Color left edge, wraps at 36mm
+  const qtyRightX = W - M - 28     // 171.9 — Qty, right-aligned
+  const rateRightX = W - M        // 199.9 — Rate, right-aligned
+
+  const addonByCode = {}
+  for (const a of (order.addOns || [])) addonByCode[a.code] = a
+
+  const lineItemColor = (code) => {
+    if (code === 'base-stone' || code === 'color-premium') {
+      return GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || ''
+    }
+    if (code?.startsWith('addon-')) {
+      const a = addonByCode[code.slice(6)]
+      const colorCode = a?.blingColor || a?.vaseColor
+      return colorCode ? (GRANITE_COLORS.find(c => c.code === colorCode)?.label || '') : ''
+    }
+    return ''
+  }
+  const lineItemQty = (code) => {
+    if (code?.startsWith('addon-')) return addonByCode[code.slice(6)]?.qty || 1
+    return 1
+  }
+
   // Header row
   ensure(6)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(8)
   doc.setTextColor(...GREY)
-  doc.text('DESCRIPTION', M, y)
-  doc.text('AMOUNT', W - M, y, { align: 'right' })
+  doc.text('DESCRIPTION', descX, y)
+  doc.text('COLOR', colorX, y)
+  doc.text('QTY', qtyRightX, y, { align: 'right' })
+  doc.text('RATE', rateRightX, y, { align: 'right' })
   y += 1.5
   doc.setDrawColor(...LIGHT_RULE)
   doc.setLineWidth(0.2)
@@ -6664,25 +6694,41 @@ async function generateEstimatePDF(order, opts = {}) {
   doc.setFontSize(9.5)
   doc.setTextColor(...TEXT)
 
+  // Draw one 4-column row. Mutates y via closure.
+  const renderLineRow = (label, amount, code) => {
+    ensure(5)
+    const qty = lineItemQty(code)
+    const colorLabel = lineItemColor(code)
+    // Strip the " x N" suffix buildLineItems bakes into addon labels — the Qty
+    // column now carries that information.
+    const desc = code?.startsWith('addon-') ? label.replace(/ × \d+$/, '') : label
+    const descLines = doc.splitTextToSize(desc, 72)
+    const colorLines = colorLabel ? doc.splitTextToSize(colorLabel, 36) : []
+    doc.text(descLines, descX, y)
+    if (colorLines.length) doc.text(colorLines, colorX, y)
+    doc.text(String(qty), qtyRightX, y, { align: 'right' })
+    if (isContract) {
+      const rateText = qty > 1 ? `${fmtUSD(amount / qty)} each` : fmtUSD(amount)
+      doc.text(rateText, rateRightX, y, { align: 'right' })
+    } else {
+      // Estimates hide per-item rate values so customers can shop around without
+      // exposing per-item pricing to competitors. Final total stays visible.
+      doc.text('—', rateRightX, y, { align: 'right' })
+    }
+    y += 4 * Math.max(descLines.length, colorLines.length, 1) + 0.5
+  }
+
   let subtotalDisc = 0       // discount-eligible (everything except cemetery permit)
   let subtotalPermitPdf = 0  // cemetery permit only (passed through, no discount)
   for (const it of itemsResolved) {
     if (it.amount == null) continue
-    ensure(5)
-    const wrapped = doc.splitTextToSize(it.label, W - M - M - 30)
-    doc.text(wrapped, M, y)
-    doc.text(fmtUSD(it.amount), W - M, y, { align: 'right' })
-    y += 4 * wrapped.length + 0.5
+    renderLineRow(it.label, it.amount, it.code)
     if (it.code === 'addon-permit') subtotalPermitPdf += Number(it.amount) || 0
     else                            subtotalDisc      += Number(it.amount) || 0
   }
   for (const it of customItems) {
     if (!it.label && !it.amount) continue
-    ensure(5)
-    const wrapped = doc.splitTextToSize(it.label || '(custom item)', W - M - M - 30)
-    doc.text(wrapped, M, y)
-    doc.text(fmtUSD(it.amount), W - M, y, { align: 'right' })
-    y += 4 * wrapped.length + 0.5
+    renderLineRow(it.label || '(custom item)', it.amount, it.code)
     subtotalDisc += Number(it.amount) || 0
   }
   const subtotalPdf = subtotalDisc + subtotalPermitPdf
