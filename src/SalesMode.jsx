@@ -1384,6 +1384,10 @@ function makeBlankOrder() {
     balanceMethod: null,
     balanceRef: null,
     balanceReceivedAt: null,
+    // Sprint M2 Phase 1 — multi-payment array. Phase 1: shadow column only —
+    // the UI still reads/writes the legacy deposit_*/balance_* fields above;
+    // payments[] is shadow-populated on read via synthesizePaymentsFromLegacy.
+    payments: [],
 
     // Sprint 3i — soft cancel
     cancelledAt: null,
@@ -1797,6 +1801,10 @@ function orderToRow(order) {
     balance_method: order.balanceMethod || null,
     balance_ref: order.balanceRef || null,
     balance_received_at: order.balanceReceivedAt || null,
+    // Sprint M2 Phase 1 — additive shadow column. The legacy deposit_*/balance_*
+    // fields above stay authoritative; the UI still writes them directly.
+    // payments[] is just carried through here until Phase 2 reverses authority.
+    payments: order.payments || [],
     cancelled_at: order.cancelledAt || null,
     cancel_reason: order.cancelReason || null,
     cancel_notes: order.cancelNotes || null,
@@ -1806,6 +1814,57 @@ function orderToRow(order) {
     deceased: order.deceased || [],
     staff_notes: order.staffNotes || [],
   }
+}
+
+// Sprint M2 Phase 1 — synthesize a payments[] array from the legacy
+// deposit_*/balance_* columns. Used as the read-fallback in rowToOrder when
+// the new payments column is empty (i.e. every order that pre-dates the
+// payments[] migration). Keyed off amount != null to match the UI's gating
+// (PaymentTrackingSection shows a slot only when its amount is set). Null
+// ref/receivedAt are preserved, not fabricated. Method defaults to 'check'
+// defensively for legacy rows that somehow lack one.
+function synthesizePaymentsFromLegacy(row) {
+  const synthesized = []
+
+  // Deposit entry — only synthesize if the amount is set.
+  if (row.deposit_amount != null) {
+    synthesized.push({
+      id: `legacy-deposit-${row.id}`,
+      amount: row.deposit_amount,
+      method: row.deposit_method || 'check',
+      ref: row.deposit_ref || null,
+      receivedAt: row.deposit_received_at || null,
+      createdAt: row.created_at || new Date(0).toISOString(),  // best-effort — order creation time
+      createdBy: null,  // unknown for legacy data
+      note: null,
+      voided: false,
+      voidedReason: null,
+      voidedAt: null,
+      voidedBy: null,
+    })
+  }
+
+  // Balance entry — synthesize if the balance amount is set, regardless of
+  // whether the deposit is set (handles the clearDeposit-then-balance-only
+  // edge case).
+  if (row.balance_amount != null) {
+    synthesized.push({
+      id: `legacy-balance-${row.id}`,
+      amount: row.balance_amount,
+      method: row.balance_method || 'check',
+      ref: row.balance_ref || null,
+      receivedAt: row.balance_received_at || null,
+      createdAt: row.created_at || new Date(0).toISOString(),
+      createdBy: null,
+      note: null,
+      voided: false,
+      voidedReason: null,
+      voidedAt: null,
+      voidedBy: null,
+    })
+  }
+
+  return synthesized
 }
 
 function rowToOrder(row, customerRow, cemeteryRow) {
@@ -1908,6 +1967,13 @@ function rowToOrder(row, customerRow, cemeteryRow) {
     balanceMethod: row.balance_method || null,
     balanceRef: row.balance_ref || null,
     balanceReceivedAt: row.balance_received_at || null,
+    // Sprint M2 Phase 1 — read-fallback (matches the designs[] pattern): use
+    // the payments column when populated, otherwise synthesize from the legacy
+    // deposit_*/balance_* columns. The UI keeps reading the legacy fields above
+    // in Phase 1; payments[] is a shadow until Phase 2.
+    payments: Array.isArray(row.payments) && row.payments.length > 0
+      ? row.payments
+      : synthesizePaymentsFromLegacy(row),
     cancelledAt: row.cancelled_at || null,
     cancelReason: row.cancel_reason || null,
     cancelNotes: row.cancel_notes || '',

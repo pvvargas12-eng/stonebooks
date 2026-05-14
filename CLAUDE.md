@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → S2`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -234,6 +234,25 @@ New field `order.targetCompletionEndDate` / column `target_completion_end_date` 
 The contract PDF DUE DATE block detects `isMausoleum && both range dates set` → renders `"Month D, YYYY – Month D, YYYY"` in the Estimated Due Date line. For the range case it also **suppresses** the "Calculated from today" unsigned-preview note (the range is staff-entered, not calculated) and **rewords** the delivery disclaimer from "on the due date" to "within the due-date window". Non-range / non-mausoleum contracts are unchanged.
 
 **Propagation scope:** only the contract PDF renders the range. CalendarTab, CustomersTab, the dashboard, and the receipt PDF all keep reading `targetCompletionDate` (the start date) as a single date — no changes, no breakage. Extending those surfaces to show the range is left for a future sprint.
+
+## Sprint M2 — Payment refactor (4 phases)
+
+**Path B: full multi-payment refactor + Zelle + soft-delete.** Phased to keep each step shippable and reversible.
+- **Phase 1 — data layer (SHIPPED).** See below.
+- **Phase 2 — `PaymentTrackingSection` UI rewrite to be array-driven.** Authority reverses: the UI writes `payments[]` directly, and `toOrderRow` mirrors `payments[]` → legacy `deposit_*`/`balance_*` columns.
+- **Phase 3 — consumers** (`stonebooksData.js`, `CustomersTab`, `OrdersTab`, receipt PDF) updated to read from `payments[]`. Receipt labels: first = "Deposit Receipt", final (balance to zero) = "Final Payment Receipt — Paid in Full", middle = "Partial Payment Receipt #N".
+- **Phase 4 — Zelle method + soft-delete with reason + Zelle receipt instructions.**
+
+### M2 Phase 1 — SHIPPED — data layer only
+
+**Migration required** — `supabase/payments_array_migration.sql` adds `payments jsonb NOT NULL DEFAULT '[]'::jsonb` on `orders`; **must be run manually in Supabase Studio** (no server-side backfill — read-fallback handles legacy data).
+
+- **New field/column:** `order.payments` / `orders.payments` (JSONB array).
+- **Payment record shape:** `{ id, amount, method, ref, receivedAt, createdAt, createdBy, note, voided, voidedReason, voidedAt, voidedBy }`.
+- **Read-fallback:** `synthesizePaymentsFromLegacy(row)` builds `payments[]` from the legacy `deposit_*`/`balance_*` columns when the `payments` column is empty. Keyed off `amount != null` (matches UI gating). Handles the balance-only edge case (synthesizes a balance entry even when deposit is absent). Null `ref`/`receivedAt` are preserved, not fabricated; `method` defaults to `'check'` defensively. Synthetic IDs: `legacy-deposit-${order.id}` / `legacy-balance-${order.id}` — stable across reads.
+- **`rowToOrder` read-fallback** mirrors the `designs[]` pattern: use `row.payments` when populated, else synthesize.
+- **`orderToRow`** writes `payments` additively — the legacy `deposit_*`/`balance_*` writes are **unchanged and still authoritative** in Phase 1.
+- **Phase 1 invariant:** the UI (`PaymentTrackingSection`, `recordDeposit`/`recordBalance`/`clear*`, receipt PDF, dashboard/customer rollups) is **completely untouched** — it still reads/writes the legacy two-slot fields. `payments[]` is a read-shadow only; the UI never writes it in Phase 1. Phase 2 reverses authority. **Any visible UI change from Phase 1 would be a bug.**
 
 ## Deferred / known issues
 
