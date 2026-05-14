@@ -1371,6 +1371,7 @@ function makeBlankOrder() {
     rushOrder: false,
     rushFeesPerService: {},
     targetCompletionDate: null,
+    targetCompletionEndDate: null,  // Sprint S1 — mausoleum range "latest" date; null for non-mausoleum
     cemeteryDeadline: null,
     timelineNotes: '',
 
@@ -1785,6 +1786,7 @@ function orderToRow(order) {
     rush_order: order.rushOrder || false,
     rush_fees_per_service: order.rushFeesPerService || {},
     target_completion_date: order.targetCompletionDate || null,
+    target_completion_end_date: order.targetCompletionEndDate || null,
     cemetery_deadline: order.cemeteryDeadline || null,
     timeline_notes: order.timelineNotes || null,
     deposit_amount: order.depositAmount ?? null,
@@ -1895,6 +1897,7 @@ function rowToOrder(row, customerRow, cemeteryRow) {
     rushOrder: row.rush_order || false,
     rushFeesPerService: row.rush_fees_per_service || {},
     targetCompletionDate: row.target_completion_date || null,
+    targetCompletionEndDate: row.target_completion_end_date || null,
     cemeteryDeadline: row.cemetery_deadline || null,
     timelineNotes: row.timeline_notes || '',
     depositAmount: row.deposit_amount ?? null,
@@ -7301,7 +7304,8 @@ function ProductionTimelineSection({ order, update, isLocked }) {
   // step 10: only when it isn't set yet, the order isn't locked, and the
   // service mix has a defined timeline (not TBD). The null check makes this
   // fire at most once per order — once the date is written, the effect re-runs
-  // but returns early.
+  // but returns early. Mausoleum orders self-exclude here (calculateDueDateRaw
+  // returns isTBD for them) — they're handled by the S1 range effect below.
   useEffect(() => {
     if (isLocked) return
     if (order.targetCompletionDate) return
@@ -7309,6 +7313,42 @@ function ProductionTimelineSection({ order, update, isLocked }) {
     if (isTBD || !isoDate) return
     update({ targetCompletionDate: isoDate })
   }, [order.targetCompletionDate, isLocked])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sprint S1 — mausoleum orders use a 6–8 month completion *range* instead of
+  // a single date. targetCompletionDate is the earliest, targetCompletionEndDate
+  // the latest.
+  const isMausoleum = (order.serviceTypes || []).includes('MAUSOLEUM')
+
+  // YYYY-MM-DD that's `months` after `anchor`, built from local date components
+  // (no UTC drift) — same formatting approach as calculateDueDateRaw.
+  const isoFromAnchorMonths = (anchor, months) => {
+    const d = new Date(anchor)
+    d.setMonth(d.getMonth() + months)
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+
+  // The mausoleum range anchored on signedAt (or today if unsigned): 6 months
+  // out for the earliest, 8 for the latest. Used by both the auto-populate
+  // effect and the recalc button.
+  const mausoleumRange = () => {
+    const anchor = order.signedAt ? new Date(order.signedAt) : new Date()
+    return {
+      earliest: isoFromAnchorMonths(anchor, 6),
+      latest: isoFromAnchorMonths(anchor, 8),
+    }
+  }
+
+  // Sprint S1 — auto-populate the mausoleum range on first visit. Fires only
+  // for mausoleum orders when BOTH range dates are empty and the order isn't
+  // locked. The dual null-check means clearing ONE date won't re-fire it;
+  // clearing BOTH re-fires — intentional "reset to auto" path.
+  useEffect(() => {
+    if (!isMausoleum || isLocked) return
+    if (order.targetCompletionDate || order.targetCompletionEndDate) return
+    const { earliest, latest } = mausoleumRange()
+    update({ targetCompletionDate: earliest, targetCompletionEndDate: latest })
+  }, [order.targetCompletionDate, order.targetCompletionEndDate, isLocked, isMausoleum])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Section title="Production timeline" eyebrow="Standard timeframes & rush option">
@@ -7351,9 +7391,12 @@ function ProductionTimelineSection({ order, update, isLocked }) {
       {/* Sprint 3x — Cemetery deadline input removed from the UI. The
           order.cemeteryDeadline field, its row mappings, and the DB column are
           preserved; legacy data stays intact and other surfaces still read it. */}
-      <div style={{ marginTop: 14 }}>
-        <Field label="Target completion date" hint="Promised by — what to plan production around">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {isMausoleum ? (
+        // Sprint S1 — mausoleum orders get a 6–8 month completion *range*
+        // (earliest + latest) instead of a single date. The recalc button sits
+        // on the "latest" field and resets BOTH dates to the auto range.
+        <div className="sm-grid-2" style={{ marginTop: 14 }}>
+          <Field label="Target completion — earliest" hint="Start of the mausoleum completion window">
             <input
               type="date"
               className="sm-textinput"
@@ -7361,21 +7404,56 @@ function ProductionTimelineSection({ order, update, isLocked }) {
               onChange={e => setDate('targetCompletionDate', e.target.value)}
               disabled={isLocked}
             />
-            {!dueRaw.isTBD && (
+          </Field>
+          <Field label="Target completion — latest" hint="End of the window — what the contract promises by">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="date"
+                className="sm-textinput"
+                value={order.targetCompletionEndDate || ''}
+                onChange={e => setDate('targetCompletionEndDate', e.target.value)}
+                disabled={isLocked}
+              />
               <button
                 type="button"
                 className="sm-pricing-reset"
-                title="Recalculate from rules"
+                title="Recalculate range from rules (6–8 months)"
                 onClick={() => {
-                  const { isoDate, isTBD } = calculateDueDateRaw(order)
-                  update({ targetCompletionDate: isTBD ? null : isoDate })
+                  const { earliest, latest } = mausoleumRange()
+                  update({ targetCompletionDate: earliest, targetCompletionEndDate: latest })
                 }}
                 disabled={isLocked}
               >↻</button>
-            )}
-          </div>
-        </Field>
-      </div>
+            </div>
+          </Field>
+        </div>
+      ) : (
+        <div style={{ marginTop: 14 }}>
+          <Field label="Target completion date" hint="Promised by — what to plan production around">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="date"
+                className="sm-textinput"
+                value={order.targetCompletionDate || ''}
+                onChange={e => setDate('targetCompletionDate', e.target.value)}
+                disabled={isLocked}
+              />
+              {!dueRaw.isTBD && (
+                <button
+                  type="button"
+                  className="sm-pricing-reset"
+                  title="Recalculate from rules"
+                  onClick={() => {
+                    const { isoDate, isTBD } = calculateDueDateRaw(order)
+                    update({ targetCompletionDate: isTBD ? null : isoDate })
+                  }}
+                  disabled={isLocked}
+                >↻</button>
+              )}
+            </div>
+          </Field>
+        </div>
+      )}
 
       <Field label="Timeline notes (optional)" wide>
         <TextInput
