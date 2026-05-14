@@ -6838,24 +6838,66 @@ async function generateEstimatePDF(order, opts = {}) {
   // we keep it internal and don't emit it.
 
   // ============================ SIGN-OFF =================================
-  ensure(40)
+  // Sprint 3u Part C — contracts carry the full legal terms (5 paragraphs);
+  // estimates keep the short "valid 30 days" notice. The whole sign-off block
+  // (divider + terms + signature pair) is reserved together so the legal text
+  // never splits mid-sentence and the signatures never orphan onto a page of
+  // their own. (Part D converts this reservation to the shared ensureBlock.)
+  const LEGAL_FS = 8        // pt — legal terms font size
+  const LEGAL_LH = 3.5      // mm per line at 8pt
+  const PARA_GAP = 3.5      // mm between paragraphs
+  const SIGN_PAIR_H = 38    // mm — signature pair footprint
+
+  const legalParagraphs = [
+    'Client agrees to pay Shevchenko Monuments LLC a deposit equal to fifty percent (50%) of the total contract price. This deposit is non-refundable. The remaining balance is due in full prior to the commencement of any carving work. Carving work is defined as any operation that physically alters the granite, including sandblasting, hand-carving, laser etching, or shape carving. Materials for the memorial may be ordered prior to balance payment; in such cases, Shevchenko Monuments bears the material cost at the Client\'s risk should the contract be subsequently breached.',
+    'Ownership of the described memorial shall remain with Shevchenko Monuments until payment is received in full. If payment is not made in accordance with this agreement — whether at delivery or thereafter — Shevchenko Monuments is authorized to enter the cemetery and remove the memorial without prior notice and without liability for emotional distress, consequential damages, or other claims. Client agrees that legal fees incurred by Shevchenko Monuments in any contested removal shall be the responsibility of the Client. If the memorial is removed for non-payment and Client subsequently requests reinstallation, a reset fee of five hundred dollars ($500) shall apply in addition to any unpaid balance.',
+    'Any changes to the design, materials, or scope of work after this contract is signed require written agreement between Client and Shevchenko Monuments. Such changes may incur additional costs and may reset the production timeline.',
+    'Client has fourteen (14) days from the date of delivery or installation to raise quality concerns in writing. After this fourteen-day window, the work shall be deemed accepted in full.',
+    'This agreement is final and not subject to cancellation. Client grants permission for Shevchenko Monuments to use photographs of the completed memorial for display, portfolio, or advertising purposes.',
+  ]
+
+  // Measure the sign-off body so the whole block can be reserved at once.
+  let legalSplit = null
+  let estimateWrapped = null
+  let signOffBodyH = 0
+  if (isContract) {
+    doc.setFontSize(LEGAL_FS)
+    legalSplit = legalParagraphs.map(p => doc.splitTextToSize(p, W - M - M))
+    signOffBodyH = legalSplit.reduce((sum, lines) => sum + lines.length * LEGAL_LH, 0)
+      + PARA_GAP * (legalSplit.length - 1)
+  } else {
+    doc.setFontSize(9)
+    const acceptText = 'This estimate is valid for 30 days from the date above. ' +
+      'To accept and proceed with production, please sign below. A signed copy will become your contract.'
+    estimateWrapped = doc.splitTextToSize(acceptText, W - M - M)
+    signOffBodyH = 4 * estimateWrapped.length
+  }
+
+  // Reserve divider (6 + 5) + body + trailing gap (6) + signature pair together.
+  ensure(6 + 5 + signOffBodyH + 6 + SIGN_PAIR_H)
+
   y += 6
   doc.setDrawColor(...LIGHT_RULE)
   doc.setLineWidth(0.2)
   doc.line(M, y, W - M, y)
   y += 5
 
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(9)
-  doc.setTextColor(...GREY)
-  const acceptText = isContract
-    ? 'This contract has been signed by the customer and Shevchenko Monuments. ' +
-      'Pricing is locked and production may proceed per the terms above.'
-    : 'This estimate is valid for 30 days from the date above. ' +
-      'To accept and proceed with production, please sign below. A signed copy will become your contract.'
-  const wrapped = doc.splitTextToSize(acceptText, W - M - M)
-  doc.text(wrapped, M, y)
-  y += 4 * wrapped.length + 6
+  if (isContract) {
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(LEGAL_FS)
+    doc.setTextColor(...TEXT)
+    legalParagraphs.forEach((para, i) => {
+      doc.text(para, M, y, { align: 'justify', maxWidth: W - M - M })
+      y += legalSplit[i].length * LEGAL_LH + PARA_GAP
+    })
+    y += 6 - PARA_GAP
+  } else {
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
+    doc.setTextColor(...GREY)
+    doc.text(estimateWrapped, M, y)
+    y += 4 * estimateWrapped.length + 6
+  }
 
   // Two signature blocks side by side. In contract mode, embed the actual
   // signature PNGs above each line; in estimate mode, leave them blank.
