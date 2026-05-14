@@ -6174,9 +6174,12 @@ function pdfDeceasedLines(order) {
   return out
 }
 
-// Sprint 3u — contract due-date calculation. The lead time is keyed off the
-// order's service types and, for new stone, the granite color.
-function calculateDueDate(order, anchorDate) {
+// Sprint 3w — raw due-date calculation. Same per-service-type math as the
+// Sprint 3u rules; returns a plain ISO date (YYYY-MM-DD, suitable for an
+// <input type="date">) plus an isTBD flag for mausoleum / no-timeline orders.
+// calculateDueDate wraps this and formats the result for display — single
+// source of truth for the math.
+function calculateDueDateRaw(order, anchorDate) {
   const anchor = anchorDate
     ? new Date(anchorDate)
     : (order.signedAt ? new Date(order.signedAt) : new Date())
@@ -6185,7 +6188,7 @@ function calculateDueDate(order, anchorDate) {
 
   // Mausoleum has no fixed lead time — always defer to the office.
   if (serviceTypes.includes('MAUSOLEUM')) {
-    return { dateText: 'TBD — contact office', months: null }
+    return { isoDate: null, isTBD: true }
   }
 
   // Per-service lead time. null = no defined timeline for that service.
@@ -6206,7 +6209,7 @@ function calculateDueDate(order, anchorDate) {
   }).filter(Boolean)
 
   if (offsets.length === 0) {
-    return { dateText: 'TBD — contact office', months: null }
+    return { isoDate: null, isTBD: true }
   }
 
   // Mixed orders take the longest lead time. Compare in days
@@ -6221,8 +6224,26 @@ function calculateDueDate(order, anchorDate) {
   if (longest.unit === 'months') due.setMonth(due.getMonth() + longest.value)
   else                          due.setDate(due.getDate() + longest.value * 7)
 
-  const dateText = due.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-  return { dateText, months: longest }
+  // Build YYYY-MM-DD from LOCAL components — toISOString() would shift the day
+  // in negative-UTC timezones.
+  const pad = (n) => String(n).padStart(2, '0')
+  const isoDate = `${due.getFullYear()}-${pad(due.getMonth() + 1)}-${pad(due.getDate())}`
+  return { isoDate, isTBD: false }
+}
+
+// Sprint 3u — contract due-date calculation. Wraps calculateDueDateRaw (the
+// single source of truth for the math) and formats the result for display.
+// Return shape { dateText, months } is preserved for the contract PDF call
+// site; `months` is no longer populated (it was never read downstream).
+function calculateDueDate(order, anchorDate) {
+  const { isoDate, isTBD } = calculateDueDateRaw(order, anchorDate)
+  if (isTBD || !isoDate) {
+    return { dateText: 'TBD — contact office', months: null }
+  }
+  // 'T00:00:00' forces local-midnight parsing so the date doesn't shift a day.
+  const d = new Date(isoDate + 'T00:00:00')
+  const dateText = d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  return { dateText, months: null }
 }
 
 // Sprint 3u Part D — shared page-break helper for the PDF generators. If
@@ -7258,6 +7279,23 @@ function ProductionTimelineSection({ order, update, isLocked }) {
   const setDate = (key, value) => update({ [key]: value || null })
   const setRush = (on) => { if (!isLocked) update({ rushOrder: on }) }
 
+  // Sprint 3w — for the recalc button: hidden for TBD service mixes (mausoleum
+  // / no defined timeline) since clicking would only clear the field.
+  const dueRaw = calculateDueDateRaw(order)
+
+  // Sprint 3w — auto-populate the target completion date on first visit to
+  // step 10: only when it isn't set yet, the order isn't locked, and the
+  // service mix has a defined timeline (not TBD). The null check makes this
+  // fire at most once per order — once the date is written, the effect re-runs
+  // but returns early.
+  useEffect(() => {
+    if (isLocked) return
+    if (order.targetCompletionDate) return
+    const { isoDate, isTBD } = calculateDueDateRaw(order)
+    if (isTBD || !isoDate) return
+    update({ targetCompletionDate: isoDate })
+  }, [order.targetCompletionDate, isLocked])  // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <Section title="Production timeline" eyebrow="Standard timeframes & rush option">
       {timelines.length > 0 ? (
@@ -7298,13 +7336,27 @@ function ProductionTimelineSection({ order, update, isLocked }) {
 
       <div className="sm-grid-2" style={{ marginTop: 14 }}>
         <Field label="Target completion date" hint="Promised by — what to plan production around">
-          <input
-            type="date"
-            className="sm-textinput"
-            value={order.targetCompletionDate || ''}
-            onChange={e => setDate('targetCompletionDate', e.target.value)}
-            disabled={isLocked}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="date"
+              className="sm-textinput"
+              value={order.targetCompletionDate || ''}
+              onChange={e => setDate('targetCompletionDate', e.target.value)}
+              disabled={isLocked}
+            />
+            {!dueRaw.isTBD && (
+              <button
+                type="button"
+                className="sm-pricing-reset"
+                title="Recalculate from rules"
+                onClick={() => {
+                  const { isoDate, isTBD } = calculateDueDateRaw(order)
+                  update({ targetCompletionDate: isTBD ? null : isoDate })
+                }}
+                disabled={isLocked}
+              >↻</button>
+            )}
+          </div>
         </Field>
         <Field label="Cemetery deadline" hint="Permit window expires, install must be by, etc.">
           <input
