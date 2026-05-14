@@ -9804,6 +9804,30 @@ function CustomerSignatureBox({ value, onChange, locked }) {
   )
 }
 
+// Sprint 3v Part C — confirmation modal for unlocking a signed contract.
+// Unlock is destructive (voids the customer's signature), so unlike the
+// pre-conversion Clear button it requires explicit confirmation.
+function UnlockConfirmModal({ open, onConfirm, onCancel }) {
+  if (!open) return null
+  return (
+    <div className="sm-pdf-preview-overlay" onClick={onCancel}>
+      <div className="sm-unlock-modal" onClick={e => e.stopPropagation()}>
+        <h2 className="sm-unlock-modal-title">Unlock this signed contract?</h2>
+        <p className="sm-unlock-modal-body">
+          This will void the customer's signature and require a new signature
+          when ready. This action cannot be undone.
+        </p>
+        <div className="sm-unlock-modal-actions">
+          <button type="button" className="sm-link-btn" onClick={onCancel}>Cancel</button>
+          <button type="button" className="sm-unlock-modal-confirm" onClick={onConfirm}>
+            Yes, Unlock
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // New wizard step — captures signatures and converts Estimate → Contract.
 // Shows lock-banner if order is already in CONTRACT state.
 function SignStep({ order, update }) {
@@ -9811,6 +9835,7 @@ function SignStep({ order, update }) {
   const [err, setErr] = useState(null)
   const [previewUrl, setPreviewUrl] = useState(null)
   const [previewErr, setPreviewErr] = useState(null)
+  const [unlockModalOpen, setUnlockModalOpen] = useState(false)
 
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
   const customerSig = order.customerSignature || order.customerSignatureUrl
@@ -9909,6 +9934,27 @@ function SignStep({ order, update }) {
     }
   }
 
+  // Sprint 3v Part C — unlock a signed contract back to draft. Voids both
+  // signatures and stamps the order notes for audit. Only camelCase fields are
+  // nulled — the in-memory order is camelCase; toOrderRow maps to snake_case
+  // columns on save.
+  // Storage files preserved on unlock — only DB references nulled. Audit recovery possible if needed.
+  const handleUnlock = () => {
+    update({
+      customerSignature: null,
+      repSignature: null,
+      customerSignatureUrl: null,
+      customerSignaturePath: null,
+      repSignatureUrl: null,
+      repSignaturePath: null,
+      signedAt: null,
+      pricingLockedAt: null,
+      status: 'draft',
+      notes: (order.notes || '') + (order.notes ? '\n\n' : '') + `[CONTRACT UNLOCKED by ${order.salesRep || 'staff'} on ${new Date().toLocaleString()}: prior signature voided.]`,
+    })
+    setUnlockModalOpen(false)
+  }
+
   return (
     <div className="sm-step">
       <div className="sm-step-head">
@@ -9992,6 +10038,28 @@ function SignStep({ order, update }) {
           <PdfDownloadButton order={order} label="Download Contract PDF" />
         </Section>
       )}
+
+      {isLocked && (
+        <Section title="Unlock & Edit" eyebrow="Staff only — need to make changes?">
+          <button
+            type="button"
+            className="sm-unlock-btn"
+            onClick={() => setUnlockModalOpen(true)}
+          >
+            🔓 Unlock &amp; Edit
+          </button>
+          <div className="sm-helper" style={{ marginTop: 10 }}>
+            Unlocking voids the customer's signature and returns this order to
+            draft so changes can be made. The contract must be re-signed afterward.
+          </div>
+        </Section>
+      )}
+
+      <UnlockConfirmModal
+        open={unlockModalOpen}
+        onConfirm={handleUnlock}
+        onCancel={() => setUnlockModalOpen(false)}
+      />
     </div>
   )
 }
@@ -12035,6 +12103,71 @@ const styles = `
   justify-content: flex-end;
   gap: 12px;
   margin-top: 14px;
+}
+
+/* Sprint 3v Part C — unlock signed contract: serious red button + confirm modal */
+.sm-unlock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: #fff;
+  border: 2px solid #c0392b;
+  border-radius: 6px;
+  color: #c0392b;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.sm-unlock-btn:hover {
+  background: #c0392b;
+  color: #fff;
+}
+.sm-unlock-modal {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 480px;
+  padding: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+.sm-unlock-modal-title {
+  font-family: var(--font-d), serif;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--sm-navy);
+  margin-bottom: 10px;
+}
+.sm-unlock-modal-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-mid, #555);
+  margin-bottom: 20px;
+}
+.sm-unlock-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  align-items: center;
+}
+.sm-unlock-modal-confirm {
+  padding: 9px 20px;
+  background: #c0392b;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sm-unlock-modal-confirm:hover {
+  background: #a93226;
 }
 
 .sm-locked-banner {
