@@ -6443,7 +6443,21 @@ async function generateEstimatePDF(order, opts = {}) {
   // ============================ DUE DATE ================================
   // Sprint 3u — contract only. Estimates skip this block entirely.
   if (isContract) {
-    const due = calculateDueDate(order)
+    // Sprint 3w — prefer the stored targetCompletionDate (set / auto-populated
+    // on step 10). Fall back to calculateDueDate for legacy orders that pre-date
+    // Sprint 3w OR mausoleum / no-timeline orders where staff hasn't set a date.
+    let due
+    if (order.targetCompletionDate) {
+      // 'T00:00:00' forces local-midnight parsing — without it, 'YYYY-MM-DD' is
+      // read as UTC and shifts back a day in negative-UTC timezones.
+      const d = new Date(order.targetCompletionDate + 'T00:00:00')
+      due = {
+        dateText: d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        months: null,
+      }
+    } else {
+      due = calculateDueDate(order)
+    }
     const deliveryDisclaimer = 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
     // Measure the disclaimer at its render font size (9pt) for an accurate line count.
     doc.setFont('helvetica', 'italic')

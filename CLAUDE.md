@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -204,6 +204,20 @@ SignStep gets a "Contract preview" Section between the lock banner and the signa
 "Unlock & Edit" Section in the locked view (below Download PDF), red/serious `.sm-unlock-btn` opening `UnlockConfirmModal` (red "Yes, Unlock" confirm, backdrop-click cancels). `handleUnlock` nulls the camelCase signature/lock fields, sets `status: 'draft'`, and appends an audit stamp to `order.notes`: `[CONTRACT UNLOCKED by ${salesRep} on ${date}: prior signature voided.]`. **Supabase Storage signature files are NOT deleted on unlock — only the DB references are nulled. Audit recovery from storage is possible if needed.** After unlock, `isLocked` drops to false, the preview regenerates signature-less, and both signature surfaces reappear empty for re-signing.
 
 - **Pre-conversion Clear button has no confirmation** (just "oops, redo"). **Post-conversion Unlock has a full confirmation modal.**
+
+## Sprint 3w — SHIPPED
+
+**Target Completion Date wiring.** Two commits. **No migration needed** — the `target_completion_date` column already existed from Sprint 3i (it's read by CalendarTab, CustomersTab, and the dashboard); this sprint only wires it up.
+
+### Part A — `calculateDueDateRaw` + auto-populate + recalc button (`498862e`)
+New helper `calculateDueDateRaw(order, anchorDate)` returns `{ isoDate, isTBD }` — `isoDate` is `YYYY-MM-DD` (built from local date components, no UTC shift), `isTBD` is true for mausoleum / no-defined-timeline service mixes (`isoDate` null then). `calculateDueDate` now **wraps `calculateDueDateRaw`** — single source of truth for the lead-time math. Its `{ dateText, months }` shape is preserved for the contract PDF call site; `months` is no longer populated (it was never read downstream).
+
+`ProductionTimelineSection` auto-populates `order.targetCompletionDate` on first visit to step 10 (Pricing) via a `useEffect` — fires only when the field is empty, the order is unlocked, and the service mix is not TBD. The null check makes it fire at most once per order; the existing 1200ms debounce persists it. A **recalc button** (↻, reuses `.sm-pricing-reset` style) sits next to the existing date input — recomputes from rules on click, disabled when locked, **hidden entirely for TBD service mixes** (clicking would only clear the field).
+
+### Part B — Contract PDF reads the stored value (committed together with this CLAUDE.md update)
+The contract PDF's DUE DATE block now **prefers `order.targetCompletionDate`** — formats the stored `YYYY-MM-DD` as "Month D, YYYY" (with a `T00:00:00` suffix to force local-midnight parsing and avoid a one-day timezone shift). Falls back to `calculateDueDate(order)` for legacy orders that pre-date 3w and for mausoleum / no-timeline orders where staff hasn't set a date manually.
+
+**Behavior change:** the dashboard, calendar, and customer list will start showing target completion dates on orders that previously had blank ones — as staff open those orders to step 10 and the auto-populate fires.
 
 ## Deferred / known issues
 
