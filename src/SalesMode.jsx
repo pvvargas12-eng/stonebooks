@@ -9480,14 +9480,51 @@ function PaymentTrackingSection({ order, update }) {
     return isNaN(d) ? datePart : d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
   }
 
-  // Phase 2 status trigger: simple + one-directional. When the non-voided sum
-  // reaches the grand total, flip to 'paid_in_full'. No auto-revert on delete
-  // or edit-down (locked decision T6 — Phase 3 makes it fully reactive).
+  // Phase 3 — reactive status. Computes the full status patch needed to keep
+  // order.status consistent with the locked payments sum.
+  //   - Locked sum >= grandTotal AND order isn't already paid_in_full → flip to
+  //     paid_in_full and snapshot the prior status into statusBeforePaidInFull
+  //   - Locked sum < grandTotal AND order IS paid_in_full → revert to the
+  //     snapshotted status (or 'contracted' fallback for orders that reached
+  //     paid_in_full via OrderStatusChanger manually, where no snapshot exists),
+  //     and clear statusBeforePaidInFull
+  //   - Status isn't paid_in_full but a stale statusBeforePaidInFull lingers
+  //     (e.g. staff changed status manually) → clear the stale snapshot
+  //   - $0 grandTotal: never auto-flip (a valueless order shouldn't go paid)
+  //   - Closed orders: terminal — never auto-flip
   const statusPatchFor = (payments) => {
-    const sum = payments.filter(p => !p.voided && (p.locked ?? true)).reduce((s, p) => s + (Number(p.amount) || 0), 0)
-    return (sum >= grandTotal && order.status !== 'paid_in_full' && order.status !== 'completed')
-      ? { status: 'paid_in_full' }
-      : {}
+    const lockedSum = payments
+      .filter(p => !p.voided && (p.locked ?? true))
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0)
+
+    const shouldBePaid = grandTotal > 0 && lockedSum >= grandTotal
+    const isPaid = order.status === 'paid_in_full'
+    const isClosed = order.status === 'closed'
+
+    if (isClosed) return {}  // closed orders are terminal; don't auto-flip
+
+    if (shouldBePaid && !isPaid) {
+      return {
+        status: 'paid_in_full',
+        statusBeforePaidInFull: order.status,
+      }
+    }
+
+    if (!shouldBePaid && isPaid) {
+      return {
+        status: order.statusBeforePaidInFull || 'contracted',
+        statusBeforePaidInFull: null,
+      }
+    }
+
+    // Stale snapshot cleanup: status is no longer paid_in_full but a snapshot
+    // is still set (e.g. staff manually changed status via OrderStatusChanger).
+    // Clear it so the next paid_in_full snapshot starts fresh.
+    if (!isPaid && order.statusBeforePaidInFull) {
+      return { statusBeforePaidInFull: null }
+    }
+
+    return {}
   }
 
   const addPayment = () => {
@@ -9544,7 +9581,10 @@ function PaymentTrackingSection({ order, update }) {
   const cancelDraft = (id) => {
     if (freshDraftIds.has(id)) {
       const newPayments = (order.payments || []).filter(p => p.id !== id)
-      update({ payments: newPayments })
+      // Phase 3 — reactivity consistency: deleting a fresh draft doesn't change
+      // the locked sum (drafts don't count), so statusPatchFor is a no-op here
+      // in practice, but routing through it guards against future logic drift.
+      update({ payments: newPayments, ...statusPatchFor(newPayments) })
       setEditingId(null)
       setFreshDraftIds(prev => {
         const next = new Set(prev); next.delete(id); return next
@@ -9578,12 +9618,13 @@ function PaymentTrackingSection({ order, update }) {
     setEditSnapshots(prev => {
       const next = new Map(prev); next.set(id, { ...payment }); return next
     })
-    // Flip to draft and open for edit. Status stays non-reactive in Phase 2.1
-    // (no auto-revert when the locked sum drops — Phase 3 makes it reactive).
+    // Flip to draft and open for edit. Phase 3 — reactive: unlocking drops this
+    // payment out of the locked sum; if that takes the order below grandTotal,
+    // statusPatchFor reverts paid_in_full to the snapshotted status.
     const newPayments = (order.payments || []).map(p =>
       p.id === id ? { ...p, locked: false } : p
     )
-    update({ payments: newPayments })
+    update({ payments: newPayments, ...statusPatchFor(newPayments) })
     setEditingId(id)
     setConfirmModal(null)
   }
@@ -9597,8 +9638,9 @@ function PaymentTrackingSection({ order, update }) {
     if (!confirmModal) return
     const id = confirmModal.paymentId
     const newPayments = (order.payments || []).filter(p => p.id !== id)
-    // No auto-revert of status on delete in Phase 2.1 (locked decision T6).
-    update({ payments: newPayments })
+    // Phase 3 — reactive: removing a locked payment drops the locked sum; if it
+    // falls below grandTotal, statusPatchFor reverts paid_in_full.
+    update({ payments: newPayments, ...statusPatchFor(newPayments) })
     if (editingId === id) setEditingId(null)
     setConfirmModal(null)
   }
