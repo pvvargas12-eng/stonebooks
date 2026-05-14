@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE)`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -290,6 +290,19 @@ Three commits (`ef9a38b`, `2624654`, + the CLAUDE.md commit). **Migration requir
 - **`OrderStatusChanger`** does NOT snapshot on manual `paid_in_full` — accepted; the `'contracted'` revert fallback covers those orders. `statusPatchFor`'s stale-snapshot cleanup handles a manually-changed status leaving a lingering snapshot.
 - **`CustomersTab.jsx`:** `'payments'` added to the `.select()` column list; the per-customer `_totalCollected` rollup (was a raw `deposit_amount + balance_amount` sum) now uses `rowTotalPaid(o)`. Other CustomersTab sites + OrdersTab + dashboard already routed through the patched `stonebooksData.js` helpers and `select('*')` — no other consumer changes needed.
 - **`generateReceiptPDF` receipt labels:** `nonVoidedPayments` filter tightened to require `(p.locked ?? true)` (drafts don't shift numbering or totals). The header label is now derived from the payment's position in the chronological non-voided-locked sequence + whether the order is fully paid *right now*: `DEPOSIT RECEIPT` (first), `PARTIAL PAYMENT RECEIPT #N` (middle, N = index among non-deposit), `FINAL PAYMENT RECEIPT — PAID IN FULL` (last AND total ≥ grandTotal), `DEPOSIT & FINAL PAYMENT — PAID IN FULL` (a lone payment that fully pays). "Final" requires the order to be fully paid *at render time* — a multi-payment order still short of grandTotal has no FINAL. Receipts regenerate on demand and carry no historical state, so the label always reflects the current ledger.
+
+### M2 Phase 4 — SHIPPED — Zelle + soft-delete with reason + Zelle receipt instructions
+
+Four commits (`0c2fc23`, `c33daac`, `56a07d5`, + the CLAUDE.md commit). **No migration** — the `voided`/`voidedReason`/`voidedAt`/`voidedBy` fields have existed on every payment object since Phase 1 (forward-engineered). **M2 multi-payment refactor is now COMPLETE.**
+
+- **Zelle method:** `'zelle'` / label `'Zelle'` added at the 3 method-enum sites (the edit-row `SelectInput` options, `methodLabels` in `generateReceiptPDF`, the `methodLabel` helper in `PaymentTrackingSection`). The Reference field is method-aware — label `'Zelle confirmation #'` / placeholder `'e.g. 1234567890'` when `method === 'zelle'`, else the existing check-oriented copy.
+- **Receipt PDF Zelle block:** renders between RUNNING TOTALS and CLOSING NOTE, gated on `!isFullyPaid` — navy `'PAY THE BALANCE BY ZELLE'` header, gold `shevcoteam@gmail.com` line, body with the `order #` memo instruction. Uses the existing `ensure()` discipline.
+- **Soft-delete (void):** "Remove" on a locked payment is renamed **"Void"** and `handleRemoveConfirm` now `.map()`s the payment to `voided: true` + `voidedReason` (required) + `voidedAt` + `voidedBy` (`order.salesRep`) — *in place*, the payment stays in `payments[]` for audit. Existing `!p.voided` filters everywhere exclude it from totals. Drafts are still hard-Cancelled (they're not money records yet).
+- **`PaymentConfirmModal`** extended for the `'remove'` variant: a required-reason `<textarea>`, `useState`/`useEffect` (reset-on-open) moved above the early return for hooks compliance, confirm button disabled until a reason is entered. Retitled **"Void this payment?"** with audit-aware body copy. `onConfirm(reason?)` — edit ignores the arg, void passes the trimmed reason.
+- **Voided rows render** (they're no longer filtered out): `visiblePayments` is now the full sorted list; a new `activePayments = visiblePayments.filter(!p.voided)` memo powers `collected` and `addPayment`'s default-amount. The row `.map()` is a three-way branch — editing / **voided** / locked-collapsed. The voided row is collapsed-only: a red `VOIDED` pill (`#b3261e`), struck-through amount, an audit line *"Voided by {voidedBy} on {date}: {reason}"*, **no Edit/Void buttons, no `ReceiptActions`**. Styling: `opacity 0.6`, light-red wash, red border.
+- **Empty state** stays gated on `visiblePayments.length === 0` (total, *including* voided) — a voided-only order shows its voided rows, not the empty state.
+- **`generateReceiptPDF` guard:** throws `'Cannot generate a receipt for a voided payment.'` if called with a voided payment — defensive, surfaces through the existing async `catch` in `ReceiptActions`. `ReceiptActions` itself is gated by `payment.locked && !payment.voided`.
+- **`statusPatchFor` unchanged** from Phase 3 — its `lockedSum` already filters `!p.voided`, so voiding a payment naturally drops it from the sum and reverts `paid_in_full` if needed. Void-driven status reactivity is free.
 
 ## Deferred / known issues
 
