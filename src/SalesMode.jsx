@@ -121,6 +121,22 @@ const FAMILY_TYPES = [
   { code: 'bench',      label: 'Bench',      blurb: 'Bench-style memorial.' },
 ]
 
+// Sprint L2 Phase 3 — Layout style options for the inscription Layout section
+const LAYOUT_STYLES = [
+  { code: 'side_by_side',  label: 'Side by side',        blurb: 'Two persons side by side, left and right of the stone.' },
+  { code: 'top_bottom',    label: 'Top and bottom',      blurb: 'Two persons stacked vertically, one above the other.' },
+  { code: 'stacked',       label: 'Stacked',             blurb: 'Names stacked, last name typically displayed once.' },
+  { code: 'centered_last', label: 'Centered last name',  blurb: 'Large last name across top, given names below.' },
+  { code: 'custom',        label: 'Custom layout',       blurb: 'Describe the arrangement freely below.' },
+]
+
+// Sprint L2 Phase 3 — Side arrangement options for 2-person orders
+const SIDE_ARRANGEMENTS = [
+  { code: 'p1_left_p2_right',  label: 'Person 1 left / Person 2 right' },
+  { code: 'p1_top_p2_bottom',  label: 'Person 1 top / Person 2 bottom' },
+  { code: 'unknown',           label: "I don't know yet",                blurb: 'A follow-up reminder will appear on the order summary.' },
+]
+
 // ---- Title prefixes (English first, then Spanish) -------------------------
 const TITLE_PREFIXES = [
   // English
@@ -4168,6 +4184,67 @@ function InscriptionTitleBuilder({ d, idx, onChange }) {
   )
 }
 
+// Sprint L2 Phase 3 — up/down arrow buttons for reordering persons in the
+// Layout section. Reorders order.deceased array directly (adjacent-swap with
+// leapfrog over reserved entries). Resequences position field for DB tidiness.
+// Up disabled on first non-reserved person, down on last.
+function PersonOrderArrows({ order, update, idx }) {
+  // Find the nearest non-reserved index above (lower) and below (higher) idx.
+  const allDeceased = order.deceased || []
+
+  const findPrevNonReservedIdx = (fromIdx) => {
+    for (let i = fromIdx - 1; i >= 0; i--) {
+      if (!allDeceased[i]?.isReserved) return i
+    }
+    return -1
+  }
+
+  const findNextNonReservedIdx = (fromIdx) => {
+    for (let i = fromIdx + 1; i < allDeceased.length; i++) {
+      if (!allDeceased[i]?.isReserved) return i
+    }
+    return -1
+  }
+
+  const prevIdx = findPrevNonReservedIdx(idx)
+  const nextIdx = findNextNonReservedIdx(idx)
+  const canMoveUp = prevIdx !== -1
+  const canMoveDown = nextIdx !== -1
+
+  const swap = (i, j) => {
+    const newDeceased = [...allDeceased]
+    const tmp = newDeceased[i]
+    newDeceased[i] = newDeceased[j]
+    newDeceased[j] = tmp
+    // Resequence position to match new array indices
+    const resequenced = newDeceased.map((d, k) => ({ ...d, position: k }))
+    update({ deceased: resequenced })
+  }
+
+  return (
+    <div className="sm-person-order-arrows">
+      <button
+        type="button"
+        className="sm-chip-btn sm-chip-btn-small"
+        onClick={() => canMoveUp && swap(idx, prevIdx)}
+        disabled={!canMoveUp}
+        title="Move up"
+      >
+        ↑
+      </button>
+      <button
+        type="button"
+        className="sm-chip-btn sm-chip-btn-small"
+        onClick={() => canMoveDown && swap(idx, nextIdx)}
+        disabled={!canMoveDown}
+        title="Move down"
+      >
+        ↓
+      </button>
+    </div>
+  )
+}
+
 function InscriptionStep({ order, update }) {
   const isInscriptionOnly = useMemo(() => {
     const inscrAndAddon = ['INSCRIPTION', 'ACID_WASH', 'REPAIR', 'ADD_PHOTO']
@@ -4176,6 +4253,11 @@ function InscriptionStep({ order, update }) {
   }, [order.serviceTypes])
 
   const updateInsc = (patch) => update({ inscription: { ...order.inscription, ...patch } })
+
+  // Sprint L2 Phase 3 — per-person patch helper for the per-person sections.
+  const updateDeceased = (idx, patch) => update({
+    deceased: (order.deceased || []).map((d, i) => i === idx ? { ...d, ...patch } : d)
+  })
 
   // Photo upload for pre-existing marker
   const [uploading, setUploading] = useState(false)
@@ -4203,9 +4285,96 @@ function InscriptionStep({ order, update }) {
         <p className="sm-step-lede">
           {isInscriptionOnly
             ? 'Inscription on an existing stone — quick job. Confirm the type and what goes on, snap a photo of the existing marker if you have one.'
-            : 'Set the title and inscription details for each person on the stone.'}
+            : 'Set how the inscription is arranged and how each person\'s name and dates appear.'}
         </p>
       </div>
+
+      {/* Sprint L2 Phase 3 §1 — Layout (order-level; hidden for inscription-only flows) */}
+      {!isInscriptionOnly && (
+        <Section title="Layout" eyebrow="Step 8 §1 · how the inscription is arranged on the stone">
+          <Field label="Layout style" wide hint="Pick the overall arrangement">
+            <div className="sm-card-grid sm-card-grid-services">
+              {LAYOUT_STYLES.map(opt => (
+                <CardOption
+                  key={opt.code}
+                  on={(order.inscription?.layoutStyle || 'side_by_side') === opt.code}
+                  onClick={() => updateInsc({ layoutStyle: opt.code })}
+                  title={opt.label}
+                  blurb={opt.blurb}
+                />
+              ))}
+            </div>
+          </Field>
+
+          {(order.inscription?.layoutStyle === 'custom') && (
+            <Field label="Custom layout description" wide>
+              <TextInput
+                value={order.inscription?.layoutCustom || ''}
+                onChange={v => updateInsc({ layoutCustom: v })}
+                placeholder="Describe the desired layout"
+              />
+            </Field>
+          )}
+
+          {/* Side arrangement picker — only for 2-person orders */}
+          {(() => {
+            const nonReservedCount = (order.deceased || []).filter(d => !d.isReserved).length
+            if (nonReservedCount !== 2) return null
+            return (
+              <>
+                <Field label="Side arrangement" wide hint="Which person goes on which side?">
+                  <div className="sm-card-grid sm-card-grid-services">
+                    {SIDE_ARRANGEMENTS.map(opt => (
+                      <CardOption
+                        key={opt.code}
+                        on={(order.inscription?.sideArrangement || 'p1_left_p2_right') === opt.code}
+                        onClick={() => updateInsc({
+                          sideArrangement: opt.code,
+                          sideToConfirm: opt.code === 'unknown',
+                        })}
+                        title={opt.label}
+                        blurb={opt.blurb || ''}
+                      />
+                    ))}
+                  </div>
+                </Field>
+
+                {order.inscription?.sideArrangement === 'unknown' && (
+                  <Field label="Notes about which side (optional)" wide hint="Anything to help confirm later">
+                    <TextInput
+                      value={order.inscription?.sideNote || ''}
+                      onChange={v => updateInsc({ sideNote: v })}
+                      placeholder="e.g. customer to confirm with cemetery"
+                    />
+                  </Field>
+                )}
+              </>
+            )
+          })()}
+
+          {/* Per-person ordering arrows — for 3+ person orders */}
+          {(() => {
+            const nonReservedCount = (order.deceased || []).filter(d => !d.isReserved).length
+            if (nonReservedCount < 3) return null
+            return (
+              <Field label="Person order" wide hint="Arrange persons top-to-bottom or left-to-right using the arrows">
+                <div className="sm-person-order-list">
+                  {(order.deceased || []).map((d, idx) => {
+                    if (d.isReserved) return null
+                    const personName = [d.firstName, d.lastName].filter(Boolean).join(' ') || `Person ${idx + 1}`
+                    return (
+                      <div key={idx} className="sm-person-order-row">
+                        <span className="sm-person-order-label">{personName}</span>
+                        <PersonOrderArrows order={order} update={update} idx={idx} />
+                      </div>
+                    )
+                  })}
+                </div>
+              </Field>
+            )
+          })()}
+        </Section>
+      )}
 
       <Section title="Title / Relationship" eyebrow="Pick a prefix + relations per person — appears on the stone above each name">
         {(order.deceased || []).map((d, idx) => {
@@ -6325,6 +6494,63 @@ function pdfCustomerLine(order) {
   const c = order.customer || {}
   const name = [c.firstName, c.lastName].filter(Boolean).join(' ').trim()
   return name || '(Customer name not yet entered)'
+}
+
+// Sprint L2 Phase 3 — shared per-person date formatter. Reads d.dateFormat
+// and renders the actual dateOfBirth/dateOfDeath in the chosen format.
+// Handles pre-need (still living) by replacing the death side with a marker.
+// Used by: pdfDeceasedLines (PDF), InscriptionTextSummary (Tab 8 summary),
+// and the Date picker preview (Tab 8 §4 — Commit 2).
+//
+// dateFormat values: 'month_day_year' | 'abbreviated' | 'slash' | 'dot'
+//   | 'year_only' | 'custom'
+// dateFormatCustom: free-text override used when dateFormat === 'custom'
+function formatPersonDates(d) {
+  if (!d) return ''
+  const fmt = d.dateFormat || 'year_only'
+
+  // Custom override — just return the free-text value as-is
+  if (fmt === 'custom') return d.dateFormatCustom || ''
+
+  const dob = d.dateOfBirth || ''
+  const dod = d.dateOfDeath || ''
+
+  // Helper — format a single ISO YYYY-MM-DD string per the chosen format
+  const formatOne = (iso) => {
+    if (!iso || typeof iso !== 'string' || iso.length < 4) return ''
+    const yyyy = iso.slice(0, 4)
+    const mm = iso.length >= 7 ? iso.slice(5, 7) : ''
+    const dd = iso.length >= 10 ? iso.slice(8, 10) : ''
+    const m = mm ? String(parseInt(mm, 10)) : ''
+    const day = dd ? String(parseInt(dd, 10)) : ''
+
+    if (fmt === 'year_only') return yyyy
+    if (fmt === 'slash' && m && day) return `${m}/${day}/${yyyy}`
+    if (fmt === 'dot' && m && day) return `${m}.${day}.${yyyy}`
+
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December']
+    const monthAbbrev = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
+
+    const mIdx = m ? parseInt(m, 10) - 1 : -1
+    if (fmt === 'month_day_year' && mIdx >= 0 && mIdx <= 11 && day) {
+      return `${monthNames[mIdx]} ${day}, ${yyyy}`
+    }
+    if (fmt === 'abbreviated' && mIdx >= 0 && mIdx <= 11 && day) {
+      return `${monthAbbrev[mIdx]} ${day}, ${yyyy}`
+    }
+
+    // Fallback when month/day missing or format unrecognized
+    return yyyy
+  }
+
+  const birth = formatOne(dob)
+  const death = formatOne(dod)
+
+  if (d.isPreNeed && birth) return `b. ${birth}`
+  if (birth && death) return `${birth} – ${death}`
+  if (birth && !death) return `${birth} – ____`
+  if (!birth && death) return `____ – ${death}`
+  return ''
 }
 
 // Build the deceased lines for the "In Memory Of" section
@@ -11268,6 +11494,34 @@ const styles = `
   font-style: italic;
   font-size: 11px;
   margin-left: 6px;
+}
+
+/* Sprint L2 Phase 3 — Layout section ordering arrows */
+.sm-person-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sm-person-order-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--sm-cream-mid, #f7f4ee);
+  border: 1px solid var(--sm-border, #e5dfd4);
+  border-radius: 4px;
+}
+.sm-person-order-label {
+  font-weight: 600;
+  color: var(--sm-navy, #1e2d3d);
+}
+.sm-person-order-arrows {
+  display: flex;
+  gap: 4px;
+}
+.sm-person-order-arrows .sm-chip-btn-small:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 /* ---- RESERVED-SPACE CARD VARIANT ------------------------------------------ */
