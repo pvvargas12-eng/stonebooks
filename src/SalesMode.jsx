@@ -7348,7 +7348,10 @@ function ProductionTimelineSection({ order, update, isLocked }) {
         </div>
       )}
 
-      <div className="sm-grid-2" style={{ marginTop: 14 }}>
+      {/* Sprint 3x — Cemetery deadline input removed from the UI. The
+          order.cemeteryDeadline field, its row mappings, and the DB column are
+          preserved; legacy data stays intact and other surfaces still read it. */}
+      <div style={{ marginTop: 14 }}>
         <Field label="Target completion date" hint="Promised by — what to plan production around">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <input
@@ -7371,15 +7374,6 @@ function ProductionTimelineSection({ order, update, isLocked }) {
               >↻</button>
             )}
           </div>
-        </Field>
-        <Field label="Cemetery deadline" hint="Permit window expires, install must be by, etc.">
-          <input
-            type="date"
-            className="sm-textinput"
-            value={order.cemeteryDeadline || ''}
-            onChange={e => setDate('cemeteryDeadline', e.target.value)}
-            disabled={isLocked}
-          />
         </Field>
       </div>
 
