@@ -6176,12 +6176,6 @@ function pdfDeceasedLines(order) {
 
 // Sprint 3u — contract due-date calculation. The lead time is keyed off the
 // order's service types and, for new stone, the granite color.
-//
-// IMPORTANT: the 5-month "fast" bucket is the literal pair
-// 'medium-barre-grey' + 'mountain-rose', per explicit user direction. This is
-// NOT the GRANITE_COLORS 'gray' family (mountain-rose is family:'pink'), and it
-// intentionally diverges from the CLAUDE.md 3u spec table. Do not "fix" this to
-// family === 'gray' without checking with Paul first.
 function calculateDueDate(order, anchorDate) {
   const anchor = anchorDate
     ? new Date(anchorDate)
@@ -6197,6 +6191,9 @@ function calculateDueDate(order, anchorDate) {
   // Per-service lead time. null = no defined timeline for that service.
   const offsets = serviceTypes.map(svc => {
     if (svc === 'NEW_STONE') {
+      // Barre Grey and Mountain Rose are Shevchenko's most reliable supply chains.
+      // All other stones get the conservative 6-month buffer. Rule is a risk-buffer
+      // based on supplier confidence, not granite family or geography. Updated 2026-05-14.
       const fast = order.graniteColor === 'medium-barre-grey' || order.graniteColor === 'mountain-rose'
       return { unit: 'months', value: fast ? 5 : 6 }
     }
@@ -6413,7 +6410,7 @@ async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10)
     doc.setTextColor(...NAVY)
-    doc.text(`Due Date: ${due.dateText}`, M, y)
+    doc.text(`Estimated Due Date: ${due.dateText}`, M, y)
     y += 5
 
     // Unsigned preview — the date is provisional until signing locks the anchor.
