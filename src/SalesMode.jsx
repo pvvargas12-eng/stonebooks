@@ -6296,27 +6296,63 @@ function pdfCustomerLine(order) {
 }
 
 // Build the deceased lines for the "In Memory Of" section
+// Sprint L2 Phase 2 Commit 1 — Fixed multiple pre-existing bugs:
+//   - d.middle should be d.middleName (middle names never rendered before)
+//   - d.birthYear / d.deathYear don't exist (derive year from d.dateOfBirth /
+//     d.dateOfDeath via slice — dates never rendered on any PDF before)
+//   - TITLE_PREFIXES / TITLE_RELATIONS are plain strings, not objects with
+//     .code/.label (lookup returned undefined, only the || fallback saved it)
+//   - Title was person-1-only; now renders per-person for any deceased with
+//     a title set
+//   - Title source now d.title (assembled string) with re-assembly fallback
+//     from titlePrefix/titleRelations — honors staff free-text overrides
 function pdfDeceasedLines(order) {
   const out = []
-  if (order.deceased?.[0]?.titlePrefix && order.deceased?.[0]?.titleRelations?.length) {
-    const prefix = TITLE_PREFIXES.find(p => p.code === order.deceased[0].titlePrefix)?.label || order.deceased[0].titlePrefix
-    const relations = order.deceased[0].titleRelations
-      .map(r => TITLE_RELATIONS.find(x => x.code === r)?.label || r)
+
+  // Helper — derive a person's title for the PDF. Prefer d.title (the
+  // assembled/editable string the LivePreview and InscriptionTextSummary
+  // already read), fall back to re-assembling from titlePrefix + titleRelations
+  // if title is empty. Returns empty string if no title data exists.
+  const buildTitleForPerson = (d) => {
+    if (d.title && d.title.trim()) return d.title.trim()
+    if (!d.titlePrefix && !(d.titleRelations?.length)) return ''
+    const prefix = d.titlePrefix || ''
+    const rels = d.titleRelations || []
     let relStr = ''
-    if (relations.length === 1) relStr = relations[0]
-    else if (relations.length === 2) relStr = relations.join(' & ')
-    else relStr = relations.slice(0, -1).join(', ') + ', & ' + relations[relations.length - 1]
-    out.push({ kind: 'title', text: `${prefix} ${relStr}` })
+    if (rels.length === 1) relStr = rels[0]
+    else if (rels.length === 2) relStr = rels.join(' & ')
+    else if (rels.length > 2) relStr = rels.slice(0, -1).join(', ') + ', & ' + rels[rels.length - 1]
+    return [prefix, relStr].filter(Boolean).join(' ').trim()
   }
+
+  // Helper — derive a year from an ISO YYYY-MM-DD string (slice avoids any
+  // timezone shift that new Date() would introduce).
+  const yearFrom = (iso) => (iso && typeof iso === 'string') ? iso.slice(0, 4) : ''
+
+  // Helper — format the date range for a person, honoring isPreNeed.
+  const buildDatesForPerson = (d) => {
+    const birth = yearFrom(d.dateOfBirth)
+    const death = yearFrom(d.dateOfDeath)
+    if (d.isPreNeed && birth) return `b. ${birth}`
+    if (birth && death) return `${birth} – ${death}`
+    if (birth && !death) return `${birth} – ____`
+    if (!birth && death) return `____ – ${death}`
+    return ''
+  }
+
+  // Render one title line per non-reserved person who has a title.
+  // Reserved persons render as a reserved-space marker (no title, no dates).
   for (const d of order.deceased || []) {
     if (d.isReserved) {
       out.push({ kind: 'reserved', text: '— Reserved space —' })
       continue
     }
-    const name = [d.firstName, d.middle, d.lastName].filter(Boolean).join(' ')
-    const birth = d.birthYear || ''
-    const death = d.deathYear || (d.birthYear ? '____' : '')
-    const dates = (birth || death) ? `${birth}${birth || death ? ' – ' : ''}${death}` : ''
+    const titleText = buildTitleForPerson(d)
+    if (titleText) {
+      out.push({ kind: 'title', text: titleText })
+    }
+    const name = [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
+    const dates = buildDatesForPerson(d)
     out.push({ kind: 'person', name: name || '(name pending)', dates })
   }
   return out
