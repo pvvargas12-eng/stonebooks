@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -190,6 +190,21 @@ Contract `acceptText` replaced with 5 legal paragraphs (8pt, dark `TEXT` color, 
 ### Part D — Page-break discipline (`682828d`)
 Module-level `ensureBlock(doc, y, blockHeight, opts)` helper. Both PDF generators' local `ensure()` are now thin bindings of it. Per-block height reservations added in `generateEstimatePDF` (due date, stone specs, line items table, totals block; legal terms + signatures already reserved together by Part C) and `generateReceiptPDF` (payment-details table, running-totals block). **`ensureBlock` is reusable for any future PDF surface.**
 
+## Sprint 3v — SHIPPED
+
+**Sign step restructure.** Three parts + one follow-up, five commits.
+
+### Part A — Contract preview iframe (`1716ad3`)
+SignStep gets a "Contract preview" Section between the lock banner and the signature surfaces. Reuses `generateContractPDF(order, { returnDoc: true })` — which forces `mode: 'contract'` — so the preview is the exact contract layout (Estimated Due Date, 4-column line items, legal terms) even before signing. **Single source of truth — no duplicated layout logic.** Blob URL generated in a `useEffect` keyed on `isLocked` (regenerates once on lock to pick up embedded signatures; not per signature stroke), cleaned up via `revokeObjectURL`.
+
+### Part B — Customer signature box + tap-to-open modal (`5e6f36a`), iframe follow-up (`51358bb`)
+`CustomerSignatureBox` — empty state is a dashed "Tap to sign" box (bronze hover) that opens `SignatureModal`; filled state shows the signature image with a no-confirmation Clear button (pre-conversion clear is just "oops, redo"). `SignatureModal` wraps the existing `SignatureCanvas` in the `sm-pdf-preview-overlay` shell. **Customer signature is now a tap-to-open box; the rep signature pad stays always-visible while drafting; BOTH signature surfaces hide entirely when locked** (the preview iframe already shows the signed contract — no duplicate signature UI). Locked view is minimal: lock banner + preview + Download PDF + Unlock. Sections ordered rep-then-customer per spec. Follow-up `51358bb` enlarged the preview iframe to `min-height: 850px` for full-page visibility without internal scroll.
+
+### Part C — Unlock signed contract (`06c13eb`)
+"Unlock & Edit" Section in the locked view (below Download PDF), red/serious `.sm-unlock-btn` opening `UnlockConfirmModal` (red "Yes, Unlock" confirm, backdrop-click cancels). `handleUnlock` nulls the camelCase signature/lock fields, sets `status: 'draft'`, and appends an audit stamp to `order.notes`: `[CONTRACT UNLOCKED by ${salesRep} on ${date}: prior signature voided.]`. **Supabase Storage signature files are NOT deleted on unlock — only the DB references are nulled. Audit recovery from storage is possible if needed.** After unlock, `isLocked` drops to false, the preview regenerates signature-less, and both signature surfaces reappear empty for re-signing.
+
+- **Pre-conversion Clear button has no confirmation** (just "oops, redo"). **Post-conversion Unlock has a full confirmation modal.**
+
 ## Deferred / known issues
 
 - **Mausoleum due-date math** — shows "TBD — contact office" until the 6–8 month range-picker UI is built (deferred from 3u).
@@ -199,10 +214,11 @@ Module-level `ensureBlock(doc, y, blockHeight, opts)` helper. Both PDF generator
 ## Feature backlog after 3p
 
 1. Zelle integration
-2. Sign step restructure (preview first, then signature)
+2. ~~Sign step restructure (preview first, then signature)~~ — ✅ SHIPPED in Sprint 3v
 3. Hand Sculpted quote-request flow
 4. Remote contract signing
 5. **Split Flat Markers into Grass / Hickey / Bronze** — today the Flat Markers tab in the Design step covers all three because the monument catalog has only a single generic `flat` tag (no grass/hickey/bronze sub-tags exist in the data at all). Requires a from-scratch catalog retag of all 141 flat-marker entries before the tabs can be split — not just a rename, an actual sub-classification pass.
+6. **Sprint 3w — Target Completion Date field on the Pricing step.** Auto-populates from the same calculation as the contract's Estimated Due Date (`calculateDueDate`). Staff can override the value before the contract publishes. The contract PDF then reads from this stored value instead of recalculating at PDF-generation time — so a staff override sticks and the date is locked in at publish time rather than drifting.
 
 ## Git / GitHub
 
