@@ -9395,39 +9395,77 @@ function PaymentTrackingSection({ order, update }) {
   const cc  = order.pricing?.applyCCSurcharge ? (taxBase + tax) * CC_SURCHARGE : 0
   const grandTotal = taxBase + tax + cc
 
-  const expectedDeposit = grandTotal * 0.5
-  const collectedDeposit = Number(order.depositAmount) || 0
-  const collectedBalance = Number(order.balanceAmount) || 0
-  const collected = collectedDeposit + collectedBalance
+  // Sprint M2 Phase 2 — array-driven. payments[] is authoritative; the UI never
+  // touches the legacy depositAmount/balanceAmount fields anymore (orderToRow
+  // mirrors them from payments[] on write). One row editable at a time.
+  const [editingId, setEditingId] = useState(null)
+
+  // Ledger order: oldest first, by createdAt. The !voided filter is inert in
+  // Phase 2 (no void UI yet) but correct for Phase 4.
+  const visiblePayments = useMemo(
+    () => (order.payments || [])
+      .filter(p => !p.voided)
+      .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '')),
+    [order.payments]
+  )
+
+  const collected = visiblePayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const remaining = Math.max(0, grandTotal - collected)
 
-  const recordDeposit = () => {
-    if (order.depositAmount != null) return
-    update({
-      depositAmount: Math.round(expectedDeposit * 100) / 100,
-      depositMethod: 'check',
-      depositRef: '',
-      depositReceivedAt: new Date().toISOString(),
-    })
+  const methodLabel = (m) => ({ cash: 'Cash', check: 'Check', card: 'Card', other: 'Other' }[m] || 'Payment')
+  const formatPaymentDate = (iso) => {
+    if (!iso) return '—'
+    const datePart = String(iso).slice(0, 10)  // handles 'YYYY-MM-DD' and full ISO timestamps
+    const d = new Date(datePart + 'T00:00:00')
+    return isNaN(d) ? datePart : d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
   }
-  const clearDeposit = () => {
-    if (!confirm('Clear deposit record?')) return
-    update({ depositAmount: null, depositMethod: null, depositRef: null, depositReceivedAt: null })
+
+  // Phase 2 status trigger: simple + one-directional. When the non-voided sum
+  // reaches the grand total, flip to 'paid_in_full'. No auto-revert on delete
+  // or edit-down (locked decision T6 — Phase 3 makes it fully reactive).
+  const statusPatchFor = (payments) => {
+    const sum = payments.filter(p => !p.voided).reduce((s, p) => s + (Number(p.amount) || 0), 0)
+    return (sum >= grandTotal && order.status !== 'paid_in_full' && order.status !== 'completed')
+      ? { status: 'paid_in_full' }
+      : {}
   }
-  const recordBalance = () => {
-    if (order.balanceAmount != null) return
-    update({
-      balanceAmount: Math.round(remaining * 100) / 100,
-      balanceMethod: 'check',
-      balanceRef: '',
-      balanceReceivedAt: new Date().toISOString(),
-      // Auto-advance status if both are now collected
-      status: remaining > 0 ? 'paid_in_full' : order.status,
-    })
+
+  const addPayment = () => {
+    const defaultAmount = visiblePayments.length === 0
+      ? Math.round(grandTotal * 0.5 * 100) / 100
+      : Math.max(0, Math.round((grandTotal - collected) * 100) / 100)
+    const newPayment = {
+      id: newPaymentId(),
+      amount: defaultAmount,
+      method: 'check',
+      ref: '',
+      receivedAt: new Date().toISOString().slice(0, 10),  // YYYY-MM-DD, today
+      createdAt: new Date().toISOString(),                // full ISO, ledger-sort key
+      createdBy: order.salesRep || null,
+      note: null,
+      voided: false,
+      voidedReason: null,
+      voidedAt: null,
+      voidedBy: null,
+    }
+    // Preserve any voided entries that visiblePayments filtered out (none in
+    // Phase 2, but written defensively).
+    const newPayments = [...(order.payments || []), newPayment]
+    update({ payments: newPayments, ...statusPatchFor(newPayments) })
+    setEditingId(newPayment.id)  // open it immediately for edit
   }
-  const clearBalance = () => {
-    if (!confirm('Clear balance record?')) return
-    update({ balanceAmount: null, balanceMethod: null, balanceRef: null, balanceReceivedAt: null })
+
+  const updatePayment = (id, patch) => {
+    const newPayments = (order.payments || []).map(p => p.id === id ? { ...p, ...patch } : p)
+    update({ payments: newPayments, ...statusPatchFor(newPayments) })
+  }
+
+  const deletePayment = (id) => {
+    if (!confirm('Remove this payment?')) return
+    const newPayments = (order.payments || []).filter(p => p.id !== id)
+    // No auto-revert of status on delete in Phase 2 (locked decision T6).
+    update({ payments: newPayments })
+    if (editingId === id) setEditingId(null)
   }
 
   return (
@@ -9447,95 +9485,77 @@ function PaymentTrackingSection({ order, update }) {
         </div>
       </div>
 
-      {/* Deposit row */}
-      <div className="sm-payment-block">
-        <div className="sm-payment-block-head">
-          <strong>Deposit (50% at signing)</strong>
-          {order.depositAmount == null
-            ? <button type="button" className="sm-add-btn" onClick={recordDeposit}>+ Record deposit (${expectedDeposit.toFixed(2)})</button>
-            : <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={clearDeposit}>Clear</button>}
-        </div>
-        {order.depositAmount != null && (
-          <div className="sm-grid-2" style={{ marginTop: 8 }}>
-            <Field label="Amount">
-              <TextInput type="number" value={order.depositAmount}
-                onChange={v => update({ depositAmount: v === '' ? null : Number(v) })} />
-            </Field>
-            <Field label="Method">
-              <SelectInput
-                value={order.depositMethod || ''}
-                onChange={v => update({ depositMethod: v || null })}
-                options={[
-                  { value: 'check', label: 'Check' },
-                  { value: 'cash',  label: 'Cash' },
-                  { value: 'card',  label: 'Credit / debit card' },
-                  { value: 'other', label: 'Other' },
-                ]}
-              />
-            </Field>
-            <Field label="Reference (check #, last 4, etc.)">
-              <TextInput value={order.depositRef || ''}
-                onChange={v => update({ depositRef: v })}
-                placeholder="check #4421" />
-            </Field>
-            <Field label="Date received">
-              <input type="date" className="sm-textinput"
-                value={order.depositReceivedAt ? order.depositReceivedAt.slice(0, 10) : ''}
-                onChange={e => update({ depositReceivedAt: e.target.value ? new Date(e.target.value).toISOString() : null })} />
-            </Field>
-          </div>
-        )}
-        {order.depositAmount != null && (
-          <ReceiptActions order={order} paymentType="deposit" />
-        )}
-      </div>
+      <button type="button" className="sm-add-btn" onClick={addPayment} style={{ marginTop: 12 }}>
+        + Add payment
+      </button>
 
-      {/* Balance row */}
-      <div className="sm-payment-block">
-        <div className="sm-payment-block-head">
-          <strong>Balance (at delivery / installation)</strong>
-          {order.balanceAmount == null
-            ? <button type="button" className="sm-add-btn" onClick={recordBalance} disabled={order.depositAmount == null}>
-                + Record balance (${remaining.toFixed(2)})
-              </button>
-            : <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={clearBalance}>Clear</button>}
+      {visiblePayments.length === 0 ? (
+        <div className="sm-payment-empty">
+          No payments recorded yet. Click "Add payment" to record the first one.
         </div>
-        {order.depositAmount == null && (
-          <div className="sm-helper" style={{ marginTop: 6 }}>Record the deposit first.</div>
-        )}
-        {order.balanceAmount != null && (
-          <div className="sm-grid-2" style={{ marginTop: 8 }}>
-            <Field label="Amount">
-              <TextInput type="number" value={order.balanceAmount}
-                onChange={v => update({ balanceAmount: v === '' ? null : Number(v) })} />
-            </Field>
-            <Field label="Method">
-              <SelectInput
-                value={order.balanceMethod || ''}
-                onChange={v => update({ balanceMethod: v || null })}
-                options={[
-                  { value: 'check', label: 'Check' },
-                  { value: 'cash',  label: 'Cash' },
-                  { value: 'card',  label: 'Credit / debit card' },
-                  { value: 'other', label: 'Other' },
-                ]}
-              />
-            </Field>
-            <Field label="Reference (check #, last 4, etc.)">
-              <TextInput value={order.balanceRef || ''}
-                onChange={v => update({ balanceRef: v })} />
-            </Field>
-            <Field label="Date received">
-              <input type="date" className="sm-textinput"
-                value={order.balanceReceivedAt ? order.balanceReceivedAt.slice(0, 10) : ''}
-                onChange={e => update({ balanceReceivedAt: e.target.value ? new Date(e.target.value).toISOString() : null })} />
-            </Field>
-          </div>
-        )}
-        {order.balanceAmount != null && (
-          <ReceiptActions order={order} paymentType="balance" />
-        )}
-      </div>
+      ) : (
+        <div className="sm-payment-list">
+          {visiblePayments.map(payment => (
+            editingId === payment.id ? (
+              <div key={payment.id} className="sm-payment-row sm-payment-row-editing">
+                <div className="sm-grid-2">
+                  <Field label="Amount">
+                    <TextInput
+                      type="number"
+                      value={payment.amount}
+                      onChange={v => updatePayment(payment.id, { amount: v === '' ? 0 : Number(v) })}
+                    />
+                  </Field>
+                  <Field label="Method">
+                    <SelectInput
+                      value={payment.method || 'check'}
+                      onChange={v => updatePayment(payment.id, { method: v })}
+                      options={[
+                        { value: 'check', label: 'Check' },
+                        { value: 'cash',  label: 'Cash' },
+                        { value: 'card',  label: 'Credit / debit card' },
+                        { value: 'other', label: 'Other' },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Reference (check #, last 4, etc.)">
+                    <TextInput
+                      value={payment.ref || ''}
+                      onChange={v => updatePayment(payment.id, { ref: v })}
+                      placeholder="check #4421"
+                    />
+                  </Field>
+                  <Field label="Date received">
+                    <input
+                      type="date"
+                      className="sm-textinput"
+                      value={(payment.receivedAt || '').slice(0, 10)}
+                      onChange={e => updatePayment(payment.id, { receivedAt: e.target.value || null })}
+                    />
+                  </Field>
+                </div>
+                <div className="sm-payment-row-actions">
+                  <button type="button" className="sm-link-btn" onClick={() => setEditingId(null)}>Done</button>
+                </div>
+              </div>
+            ) : (
+              <div key={payment.id} className="sm-payment-row sm-payment-row-collapsed">
+                <div className="sm-payment-row-summary">
+                  <strong>${(Number(payment.amount) || 0).toFixed(2)}</strong>
+                  <span>— {methodLabel(payment.method)}</span>
+                  {payment.ref && <span>#{payment.ref}</span>}
+                  <span>· {formatPaymentDate(payment.receivedAt)}</span>
+                </div>
+                <div className="sm-payment-row-actions">
+                  <button type="button" className="sm-link-btn" onClick={() => setEditingId(payment.id)}>Edit</button>
+                  <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => deletePayment(payment.id)}>Remove</button>
+                </div>
+                <ReceiptActions order={order} payment={payment} />
+              </div>
+            )
+          ))}
+        </div>
+      )}
     </Section>
   )
 }
@@ -13479,6 +13499,69 @@ const styles = `
   font-family: var(--font-d), serif;
   color: var(--sm-navy);
   font-size: 14px;
+}
+
+/* ---- SPRINT M2 Phase 2 — array-driven payment rows ------------------- */
+.sm-payment-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sm-payment-row {
+  background: #fff;
+  border: 1px solid var(--sm-border);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+.sm-payment-row-collapsed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+}
+.sm-payment-row-summary {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-mid);
+}
+.sm-payment-row-summary strong {
+  font-family: var(--font-d), serif;
+  font-size: 16px;
+  color: var(--sm-navy);
+}
+.sm-payment-row-editing {
+  border-color: var(--sm-gold);
+}
+.sm-payment-row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* ReceiptActions toolbar drops to its own full-width line below the summary. */
+.sm-payment-row-collapsed > div:last-child {
+  flex: 1 1 100%;
+}
+.sm-payment-row-collapsed .sm-payment-row-summary,
+.sm-payment-row-collapsed .sm-payment-row-actions {
+  flex-basis: auto;
+}
+.sm-payment-empty {
+  margin-top: 12px;
+  padding: 20px;
+  text-align: center;
+  color: var(--text-light, #999);
+  font-style: italic;
+  font-size: 14px;
+  background: var(--sm-cream-mid);
+  border: 1px dashed var(--sm-border);
+  border-radius: 6px;
 }
 
 /* ---- SPRINT 3i — Cancel order ---------------------------------------- */
