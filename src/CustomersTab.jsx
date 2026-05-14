@@ -31,7 +31,7 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
     setLoading(true)
     const [cs, { data: os }] = await Promise.all([
       filter === 'archived' ? listArchivedCustomers() : listAllCustomers(),
-      supabase.from('orders').select('id, customer_id, status, order_number, updated_at, created_at, deposit_amount, balance_amount, pricing, add_ons, target_completion_date'),
+      supabase.from('orders').select('id, customer_id, status, order_number, updated_at, created_at, deposit_amount, balance_amount, payments, pricing, add_ons, target_completion_date'),
     ])
     setCustomers(cs)
     setAllOrders(os || [])
@@ -62,7 +62,7 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
         r._soldCount++
         r._lifetimeValue += rowGrandTotal(o)
       }
-      r._totalCollected += (Number(o.deposit_amount) || 0) + (Number(o.balance_amount) || 0)
+      r._totalCollected += rowTotalPaid(o)  // Sprint M2 Phase 3 — sums locked payments[] (helper), not raw legacy columns
       const upd = new Date(o.updated_at).getTime()
       if (!r._lastActivity || upd > r._lastActivity) r._lastActivity = upd
     }

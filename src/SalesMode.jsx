@@ -1235,6 +1235,8 @@ function makeBlankOrder() {
     id: null,
     orderNumber: null,
     status: 'draft',
+    // Sprint M2 Phase 3 — prior status snapshot for the paid_in_full revert.
+    statusBeforePaidInFull: null,
     salesRep: '',
 
     // Service types & family
@@ -1741,6 +1743,7 @@ function orderToRow(order) {
 
   return {
     status: order.status,
+    status_before_paid_in_full: order.statusBeforePaidInFull || null,
     sales_rep: order.salesRep || null,
     customer_id: order.customer.id || null,
     cemetery_id: order.cemetery.id || null,
@@ -1895,6 +1898,7 @@ function rowToOrder(row, customerRow, cemeteryRow) {
     id: row.id,
     orderNumber: row.order_number,
     status: row.status || 'draft',
+    statusBeforePaidInFull: row.status_before_paid_in_full || null,
     salesRep: row.sales_rep || '',
 
     serviceTypes: row.service_types || [],
