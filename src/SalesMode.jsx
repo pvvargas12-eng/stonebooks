@@ -6225,6 +6225,22 @@ function calculateDueDate(order, anchorDate) {
   return { dateText, months: longest }
 }
 
+// Sprint 3u Part D — shared page-break helper for the PDF generators. If
+// `blockHeight` mm won't fit below the current y on this page, finalize the
+// page (via the optional onBreak callback, e.g. addFooter) and start a fresh
+// one. Returns the y to continue drawing at — unchanged if the block fits, or
+// the top margin if it broke to a new page. Each major PDF block measures its
+// full vertical footprint and calls this once, so a block never splits across
+// a page boundary mid-render.
+function ensureBlock(doc, y, blockHeight, { pageHeight, margin, footerReserve = 12, onBreak } = {}) {
+  if (y + blockHeight > pageHeight - margin - footerReserve) {
+    if (onBreak) onBreak()
+    doc.addPage()
+    return margin
+  }
+  return y
+}
+
 // Generate the estimate PDF for the given order. Async because we lazy-load jsPDF.
 // Convert a URL (Supabase Storage) into a data URL for jsPDF.addImage
 async function urlToDataURL(url) {
@@ -6292,13 +6308,13 @@ async function generateEstimatePDF(order, opts = {}) {
 
   let y = M
 
-  // Helper: ensure we have room for `need` mm of content; otherwise new page
+  // Helper: ensure we have room for `need` mm of content; otherwise new page.
+  // Sprint 3u Part D — thin binding of the shared ensureBlock helper, so every
+  // page-break decision (legacy per-row calls and the new per-block height
+  // reservations) runs through one place. footerReserve 12 matches the prior
+  // threshold (H - M - 12).
   const ensure = (need) => {
-    if (y + need > H - M - 12) {  // leave room for footer
-      addFooter()
-      doc.addPage()
-      y = M
-    }
+    y = ensureBlock(doc, y, need, { pageHeight: H, margin: M, footerReserve: 12, onBreak: addFooter })
   }
 
   // Helper: section header (gold all-caps eyebrow + thin grey rule)
@@ -6407,6 +6423,14 @@ async function generateEstimatePDF(order, opts = {}) {
   // Sprint 3u — contract only. Estimates skip this block entirely.
   if (isContract) {
     const due = calculateDueDate(order)
+    const deliveryDisclaimer = 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
+    // Measure the disclaimer at its render font size (9pt) for an accurate line count.
+    doc.setFont('helvetica', 'italic')
+    doc.setFontSize(9)
+    const ddLines = doc.splitTextToSize(deliveryDisclaimer, W - M - M)
+    // Sprint 3u Part D — reserve the whole due-date + disclaimer block.
+    ensure(5 + (order.signedAt ? 0 : 4) + 4 * ddLines.length + 2)
+
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10)
     doc.setTextColor(...NAVY)
@@ -6426,8 +6450,6 @@ async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'italic')
     doc.setFontSize(9)
     doc.setTextColor(...GREY)
-    const deliveryDisclaimer = 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
-    const ddLines = doc.splitTextToSize(deliveryDisclaimer, W - M - M)
     doc.text(ddLines, M, y)
     y += 4 * ddLines.length + 2
   }
@@ -6535,6 +6557,20 @@ async function generateEstimatePDF(order, opts = {}) {
   // ============================ STONE SPECS =============================
   const shape = SHAPES.find(s => s.code === order.shape)
   if (shape) {
+    // Sprint 3u Part D — reserve the whole stone-specs block (section header +
+    // one row per populated spec field + trailing gap) so it never splits.
+    const color = GRANITE_COLORS.find(g => g.code === order.graniteColor)
+    const top = TOP_SHAPES.find(t => t.code === order.topShape)
+    const polish = POLISH_LEVELS.find(p => p.code === order.polishLevel)
+    const sides = SIDES_OPTIONS.find(s => s.code === order.sides)
+    let specRows = 1  // Shape always renders
+    if (color) specRows++
+    if (top) specRows++
+    if (polish) specRows++
+    if (sides) specRows++
+    if (order.baseConfig?.include) specRows++
+    ensure(12 + specRows * 5 + 2)
+
     sectionHeader('Stone specifications')
     const stdSize = order.standardSizeCode ? shape.standardSizes.find(s => s.code === order.standardSizeCode) : null
     // The standardSize label IS the dimensions (e.g. "2-0 × 1-0 × 1-6"),
@@ -6544,16 +6580,9 @@ async function generateEstimatePDF(order, opts = {}) {
       : [order.width, order.depth, order.thickness].filter(x => x != null).join(' × ') + '"'
     kvRow('Shape', sizeText ? `${shape.label} — ${sizeText}` : shape.label)
 
-    const color = GRANITE_COLORS.find(g => g.code === order.graniteColor)
     if (color) kvRow('Granite color', `${color.label} (${color.origin})`)
-
-    const top = TOP_SHAPES.find(t => t.code === order.topShape)
     if (top) kvRow('Top shape', top.label)
-
-    const polish = POLISH_LEVELS.find(p => p.code === order.polishLevel)
     if (polish) kvRow('Polish level', polish.label)
-
-    const sides = SIDES_OPTIONS.find(s => s.code === order.sides)
     if (sides) kvRow('Sides', sides.label)
 
     if (order.baseConfig?.include) {
@@ -6676,7 +6705,11 @@ async function generateEstimatePDF(order, opts = {}) {
   }
 
   // Header row
-  ensure(6)
+  // Sprint 3u Part D — reserve the whole line-items table (column header +
+  // one row per item + footer slack) so the table header never orphans.
+  const lineRowCount = itemsResolved.filter(it => it.amount != null).length
+    + customItems.filter(it => it.label || it.amount).length
+  ensure(lineRowCount * 5 + 12)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(8)
   doc.setTextColor(...GREY)
@@ -6733,6 +6766,15 @@ async function generateEstimatePDF(order, opts = {}) {
   }
   const subtotalPdf = subtotalDisc + subtotalPermitPdf
 
+  // Sprint 3u Part D — reserve the whole totals block (one row per populated
+  // line + spacers/dividers) so it never splits across a page boundary.
+  const discountPctPdf = Number(order.pricing?.discountPct) || 0
+  let totalsRows = 2  // Subtotal + GRAND TOTAL always render
+  if (discountPctPdf > 0) totalsRows += 2  // Discount + Subtotal-after-discount
+  if (order.pricing?.applyTax) totalsRows += 1
+  if (order.pricing?.applyCCSurcharge) totalsRows += 1
+  ensure(totalsRows * 5 + 15)
+
   // Totals block
   y += 3
   doc.setDrawColor(...LIGHT_RULE)
@@ -6747,7 +6789,6 @@ async function generateEstimatePDF(order, opts = {}) {
   y += 5
 
   // Discount (applied to discountable portion only)
-  const discountPctPdf = Number(order.pricing?.discountPct) || 0
   const discountAmountPdf = subtotalDisc * (discountPctPdf / 100)
   let postDiscountTaxBase = subtotalPdf
   if (discountPctPdf > 0) {
@@ -7001,10 +7042,10 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
   const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : '—'
 
   let y = M
+  // Sprint 3u Part D — thin binding of the shared ensureBlock helper. The
+  // receipt draws its footer once at the end (not per page), so no onBreak.
   const ensure = (need) => {
-    if (y + need > H - 16) {
-      doc.addPage(); y = M
-    }
+    y = ensureBlock(doc, y, need, { pageHeight: H, margin: M, footerReserve: 0 })
   }
 
   // Compute totals — same logic as PaymentTrackingSection / PdfDownloadButton
@@ -7117,6 +7158,8 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
     ['Reference', paymentRef || '—'],
     ['Date received', fmtDate(paymentDate)],
   ]
+  // Sprint 3u Part D — reserve the whole payment-details table at once.
+  ensure(rows.length * 5 + 8)
   for (const [k, v] of rows) {
     ensure(6)
     doc.setFont('helvetica', 'normal')
@@ -7144,6 +7187,8 @@ async function generateReceiptPDF(order, paymentType = 'deposit', opts = {}) {
     [isFullyPaid ? 'Balance — PAID IN FULL' : 'Balance remaining',
      isFullyPaid ? fmtUSD(0) : fmtUSD(balanceRemaining), true],
   ]
+  // Sprint 3u Part D — reserve the whole running-totals block at once.
+  ensure(totRows.length * 6 + 8)
   for (const [k, v, big] of totRows) {
     ensure(6)
     doc.setFont('helvetica', 'normal')
