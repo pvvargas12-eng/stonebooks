@@ -4739,22 +4739,31 @@ function InscriptionStep({ order, update }) {
 
 // Tiny summary of what's about to be added — used in the inscription-only flow
 function InscriptionTextSummary({ order }) {
-  const named = order.deceased.filter(d => !d.isReserved && d.firstName)
+  // Sprint L2 Phase 3 Commit 3 — include persons who have only inscriptionName
+  // set (no legal firstName) so the summary matches the PDF's name source.
+  const named = order.deceased.filter(d =>
+    !d.isReserved && (d.firstName || (d.inscriptionName && d.inscriptionName.trim()))
+  )
   return (
     <div className="sm-text-summary">
-      {named.map((d, i) => (
-        <div key={i} className="sm-text-summary-row">
-          {d.title && <div className="sm-text-summary-title">{d.title}</div>}
-          <div className="sm-text-summary-name">
-            {[d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')}
+      {named.map((d, i) => {
+        // Sprint L2 Phase 3 Commit 3 — name + date now consistent with PDF.
+        // Reads inscriptionName when set, falls back to assembled legal name.
+        // Uses formatPersonDates for date rendering (honors dateFormat).
+        const displayName = (d.inscriptionName && d.inscriptionName.trim())
+          ? d.inscriptionName.trim()
+          : [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
+        const displayDates = formatPersonDates(d)
+        return (
+          <div key={i} className="sm-text-summary-row">
+            {d.title && <div className="sm-text-summary-title">{d.title}</div>}
+            <div className="sm-text-summary-name">{displayName}</div>
+            {displayDates && (
+              <div className="sm-text-summary-dates">{displayDates}</div>
+            )}
           </div>
-          {(d.dateOfBirth || d.dateOfDeath) && (
-            <div className="sm-text-summary-dates">
-              {formatDate(d.dateOfBirth) || '?'} – {d.isPreNeed ? '(pre-need)' : (formatDate(d.dateOfDeath) || '?')}
-            </div>
-          )}
-        </div>
-      ))}
+        )
+      })}
       {order.inscription.epitaph && (
         <div className="sm-text-summary-epitaph">"{order.inscription.epitaph}"</div>
       )}
@@ -6786,19 +6795,12 @@ function pdfDeceasedLines(order) {
     return [prefix, relStr].filter(Boolean).join(' ').trim()
   }
 
-  // Helper — derive a year from an ISO YYYY-MM-DD string (slice avoids any
-  // timezone shift that new Date() would introduce).
-  const yearFrom = (iso) => (iso && typeof iso === 'string') ? iso.slice(0, 4) : ''
-
-  // Helper — format the date range for a person, honoring isPreNeed.
-  const buildDatesForPerson = (d) => {
-    const birth = yearFrom(d.dateOfBirth)
-    const death = yearFrom(d.dateOfDeath)
-    if (d.isPreNeed && birth) return `b. ${birth}`
-    if (birth && death) return `${birth} – ${death}`
-    if (birth && !death) return `${birth} – ____`
-    if (!birth && death) return `____ – ${death}`
-    return ''
+  // Sprint L2 Phase 3 Commit 3 — name source: inscriptionName (Tab 8 §1
+  // editable carved name) preferred, fall back to assembled legal name
+  // from firstName+middleName+lastName.
+  const buildNameForPerson = (d) => {
+    if (d.inscriptionName && d.inscriptionName.trim()) return d.inscriptionName.trim()
+    return [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
   }
 
   // Render one title line per non-reserved person who has a title.
@@ -6812,8 +6814,10 @@ function pdfDeceasedLines(order) {
     if (titleText) {
       out.push({ kind: 'title', text: titleText })
     }
-    const name = [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
-    const dates = buildDatesForPerson(d)
+    const name = buildNameForPerson(d)
+    // Sprint L2 Phase 3 Commit 3 — date rendering via shared formatPersonDates
+    // helper (module scope, defined above) honors per-person dateFormat.
+    const dates = formatPersonDates(d)
     out.push({ kind: 'person', name: name || '(name pending)', dates })
   }
   return out
