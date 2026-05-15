@@ -134,12 +134,10 @@ const LAYOUT_STYLES = [
   { code: 'custom',               label: 'Custom layout',        blurb: 'Describe the arrangement freely below.' },
 ]
 
-// Sprint L2 Phase 3 — Side arrangement options for 2-person orders
-const SIDE_ARRANGEMENTS = [
-  { code: 'p1_left_p2_right',  label: 'Person 1 left / Person 2 right' },
-  { code: 'p1_top_p2_bottom',  label: 'Person 1 top / Person 2 bottom' },
-  { code: 'unknown',           label: "I don't know yet",                blurb: 'A follow-up reminder will appear on the order summary.' },
-]
+// Sprint L2 Phase 4 Commit 5 — SIDE_ARRANGEMENTS constant deleted. Person
+// ordering arrows (2+ persons) handle who-goes-where; explicit sideToConfirm
+// checkbox handles the confirmation-pending flag. The inscription.sideArrangement
+// field is kept in schema (orphaned) for legacy-row compatibility.
 
 // Sprint L2 Phase 3 Commit 2 — Date format options for the inscription Date section.
 // Blurbs show a sample using a fixed reference date (Jan 15, 1942 – Jun 22, 2018)
@@ -4296,8 +4294,7 @@ function InscriptionTextPreview({ order }) {
     )
   }
 
-  const layoutStyle = insc.layoutStyle || 'side_by_side'
-  const sideArrangement = insc.sideArrangement || 'p1_left_p2_right'
+  const layoutStyle = insc.layoutStyle || 'centered_family_name'
 
   // Sprint L2 Phase 4 Commit 2 — order-level dateFormat + styleTreatment.
   const orderDateFormat = insc.dateFormat
@@ -4319,11 +4316,10 @@ function InscriptionTextPreview({ order }) {
     return base
   })()
 
-  // Side arrangement wins over layoutStyle when they conflict.
-  // p1_top_p2_bottom on side_by_side → renders stacked.
-  const effectiveLayout = (layoutStyle === 'side_by_side' && sideArrangement === 'p1_top_p2_bottom')
-    ? 'stacked'
-    : layoutStyle
+  // Sprint L2 Phase 4 Commit 5 — sideArrangement orphaned. Layout style is
+  // the single source of truth for arrangement; array order determines
+  // who-goes-where (person[0]=left/top, person[1]=right/bottom).
+  const effectiveLayout = layoutStyle
 
   // side_by_side with 3+ persons → fall back to stacked, with caption
   const sideBySideOverflow = effectiveLayout === 'side_by_side' && persons.length > 2
@@ -4403,12 +4399,14 @@ function InscriptionTextPreview({ order }) {
     effectiveLayout === 'centered_family_name'
     && sharedLastName
     && persons.length === 2
-    && sideArrangement === 'p1_left_p2_right'
   ) {
     // Sprint L2 Phase 4 Commit 3 — Centered Family Name + 2-person
     // side-by-side combo: big surname banner at top + 2-column persons
-    // below with thin vertical divider. Only fires when the side
-    // arrangement is explicitly side-by-side (left/right).
+    // below with thin vertical divider.
+    // Sprint L2 Phase 4 Commit 5 — sideArrangement check removed; this
+    // combo is now the unconditional render for 2-person shared-surname
+    // Centered Family Name. Staff who want stacked persons under a family
+    // banner should pick "Stacked" layout instead.
     content = (
       <div className="sm-itp-centered-family-name">
         <div className="sm-itp-family-name-banner">{familyNameForBanner.toUpperCase()}</div>
@@ -4487,14 +4485,16 @@ function InscriptionTextPreview({ order }) {
     )
   }
 
-  // Side-confirmation soft indicator (in addition to the saved-view banner — Commit 2)
-  const sideUnknown = sideArrangement === 'unknown' && persons.length === 2
+  // Sprint L2 Phase 4 Commit 5 — soft indicator driven by explicit
+  // sideToConfirm checkbox (was sideArrangement === 'unknown'). Applies to
+  // any person count, not just 2-person orders.
+  const sideUnconfirmed = !!insc.sideToConfirm
 
   return (
     <div className="sm-itp-shell">
-      {sideUnknown && (
+      {sideUnconfirmed && (
         <div className="sm-itp-side-hint">
-          <em>Side arrangement: not yet confirmed</em>
+          <em>Inscription side not yet confirmed</em>
         </div>
       )}
       <div className="sm-itp-stone">
@@ -4769,46 +4769,39 @@ function InscriptionStep({ order, update }) {
             </Field>
           )}
 
-          {/* Side arrangement picker — only for 2-person orders */}
+          {/* Sprint L2 Phase 4 Commit 5 — explicit sideToConfirm checkbox
+              replaces the SIDE_ARRANGEMENTS 'unknown' option. Order-level,
+              so visible regardless of person count. */}
+          <Field label="Inscription side not yet confirmed" wide hint="Check this if customer or cemetery still needs to confirm which side faces forward. A reminder banner will appear on the saved order.">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="checkbox"
+                id="sm-sideToConfirm-checkbox"
+                checked={!!order.inscription?.sideToConfirm}
+                onChange={e => updateInsc({ sideToConfirm: e.target.checked })}
+              />
+              <label htmlFor="sm-sideToConfirm-checkbox" style={{ cursor: 'pointer' }}>
+                Yes, flag this order for side confirmation
+              </label>
+            </div>
+          </Field>
+
+          {order.inscription?.sideToConfirm && (
+            <Field label="Notes about the side (optional)" wide>
+              <TextInput
+                value={order.inscription?.sideNote || ''}
+                onChange={v => updateInsc({ sideNote: v })}
+                placeholder="e.g. customer to confirm with cemetery"
+              />
+            </Field>
+          )}
+
+          {/* Per-person ordering arrows — Sprint L2 Phase 4 Commit 5:
+              now show for 2+ persons (was 3+). Array order determines
+              who-goes-where in the preview (person[0]=left/top). */}
           {(() => {
             const nonReservedCount = (order.deceased || []).filter(d => !d.isReserved).length
-            if (nonReservedCount !== 2) return null
-            return (
-              <>
-                <Field label="Side arrangement" wide hint="Which person goes on which side?">
-                  <div className="sm-card-grid sm-card-grid-services">
-                    {SIDE_ARRANGEMENTS.map(opt => (
-                      <CardOption
-                        key={opt.code}
-                        on={(order.inscription?.sideArrangement || 'p1_left_p2_right') === opt.code}
-                        onClick={() => updateInsc({
-                          sideArrangement: opt.code,
-                          sideToConfirm: opt.code === 'unknown',
-                        })}
-                        title={opt.label}
-                        blurb={opt.blurb || ''}
-                      />
-                    ))}
-                  </div>
-                </Field>
-
-                {order.inscription?.sideArrangement === 'unknown' && (
-                  <Field label="Notes about which side (optional)" wide hint="Anything to help confirm later">
-                    <TextInput
-                      value={order.inscription?.sideNote || ''}
-                      onChange={v => updateInsc({ sideNote: v })}
-                      placeholder="e.g. customer to confirm with cemetery"
-                    />
-                  </Field>
-                )}
-              </>
-            )
-          })()}
-
-          {/* Per-person ordering arrows — for 3+ person orders */}
-          {(() => {
-            const nonReservedCount = (order.deceased || []).filter(d => !d.isReserved).length
-            if (nonReservedCount < 3) return null
+            if (nonReservedCount < 2) return null
             return (
               <Field label="Person order" wide hint="Arrange persons top-to-bottom or left-to-right using the arrows">
                 <div className="sm-person-order-list">
