@@ -5034,200 +5034,10 @@ function InscriptionTextSummary({ order }) {
   )
 }
 
-// Live SVG preview of the stone with text rendered. Intentionally simple —
-// flat-color granite background, clean serif type. Final layout is set in production.
-// PreviewPanel — opt-in wrapper. The underlying LivePreview only renders if
-// the customer has picked enough info to make the sketch accurate.
-function PreviewPanel({ order }) {
-  const [showPreview, setShowPreview] = useState(false)
-
-  const shape = SHAPES.find(s => s.code === order.shape)
-  const hasShape = !!shape
-  const hasTopShape = !!order.topShape || ['grass', 'hickey', 'bronze', 'mausoleum'].includes(order.shape)
-  const hasSize = order.width != null && order.depth != null
-  const ready = hasShape && hasTopShape && hasSize
-
-  if (!ready) {
-    return (
-      <div className="sm-preview-blocked">
-        <div className="sm-preview-blocked-icon">📐</div>
-        <div className="sm-preview-blocked-msg">
-          Preview will appear once these are picked:
-        </div>
-        <ul className="sm-preview-blocked-list">
-          {!hasShape && <li>Shape category</li>}
-          {hasShape && !hasTopShape && <li>Top shape</li>}
-          {!hasSize && <li>Standard size or custom dimensions</li>}
-        </ul>
-        <div className="sm-preview-blocked-hint">
-          Go back to <strong>Step 5 — Shape & Size</strong> to fill these in.
-        </div>
-      </div>
-    )
-  }
-
-  if (!showPreview) {
-    return (
-      <div className="sm-preview-optin">
-        <p className="sm-helper">
-          Rough sketch only — the actual carving, font, and exact spacing will
-          differ. Useful for showing the customer the general shape and layout.
-        </p>
-        <button
-          type="button"
-          className="sm-add-btn"
-          onClick={() => setShowPreview(true)}
-        >
-          Show preview
-        </button>
-      </div>
-    )
-  }
-
-  return <LivePreview order={order} onHide={() => setShowPreview(false)} />
-}
-
-function LivePreview({ order, onHide }) {
-  const shape = SHAPES.find(s => s.code === order.shape)
-  const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)
-  const fillHex = color ? COLOR_FAMILY_HEX[color.family] : '#888'
-  const topShape = order.topShape
-
-  // Pull names + dates + title for first 2 deceased
-  const named = order.deceased.filter(d => !d.isReserved && d.firstName)
-  const a = named[0]
-  const b = named[1]
-
-  const W = 600, H = 360
-  const groundY = 340
-  let outline = null
-  let textY = 150  // default text vertical anchor
-
-  // Helper: build the top edge of an upright die given a top shape
-  // Returns SVG path data starting from the top-left corner moving across the top
-  const upTop = (xL, xR, yTop) => {
-    const cx = (xL + xR) / 2
-    if (topShape === 'flat-top')   return `L ${xR} ${yTop}`
-    if (topShape === 'oval-top')   return `Q ${cx} ${yTop - 50} ${xR} ${yTop}`
-    if (topShape === 'roof-top')   return `L ${cx} ${yTop - 40} L ${xR} ${yTop}`
-    if (topShape === 'cathedral')  return `L ${cx} ${yTop - 70} L ${xR} ${yTop}`
-    if (topShape === 'gothic')     return `Q ${xL + (xR - xL) * 0.25} ${yTop - 60} ${cx} ${yTop - 70} Q ${xR - (xR - xL) * 0.25} ${yTop - 60} ${xR} ${yTop}`
-    if (topShape === 'classic-serp')   return `Q ${xL + (xR - xL) * 0.25} ${yTop - 30} ${cx} ${yTop - 30} Q ${xR - (xR - xL) * 0.25} ${yTop - 30} ${xR} ${yTop}`
-    if (topShape === 'cathedral-serp') return `Q ${xL + (xR - xL) * 0.20} ${yTop - 40} ${cx} ${yTop - 60} Q ${xR - (xR - xL) * 0.20} ${yTop - 40} ${xR} ${yTop}`
-    return `L ${xR} ${yTop}` // fallback flat
-  }
-
-  if (shape.code === 'grass' || shape.code === 'hickey' || shape.code === 'bronze') {
-    // Lying flat — no base. Hickey gets a slight bevel hint via a thin top edge.
-    const topY = shape.code === 'hickey' ? 250 : 270
-    outline = <rect x="50" y={topY} width={W - 100} height={groundY - topY} rx="3" fill={fillHex} />
-    textY = topY + (groundY - topY) / 2 - 8
-  } else if (shape.code === 'slant' || shape.code === 'double-slant') {
-    // Slanted block — NO base. Pauly was clear: slants don't have an automatic base.
-    // The slant rises higher in front than back; back is taller (slant downward back-to-front)
-    // We draw it sloping down toward the viewer: top-back is high, top-front is lower.
-    const slantW = shape.code === 'double-slant' ? 520 : 420
-    const xL = (W - slantW) / 2, xR = xL + slantW
-    const topBackY = 140
-    const topFrontY = 200
-    outline = (
-      <polygon
-        points={`${xL},${groundY} ${xR},${groundY} ${xR},${topFrontY} ${xL},${topFrontY}`}
-        fill={fillHex}
-      />
-    )
-    // Add the slope as a subtle highlight on top
-    outline = (
-      <g>
-        <polygon points={`${xL},${groundY} ${xR},${groundY} ${xR},${topFrontY} ${xL},${topFrontY}`} fill={fillHex} />
-        <polygon points={`${xL},${topFrontY} ${xR},${topFrontY} ${xR - 30},${topBackY} ${xL + 30},${topBackY}`} fill={fillHex} opacity="0.85" />
-      </g>
-    )
-    textY = topFrontY + 60
-  } else if (shape.code === 'die' || shape.code === 'double-die' || shape.code === 'civic' || shape.code === 'custom') {
-    // Standing die — with optional base
-    const dieW = shape.code === 'double-die' ? 380 : 240
-    const xL = (W - dieW) / 2, xR = xL + dieW
-    const topY = 80
-    const dieBottomY = order.baseConfig.include || shape.requiresBase ? groundY - 30 : groundY
-    const topPath = upTop(xL, xR, topY)
-    outline = (
-      <g>
-        <path d={`M ${xL} ${dieBottomY} L ${xL} ${topY} ${topPath} L ${xR} ${dieBottomY} Z`} fill={fillHex} />
-        {(order.baseConfig.include || shape.requiresBase) && (
-          <rect x={xL - 30} y={dieBottomY} width={dieW + 60} height={groundY - dieBottomY} fill={fillHex} opacity="0.9" />
-        )}
-      </g>
-    )
-    textY = topY + 60
-  } else if (shape.code === 'mausoleum') {
-    outline = (
-      <g>
-        <rect x="60" y="120" width={W - 120} height={groundY - 120} fill={fillHex} />
-        <polygon points={`60,120 ${W / 2},60 ${W - 60},120`} fill={fillHex} />
-      </g>
-    )
-    textY = 200
-  }
-
-  return (
-    <div className="sm-live-preview">
-      <div className="sm-live-preview-actions">
-        <button type="button" className="sm-link-btn" onClick={onHide}>Hide preview</button>
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
-        {/* Ground line */}
-        <rect x="0" y={groundY} width={W} height={H - groundY} fill="#d8d4cc" />
-        {outline}
-
-        {/* Engraved text */}
-        <g fill="rgba(255,255,255,0.92)" textAnchor="middle" fontFamily="'Playfair Display', Georgia, serif">
-          {a?.title && (
-            <text x={W / 2} y={textY} fontSize="13" fontStyle="italic" opacity="0.85" letterSpacing="2">
-              {a.title.toUpperCase()}
-            </text>
-          )}
-          {a?.firstName && (
-            <text x={W / 2} y={textY + (a?.title ? 32 : 0)} fontSize="28" fontWeight="500">
-              {[a.firstName, a.lastName].filter(Boolean).join(' ').toUpperCase()}
-            </text>
-          )}
-          {(a?.dateOfBirth || a?.dateOfDeath) && (
-            <text x={W / 2} y={textY + (a?.title ? 54 : 24)} fontSize="12" opacity="0.85">
-              {(a.dateOfBirth ? new Date(a.dateOfBirth).getFullYear() : '?')}
-              {' – '}
-              {a.isPreNeed ? '\u00A0\u00A0\u00A0' : (a.dateOfDeath ? new Date(a.dateOfDeath).getFullYear() : '?')}
-            </text>
-          )}
-          {b?.firstName && (
-            <text x={W / 2} y={textY + 90} fontSize="18" fontWeight="500">
-              {[b.firstName, b.lastName].filter(Boolean).join(' ').toUpperCase()}
-            </text>
-          )}
-          {b && (b?.dateOfBirth || b?.dateOfDeath) && (
-            <text x={W / 2} y={textY + 108} fontSize="11" opacity="0.85">
-              {(b.dateOfBirth ? new Date(b.dateOfBirth).getFullYear() : '?')}
-              {' – '}
-              {b.isPreNeed ? '\u00A0\u00A0\u00A0' : (b.dateOfDeath ? new Date(b.dateOfDeath).getFullYear() : '?')}
-            </text>
-          )}
-          {order.inscription?.epitaph && (
-            <text x={W / 2} y={textY + (b ? 132 : 76)} fontSize="10" fontStyle="italic" opacity="0.78">
-              "{order.inscription.epitaph.length > 50 ? order.inscription.epitaph.slice(0, 47) + '…' : order.inscription.epitaph}"
-            </text>
-          )}
-        </g>
-      </svg>
-
-      <div className="sm-live-preview-caption">
-        {color && <span>{color.label} ({color.origin})</span>}
-        {shape && <span>{shape.label}</span>}
-        {topShape && <span>{TOP_SHAPES.find(t => t.code === topShape)?.label}</span>}
-        {order.width != null && <span>{order.width}″ × {order.depth}″ × {order.thickness}″</span>}
-      </div>
-    </div>
-  )
-}
+// Sprint L2 Phase 4 Commit 6 — the SVG LivePreview + PreviewPanel components
+// have been deleted; they were replaced by the HTML/CSS InscriptionTextPreview
+// (defined above) in Phase 4 Commit 1. The preview no longer simulates the
+// granite shape/size/color — text arrangement only, per Q3b.
 
 // =============================================================================
 // EPITAPH LIBRARY PICKER (Sprint 2.5)
@@ -10119,6 +9929,21 @@ function ContinueLater({ order, update }) {
         </p>
       </div>
 
+      {/* Sprint L2 Phase 4 Commit 6 — side-confirmation banner; reuses
+          .sm-existing-banner. Gated on the explicit checkbox from Tab 8 §3. */}
+      {order.inscription?.sideToConfirm && (
+        <div className="sm-existing-banner">
+          <div>
+            <strong>⚠ Inscription side not yet confirmed</strong> — verify with customer or cemetery before production.
+            {order.inscription?.sideNote?.trim() && (
+              <div className="sm-helper" style={{ marginTop: '4px' }}>
+                Notes: {order.inscription.sideNote.trim()}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="sm-summary">
         <div className="sm-summary-grid">
           <div>
@@ -12677,60 +12502,6 @@ const styles = `
   border-style: solid;
 }
 
-/* ---- PREVIEW GATING (Sprint 2.1) ------------------------------------------ */
-.sm-preview-blocked {
-  text-align: center;
-  padding: 32px 24px;
-  background: var(--sm-cream-mid);
-  border: 1px dashed var(--sm-border-dark);
-  border-radius: 8px;
-}
-.sm-preview-blocked-icon {
-  font-size: 32px; margin-bottom: 12px; opacity: 0.6;
-}
-.sm-preview-blocked-msg {
-  font-family: var(--font-d), serif;
-  font-size: 15px;
-  color: var(--sm-navy);
-  margin-bottom: 12px;
-}
-.sm-preview-blocked-list {
-  display: inline-block;
-  text-align: left;
-  margin: 0 0 12px;
-  padding: 0;
-  list-style: none;
-}
-.sm-preview-blocked-list li {
-  padding: 4px 0 4px 22px;
-  position: relative;
-  font-size: 13px;
-  color: var(--text-mid);
-}
-.sm-preview-blocked-list li::before {
-  content: '○';
-  position: absolute;
-  left: 0;
-  color: var(--sm-gold);
-}
-.sm-preview-blocked-hint {
-  font-size: 12px;
-  color: var(--text-light);
-  font-style: italic;
-}
-.sm-preview-optin {
-  text-align: center;
-  padding: 12px 0;
-}
-.sm-preview-optin .sm-add-btn {
-  max-width: 240px;
-  margin: 0 auto;
-}
-.sm-live-preview-actions {
-  display: flex; justify-content: flex-end;
-  margin-bottom: 8px;
-}
-
 /* ---- COLOR GRID (Step 6) -------------------------------------------------- */
 .sm-color-grid {
   display: grid;
@@ -13218,32 +12989,6 @@ const styles = `
   margin-top: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--sm-border);
-}
-
-/* ---- LIVE PREVIEW (SVG stone) --------------------------------------------- */
-.sm-live-preview {
-  background: linear-gradient(180deg, #f5f1e9 0%, #e8e3d8 100%);
-  border-radius: 6px;
-  padding: 16px;
-  border: 1px solid var(--sm-border);
-}
-.sm-live-preview svg {
-  width: 100%; max-width: 600px;
-  display: block;
-  margin: 0 auto;
-  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.18));
-}
-.sm-live-preview-caption {
-  display: flex; flex-wrap: wrap; gap: 14px;
-  justify-content: center;
-  margin-top: 14px;
-  font-size: 12px; color: var(--text-mid);
-  letter-spacing: 0.04em;
-}
-.sm-live-preview-caption span {
-  padding: 4px 10px;
-  background: rgba(255,255,255,0.7);
-  border-radius: 999px;
 }
 
 /* ---- SUMMARY: wide row (for long values like epitaph) -------------------- */
