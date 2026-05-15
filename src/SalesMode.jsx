@@ -124,11 +124,14 @@ const FAMILY_TYPES = [
 // Sprint L2 Phase 3 — Layout style options for the inscription Layout section
 // Commit 2: 'top_bottom' removed (same visual as Stacked). Legacy orders with
 // layoutStyle: 'top_bottom' still load fine — no card will show as selected.
+// Sprint L2 Phase 4 Commit 3 — reordered with Centered Family Name as default
+// (most common monument layout); legacy code 'centered_last' migrated to
+// 'centered_family_name' in rowToOrder.
 const LAYOUT_STYLES = [
-  { code: 'side_by_side',  label: 'Side by side',        blurb: 'Two persons side by side, left and right of the stone.' },
-  { code: 'stacked',       label: 'Stacked',             blurb: 'Names stacked, last name typically displayed once.' },
-  { code: 'centered_last', label: 'Centered last name',  blurb: 'Large last name across top, given names below.' },
-  { code: 'custom',        label: 'Custom layout',       blurb: 'Describe the arrangement freely below.' },
+  { code: 'centered_family_name', label: 'Centered Family Name', blurb: 'Large family surname at top, given names and dates below. Most common monument layout.' },
+  { code: 'side_by_side',         label: 'Side by side',         blurb: 'Two persons side by side, with a divider between them.' },
+  { code: 'stacked',              label: 'Stacked',              blurb: 'Persons stacked top to bottom, no large family name banner.' },
+  { code: 'custom',               label: 'Custom layout',        blurb: 'Describe the arrangement freely below.' },
 ]
 
 // Sprint L2 Phase 3 — Side arrangement options for 2-person orders
@@ -1409,10 +1412,11 @@ function makeBlankOrder() {
       preExistingPhotoUrl: '',  // photo of existing marker (Storage URL)
       preExistingPhotoPath: '', // storage path for delete on retry
       // Sprint L2 — order-level inscription layout controls (set on Tab 8 §1).
-      // layoutStyle: 'side_by_side' | 'top_bottom' | 'stacked'
-      //   | 'centered_last' | 'custom'
+      // layoutStyle: 'centered_family_name' | 'side_by_side' | 'stacked' | 'custom'
+      // (Phase 4 Commit 3: 'centered_last' renamed to 'centered_family_name';
+      //  default changed from 'side_by_side' to 'centered_family_name'.)
       // sideArrangement: 'p1_left_p2_right' | 'p1_top_p2_bottom' | 'unknown'
-      layoutStyle: 'side_by_side',
+      layoutStyle: 'centered_family_name',
       layoutCustom: '',
       sideArrangement: 'p1_left_p2_right',
       sideToConfirm: false,
@@ -2054,27 +2058,38 @@ function rowToOrder(row, customerRow, cemeteryRow) {
     // Sprint L2 — defensive merge on order-level inscription fields so legacy
     // rows get sensible defaults for new L2 keys without losing existing data.
     // The ...row.inscription spread MUST come last so real values win.
-    inscription: {
-      type: null,
-      epitaph: '',
-      customNotes: '',
-      customFont: false,
-      customFontDescription: '',
-      preExistingPhotoUrl: '',
-      preExistingPhotoPath: '',
-      // Sprint L2 additions
-      layoutStyle: 'side_by_side',
-      layoutCustom: '',
-      sideArrangement: 'p1_left_p2_right',
-      sideToConfirm: false,
-      sideNote: '',
-      // Sprint L2 Phase 4 Commit 2 additions
-      dateFormat: 'year_only',
-      dateFormatCustom: '',
-      styleTreatment: 'plain',
-      styleTreatmentCustom: '',
-      ...(row.inscription || {}),
-    },
+    // Sprint L2 Phase 4 Commit 3 — wrapped in IIFE to apply post-spread legacy
+    // value normalization (centered_last → centered_family_name).
+    inscription: (() => {
+      const merged = {
+        type: null,
+        epitaph: '',
+        customNotes: '',
+        customFont: false,
+        customFontDescription: '',
+        preExistingPhotoUrl: '',
+        preExistingPhotoPath: '',
+        // Sprint L2 additions
+        layoutStyle: 'centered_family_name',
+        layoutCustom: '',
+        sideArrangement: 'p1_left_p2_right',
+        sideToConfirm: false,
+        sideNote: '',
+        // Sprint L2 Phase 4 Commit 2 additions
+        dateFormat: 'year_only',
+        dateFormatCustom: '',
+        styleTreatment: 'plain',
+        styleTreatmentCustom: '',
+        ...(row.inscription || {}),
+      }
+      // Sprint L2 Phase 4 Commit 3 — legacy code migration. Orders saved with
+      // layoutStyle='centered_last' (Phase 1 / Phase 3 Commit 2 code value)
+      // map to the renamed 'centered_family_name' on load.
+      if (merged.layoutStyle === 'centered_last') {
+        merged.layoutStyle = 'centered_family_name'
+      }
+      return merged
+    })(),
 
     addOns: row.add_ons || [],
     pricing: row.pricing || {
@@ -4305,11 +4320,12 @@ function InscriptionTextPreview({ order }) {
   // side_by_side with 3+ persons → fall back to stacked, with caption
   const sideBySideOverflow = effectiveLayout === 'side_by_side' && persons.length > 2
 
-  // centered_last surname analysis (D2b)
+  // centered_family_name surname analysis (D2b)
+  // Sprint L2 Phase 4 Commit 3 — renamed from centered_last for consistency.
   const allLastNames = persons.map(p => (p.lastName || '').trim()).filter(Boolean)
   const uniqueLastNames = [...new Set(allLastNames)]
   const sharedLastName = uniqueLastNames.length === 1 && allLastNames.length === persons.length
-  const centeredLastFallback = effectiveLayout === 'centered_last' && !sharedLastName
+  const centeredFamilyNameFallback = effectiveLayout === 'centered_family_name' && !sharedLastName
 
   // Per-person rendering block
   const renderPerson = (d, idx) => {
@@ -4320,9 +4336,9 @@ function InscriptionTextPreview({ order }) {
       customText: orderDateFormatCustom,
     })
 
-    // For centered_last successful case: don't render last name inside the
-    // person block; it's rendered once at the top of the layout.
-    const renderLastInline = !(effectiveLayout === 'centered_last' && sharedLastName)
+    // For centered_family_name successful case: don't render last name inside
+    // the person block; it's rendered once at the top of the layout.
+    const renderLastInline = !(effectiveLayout === 'centered_family_name' && sharedLastName)
     const displayName = renderLastInline
       ? name
       : (d.inscriptionName?.trim()
@@ -4341,22 +4357,46 @@ function InscriptionTextPreview({ order }) {
   // Render based on effective layout
   let content
 
-  if (effectiveLayout === 'centered_last' && sharedLastName) {
-    // Render shared surname large at top, persons below
+  if (
+    effectiveLayout === 'centered_family_name'
+    && sharedLastName
+    && persons.length === 2
+    && sideArrangement === 'p1_left_p2_right'
+  ) {
+    // Sprint L2 Phase 4 Commit 3 — Centered Family Name + 2-person
+    // side-by-side combo: big surname banner at top + 2-column persons
+    // below with thin vertical divider. Only fires when the side
+    // arrangement is explicitly side-by-side (left/right).
     content = (
-      <div className="sm-itp-centered-last">
-        <div className="sm-itp-last-name-banner">{(persons[0].lastName || '').toUpperCase()}</div>
+      <div className="sm-itp-centered-family-name">
+        <div className="sm-itp-family-name-banner">{(persons[0].lastName || '').toUpperCase()}</div>
+        <div className="sm-itp-side-by-side sm-itp-side-by-side-with-divider">
+          {persons.map((p, idx) => (
+            <div key={idx} className="sm-itp-column">
+              {renderPerson(p, idx)}
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  } else if (effectiveLayout === 'centered_family_name' && sharedLastName) {
+    // Centered Family Name (default stacked render): shared surname large at
+    // top, persons below in a single column. Covers top/bottom, unknown side,
+    // and 1-person or 3+ person cases.
+    content = (
+      <div className="sm-itp-centered-family-name">
+        <div className="sm-itp-family-name-banner">{(persons[0].lastName || '').toUpperCase()}</div>
         <div className="sm-itp-persons-stacked">
           {persons.map((p, idx) => renderPerson(p, idx))}
         </div>
       </div>
     )
-  } else if (centeredLastFallback) {
+  } else if (centeredFamilyNameFallback) {
     // Mixed surnames — fall back to stacked with explanatory caption
     content = (
       <div className="sm-itp-stacked">
         <div className="sm-itp-fallback-caption">
-          Centered last name requires shared surname — showing stacked.
+          Centered Family Name requires shared surname — showing stacked.
         </div>
         {persons.map((p, idx) => renderPerson(p, idx))}
       </div>
@@ -4364,8 +4404,9 @@ function InscriptionTextPreview({ order }) {
   } else if (effectiveLayout === 'side_by_side' && persons.length === 2 && !sideBySideOverflow) {
     // 2 persons, true side-by-side render. p1_left_p2_right: array order
     // (person 0 left, person 1 right). Other side values handled above.
+    // Sprint L2 Phase 4 Commit 3 — added thin vertical divider class.
     content = (
-      <div className="sm-itp-side-by-side">
+      <div className="sm-itp-side-by-side sm-itp-side-by-side-with-divider">
         {persons.map((p, idx) => (
           <div key={idx} className="sm-itp-column">
             {renderPerson(p, idx)}
@@ -4881,10 +4922,15 @@ function InscriptionTextSummary({ order }) {
         // Sprint L2 Phase 3 Commit 3 — name + date now consistent with PDF.
         // Reads inscriptionName when set, falls back to assembled legal name.
         // Uses formatPersonDates for date rendering (honors dateFormat).
+        // Sprint L2 Phase 4 Commit 3 — pass order-level dateFormat opts so
+        // PDF, Tab 8 Preview, and this summary all use the same format.
         const displayName = (d.inscriptionName && d.inscriptionName.trim())
           ? d.inscriptionName.trim()
           : [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
-        const displayDates = formatPersonDates(d)
+        const displayDates = formatPersonDates(d, {
+          format: order.inscription?.dateFormat,
+          customText: order.inscription?.dateFormatCustom,
+        })
         return (
           <div key={i} className="sm-text-summary-row">
             {d.title && <div className="sm-text-summary-title">{d.title}</div>}
@@ -11944,10 +11990,11 @@ const styles = `
   gap: 16px;
   text-align: center;
 }
-.sm-itp-centered-last {
+/* Sprint L2 Phase 4 Commit 3 — renamed from .sm-itp-centered-last */
+.sm-itp-centered-family-name {
   text-align: center;
 }
-.sm-itp-last-name-banner {
+.sm-itp-family-name-banner {
   font-size: 32px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -11955,6 +12002,21 @@ const styles = `
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 2px solid var(--sm-gold, #8c6d3f);
+}
+
+/* Sprint L2 Phase 4 Commit 3 — thin vertical divider on side-by-side renders */
+.sm-itp-side-by-side-with-divider {
+  position: relative;
+}
+.sm-itp-side-by-side-with-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--sm-border-dark, #cdc8be);
+  transform: translateX(-50%);
 }
 .sm-itp-person {
   padding: 8px 0;
