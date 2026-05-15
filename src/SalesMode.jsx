@@ -122,9 +122,10 @@ const FAMILY_TYPES = [
 ]
 
 // Sprint L2 Phase 3 — Layout style options for the inscription Layout section
+// Commit 2: 'top_bottom' removed (same visual as Stacked). Legacy orders with
+// layoutStyle: 'top_bottom' still load fine — no card will show as selected.
 const LAYOUT_STYLES = [
   { code: 'side_by_side',  label: 'Side by side',        blurb: 'Two persons side by side, left and right of the stone.' },
-  { code: 'top_bottom',    label: 'Top and bottom',      blurb: 'Two persons stacked vertically, one above the other.' },
   { code: 'stacked',       label: 'Stacked',             blurb: 'Names stacked, last name typically displayed once.' },
   { code: 'centered_last', label: 'Centered last name',  blurb: 'Large last name across top, given names below.' },
   { code: 'custom',        label: 'Custom layout',       blurb: 'Describe the arrangement freely below.' },
@@ -135,6 +136,34 @@ const SIDE_ARRANGEMENTS = [
   { code: 'p1_left_p2_right',  label: 'Person 1 left / Person 2 right' },
   { code: 'p1_top_p2_bottom',  label: 'Person 1 top / Person 2 bottom' },
   { code: 'unknown',           label: "I don't know yet",                blurb: 'A follow-up reminder will appear on the order summary.' },
+]
+
+// Sprint L2 Phase 3 Commit 2 — Date format options for the inscription Date section.
+// Blurbs show a sample using a fixed reference date (Jan 15, 1942 – Jun 22, 2018)
+// so staff sees the format before applying it; actual per-person preview uses
+// each person's real dates via formatPersonDates from Commit 1.
+const DATE_FORMATS = [
+  { code: 'month_day_year', label: 'Month Day, Year',  blurb: 'January 15, 1942 – June 22, 2018' },
+  { code: 'abbreviated',    label: 'Abbreviated',      blurb: 'Jan. 15, 1942 – Jun. 22, 2018' },
+  { code: 'slash',          label: 'Slash format',     blurb: '1/15/1942 – 6/22/2018' },
+  { code: 'dot',            label: 'Dot format',       blurb: '1.15.1942 – 6.22.2018' },
+  { code: 'year_only',      label: 'Year only',        blurb: '1942 – 2018' },
+  { code: 'custom',         label: 'Custom format',    blurb: 'Type the exact date format you want' },
+]
+
+// Sprint L2 Phase 3 Commit 2 — Style treatment options for the inscription
+// Style section. Text-only descriptions; visual assets a future enhancement.
+const STYLE_TREATMENTS = [
+  { code: 'plain',         label: 'Plain text',       blurb: 'Clean carved letters, no border or embellishment.' },
+  { code: 'scroll',        label: 'Scroll',           blurb: 'Letters set inside a carved scroll motif.' },
+  { code: 'banner',        label: 'Banner',           blurb: 'Letters set inside a carved banner.' },
+  { code: 'skin_frosted',  label: 'Skin frosted',     blurb: 'Frosted background behind the letters.' },
+  { code: 'panel',         label: 'Panel',            blurb: 'Letters set inside a raised carved panel.' },
+  { code: 'double_panel',  label: 'Double panel',     blurb: 'Two carved panels for separate sections (e.g. name + dates).' },
+  { code: 'panel_chip',    label: 'Panel with chip',  blurb: 'Carved panel with a chiseled stone-chip detail.' },
+  { code: 'old_english',   label: 'Old English font', blurb: 'Old English / blackletter font style.' },
+  { code: 'special_font',  label: 'Special font',     blurb: 'Specific font request — describe below.' },
+  { code: 'custom',        label: 'Custom treatment', blurb: 'Describe the desired style.' },
 ]
 
 // ---- Title prefixes (English first, then Spanish) -------------------------
@@ -1256,6 +1285,12 @@ function makeBlankDeceased(position = 0, isReserved = false) {
     dateFormatCustom: '',
     styleTreatment: 'plain',
     styleTreatmentCustom: '',
+    // Sprint L2 Phase 3 Commit 2 — name as appears carved on the stone.
+    // Defaults to null (UI falls back to assembled legal name from
+    // firstName+middleName+lastName). Once set, persists independently of
+    // legal name fields — Tab 4 keeps legal name for records, Tab 8 stores
+    // the carved name.
+    inscriptionName: null,
     position,
   }
 }
@@ -1976,6 +2011,7 @@ function rowToOrder(row, customerRow, cemeteryRow) {
           dateFormatCustom: d.dateFormatCustom ?? '',
           styleTreatment: d.styleTreatment ?? 'plain',
           styleTreatmentCustom: d.styleTreatmentCustom ?? '',
+          inscriptionName: d.inscriptionName ?? null,
         }))
       : [makeBlankDeceased(0)],
 
@@ -4184,6 +4220,108 @@ function InscriptionTitleBuilder({ d, idx, onChange }) {
   )
 }
 
+// Sprint L2 Phase 3 Commit 2 — per-person carved name input.
+// Defaults to assembled legal name (firstName + middleName + lastName) when
+// inscriptionName is null/empty. Once edited, persists separately from legal
+// name. PDF reads inscriptionName first, falls back to assembled legal name.
+function InscriptionNamePicker({ d, idx, onChange }) {
+  const assembledLegalName = [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ') || ''
+  const personLabel = `Person ${idx + 1}${assembledLegalName ? ' — ' + assembledLegalName : ''}`
+  const valueOrDefault = d.inscriptionName != null && d.inscriptionName !== '' ? d.inscriptionName : assembledLegalName
+
+  return (
+    <div className="sm-name-picker">
+      <Field label={personLabel} wide hint="How the name should appear on the stone (e.g. 'Johnny' instead of legal 'John'). Defaults to legal name from Memorial step.">
+        <TextInput
+          value={valueOrDefault}
+          onChange={v => onChange({ inscriptionName: v })}
+          placeholder={assembledLegalName || 'Enter the carved name'}
+        />
+      </Field>
+    </div>
+  )
+}
+
+// Sprint L2 Phase 3 Commit 2 — per-person date format picker.
+// Uses formatPersonDates (Commit 1 helper) to show how each person's actual
+// dates would render in each format.
+function DateFormatPicker({ d, idx, onChange }) {
+  const personName = [d.firstName, d.lastName].filter(Boolean).join(' ') || `Person ${idx + 1}`
+  const personLabel = `Person ${idx + 1}${personName !== `Person ${idx + 1}` ? ' — ' + personName : ''}`
+
+  return (
+    <div className="sm-date-picker">
+      <Field label={personLabel} wide hint="How the dates should appear on the stone">
+        <div className="sm-card-grid sm-card-grid-services">
+          {DATE_FORMATS.map(opt => {
+            const previewD = { ...d, dateFormat: opt.code }
+            let preview = ''
+            if (opt.code !== 'custom') {
+              preview = formatPersonDates(previewD) || opt.blurb
+            } else {
+              preview = opt.blurb
+            }
+            return (
+              <CardOption
+                key={opt.code}
+                on={(d.dateFormat || 'year_only') === opt.code}
+                onClick={() => onChange({ dateFormat: opt.code })}
+                title={opt.label}
+                blurb={preview}
+              />
+            )
+          })}
+        </div>
+      </Field>
+
+      {d.dateFormat === 'custom' && (
+        <Field label="Custom date format" wide>
+          <TextInput
+            value={d.dateFormatCustom || ''}
+            onChange={v => onChange({ dateFormatCustom: v })}
+            placeholder="e.g. 'Born 1942 · Died 2018'"
+          />
+        </Field>
+      )}
+    </div>
+  )
+}
+
+// Sprint L2 Phase 3 Commit 2 — per-person style treatment picker.
+// Text-only descriptions; visual assets a future enhancement.
+function StyleTreatmentPicker({ d, idx, onChange }) {
+  const personName = [d.firstName, d.lastName].filter(Boolean).join(' ') || `Person ${idx + 1}`
+  const personLabel = `Person ${idx + 1}${personName !== `Person ${idx + 1}` ? ' — ' + personName : ''}`
+
+  return (
+    <div className="sm-style-picker">
+      <Field label={personLabel} wide hint="Decorative treatment for this person's section">
+        <div className="sm-card-grid sm-card-grid-services">
+          {STYLE_TREATMENTS.map(opt => (
+            <CardOption
+              key={opt.code}
+              on={(d.styleTreatment || 'plain') === opt.code}
+              onClick={() => onChange({ styleTreatment: opt.code })}
+              title={opt.label}
+              blurb={opt.blurb}
+            />
+          ))}
+        </div>
+      </Field>
+
+      {(d.styleTreatment === 'special_font' || d.styleTreatment === 'custom') && (
+        <Field label={d.styleTreatment === 'special_font' ? 'Special font description' : 'Custom treatment description'} wide>
+          <TextInput
+            value={d.styleTreatmentCustom || ''}
+            onChange={v => onChange({ styleTreatmentCustom: v })}
+            placeholder={d.styleTreatment === 'special_font' ? 'Name of the font' : 'Describe the treatment'}
+          />
+        </Field>
+      )}
+    </div>
+  )
+}
+
 // Sprint L2 Phase 3 — up/down arrow buttons for reordering persons in the
 // Layout section. Reorders order.deceased array directly (adjacent-swap with
 // leapfrog over reserved entries). Resequences position field for DB tidiness.
@@ -4285,13 +4423,113 @@ function InscriptionStep({ order, update }) {
         <p className="sm-step-lede">
           {isInscriptionOnly
             ? 'Inscription on an existing stone — quick job. Confirm the type and what goes on, snap a photo of the existing marker if you have one.'
-            : 'Set how the inscription is arranged and how each person\'s name and dates appear.'}
+            : 'Set how each person\'s name, title, dates, and style appear on the stone.'}
         </p>
       </div>
 
-      {/* Sprint L2 Phase 3 §1 — Layout (order-level; hidden for inscription-only flows) */}
+      {/* §1 — Name as carved (per-person; always shown for non-reserved persons) */}
+      <Section title="Name as carved" eyebrow="Step 8 §1 · how the name should appear on the stone (defaults to legal name from Memorial step)">
+        {(order.deceased || []).map((d, idx) => {
+          if (d.isReserved) return null
+          return (
+            <InscriptionNamePicker
+              key={idx}
+              d={d}
+              idx={idx}
+              onChange={patch => updateDeceased(idx, patch)}
+            />
+          )
+        })}
+        {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
+          <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
+            Add at least one person on the Memorial step (step 4) to set their inscription name here.
+          </div>
+        )}
+      </Section>
+
+      {/* §2 — Title / Relationship (per-person; Phase 2 component, relocated below Name) */}
+      <Section title="Title / Relationship" eyebrow="Step 8 §2 · pick a prefix + relations per person — appears above each name">
+        {(order.deceased || []).map((d, idx) => {
+          // Critical: map over FULL deceased array, skip reserved with null
+          // so idx stays aligned to the real array position. updateDeceased(idx, ...)
+          // would patch the wrong person if we .filter() first.
+          if (d.isReserved) return null
+          return (
+            <InscriptionTitleBuilder
+              key={idx}
+              d={d}
+              idx={idx}
+              onChange={patch => updateDeceased(idx, patch)}
+            />
+          )
+        })}
+        {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
+          <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
+            Add at least one person on the Memorial step (step 4) to set their inscription title here.
+          </div>
+        )}
+      </Section>
+
+      {/* Inscription-only-specific: type picker + photo upload */}
+      {isInscriptionOnly && (
+        <Section title="Inscription type" eyebrow="What kind of inscription">
+          <div className="sm-card-grid sm-card-grid-services">
+            {INSCRIPTION_TYPES.map(t => (
+              <CardOption
+                key={t.code}
+                on={order.inscription.type === t.code}
+                onClick={() => updateInsc({ type: t.code })}
+                title={t.label}
+                blurb={t.blurb}
+                icon={t.code === 'full' ? '✒️' : t.code === 'date' ? '📅' : '🗓'}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {(isInscriptionOnly || order.serviceTypes.includes('ADD_PHOTO') || order.serviceTypes.includes('REPAIR') || order.serviceTypes.includes('ACID_WASH')) && (
+        <Section title="Existing marker photo" eyebrow="Optional but very helpful">
+          <p className="sm-helper">
+            Upload a photo of the existing marker so the engraver can confirm
+            spacing, font, and font size. Phone snapshots are fine.
+          </p>
+          {order.inscription.preExistingPhotoUrl ? (
+            <div className="sm-photo-preview">
+              <img src={order.inscription.preExistingPhotoUrl} alt="Existing marker" />
+              <button
+                type="button"
+                className="sm-link-btn sm-link-btn-danger"
+                onClick={() => updateInsc({ preExistingPhotoUrl: '', preExistingPhotoPath: '' })}
+              >Replace photo</button>
+            </div>
+          ) : (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={onUpload}
+              />
+              <button
+                type="button"
+                className="sm-add-btn"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? 'Uploading…' : '📷 Upload photo from this device'}
+              </button>
+            </>
+          )}
+        </Section>
+      )}
+
+      {/* §3 — Layout (order-level; hidden for inscription-only AND for single-person orders without a reserved slot) */}
       {!isInscriptionOnly && (
-        <Section title="Layout" eyebrow="Step 8 §1 · how the inscription is arranged on the stone">
+        ((order.deceased || []).filter(d => !d.isReserved).length > 1
+          || (order.deceased || []).some(d => d.isReserved)) && (
+        <Section title="Layout" eyebrow="Step 8 §3 · how the inscription is arranged on the stone">
           <Field label="Layout style" wide hint="Pick the overall arrangement">
             <div className="sm-card-grid sm-card-grid-services">
               {LAYOUT_STYLES.map(opt => (
@@ -4374,117 +4612,50 @@ function InscriptionStep({ order, update }) {
             )
           })()}
         </Section>
+        )
       )}
 
-      <Section title="Title / Relationship" eyebrow="Pick a prefix + relations per person — appears on the stone above each name">
+      {/* §4 — Date format (per-person; always shown for non-reserved persons) */}
+      <Section title="Date format" eyebrow="Step 8 §4 · how the dates appear on the stone (per person)">
         {(order.deceased || []).map((d, idx) => {
-          // Critical: map over FULL deceased array, skip reserved with null
-          // so idx stays aligned to the real array position. updateDeceased(idx, ...)
-          // would patch the wrong person if we .filter() first.
           if (d.isReserved) return null
           return (
-            <InscriptionTitleBuilder
+            <DateFormatPicker
               key={idx}
               d={d}
               idx={idx}
-              onChange={patch => update({
-                deceased: (order.deceased || []).map((x, i) => i === idx ? { ...x, ...patch } : x)
-              })}
+              onChange={patch => updateDeceased(idx, patch)}
             />
           )
         })}
         {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
           <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
-            Add at least one person on the Memorial step (step 4) to set their inscription title here.
+            Add at least one person on the Memorial step (step 4) to set their date format here.
           </div>
         )}
       </Section>
 
-      {/* Inscription-only-specific: type picker + photo upload */}
-      {isInscriptionOnly && (
-        <Section title="Inscription type" eyebrow="What kind of inscription">
-          <div className="sm-card-grid sm-card-grid-services">
-            {INSCRIPTION_TYPES.map(t => (
-              <CardOption
-                key={t.code}
-                on={order.inscription.type === t.code}
-                onClick={() => updateInsc({ type: t.code })}
-                title={t.label}
-                blurb={t.blurb}
-                icon={t.code === 'full' ? '✒️' : t.code === 'date' ? '📅' : '🗓'}
+      {/* §5 — Style treatment (per-person; hidden for inscription-only flows) */}
+      {!isInscriptionOnly && (
+        <Section title="Style treatment" eyebrow="Step 8 §5 · decorative treatment for each person's section">
+          {(order.deceased || []).map((d, idx) => {
+            if (d.isReserved) return null
+            return (
+              <StyleTreatmentPicker
+                key={idx}
+                d={d}
+                idx={idx}
+                onChange={patch => updateDeceased(idx, patch)}
               />
-            ))}
-          </div>
-        </Section>
-      )}
-
-      {(isInscriptionOnly || order.serviceTypes.includes('ADD_PHOTO') || order.serviceTypes.includes('REPAIR') || order.serviceTypes.includes('ACID_WASH')) && (
-        <Section title="Existing marker photo" eyebrow="Optional but very helpful">
-          <p className="sm-helper">
-            Upload a photo of the existing marker so the engraver can confirm
-            spacing, font, and font size. Phone snapshots are fine.
-          </p>
-          {order.inscription.preExistingPhotoUrl ? (
-            <div className="sm-photo-preview">
-              <img src={order.inscription.preExistingPhotoUrl} alt="Existing marker" />
-              <button
-                type="button"
-                className="sm-link-btn sm-link-btn-danger"
-                onClick={() => updateInsc({ preExistingPhotoUrl: '', preExistingPhotoPath: '' })}
-              >Replace photo</button>
+            )
+          })}
+          {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
+            <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
+              Add at least one person on the Memorial step (step 4) to set their style treatment here.
             </div>
-          ) : (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={onUpload}
-              />
-              <button
-                type="button"
-                className="sm-add-btn"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-              >
-                {uploading ? 'Uploading…' : '📷 Upload photo from this device'}
-              </button>
-            </>
           )}
         </Section>
       )}
-
-      <Section title="Epitaph" eyebrow="Scripture, saying, or short verse">
-        <Field label="Most Popular (quick pick)" hint="Click any to drop into the textbox below">
-          <SelectInput
-            value=""
-            onChange={v => v && updateInsc({ epitaph: v })}
-            placeholder="— pick a popular epitaph —"
-            options={POPULAR_EPITAPHS.map(e => ({ value: e, label: e }))}
-          />
-        </Field>
-        <EpitaphLibraryPicker
-          onPick={v => updateInsc({ epitaph: v })}
-          current={order.inscription.epitaph}
-        />
-        <Field label="Epitaph text" wide hint="Edit freely — picking from above pre-fills this">
-          <TextArea
-            value={order.inscription.epitaph}
-            onChange={v => updateInsc({ epitaph: v })}
-            rows={3}
-            placeholder="e.g. Forever in our hearts · Until we meet again · El Señor es mi pastor"
-          />
-        </Field>
-        <Field label="Custom notes for the engraver" wide hint="Optional">
-          <TextArea
-            value={order.inscription.customNotes}
-            onChange={v => updateInsc({ customNotes: v })}
-            rows={2}
-            placeholder="e.g. Center the epitaph below the names · Lord's Prayer in Spanish · etch in script font"
-          />
-        </Field>
-      </Section>
 
       {/* Custom font fee only applies to inscription services on existing stones —
           new stones and bronzes don't carry the custom-font surcharge. */}
@@ -4520,6 +4691,38 @@ function InscriptionStep({ order, update }) {
           <PreviewPanel order={order} />
         </Section>
       )}
+
+      {/* §6 — Epitaph (order-level; last) */}
+      <Section title="Epitaph" eyebrow="Step 8 §6 · scripture, saying, or short verse">
+        <Field label="Most Popular (quick pick)" hint="Click any to drop into the textbox below">
+          <SelectInput
+            value=""
+            onChange={v => v && updateInsc({ epitaph: v })}
+            placeholder="— pick a popular epitaph —"
+            options={POPULAR_EPITAPHS.map(e => ({ value: e, label: e }))}
+          />
+        </Field>
+        <EpitaphLibraryPicker
+          onPick={v => updateInsc({ epitaph: v })}
+          current={order.inscription.epitaph}
+        />
+        <Field label="Epitaph text" wide hint="Edit freely — picking from above pre-fills this">
+          <TextArea
+            value={order.inscription.epitaph}
+            onChange={v => updateInsc({ epitaph: v })}
+            rows={3}
+            placeholder="e.g. Forever in our hearts · Until we meet again · El Señor es mi pastor"
+          />
+        </Field>
+        <Field label="Custom notes for the engraver" wide hint="Optional">
+          <TextArea
+            value={order.inscription.customNotes}
+            onChange={v => updateInsc({ customNotes: v })}
+            rows={2}
+            placeholder="e.g. Center the epitaph below the names · Lord's Prayer in Spanish · etch in script font"
+          />
+        </Field>
+      </Section>
 
       {isInscriptionOnly && (
         <Section title="What's going on" eyebrow="Confirm the text">
@@ -11522,6 +11725,18 @@ const styles = `
 .sm-person-order-arrows .sm-chip-btn-small:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* Sprint L2 Phase 3 Commit 2 — per-person picker spacing */
+.sm-name-picker,
+.sm-date-picker,
+.sm-style-picker {
+  margin-bottom: 16px;
+}
+.sm-name-picker:last-child,
+.sm-date-picker:last-child,
+.sm-style-picker:last-child {
+  margin-bottom: 0;
 }
 
 /* ---- RESERVED-SPACE CARD VARIANT ------------------------------------------ */
