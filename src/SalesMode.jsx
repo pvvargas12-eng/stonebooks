@@ -169,34 +169,6 @@ const STYLE_TREATMENTS = [
   { code: 'custom',        label: 'Custom treatment', blurb: 'Describe the desired style.' },
 ]
 
-// Sprint L3 — per-person carved name picker options. Each option has a `code`
-// (used for selection detection), a `label` (shown on the card), and a
-// builder function that takes a deceased person and returns the carved name
-// string. The Custom option has no builder — picking it reveals a free-text
-// input below the grid.
-const NAME_DISPLAY_OPTIONS = [
-  {
-    code: 'family',
-    label: 'Family Name',
-    build: (d) => (d.lastName || '').trim(),
-  },
-  {
-    code: 'full_legal',
-    label: 'Full Legal Name',
-    build: (d) => [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ').trim(),
-  },
-  {
-    code: 'first_last',
-    label: 'First Last',
-    build: (d) => [d.firstName, d.lastName].filter(Boolean).join(' ').trim(),
-  },
-  {
-    code: 'custom',
-    label: 'Custom',
-    build: null, // free-text — revealed below the grid when selected
-  },
-]
-
 // ---- Title prefixes (English first, then Spanish) -------------------------
 const TITLE_PREFIXES = [
   // English
@@ -4283,85 +4255,24 @@ function InscriptionTitleBuilder({ d, idx, onChange }) {
   )
 }
 
-// Sprint L2 Phase 3 Commit 2 + Sprint L3 — per-person carved name picker.
-// Card grid with 4 options: Family Name, Full Legal Name, First Last, Custom.
-// Storage in d.inscriptionName. PDF/preview/summary read this field with
-// fallback to assembled legal name (buildNameForPerson) — unchanged.
-// Cards with empty computed values are hidden (Family Name hides when no
-// lastName). Duplicate-sample cards are deduped (First Last hides when
-// identical to Full Legal Name because no middleName).
+// Sprint L2 Phase 3 Commit 2 — per-person carved name input.
+// Defaults to assembled legal name (firstName + middleName + lastName) when
+// inscriptionName is null/empty. Once edited, persists separately from legal
+// name. PDF reads inscriptionName first, falls back to assembled legal name.
 function InscriptionNamePicker({ d, idx, onChange }) {
-  const assembledLegalName = [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ').trim()
+  const assembledLegalName = [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ') || ''
   const personLabel = `Person ${idx + 1}${assembledLegalName ? ' — ' + assembledLegalName : ''}`
-
-  // Build candidate samples for each non-custom option once.
-  const samples = {}
-  for (const opt of NAME_DISPLAY_OPTIONS) {
-    if (opt.build) {
-      samples[opt.code] = opt.build(d)
-    }
-  }
-
-  // Visible options: hide cards whose value would be empty, and dedupe
-  // identical samples (First Last hides when it matches Full Legal Name).
-  const visibleOptions = NAME_DISPLAY_OPTIONS.filter(opt => {
-    if (opt.code === 'custom') return true // always visible
-    const value = samples[opt.code]
-    if (!value) return false
-    if (opt.code === 'first_last' && samples['first_last'] === samples['full_legal']) {
-      return false
-    }
-    return true
-  })
-
-  // Detect selected card from stored d.inscriptionName.
-  // Auto-select 'full_legal' when value is null/empty (matches what gets
-  // carved today via buildNameForPerson fallback). Only consider visible
-  // options so we never auto-select a card the user can't see.
-  const detectSelected = () => {
-    const stored = (d.inscriptionName || '').trim()
-    if (!stored) return 'full_legal'
-    for (const opt of visibleOptions) {
-      if (opt.code === 'custom') continue
-      if (samples[opt.code] === stored) return opt.code
-    }
-    return 'custom'
-  }
-  const selectedCode = detectSelected()
-
-  const handleCardClick = (opt) => {
-    if (opt.code === 'custom') {
-      // No auto-write — staff types in the input below. Keep d.inscriptionName
-      // as-is so the Custom input pre-fills with any prior value.
-      return
-    }
-    onChange({ inscriptionName: opt.build(d) })
-  }
+  const valueOrDefault = d.inscriptionName != null && d.inscriptionName !== '' ? d.inscriptionName : assembledLegalName
 
   return (
     <div className="sm-name-picker">
-      <Field label={personLabel} wide hint="How the name should appear on the stone (separate from the family banner above).">
-        <div className="sm-card-grid sm-card-grid-services">
-          {visibleOptions.map(opt => (
-            <CardOption
-              key={opt.code}
-              on={selectedCode === opt.code}
-              onClick={() => handleCardClick(opt)}
-              title={opt.label}
-              blurb={opt.code === 'custom' ? 'Type your own — for nicknames or special phrasing' : (samples[opt.code] || '—')}
-            />
-          ))}
-        </div>
+      <Field label={personLabel} wide hint="How the name should appear on the stone (e.g. 'Johnny' instead of legal 'John'). Defaults to legal name from Memorial step.">
+        <TextInput
+          value={valueOrDefault}
+          onChange={v => onChange({ inscriptionName: v })}
+          placeholder={assembledLegalName || 'Enter the carved name'}
+        />
       </Field>
-      {selectedCode === 'custom' && (
-        <Field label="Custom carved name" wide>
-          <TextInput
-            value={d.inscriptionName || ''}
-            onChange={v => onChange({ inscriptionName: v })}
-            placeholder={assembledLegalName || 'Enter the carved name'}
-          />
-        </Field>
-      )}
     </div>
   )
 }
