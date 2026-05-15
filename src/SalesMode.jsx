@@ -134,10 +134,11 @@ const LAYOUT_STYLES = [
   { code: 'custom',               label: 'Custom layout',        blurb: 'Describe the arrangement freely below.' },
 ]
 
-// Sprint L2 Phase 4 Commit 5 — SIDE_ARRANGEMENTS constant deleted. Person
-// ordering arrows (2+ persons) handle who-goes-where; explicit sideToConfirm
-// checkbox handles the confirmation-pending flag. The inscription.sideArrangement
-// field is kept in schema (orphaned) for legacy-row compatibility.
+// Sprint L2 Phase 4 Commit 5 — the per-person side-arrangement card constant
+// was removed. Person ordering arrows (2+ persons) now handle who-goes-where;
+// an explicit "side not yet confirmed" checkbox handles the confirmation-pending
+// flag. The legacy field on order.inscription is kept in schema (orphaned)
+// for backward-compatibility with rows saved before this commit.
 
 // Sprint L2 Phase 3 Commit 2 — Date format options for the inscription Date section.
 // Blurbs show a sample using a fixed reference date (Jan 15, 1942 – Jun 22, 2018)
@@ -4770,7 +4771,7 @@ function InscriptionStep({ order, update }) {
           )}
 
           {/* Sprint L2 Phase 4 Commit 5 — explicit sideToConfirm checkbox
-              replaces the SIDE_ARRANGEMENTS 'unknown' option. Order-level,
+              replaces the prior side-arrangement "unknown" option. Order-level,
               so visible regardless of person count. */}
           <Field label="Inscription side not yet confirmed" wide hint="Check this if customer or cemetery still needs to confirm which side faces forward. A reminder banner will appear on the saved order.">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
