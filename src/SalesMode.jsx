@@ -151,6 +151,7 @@ const DATE_FORMATS = [
   { code: 'slash',          label: 'Slash format',     blurb: '1/15/1942 – 6/22/2018' },
   { code: 'dot',            label: 'Dot format',       blurb: '1.15.1942 – 6.22.2018' },
   { code: 'year_only',      label: 'Year only',        blurb: '1942 – 2018' },
+  { code: 'year_name_year', label: 'Year Name Year',   blurb: '1919 Paul V. 2020 (dates flank the name)' },
   { code: 'custom',         label: 'Custom format',    blurb: 'Type the exact date format you want' },
 ]
 
@@ -1429,6 +1430,11 @@ function makeBlankOrder() {
       dateFormatCustom: '',
       styleTreatment: 'plain',
       styleTreatmentCustom: '',
+      // Sprint L2 Phase 4 Commit 4 — order-level Family Name for the
+      // Centered Family Name banner. null = auto-populate from computed
+      // default (shared surname or first person's lastName). Preview-only;
+      // PDF unchanged.
+      familyName: null,
     },
 
     // Add-ons (Sprint 3) — array of { code, qty, price, notes }
@@ -2080,6 +2086,8 @@ function rowToOrder(row, customerRow, cemeteryRow) {
         dateFormatCustom: '',
         styleTreatment: 'plain',
         styleTreatmentCustom: '',
+        // Sprint L2 Phase 4 Commit 4 — preview-only Family Name verification.
+        familyName: null,
         ...(row.inscription || {}),
       }
       // Sprint L2 Phase 4 Commit 3 — legacy code migration. Orders saved with
@@ -4327,10 +4335,44 @@ function InscriptionTextPreview({ order }) {
   const sharedLastName = uniqueLastNames.length === 1 && allLastNames.length === persons.length
   const centeredFamilyNameFallback = effectiveLayout === 'centered_family_name' && !sharedLastName
 
+  // Sprint L2 Phase 4 Commit 4 — Family Name for the centered banner. Prefer
+  // the explicit order.inscription.familyName when staff has set it; otherwise
+  // fall back to the computed default (shared surname or first person's lastName).
+  const familyNameForBanner = (() => {
+    const explicit = order.inscription?.familyName
+    if (explicit && explicit.trim()) return explicit.trim()
+    return computeFamilyNameDefault(order.deceased)
+  })()
+
   // Per-person rendering block
   const renderPerson = (d, idx) => {
     const name = buildNameForPerson(d)
     const title = buildTitleForPerson(d)
+
+    // Sprint L2 Phase 4 Commit 4 — Year Name Year structural special-case.
+    // Replaces the separate name + dates divs with one combined line.
+    if (orderDateFormat === 'year_name_year') {
+      const parts = yearNameYearParts(d)
+      let combined = name || '(name pending)'
+      if (parts) {
+        if (parts.isPreNeed && parts.birthYear) {
+          combined = `b. ${parts.birthYear} ${combined}`
+        } else if (parts.birthYear && parts.deathYear) {
+          combined = `${parts.birthYear}    ${combined}    ${parts.deathYear}`
+        } else if (parts.birthYear) {
+          combined = `${parts.birthYear}    ${combined}`
+        } else if (parts.deathYear) {
+          combined = `${combined}    ${parts.deathYear}`
+        }
+      }
+      return (
+        <div key={idx} className="sm-itp-person sm-itp-person-ynr">
+          {title && <div className="sm-itp-title">{title}</div>}
+          <div className="sm-itp-year-name-year">{combined}</div>
+        </div>
+      )
+    }
+
     const dates = formatPersonDates(d, {
       format: orderDateFormat,
       customText: orderDateFormatCustom,
@@ -4369,7 +4411,7 @@ function InscriptionTextPreview({ order }) {
     // arrangement is explicitly side-by-side (left/right).
     content = (
       <div className="sm-itp-centered-family-name">
-        <div className="sm-itp-family-name-banner">{(persons[0].lastName || '').toUpperCase()}</div>
+        <div className="sm-itp-family-name-banner">{familyNameForBanner.toUpperCase()}</div>
         <div className="sm-itp-side-by-side sm-itp-side-by-side-with-divider">
           {persons.map((p, idx) => (
             <div key={idx} className="sm-itp-column">
@@ -4385,7 +4427,7 @@ function InscriptionTextPreview({ order }) {
     // and 1-person or 3+ person cases.
     content = (
       <div className="sm-itp-centered-family-name">
-        <div className="sm-itp-family-name-banner">{(persons[0].lastName || '').toUpperCase()}</div>
+        <div className="sm-itp-family-name-banner">{familyNameForBanner.toUpperCase()}</div>
         <div className="sm-itp-persons-stacked">
           {persons.map((p, idx) => renderPerson(p, idx))}
         </div>
@@ -4577,6 +4619,31 @@ function InscriptionStep({ order, update }) {
 
       {/* §1 — Name as carved (per-person; always shown for non-reserved persons) */}
       <Section title="Name as carved" eyebrow="Step 8 §1 · how the name should appear on the stone (defaults to legal name from Memorial step)">
+        {/* Sprint L2 Phase 4 Commit 4 — Family Name verification field. Auto-
+            populates from the computed default (shared surname or first
+            person's lastName); editable. Preview-only — the PDF reads each
+            person's lastName, not this field. */}
+        {(() => {
+          const computedDefault = computeFamilyNameDefault(order.deceased)
+          const explicit = order.inscription?.familyName
+          const currentValue = (explicit != null && explicit !== '') ? explicit : computedDefault
+          const personCount = (order.deceased || []).filter(d => !d.isReserved).length
+          if (personCount === 0 && order.inscription?.layoutStyle !== 'centered_family_name') return null
+          return (
+            <Field
+              label="Family Name (centered on the stone)"
+              wide
+              hint="Surname that appears large and centered when layout is 'Centered Family Name'. Defaults from persons; editable."
+            >
+              <TextInput
+                value={currentValue}
+                onChange={v => updateInsc({ familyName: v })}
+                placeholder={computedDefault || 'Family surname'}
+              />
+            </Field>
+          )
+        })()}
+
         {(order.deceased || []).map((d, idx) => {
           if (d.isReserved) return null
           return (
@@ -4927,6 +4994,31 @@ function InscriptionTextSummary({ order }) {
         const displayName = (d.inscriptionName && d.inscriptionName.trim())
           ? d.inscriptionName.trim()
           : [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
+
+        // Sprint L2 Phase 4 Commit 4 — Year Name Year structural special-case.
+        // Combines the name + flanking years into one row.
+        if (order.inscription?.dateFormat === 'year_name_year') {
+          const parts = yearNameYearParts(d)
+          let combined = displayName || '(name pending)'
+          if (parts) {
+            if (parts.isPreNeed && parts.birthYear) {
+              combined = `b. ${parts.birthYear} ${combined}`
+            } else if (parts.birthYear && parts.deathYear) {
+              combined = `${parts.birthYear}    ${combined}    ${parts.deathYear}`
+            } else if (parts.birthYear) {
+              combined = `${parts.birthYear}    ${combined}`
+            } else if (parts.deathYear) {
+              combined = `${combined}    ${parts.deathYear}`
+            }
+          }
+          return (
+            <div key={i} className="sm-text-summary-row">
+              {d.title && <div className="sm-text-summary-title">{d.title}</div>}
+              <div className="sm-text-summary-name">{combined}</div>
+            </div>
+          )
+        }
+
         const displayDates = formatPersonDates(d, {
           format: order.inscription?.dateFormat,
           customText: order.inscription?.dateFormatCustom,
@@ -6946,6 +7038,34 @@ function formatPersonDates(d, opts) {
   return ''
 }
 
+// Sprint L2 Phase 4 Commit 4 — Year Name Year structural special-case.
+// Extracts the birth/death years from ISO YYYY-MM-DD strings (slice-based
+// to avoid timezone shifts). Returns null when both dates are absent so the
+// caller can short-circuit to just the name.
+function yearNameYearParts(d) {
+  if (!d) return null
+  const birthYear = (d.dateOfBirth && typeof d.dateOfBirth === 'string' && d.dateOfBirth.length >= 4)
+    ? d.dateOfBirth.slice(0, 4)
+    : ''
+  const deathYear = (d.dateOfDeath && typeof d.dateOfDeath === 'string' && d.dateOfDeath.length >= 4)
+    ? d.dateOfDeath.slice(0, 4)
+    : ''
+  if (!birthYear && !deathYear) return null
+  return { birthYear, deathYear, isPreNeed: !!d.isPreNeed }
+}
+
+// Sprint L2 Phase 4 Commit 4 — derive a default Family Name for the
+// Centered Family Name banner. Shared surname across all non-reserved
+// persons wins; otherwise falls back to the first non-reserved person's
+// lastName. Used as the placeholder/auto-populate for the Tab 8 §1
+// "Family Name" field, and as the banner fallback in InscriptionTextPreview.
+function computeFamilyNameDefault(deceased) {
+  const persons = (deceased || []).filter(d => !d.isReserved && (d.lastName || '').trim())
+  if (persons.length === 0) return ''
+  const lastNames = [...new Set(persons.map(p => p.lastName.trim()))]
+  return lastNames.length === 1 ? lastNames[0] : persons[0].lastName.trim()
+}
+
 // Sprint L2 Phase 4 — hoisted from pdfDeceasedLines so the new
 // InscriptionTextPreview and (future) consumers share one implementation.
 // Title: prefer d.title (free-text editable), fall back to assembled
@@ -7004,6 +7124,28 @@ function pdfDeceasedLines(order) {
       out.push({ kind: 'title', text: titleText })
     }
     const name = buildNameForPerson(d)
+
+    // Sprint L2 Phase 4 Commit 4 — Year Name Year structural special-case.
+    // Replaces the separate name + dates rows with one combined "YYYY name YYYY"
+    // line. Empty `dates` so the consumer's right-aligned dates renderer skips.
+    if (orderDateFormat === 'year_name_year') {
+      const parts = yearNameYearParts(d)
+      let combined = name || '(name pending)'
+      if (parts) {
+        if (parts.isPreNeed && parts.birthYear) {
+          combined = `b. ${parts.birthYear}  ${combined}`
+        } else if (parts.birthYear && parts.deathYear) {
+          combined = `${parts.birthYear}  ${combined}  ${parts.deathYear}`
+        } else if (parts.birthYear) {
+          combined = `${parts.birthYear}  ${combined}`
+        } else if (parts.deathYear) {
+          combined = `${combined}  ${parts.deathYear}`
+        }
+      }
+      out.push({ kind: 'person', name: combined, dates: '' })
+      continue
+    }
+
     const dates = formatPersonDates(d, {
       format: orderDateFormat,
       customText: orderDateFormatCustom,
@@ -12002,6 +12144,20 @@ const styles = `
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 2px solid var(--sm-gold, #8c6d3f);
+}
+
+/* Sprint L2 Phase 4 Commit 4 — Year Name Year combined-line display */
+.sm-itp-year-name-year {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  margin-bottom: 4px;
+  color: var(--sm-navy, #1e2d3d);
+}
+.sm-itp-person-ynr {
+  padding: 8px 0;
 }
 
 /* Sprint L2 Phase 4 Commit 3 — thin vertical divider on side-by-side renders */
