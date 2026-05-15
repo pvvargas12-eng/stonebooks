@@ -4322,6 +4322,164 @@ function StyleTreatmentPicker({ d, idx, onChange }) {
   )
 }
 
+// Sprint L2 Phase 4 — HTML/CSS preview replacing the SVG carved-stone preview.
+// Shows text arrangement only (no shape, size, or color per Q3b). Honors
+// layoutStyle, sideArrangement, styleTreatment per person, and respects the
+// 3+ relations title wrap requirement via natural CSS word-wrap.
+function InscriptionTextPreview({ order }) {
+  const allDeceased = order.deceased || []
+  const persons = allDeceased.filter(d => !d.isReserved)
+  const insc = order.inscription || {}
+
+  // Edge: no non-reserved persons → render an empty-state hint
+  if (persons.length === 0) {
+    return (
+      <div className="sm-itp-empty">
+        <em>Add at least one person on the Memorial step to see the preview.</em>
+      </div>
+    )
+  }
+
+  const layoutStyle = insc.layoutStyle || 'side_by_side'
+  const sideArrangement = insc.sideArrangement || 'p1_left_p2_right'
+
+  // Side arrangement wins over layoutStyle when they conflict.
+  // p1_top_p2_bottom on side_by_side → renders stacked.
+  const effectiveLayout = (layoutStyle === 'side_by_side' && sideArrangement === 'p1_top_p2_bottom')
+    ? 'stacked'
+    : layoutStyle
+
+  // side_by_side with 3+ persons → fall back to stacked, with caption
+  const sideBySideOverflow = effectiveLayout === 'side_by_side' && persons.length > 2
+
+  // centered_last surname analysis (D2b)
+  const allLastNames = persons.map(p => (p.lastName || '').trim()).filter(Boolean)
+  const uniqueLastNames = [...new Set(allLastNames)]
+  const sharedLastName = uniqueLastNames.length === 1 && allLastNames.length === persons.length
+  const centeredLastFallback = effectiveLayout === 'centered_last' && !sharedLastName
+
+  // Per-person rendering block
+  const renderPerson = (d, idx) => {
+    const name = buildNameForPerson(d)
+    const title = buildTitleForPerson(d)
+    const dates = formatPersonDates(d)
+    const treatment = d.styleTreatment || 'plain'
+    const treatmentLabel = (() => {
+      if (treatment === 'plain') return null
+      const found = STYLE_TREATMENTS.find(s => s.code === treatment)
+      if (!found) return null
+      const base = found.label
+      if ((treatment === 'special_font' || treatment === 'custom') && d.styleTreatmentCustom?.trim()) {
+        return `${base} (${d.styleTreatmentCustom.trim()})`
+      }
+      return base
+    })()
+
+    // For centered_last successful case: don't render last name inside the
+    // person block; it's rendered once at the top of the layout.
+    const renderLastInline = !(effectiveLayout === 'centered_last' && sharedLastName)
+    const displayName = renderLastInline
+      ? name
+      : (d.inscriptionName?.trim()
+          ? d.inscriptionName.trim()
+          : [d.firstName, d.middleName].filter(Boolean).join(' '))
+
+    return (
+      <div key={idx} className="sm-itp-person">
+        {title && <div className="sm-itp-title">{title}</div>}
+        <div className="sm-itp-name">{displayName || '(name pending)'}</div>
+        {dates && <div className="sm-itp-dates">{dates}</div>}
+        {treatmentLabel && <div className="sm-itp-treatment">Treatment: {treatmentLabel}</div>}
+      </div>
+    )
+  }
+
+  // Render based on effective layout
+  let content
+
+  if (effectiveLayout === 'centered_last' && sharedLastName) {
+    // Render shared surname large at top, persons below
+    content = (
+      <div className="sm-itp-centered-last">
+        <div className="sm-itp-last-name-banner">{(persons[0].lastName || '').toUpperCase()}</div>
+        <div className="sm-itp-persons-stacked">
+          {persons.map((p, idx) => renderPerson(p, idx))}
+        </div>
+      </div>
+    )
+  } else if (centeredLastFallback) {
+    // Mixed surnames — fall back to stacked with explanatory caption
+    content = (
+      <div className="sm-itp-stacked">
+        <div className="sm-itp-fallback-caption">
+          Centered last name requires shared surname — showing stacked.
+        </div>
+        {persons.map((p, idx) => renderPerson(p, idx))}
+      </div>
+    )
+  } else if (effectiveLayout === 'side_by_side' && persons.length === 2 && !sideBySideOverflow) {
+    // 2 persons, true side-by-side render. p1_left_p2_right: array order
+    // (person 0 left, person 1 right). Other side values handled above.
+    content = (
+      <div className="sm-itp-side-by-side">
+        {persons.map((p, idx) => (
+          <div key={idx} className="sm-itp-column">
+            {renderPerson(p, idx)}
+          </div>
+        ))}
+      </div>
+    )
+  } else if (sideBySideOverflow) {
+    // side_by_side requested but 3+ persons → fall back to stacked
+    content = (
+      <div className="sm-itp-stacked">
+        <div className="sm-itp-fallback-caption">
+          Side-by-side requires 2 persons — showing stacked.
+        </div>
+        {persons.map((p, idx) => renderPerson(p, idx))}
+      </div>
+    )
+  } else if (effectiveLayout === 'custom') {
+    // Custom layout — render stacked + display the custom description
+    content = (
+      <div className="sm-itp-stacked">
+        {persons.map((p, idx) => renderPerson(p, idx))}
+        {insc.layoutCustom?.trim() && (
+          <div className="sm-itp-custom-note">
+            <em>Custom layout: {insc.layoutCustom.trim()}</em>
+          </div>
+        )}
+      </div>
+    )
+  } else {
+    // Default: stacked
+    content = (
+      <div className="sm-itp-stacked">
+        {persons.map((p, idx) => renderPerson(p, idx))}
+      </div>
+    )
+  }
+
+  // Side-confirmation soft indicator (in addition to the saved-view banner — Commit 2)
+  const sideUnknown = sideArrangement === 'unknown' && persons.length === 2
+
+  return (
+    <div className="sm-itp-shell">
+      {sideUnknown && (
+        <div className="sm-itp-side-hint">
+          <em>Side arrangement: not yet confirmed</em>
+        </div>
+      )}
+      <div className="sm-itp-stone">
+        {content}
+      </div>
+      {insc.epitaph?.trim() && (
+        <div className="sm-itp-epitaph">"{insc.epitaph.trim()}"</div>
+      )}
+    </div>
+  )
+}
+
 // Sprint L2 Phase 3 — up/down arrow buttons for reordering persons in the
 // Layout section. Reorders order.deceased array directly (adjacent-swap with
 // leapfrog over reserved entries). Resequences position field for DB tidiness.
@@ -4685,10 +4843,10 @@ function InscriptionStep({ order, update }) {
         </Section>
       )}
 
-      {/* Live preview — opt-in, only renders when we have enough info to be accurate */}
+      {/* Sprint L2 Phase 4 — HTML/CSS text-arrangement preview (replaces SVG) */}
       {!isInscriptionOnly && (
-        <Section title="Preview" eyebrow="Optional rough sketch">
-          <PreviewPanel order={order} />
+        <Section title="Preview" eyebrow="Step 8 · how the inscription will read on the stone (text arrangement only)">
+          <InscriptionTextPreview order={order} />
         </Section>
       )}
 
@@ -6765,6 +6923,31 @@ function formatPersonDates(d) {
   return ''
 }
 
+// Sprint L2 Phase 4 — hoisted from pdfDeceasedLines so the new
+// InscriptionTextPreview and (future) consumers share one implementation.
+// Title: prefer d.title (free-text editable), fall back to assembled
+// titlePrefix + titleRelations.
+function buildTitleForPerson(d) {
+  if (!d) return ''
+  if (d.title && d.title.trim()) return d.title.trim()
+  if (!d.titlePrefix && !(d.titleRelations?.length)) return ''
+  const prefix = d.titlePrefix || ''
+  const rels = d.titleRelations || []
+  let relStr = ''
+  if (rels.length === 1) relStr = rels[0]
+  else if (rels.length === 2) relStr = rels.join(' & ')
+  else if (rels.length > 2) relStr = rels.slice(0, -1).join(', ') + ', & ' + rels[rels.length - 1]
+  return [prefix, relStr].filter(Boolean).join(' ').trim()
+}
+
+// Sprint L2 Phase 4 — hoisted from pdfDeceasedLines. Carved name (Tab 8 §1)
+// preferred, fall back to assembled legal name from Tab 4.
+function buildNameForPerson(d) {
+  if (!d) return ''
+  if (d.inscriptionName && d.inscriptionName.trim()) return d.inscriptionName.trim()
+  return [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
+}
+
 // Build the deceased lines for the "In Memory Of" section
 // Sprint L2 Phase 2 Commit 1 — Fixed multiple pre-existing bugs:
 //   - d.middle should be d.middleName (middle names never rendered before)
@@ -6779,32 +6962,10 @@ function formatPersonDates(d) {
 function pdfDeceasedLines(order) {
   const out = []
 
-  // Helper — derive a person's title for the PDF. Prefer d.title (the
-  // assembled/editable string the LivePreview and InscriptionTextSummary
-  // already read), fall back to re-assembling from titlePrefix + titleRelations
-  // if title is empty. Returns empty string if no title data exists.
-  const buildTitleForPerson = (d) => {
-    if (d.title && d.title.trim()) return d.title.trim()
-    if (!d.titlePrefix && !(d.titleRelations?.length)) return ''
-    const prefix = d.titlePrefix || ''
-    const rels = d.titleRelations || []
-    let relStr = ''
-    if (rels.length === 1) relStr = rels[0]
-    else if (rels.length === 2) relStr = rels.join(' & ')
-    else if (rels.length > 2) relStr = rels.slice(0, -1).join(', ') + ', & ' + rels[rels.length - 1]
-    return [prefix, relStr].filter(Boolean).join(' ').trim()
-  }
-
-  // Sprint L2 Phase 3 Commit 3 — name source: inscriptionName (Tab 8 §1
-  // editable carved name) preferred, fall back to assembled legal name
-  // from firstName+middleName+lastName.
-  const buildNameForPerson = (d) => {
-    if (d.inscriptionName && d.inscriptionName.trim()) return d.inscriptionName.trim()
-    return [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
-  }
-
-  // Render one title line per non-reserved person who has a title.
-  // Reserved persons render as a reserved-space marker (no title, no dates).
+  // Sprint L2 Phase 4 — buildTitleForPerson / buildNameForPerson are now
+  // module-scope helpers (hoisted above formatPersonDates' neighbor block),
+  // shared with the new InscriptionTextPreview. Date rendering via the
+  // shared formatPersonDates helper honors per-person dateFormat.
   for (const d of order.deceased || []) {
     if (d.isReserved) {
       out.push({ kind: 'reserved', text: '— Reserved space —' })
@@ -6815,8 +6976,6 @@ function pdfDeceasedLines(order) {
       out.push({ kind: 'title', text: titleText })
     }
     const name = buildNameForPerson(d)
-    // Sprint L2 Phase 3 Commit 3 — date rendering via shared formatPersonDates
-    // helper (module scope, defined above) honors per-person dateFormat.
     const dates = formatPersonDates(d)
     out.push({ kind: 'person', name: name || '(name pending)', dates })
   }
@@ -7208,11 +7367,17 @@ async function generateEstimatePDF(order, opts = {}) {
     for (const ln of lines) {
       ensure(6)
       if (ln.kind === 'title') {
+        // Sprint L2 Phase 4 — wrap title line for 3+ relations
+        // (e.g. "Beloved Father, Husband, Grandfather, Brother, & Uncle"
+        // overflows at letter width without splitTextToSize).
         doc.setFont('helvetica', 'italic')
         doc.setFontSize(11)
         doc.setTextColor(...GOLD)
-        doc.text(ln.text, M, y)
-        y += 5
+        const titleLines = doc.splitTextToSize(ln.text, W - M - M)
+        for (const wrappedLine of titleLines) {
+          doc.text(wrappedLine, M, y)
+          y += 5
+        }
       } else if (ln.kind === 'reserved') {
         doc.setFont('helvetica', 'italic')
         doc.setFontSize(9.5)
@@ -11741,6 +11906,120 @@ const styles = `
 .sm-date-picker:last-child,
 .sm-style-picker:last-child {
   margin-bottom: 0;
+}
+
+/* Sprint L2 Phase 4 — InscriptionTextPreview HTML/CSS preview */
+.sm-itp-shell {
+  margin-top: 12px;
+}
+.sm-itp-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-mid, #777);
+  background: var(--sm-cream-mid, #e8e4dc);
+  border: 1px solid var(--sm-border, #e0dbd2);
+  border-radius: 4px;
+}
+.sm-itp-stone {
+  background: var(--sm-cream, #faf8f4);
+  border: 1px solid var(--sm-border-dark, #cdc8be);
+  border-radius: 6px;
+  padding: 32px 24px;
+  font-family: var(--font-d, 'Playfair Display'), Georgia, serif;
+  color: var(--sm-navy, #1e2d3d);
+  min-height: 140px;
+}
+.sm-itp-side-hint {
+  text-align: center;
+  color: var(--text-mid, #777);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.sm-itp-fallback-caption {
+  text-align: center;
+  color: var(--text-mid, #777);
+  font-size: 11px;
+  font-style: italic;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--sm-border, #e0dbd2);
+}
+.sm-itp-side-by-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+.sm-itp-column {
+  text-align: center;
+}
+.sm-itp-stacked,
+.sm-itp-persons-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: center;
+}
+.sm-itp-centered-last {
+  text-align: center;
+}
+.sm-itp-last-name-banner {
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--sm-gold, #8c6d3f);
+}
+.sm-itp-person {
+  padding: 8px 0;
+}
+.sm-itp-stacked .sm-itp-person:not(:last-child) {
+  border-bottom: 1px dashed var(--sm-border, #e0dbd2);
+  padding-bottom: 16px;
+}
+.sm-itp-title {
+  font-style: italic;
+  font-size: 13px;
+  color: var(--sm-gold, #8c6d3f);
+  margin-bottom: 4px;
+  letter-spacing: 0.04em;
+}
+.sm-itp-name {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.sm-itp-dates {
+  font-size: 14px;
+  color: var(--sm-navy, #1e2d3d);
+  margin-bottom: 4px;
+}
+.sm-itp-treatment {
+  font-size: 10px;
+  color: var(--sm-gold, #8c6d3f);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 6px;
+}
+.sm-itp-epitaph {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--sm-border, #e0dbd2);
+  text-align: center;
+  font-style: italic;
+  font-size: 15px;
+  color: var(--sm-navy, #1e2d3d);
+}
+.sm-itp-custom-note {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-mid, #777);
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--sm-border, #e0dbd2);
 }
 
 /* ---- RESERVED-SPACE CARD VARIANT ------------------------------------------ */
