@@ -1417,6 +1417,14 @@ function makeBlankOrder() {
       sideArrangement: 'p1_left_p2_right',
       sideToConfirm: false,
       sideNote: '',
+      // Sprint L2 Phase 4 Commit 2 — order-level date format + style treatment.
+      // Apply uniformly to all persons on the order. Per-person fields from
+      // Phase 1 (d.dateFormat, d.styleTreatment) are orphaned — schema kept,
+      // UI no longer references them.
+      dateFormat: 'year_only',
+      dateFormatCustom: '',
+      styleTreatment: 'plain',
+      styleTreatmentCustom: '',
     },
 
     // Add-ons (Sprint 3) — array of { code, qty, price, notes }
@@ -2060,6 +2068,11 @@ function rowToOrder(row, customerRow, cemeteryRow) {
       sideArrangement: 'p1_left_p2_right',
       sideToConfirm: false,
       sideNote: '',
+      // Sprint L2 Phase 4 Commit 2 additions
+      dateFormat: 'year_only',
+      dateFormatCustom: '',
+      styleTreatment: 'plain',
+      styleTreatmentCustom: '',
       ...(row.inscription || {}),
     },
 
@@ -4242,86 +4255,6 @@ function InscriptionNamePicker({ d, idx, onChange }) {
   )
 }
 
-// Sprint L2 Phase 3 Commit 2 — per-person date format picker.
-// Uses formatPersonDates (Commit 1 helper) to show how each person's actual
-// dates would render in each format.
-function DateFormatPicker({ d, idx, onChange }) {
-  const personName = [d.firstName, d.lastName].filter(Boolean).join(' ') || `Person ${idx + 1}`
-  const personLabel = `Person ${idx + 1}${personName !== `Person ${idx + 1}` ? ' — ' + personName : ''}`
-
-  return (
-    <div className="sm-date-picker">
-      <Field label={personLabel} wide hint="How the dates should appear on the stone">
-        <div className="sm-card-grid sm-card-grid-services">
-          {DATE_FORMATS.map(opt => {
-            const previewD = { ...d, dateFormat: opt.code }
-            let preview = ''
-            if (opt.code !== 'custom') {
-              preview = formatPersonDates(previewD) || opt.blurb
-            } else {
-              preview = opt.blurb
-            }
-            return (
-              <CardOption
-                key={opt.code}
-                on={(d.dateFormat || 'year_only') === opt.code}
-                onClick={() => onChange({ dateFormat: opt.code })}
-                title={opt.label}
-                blurb={preview}
-              />
-            )
-          })}
-        </div>
-      </Field>
-
-      {d.dateFormat === 'custom' && (
-        <Field label="Custom date format" wide>
-          <TextInput
-            value={d.dateFormatCustom || ''}
-            onChange={v => onChange({ dateFormatCustom: v })}
-            placeholder="e.g. 'Born 1942 · Died 2018'"
-          />
-        </Field>
-      )}
-    </div>
-  )
-}
-
-// Sprint L2 Phase 3 Commit 2 — per-person style treatment picker.
-// Text-only descriptions; visual assets a future enhancement.
-function StyleTreatmentPicker({ d, idx, onChange }) {
-  const personName = [d.firstName, d.lastName].filter(Boolean).join(' ') || `Person ${idx + 1}`
-  const personLabel = `Person ${idx + 1}${personName !== `Person ${idx + 1}` ? ' — ' + personName : ''}`
-
-  return (
-    <div className="sm-style-picker">
-      <Field label={personLabel} wide hint="Decorative treatment for this person's section">
-        <div className="sm-card-grid sm-card-grid-services">
-          {STYLE_TREATMENTS.map(opt => (
-            <CardOption
-              key={opt.code}
-              on={(d.styleTreatment || 'plain') === opt.code}
-              onClick={() => onChange({ styleTreatment: opt.code })}
-              title={opt.label}
-              blurb={opt.blurb}
-            />
-          ))}
-        </div>
-      </Field>
-
-      {(d.styleTreatment === 'special_font' || d.styleTreatment === 'custom') && (
-        <Field label={d.styleTreatment === 'special_font' ? 'Special font description' : 'Custom treatment description'} wide>
-          <TextInput
-            value={d.styleTreatmentCustom || ''}
-            onChange={v => onChange({ styleTreatmentCustom: v })}
-            placeholder={d.styleTreatment === 'special_font' ? 'Name of the font' : 'Describe the treatment'}
-          />
-        </Field>
-      )}
-    </div>
-  )
-}
-
 // Sprint L2 Phase 4 — HTML/CSS preview replacing the SVG carved-stone preview.
 // Shows text arrangement only (no shape, size, or color per Q3b). Honors
 // layoutStyle, sideArrangement, styleTreatment per person, and respects the
@@ -4343,6 +4276,26 @@ function InscriptionTextPreview({ order }) {
   const layoutStyle = insc.layoutStyle || 'side_by_side'
   const sideArrangement = insc.sideArrangement || 'p1_left_p2_right'
 
+  // Sprint L2 Phase 4 Commit 2 — order-level dateFormat + styleTreatment.
+  const orderDateFormat = insc.dateFormat
+  const orderDateFormatCustom = insc.dateFormatCustom
+  const orderStyleTreatment = insc.styleTreatment || 'plain'
+  const orderStyleTreatmentCustom = insc.styleTreatmentCustom
+
+  // Sprint L2 Phase 4 Commit 2 — order-level treatment label, same for every
+  // person on the order. Computed once, rendered once at the bottom of preview
+  // (NOT per-person — that was Commit 1 behavior with per-person fields).
+  const treatmentLabel = (() => {
+    if (orderStyleTreatment === 'plain') return null
+    const found = STYLE_TREATMENTS.find(s => s.code === orderStyleTreatment)
+    if (!found) return null
+    const base = found.label
+    if ((orderStyleTreatment === 'special_font' || orderStyleTreatment === 'custom') && orderStyleTreatmentCustom?.trim()) {
+      return `${base} (${orderStyleTreatmentCustom.trim()})`
+    }
+    return base
+  })()
+
   // Side arrangement wins over layoutStyle when they conflict.
   // p1_top_p2_bottom on side_by_side → renders stacked.
   const effectiveLayout = (layoutStyle === 'side_by_side' && sideArrangement === 'p1_top_p2_bottom')
@@ -4362,18 +4315,10 @@ function InscriptionTextPreview({ order }) {
   const renderPerson = (d, idx) => {
     const name = buildNameForPerson(d)
     const title = buildTitleForPerson(d)
-    const dates = formatPersonDates(d)
-    const treatment = d.styleTreatment || 'plain'
-    const treatmentLabel = (() => {
-      if (treatment === 'plain') return null
-      const found = STYLE_TREATMENTS.find(s => s.code === treatment)
-      if (!found) return null
-      const base = found.label
-      if ((treatment === 'special_font' || treatment === 'custom') && d.styleTreatmentCustom?.trim()) {
-        return `${base} (${d.styleTreatmentCustom.trim()})`
-      }
-      return base
-    })()
+    const dates = formatPersonDates(d, {
+      format: orderDateFormat,
+      customText: orderDateFormatCustom,
+    })
 
     // For centered_last successful case: don't render last name inside the
     // person block; it's rendered once at the top of the layout.
@@ -4389,7 +4334,6 @@ function InscriptionTextPreview({ order }) {
         {title && <div className="sm-itp-title">{title}</div>}
         <div className="sm-itp-name">{displayName || '(name pending)'}</div>
         {dates && <div className="sm-itp-dates">{dates}</div>}
-        {treatmentLabel && <div className="sm-itp-treatment">Treatment: {treatmentLabel}</div>}
       </div>
     )
   }
@@ -4475,6 +4419,11 @@ function InscriptionTextPreview({ order }) {
       </div>
       {insc.epitaph?.trim() && (
         <div className="sm-itp-epitaph">"{insc.epitaph.trim()}"</div>
+      )}
+      {treatmentLabel && (
+        <div className="sm-itp-treatment-order">
+          Treatment: {treatmentLabel}
+        </div>
       )}
     </div>
   )
@@ -4581,7 +4530,7 @@ function InscriptionStep({ order, update }) {
         <p className="sm-step-lede">
           {isInscriptionOnly
             ? 'Inscription on an existing stone — quick job. Confirm the type and what goes on, snap a photo of the existing marker if you have one.'
-            : 'Set how each person\'s name, title, dates, and style appear on the stone.'}
+            : 'Set how the inscription is arranged and how names, titles, dates, and style appear on the stone.'}
         </p>
       </div>
 
@@ -4773,44 +4722,68 @@ function InscriptionStep({ order, update }) {
         )
       )}
 
-      {/* §4 — Date format (per-person; always shown for non-reserved persons) */}
-      <Section title="Date format" eyebrow="Step 8 §4 · how the dates appear on the stone (per person)">
-        {(order.deceased || []).map((d, idx) => {
-          if (d.isReserved) return null
-          return (
-            <DateFormatPicker
-              key={idx}
-              d={d}
-              idx={idx}
-              onChange={patch => updateDeceased(idx, patch)}
-            />
-          )
-        })}
-        {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
-          <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
-            Add at least one person on the Memorial step (step 4) to set their date format here.
+      {/* §4 — Date format (Sprint L2 Phase 4 Commit 2: order-level, single picker) */}
+      <Section title="Date format" eyebrow="Step 8 §4 · how dates appear on the stone (applies to everyone)">
+        <Field label="Date format" wide hint="Same format used for all persons">
+          <div className="sm-card-grid sm-card-grid-services">
+            {DATE_FORMATS.map(opt => {
+              // Sample preview using representative dates — use first non-reserved
+              // person's actual dates if available, else fall back to static sample.
+              const firstPerson = (order.deceased || []).find(d => !d.isReserved)
+              let preview = opt.blurb
+              if (firstPerson && opt.code !== 'custom') {
+                const candidatePreview = formatPersonDates(firstPerson, { format: opt.code })
+                if (candidatePreview) preview = candidatePreview
+              }
+              return (
+                <CardOption
+                  key={opt.code}
+                  on={(order.inscription?.dateFormat || 'year_only') === opt.code}
+                  onClick={() => updateInsc({ dateFormat: opt.code })}
+                  title={opt.label}
+                  blurb={preview}
+                />
+              )
+            })}
           </div>
+        </Field>
+
+        {order.inscription?.dateFormat === 'custom' && (
+          <Field label="Custom date format" wide>
+            <TextInput
+              value={order.inscription?.dateFormatCustom || ''}
+              onChange={v => updateInsc({ dateFormatCustom: v })}
+              placeholder="e.g. 'Born 1942 · Died 2018'"
+            />
+          </Field>
         )}
       </Section>
 
-      {/* §5 — Style treatment (per-person; hidden for inscription-only flows) */}
+      {/* §5 — Style treatment (Sprint L2 Phase 4 Commit 2: order-level; hidden for inscription-only flows) */}
       {!isInscriptionOnly && (
-        <Section title="Style treatment" eyebrow="Step 8 §5 · decorative treatment for each person's section">
-          {(order.deceased || []).map((d, idx) => {
-            if (d.isReserved) return null
-            return (
-              <StyleTreatmentPicker
-                key={idx}
-                d={d}
-                idx={idx}
-                onChange={patch => updateDeceased(idx, patch)}
-              />
-            )
-          })}
-          {(order.deceased || []).filter(d => !d.isReserved).length === 0 && (
-            <div className="sm-helper" style={{ fontStyle: 'italic', color: 'var(--text-mid, #777)' }}>
-              Add at least one person on the Memorial step (step 4) to set their style treatment here.
+        <Section title="Style treatment" eyebrow="Step 8 §5 · decorative treatment applied to the order">
+          <Field label="Style treatment" wide hint="Same treatment used for all persons">
+            <div className="sm-card-grid sm-card-grid-services">
+              {STYLE_TREATMENTS.map(opt => (
+                <CardOption
+                  key={opt.code}
+                  on={(order.inscription?.styleTreatment || 'plain') === opt.code}
+                  onClick={() => updateInsc({ styleTreatment: opt.code })}
+                  title={opt.label}
+                  blurb={opt.blurb}
+                />
+              ))}
             </div>
+          </Field>
+
+          {(order.inscription?.styleTreatment === 'special_font' || order.inscription?.styleTreatment === 'custom') && (
+            <Field label={order.inscription.styleTreatment === 'special_font' ? 'Special font description' : 'Custom treatment description'} wide>
+              <TextInput
+                value={order.inscription?.styleTreatmentCustom || ''}
+                onChange={v => updateInsc({ styleTreatmentCustom: v })}
+                placeholder={order.inscription.styleTreatment === 'special_font' ? 'Name of the font' : 'Describe the treatment'}
+              />
+            </Field>
           )}
         </Section>
       )}
@@ -6875,12 +6848,16 @@ function pdfCustomerLine(order) {
 // dateFormat values: 'month_day_year' | 'abbreviated' | 'slash' | 'dot'
 //   | 'year_only' | 'custom'
 // dateFormatCustom: free-text override used when dateFormat === 'custom'
-function formatPersonDates(d) {
+function formatPersonDates(d, opts) {
   if (!d) return ''
-  const fmt = d.dateFormat || 'year_only'
+  // Sprint L2 Phase 4 Commit 2 — accept optional opts={format, customText}
+  // for order-level dateFormat (overrides per-person field). When opts not
+  // provided, reads per-person d.dateFormat (backward compatible).
+  const fmt = opts?.format || d.dateFormat || 'year_only'
 
-  // Custom override — just return the free-text value as-is
-  if (fmt === 'custom') return d.dateFormatCustom || ''
+  // Custom override — opts.customText (order-level) wins when provided,
+  // else fall back to per-person d.dateFormatCustom.
+  if (fmt === 'custom') return opts?.customText ?? d.dateFormatCustom ?? ''
 
   const dob = d.dateOfBirth || ''
   const dod = d.dateOfDeath || ''
@@ -6965,7 +6942,12 @@ function pdfDeceasedLines(order) {
   // Sprint L2 Phase 4 — buildTitleForPerson / buildNameForPerson are now
   // module-scope helpers (hoisted above formatPersonDates' neighbor block),
   // shared with the new InscriptionTextPreview. Date rendering via the
-  // shared formatPersonDates helper honors per-person dateFormat.
+  // shared formatPersonDates helper.
+  // Sprint L2 Phase 4 Commit 2 — order-level dateFormat from order.inscription
+  // overrides per-person (which is now orphaned). Lift once outside the loop.
+  const orderDateFormat = order.inscription?.dateFormat
+  const orderDateFormatCustom = order.inscription?.dateFormatCustom
+
   for (const d of order.deceased || []) {
     if (d.isReserved) {
       out.push({ kind: 'reserved', text: '— Reserved space —' })
@@ -6976,7 +6958,10 @@ function pdfDeceasedLines(order) {
       out.push({ kind: 'title', text: titleText })
     }
     const name = buildNameForPerson(d)
-    const dates = formatPersonDates(d)
+    const dates = formatPersonDates(d, {
+      format: orderDateFormat,
+      customText: orderDateFormatCustom,
+    })
     out.push({ kind: 'person', name: name || '(name pending)', dates })
   }
   return out
@@ -12019,6 +12004,18 @@ const styles = `
   color: var(--text-mid, #777);
   margin-top: 8px;
   padding-top: 8px;
+  border-top: 1px dashed var(--sm-border, #e0dbd2);
+}
+
+/* Sprint L2 Phase 4 Commit 2 — order-level treatment label */
+.sm-itp-treatment-order {
+  text-align: center;
+  font-size: 11px;
+  color: var(--sm-gold, #8c6d3f);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 16px;
+  padding-top: 12px;
   border-top: 1px dashed var(--sm-border, #e0dbd2);
 }
 
