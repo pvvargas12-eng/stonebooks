@@ -19,6 +19,7 @@ import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD } from 
 import SalesMode from './SalesMode'
 import CustomersTab from './CustomersTab'
 import OrdersTab from './OrdersTab'
+import JobsTab from './JobsTab'
 import CalendarTab from './CalendarTab'
 import ReportsTab from './ReportsTab'
 
@@ -173,6 +174,7 @@ const NAV_PRIMARY = [
   { key: 'today',     label: 'Today' },
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Orders' },
+  { key: 'jobs',      label: 'Jobs' },
   { key: 'calendar',  label: 'Calendar' },
   { key: 'reports',   label: 'Reports' },
 ]
@@ -322,10 +324,11 @@ export default function Stonebooks() {
 
         <main className="sb-main">
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
-          {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
-          {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
-          {tab === 'calendar'  && <CalendarTab onOpenOrder={openSales} />}
-          {tab === 'reports'   && <ReportsTab />}
+{tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
+{tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+{tab === 'jobs'      && <JobsTab onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+{tab === 'calendar'  && <CalendarTab onOpenOrder={openSales} />}
+{tab === 'reports'   && <ReportsTab />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
             'Coming next: design library management — upload new monuments, edit metadata, organize by category.',
             'For now, the catalog browses on the customer-facing site.',
