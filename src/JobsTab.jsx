@@ -480,6 +480,14 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
     return () => { cancelled = true }
   }, [jobId])
 
+  // Sprint J1-P1 follow-up — hooks must be called in the same order on
+  // every render. useMemoGroupMilestones contains a useMemo internally; if
+  // it sits after the !job early-return, render 1 (job null) calls 5 hooks
+  // and render 2 (job loaded) calls 6, crashing JobDetail in production.
+  // Keep it here, above the early return; the empty-milestones path is a
+  // no-op so the loading render is fine.
+  const byGroup = useMemoGroupMilestones(job?.milestones || [])
+
   if (!job) return (
     <div className="sb-page sb-page-wide">
       <BackBar onBack={onBack} />
@@ -494,8 +502,6 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   const days = daysSinceUpdate(job)
   const suggested = suggestNextActionableMilestone(job.milestones || [])
 
-  // Milestone grouping
-  const byGroup = useMemoGroupMilestones(job.milestones || [])
   const orderedGroups = GROUP_ORDER.filter(g => byGroup.has(g))
 
   const total = order ? rowGrandTotal(order) : 0
