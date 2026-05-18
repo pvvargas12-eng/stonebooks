@@ -59,9 +59,17 @@ const GROUP_LABEL = {
 // MAIN
 // =============================================================================
 
-export default function JobsTab({ onOpenOrder, onOpenCustomer }) {
+export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustomer }) {
   const [jobs, setJobs] = useState(null) // null = loading, [] = empty
-  const [selectedJobId, setSelectedJobId] = useState(null)
+  // Sprint J1-P1 Today Commit B — initialJobId lets Today drill into a
+  // specific job via onOpenJob → setSelectedJobId in Stonebooks shell.
+  // We seed local state from the prop and re-sync on prop changes so
+  // subsequent Today clicks redirect correctly.
+  const [selectedJobId, setSelectedJobId] = useState(initialJobId || null)
+  useEffect(() => {
+    if (initialJobId) setSelectedJobId(initialJobId)
+  }, [initialJobId])
+
   const [teamFilter, setTeamFilter] = useState(null)         // single team or null
   const [statusFilter, setStatusFilter] = useState(null)     // single status or null
   const [search, setSearch] = useState('')

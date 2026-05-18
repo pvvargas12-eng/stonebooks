@@ -22,6 +22,9 @@ import OrdersTab from './OrdersTab'
 import JobsTab from './JobsTab'
 import CalendarTab from './CalendarTab'
 import ReportsTab from './ReportsTab'
+// Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
+// the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
+import TodayTab from './TodayTab'
 
 // =============================================================================
 // LOGO COMPONENTS
@@ -193,6 +196,10 @@ export default function Stonebooks() {
   const [salesOrderId, setSalesOrderId] = useState(null)   // when set, open Sales Mode with that order pre-loaded
   const [profile, setProfile] = useState(null)  // user_settings row
   const [selectedCustomerId, setSelectedCustomerId] = useState(null)  // for customer drill-in across tabs
+  // Sprint J1-P1 Today Commit B — for job drill-in from Today operational items.
+  // Mirrors the selectedCustomerId pattern. JobsTab uses this as initialJobId
+  // to auto-open the job detail when the user clicks an operational item.
+  const [selectedJobId, setSelectedJobId] = useState(null)
 
   // Open Sales Mode — either fresh (no id) or with a specific order
   const openSales = (orderId = null) => {
@@ -323,10 +330,10 @@ export default function Stonebooks() {
         </aside>
 
         <main className="sb-main">
-          {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+          {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
-{tab === 'jobs'      && <JobsTab onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+{tab === 'jobs'      && <JobsTab initialJobId={selectedJobId} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'calendar'  && <CalendarTab onOpenOrder={openSales} />}
 {tab === 'reports'   && <ReportsTab />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
@@ -340,141 +347,6 @@ export default function Stonebooks() {
   )
 }
 
-// =============================================================================
-// TODAY TAB
-// =============================================================================
-
-function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOpenCustomer }) {
-  const [stats, setStats] = useState(null)
-  const [actionItems, setActionItems] = useState(null)
-  const today = useMemo(() => {
-    const d = new Date()
-    const day = d.toLocaleDateString('en-US', { weekday: 'long' })
-    const date = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
-    return { day, date }
-  }, [])
-
-  // Load summary stats + action items
-  useEffect(() => {
-    let cancelled = false
-    import('./lib/stonebooksData').then(async (m) => {
-      const [orders, items] = await Promise.all([
-        m.listAllOrders({ limit: 500 }),
-        m.getActionItems(),
-      ])
-      if (cancelled) return
-      const ACTIVE = ['draft','scoping','quoted','contracted','in_production','installed']
-      const SOLD   = ['contracted','in_production','installed','paid_in_full','closed']
-      const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0)
-
-      let active = 0, pipeline = 0, mtd = 0, mtdCount = 0
-      let sold = 0, cancelled_count = 0
-      for (const o of orders) {
-        const total = computeTotal(o)
-        if (ACTIVE.includes(o.status)) { active++; pipeline += total }
-        if (SOLD.includes(o.status)) {
-          sold++
-          if (new Date(o.created_at) >= monthStart) { mtd += total; mtdCount++ }
-        }
-        if (o.status === 'cancelled') cancelled_count++
-      }
-      const attempted = sold + cancelled_count
-      const winRate = attempted > 0 ? Math.round((sold / attempted) * 100) : null
-
-      setStats({ active, pipeline, mtd, mtdCount, winRate })
-      setActionItems(items)
-    })
-    return () => { cancelled = true }
-  }, [])
-
-  const greeting = profile?.display_name ? profile.display_name.split(' ')[0] : 'there'
-
-  return (
-    <div className="sb-page sb-page-wide">
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">{today.day} · {today.date}</div>
-        <h1 className="sb-page-title">Today</h1>
-      </div>
-
-      <div className="sb-metric-grid">
-        <MetricCard label="Active orders" value={stats ? stats.active : '—'} sub={stats ? `${fmtUSD(stats.pipeline)} in pipeline` : ''} />
-        <MetricCard label="Month-to-date" value={stats ? fmtUSD(stats.mtd) : '—'} sub={stats ? `${stats.mtdCount} sold` : ''} />
-        <MetricCard label="Win rate" value={stats?.winRate != null ? `${stats.winRate}%` : '—'} sub="cancelled vs sold" />
-        <MetricCard label="Action items" value={actionItems ? actionItems.length : '—'} sub={actionItems && actionItems.length > 0 ? `${actionItems.filter(i => i.severity === 'red').length} urgent` : 'all caught up'} />
-      </div>
-
-      <div className="sb-section-label">Quick actions</div>
-      <div className="sb-quick-actions">
-        <button type="button" className="sb-quick-action" onClick={onOpenSales}>
-          <div className="sb-quick-action-title">+ New sale</div>
-          <div className="sb-quick-action-sub">Walk a customer through the wizard</div>
-        </button>
-        <button type="button" className="sb-quick-action" onClick={() => window.dispatchEvent(new CustomEvent('sb:nav', { detail: 'customers' }))}>
-          <div className="sb-quick-action-title">Customers</div>
-          <div className="sb-quick-action-sub">Search by name, phone, email</div>
-        </button>
-        <button type="button" className="sb-quick-action" onClick={() => window.dispatchEvent(new CustomEvent('sb:nav', { detail: 'reports' }))}>
-          <div className="sb-quick-action-title">Reports</div>
-          <div className="sb-quick-action-sub">Sales analytics, win rate, by rep</div>
-        </button>
-      </div>
-
-      <div className="sb-section-label">Action items</div>
-      {actionItems === null ? (
-        <div className="sb-empty">Loading…</div>
-      ) : actionItems.length === 0 ? (
-        <div className="sb-empty">Nothing needs attention right now. As orders age past target dates or quotes go stale, items will surface here.</div>
-      ) : (
-        <div className="sb-action-list">
-          {actionItems.map((item, idx) => (
-            <button
-              key={`${item.order.id}-${item.kind}-${idx}`}
-              type="button"
-              className={`sb-action-item sb-action-${item.severity}`}
-              onClick={() => onOpenOrder(item.order.id)}
-            >
-              <span className="sb-action-icon">{item.icon}</span>
-              <div className="sb-action-body">
-                <div className="sb-action-label">{item.label}</div>
-                <div className="sb-action-meta">{item.meta}</div>
-              </div>
-              <span className="sb-action-arrow">→</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Inline total computation — duplicated tiny version of stonebooksData rowGrandTotal
-// to avoid import cycle issues in TodayTab
-function computeTotal(o) {
-  if (!o) return 0
-  const pricing = o.pricing || {}
-  const overrides = pricing.overrides || {}
-  const addOns = o.add_ons || []
-  let subtotalDisc = 0, subtotalPermit = 0
-  if (overrides['base-stone'] != null) subtotalDisc += Number(overrides['base-stone']) || 0
-  for (const [code, val] of Object.entries(overrides)) {
-    if (code === 'base-stone' || typeof val !== 'number') continue
-    if (code === 'addon-permit') subtotalPermit += val
-    else                          subtotalDisc += val
-  }
-  for (const a of addOns) {
-    if (a.freeWithStone) continue
-    const amt = (Number(a.price) || 0) * (Number(a.qty) || 1)
-    if (a.code === 'permit') subtotalPermit += amt
-    else                     subtotalDisc += amt
-  }
-  for (const c of (pricing.customLineItems || [])) subtotalDisc += Number(c.amount) || 0
-  const discountPct = Number(pricing.discountPct) || 0
-  const discountAmt = subtotalDisc * (discountPct / 100)
-  const taxBase = (subtotalDisc - discountAmt) + subtotalPermit
-  const tax = pricing.applyTax ? taxBase * 0.06625 : 0
-  const cc = pricing.applyCCSurcharge ? (taxBase + tax) * 0.03 : 0
-  return Math.round(taxBase + tax + cc)
-}
 
 // =============================================================================
 // SETTINGS TAB
@@ -741,16 +613,6 @@ function AboutSettings() {
 // =============================================================================
 // SHARED COMPONENTS
 // =============================================================================
-
-function MetricCard({ label, value, sub }) {
-  return (
-    <div className="sb-metric">
-      <div className="sb-metric-label">{label}</div>
-      <div className="sb-metric-value">{value}</div>
-      {sub && <div className="sb-metric-sub">{sub}</div>}
-    </div>
-  )
-}
 
 function PlaceholderTab({ title, lines = [] }) {
   return (
