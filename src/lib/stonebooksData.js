@@ -740,6 +740,30 @@ export const JOB_TEAMS = [
   { code: 'installation', label: 'Installation', color: '#2d7a4f' },
 ]
 
+// Sprint J1-P1 stabilization — default milestone duration (in days) by group.
+// Used by _applyMilestoneUpdate to auto-seed due_date on the FIRST transition
+// into 'in_progress' when no date is currently set. Group-level defaults are a
+// placeholder model; several groups (etching especially) will eventually
+// subdivide into structured substates with their own per-substate thresholds.
+// Etching is intentionally generous (90d) because it can include outsourced
+// vendor steps — treating it as a simple internal task would create
+// unrealistic overdue pressure. Same caveat applies in spirit to design,
+// permit, stone, photo — they're floor estimates pending the subflow refactor.
+// Values calibrated for Shevchenko Monuments 2026-05-18.
+const MILESTONE_GROUP_DEFAULT_DAYS = {
+  intake:      3,
+  design:     14,
+  permit:     21,
+  stone:      45,
+  photo:      30,
+  etching:    90,
+  production: 21,
+  foundation: 14,
+  install:    14,
+  closeout:    7,
+  _default:   14,
+}
+
 export function jobStatusInfo(code) {
   return JOB_OVERALL_STATUSES.find(s => s.code === code) || { code, label: code, color: '#8b8b87' }
 }
@@ -1107,6 +1131,29 @@ async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, 
   if (patch.assignee_user_id !== undefined) rowPatch.assignee_user_id = patch.assignee_user_id
   if (patch.note !== undefined) rowPatch.note = patch.note
 
+  // Sprint J1-P1 stabilization — auto-seed due_date on FIRST transition to
+  // 'in_progress'. Three guards keep this safe and idempotent:
+  //   1. patch.status === 'in_progress' (only this direction; not done/blocked/etc.)
+  //   2. patch.due_date === undefined (an explicit date in the same patch wins)
+  //   3. !current.due_date (never overwrite — sticky once set, auto or manual)
+  // When all three hold, seed today + MILESTONE_GROUP_DEFAULT_DAYS[group].
+  // YYYY-MM-DD computed from LOCAL date components (avoids the UTC drift the
+  // pre-existing status_date computation has — that's a separate fix, not
+  // in scope here).
+  // The override path through updateMilestoneWithOverride hits this same
+  // logic — auto-seed fires regardless of whether the transition was gated.
+  let autoSeedDate = null
+  if (
+    patch.status === 'in_progress' &&
+    patch.due_date === undefined &&
+    !current.due_date
+  ) {
+    const days = MILESTONE_GROUP_DEFAULT_DAYS[current.group] ?? MILESTONE_GROUP_DEFAULT_DAYS._default
+    const seedDt = new Date(Date.now() + days * 86400000)
+    autoSeedDate = `${seedDt.getFullYear()}-${String(seedDt.getMonth() + 1).padStart(2, '0')}-${String(seedDt.getDate()).padStart(2, '0')}`
+    rowPatch.due_date = autoSeedDate
+  }
+
   // 4. Apply the patch.
   const { data: updated, error: updErr } = await supabase
     .from('job_milestones')
@@ -1160,6 +1207,25 @@ async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, 
       milestone_key: milestoneKey,
       payload: {},
       note: patch.note,
+      created_by: actorUserId || null,
+    })
+  }
+  // Sprint J1-P1 stabilization — auto-seed event. Emitted AFTER the
+  // note-event block above so that a user-supplied patch.note still gets
+  // its own milestone_note_added event (that block uses
+  // `!events.some(e => e.note)` as a suppression guard; we must not trip
+  // it before the user's note can land). Reuses milestone_due_date_set
+  // event type so the existing JobsTab event-log renderer handles it
+  // without UI changes; the auto_seeded:true payload flag + the note
+  // make the audit trail queryable and human-readable.
+  if (autoSeedDate !== null) {
+    events.push({
+      tenant_id: current.tenant_id,
+      job_id: jobId,
+      event_type: 'milestone_due_date_set',
+      milestone_key: milestoneKey,
+      payload: { from: null, to: autoSeedDate, auto_seeded: true },
+      note: 'Auto-seeded on transition to in_progress.',
       created_by: actorUserId || null,
     })
   }
