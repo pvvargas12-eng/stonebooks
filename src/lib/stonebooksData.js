@@ -327,6 +327,19 @@ function _humanizeWaitingStatus(code) {
   return code.replace(/^waiting_/, 'waiting on ').replace(/_/g, ' ')
 }
 
+// Post-J1-P1 stabilization helper — mirrors the readiness check in JobsTab.jsx
+// MilestoneRow. A milestone is "ready" when all of its requires[] resolve to
+// milestones already in 'done' or 'not_needed' state. Used by next_actionable_idle
+// to find the lowest-sort_order ready not_started milestone for sleeping jobs.
+function _isMilestoneReady(milestone, milestonesByKey) {
+  if (!milestone.requires || milestone.requires.length === 0) return true
+  for (const k of milestone.requires) {
+    const dep = milestonesByKey.get(k)
+    if (dep && dep.status !== 'done' && dep.status !== 'not_needed') return false
+  }
+  return true
+}
+
 // ── ACTION ITEMS (Today tab) ─────────────────────────────────────────────────
 // Returns categorized list of things that need attention. Two opt-in modes:
 //   getActionItems()                              → legacy: orders-only signals
@@ -362,6 +375,7 @@ export async function getActionItems(opts = {}) {
   const in7 = new Date(today.getTime() + 7 * 86400000)
   const in14 = new Date(today.getTime() + 14 * 86400000)
   const monthAgo = new Date(today.getTime() - 30 * 86400000)
+  const threeDaysAgo = new Date(today.getTime() - 3 * 86400000)
   const sevenAgo = new Date(today.getTime() - 7 * 86400000)
   const fourteenAgo = new Date(today.getTime() - 14 * 86400000)
 
@@ -474,7 +488,7 @@ export async function getActionItems(opts = {}) {
       .select(`
         id, overall_status, last_update_at, order_id,
         order:orders(id, order_number, status, updated_at, customer:customers(*)),
-        milestones:job_milestones(milestone_key, label, due_date, status)
+        milestones:job_milestones(milestone_key, label, due_date, status, sort_order, requires)
       `)
       .neq('overall_status', 'closed')
       .limit(500)
@@ -482,9 +496,10 @@ export async function getActionItems(opts = {}) {
     if (jobsErr) {
       console.error('getActionItems operational query:', jobsErr)
     } else {
-      const overdueRows = []   // { job, milestone, daysOverdue }
-      const waitingRows = []   // { job, daysSince }
-      const stalledRows = []   // { job, daysSince }
+      const overdueRows = []           // { job, milestone, daysOverdue }
+      const waitingRows = []           // { job, daysSince }
+      const stalledRows = []           // { job, daysSince }
+      const nextActionableRows = []    // { job, milestone, daysIdle }
 
       for (const j of (jobs || [])) {
         if (!j.order) continue
@@ -528,12 +543,42 @@ export async function getActionItems(opts = {}) {
             stalledRows.push({ job: j, daysSince })
           }
         }
+
+        // next_actionable_idle — "healthy but sleeping" detection.
+        // STRICT gate: no in_progress milestone may exist (the job has no
+        // current momentum to disturb — we only flag jobs where the next
+        // thing hasn't started). overall_status must be 'active'. The
+        // milestone is selected by lowest sort_order among ready not_started
+        // (matches the canonical template flow's "what's next"). Idle
+        // threshold is 3 days — tighter than stalled_job (14d), filling the
+        // operational blind zone between recent-activity and stalled.
+        // Dedupes against overdue + stalled below (those are stronger signals).
+        if (j.overall_status === 'active') {
+          const hasInProgress = (j.milestones || []).some(m => m.status === 'in_progress')
+          if (!hasInProgress) {
+            const milestonesByKey = new Map((j.milestones || []).map(m => [m.milestone_key, m]))
+            const readyNotStarted = (j.milestones || [])
+              .filter(m => m.status === 'not_started' && _isMilestoneReady(m, milestonesByKey))
+              .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+            const next = readyNotStarted[0]
+            if (next) {
+              const updated = new Date(j.last_update_at || 0)
+              if (updated < threeDaysAgo) {
+                const daysIdle = Math.floor((today - updated) / 86400000)
+                nextActionableRows.push({ job: j, milestone: next, daysIdle })
+              }
+            }
+          }
+        }
       }
 
-      // Build dedupe set from ALL overdue candidates (pre-cap). A job with an
+      // Build dedupe sets from ALL candidates (pre-cap). A job with an
       // overdue milestone that doesn't make the top-20 cap still suppresses
-      // stalled_job — surfacing the same job twice would be noise.
+      // stalled_job and next_actionable_idle — surfacing the same job twice
+      // would be noise. Same principle for stalled jobs suppressing
+      // next_actionable_idle (stalled is the older/stronger signal at 14d+).
       const overdueJobIds = new Set(overdueRows.map(r => r.job.id))
+      const stalledJobIds = new Set(stalledRows.map(r => r.job.id))
 
       // Emit overdue_milestone (top 20 by days overdue desc)
       overdueRows.sort((a, b) => b.daysOverdue - a.daysOverdue)
@@ -579,6 +624,29 @@ export async function getActionItems(opts = {}) {
           icon: '·',
           label: `${customerName(r.job.order.customer)} · no updates in ${r.daysSince}d`,
           meta: r.job.order.order_number || `job ${r.job.id.slice(0, 8)}`,
+          route: 'job',
+          routeId: r.job.id,
+        })
+      }
+
+      // Emit next_actionable_idle (top 10 by daysIdle desc, deduped against
+      // both overdue and stalled candidate sets — stronger signals win).
+      // Severity: 'muted' — this is "deserves attention before it quietly
+      // becomes a problem," not "something is actively wrong." Renders at
+      // the bottom of the Operations section, below the red/amber signals.
+      const nextActionableFiltered = nextActionableRows.filter(r =>
+        !overdueJobIds.has(r.job.id) && !stalledJobIds.has(r.job.id)
+      )
+      nextActionableFiltered.sort((a, b) => b.daysIdle - a.daysIdle)
+      for (const r of nextActionableFiltered.slice(0, 10)) {
+        items.push({
+          kind: 'next_actionable_idle',
+          severity: 'muted',
+          order: r.job.order,
+          job: { id: r.job.id, overall_status: r.job.overall_status, last_update_at: r.job.last_update_at, order_id: r.job.order_id },
+          icon: '→',
+          label: `${customerName(r.job.order.customer)} · ${r.milestone.label}`,
+          meta: `Ready ${r.daysIdle}d ago · ${r.job.order.order_number || 'job ' + r.job.id.slice(0, 8)}`,
           route: 'job',
           routeId: r.job.id,
         })

@@ -27,9 +27,10 @@ import { fmtUSD } from './lib/stonebooksData'
 // surface in the Operations section so they're never silently lost.
 const KIND_TO_SECTION = {
   // Operations — post-sign job/milestone state
-  overdue_milestone: 'operations',
-  waiting_aged:      'operations',
-  stalled_job:       'operations',
+  overdue_milestone:     'operations',
+  waiting_aged:          'operations',
+  stalled_job:           'operations',
+  next_actionable_idle:  'operations',
   // Money & deadlines — financial/deadline urgency on orders
   overdue_balance:   'money',
   cemetery_deadline: 'money',
