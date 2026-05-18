@@ -320,10 +320,36 @@ export async function uploadProfilePhoto(userId, file) {
   return { ok: true, url: data.publicUrl }
 }
 
-// ── ACTION ITEMS (Today tab) ─────────────────────────────────────────────────
-// Returns categorized list of things that need attention.
+// Post-J1-P1 stabilization helper — turns 'waiting_on_cemetery' into
+// 'waiting on cemetery' for human-readable action-item labels.
+function _humanizeWaitingStatus(code) {
+  if (!code) return 'waiting'
+  return code.replace(/^waiting_/, 'waiting on ').replace(/_/g, ' ')
+}
 
-export async function getActionItems() {
+// ── ACTION ITEMS (Today tab) ─────────────────────────────────────────────────
+// Returns categorized list of things that need attention. Two opt-in modes:
+//   getActionItems()                              → legacy: orders-only signals
+//   getActionItems({ includeOperational: true })  → adds job/milestone signals
+//
+// Every item carries a `route` ('order' | 'job') and `routeId` so consumers
+// can drill into the right surface. Today's existing UI ignores `route` for
+// now and keeps using `item.order.id`; Commit B will switch to route-aware
+// routing once the operational items are surfaced via a sectioned UI.
+//
+// Operational signals (when includeOperational:true):
+//   overdue_milestone (red) — most-overdue actionable milestone per job, top 20
+//   waiting_aged (amber)    — waiting_* status untouched > 7d, top 10
+//   stalled_job (amber)     — active status untouched > 14d, top 10
+//
+// Dedupe rule: any job that has at least one overdue actionable milestone is
+// suppressed from stalled_job (even if that job doesn't make the top-20 cap
+// for overdue_milestone). The overdue signal is the stronger operational
+// truth; surfacing the same job twice would be noise.
+
+export async function getActionItems(opts = {}) {
+  const { includeOperational = false } = opts
+
   const { data: rows, error } = await supabase
     .from('orders')
     .select('*, customer:customers(*), cemetery:cemeteries(*)')
@@ -336,6 +362,8 @@ export async function getActionItems() {
   const in7 = new Date(today.getTime() + 7 * 86400000)
   const in14 = new Date(today.getTime() + 14 * 86400000)
   const monthAgo = new Date(today.getTime() - 30 * 86400000)
+  const sevenAgo = new Date(today.getTime() - 7 * 86400000)
+  const fourteenAgo = new Date(today.getTime() - 14 * 86400000)
 
   const items = []
 
@@ -352,9 +380,12 @@ export async function getActionItems() {
           kind: 'overdue_balance',
           severity: 'red',
           order: o,
+          job: null,
           icon: '$',
           label: `${customerName(o.customer)} · balance ${fmtUSD(balance)} overdue`,
           meta: `Target was ${fmtDate(o.target_completion_date)}`,
+          route: 'order',
+          routeId: o.id,
         })
       }
     }
@@ -367,9 +398,12 @@ export async function getActionItems() {
           kind: 'cemetery_deadline',
           severity: 'red',
           order: o,
+          job: null,
           icon: '!',
           label: `${customerName(o.customer)} · cemetery permit deadline`,
           meta: `${fmtDate(o.cemetery_deadline)} (${Math.ceil((dl - today) / 86400000)}d)`,
+          route: 'order',
+          routeId: o.id,
         })
       }
     }
@@ -382,9 +416,12 @@ export async function getActionItems() {
           kind: 'target_soon',
           severity: 'amber',
           order: o,
+          job: null,
           icon: '⏱',
           label: `${customerName(o.customer)} · target completion soon`,
           meta: `${fmtDate(o.target_completion_date)} (${Math.ceil((tgt - today) / 86400000)}d)`,
+          route: 'order',
+          routeId: o.id,
         })
       }
     }
@@ -397,9 +434,12 @@ export async function getActionItems() {
           kind: 'abandoned_draft',
           severity: 'muted',
           order: o,
+          job: null,
           icon: '·',
           label: `${customerName(o.customer)} · draft sitting idle`,
           meta: `Last touched ${fmtRelative(o.updated_at)}`,
+          route: 'order',
+          routeId: o.id,
         })
       }
     }
@@ -413,9 +453,134 @@ export async function getActionItems() {
           kind: 'stale_quote',
           severity: 'amber',
           order: o,
+          job: null,
           icon: '⌛',
           label: `${customerName(o.customer)} · quote not yet contracted`,
           meta: `Quoted ${fmtRelative(o.updated_at)} · ${fmtUSD(total)}`,
+          route: 'order',
+          routeId: o.id,
+        })
+      }
+    }
+  }
+
+  // ─── Operational signals (Sprint J1-P1 stabilization — Today commit A) ────
+  // Opt-in via opts.includeOperational. UI in Today does NOT pass this flag
+  // yet; the legacy item set above is what currently renders. Commit B will
+  // flip the flag and add sectioned rendering.
+  if (includeOperational) {
+    const { data: jobs, error: jobsErr } = await supabase
+      .from('jobs')
+      .select(`
+        id, overall_status, last_update_at, order_id,
+        order:orders(id, order_number, status, updated_at, customer:customers(*)),
+        milestones:job_milestones(milestone_key, label, due_date, status)
+      `)
+      .neq('overall_status', 'closed')
+      .limit(500)
+
+    if (jobsErr) {
+      console.error('getActionItems operational query:', jobsErr)
+    } else {
+      const overdueRows = []   // { job, milestone, daysOverdue }
+      const waitingRows = []   // { job, daysSince }
+      const stalledRows = []   // { job, daysSince }
+
+      for (const j of (jobs || [])) {
+        if (!j.order) continue
+        if (j.order.status === 'cancelled') continue
+
+        // overdue_milestone — pick the most-overdue actionable milestone for
+        // this job. Same condition as the JobsTab overdue cue: due_date <
+        // today AND status NOT in done/not_needed.
+        let worst = null
+        let worstDays = -1
+        for (const m of (j.milestones || [])) {
+          if (!m.due_date) continue
+          if (m.status === 'done' || m.status === 'not_needed') continue
+          const dueDate = new Date(m.due_date + 'T00:00:00')
+          if (dueDate >= today) continue
+          const days = Math.floor((today - dueDate) / 86400000)
+          if (days > worstDays) { worstDays = days; worst = m }
+        }
+        if (worst) {
+          overdueRows.push({ job: j, milestone: worst, daysOverdue: worstDays })
+        }
+
+        // waiting_aged — overall_status starts with 'waiting_' AND
+        // last_update_at > 7d ago. Independent of overdue dedupe — a job
+        // that's both waiting AND has an overdue milestone surfaces both
+        // (they're different operational truths).
+        if (j.overall_status && j.overall_status.startsWith('waiting_')) {
+          const updated = new Date(j.last_update_at || 0)
+          if (updated < sevenAgo) {
+            const daysSince = Math.floor((today - updated) / 86400000)
+            waitingRows.push({ job: j, daysSince })
+          }
+        }
+
+        // stalled_job — STRICTLY overall_status==='active' (waiting_* states
+        // never produce stalled_job; they have their own waiting_aged signal).
+        if (j.overall_status === 'active') {
+          const updated = new Date(j.last_update_at || 0)
+          if (updated < fourteenAgo) {
+            const daysSince = Math.floor((today - updated) / 86400000)
+            stalledRows.push({ job: j, daysSince })
+          }
+        }
+      }
+
+      // Build dedupe set from ALL overdue candidates (pre-cap). A job with an
+      // overdue milestone that doesn't make the top-20 cap still suppresses
+      // stalled_job — surfacing the same job twice would be noise.
+      const overdueJobIds = new Set(overdueRows.map(r => r.job.id))
+
+      // Emit overdue_milestone (top 20 by days overdue desc)
+      overdueRows.sort((a, b) => b.daysOverdue - a.daysOverdue)
+      for (const r of overdueRows.slice(0, 20)) {
+        items.push({
+          kind: 'overdue_milestone',
+          severity: 'red',
+          order: r.job.order,
+          job: { id: r.job.id, overall_status: r.job.overall_status, last_update_at: r.job.last_update_at, order_id: r.job.order_id },
+          icon: '⚠',
+          label: `${customerName(r.job.order.customer)} · ${r.milestone.label}`,
+          meta: `${r.daysOverdue}d overdue · ${r.job.order.order_number || 'job ' + r.job.id.slice(0, 8)}`,
+          route: 'job',
+          routeId: r.job.id,
+        })
+      }
+
+      // Emit waiting_aged (top 10 by days-in-state desc)
+      waitingRows.sort((a, b) => b.daysSince - a.daysSince)
+      for (const r of waitingRows.slice(0, 10)) {
+        items.push({
+          kind: 'waiting_aged',
+          severity: 'amber',
+          order: r.job.order,
+          job: { id: r.job.id, overall_status: r.job.overall_status, last_update_at: r.job.last_update_at, order_id: r.job.order_id },
+          icon: '⌛',
+          label: `${customerName(r.job.order.customer)} · ${_humanizeWaitingStatus(r.job.overall_status)}`,
+          meta: `${r.daysSince}d in this state · ${r.job.order.order_number || 'job ' + r.job.id.slice(0, 8)}`,
+          route: 'job',
+          routeId: r.job.id,
+        })
+      }
+
+      // Emit stalled_job (top 10, deduped against ANY overdue-candidate job)
+      const stalledFiltered = stalledRows.filter(r => !overdueJobIds.has(r.job.id))
+      stalledFiltered.sort((a, b) => b.daysSince - a.daysSince)
+      for (const r of stalledFiltered.slice(0, 10)) {
+        items.push({
+          kind: 'stalled_job',
+          severity: 'amber',
+          order: r.job.order,
+          job: { id: r.job.id, overall_status: r.job.overall_status, last_update_at: r.job.last_update_at, order_id: r.job.order_id },
+          icon: '·',
+          label: `${customerName(r.job.order.customer)} · no updates in ${r.daysSince}d`,
+          meta: r.job.order.order_number || `job ${r.job.id.slice(0, 8)}`,
+          route: 'job',
+          routeId: r.job.id,
         })
       }
     }
@@ -426,7 +591,7 @@ export async function getActionItems() {
   items.sort((a, b) => {
     const dr = sevRank[a.severity] - sevRank[b.severity]
     if (dr !== 0) return dr
-    return new Date(b.order.updated_at) - new Date(a.order.updated_at)
+    return new Date(b.order?.updated_at || 0) - new Date(a.order?.updated_at || 0)
   })
 
   return items
