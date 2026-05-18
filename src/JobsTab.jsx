@@ -639,16 +639,88 @@ function MetricMini({ label, value, accent }) {
   )
 }
 
+// ── Stabilization (post-J1-P1): overdue derivation + actionable-first sort ───
+// Pure helpers — no DB, no side effects. Same logic surfaces in MilestoneRow
+// for the visual cue (red border + caption) and in useMemoGroupMilestones for
+// the within-group sort priority.
+
+function _todayLocalISO() {
+  // Build YYYY-MM-DD from local components. Avoids toISOString's UTC drift,
+  // which near midnight in NJ can roll the date forward or back.
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function isMilestoneOverdue(m) {
+  if (!m?.due_date) return false
+  if (m.status === 'done' || m.status === 'not_needed') return false
+  // ISO YYYY-MM-DD lex-compares correctly; "due today" is NOT overdue.
+  return m.due_date < _todayLocalISO()
+}
+
+function daysPastDue(m) {
+  if (!isMilestoneOverdue(m)) return 0
+  // Parse both as local midnight so the diff is an honest day count.
+  const due = new Date(m.due_date + 'T00:00:00')
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.floor((today - due) / 86400000)
+}
+
+// Returns true if a not_started milestone has at least one unsatisfied
+// `requires[]` dependency (i.e., it's locked, can't be acted on yet).
+// Mirrors the same check MilestoneRow uses for its blocking caption.
+function _hasUnsatisfiedRequires(m, byKey) {
+  if (!m.requires || m.requires.length === 0) return false
+  for (const k of m.requires) {
+    const dep = byKey.get(k)
+    if (dep && dep.status !== 'done' && dep.status !== 'not_needed') return true
+  }
+  return false
+}
+
+// Status sort key for the actionable-first comparator. Split per Paul's
+// 2026-05-18 rule: ready not_started outranks locked not_started.
+function _statusSortKey(m, byKey) {
+  if (m.status === 'blocked')     return 1
+  if (m.status === 'in_progress') return 2
+  if (m.status === 'not_started') return _hasUnsatisfiedRequires(m, byKey) ? 4 : 3
+  if (m.status === 'done')        return 5
+  if (m.status === 'not_needed')  return 6
+  return 99
+}
+
+function _isOverdueActionable(m) {
+  if (!isMilestoneOverdue(m)) return false
+  return m.status === 'blocked' || m.status === 'in_progress' || m.status === 'not_started'
+}
+
 function useMemoGroupMilestones(milestones) {
   return useMemo(() => {
+    const byKey = new Map((milestones || []).map(m => [m.milestone_key, m]))
     const map = new Map()
-    for (const m of milestones) {
+    for (const m of (milestones || [])) {
       const g = m.group || 'other'
       if (!map.has(g)) map.set(g, [])
       map.get(g).push(m)
     }
+    // Actionable-first sort within each group:
+    //   key 1: overdue-actionable rises above everything (overdue + done/
+    //          not_needed is impossible — those statuses can't be overdue)
+    //   key 2: status priority (blocked > in_progress > ready ns > locked ns
+    //          > done > not_needed)
+    //   key 3: original template sort_order, preserves canonical flow as
+    //          tiebreaker
     for (const arr of map.values()) {
-      arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+      arr.sort((a, b) => {
+        const aOver = _isOverdueActionable(a) ? 0 : 1
+        const bOver = _isOverdueActionable(b) ? 0 : 1
+        if (aOver !== bOver) return aOver - bOver
+        const aPri = _statusSortKey(a, byKey)
+        const bPri = _statusSortKey(b, byKey)
+        if (aPri !== bPri) return aPri - bPri
+        return (a.sort_order || 0) - (b.sort_order || 0)
+      })
     }
     return map
   }, [milestones])
@@ -747,6 +819,11 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
 
   const isLocked = blocking.length > 0 && milestone.status !== 'done' && milestone.status !== 'not_needed'
 
+  // Stabilization (post-J1-P1): derive overdue cue from due_date. "Due today"
+  // is NOT overdue — only strictly past. Done / not_needed never overdue.
+  const overdue = isMilestoneOverdue(milestone)
+  const daysOver = overdue ? daysPastDue(milestone) : 0
+
   // Status change — advancing statuses go through the readiness gate; the
   // data layer rejects with requiresOverride:true if the milestone isn't ready,
   // and the UI opens the override modal in response.
@@ -827,6 +904,11 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
               Waiting on: {blocking.join(', ')}
             </div>
           )}
+          {overdue && (
+            <div className="sb-milestone-overdue-caption">
+              ⚠ {daysOver} day{daysOver === 1 ? '' : 's'} overdue
+            </div>
+          )}
           {milestone.note && (
             <div style={{ fontSize: 11, color: 'var(--sb-text-secondary)', marginTop: 4, fontStyle: 'italic' }}>
               {milestone.note}
@@ -858,7 +940,7 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
         <div>
           <input
             type="date"
-            className="sb-date-input"
+            className={`sb-date-input ${overdue ? 'is-overdue' : ''}`}
             value={milestone.due_date || ''}
             onChange={handleDueDateChange}
             disabled={busy}
@@ -1332,6 +1414,20 @@ const localStyles = `
     width: 130px;
   }
   .sb-date-input:disabled { opacity: 0.6; cursor: wait; }
+  /* Post-J1-P1 stabilization — overdue cue on the milestone date input */
+  .sb-date-input.is-overdue {
+    border-color: var(--sb-red, #b54040);
+    color: var(--sb-red, #b54040);
+    font-weight: 600;
+  }
+  .sb-milestone-overdue-caption {
+    font-size: 11px;
+    color: var(--sb-red, #b54040);
+    font-style: italic;
+    margin-top: 2px;
+    font-family: var(--sb-font-mono);
+    letter-spacing: 0.02em;
+  }
 
   .sb-text-input {
     font: inherit;
