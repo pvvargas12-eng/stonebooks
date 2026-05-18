@@ -454,3 +454,697 @@ export function monthKey(d) {
 export function monthLabel(d) {
   return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
 }
+// =============================================================================
+// Stonebooks — Jobs Operations data layer (Sprint J1-P1, commit 2)
+// =============================================================================
+// Append this entire block to the bottom of src/lib/stonebooksData.js, just
+// before any closing exports or trailing whitespace. Nothing above it changes.
+//
+// Conventions matched to existing helpers:
+//   - reads return [] / null on error, log to console.error
+//   - writes return { ok: true, ... } / { ok: false, error }
+//   - snake_case in the DB, mirrored field names in JS where natural
+//   - JSONB-heavy storage, defensive defaults on read
+//
+// What this commit ships:
+//   - Service-type → template mapping
+//   - Template loader + milestone union for multi-service orders
+//   - createJobFromOrder (idempotent)
+//   - getJobs (list view) + getJob (detail)
+//   - Milestone updates with readiness gating + override path
+//   - Decision-milestone cascade ("not needed" propagates to dependents)
+//   - Job-level helpers: status, next action, note
+//   - Event reader
+// =============================================================================
+
+// ── JOBS: constants ──────────────────────────────────────────────────────────
+
+export const JOB_OVERALL_STATUSES = [
+  { code: 'active',              label: 'Active',              color: '#2d7a4f' },
+  { code: 'waiting_on_customer', label: 'Waiting on customer', color: '#b8842a' },
+  { code: 'waiting_on_cemetery', label: 'Waiting on cemetery', color: '#b8842a' },
+  { code: 'waiting_on_supplier', label: 'Waiting on supplier', color: '#b8842a' },
+  { code: 'weather_delayed',     label: 'Weather delayed',     color: '#5d5d5a' },
+  { code: 'seasonal_hold',       label: 'Seasonal hold',       color: '#5d5d5a' },
+  { code: 'legal_hold',          label: 'Legal hold',          color: '#b54040' },
+  { code: 'blocked',             label: 'Blocked',             color: '#b54040' },
+  { code: 'closed',              label: 'Closed',              color: '#0f1419' },
+]
+
+export const JOB_MILESTONE_STATUSES = [
+  { code: 'not_needed',  label: 'Not needed',  color: '#8b8b87' },
+  { code: 'not_started', label: 'Not started', color: '#5d5d5a' },
+  { code: 'in_progress', label: 'In progress', color: '#1d4ed8' },
+  { code: 'done',        label: 'Done',        color: '#2d7a4f' },
+  { code: 'blocked',     label: 'Blocked',     color: '#b54040' },
+]
+
+export const JOB_TEAMS = [
+  { code: 'design',       label: 'Design',       color: '#7c3aed' },
+  { code: 'sales',        label: 'Sales',        color: '#1d4ed8' },
+  { code: 'admin',        label: 'Admin',        color: '#b8842a' },
+  { code: 'production',   label: 'Production',   color: '#0d9488' },
+  { code: 'installation', label: 'Installation', color: '#2d7a4f' },
+]
+
+export function jobStatusInfo(code) {
+  return JOB_OVERALL_STATUSES.find(s => s.code === code) || { code, label: code, color: '#8b8b87' }
+}
+export function milestoneStatusInfo(code) {
+  return JOB_MILESTONE_STATUSES.find(s => s.code === code) || { code, label: code, color: '#8b8b87' }
+}
+export function teamInfo(code) {
+  return JOB_TEAMS.find(t => t.code === code) || { code, label: code || '—', color: '#8b8b87' }
+}
+
+// ── JOBS: service-type → job-type mapping ────────────────────────────────────
+// Maps the codes from orders.service_types (an ARRAY) onto our four templates.
+// The first matching service type drives the primary template; secondary types
+// contribute additional milestones via union (see milestonesForServiceTypes).
+//
+// OTHER → new_stone fallback, with a staff_notes flag added at creation time.
+
+const SERVICE_TYPE_TO_JOB_TYPE = {
+  NEW_STONE:       'new_stone',
+  CIVIC_MEMORIAL:  'new_stone',
+  MAUSOLEUM:       'new_stone',
+  INSCRIPTION:     'inscription',
+  ADD_PHOTO:       'inscription',
+  BRONZE:          'bronze',
+  ACID_WASH:       'cleaning_repair',
+  REPAIR:          'cleaning_repair',
+  OTHER:           'new_stone',
+}
+
+export function jobTypeForServiceTypes(serviceTypes) {
+  if (!Array.isArray(serviceTypes) || serviceTypes.length === 0) return null
+  for (const s of serviceTypes) {
+    const t = SERVICE_TYPE_TO_JOB_TYPE[s]
+    if (t) return t
+  }
+  return 'new_stone' // unknown codes fall through to new_stone
+}
+
+// ── JOBS: template loading ───────────────────────────────────────────────────
+
+async function fetchActiveTemplateByJobType(jobType) {
+  const { data, error } = await supabase
+    .from('milestone_templates')
+    .select('*')
+    .eq('job_type', jobType)
+    .eq('is_active', true)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) { console.error('fetchActiveTemplateByJobType:', error); return null }
+  return data
+}
+
+// Given a service_types[] array, returns:
+//   { primaryTemplate, allMilestones }
+// where allMilestones is the primary template's milestone list with any
+// additional milestones from secondary-service templates appended (deduped by
+// milestone_key, primary wins on conflict). sort_order is assigned by final
+// position so the table renders in a stable order.
+async function buildMilestoneListForOrder(serviceTypes) {
+  const types = Array.isArray(serviceTypes) ? serviceTypes : []
+  if (types.length === 0) return { primaryTemplate: null, allMilestones: [] }
+
+  const primaryJobType = jobTypeForServiceTypes(types)
+  if (!primaryJobType) return { primaryTemplate: null, allMilestones: [] }
+
+  const primaryTemplate = await fetchActiveTemplateByJobType(primaryJobType)
+  if (!primaryTemplate) return { primaryTemplate: null, allMilestones: [] }
+
+  const seenKeys = new Set()
+  const merged = []
+  for (const m of (primaryTemplate.template?.milestones || [])) {
+    seenKeys.add(m.key)
+    merged.push(m)
+  }
+
+  // Collect distinct secondary job-types (other than primary)
+  const secondaryJobTypes = []
+  for (const s of types) {
+    const t = SERVICE_TYPE_TO_JOB_TYPE[s]
+    if (t && t !== primaryJobType && !secondaryJobTypes.includes(t)) {
+      secondaryJobTypes.push(t)
+    }
+  }
+
+  for (const jt of secondaryJobTypes) {
+    const tmpl = await fetchActiveTemplateByJobType(jt)
+    if (!tmpl) continue
+    for (const m of (tmpl.template?.milestones || [])) {
+      if (!seenKeys.has(m.key)) {
+        seenKeys.add(m.key)
+        merged.push(m)
+      }
+    }
+  }
+
+  return { primaryTemplate, allMilestones: merged }
+}
+
+// ── JOBS: createJobFromOrder ─────────────────────────────────────────────────
+// Idempotent: if a job already exists for this order, returns that job.
+// Requires orders.signed_at to be non-null.
+// Writes a job_created event on first creation.
+
+export async function createJobFromOrder(orderId) {
+  if (!orderId) return { ok: false, error: 'No orderId' }
+
+  // 1. Existing job? Return it.
+  const { data: existing } = await supabase
+    .from('jobs')
+    .select('*')
+    .eq('order_id', orderId)
+    .maybeSingle()
+  if (existing) return { ok: true, job: existing, alreadyExisted: true }
+
+  // 2. Load the order.
+  const { data: order, error: orderErr } = await supabase
+    .from('orders')
+    .select('id, signed_at, service_types, sales_rep, tenant_id, staff_notes')
+    .eq('id', orderId)
+    .single()
+  if (orderErr || !order) return { ok: false, error: orderErr?.message || 'Order not found' }
+  if (!order.signed_at) return { ok: false, error: 'Order is not signed yet — no job created' }
+
+  // 3. Resolve template + milestone list.
+  const { primaryTemplate, allMilestones } = await buildMilestoneListForOrder(order.service_types)
+  if (!primaryTemplate) return { ok: false, error: 'No active template matches this order\'s service types' }
+
+  // 4. Insert the job.
+  const jobRow = {
+    tenant_id: order.tenant_id,
+    order_id: order.id,
+    template_id: primaryTemplate.id,
+    job_type: primaryTemplate.job_type,
+    overall_status: 'active',
+    last_update_at: new Date().toISOString(),
+  }
+  const { data: job, error: jobErr } = await supabase
+    .from('jobs')
+    .insert(jobRow)
+    .select()
+    .single()
+  if (jobErr) return { ok: false, error: jobErr.message }
+
+  // 5. Insert milestone rows.
+  const milestoneRows = allMilestones.map((m, idx) => ({
+    tenant_id: order.tenant_id,
+    job_id: job.id,
+    milestone_key: m.key,
+    label: m.label,
+    group: m.group,
+    team: m.team || null,
+    status: m.default_status || 'not_started',
+    sort_order: idx,
+    requires: m.requires || [],
+    is_decision: !!m.is_decision,
+    cascades_to: m.cascades_to || [],
+    is_customer_visible: !!m.is_customer_visible,
+    due_date: null,
+    updated_at: new Date().toISOString(),
+  }))
+  if (milestoneRows.length > 0) {
+    const { error: msErr } = await supabase.from('job_milestones').insert(milestoneRows)
+    if (msErr) {
+      // Roll back the job row so we don't leave orphans
+      await supabase.from('jobs').delete().eq('id', job.id)
+      return { ok: false, error: `Failed to seed milestones: ${msErr.message}` }
+    }
+  }
+
+  // 6. Write job_created event.
+  const eventPayload = {
+    service_types: order.service_types,
+    template_job_type: primaryTemplate.job_type,
+    template_version: primaryTemplate.version,
+    milestone_count: milestoneRows.length,
+  }
+  if ((order.service_types || []).includes('OTHER')) {
+    eventPayload.staff_review_required = true
+    eventPayload.reason = 'Order contains OTHER service type; verify template fits the actual work.'
+  }
+  await supabase.from('job_events').insert({
+    tenant_id: order.tenant_id,
+    job_id: job.id,
+    event_type: 'job_created',
+    payload: eventPayload,
+    note: eventPayload.staff_review_required
+      ? 'Job created from OTHER service type — staff review recommended.'
+      : null,
+  })
+
+  return { ok: true, job, alreadyExisted: false }
+}
+
+// ── JOBS: list view ──────────────────────────────────────────────────────────
+// Returns rows for the Jobs tab table. Each row includes:
+//   - joined customer (id, names, phones)
+//   - joined cemetery (id, name)
+//   - joined order (id, order_number, service_types, target_completion_date)
+//   - milestones array (full set; the UI summarizes by group)
+//
+// Filters:
+//   teamFilter:   array of team codes to filter milestones (and hide jobs with
+//                 no matching open milestones). Empty array / undefined = no filter.
+//   statusFilter: array of overall_status codes to keep.
+//   includeClosed: default false; closed jobs hidden unless asked.
+
+export async function getJobs({ teamFilter, statusFilter, includeClosed = false, limit = 500 } = {}) {
+  let q = supabase
+    .from('jobs')
+    .select(`
+      *,
+      milestones:job_milestones(*),
+      order:orders(id, order_number, service_types, target_completion_date, target_completion_end_date, primary_lastname, signed_at, customer_id, cemetery_id),
+      customer:orders(customer:customers(*)),
+      cemetery:orders(cemetery:cemeteries(*))
+    `)
+    .order('last_update_at', { ascending: false })
+    .limit(limit)
+
+  if (statusFilter && statusFilter.length) {
+    q = q.in('overall_status', statusFilter)
+  } else if (!includeClosed) {
+    q = q.neq('overall_status', 'closed')
+  }
+
+  const { data, error } = await q
+  if (error) { console.error('getJobs:', error); return [] }
+
+  // The double-nested customer/cemetery select returns arrays of join objects;
+  // flatten to a single record per job for easier consumption.
+  const rows = (data || []).map(j => {
+    const order = j.order || null
+    // Unnest customer + cemetery via a second fetch path; Supabase's PostgREST
+    // can sometimes return either shape depending on relationship hints. Be
+    // defensive.
+    let customer = null, cemetery = null
+    if (Array.isArray(j.customer) && j.customer.length) {
+      customer = j.customer[0]?.customer || null
+    } else if (j.customer && j.customer.customer) {
+      customer = j.customer.customer
+    }
+    if (Array.isArray(j.cemetery) && j.cemetery.length) {
+      cemetery = j.cemetery[0]?.cemetery || null
+    } else if (j.cemetery && j.cemetery.cemetery) {
+      cemetery = j.cemetery.cemetery
+    }
+    return {
+      ...j,
+      milestones: (j.milestones || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+      order,
+      customer,
+      cemetery,
+    }
+  })
+
+  // Team filter is post-fetch (the join shape makes server-side filtering on
+  // children awkward, and the dataset is small in Sprint 1).
+  if (teamFilter && teamFilter.length) {
+    return rows.filter(r =>
+      r.milestones.some(m =>
+        teamFilter.includes(m.team) &&
+        m.status !== 'done' &&
+        m.status !== 'not_needed'
+      )
+    )
+  }
+  return rows
+}
+
+// ── JOBS: single-job detail ──────────────────────────────────────────────────
+
+export async function getJob(jobId) {
+  if (!jobId) return null
+  const { data: job, error } = await supabase
+    .from('jobs')
+    .select(`
+      *,
+      milestones:job_milestones(*),
+      order:orders(*, customer:customers(*), cemetery:cemeteries(*))
+    `)
+    .eq('id', jobId)
+    .single()
+  if (error) { console.error('getJob:', error); return null }
+  if (!job) return null
+  return {
+    ...job,
+    milestones: (job.milestones || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    customer: job.order?.customer || null,
+    cemetery: job.order?.cemetery || null,
+  }
+}
+
+// ── JOBS: readiness gating ───────────────────────────────────────────────────
+// A milestone is "ready" if every key in its requires[] resolves to a milestone
+// whose status is 'done' OR 'not_needed' on the same job.
+// `not_needed` counts as satisfied — that's the whole point of the cascade.
+
+export function computeMilestoneReadiness(milestone, allMilestones) {
+  const requires = Array.isArray(milestone.requires) ? milestone.requires : []
+  if (requires.length === 0) return { ready: true, blockingKeys: [] }
+  const byKey = new Map(allMilestones.map(m => [m.milestone_key, m]))
+  const blocking = []
+  for (const key of requires) {
+    const dep = byKey.get(key)
+    if (!dep) continue // unknown key — be permissive, log later
+    if (dep.status !== 'done' && dep.status !== 'not_needed') {
+      blocking.push(key)
+    }
+  }
+  return { ready: blocking.length === 0, blockingKeys: blocking }
+}
+
+// ── JOBS: updateMilestone ────────────────────────────────────────────────────
+// Patch shape: { status?, due_date?, assignee_user_id?, note? }
+// If the patch advances status to 'in_progress' or 'done' and the milestone
+// is not ready, this returns:
+//   { ok: false, requiresOverride: true, blockingKeys: [...] }
+// The caller can then prompt for a reason and call updateMilestoneWithOverride.
+
+export async function updateMilestone(jobId, milestoneKey, patch, { actorUserId } = {}) {
+  return _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, override: null })
+}
+
+export async function updateMilestoneWithOverride(jobId, milestoneKey, patch, overrideReason, { actorUserId } = {}) {
+  const reason = (overrideReason || '').trim()
+  if (!reason) return { ok: false, error: 'Override reason is required' }
+  return _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, override: reason })
+}
+
+async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, override }) {
+  if (!jobId || !milestoneKey) return { ok: false, error: 'Missing jobId or milestoneKey' }
+
+  // 1. Load this milestone and its siblings (for readiness check).
+  const { data: siblings, error: sibErr } = await supabase
+    .from('job_milestones')
+    .select('*')
+    .eq('job_id', jobId)
+  if (sibErr) return { ok: false, error: sibErr.message }
+  const current = (siblings || []).find(m => m.milestone_key === milestoneKey)
+  if (!current) return { ok: false, error: 'Milestone not found' }
+
+  // 2. Readiness gate — only for forward-progress status changes.
+  const advancingStatus =
+    patch.status && (patch.status === 'in_progress' || patch.status === 'done')
+  if (advancingStatus && !override) {
+    const { ready, blockingKeys } = computeMilestoneReadiness(current, siblings)
+    if (!ready) {
+      return { ok: false, requiresOverride: true, blockingKeys }
+    }
+  }
+
+  // 3. Build the row patch.
+  const rowPatch = { updated_at: new Date().toISOString() }
+  if (actorUserId) rowPatch.updated_by = actorUserId
+  if (patch.status !== undefined) {
+    rowPatch.status = patch.status
+    rowPatch.status_date = new Date().toISOString().slice(0, 10)
+  }
+  if (patch.due_date !== undefined) rowPatch.due_date = patch.due_date
+  if (patch.assignee_user_id !== undefined) rowPatch.assignee_user_id = patch.assignee_user_id
+  if (patch.note !== undefined) rowPatch.note = patch.note
+
+  // 4. Apply the patch.
+  const { data: updated, error: updErr } = await supabase
+    .from('job_milestones')
+    .update(rowPatch)
+    .eq('job_id', jobId)
+    .eq('milestone_key', milestoneKey)
+    .select()
+    .single()
+  if (updErr) return { ok: false, error: updErr.message }
+
+  // 5. Write the corresponding event(s).
+  const events = []
+  if (patch.status !== undefined && patch.status !== current.status) {
+    events.push({
+      tenant_id: current.tenant_id,
+      job_id: jobId,
+      event_type: override ? 'override' : 'milestone_status_changed',
+      milestone_key: milestoneKey,
+      payload: { from: current.status, to: patch.status },
+      note: patch.note || null,
+      is_override: !!override,
+      override_reason: override || null,
+      created_by: actorUserId || null,
+    })
+  }
+  if (patch.due_date !== undefined && patch.due_date !== current.due_date) {
+    events.push({
+      tenant_id: current.tenant_id,
+      job_id: jobId,
+      event_type: 'milestone_due_date_set',
+      milestone_key: milestoneKey,
+      payload: { from: current.due_date, to: patch.due_date },
+      created_by: actorUserId || null,
+    })
+  }
+  if (patch.assignee_user_id !== undefined && patch.assignee_user_id !== current.assignee_user_id) {
+    events.push({
+      tenant_id: current.tenant_id,
+      job_id: jobId,
+      event_type: 'milestone_assigned',
+      milestone_key: milestoneKey,
+      payload: { from: current.assignee_user_id, to: patch.assignee_user_id },
+      created_by: actorUserId || null,
+    })
+  }
+  if (patch.note !== undefined && !events.some(e => e.note)) {
+    events.push({
+      tenant_id: current.tenant_id,
+      job_id: jobId,
+      event_type: 'milestone_note_added',
+      milestone_key: milestoneKey,
+      payload: {},
+      note: patch.note,
+      created_by: actorUserId || null,
+    })
+  }
+  if (events.length > 0) {
+    await supabase.from('job_events').insert(events)
+  }
+
+  // 6. Cascade if this was a decision milestone flipped to 'not_needed'.
+  let cascadeApplied = null
+  if (
+    current.is_decision &&
+    patch.status === 'not_needed' &&
+    Array.isArray(current.cascades_to) &&
+    current.cascades_to.length > 0
+  ) {
+    cascadeApplied = await _applyNotNeededCascade(jobId, current, actorUserId)
+  }
+
+  // 7. If a non-decision milestone was flipped back from not_needed to
+  // not_started (rare), we don't auto-reset its downstream chain — that's a
+  // manual decision. We just log nothing extra.
+
+  return { ok: true, milestone: updated, cascadeApplied }
+}
+
+async function _applyNotNeededCascade(jobId, decisionMilestone, actorUserId) {
+  const keys = Array.isArray(decisionMilestone.cascades_to) ? decisionMilestone.cascades_to : []
+  if (keys.length === 0) return { affectedKeys: [] }
+
+  const { data: dependents, error: depErr } = await supabase
+    .from('job_milestones')
+    .select('*')
+    .eq('job_id', jobId)
+    .in('milestone_key', keys)
+  if (depErr) { console.error('cascade fetch:', depErr); return { affectedKeys: [] } }
+
+  const toUpdate = (dependents || []).filter(d => d.status !== 'not_needed' && d.status !== 'done')
+  const nowIso = new Date().toISOString()
+  const today = nowIso.slice(0, 10)
+  const affected = []
+
+  for (const d of toUpdate) {
+    const { error } = await supabase
+      .from('job_milestones')
+      .update({
+        status: 'not_needed',
+        status_date: today,
+        updated_at: nowIso,
+        updated_by: actorUserId || null,
+      })
+      .eq('id', d.id)
+    if (!error) affected.push(d.milestone_key)
+  }
+
+  if (affected.length > 0) {
+    await supabase.from('job_events').insert({
+      tenant_id: decisionMilestone.tenant_id,
+      job_id: jobId,
+      event_type: 'cascade_applied',
+      milestone_key: decisionMilestone.milestone_key,
+      payload: { affected_keys: affected, trigger: decisionMilestone.milestone_key },
+      note: `Auto-cascade: ${affected.length} dependent milestone${affected.length === 1 ? '' : 's'} set to not_needed.`,
+      created_by: actorUserId || null,
+    })
+  }
+  return { affectedKeys: affected }
+}
+
+// ── JOBS: job-level helpers ──────────────────────────────────────────────────
+
+export async function setJobOverallStatus(jobId, newStatus, note, { actorUserId } = {}) {
+  if (!jobId || !newStatus) return { ok: false, error: 'Missing jobId or newStatus' }
+  const valid = JOB_OVERALL_STATUSES.some(s => s.code === newStatus)
+  if (!valid) return { ok: false, error: `Invalid status: ${newStatus}` }
+
+  const { data: job, error: getErr } = await supabase
+    .from('jobs')
+    .select('id, tenant_id, overall_status, closed_at')
+    .eq('id', jobId)
+    .single()
+  if (getErr || !job) return { ok: false, error: getErr?.message || 'Job not found' }
+  if (job.overall_status === newStatus) return { ok: true, unchanged: true }
+
+  const patch = {
+    overall_status: newStatus,
+    last_update_at: new Date().toISOString(),
+  }
+  if (actorUserId) patch.last_update_by = actorUserId
+  if (newStatus === 'closed' && !job.closed_at) patch.closed_at = new Date().toISOString()
+  if (newStatus !== 'closed' && job.closed_at) patch.closed_at = null
+
+  const { error: updErr } = await supabase.from('jobs').update(patch).eq('id', jobId)
+  if (updErr) return { ok: false, error: updErr.message }
+
+  await supabase.from('job_events').insert({
+    tenant_id: job.tenant_id,
+    job_id: jobId,
+    event_type: newStatus === 'closed' ? 'job_closed' : 'job_status_changed',
+    payload: { from: job.overall_status, to: newStatus },
+    note: note || null,
+    created_by: actorUserId || null,
+  })
+  return { ok: true }
+}
+
+export async function setNextAction(jobId, text, dueDate, { actorUserId } = {}) {
+  if (!jobId) return { ok: false, error: 'Missing jobId' }
+  const { data: job, error: getErr } = await supabase
+    .from('jobs')
+    .select('id, tenant_id, next_action, next_action_due')
+    .eq('id', jobId)
+    .single()
+  if (getErr || !job) return { ok: false, error: getErr?.message || 'Job not found' }
+
+  const patch = {
+    next_action: text || null,
+    next_action_due: dueDate || null,
+    last_update_at: new Date().toISOString(),
+  }
+  if (actorUserId) patch.last_update_by = actorUserId
+
+  const { error: updErr } = await supabase.from('jobs').update(patch).eq('id', jobId)
+  if (updErr) return { ok: false, error: updErr.message }
+
+  await supabase.from('job_events').insert({
+    tenant_id: job.tenant_id,
+    job_id: jobId,
+    event_type: 'next_action_set',
+    payload: {
+      from: job.next_action,
+      to: text || null,
+      from_due: job.next_action_due,
+      to_due: dueDate || null,
+    },
+    created_by: actorUserId || null,
+  })
+  return { ok: true }
+}
+
+export async function addJobNote(jobId, body, { relatedMilestoneKey, actorUserId } = {}) {
+  if (!jobId) return { ok: false, error: 'Missing jobId' }
+  const text = (body || '').trim()
+  if (!text) return { ok: false, error: 'Note body is empty' }
+
+  const { data: job, error: getErr } = await supabase
+    .from('jobs')
+    .select('id, tenant_id')
+    .eq('id', jobId)
+    .single()
+  if (getErr || !job) return { ok: false, error: getErr?.message || 'Job not found' }
+
+  const { error } = await supabase.from('job_events').insert({
+    tenant_id: job.tenant_id,
+    job_id: jobId,
+    event_type: 'note_added',
+    milestone_key: relatedMilestoneKey || null,
+    payload: {},
+    note: text,
+    created_by: actorUserId || null,
+  })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// ── JOBS: event reader ───────────────────────────────────────────────────────
+
+export async function getJobEvents(jobId, { limit = 200, includeVoided = false } = {}) {
+  if (!jobId) return []
+  let q = supabase
+    .from('job_events')
+    .select('*')
+    .eq('job_id', jobId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (!includeVoided) q = q.eq('voided', false)
+  const { data, error } = await q
+  if (error) { console.error('getJobEvents:', error); return [] }
+  return data || []
+}
+
+// ── JOBS: derived helpers (no DB calls) ──────────────────────────────────────
+// Pure functions for UI use — summarize a milestone list by group, find the
+// best "next required action" suggestion, compute days since update, etc.
+
+export function summarizeMilestonesByGroup(milestones) {
+  const out = new Map()
+  for (const m of (milestones || [])) {
+    const g = m.group || 'other'
+    if (!out.has(g)) out.set(g, { group: g, total: 0, done: 0, notNeeded: 0, inProgress: 0, blocked: 0, notStarted: 0 })
+    const row = out.get(g)
+    row.total += 1
+    if (m.status === 'done')        row.done += 1
+    if (m.status === 'not_needed')  row.notNeeded += 1
+    if (m.status === 'in_progress') row.inProgress += 1
+    if (m.status === 'blocked')     row.blocked += 1
+    if (m.status === 'not_started') row.notStarted += 1
+  }
+  return Array.from(out.values())
+}
+
+// Returns the oldest "actionable" milestone — i.e. not_started or in_progress
+// AND ready (all prerequisites satisfied). This drives the suggested
+// next-action when staff hasn't manually set one.
+export function suggestNextActionableMilestone(milestones) {
+  const list = milestones || []
+  const candidates = list.filter(m => {
+    if (m.status !== 'not_started' && m.status !== 'in_progress') return false
+    const { ready } = computeMilestoneReadiness(m, list)
+    return ready
+  })
+  if (candidates.length === 0) return null
+  // Earliest by sort_order is the natural workflow order
+  candidates.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  return candidates[0]
+}
+
+export function daysSinceUpdate(job) {
+  if (!job?.last_update_at) return null
+  const ms = Date.now() - new Date(job.last_update_at).getTime()
+  return Math.floor(ms / 86400000)
+}
+
+// =============================================================================
+// End of Jobs Operations data layer
+// =============================================================================
