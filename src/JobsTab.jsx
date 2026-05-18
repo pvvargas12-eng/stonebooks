@@ -120,6 +120,10 @@ export default function JobsTab({ onOpenOrder, onOpenCustomer }) {
         <h1 className="sb-page-title">Jobs</h1>
       </div>
 
+      {/* Backfill banner — surfaces signed orders that don't yet have jobs.
+          Disappears automatically when count hits zero. */}
+      <BackfillBanner reloadCount={reloadCount} onComplete={triggerReload} />
+
       {/* Filters */}
       <div className="sb-cust-toolbar">
         <input
@@ -179,7 +183,6 @@ export default function JobsTab({ onOpenOrder, onOpenCustomer }) {
       ) : filteredJobs.length === 0 ? (
         <EmptyState
           hasFilters={!!teamFilter || !!statusFilter || !!search.trim()}
-          onReload={triggerReload}
         />
       ) : (
         <>
@@ -195,64 +198,120 @@ export default function JobsTab({ onOpenOrder, onOpenCustomer }) {
 }
 
 // =============================================================================
-// EMPTY STATE — with throwaway "Create test job" picker (removed in commit 6)
+// BACKFILL BANNER — surfaces signed orders that don't yet have jobs
 // =============================================================================
+// Commit 6 replaces the empty-state "Create test job from order" picker. New
+// signings auto-create their jobs via the SalesMode hook; this banner is the
+// discoverable recovery path for legacy signed orders that never had a job.
+//
+// Renders nothing when count is 0. Re-queries on every parent reload so the
+// banner disappears as soon as backfill completes. Tags each created job
+// with creation_source='backfill' in its job_created event.
 
-function EmptyState({ hasFilters, onReload }) {
-  const [signedOrders, setSignedOrders] = useState(null)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [msg, setMsg] = useState(null)
+function BackfillBanner({ reloadCount, onComplete }) {
+  const [pending, setPending] = useState(null)   // null = loading, [] = empty
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState(null) // { done, total } during a run
+  const [error, setError] = useState(null)
 
-  const loadSignedOrders = async () => {
-    setSignedOrders(null)
-    const { data, error } = await supabase
+  const loadPending = useCallback(async () => {
+    setError(null)
+    const { data, error: e1 } = await supabase
       .from('orders')
-      .select('id, order_number, primary_lastname, service_types, signed_at, customer:customers(first_name, last_name)')
+      .select('id, order_number, primary_lastname, service_types, signed_at')
       .not('signed_at', 'is', null)
       .in('status', SOLD_STATUSES)
       .order('signed_at', { ascending: false })
-      .limit(50)
-    if (error) {
-      setMsg({ type: 'err', text: error.message })
-      setSignedOrders([])
-      return
-    }
-    // Filter out orders that already have a job
+      .limit(200)
+    if (e1) { setError(e1.message); setPending([]); return }
     const orderIds = (data || []).map(o => o.id)
-    if (orderIds.length === 0) { setSignedOrders([]); return }
-    const { data: existingJobs } = await supabase
+    if (orderIds.length === 0) { setPending([]); return }
+    const { data: existingJobs, error: e2 } = await supabase
       .from('jobs')
       .select('order_id')
       .in('order_id', orderIds)
+    if (e2) { setError(e2.message); setPending([]); return }
     const taken = new Set((existingJobs || []).map(j => j.order_id))
-    setSignedOrders((data || []).filter(o => !taken.has(o.id)))
-  }
+    setPending((data || []).filter(o => !taken.has(o.id)))
+  }, [])
 
-  const handleOpenPicker = () => {
-    setPickerOpen(true)
-    setMsg(null)
-    loadSignedOrders()
-  }
+  useEffect(() => { loadPending() }, [loadPending, reloadCount])
 
-  const handleCreate = async (orderId) => {
-    setCreating(true); setMsg(null)
-    const r = await createJobFromOrder(orderId)
-    setCreating(false)
-    if (!r.ok) {
-      setMsg({ type: 'err', text: r.error })
-      return
+  const handleBackfillAll = async () => {
+    if (!pending || pending.length === 0) return
+    setBusy(true); setError(null)
+    setProgress({ done: 0, total: pending.length })
+    const failures = []
+    for (let i = 0; i < pending.length; i++) {
+      const o = pending[i]
+      const r = await createJobFromOrder(o.id, { source: 'backfill' })
+      if (!r.ok) failures.push({ order: o, error: r.error })
+      setProgress({ done: i + 1, total: pending.length })
     }
-    setMsg({
-      type: 'ok',
-      text: r.alreadyExisted
-        ? 'A job already existed for that order — loaded it.'
-        : 'Job created.',
-    })
-    onReload()
-    setPickerOpen(false)
+    setBusy(false)
+    setProgress(null)
+    if (failures.length > 0) {
+      setError(`${failures.length} order${failures.length === 1 ? '' : 's'} failed: ${failures.slice(0, 3).map(f => `${f.order.order_number || f.order.id.slice(0,8)} (${f.error})`).join(', ')}${failures.length > 3 ? ' …' : ''}`)
+    }
+    onComplete?.()
+    // loadPending will re-run via reloadCount dependency once parent calls triggerReload
   }
 
+  if (pending === null) return null       // first-load silence
+  if (pending.length === 0 && !error) return null // nothing to do, no errors to surface
+
+  return (
+    <div className="sb-existing-banner" style={{
+      background: 'var(--sb-gold-pale, #f5ede0)',
+      border: '0.5px solid var(--sb-gold-light, #b8935a)',
+      borderRadius: 'var(--sb-r-sm)',
+      padding: '12px 16px',
+      marginBottom: 16,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+    }}>
+      <div style={{ fontSize: 13 }}>
+        {pending.length > 0 ? (
+          <>
+            <strong>{pending.length} signed order{pending.length === 1 ? '' : 's'} without {pending.length === 1 ? 'a job' : 'jobs'}.</strong>{' '}
+            Backfill creates one job per order using the same template logic as automatic creation on signing.
+          </>
+        ) : (
+          <strong>Backfill check complete.</strong>
+        )}
+        {progress && (
+          <span style={{ marginLeft: 8, fontFamily: 'var(--sb-font-mono)', fontSize: 12, color: 'var(--sb-text-muted)' }}>
+            {progress.done} / {progress.total}
+          </span>
+        )}
+        {error && (
+          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--sb-red, #b54040)' }}>
+            {error}
+          </div>
+        )}
+      </div>
+      {pending.length > 0 && (
+        <button
+          type="button"
+          className="sb-btn-secondary"
+          onClick={handleBackfillAll}
+          disabled={busy}
+        >
+          {busy ? 'Backfilling…' : `Backfill ${pending.length} order${pending.length === 1 ? '' : 's'}`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
+// EMPTY STATE
+// =============================================================================
+
+function EmptyState({ hasFilters }) {
   if (hasFilters) {
     return (
       <div className="sb-empty">
@@ -260,78 +319,15 @@ function EmptyState({ hasFilters, onReload }) {
       </div>
     )
   }
-
   return (
     <div className="sb-empty">
       <p style={{ marginBottom: 12, fontSize: 14, color: 'var(--sb-text)', fontWeight: 500 }}>
         No jobs yet.
       </p>
-      <p style={{ marginBottom: 12 }}>
-        Jobs appear here once signed orders flow through the operations pipeline.
-        The full wizard handoff lands in a later commit — until then, you can
-        create test jobs from existing signed orders to preview the workflow.
+      <p>
+        Jobs are created automatically when a contract is signed. If signed
+        orders exist without jobs, a backfill banner will appear above.
       </p>
-
-      {!pickerOpen ? (
-        <button type="button" className="sb-btn-secondary" onClick={handleOpenPicker}>
-          Create test job from order
-        </button>
-      ) : (
-        <div style={{
-          marginTop: 16,
-          padding: 16,
-          background: 'var(--sb-bg)',
-          border: '0.5px solid var(--sb-border)',
-          borderRadius: 'var(--sb-r-md)',
-        }}>
-          <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--sb-text-muted)' }}>
-            Pick a signed order to instantiate as a job. Orders that already have a job are excluded.
-          </div>
-
-          {signedOrders === null ? (
-            <div style={{ fontSize: 12, color: 'var(--sb-text-muted)' }}>Loading orders…</div>
-          ) : signedOrders.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--sb-text-muted)' }}>
-              No signed orders are available. Either none exist yet, or all of them already have a job.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 360, overflowY: 'auto' }}>
-              {signedOrders.map(o => (
-                <button
-                  key={o.id}
-                  type="button"
-                  disabled={creating}
-                  onClick={() => handleCreate(o.id)}
-                  style={{
-                    background: 'var(--sb-surface)',
-                    border: '0.5px solid var(--sb-border)',
-                    borderRadius: 'var(--sb-r-sm)',
-                    padding: '8px 12px',
-                    textAlign: 'left',
-                    cursor: creating ? 'not-allowed' : 'pointer',
-                    font: 'inherit',
-                    color: 'inherit',
-                    opacity: creating ? 0.5 : 1,
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>
-                    {o.order_number || '(no #)'} — {o.primary_lastname || customerName(o.customer)}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--sb-text-muted)', marginTop: 2, fontFamily: 'var(--sb-font-mono)' }}>
-                    {(o.service_types || []).join(', ')} · signed {fmtRelative(o.signed_at)}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <button type="button" className="sb-link" onClick={() => setPickerOpen(false)}>Cancel</button>
-          </div>
-
-          {msg && <div className={`sb-msg sb-msg-${msg.type}`} style={{ marginTop: 8 }}>{msg.text}</div>}
-        </div>
-      )}
     </div>
   )
 }
@@ -970,6 +966,12 @@ function renderEventBody(e) {
   }
   if (payload.milestone_count !== undefined) {
     parts.push(`${payload.milestone_count} milestone${payload.milestone_count === 1 ? '' : 's'} initialized`)
+  }
+  if (payload.creation_source) {
+    const sourceLabel = payload.creation_source === 'wizard'   ? 'Auto-created on signing'
+                      : payload.creation_source === 'backfill' ? 'Backfilled from legacy order'
+                      : 'Manual'
+    parts.push(sourceLabel)
   }
   return (
     <div style={{ fontSize: 12, color: 'var(--sb-text-secondary)', lineHeight: 1.5 }}>

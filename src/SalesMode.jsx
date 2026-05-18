@@ -18,6 +18,11 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from './lib/supabase'
+// Sprint J1-P1 commit 6 — operational job creation on contract conversion.
+// Single boundary call between the sales wizard and the operational layer.
+// SalesMode does not depend on the result; failure surfaces as a non-fatal
+// notice on the locked view and does not undo the signing.
+import { createJobFromOrder } from './lib/stonebooksData'
 
 // =============================================================================
 // STATIC DATA
@@ -11145,6 +11150,10 @@ function UnlockConfirmModal({ open, onConfirm, onCancel }) {
 function SignStep({ order, update }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  // Operational job-creation warning. Only set on the post-signing path when
+  // createJobFromOrder fails. alreadyExisted:true is a silent success — no
+  // warning, no duplicate event written by the data layer.
+  const [jobWarn, setJobWarn] = useState(null)
   const [previewUrl, setPreviewUrl] = useState(null)
   const [previewErr, setPreviewErr] = useState(null)
   const [unlockModalOpen, setUnlockModalOpen] = useState(false)
@@ -11238,6 +11247,23 @@ function SignStep({ order, update }) {
         signedAt: now,
         pricingLockedAt: now,
       })
+
+      // Sprint J1-P1 commit 6 — operational job creation. Isolated try/catch:
+      // any failure here must NOT undo the signing or set the convert-error
+      // state. alreadyExisted:true is a silent success (data layer writes
+      // no duplicate event). The backfill banner on Jobs tab is the
+      // recovery path if this fails.
+      setJobWarn(null)
+      try {
+        const jobRes = await createJobFromOrder(order.id, { source: 'wizard' })
+        if (!jobRes.ok) {
+          setJobWarn(jobRes.error || 'Unknown error')
+          console.warn('createJobFromOrder failed:', jobRes.error)
+        }
+      } catch (jobErr) {
+        setJobWarn(jobErr?.message || 'Job creation failed')
+        console.warn('createJobFromOrder threw:', jobErr)
+      }
     } catch (e) {
       setErr(e.message || 'Conversion failed')
       console.error('Convert error:', e)
@@ -11283,6 +11309,26 @@ function SignStep({ order, update }) {
           🔒 <strong>This order is now a CONTRACT.</strong>{' '}
           {order.signedAt && <>Signed {new Date(order.signedAt).toLocaleString()}.</>}{' '}
           Pricing is locked.
+        </div>
+      )}
+
+      {/* Sprint J1-P1 commit 6 — operational job-creation warning. Renders
+          only when the post-signing createJobFromOrder call failed. Does
+          not block, does not undo the conversion. Recovery is via the
+          Jobs tab Backfill banner. */}
+      {isLocked && jobWarn && (
+        <div
+          className="sm-helper"
+          style={{
+            marginTop: 8,
+            padding: '10px 14px',
+            background: '#fff7e6',
+            border: '1px solid #ffd28d',
+            borderRadius: 4,
+            color: '#1e2d3d',
+          }}
+        >
+          ⚠ Contract signed. Note: job creation failed — {jobWarn}. You can backfill from the Jobs tab.
         </div>
       )}
 

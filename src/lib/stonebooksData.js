@@ -607,11 +607,14 @@ async function buildMilestoneListForOrder(serviceTypes) {
 }
 
 // ── JOBS: createJobFromOrder ─────────────────────────────────────────────────
-// Idempotent: if a job already exists for this order, returns that job.
+// Idempotent: if a job already exists for this order, returns that job
+// with alreadyExisted:true and writes NO new event.
 // Requires orders.signed_at to be non-null.
-// Writes a job_created event on first creation.
+// Writes a job_created event on first creation, tagged with creation_source
+// for the audit trail: 'wizard' (auto from contract signing), 'backfill'
+// (batch from Jobs tab), or 'manual' (default for any ad-hoc caller).
 
-export async function createJobFromOrder(orderId) {
+export async function createJobFromOrder(orderId, { source } = {}) {
   if (!orderId) return { ok: false, error: 'No orderId' }
 
   // 1. Existing job? Return it.
@@ -683,6 +686,7 @@ export async function createJobFromOrder(orderId) {
     template_job_type: primaryTemplate.job_type,
     template_version: primaryTemplate.version,
     milestone_count: milestoneRows.length,
+    creation_source: source || 'manual',
   }
   if ((order.service_types || []).includes('OTHER')) {
     eventPayload.staff_review_required = true
