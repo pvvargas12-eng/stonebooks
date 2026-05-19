@@ -1296,7 +1296,57 @@ async function _applyNotNeededCascade(jobId, decisionMilestone, actorUserId) {
 
 // ── JOBS: job-level helpers ──────────────────────────────────────────────────
 
-export async function setJobOverallStatus(jobId, newStatus, note, { actorUserId } = {}) {
+// Sprint J1-P1 operational continuation #3 — waiting-state transition hints.
+// Pure heuristic. When staff moves a milestone to in_progress and the label/key
+// implies an outbound action on an external party (customer / cemetery /
+// supplier), we surface a soft suggestion to update job.overall_status.
+//
+// Conservative substring matching against `label + milestone_key` (lowercased).
+// The exclusion regex bails out on "the wait is over" signals
+// (received/approved/etc.) so labels like "Customer approval received" don't
+// false-positive into waiting_on_customer. First positive rule wins.
+//
+// Subflow direction (NOT yet implemented): when groups like etching evolve
+// into structured substates, each substate's external-party role will be
+// encoded on the template rather than inferred. This heuristic is the
+// no-schema bootstrap pending that refactor.
+const WAITING_HINT_RULES = [
+  {
+    kind: 'waiting_on_supplier',
+    patterns: ['ordered', 'order placed', 'po sent', 'po submitted'],
+  },
+  {
+    kind: 'waiting_on_cemetery',
+    patterns: [
+      'permit submitted', 'permit filed', 'submit permit',
+      'submitted to cemetery', 'filed with cemetery', 'sent to cemetery',
+    ],
+  },
+  {
+    kind: 'waiting_on_customer',
+    patterns: [
+      'sent to customer', 'send to customer',
+      'awaiting customer', 'customer approval', 'customer sign-off',
+      'layout sent', 'proof sent',
+      'layout to customer', 'proof to customer',
+    ],
+  },
+]
+const WAITING_HINT_EXCLUSIONS = /\b(received|arrived|approved|confirmed|rejected|completed|done)\b/
+
+export function inferWaitingStatusFromMilestone(milestone) {
+  if (!milestone) return null
+  const text = `${milestone.label || ''} ${milestone.milestone_key || ''}`.toLowerCase()
+  if (WAITING_HINT_EXCLUSIONS.test(text)) return null
+  for (const rule of WAITING_HINT_RULES) {
+    for (const pattern of rule.patterns) {
+      if (text.includes(pattern)) return rule.kind
+    }
+  }
+  return null
+}
+
+export async function setJobOverallStatus(jobId, newStatus, note, { actorUserId, source } = {}) {
   if (!jobId || !newStatus) return { ok: false, error: 'Missing jobId or newStatus' }
   const valid = JOB_OVERALL_STATUSES.some(s => s.code === newStatus)
   if (!valid) return { ok: false, error: `Invalid status: ${newStatus}` }
@@ -1320,11 +1370,16 @@ export async function setJobOverallStatus(jobId, newStatus, note, { actorUserId 
   const { error: updErr } = await supabase.from('jobs').update(patch).eq('id', jobId)
   if (updErr) return { ok: false, error: updErr.message }
 
+  // Event payload — optional `triggered_by` audit tag mirrors the
+  // `creation_source` pattern from Sprint J1-P1 Commit 6 (wizard/backfill/manual).
+  const payload = { from: job.overall_status, to: newStatus }
+  if (source) payload.triggered_by = source
+
   await supabase.from('job_events').insert({
     tenant_id: job.tenant_id,
     job_id: jobId,
     event_type: newStatus === 'closed' ? 'job_closed' : 'job_status_changed',
-    payload: { from: job.overall_status, to: newStatus },
+    payload,
     note: note || null,
     created_by: actorUserId || null,
   })

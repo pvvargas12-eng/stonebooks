@@ -21,6 +21,7 @@ import {
   createJobFromOrder,
   updateMilestone, updateMilestoneWithOverride,
   setJobOverallStatus, setNextAction, addJobNote,
+  inferWaitingStatusFromMilestone,
   JOB_OVERALL_STATUSES, JOB_MILESTONE_STATUSES, JOB_TEAMS,
   jobStatusInfo, milestoneStatusInfo, teamInfo,
   summarizeMilestonesByGroup, suggestNextActionableMilestone, daysSinceUpdate,
@@ -472,6 +473,15 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   // change with requiresOverride. Confirm calls updateMilestoneWithOverride.
   const [overrideReq, setOverrideReq] = useState(null)
 
+  // Waiting-state transition hint (operational continuation #3, J1-P1).
+  // Transient component-local state — cleared on unmount, on manual
+  // overall_status change, and on the dismissed-kinds cooldown.
+  const [waitingHint, setWaitingHint] = useState(null)
+  // Session cooldown — once the user dismisses a hint for a given waiting
+  // kind, don't re-surface that same kind until JobDetail unmounts. Stays
+  // a plain Set in component state. No persistence, no DB.
+  const [dismissedKinds, setDismissedKinds] = useState(() => new Set())
+
   const loadJob = useCallback(async () => {
     const [j, e] = await Promise.all([getJob(jobId), getJobEvents(jobId)])
     setJob(j)
@@ -487,6 +497,13 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
     })
     return () => { cancelled = true }
   }, [jobId])
+
+  // Auto-clear the waiting hint whenever overall_status changes. Covers manual
+  // JobControls saves, hint acceptance, and any other path that updates the
+  // job-level status — the underlying question has been addressed.
+  useEffect(() => {
+    setWaitingHint(null)
+  }, [job?.overall_status])
 
   // Sprint J1-P1 follow-up — hooks must be called in the same order on
   // every render. useMemoGroupMilestones contains a useMemo internally; if
@@ -515,6 +532,53 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   const total = order ? rowGrandTotal(order) : 0
   const paid = order ? rowTotalPaid(order) : 0
   const balance = total - paid
+
+  // Waiting-hint logic — consult the heuristic when a milestone transitions
+  // to in_progress, gated on:
+  //   1. job is not already in a waiting_* state (future-proof for new
+  //      waiting kinds without revisiting this branch)
+  //   2. the kind hasn't been dismissed during this JobDetail session
+  // Same callback fires for both the direct path (MilestoneRow) and the
+  // override path (OverrideModal onConfirmed).
+  const considerWaitingHint = (milestone, newStatus) => {
+    if (newStatus !== 'in_progress') return
+    if (!milestone) return
+    if ((job.overall_status || '').startsWith('waiting_')) return
+    const kind = inferWaitingStatusFromMilestone(milestone)
+    if (!kind) return
+    if (dismissedKinds.has(kind)) return
+    setWaitingHint({
+      milestoneKey: milestone.milestone_key,
+      suggestedKind: kind,
+      sourceLabel: milestone.label,
+    })
+  }
+
+  const handleAcceptHint = async () => {
+    if (!waitingHint) return null
+    const note = `Set via waiting-hint from milestone: ${waitingHint.sourceLabel}`
+    const res = await setJobOverallStatus(
+      job.id,
+      waitingHint.suggestedKind,
+      note,
+      { source: 'waiting_hint' },
+    )
+    if (res.ok) {
+      setWaitingHint(null)
+      loadJob()
+    }
+    return res
+  }
+
+  const handleDismissHint = () => {
+    if (!waitingHint) return
+    setDismissedKinds(prev => {
+      const next = new Set(prev)
+      next.add(waitingHint.suggestedKind)
+      return next
+    })
+    setWaitingHint(null)
+  }
 
   return (
     <div className="sb-page sb-page-wide">
@@ -588,6 +652,15 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
       {/* Job-level controls — overall status, next action, free-form note */}
       <JobControls job={job} suggested={suggested} onRefresh={loadJob} />
 
+      {/* Waiting-state transition hint — soft suggestion only, never automation */}
+      {waitingHint && (
+        <WaitingHintBanner
+          hint={waitingHint}
+          onAccept={handleAcceptHint}
+          onDismiss={handleDismissHint}
+        />
+      )}
+
       {/* Milestones by group */}
       <div className="sb-section-label">Milestones</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -600,6 +673,7 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
             jobId={jobId}
             onRefresh={loadJob}
             onOverrideRequest={setOverrideReq}
+            onTransition={considerWaitingHint}
           />
         ))}
       </div>
@@ -619,7 +693,19 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
           jobId={jobId}
           request={overrideReq}
           onClose={() => setOverrideReq(null)}
-          onConfirmed={() => { setOverrideReq(null); loadJob() }}
+          onConfirmed={() => {
+            // Mirror the direct-path heuristic for override-driven advances.
+            // Read the milestone from the pre-refetch job; only label/key feed
+            // the heuristic, and those don't change on a status update.
+            if (overrideReq.patch?.status === 'in_progress') {
+              const ms = (job.milestones || []).find(
+                m => m.milestone_key === overrideReq.milestoneKey,
+              )
+              if (ms) considerWaitingHint(ms, 'in_progress')
+            }
+            setOverrideReq(null)
+            loadJob()
+          }}
         />
       )}
     </div>
@@ -745,7 +831,7 @@ function countEffective(milestones) {
 // MILESTONE GROUP CARD
 // =============================================================================
 
-function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh, onOverrideRequest }) {
+function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh, onOverrideRequest, onTransition }) {
   const [open, setOpen] = useState(true)
   const summary = useMemo(() => {
     const total = milestones.length
@@ -800,6 +886,7 @@ function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh
               jobId={jobId}
               onRefresh={onRefresh}
               onOverrideRequest={onOverrideRequest}
+              onTransition={onTransition}
             />
           ))}
         </div>
@@ -808,7 +895,7 @@ function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh
   )
 }
 
-function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRequest }) {
+function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRequest, onTransition }) {
   const team = milestone.team ? teamInfo(milestone.team) : null
   const [noteOpen, setNoteOpen] = useState(false)
   const [noteDraft, setNoteDraft] = useState('')
@@ -841,6 +928,8 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
     const res = await updateMilestone(jobId, milestone.milestone_key, { status: newStatus })
     setBusy(false)
     if (res.ok) {
+      // Surface waiting-state hints; JobDetail gates on overall_status + cooldown.
+      onTransition?.(milestone, newStatus)
       onRefresh?.()
       return
     }
@@ -1069,6 +1158,12 @@ function renderEventBody(e) {
                       : 'Manual'
     parts.push(sourceLabel)
   }
+  if (payload.triggered_by) {
+    const triggerLabel = payload.triggered_by === 'waiting_hint'
+                       ? 'Set via waiting-hint'
+                       : `Triggered by: ${payload.triggered_by}`
+    parts.push(triggerLabel)
+  }
   return (
     <div style={{ fontSize: 12, color: 'var(--sb-text-secondary)', lineHeight: 1.5 }}>
       {parts.length > 0 && <div className="sb-mono" style={{ fontSize: 11 }}>{parts.join(' · ')}</div>}
@@ -1230,6 +1325,84 @@ function JobControls({ job, suggested, onRefresh }) {
           </div>
           {noteErr && <div style={{ fontSize: 11, color: 'var(--sb-red)', marginTop: 4 }}>{noteErr}</div>}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// WAITING-STATE TRANSITION HINT BANNER
+// =============================================================================
+// Soft suggestion surface for operational continuation #3. Renders when the
+// milestone-to-waiting heuristic fires AND the gates in JobDetail pass.
+// Hint-only — no automation. Accept calls setJobOverallStatus with a
+// `waiting_hint` audit source; dismiss is a pure UI clear (no DB write).
+// JobDetail owns the cooldown (dismissedKinds Set) and auto-clear-on-manual.
+
+function WaitingHintBanner({ hint, onAccept, onDismiss }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const kindLabel = jobStatusInfo(hint.suggestedKind).label
+  const partyLabel =
+    hint.suggestedKind === 'waiting_on_customer' ? 'customer' :
+    hint.suggestedKind === 'waiting_on_cemetery' ? 'cemetery' :
+    hint.suggestedKind === 'waiting_on_supplier' ? 'supplier' :
+    kindLabel.toLowerCase()
+
+  const handleAccept = async () => {
+    setBusy(true); setError(null)
+    const res = await onAccept()
+    if (!res || !res.ok) {
+      setBusy(false)
+      setError(res?.error || 'Update failed')
+    }
+    // On success the parent clears the hint and this component unmounts.
+  }
+
+  return (
+    <div
+      className="sb-existing-banner"
+      style={{
+        background: 'var(--sb-gold-pale, #f5ede0)',
+        border: '0.5px solid var(--sb-gold-light, #b8935a)',
+        borderRadius: 'var(--sb-r-sm)',
+        padding: '12px 16px',
+        marginBottom: 16,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+      }}
+    >
+      <div style={{ fontSize: 13, flex: '1 1 auto', minWidth: 240 }}>
+        <span style={{ marginRight: 6 }}>💡</span>
+        <strong>“{hint.sourceLabel}”</strong> usually means the job is now waiting on the {partyLabel}.{' '}
+        Update overall status to <strong>{kindLabel}</strong>?
+        {error && (
+          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--sb-red, #b54040)' }}>
+            {error}
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          type="button"
+          className="sb-btn-primary"
+          onClick={handleAccept}
+          disabled={busy}
+        >
+          {busy ? 'Updating…' : `Yes, set ${kindLabel}`}
+        </button>
+        <button
+          type="button"
+          className="sb-link"
+          onClick={onDismiss}
+          disabled={busy}
+        >
+          Dismiss
+        </button>
       </div>
     </div>
   )
