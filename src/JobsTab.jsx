@@ -16,6 +16,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
+import QueuesView from './QueuesView'
 import {
   getJobs, getJob, getJobEvents,
   createJobFromOrder,
@@ -77,6 +78,13 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
   const [search, setSearch] = useState('')
   const [reloadCount, setReloadCount] = useState(0)
 
+  // Sprint J1-P1 Commit 2 — view-mode + active-queue state. Mode toggle swaps
+  // the jobs body for QueuesView; activeQueue picks which queue renders inside
+  // it. Component-local, no URL persistence (reload returns to Jobs mode by
+  // design). Survives drill-into-JobDetail/back because JobsTab doesn't unmount.
+  const [viewMode, setViewMode] = useState('jobs')           // 'jobs' | 'queues'
+  const [activeQueue, setActiveQueue] = useState('layouts')   // 'layouts' | 'waiting_on_customer'
+
   // Load list
   useEffect(() => {
     let cancelled = false
@@ -131,78 +139,147 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
       </div>
 
       {/* Backfill banner — surfaces signed orders that don't yet have jobs.
-          Disappears automatically when count hits zero. */}
+          Disappears automatically when count hits zero. Visible in BOTH modes. */}
       <BackfillBanner reloadCount={reloadCount} onComplete={triggerReload} />
 
-      {/* Filters */}
-      <div className="sb-cust-toolbar">
-        <input
-          type="text"
-          className="sb-input sb-cust-search"
-          placeholder="Search by customer, order #, cemetery, next action…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
+      {/* Mode toggle — Jobs (per-job view) vs Queues (cross-job operational
+          lenses). Component-local state, no URL persistence. */}
+      <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
 
-      <div className="sb-pill-row">
-        <button
-          type="button"
-          className={`sb-pill ${teamFilter === null ? 'on' : ''}`}
-          onClick={() => setTeamFilter(null)}
-        >All teams</button>
-        <span className="sb-pill-divider" />
-        {JOB_TEAMS.map(t => (
-          <button
-            key={t.code}
-            type="button"
-            className={`sb-pill ${teamFilter === t.code ? 'on' : ''}`}
-            style={{ '--pill-dot': t.color }}
-            onClick={() => setTeamFilter(teamFilter === t.code ? null : t.code)}
-          >
-            <span className="sb-pill-dot" />
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="sb-pill-row">
-        <button
-          type="button"
-          className={`sb-pill ${statusFilter === null ? 'on' : ''}`}
-          onClick={() => setStatusFilter(null)}
-        >Any status</button>
-        <span className="sb-pill-divider" />
-        {JOB_OVERALL_STATUSES.filter(s => s.code !== 'closed').map(s => (
-          <button
-            key={s.code}
-            type="button"
-            className={`sb-pill ${statusFilter === s.code ? 'on' : ''}`}
-            style={{ '--pill-dot': s.color }}
-            onClick={() => setStatusFilter(statusFilter === s.code ? null : s.code)}
-          >
-            <span className="sb-pill-dot" />
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Table */}
-      {filteredJobs === null ? (
-        <div className="sb-empty">Loading jobs…</div>
-      ) : filteredJobs.length === 0 ? (
-        <EmptyState
-          hasFilters={!!teamFilter || !!statusFilter || !!search.trim()}
-        />
-      ) : (
+      {viewMode === 'jobs' && (
         <>
-          <div className="sb-cust-meta">{filteredJobs.length} job{filteredJobs.length === 1 ? '' : 's'}</div>
-          <JobsTable
-            jobs={filteredJobs}
-            onSelectJob={setSelectedJobId}
-          />
+          {/* Filters */}
+          <div className="sb-cust-toolbar">
+            <input
+              type="text"
+              className="sb-input sb-cust-search"
+              placeholder="Search by customer, order #, cemetery, next action…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div className="sb-pill-row">
+            <button
+              type="button"
+              className={`sb-pill ${teamFilter === null ? 'on' : ''}`}
+              onClick={() => setTeamFilter(null)}
+            >All teams</button>
+            <span className="sb-pill-divider" />
+            {JOB_TEAMS.map(t => (
+              <button
+                key={t.code}
+                type="button"
+                className={`sb-pill ${teamFilter === t.code ? 'on' : ''}`}
+                style={{ '--pill-dot': t.color }}
+                onClick={() => setTeamFilter(teamFilter === t.code ? null : t.code)}
+              >
+                <span className="sb-pill-dot" />
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="sb-pill-row">
+            <button
+              type="button"
+              className={`sb-pill ${statusFilter === null ? 'on' : ''}`}
+              onClick={() => setStatusFilter(null)}
+            >Any status</button>
+            <span className="sb-pill-divider" />
+            {JOB_OVERALL_STATUSES.filter(s => s.code !== 'closed').map(s => (
+              <button
+                key={s.code}
+                type="button"
+                className={`sb-pill ${statusFilter === s.code ? 'on' : ''}`}
+                style={{ '--pill-dot': s.color }}
+                onClick={() => setStatusFilter(statusFilter === s.code ? null : s.code)}
+              >
+                <span className="sb-pill-dot" />
+                {s.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Table */}
+          {filteredJobs === null ? (
+            <div className="sb-empty">Loading jobs…</div>
+          ) : filteredJobs.length === 0 ? (
+            <EmptyState
+              hasFilters={!!teamFilter || !!statusFilter || !!search.trim()}
+            />
+          ) : (
+            <>
+              <div className="sb-cust-meta">{filteredJobs.length} job{filteredJobs.length === 1 ? '' : 's'}</div>
+              <JobsTable
+                jobs={filteredJobs}
+                onSelectJob={setSelectedJobId}
+              />
+            </>
+          )}
         </>
       )}
+
+      {viewMode === 'queues' && (
+        <QueuesView
+          activeQueue={activeQueue}
+          onSelectQueue={setActiveQueue}
+          onOpenJob={setSelectedJobId}
+        />
+      )}
+    </div>
+  )
+}
+
+// View-mode segmented toggle. Visual language: same inline-styled pattern as
+// BackfillBanner; muted/active distinction matches the existing tab strip vibe.
+function ViewModeToggle({ viewMode, onChange }) {
+  const modes = [
+    { code: 'jobs',   label: 'Jobs' },
+    { code: 'queues', label: 'Queues' },
+  ]
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 4,
+        marginBottom: 16,
+        alignItems: 'center',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          color: 'var(--sb-text-muted)',
+          fontFamily: 'var(--sb-font-mono)',
+          marginRight: 6,
+        }}
+      >
+        View:
+      </span>
+      {modes.map(m => {
+        const active = m.code === viewMode
+        return (
+          <button
+            key={m.code}
+            type="button"
+            onClick={() => onChange(m.code)}
+            style={{
+              padding: '6px 12px',
+              border: '0.5px solid var(--sb-border)',
+              borderRadius: 'var(--sb-r-sm)',
+              background: active ? 'var(--sb-text)' : 'transparent',
+              color: active ? 'var(--sb-surface)' : 'var(--sb-text-secondary)',
+              fontSize: 12,
+              fontWeight: active ? 600 : 400,
+              cursor: 'pointer',
+              font: 'inherit',
+            }}
+          >
+            {m.label}
+          </button>
+        )
+      })}
     </div>
   )
 }

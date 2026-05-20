@@ -1544,6 +1544,286 @@ export function hasUnsatisfiedRequires(m, byKey) {
   return false
 }
 
+// ── Generic aging helper ────────────────────────────────────────────────────
+// Days elapsed since a given ISO timestamp (or null if absent). Local-clock-
+// based; midnight transitions match user-visible reality. Used for queue row
+// aging and any other "Nd idle / ago" surface.
+
+export function daysSinceMs(timestamp) {
+  if (!timestamp) return null
+  const diff = Date.now() - new Date(timestamp).getTime()
+  return Math.max(0, Math.floor(diff / 86400000))
+}
+
+// ── Operational classification layer ────────────────────────────────────────
+// Sprint J1-P1 follow-up — queue derivation (and future NRA, drift signals,
+// AI-drafted comms) reads operational meaning from these helpers, never from
+// raw milestone_key string patterns. v1 implementation infers the meaning
+// from the existing key/group naming convention; v2/v3 will swap the internal
+// implementation to read template-side metadata when templates carry
+// operational_role / waiting_on / owner_type fields. Consumers do not change.
+//
+// These three helpers are the load-bearing abstraction. Adding a fourth or
+// fifth is fine; bypassing them with inline pattern matching is not.
+
+// What operational party is this milestone waiting on when in_progress?
+// Wraps inferWaitingStatusFromMilestone (which returns the full waiting_on_*
+// enum used by the hint banner) and returns the simplified party label used
+// by queues and NRA. Returns one of:
+//   'customer' | 'cemetery' | 'supplier' | 'internal'
+export function getMilestoneWaitingOn(milestone) {
+  if (!milestone) return 'internal'
+  const inferred = inferWaitingStatusFromMilestone(milestone)
+  if (inferred === 'waiting_on_customer') return 'customer'
+  if (inferred === 'waiting_on_cemetery') return 'cemetery'
+  if (inferred === 'waiting_on_supplier') return 'supplier'
+  return 'internal'
+}
+
+// What operational role does this milestone play in its group?
+// Returns one of the v1 role enum values:
+//   'decision' | 'internal_work'
+//   | 'send_to_customer' | 'receive_from_customer'
+//   | 'send_to_supplier' | 'receive_from_supplier'
+//   | 'send_to_cemetery' | 'receive_from_cemetery'
+//   | 'scheduling' | 'field_work'
+//
+// v1: classification by (group, key suffix). Pattern matching is contained
+// here — queue/NRA consumers must never inspect milestone_key directly.
+export function getMilestoneOperationalRole(milestone) {
+  if (!milestone) return 'internal_work'
+  if (milestone.is_decision) return 'decision'
+
+  const key = (milestone.milestone_key || '').toLowerCase()
+  const group = milestone.group || ''
+
+  // Design group: internal authoring vs send/approve cycle
+  if (group === 'design') {
+    if (/_(approved|approved_by_customer)$/.test(key)) return 'receive_from_customer'
+    if (/_(sent|sent_to_customer)$/.test(key))         return 'send_to_customer'
+    return 'internal_work'
+  }
+
+  // Permit group → cemetery party
+  if (group === 'permit') {
+    if (/_(submitted|filed)$/.test(key) || /to_cemetery/.test(key)) return 'send_to_cemetery'
+    if (/_(approved|received)$/.test(key))                          return 'receive_from_cemetery'
+    return 'internal_work'
+  }
+
+  // Stone / etching groups → supplier party
+  if (group === 'stone' || group === 'etching') {
+    if (/_(ordered|order_placed)$/.test(key) || /^po_/.test(key)) return 'send_to_supplier'
+    if (/_(received|arrived)$/.test(key))                         return 'receive_from_supplier'
+    return 'internal_work'
+  }
+
+  // Photo group → customer party (typical: request photo, receive photo)
+  if (group === 'photo') {
+    if (/request/.test(key))  return 'send_to_customer'
+    if (/received/.test(key)) return 'receive_from_customer'
+    return 'internal_work'
+  }
+
+  // Foundation / install / closeout: field work + scheduling steps
+  if (group === 'foundation' || group === 'install') {
+    if (/_(scheduled|schedule)/.test(key)) return 'scheduling'
+    return 'field_work'
+  }
+
+  // Fallback — intake, closeout, production, and any unrecognized group
+  return 'internal_work'
+}
+
+// Universal operational state classifier — what stage is this milestone in
+// right now? Independent of queue or domain. Returns one of:
+//   'blocked'              — cannot act yet (status=blocked OR locked not_started)
+//   'awaiting_internal'    — actionable internal work to advance it
+//   'awaiting_external'    — sent out, waiting for external party response
+//   'received_unprocessed' — got response, but downstream has not advanced
+//   'complete'             — done
+//   'skipped'              — not_needed
+//
+// Queues map these state codes to their own section labels; NRA composes over
+// the same codes. The Layouts queue's four sections are derived from this.
+export function getMilestoneSectionKey(milestone, allInJob) {
+  if (!milestone) return null
+  const status = milestone.status
+  const role = getMilestoneOperationalRole(milestone)
+
+  if (status === 'not_needed') return 'skipped'
+  if (status === 'blocked')    return 'blocked'
+
+  const byKey = new Map((allInJob || []).map(m => [m.milestone_key, m]))
+  if (status === 'not_started' && hasUnsatisfiedRequires(milestone, byKey)) {
+    return 'blocked'
+  }
+
+  if (status === 'done') {
+    // A receive_from_* milestone that's done while downstream hasn't moved
+    // is the classic operational drift signal — surface it as needing action.
+    const isReceive = role === 'receive_from_customer'
+                   || role === 'receive_from_supplier'
+                   || role === 'receive_from_cemetery'
+    if (isReceive && _hasDownstreamNotStarted(milestone, allInJob)) {
+      return 'received_unprocessed'
+    }
+    return 'complete'
+  }
+
+  // Active statuses (not_started unlocked, in_progress)
+  const isSend = role === 'send_to_customer'
+              || role === 'send_to_supplier'
+              || role === 'send_to_cemetery'
+  if (isSend && status === 'in_progress') return 'awaiting_external'
+
+  // Receive milestones that are pending (not yet done) — still awaiting external
+  const isReceive = role === 'receive_from_customer'
+                 || role === 'receive_from_supplier'
+                 || role === 'receive_from_cemetery'
+  if (isReceive && status === 'in_progress') return 'awaiting_external'
+
+  // Everything else actionable defaults to internal work (internal_work,
+  // scheduling, field_work, send_* not yet sent, etc.)
+  return 'awaiting_internal'
+}
+
+// File-local: does any milestone in this job have `m.milestone_key` in its
+// requires[] AND a not_started status? Used to flag receive milestones whose
+// downstream hasn't moved (the "received_unprocessed" state).
+function _hasDownstreamNotStarted(m, allInJob) {
+  if (!m || !m.milestone_key) return false
+  for (const other of (allInJob || [])) {
+    if (other.status !== 'not_started') continue
+    if (!other.requires || other.requires.length === 0) continue
+    if (other.requires.includes(m.milestone_key)) return true
+  }
+  return false
+}
+
+// ── Queue derivation — operational lenses on milestone state ────────────────
+// Each function takes the array of jobs (as returned by getJobs) and returns
+// queue-ready row objects with section assignments and sort applied. UI
+// iterates and renders; UI does not filter, sort, or classify.
+
+const LAYOUTS_SECTION_ORDER = [
+  'needs_drawing',
+  'awaiting_approval',
+  'ready_to_advance',
+  'blocked',
+]
+
+// Maps the universal operational state code to a Layouts-queue section key.
+// Returns null if the milestone is not in the Layouts queue.
+function _layoutsSectionFor(milestone, allInJob) {
+  if (!milestone || milestone.group !== 'design') return null
+  if (getMilestoneOperationalRole(milestone) === 'decision') return null
+  const state = getMilestoneSectionKey(milestone, allInJob)
+  if (state === 'complete' || state === 'skipped' || state == null) return null
+  if (state === 'blocked')              return 'blocked'
+  if (state === 'awaiting_internal')    return 'needs_drawing'
+  if (state === 'awaiting_external')    return 'awaiting_approval'
+  if (state === 'received_unprocessed') return 'ready_to_advance'
+  // Unclassified — log in dev for smoke-test visibility, suppress in prod.
+  if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
+    console.warn(
+      `[Layouts queue] Unclassified design milestone fell through: ` +
+      `key=${milestone.milestone_key} status=${milestone.status} state=${state}`,
+    )
+  }
+  return null
+}
+
+export function deriveLayoutsQueueRows(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const milestones = job.milestones || []
+    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+    for (const m of milestones) {
+      if (m.group !== 'design') continue
+      const section = _layoutsSectionFor(m, milestones)
+      if (!section) continue
+      const overdue = isMilestoneOverdue(m)
+      rows.push({
+        section,
+        milestone: m,
+        job,
+        order: job.order || null,
+        customer: job.customer || null,
+        cemetery: job.cemetery || null,
+        team: m.team || null,
+        agingDays: daysSinceMs(m.updated_at),
+        updatedAt: m.updated_at || null,
+        overdue,
+        overdueDays: overdue ? daysPastDue(m) : 0,
+        dueDate: m.due_date || null,
+        blockerKeys: (m.requires || []).filter(k => {
+          const dep = byKey.get(k)
+          return dep && dep.status !== 'done' && dep.status !== 'not_needed'
+        }),
+        waitingStatus: (job.overall_status || '').startsWith('waiting_')
+          ? job.overall_status : null,
+      })
+    }
+  }
+  rows.sort((a, b) => {
+    const sa = LAYOUTS_SECTION_ORDER.indexOf(a.section)
+    const sb = LAYOUTS_SECTION_ORDER.indexOf(b.section)
+    if (sa !== sb) return sa - sb
+    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
+    if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
+      return b.overdueDays - a.overdueDays
+    }
+    const aAge = a.agingDays ?? 0
+    const bAge = b.agingDays ?? 0
+    if (aAge !== bAge) return bAge - aAge
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    if (aN !== bN) return aN.localeCompare(bN)
+    const aO = a.order?.order_number || ''
+    const bO = b.order?.order_number || ''
+    return aO.localeCompare(bO)
+  })
+  return rows
+}
+
+export function deriveWaitingOnCustomerQueueRows(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status !== 'waiting_on_customer') continue
+    // Identify the most-recent in_progress milestone whose operational
+    // waiting party is the customer. Falls back to null if none match.
+    const candidates = (job.milestones || []).filter(m =>
+      m.status === 'in_progress' && getMilestoneWaitingOn(m) === 'customer'
+    )
+    candidates.sort((a, b) =>
+      new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
+    )
+    const awaiting = candidates[0] || null
+    rows.push({
+      job,
+      order: job.order || null,
+      customer: job.customer || null,
+      cemetery: job.cemetery || null,
+      awaitingMilestone: awaiting,
+      awaitingDays: awaiting ? daysSinceMs(awaiting.updated_at) : null,
+      awaitingTeam: awaiting?.team || null,
+      daysWaiting: daysSinceUpdate(job),
+      jobUpdatedAt: job.last_update_at || null,
+    })
+  }
+  rows.sort((a, b) => {
+    const ad = a.daysWaiting ?? 0
+    const bd = b.daysWaiting ?? 0
+    if (ad !== bd) return bd - ad
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    return aN.localeCompare(bN)
+  })
+  return rows
+}
+
 // =============================================================================
 // End of Jobs Operations data layer
 // =============================================================================
