@@ -25,6 +25,7 @@ import {
   JOB_OVERALL_STATUSES, JOB_MILESTONE_STATUSES, JOB_TEAMS,
   jobStatusInfo, milestoneStatusInfo, teamInfo,
   summarizeMilestonesByGroup, suggestNextActionableMilestone, daysSinceUpdate,
+  isMilestoneOverdue, daysPastDue, hasUnsatisfiedRequires,
   customerName, fmtDate, fmtRelative, fmtUSD,
   rowGrandTotal, rowTotalPaid,
   SOLD_STATUSES,
@@ -734,51 +735,16 @@ function MetricMini({ label, value, accent }) {
 }
 
 // ── Stabilization (post-J1-P1): overdue derivation + actionable-first sort ───
-// Pure helpers — no DB, no side effects. Same logic surfaces in MilestoneRow
-// for the visual cue (red border + caption) and in useMemoGroupMilestones for
-// the within-group sort priority.
-
-function _todayLocalISO() {
-  // Build YYYY-MM-DD from local components. Avoids toISOString's UTC drift,
-  // which near midnight in NJ can roll the date forward or back.
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-function isMilestoneOverdue(m) {
-  if (!m?.due_date) return false
-  if (m.status === 'done' || m.status === 'not_needed') return false
-  // ISO YYYY-MM-DD lex-compares correctly; "due today" is NOT overdue.
-  return m.due_date < _todayLocalISO()
-}
-
-function daysPastDue(m) {
-  if (!isMilestoneOverdue(m)) return 0
-  // Parse both as local midnight so the diff is an honest day count.
-  const due = new Date(m.due_date + 'T00:00:00')
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return Math.floor((today - due) / 86400000)
-}
-
-// Returns true if a not_started milestone has at least one unsatisfied
-// `requires[]` dependency (i.e., it's locked, can't be acted on yet).
-// Mirrors the same check MilestoneRow uses for its blocking caption.
-function _hasUnsatisfiedRequires(m, byKey) {
-  if (!m.requires || m.requires.length === 0) return false
-  for (const k of m.requires) {
-    const dep = byKey.get(k)
-    if (dep && dep.status !== 'done' && dep.status !== 'not_needed') return true
-  }
-  return false
-}
+// The pure helpers (isMilestoneOverdue, daysPastDue, hasUnsatisfiedRequires,
+// todayLocalISO) now live in stonebooksData.js so queue components can share
+// them. The file-local helpers below compose them for the within-group sort.
 
 // Status sort key for the actionable-first comparator. Split per Paul's
 // 2026-05-18 rule: ready not_started outranks locked not_started.
 function _statusSortKey(m, byKey) {
   if (m.status === 'blocked')     return 1
   if (m.status === 'in_progress') return 2
-  if (m.status === 'not_started') return _hasUnsatisfiedRequires(m, byKey) ? 4 : 3
+  if (m.status === 'not_started') return hasUnsatisfiedRequires(m, byKey) ? 4 : 3
   if (m.status === 'done')        return 5
   if (m.status === 'not_needed')  return 6
   return 99

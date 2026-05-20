@@ -1503,6 +1503,47 @@ export function daysSinceUpdate(job) {
   return Math.floor(ms / 86400000)
 }
 
+// ── Milestone overdue + readiness helpers (relocated from JobsTab) ───────────
+// Pure helpers — no DB, no side effects. Surface in MilestoneRow (overdue cue +
+// blocking caption), in useMemoGroupMilestones (within-group sort priority),
+// and in queue components (overdue badges, blocker notes). Centralized here
+// so every consumer reads from the same source.
+
+export function todayLocalISO() {
+  // Build YYYY-MM-DD from local components. Avoids toISOString's UTC drift,
+  // which near midnight in NJ can roll the date forward or back.
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+export function isMilestoneOverdue(m) {
+  if (!m?.due_date) return false
+  if (m.status === 'done' || m.status === 'not_needed') return false
+  // ISO YYYY-MM-DD lex-compares correctly; "due today" is NOT overdue.
+  return m.due_date < todayLocalISO()
+}
+
+export function daysPastDue(m) {
+  if (!isMilestoneOverdue(m)) return 0
+  // Parse both as local midnight so the diff is an honest day count.
+  const due = new Date(m.due_date + 'T00:00:00')
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.floor((today - due) / 86400000)
+}
+
+// Returns true if a not_started milestone has at least one unsatisfied
+// `requires[]` dependency (i.e., it's locked, can't be acted on yet).
+// Mirrors the same check MilestoneRow uses for its blocking caption.
+export function hasUnsatisfiedRequires(m, byKey) {
+  if (!m.requires || m.requires.length === 0) return false
+  for (const k of m.requires) {
+    const dep = byKey.get(k)
+    if (dep && dep.status !== 'done' && dep.status !== 'not_needed') return true
+  }
+  return false
+}
+
 // =============================================================================
 // End of Jobs Operations data layer
 // =============================================================================
