@@ -1637,15 +1637,21 @@ export function getMilestoneOperationalRole(milestone) {
 
 // Universal operational state classifier — what stage is this milestone in
 // right now? Independent of queue or domain. Returns one of:
-//   'blocked'              — cannot act yet (status=blocked OR locked not_started)
-//   'awaiting_internal'    — actionable internal work to advance it
-//   'awaiting_external'    — sent out, waiting for external party response
-//   'received_unprocessed' — got response, but downstream has not advanced
-//   'complete'             — done
-//   'skipped'              — not_needed
+//   'blocked'           — cannot act yet (status=blocked OR locked not_started)
+//   'awaiting_internal' — actionable internal work to advance it
+//   'awaiting_external' — sent out, waiting for external party response
+//   'handoff_pending'   — done, but a cross-group downstream milestone has not
+//                         picked up. Cross-group is the precise definition of
+//                         operational handoff drift (e.g., design→stone,
+//                         stone→production, production→install). Same-group
+//                         downstream not_started is just normal workflow
+//                         progression and is NOT flagged.
+//   'complete'          — done
+//   'skipped'           — not_needed
 //
 // Queues map these state codes to their own section labels; NRA composes over
-// the same codes. The Layouts queue's four sections are derived from this.
+// the same codes. Renamed from 'received_unprocessed' once Production made
+// clear the signal is about cross-group orchestration, not receive-role drift.
 export function getMilestoneSectionKey(milestone, allInJob) {
   if (!milestone) return null
   const status = milestone.status
@@ -1660,13 +1666,13 @@ export function getMilestoneSectionKey(milestone, allInJob) {
   }
 
   if (status === 'done') {
-    // A receive_from_* milestone that's done while downstream hasn't moved
-    // is the classic operational drift signal — surface it as needing action.
-    const isReceive = role === 'receive_from_customer'
-                   || role === 'receive_from_supplier'
-                   || role === 'receive_from_cemetery'
-    if (isReceive && _hasDownstreamNotStarted(milestone, allInJob)) {
-      return 'received_unprocessed'
+    // Cross-group handoff drift: this milestone is done, and any downstream
+    // milestone IN A DIFFERENT GROUP is not_started. The next team hasn't
+    // picked it up. Intra-group "drift" (stencil_created done → stencil_cut
+    // not_started) is normal workflow progression and is intentionally not
+    // flagged here.
+    if (_hasCrossGroupDownstreamNotStarted(milestone, allInJob)) {
+      return 'handoff_pending'
     }
     return 'complete'
   }
@@ -1694,13 +1700,16 @@ export function getMilestoneSectionKey(milestone, allInJob) {
 }
 
 // File-local: does any milestone in this job have `m.milestone_key` in its
-// requires[] AND a not_started status? Used to flag receive milestones whose
-// downstream hasn't moved (the "received_unprocessed" state).
-function _hasDownstreamNotStarted(m, allInJob) {
+// requires[] AND a not_started status AND a different group? This is the
+// precise cross-group handoff signal — a milestone is done but the next team
+// (different group) hasn't started. Same-group downstream not_started is just
+// normal sequential workflow and is intentionally NOT flagged here.
+function _hasCrossGroupDownstreamNotStarted(m, allInJob) {
   if (!m || !m.milestone_key) return false
   for (const other of (allInJob || [])) {
     if (other.status !== 'not_started') continue
     if (!other.requires || other.requires.length === 0) continue
+    if (other.group === m.group) continue
     if (other.requires.includes(m.milestone_key)) return true
   }
   return false
@@ -1728,7 +1737,7 @@ function _layoutsSectionFor(milestone, allInJob) {
   if (state === 'blocked')              return 'blocked'
   if (state === 'awaiting_internal')    return 'needs_drawing'
   if (state === 'awaiting_external')    return 'awaiting_approval'
-  if (state === 'received_unprocessed') return 'ready_to_advance'
+  if (state === 'handoff_pending')      return 'ready_to_advance'
   // Unclassified — log in dev for smoke-test visibility, suppress in prod.
   if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
     console.warn(
@@ -1805,19 +1814,19 @@ const STONES_SECTION_ORDER = [
 //
 // Group boundary: m.group === 'stone' is the entire scope. Downstream
 // production milestones (stencil_*, production_*, ready_to_install, etc.)
-// have group !== 'stone' and are structurally excluded — they belong to a
-// future Production queue. The 'received_awaiting_production' section uses
-// the universal received_unprocessed state to surface the handoff drift
+// have group !== 'stone' and are structurally excluded — they belong to the
+// Production queue. The 'received_awaiting_production' section uses the
+// universal handoff_pending state to surface the cross-group handoff drift
 // without rendering the production milestones themselves.
 function _stonesSectionFor(milestone, allInJob) {
   if (!milestone || milestone.group !== 'stone') return null
   if (getMilestoneOperationalRole(milestone) === 'decision') return null
   const state = getMilestoneSectionKey(milestone, allInJob)
   if (state === 'complete' || state === 'skipped' || state == null) return null
-  if (state === 'blocked')              return 'blocked'
-  if (state === 'awaiting_internal')    return 'to_order'
-  if (state === 'awaiting_external')    return 'ordered_awaiting_supplier'
-  if (state === 'received_unprocessed') return 'received_awaiting_production'
+  if (state === 'blocked')           return 'blocked'
+  if (state === 'awaiting_internal') return 'to_order'
+  if (state === 'awaiting_external') return 'ordered_awaiting_supplier'
+  if (state === 'handoff_pending')   return 'received_awaiting_production'
   // Unclassified — log in dev for smoke-test visibility, suppress in prod.
   if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
     console.warn(
@@ -1864,6 +1873,133 @@ export function deriveStonesQueueRows(jobs) {
   rows.sort((a, b) => {
     const sa = STONES_SECTION_ORDER.indexOf(a.section)
     const sb = STONES_SECTION_ORDER.indexOf(b.section)
+    if (sa !== sb) return sa - sb
+    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
+    if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
+      return b.overdueDays - a.overdueDays
+    }
+    const aAge = a.agingDays ?? 0
+    const bAge = b.agingDays ?? 0
+    if (aAge !== bAge) return bAge - aAge
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    if (aN !== bN) return aN.localeCompare(bN)
+    const aO = a.order?.order_number || ''
+    const bO = b.order?.order_number || ''
+    return aO.localeCompare(bO)
+  })
+  return rows
+}
+
+const PRODUCTION_SECTION_ORDER = [
+  'stencil_prep_needed',
+  'ready_for_carving',
+  'in_production',
+  'complete_awaiting_install',
+  'blocked',
+]
+
+// Production-queue stage classifier. Explicit map of milestone_key →
+// production-stage code. Pattern matching contained here, never in JSX.
+// Adding a new production milestone is a one-line addition; the dev warning
+// in _productionSectionFor catches forgotten cases during smoke-test.
+//
+// Architectural note: this is queue-local pattern matching, analogous to
+// (but smaller-scope than) getMilestoneOperationalRole. v2 metadata migration
+// will replace the map's internals with template-side metadata reads; the
+// helper's signature and consumers stay unchanged.
+const PRODUCTION_STAGE_MAP = {
+  stencil_created:      'stencil_created',
+  stencil_cut:          'stencil_cut',
+  production_started:   'production_started',
+  production_completed: 'production_completed',
+}
+
+function _productionStage(milestone) {
+  return PRODUCTION_STAGE_MAP[milestone?.milestone_key] || null
+}
+
+// Maps universal state + production stage to a Production-queue section key.
+// Section structure (per the corrected operational model):
+//   stencil_prep_needed     — stencil_created OR stencil_cut, actionable
+//   ready_for_carving       — production_started not_started, all requires met
+//   in_production           — production_started in_progress, OR
+//                             production_completed actionable
+//   complete_awaiting_install — universal handoff_pending (production_completed
+//                             done + cross-group ready_to_install not_started)
+//   blocked                 — locked or explicitly blocked
+//
+// Group boundary: m.group === 'production' is the entire scope. Install
+// milestones (ready_to_install, installed) are structurally excluded; they
+// belong to a future Install queue.
+function _productionSectionFor(milestone, allInJob) {
+  if (!milestone || milestone.group !== 'production') return null
+  if (getMilestoneOperationalRole(milestone) === 'decision') return null
+
+  const state = getMilestoneSectionKey(milestone, allInJob)
+  if (state === 'complete' || state === 'skipped' || state == null) return null
+  if (state === 'blocked')         return 'blocked'
+  if (state === 'handoff_pending') return 'complete_awaiting_install'
+  if (state !== 'awaiting_internal') return null
+
+  const stage = _productionStage(milestone)
+  if (stage === 'stencil_created' || stage === 'stencil_cut') {
+    return 'stencil_prep_needed'
+  }
+  if (stage === 'production_started') {
+    return milestone.status === 'not_started' ? 'ready_for_carving' : 'in_production'
+  }
+  if (stage === 'production_completed') {
+    return 'in_production'
+  }
+
+  // Unknown production-group milestone — log in dev for smoke-test visibility.
+  // If a new production key is added to a template without updating
+  // PRODUCTION_STAGE_MAP, this fires on localhost during testing.
+  if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
+    console.warn(
+      `[Production queue] Unstaged production milestone: ${milestone.milestone_key}`,
+    )
+  }
+  return null
+}
+
+export function deriveProductionQueueRows(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const milestones = job.milestones || []
+    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+    for (const m of milestones) {
+      if (m.group !== 'production') continue
+      const section = _productionSectionFor(m, milestones)
+      if (!section) continue
+      const overdue = isMilestoneOverdue(m)
+      rows.push({
+        section,
+        milestone: m,
+        job,
+        order: job.order || null,
+        customer: job.customer || null,
+        cemetery: job.cemetery || null,
+        team: m.team || null,
+        agingDays: daysSinceMs(m.updated_at),
+        updatedAt: m.updated_at || null,
+        overdue,
+        overdueDays: overdue ? daysPastDue(m) : 0,
+        dueDate: m.due_date || null,
+        blockerKeys: (m.requires || []).filter(k => {
+          const dep = byKey.get(k)
+          return dep && dep.status !== 'done' && dep.status !== 'not_needed'
+        }),
+        waitingStatus: (job.overall_status || '').startsWith('waiting_')
+          ? job.overall_status : null,
+      })
+    }
+  }
+  rows.sort((a, b) => {
+    const sa = PRODUCTION_SECTION_ORDER.indexOf(a.section)
+    const sb = PRODUCTION_SECTION_ORDER.indexOf(b.section)
     if (sa !== sb) return sa - sb
     if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
     if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {

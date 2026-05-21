@@ -17,6 +17,7 @@ import {
   getJobs,
   deriveLayoutsQueueRows,
   deriveStonesQueueRows,
+  deriveProductionQueueRows,
   deriveWaitingOnCustomerQueueRows,
   teamInfo,
   jobStatusInfo,
@@ -43,6 +44,19 @@ const STONES_SECTIONS = [
   { code: 'ordered_awaiting_supplier',    label: 'Ordered, awaiting supplier' },
   { code: 'received_awaiting_production', label: 'Received / awaiting production' },
   { code: 'blocked',                      label: 'Blocked' },
+]
+
+// Static section metadata for the Production queue. Five operational stages:
+// stencil prep is distinct from carving (different workflow lane); "ready for
+// carving" surfaces jobs queued for the line but not yet started; "in
+// production" surfaces active carving + completion-marking; the handoff
+// section surfaces production→install drift without rendering install rows.
+const PRODUCTION_SECTIONS = [
+  { code: 'stencil_prep_needed',       label: 'Stencil prep needed' },
+  { code: 'ready_for_carving',         label: 'Ready for carving' },
+  { code: 'in_production',             label: 'In production' },
+  { code: 'complete_awaiting_install', label: 'Complete / awaiting install' },
+  { code: 'blocked',                   label: 'Blocked' },
 ]
 
 // =============================================================================
@@ -74,6 +88,10 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
     () => deriveStonesQueueRows(jobs || []),
     [jobs],
   )
+  const productionRows = useMemo(
+    () => deriveProductionQueueRows(jobs || []),
+    [jobs],
+  )
   const waitingRows = useMemo(
     () => deriveWaitingOnCustomerQueueRows(jobs || []),
     [jobs],
@@ -82,6 +100,7 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
   const counts = {
     layouts: layoutsRows.length,
     stones: stonesRows.length,
+    production: productionRows.length,
     waiting_on_customer: waitingRows.length,
   }
 
@@ -111,6 +130,10 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
         <StonesQueue rows={stonesRows} onOpenJob={onOpenJob} />
       )}
 
+      {jobs !== null && !loadErr && activeQueue === 'production' && (
+        <ProductionQueue rows={productionRows} onOpenJob={onOpenJob} />
+      )}
+
       {jobs !== null && !loadErr && activeQueue === 'waiting_on_customer' && (
         <WaitingOnCustomerQueue rows={waitingRows} onOpenJob={onOpenJob} />
       )}
@@ -126,6 +149,7 @@ function QueuePicker({ active, counts, onSelect }) {
   const tabs = [
     { code: 'layouts',             label: 'Layouts' },
     { code: 'stones',              label: 'Stones' },
+    { code: 'production',          label: 'Production' },
     { code: 'waiting_on_customer', label: 'Waiting on customer' },
   ]
   return (
@@ -280,6 +304,88 @@ function StonesQueue({ rows, onOpenJob }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {STONES_SECTIONS.map(section => {
+        const sectionRows = bySection.get(section.code) || []
+        return (
+          <div key={section.code}>
+            <div
+              className="sb-section-label"
+              style={{ margin: 0, marginBottom: 6 }}
+            >
+              {section.label}
+              <span
+                style={{
+                  marginLeft: 8,
+                  fontFamily: 'var(--sb-font-mono)',
+                  fontSize: 11,
+                  color: 'var(--sb-text-muted)',
+                }}
+              >
+                ({sectionRows.length})
+              </span>
+            </div>
+            {sectionRows.length === 0 ? (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--sb-text-muted)',
+                  fontStyle: 'italic',
+                  padding: '6px 0',
+                }}
+              >
+                —
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                {sectionRows.map(row => (
+                  <MilestoneQueueRow
+                    key={`${row.job.id}::${row.milestone.milestone_key}`}
+                    row={row}
+                    onOpenJob={onOpenJob}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// =============================================================================
+// PRODUCTION QUEUE — per-milestone rows grouped by operational stage
+// =============================================================================
+// Scope: production-group milestones only (stencil prep + carving). Install
+// execution (ready_to_install, installed) lives in a future Install queue —
+// structurally excluded here because the data layer's deriveProductionQueueRows
+// filters strictly on m.group === 'production'. The "Complete / awaiting
+// install" section surfaces production→install handoff drift via the universal
+// handoff_pending state without rendering install rows.
+
+function ProductionQueue({ rows, onOpenJob }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="sb-empty">
+        No open production work. Either every stone has cleared the production
+        line, or no jobs have reached the stencil-prep step yet.
+      </div>
+    )
+  }
+
+  const bySection = new Map(PRODUCTION_SECTIONS.map(s => [s.code, []]))
+  for (const row of rows) {
+    if (bySection.has(row.section)) bySection.get(row.section).push(row)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {PRODUCTION_SECTIONS.map(section => {
         const sectionRows = bySection.get(section.code) || []
         return (
           <div key={section.code}>
