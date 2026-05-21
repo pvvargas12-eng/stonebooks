@@ -23,5 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# Claude Code harness-local settings (per-machine, do not track)
-.claude/
+# Claude Code — deny everything in .claude/ by default (catches
+# settings.local.json, caches, per-machine state), then explicitly
+# re-include directories that should be source-controlled.
+.claude/*
+!.claude/agents/
