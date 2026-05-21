@@ -36,20 +36,20 @@ export const STONEBOOKS_TOKENS = {
     mono: '"JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Monaco, Consolas, monospace',
   },
 
-  // Type scale — calibrated 2026-05-21 for "calm premium operational
-  // software" feel. Gaps between adjacent sizes are deliberately spread
-  // so hierarchy is visible (clusters in 10–13px range removed). World-
-  // class operational software (Linear 14, Stripe 14, Notion 16, Superhuman
-  // 14) sits in this range for primary body — Stonebooks now matches.
+  // Type scale — Migration Phase 1 (Design System foundation, 2026-05-21).
+  // Whole scale lifted one step so primary body reads at 17px (load-bearing
+  // operational read) and metadata floor moves off 12px (developer-tool feel).
+  // Hero stays at 40 — already declarative. Working surfaces inherit the lift
+  // automatically; no per-component bumps required for general improvement.
   fontSize: {
-    xs:    '12px',  // smallest UI text — mono IDs, timestamps, chrome
-    sm:    '13px',  // small labels, hover tooltips (used sparingly)
-    base:  '14px',  // secondary body — meta lines on rows, dates, captions
-    md:    '16px',  // PRIMARY body — list rows, customer names, milestone labels
-    lg:    '17px',  // medium emphasis — JobDetail field labels
-    xl:    '20px',  // section emphasis, NRA badge, page subheaders
-    '2xl': '24px',  // intermediate (rarely used)
-    '3xl': '28px',  // page titles (Today, Jobs, Orders, Customers)
+    xs:    '13px',  // metadata floor — mono IDs, timestamps, cemetery sub-text
+    sm:    '14px',  // small labels, chip text (used sparingly)
+    base:  '15px',  // secondary body — meta lines on rows, dates, captions
+    md:    '17px',  // PRIMARY body — list rows, customer names, milestone labels
+    lg:    '19px',  // medium emphasis — JobDetail field labels, balance numerals
+    xl:    '22px',  // section emphasis — NRA badge, deceased name, page subheaders
+    '2xl': '26px',  // intermediate emphasis (metric values, intermediate H2)
+    '3xl': '32px',  // page titles (Today, Jobs, Orders, Customers)
     '4xl': '40px',  // hero text (home opening sentence, deceased name reveal)
   },
 }
@@ -79,6 +79,12 @@ export const STONEBOOKS_LIGHT = {
   accentHover:  '#1e40af',
   accentBg:     '#eef2ff',
 
+  // Bronze — operational identity accent (Shevchenko Monuments).
+  // Used 1–3 times per screen: active-nav stripe, hero customer name
+  // dotted underline, primary-design role badge. Never load-bearing
+  // for functional state (use the blue accent for info / focus).
+  bronze:       '#b08d57',
+
   // Status colors (only appear when carrying real information)
   statusRed:     '#b54040',  statusRedBg:    '#fdeded',
   statusGreen:   '#2d7a4f',  statusGreenBg:  '#e9f5ee',
@@ -106,6 +112,8 @@ export const STONEBOOKS_DARK = {
   accent:       '#3b82f6',
   accentHover:  '#60a5fa',
   accentBg:     '#1e293b',
+
+  bronze:       '#c9a468',
 
   statusRed:     '#dc6262',  statusRedBg:    '#2d1414',
   statusGreen:   '#4ea874',  statusGreenBg:  '#0f2418',
@@ -135,6 +143,7 @@ export function buildThemeCSS(theme = 'light') {
       --sb-accent:       ${t.accent};
       --sb-accent-hover: ${t.accentHover};
       --sb-accent-bg:    ${t.accentBg};
+      --sb-bronze:       ${t.bronze};
       --sb-red:    ${t.statusRed};   --sb-red-bg:   ${t.statusRedBg};
       --sb-green:  ${t.statusGreen}; --sb-green-bg: ${t.statusGreenBg};
       --sb-amber:  ${t.statusAmber}; --sb-amber-bg: ${t.statusAmberBg};

@@ -1,314 +1,354 @@
 // =============================================================================
-// 📚 Stonebooks — Today (operational attention layer)
+// 📚 Stonebooks — Today (operational briefing surface, v2)
 // =============================================================================
-// The "open Stonebooks and know what matters" screen. Three sections of
-// attention signals, ordered by operational priority:
-//   1. Operations          — job/milestone state (overdue, waiting, stalled)
-//   2. Money & deadlines   — overdue balances, cemetery permits, target dates
-//   3. Sales funnel        — stale quotes, abandoned drafts
+// T-2 of the Today v2 migration: signal engine wired into the L1–L5 shell.
 //
-// Each item carries a `route` field that drives drill-in:
-//   - route: 'order' → opens SalesMode for that order
-//   - route: 'job'   → opens JobsTab pre-selected to that job
+//   L1 — Morning sentence (still placeholder — T-3 ships the templating engine)
+//   L2 — Needs your attention (now populated by todaySignals.js)
+//   L3 — Today on the calendar (populated)
+//   L4 — Drift watch (populated)
+//   L5 — Stewardship roll-up (populated)
 //
-// Architecture extension points (NOT implemented now):
-//   - Communication-aware signals (overdue customer photo request, unanswered
-//     layout approval, etc.) slot in by adding new `kind` values to
-//     getActionItems and one row in KIND_TO_SECTION below.
-//   - Future `route` values (e.g. 'thread', 'message') get one branch in
-//     handleClickItem. No structural change required.
+// Signal rows are pure sentence-form: no chrome, no badges, no labels.
+// Urgent L2 items carry a 2px left accent stripe; everything else is calm.
+// Each row routes to the relevant Job or Order via the standard handlers.
+//
+// What this file does NOT do (intentionally deferred):
+//   - Morning sentence intelligence (T-3)
+//   - Acknowledgement / read-tracking (architecturally out of scope)
+//   - Persistent Today state (Today is derived, never stored)
+//   - Drift acknowledge / snooze (T-4 layer)
+//   - Anticipatory PO / vendor signals (depend on the BI layer)
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
-import { fmtUSD } from './lib/stonebooksData'
+import { useEffect, useMemo, useState } from 'react'
+import { fetchTodayData, deriveTodaySignals } from './lib/todaySignals'
 
-// Map every action-item kind to its display section. New kinds slot in here.
-// Unknown kinds fall through to 'operations' as a defensive default — they'll
-// surface in the Operations section so they're never silently lost.
-const KIND_TO_SECTION = {
-  // Operations — post-sign job/milestone state
-  overdue_milestone:     'operations',
-  waiting_aged:          'operations',
-  stalled_job:           'operations',
-  next_actionable_idle:  'operations',
-  // Money & deadlines — financial/deadline urgency on orders
-  overdue_balance:   'money',
-  cemetery_deadline: 'money',
-  target_soon:       'money',
-  // Sales funnel — pre-sign pipeline staleness
-  stale_quote:       'sales',
-  abandoned_draft:   'sales',
-}
-
-// Operations is rendered with a subtly stronger header (primary:true) to
-// anchor the page; Money & Sales use the standard section-label treatment.
-const SECTIONS = [
-  { key: 'operations', label: 'Operations',        primary: true  },
-  { key: 'money',      label: 'Money & deadlines', primary: false },
-  { key: 'sales',      label: 'Sales funnel',      primary: false },
-]
-
-// Default visible items per section. Anything beyond is hidden behind a
-// per-section inline "Show all N →" expand. Hard caps at the data layer
-// (Commit A) keep the worst case bounded — 20 overdue, 10 waiting, 10 stalled.
-const PER_SECTION_CAP = 5
-
+// eslint-disable-next-line no-unused-vars
 export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOpenJob, onOpenCustomer }) {
-  const [stats, setStats] = useState(null)
-  const [actionItems, setActionItems] = useState(null)
+  const [data, setData] = useState(null) // { jobs, orders } | null
+  const [now] = useState(() => new Date())
+
   const today = useMemo(() => {
-    const d = new Date()
-    const day = d.toLocaleDateString('en-US', { weekday: 'long' })
+    const d = now
+    const day  = d.toLocaleDateString('en-US', { weekday: 'long' })
     const date = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
     return { day, date }
-  }, [])
+  }, [now])
 
-  // Load summary stats + action items. Commit B flips includeOperational on.
-  // Dynamic import preserves the pre-existing pattern of avoiding TodayTab
-  // becoming a top-level static importer of stonebooksData (defensive against
-  // the static/dynamic-import warning that already exists in this project).
+  // Load operational data on mount. No caching — Today is live.
   useEffect(() => {
     let cancelled = false
-    import('./lib/stonebooksData').then(async (m) => {
-      const [orders, items] = await Promise.all([
-        m.listAllOrders({ limit: 500 }),
-        m.getActionItems({ includeOperational: true }),
-      ])
-      if (cancelled) return
-      const ACTIVE = ['draft','scoping','quoted','contracted','in_production','installed']
-      const SOLD   = ['contracted','in_production','installed','paid_in_full','closed']
-      const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0)
-
-      let active = 0, pipeline = 0, mtd = 0, mtdCount = 0
-      let sold = 0, cancelled_count = 0
-      for (const o of orders) {
-        const total = computeTotal(o)
-        if (ACTIVE.includes(o.status)) { active++; pipeline += total }
-        if (SOLD.includes(o.status)) {
-          sold++
-          if (new Date(o.created_at) >= monthStart) { mtd += total; mtdCount++ }
-        }
-        if (o.status === 'cancelled') cancelled_count++
-      }
-      const attempted = sold + cancelled_count
-      const winRate = attempted > 0 ? Math.round((sold / attempted) * 100) : null
-
-      setStats({ active, pipeline, mtd, mtdCount, winRate })
-      setActionItems(items)
+    fetchTodayData().then(d => {
+      if (!cancelled) setData(d)
+    }).catch(err => {
+      console.error('[Today] fetch failed:', err)
+      if (!cancelled) setData({ jobs: [], orders: [] })
     })
     return () => { cancelled = true }
   }, [])
 
-  // Bucket items by section in one pass; preserves the existing severity sort
-  // from getActionItems (red → amber → muted, recent-first within).
-  const itemsBySection = useMemo(() => {
-    if (!actionItems) return null
-    const out = { operations: [], money: [], sales: [] }
-    for (const item of actionItems) {
-      const s = KIND_TO_SECTION[item.kind] || 'operations'
-      if (out[s]) out[s].push(item)
-    }
-    return out
-  }, [actionItems])
+  const signals = useMemo(() => {
+    if (!data) return null
+    return deriveTodaySignals({ jobs: data.jobs, orders: data.orders, now })
+  }, [data, now])
 
-  // Route-aware click dispatch. Falls back to onOpenOrder if the item has an
-  // order ref but no recognized route — defensive against future shape drift.
-  const handleClickItem = (item) => {
-    if (item.route === 'job' && onOpenJob) return onOpenJob(item.routeId)
-    if (item.route === 'order')            return onOpenOrder(item.routeId)
-    if (item.order?.id)                    return onOpenOrder(item.order.id)
+  const handleClick = (signal) => {
+    if (signal.route === 'job'   && onOpenJob)   return onOpenJob(signal.routeId)
+    if (signal.route === 'order' && onOpenOrder) return onOpenOrder(signal.routeId)
   }
 
-  const totalItemCount = actionItems ? actionItems.length : 0
-  const urgentCount = actionItems ? actionItems.filter(i => i.severity === 'red').length : 0
+  return (
+    <div className="sb-page sb-today">
+      {/* L1 — Morning sentence (placeholder; T-3 ships the live briefing). */}
+      <header className="sb-today-head">
+        <div className="sb-today-date">{today.day} · {today.date}</div>
+        <h1 className="sb-today-sentence">
+          Good morning. Five things need you, three installs are scheduled, one signing risk is open.
+        </h1>
+        <div className="sb-today-sentence-note">
+          Placeholder briefing — the live morning sentence ships in a later phase.
+        </div>
+      </header>
+
+      <TodaySection
+        label="Needs your attention"
+        signals={signals?.l2}
+        loading={signals === null}
+        emptyText="Nothing requires your decision right now."
+        onClick={handleClick}
+      />
+
+      <TodaySection
+        label="Today on the calendar"
+        signals={signals?.l3}
+        loading={signals === null}
+        emptyText="Nothing scheduled today."
+        onClick={handleClick}
+      />
+
+      <TodaySection
+        label="Drift watch"
+        signals={signals?.l4}
+        loading={signals === null}
+        emptyText="Nothing has drifted past its typical pace."
+        quiet
+        onClick={handleClick}
+      />
+
+      <TodaySection
+        label="Stewardship"
+        signals={signals?.l5}
+        loading={signals === null}
+        emptyText="No upcoming arrivals or deadlines this week."
+        quiet
+        onClick={handleClick}
+      />
+    </div>
+  )
+}
+
+// ─── Section — header + signal list (or empty / loading) ─────────────────────
+function TodaySection({ label, signals, loading, emptyText, quiet, onClick }) {
+  const cls = quiet ? 'sb-today-section sb-today-section-quiet' : 'sb-today-section'
 
   return (
-    <div className="sb-page sb-page-wide">
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">{today.day} · {today.date}</div>
-        <h1 className="sb-page-title">Today</h1>
-      </div>
+    <section className={cls}>
+      <h2 className="sb-today-section-label">{label}</h2>
 
-      {/* Stats grid — byte-identical to pre-Commit-B Today */}
-      <div className="sb-metric-grid">
-        <MetricCard label="Active orders" value={stats ? stats.active : '—'} sub={stats ? `${fmtUSD(stats.pipeline)} in pipeline` : ''} />
-        <MetricCard label="Month-to-date" value={stats ? fmtUSD(stats.mtd) : '—'} sub={stats ? `${stats.mtdCount} sold` : ''} />
-        <MetricCard label="Win rate" value={stats?.winRate != null ? `${stats.winRate}%` : '—'} sub="cancelled vs sold" />
-        <MetricCard label="Action items" value={actionItems ? totalItemCount : '—'} sub={actionItems && totalItemCount > 0 ? `${urgentCount} urgent` : 'all caught up'} />
-      </div>
-
-      {/* Quick actions — byte-identical to pre-Commit-B Today */}
-      <div className="sb-section-label">Quick actions</div>
-      <div className="sb-quick-actions">
-        <button type="button" className="sb-quick-action" onClick={onOpenSales}>
-          <div className="sb-quick-action-title">+ New sale</div>
-          <div className="sb-quick-action-sub">Walk a customer through the wizard</div>
-        </button>
-        <button type="button" className="sb-quick-action" onClick={() => window.dispatchEvent(new CustomEvent('sb:nav', { detail: 'customers' }))}>
-          <div className="sb-quick-action-title">Customers</div>
-          <div className="sb-quick-action-sub">Search by name, phone, email</div>
-        </button>
-        <button type="button" className="sb-quick-action" onClick={() => window.dispatchEvent(new CustomEvent('sb:nav', { detail: 'reports' }))}>
-          <div className="sb-quick-action-title">Reports</div>
-          <div className="sb-quick-action-sub">Sales analytics, win rate, by rep</div>
-        </button>
-      </div>
-
-      {/* Attention sections — Commit B. Empty sections hide entirely; if all
-          three are empty, fall back to the unified "Nothing needs attention"
-          empty state. */}
-      {actionItems === null ? (
-        <div className="sb-empty">Loading…</div>
-      ) : totalItemCount === 0 ? (
-        <div className="sb-empty">Nothing needs attention right now. As orders age past target dates or quotes go stale, items will surface here.</div>
+      {loading ? (
+        <p className="sb-today-empty sb-today-loading">Reading the day's signals…</p>
+      ) : signals && signals.length > 0 ? (
+        <div className="sb-today-list">
+          {signals.map(s => (
+            <SignalRow key={s.id} signal={s} onClick={onClick} />
+          ))}
+        </div>
       ) : (
-        SECTIONS.map(sec => {
-          const sectionItems = itemsBySection?.[sec.key] || []
-          if (sectionItems.length === 0) return null
-          return (
-            <ActionSection
-              key={sec.key}
-              label={sec.label}
-              primary={sec.primary}
-              items={sectionItems}
-              onClickItem={handleClickItem}
-            />
-          )
-        })
+        <p className="sb-today-empty">{emptyText}</p>
       )}
-    </div>
+    </section>
   )
 }
 
-// ─── Section component ───────────────────────────────────────────────────────
-// One sectioned action list. Operations gets primary={true} which switches
-// the header style to the slightly stronger 'primary' variant — larger font,
-// darker color, more vertical breathing room. Restrained: no icons, no
-// borders, just typography and spacing.
+// ─── Signal row — sentence + optional note ──────────────────────────────────
+// Two render modes:
+//   • Clickable button — the common case. Hover background, focus ring,
+//     opens the underlying job/order on click.
+//   • Static row       — used for L4 consolidation summaries ("3 more jobs
+//     quiet 14+ days — Wilson, Lopez, Garcia."). No subject, no click, no
+//     hover. Visually subdued.
+function SignalRow({ signal, onClick }) {
+  const isStatic = !signal.route
+  const base = signal.severity === 'urgent'
+    ? 'sb-today-signal sb-today-signal-urgent'
+    : 'sb-today-signal'
+  const cls = isStatic ? `${base} sb-today-signal-static` : base
 
-function ActionSection({ label, primary, items, onClickItem }) {
-  const [expanded, setExpanded] = useState(false)
-  const visible = expanded ? items : items.slice(0, PER_SECTION_CAP)
-  const overflow = items.length - PER_SECTION_CAP
-
-  const sectionCls = primary
-    ? 'sb-action-section sb-action-section-primary'
-    : 'sb-action-section'
-  const labelCls = primary
-    ? 'sb-action-section-label sb-action-section-label-primary'
-    : 'sb-action-section-label'
-
-  return (
-    <div className={sectionCls}>
-      <div className={labelCls}>{label}</div>
-      <div className="sb-action-list">
-        {visible.map((item, idx) => (
-          <button
-            key={`${item.kind}-${item.routeId || item.order?.id || idx}`}
-            type="button"
-            className={`sb-action-item sb-action-${item.severity}`}
-            onClick={() => onClickItem(item)}
-          >
-            <span className="sb-action-icon">{item.icon}</span>
-            <div className="sb-action-body">
-              <div className="sb-action-label">{item.label}</div>
-              <div className="sb-action-meta">{item.meta}</div>
-            </div>
-            <span className="sb-action-arrow">→</span>
-          </button>
-        ))}
+  if (isStatic) {
+    return (
+      <div className={cls}>
+        <span className="sb-today-signal-sentence">{signal.sentence}</span>
+        {signal.note && <span className="sb-today-signal-note">{signal.note}</span>}
       </div>
-      {overflow > 0 && (
-        <button
-          type="button"
-          className="sb-link sb-action-show-more"
-          onClick={() => setExpanded(e => !e)}
-        >
-          {expanded ? 'Show fewer ↑' : `Show all ${items.length} →`}
-        </button>
-      )}
-    </div>
-  )
-}
-
-// ─── Local helpers (moved from Stonebooks.jsx with the TodayTab extraction)──
-
-function MetricCard({ label, value, sub }) {
+    )
+  }
   return (
-    <div className="sb-metric">
-      <div className="sb-metric-label">{label}</div>
-      <div className="sb-metric-value">{value}</div>
-      {sub && <div className="sb-metric-sub">{sub}</div>}
-    </div>
+    <button type="button" className={cls} onClick={() => onClick?.(signal)}>
+      <span className="sb-today-signal-sentence">{signal.sentence}</span>
+      {signal.note && <span className="sb-today-signal-note">{signal.note}</span>}
+    </button>
   )
 }
 
-// Inline total computation — duplicated tiny version of stonebooksData
-// rowGrandTotal to avoid import cycles in TodayTab.
-function computeTotal(o) {
-  if (!o) return 0
-  const pricing = o.pricing || {}
-  const overrides = pricing.overrides || {}
-  const addOns = o.add_ons || []
-  let subtotalDisc = 0, subtotalPermit = 0
-  if (overrides['base-stone'] != null) subtotalDisc += Number(overrides['base-stone']) || 0
-  for (const [code, val] of Object.entries(overrides)) {
-    if (code === 'base-stone' || typeof val !== 'number') continue
-    if (code === 'addon-permit') subtotalPermit += val
-    else                          subtotalDisc += val
-  }
-  for (const a of addOns) {
-    if (a.freeWithStone) continue
-    const amt = (Number(a.price) || 0) * (Number(a.qty) || 1)
-    if (a.code === 'permit') subtotalPermit += amt
-    else                     subtotalDisc += amt
-  }
-  for (const c of (pricing.customLineItems || [])) subtotalDisc += Number(c.amount) || 0
-  const discountPct = Number(pricing.discountPct) || 0
-  const discountAmt = subtotalDisc * (discountPct / 100)
-  const taxBase = (subtotalDisc - discountAmt) + subtotalPermit
-  const tax = pricing.applyTax ? taxBase * 0.06625 : 0
-  const cc = pricing.applyCCSurcharge ? (taxBase + tax) * 0.03 : 0
-  return Math.round(taxBase + tax + cc)
-}
-
-// ─── Component-local styles (Commit B additions) ─────────────────────────────
-// Section wrappers + the slightly stronger 'primary' label variant for
-// Operations. Other tabs already inject styles via <style> tag on first
-// module load (see JobsTab.jsx); same pattern.
+// ─── Today v2 — T-2 styles ───────────────────────────────────────────────────
+// Sentence-first posture, briefing hierarchy, breathing rhythm.
+// Layered visual intensity: full attention on L1/L2, progressively quieter
+// through L3–L5. Signal rows are buttons (clickable) with a hairline bottom
+// divider and a subtle hover tint. Urgent rows carry a 2px left accent stripe.
 
 const localStyles = `
-  .sb-action-section {
-    margin-top: 20px;
+  .sb-today {
+    padding-bottom: 96px;
   }
-  .sb-action-section-primary {
-    margin-top: 28px;
+
+  /* L1 — Morning sentence block.
+     The date is a small quiet eyebrow; the sentence is the page's H1 but
+     styled as a sentence, not a title — weight 400 (not 500), generous
+     line-height, narrow reading measure so it reads as composed prose. */
+  .sb-today-head {
+    margin-bottom: 72px;
   }
-  .sb-action-section-label {
-    font-size: 11px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .sb-today-date {
+    font-size: 14px;
     color: var(--sb-text-muted);
-    margin-bottom: 8px;
+    margin-bottom: 14px;
   }
-  .sb-action-section-label-primary {
-    font-size: 13px;
+  .sb-today-sentence {
+    font-size: 32px;
+    font-weight: 400;
+    letter-spacing: -0.012em;
+    line-height: 1.32;
     color: var(--sb-text);
-    font-weight: 600;
-    margin-bottom: 12px;
+    margin: 0;
+    max-width: 52ch;
   }
-  .sb-action-show-more {
-    font-size: 12px;
-    margin-top: 8px;
-    padding: 4px 0;
+  .sb-today-sentence-note {
+    margin-top: 18px;
+    font-size: 13px;
+    font-style: italic;
+    color: var(--sb-text-muted);
+  }
+
+  /* L2–L5 — Sections. Same structural shape; quieter variants demote the
+     section label color/weight only, not the layout. */
+  .sb-today-section {
+    margin-bottom: 56px;
+  }
+  .sb-today-section:last-child {
+    margin-bottom: 0;
+  }
+  .sb-today-section-label {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--sb-text);
+    margin: 0 0 20px;
+    letter-spacing: 0;
+  }
+  .sb-today-section-quiet .sb-today-section-label {
+    color: var(--sb-text-secondary);
+    font-weight: 400;
+  }
+
+  /* Empty / loading state — sentence-form prose, not a card.
+     Hairline at the bottom previews the row-divider pattern of real signals. */
+  .sb-today-empty {
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--sb-text-secondary);
+    max-width: 60ch;
+    margin: 0;
+    padding: 4px 0 20px;
+    border-bottom: 0.5px solid var(--sb-border);
+  }
+  .sb-today-section-quiet .sb-today-empty {
+    color: var(--sb-text-muted);
+  }
+  .sb-today-loading {
+    color: var(--sb-text-muted);
+    font-style: italic;
+  }
+
+  /* Signal list — column of clickable rows, hairline between, no card chrome. */
+  .sb-today-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sb-today-signal {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-bottom: 0.5px solid var(--sb-border);
+    padding: 16px 18px 16px 18px;
+    margin: 0;
+    text-align: left;
     cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition: background 0.12s;
+    position: relative;
+  }
+  .sb-today-signal:hover {
+    background: var(--sb-surface-muted);
+  }
+  .sb-today-signal:focus-visible {
+    outline: none;
+    background: var(--sb-surface-muted);
+    box-shadow: inset 0 0 0 1px var(--sb-border-hover);
+  }
+
+  /* Urgent — 2px left accent stripe. Used sparingly: promise-risk, blocked
+     jobs, install-overdue with outstanding balance. Same red as the design
+     system's status red, kept thin so the page never reads as a wall of red. */
+  .sb-today-signal-urgent {
+    box-shadow: inset 2px 0 0 var(--sb-red);
+  }
+  .sb-today-signal-urgent .sb-today-signal-sentence {
+    color: var(--sb-text);
+  }
+
+  /* Sentence — the primary read. Design-system md (17px). */
+  .sb-today-signal-sentence {
+    font-size: 17px;
+    line-height: 1.5;
+    color: var(--sb-text);
+    letter-spacing: -0.005em;
+  }
+
+  /* Note — secondary metadata (typically cemetery name). Design-system base (15px). */
+  .sb-today-signal-note {
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--sb-text-muted);
+    margin-top: 4px;
+  }
+
+  /* Quieter sections soften the sentence color a hair so L4/L5 read as
+     calmer than L2 even when populated. */
+  .sb-today-section-quiet .sb-today-signal-sentence {
+    color: var(--sb-text-secondary);
+  }
+
+  /* L4 consolidation summary — static (non-clickable) row. Italic + muted to
+     signal "this rolls up several quiet signals; nothing to act on directly."
+     Same hairline + padding so vertical rhythm stays intact. */
+  .sb-today-signal-static {
+    cursor: default;
+  }
+  .sb-today-signal-static:hover {
+    background: transparent;
+  }
+  .sb-today-signal-static .sb-today-signal-sentence {
+    color: var(--sb-text-muted);
+    font-style: italic;
+  }
+
+  /* Responsive — phone (<600px) tightens type and spacing while preserving
+     hierarchy. The morning sentence stays generously sized; it's the briefing
+     while walking. */
+  @media (max-width: 720px) {
+    .sb-today-head {
+      margin-bottom: 56px;
+    }
+    .sb-today-section {
+      margin-bottom: 44px;
+    }
+  }
+  @media (max-width: 600px) {
+    .sb-today-sentence {
+      font-size: 26px;
+      line-height: 1.35;
+    }
+    .sb-today-empty,
+    .sb-today-signal-sentence {
+      font-size: 16px;
+    }
+    .sb-today-signal {
+      padding: 14px 14px;
+    }
   }
 `
 
-if (typeof document !== 'undefined' && !document.getElementById('sb-today-tab-styles')) {
+// Fresh style-tag ID for the v2 shell (was sb-today-tab-styles on the old
+// pre-v2 Today). The old tag, if it lingers from hot-reload, no longer has
+// matching markup.
+if (typeof document !== 'undefined' && !document.getElementById('sb-today-v2-styles')) {
   const tag = document.createElement('style')
-  tag.id = 'sb-today-tab-styles'
+  tag.id = 'sb-today-v2-styles'
   tag.textContent = localStyles
   document.head.appendChild(tag)
 }

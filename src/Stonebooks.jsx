@@ -648,13 +648,13 @@ const shellStyles = `
 
   .sb-root {
     display: grid;
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: 240px 1fr;
     min-height: 100vh;
     background: var(--sb-bg);
     color: var(--sb-text);
     font-family: var(--sb-font-sans);
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 15px;
+    line-height: 1.55;
   }
 
   .sb-loading {
@@ -663,7 +663,7 @@ const shellStyles = `
     background: var(--sb-bg);
     color: var(--sb-text-muted);
     font-family: var(--sb-font-sans);
-    font-size: 13px;
+    font-size: 15px;
   }
 
   /* SIDEBAR */
@@ -680,11 +680,11 @@ const shellStyles = `
   }
   .sb-nav { flex: 1; display: flex; flex-direction: column; }
   .sb-nav-section-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--sb-text-on-dark-muted);
     padding: 0 12px;
-    margin: 24px 0 8px;
+    margin: 28px 0 10px;
   }
   .sb-nav-item {
     display: block;
@@ -694,15 +694,20 @@ const shellStyles = `
     border: none;
     color: var(--sb-text-on-dark-muted);
     font: inherit;
-    font-size: 14px;
-    padding: 10px 12px;
+    font-size: 15px;
+    padding: 11px 12px;
     border-radius: var(--sb-r-md);
     cursor: pointer;
     margin-bottom: 2px;
     transition: background 0.15s, color 0.15s;
   }
   .sb-nav-item:hover { background: rgba(255,255,255,0.06); color: var(--sb-text-on-dark); }
-  .sb-nav-item.on    { background: rgba(255,255,255,0.10); color: var(--sb-text-on-dark); font-weight: 500; }
+  .sb-nav-item.on    {
+    background: rgba(255,255,255,0.10);
+    color: var(--sb-text-on-dark);
+    font-weight: 500;
+    box-shadow: inset 3px 0 0 var(--sb-bronze);
+  }
   .sb-nav-item-action {
     color: var(--sb-text-on-dark);
     font-weight: 500;
@@ -746,35 +751,50 @@ const shellStyles = `
     overflow-y: auto;
     padding: 48px 48px;
   }
-  .sb-page { max-width: 960px; }
-  .sb-page-head { margin-bottom: 40px; }
+  @media (min-width: 1600px) { .sb-main { padding: 56px 64px; } }
+  @media (min-width: 1920px) { .sb-main { padding: 64px 80px; } }
+
+  /* ── Working-surface tiers ────────────────────────────────────────
+     .sb-page          → 1080px ceiling — default operational working
+                         surface (Jobs list, Today, Customers list).
+     .sb-page-hero     → 820px  ceiling — intimate detail / signing
+                         surfaces (JobDetail hero, single-record forms).
+     .sb-page-wide     → 1440px ceiling — reference / tabular surfaces
+                         that benefit from width (Calendar, Reports,
+                         Orders table, Customers table).
+     Pre-migration .sb-page-wide was max-width:none (panoramic);
+     1440 anchors it without losing horizontal headroom.
+  */
+  .sb-page      { max-width: 1080px; }
+  .sb-page-hero { max-width: 820px; }
+  .sb-page-head { margin-bottom: 48px; }
   .sb-page-eyebrow {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 400;
     color: var(--sb-text-muted);
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
   .sb-page-title {
-    font-size: 28px;
+    font-size: 32px;
     font-weight: 500;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.018em;
     color: var(--sb-text);
     margin: 0;
     line-height: 1.15;
   }
   .sb-section-label {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--sb-text);
-    margin: 40px 0 16px;
+    margin: 48px 0 18px;
   }
 
   .sb-empty {
     background: transparent;
-    padding: 32px 0;
+    padding: 40px 0;
     color: var(--sb-text-secondary);
-    font-size: 16px;
-    line-height: 1.7;
+    font-size: 17px;
+    line-height: 1.65;
   }
 
   /* METRICS */
@@ -788,22 +808,22 @@ const shellStyles = `
     padding: 4px 0;
   }
   .sb-metric-label {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 400;
     color: var(--sb-text-muted);
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
   .sb-metric-value {
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 500;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.018em;
     color: var(--sb-text);
     font-family: var(--sb-font-mono);
     font-variant-numeric: tabular-nums;
   }
   .sb-metric-sub {
     margin-top: 6px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--sb-text-muted);
   }
 
@@ -915,9 +935,9 @@ const shellStyles = `
     color: var(--sb-bg);
     border: none;
     border-radius: var(--sb-r-md);
-    padding: 10px 18px;
+    padding: 11px 20px;
     font: inherit;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 500;
     cursor: pointer;
     margin-top: 12px;
@@ -931,9 +951,9 @@ const shellStyles = `
     color: var(--sb-text);
     border: none;
     border-radius: var(--sb-r-md);
-    padding: 8px 14px;
+    padding: 9px 16px;
     font: inherit;
-    font-size: 14px;
+    font-size: 15px;
     cursor: pointer;
     transition: background 0.15s;
   }
@@ -943,7 +963,7 @@ const shellStyles = `
     background: none; border: none;
     color: var(--sb-accent);
     font: inherit;
-    font-size: 14px;
+    font-size: 15px;
     cursor: pointer;
     padding: 0;
   }
@@ -1056,8 +1076,8 @@ const shellStyles = `
     box-shadow: 0 1px 2px rgba(0,0,0,0.04);
   }
 
-  /* ── FULL-WIDTH PAGES ─────────────────────────────────────────── */
-  .sb-page-wide { max-width: none; }
+  /* ── WIDE PAGES — reference / tabular tier (defined above with .sb-page) ── */
+  .sb-page-wide { max-width: 1440px; }
 
   /* User row in sidebar */
   .sb-user-row { background: transparent; border: none; font: inherit; color: inherit; width: 100%; text-align: left; }
@@ -1087,7 +1107,7 @@ const shellStyles = `
     margin-bottom: 16px;
   }
   .sb-meta-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--sb-text-muted);
     margin-bottom: 6px;
@@ -1234,7 +1254,7 @@ const shellStyles = `
   /* STATUS PILL — canonical pill, kept for order/job status displays */
   .sb-status-pill {
     display: inline-block;
-    font-size: 12px;
+    font-size: 13px;
     letter-spacing: 0;
     text-transform: none;
     padding: 4px 10px;
@@ -1256,7 +1276,7 @@ const shellStyles = `
     border: none;
     color: var(--sb-text-muted);
     font: inherit;
-    font-size: 14px;
+    font-size: 15px;
     padding: 4px 0;
     border-bottom: 2px solid transparent;
     border-radius: 0;
@@ -1277,7 +1297,7 @@ const shellStyles = `
     display: inline-block;
   }
   .sb-pill-count {
-    font-size: 13px;
+    font-size: 14px;
     background: transparent;
     padding: 0;
     border-radius: 0;

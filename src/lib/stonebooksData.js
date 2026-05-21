@@ -1306,10 +1306,13 @@ async function _applyNotNeededCascade(jobId, decisionMilestone, actorUserId) {
 // (received/approved/etc.) so labels like "Customer approval received" don't
 // false-positive into waiting_on_customer. First positive rule wins.
 //
-// Subflow direction (NOT yet implemented): when groups like etching evolve
-// into structured substates, each substate's external-party role will be
-// encoded on the template rather than inferred. This heuristic is the
-// no-schema bootstrap pending that refactor.
+// @deprecated The Operational Truth Substrate pass introduces structured
+// `block_reason_code` and `external_party_ref` columns on job_milestones plus
+// a unified `getMilestoneBlockReason` helper. Once the WaitingHintBanner
+// consumer is migrated to read the structured fields, this substring matcher
+// (and `inferWaitingStatusFromMilestone` below) can be retired in a
+// follow-up cleanup sprint. Kept in place tonight to preserve current
+// banner behavior — no consumer changes in this pass.
 const WAITING_HINT_RULES = [
   {
     kind: 'waiting_on_supplier',
@@ -1334,6 +1337,8 @@ const WAITING_HINT_RULES = [
 ]
 const WAITING_HINT_EXCLUSIONS = /\b(received|arrived|approved|confirmed|rejected|completed|done)\b/
 
+// @deprecated See WAITING_HINT_RULES note above. Slated for retirement after
+// the WaitingHintBanner consumer migrates to read structured columns.
 export function inferWaitingStatusFromMilestone(milestone) {
   if (!milestone) return null
   const text = `${milestone.label || ''} ${milestone.milestone_key || ''}`.toLowerCase()
@@ -1344,6 +1349,73 @@ export function inferWaitingStatusFromMilestone(milestone) {
     }
   }
   return null
+}
+
+// =============================================================================
+// OPERATIONAL TRUTH SUBSTRATE — phase 2 of the OD/OT foundation pass
+// =============================================================================
+// Three new helpers that compose on the new `expected_resolution_at`,
+// `block_reason_code`, and `external_party_ref` columns on `job_milestones`.
+//
+// Design rules:
+//   • All helpers tolerate NULL on the new columns — pre-migration rows must
+//     keep working exactly as before.
+//   • No new state machine. These helpers READ structured fields and report.
+//     Writing the fields is the milestone editor's job (not in scope tonight).
+//   • Pure functions. No DB calls. Easy to compose into Today / Queues / NRA.
+// =============================================================================
+
+// The structured block-reason vocabulary. Mirrors the CHECK constraint in
+// supabase/operational_truth_substrate_migration.sql. Exported so UI editors
+// (future) can render a select against the canonical list.
+export const BLOCK_REASON_CODES = [
+  { code: 'awaiting_decision', label: 'Awaiting a decision',           short: 'needs a decision' },
+  { code: 'awaiting_money',    label: 'Waiting on payment',            short: 'waiting on payment' },
+  { code: 'awaiting_upstream', label: 'Waiting on an upstream step',   short: 'upstream step incomplete' },
+  { code: 'vendor_silent',     label: 'Supplier hasn\'t responded',    short: 'supplier silent' },
+  { code: 'customer_silent',   label: 'Customer hasn\'t responded',    short: 'customer silent' },
+  { code: 'operator_paused',   label: 'Paused by the shop',            short: 'paused' },
+]
+
+const BLOCK_REASON_BY_CODE = new Map(BLOCK_REASON_CODES.map(r => [r.code, r]))
+
+export function blockReasonInfo(code) {
+  return BLOCK_REASON_BY_CODE.get(code) || null
+}
+
+// Returns the structured block reason for a milestone, preferring the
+// explicit `block_reason_code` column. Returns null when no reason is
+// expressible — caller decides whether to fall back to inference helpers
+// like `_walkBlockerChain` (which name WHO the blocker is) for the
+// upstream chain. This helper answers "WHY," not "WHO."
+//
+// Shape: { code, label, short } or null.
+export function getMilestoneBlockReason(milestone) {
+  if (!milestone) return null
+  const code = milestone.block_reason_code
+  if (!code) return null
+  return BLOCK_REASON_BY_CODE.get(code) || { code, label: code, short: code }
+}
+
+// Returns whether a milestone is late against the EXTERNAL party's quoted
+// resolution date. Distinct from `isMilestoneOverdue` which checks our
+// internal `due_date` target. Used by Today / Queues to distinguish
+// "in transit on schedule" from "supplier broke their quoted date."
+//
+// Returns:
+//   • null    — no `expected_resolution_at` set; lateness against expectation
+//               is unknowable. Caller can fall back to internal due_date.
+//   • false   — expectation set and today is on or before the quoted date.
+//   • object  — { daysLate: N } where N >= 1 — the external party is past
+//               their committed date by N calendar days.
+export function isLateAgainstExpectedResolution(milestone, today = new Date()) {
+  if (!milestone || !milestone.expected_resolution_at) return null
+  const expected = new Date(`${milestone.expected_resolution_at.slice(0, 10)}T00:00:00`)
+  const t = new Date(today)
+  t.setHours(0, 0, 0, 0)
+  if (expected >= t) return false
+  const daysLate = Math.floor((t - expected) / 86400000)
+  return { daysLate }
 }
 
 export async function setJobOverallStatus(jobId, newStatus, note, { actorUserId, source } = {}) {
@@ -1755,6 +1827,11 @@ export function getNextRequiredAction(job) {
   const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
 
   // Helper: build the standard result with forward-compat hooks populated.
+  // Operational Truth Substrate additions (additive, all nullable):
+  //   • blockReasonCode    — structured WHY when the cited milestone is blocked
+  //   • expectedResolutionAt — external party's quoted-back date (ISO date)
+  //   • externalPartyRef   — free-form party name / reference (e.g. "Coldspring", "PO #4427")
+  // Existing fields are untouched; legacy callers see no shape change.
   const result = (kind, label, opts = {}) => {
     const m = opts.milestone || null
     return {
@@ -1771,6 +1848,9 @@ export function getNextRequiredAction(job) {
         m?.group
           ? (MILESTONE_GROUP_DEFAULT_DAYS[m.group] ?? MILESTONE_GROUP_DEFAULT_DAYS._default)
           : null,
+      blockReasonCode:      m?.block_reason_code      ?? null,
+      expectedResolutionAt: m?.expected_resolution_at ?? null,
+      externalPartyRef:     m?.external_party_ref     ?? null,
       route: null,
     }
   }
@@ -2052,6 +2132,7 @@ function _stonesSectionFor(milestone, allInJob) {
 
 export function deriveStonesQueueRows(jobs) {
   const rows = []
+  const today = new Date()
   for (const job of (jobs || [])) {
     if (job.overall_status === 'closed') continue
     const milestones = job.milestones || []
@@ -2061,6 +2142,11 @@ export function deriveStonesQueueRows(jobs) {
       const section = _stonesSectionFor(m, milestones)
       if (!section) continue
       const overdue = isMilestoneOverdue(m)
+      // Operational Truth Substrate — read structured fields (nullable).
+      // `lateAgainstExpectation` is the row's authoritative signal for
+      // "the external party broke their quoted-back date" — distinct from
+      // `overdue`, which is "we broke our internal due_date."
+      const lateInfo = isLateAgainstExpectedResolution(m, today)
       rows.push({
         section,
         milestone: m,
@@ -2080,6 +2166,10 @@ export function deriveStonesQueueRows(jobs) {
         }),
         waitingStatus: (job.overall_status || '').startsWith('waiting_')
           ? job.overall_status : null,
+        // Operational Truth Substrate fields (nullable):
+        expectedResolutionAt: m.expected_resolution_at || null,
+        externalPartyRef:     m.external_party_ref     || null,
+        lateAgainstExpectation: lateInfo, // null | false | { daysLate }
       })
     }
   }
@@ -2087,6 +2177,17 @@ export function deriveStonesQueueRows(jobs) {
     const sa = STONES_SECTION_ORDER.indexOf(a.section)
     const sb = STONES_SECTION_ORDER.indexOf(b.section)
     if (sa !== sb) return sa - sb
+    // Expectation-lateness floats to the top of any section where it applies
+    // (primarily ordered_awaiting_supplier, but harmless elsewhere — rows
+    // without expected_resolution_at set carry lateAgainstExpectation === null
+    // and fall through to the existing tiebreaks unchanged).
+    const aLate = a.lateAgainstExpectation && a.lateAgainstExpectation.daysLate > 0
+    const bLate = b.lateAgainstExpectation && b.lateAgainstExpectation.daysLate > 0
+    if (aLate !== bLate) return aLate ? -1 : 1
+    if (aLate && bLate) {
+      const dL = (b.lateAgainstExpectation.daysLate || 0) - (a.lateAgainstExpectation.daysLate || 0)
+      if (dL !== 0) return dL
+    }
     if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
     if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
       return b.overdueDays - a.overdueDays

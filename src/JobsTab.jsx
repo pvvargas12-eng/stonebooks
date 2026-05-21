@@ -139,7 +139,7 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
   }
 
   return (
-    <div className="sb-page sb-page-wide">
+    <div className="sb-page">
       <div className="sb-page-head">
         <div className="sb-page-eyebrow">Operations</div>
         <h1 className="sb-page-title">Jobs</h1>
@@ -653,7 +653,7 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   }
 
   return (
-    <div className="sb-page">
+    <div className="sb-page sb-page-hero">
       <BackBar onBack={onBack} />
 
       <JobDetailHero
@@ -1739,7 +1739,7 @@ const localStyles = `
   /* Service descriptor — one quiet line. Service type + cemetery, middle-
      dot separated by the JSX. The 48px below sets up the NRA's moment. */
   .sb-job-hero-service {
-    font-size: 16px;
+    font-size: 17px;
     font-weight: 400;
     color: var(--sb-text-secondary);
     margin-bottom: 48px;
@@ -1748,16 +1748,15 @@ const localStyles = `
 
   /* NRA sentence — the operational center of gravity. Weight 500 (slight
      emphasis lifts it from the surrounding paragraph rhythm). Full-contrast
-     color so the eye lands. Max-width 52ch keeps it composed. Bronze accent
-     on urgent priority. */
+     color so the eye lands. Max-width 52ch keeps it composed. */
   .sb-job-hero-nra {
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 500;
     color: var(--sb-text);
-    line-height: 1.45;
-    letter-spacing: -0.005em;
+    line-height: 1.4;
+    letter-spacing: -0.008em;
     margin-bottom: 40px;
-    max-width: 52ch;
+    max-width: 48ch;
   }
   .sb-job-hero-nra-urgent {
     color: var(--sb-accent);
@@ -1781,7 +1780,7 @@ const localStyles = `
     align-items: baseline;
     gap: 4px 12px;
     flex-wrap: wrap;
-    font-size: 14px;
+    font-size: 15px;
     color: var(--sb-text-secondary);
     font-variant-numeric: tabular-nums;
   }
@@ -1790,12 +1789,12 @@ const localStyles = `
   .sb-job-hero-balance-num {
     font-family: var(--sb-font-mono);
     color: var(--sb-text);
-    font-size: 15px;
+    font-size: 17px;
     margin-right: 4px;
   }
   .sb-job-hero-balance-sep {
     color: var(--sb-text-muted);
-    font-size: 12px;
+    font-size: 13px;
     margin-right: 8px;
   }
 
@@ -1808,7 +1807,7 @@ const localStyles = `
     gap: 12px;
     min-width: 180px;
     text-align: right;
-    font-size: 13px;
+    font-size: 14px;
   }
   .sb-job-hero-meta-line {
     color: var(--sb-text-muted);
@@ -1819,7 +1818,7 @@ const localStyles = `
     padding: 4px 0;
     color: var(--sb-text-secondary);
     font: inherit;
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
     transition: color 0.15s;
   }
@@ -1845,7 +1844,7 @@ const localStyles = `
     flex-direction: column;
   }
   .sb-job-hero-action-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--sb-text-muted);
     margin-bottom: 10px;
@@ -1857,8 +1856,8 @@ const localStyles = `
     background: var(--sb-surface-muted);
     border: none;
     border-radius: var(--sb-r-sm);
-    font-size: 13px;
-    padding: 8px 10px;
+    font-size: 14px;
+    padding: 9px 11px;
   }
   .sb-job-hero-actions .sb-text-input:focus,
   .sb-job-hero-actions .sb-textarea:focus {
@@ -1866,16 +1865,16 @@ const localStyles = `
     outline: 0.5px solid var(--sb-border);
   }
   .sb-job-hero-actions .sb-status-select {
-    font-size: 13px;
-    padding: 6px 8px;
+    font-size: 14px;
+    padding: 7px 9px;
   }
   .sb-job-hero-actions .sb-btn-primary {
-    font-size: 13px;
-    padding: 8px 14px;
+    font-size: 14px;
+    padding: 9px 15px;
   }
   .sb-job-hero-actions .sb-btn-secondary {
-    font-size: 13px;
-    padding: 8px 12px;
+    font-size: 14px;
+    padding: 9px 13px;
   }
 
   /* Responsive — three tiers: tablet (under 900) collapses meta below
@@ -1921,8 +1920,8 @@ const localStyles = `
     border: none;
     color: var(--sb-text-muted);
     font: inherit;
-    font-size: 14px;
-    padding: 8px 12px;
+    font-size: 15px;
+    padding: 9px 13px;
     cursor: pointer;
     transition: color 0.15s;
     white-space: nowrap;
@@ -1948,9 +1947,9 @@ const localStyles = `
     flex-wrap: wrap;
   }
   .sb-jobs-filter-label {
-    font-size: 13px;
+    font-size: 14px;
     color: var(--sb-text-muted);
-    min-width: 56px;
+    min-width: 60px;
   }
 
   /* Active-filter summary — one quiet line, replaces pill chrome at rest. */
@@ -1960,7 +1959,7 @@ const localStyles = `
     gap: 6px;
     flex-wrap: wrap;
     margin-bottom: 16px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--sb-text-muted);
   }
   .sb-jobs-filter-summary-label {
@@ -1979,7 +1978,7 @@ const localStyles = `
     border: none;
     color: var(--sb-accent);
     font: inherit;
-    font-size: 13px;
+    font-size: 14px;
     padding: 0;
     cursor: pointer;
     margin-left: 6px;
@@ -2007,7 +2006,7 @@ const localStyles = `
     background: transparent;
     border: none;
     border-bottom: 0.5px solid var(--sb-border);
-    padding: 16px 4px;
+    padding: 20px 4px;
     cursor: pointer;
     font: inherit;
     color: inherit;
@@ -2038,15 +2037,16 @@ const localStyles = `
     min-width: 0;
   }
   .sb-jobs-list-row-name {
-    font-size: 16px;
+    font-size: 17px;
     font-weight: 500;
     color: var(--sb-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    letter-spacing: -0.005em;
   }
   .sb-jobs-list-row-ordernum {
-    font-size: 13px;
+    font-size: 14px;
     font-family: var(--sb-font-mono);
     color: var(--sb-text-muted);
     white-space: nowrap;
@@ -2059,8 +2059,8 @@ const localStyles = `
     align-items: baseline;
     justify-content: space-between;
     gap: 16px;
-    margin-top: 6px;
-    font-size: 14px;
+    margin-top: 8px;
+    font-size: 15px;
     color: var(--sb-text-secondary);
     line-height: 1.5;
   }
@@ -2073,7 +2073,7 @@ const localStyles = `
   }
   .sb-jobs-list-row-cemetery {
     color: var(--sb-text-muted);
-    font-size: 13px;
+    font-size: 14px;
     white-space: nowrap;
   }
   .sb-jobs-list-row-empty {
@@ -2089,7 +2089,7 @@ const localStyles = `
       align-items: flex-start;
     }
     .sb-jobs-list-row-cemetery {
-      font-size: 12px;
+      font-size: 13px;
     }
   }
 

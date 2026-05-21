@@ -21,6 +21,7 @@ import {
   deriveWaitingOnCustomerQueueRows,
   jobStatusInfo,
   fmtDate,
+  isLateAgainstExpectedResolution,
 } from './lib/stonebooksData'
 
 // Static section metadata for the Layouts queue. Section codes come from the
@@ -155,8 +156,8 @@ function QueuePicker({ active, counts, onSelect }) {
     <div
       style={{
         display: 'flex',
-        gap: 24,
-        marginBottom: 32,
+        gap: 32,
+        marginBottom: 40,
         flexWrap: 'wrap',
         borderBottom: '0.5px solid var(--sb-border)',
         paddingBottom: 4,
@@ -482,11 +483,19 @@ function MilestoneQueueRow({ row, onOpenJob }) {
   const orderNum = order?.order_number || ''
   const waitingPill = row.waitingStatus ? jobStatusInfo(row.waitingStatus) : null
 
-  // Build secondary metadata as middle-dot-separated parts
+  // Build secondary metadata as middle-dot-separated parts.
+  // Operational Truth Substrate — when the row's milestone carries an
+  // `expected_resolution_at` and/or `external_party_ref`, the clause is
+  // appended inline (no new container, no chip; see UI-polish guardrail).
+  // The internal `due` clause is suppressed when an expectation clause is
+  // present — the external promise-back date is the more honest reading and
+  // surfacing both turns the sentence into a tuple.
+  const expectClause = expectationClause(row)
   const secondaryParts = []
   secondaryParts.push(row.milestone.label)
   if (row.cemetery?.name) secondaryParts.push(row.cemetery.name)
-  if (row.dueDate) secondaryParts.push(`due ${fmtDate(row.dueDate)}`)
+  if (row.dueDate && !expectClause) secondaryParts.push(`due ${fmtDate(row.dueDate)}`)
+  if (expectClause) secondaryParts.push(expectClause)
   if (row.blockerKeys?.length > 0) {
     secondaryParts.push(`blocked by ${row.blockerKeys.join(', ')}`)
   }
@@ -503,7 +512,7 @@ function MilestoneQueueRow({ row, onOpenJob }) {
         background: 'transparent',
         border: 'none',
         borderBottom: '0.5px solid var(--sb-border)',
-        padding: '16px 4px',
+        padding: '20px 4px',
         cursor: 'pointer',
         font: 'inherit',
         color: 'inherit',
@@ -526,7 +535,7 @@ function MilestoneQueueRow({ row, onOpenJob }) {
           flex: 1,
           minWidth: 0,
         }}>
-          <span style={{ fontSize: 16, fontWeight: 500, color: 'var(--sb-text)' }}>
+          <span style={{ fontSize: 17, fontWeight: 500, color: 'var(--sb-text)', letterSpacing: '-0.005em' }}>
             {handle}
           </span>
           {orderNum && (
@@ -562,8 +571,8 @@ function MilestoneQueueRow({ row, onOpenJob }) {
 
       {/* Secondary line: milestone label + supporting metadata, middle-dot separated */}
       <div style={{
-        marginTop: 6,
-        fontSize: 14,
+        marginTop: 8,
+        fontSize: 15,
         color: 'var(--sb-text-secondary)',
         lineHeight: 1.5,
       }}>
@@ -604,7 +613,7 @@ function WaitingJobRow({ row, onOpenJob }) {
         background: 'transparent',
         border: 'none',
         borderBottom: '0.5px solid var(--sb-border)',
-        padding: '16px 4px',
+        padding: '20px 4px',
         cursor: 'pointer',
         font: 'inherit',
         color: 'inherit',
@@ -621,7 +630,7 @@ function WaitingJobRow({ row, onOpenJob }) {
         gap: 16,
       }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 16, fontWeight: 500, color: 'var(--sb-text)' }}>
+          <span style={{ fontSize: 17, fontWeight: 500, color: 'var(--sb-text)', letterSpacing: '-0.005em' }}>
             {handle}
           </span>
           {orderNum && (
@@ -648,10 +657,14 @@ function WaitingJobRow({ row, onOpenJob }) {
         </div>
       </div>
 
-      {/* Secondary line: what we're awaiting + cemetery */}
+      {/* Secondary line: what we're awaiting + cemetery.
+          Operational Truth Substrate — when the awaiting milestone carries
+          an external_party_ref or expected_resolution_at, those facts append
+          inline ("expected back Tuesday from Coldspring"). No chrome added;
+          the sentence simply gains specificity when the data is present. */}
       <div style={{
-        marginTop: 6,
-        fontSize: 14,
+        marginTop: 8,
+        fontSize: 15,
         color: 'var(--sb-text-secondary)',
         lineHeight: 1.5,
       }}>
@@ -659,6 +672,14 @@ function WaitingJobRow({ row, onOpenJob }) {
           <>
             Awaiting: {awaiting.label}
             {row.awaitingDays != null && ` · ${formatDays(row.awaitingDays)} ago`}
+            {(() => {
+              const c = expectationClause({
+                expectedResolutionAt: awaiting.expected_resolution_at || null,
+                externalPartyRef:     awaiting.external_party_ref     || null,
+                lateAgainstExpectation: isLateAgainstExpectedResolution(awaiting),
+              })
+              return c ? <> · {c}</> : null
+            })()}
           </>
         ) : (
           <>Awaiting: see job for details</>
@@ -686,4 +707,50 @@ function formatDays(days) {
   if (days === 0) return 'Today'
   if (days === 1) return 'Yesterday'
   return `${days}d`
+}
+
+// Composes a single inline clause naming the external party's promise-back
+// status. Returns null when no structured fields are present — caller skips
+// the clause in that case. Honors the UI-polish guardrail: this is a sentence
+// fragment that joins the existing middle-dot-separated row parts; never a
+// container, never a chip.
+//
+// Inputs come from the queue row payload (see deriveStonesQueueRows in
+// stonebooksData.js) or from a milestone directly (WaitingJobRow path).
+function expectationClause({ expectedResolutionAt, externalPartyRef, lateAgainstExpectation }) {
+  const party = externalPartyRef?.trim() || null
+  const late  = lateAgainstExpectation && lateAgainstExpectation.daysLate > 0
+    ? lateAgainstExpectation.daysLate
+    : null
+
+  if (late != null) {
+    return party
+      ? `${party} ${late}d past quoted date`
+      : `${late}d past expected`
+  }
+  if (expectedResolutionAt) {
+    const when = formatExpectedShort(expectedResolutionAt)
+    return party
+      ? `expected back ${when} from ${party}`
+      : `expected back ${when}`
+  }
+  if (party) return `awaiting ${party}`
+  return null
+}
+
+// Calm time anchor for the expectation clause. Within the next 7 days
+// → today / tomorrow / weekday name; beyond → "Jun 14" form. Same intent as
+// the formatExpected helper in todaySignals.js — duplicated intentionally
+// so QueuesView doesn't take a cross-module dependency for one string.
+function formatExpectedShort(iso) {
+  if (!iso) return ''
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00`)
+  const t = new Date(); t.setHours(0, 0, 0, 0)
+  const delta = Math.floor((d - t) / 86400000)
+  if (delta === 0) return 'today'
+  if (delta === 1) return 'tomorrow'
+  if (delta >= 2 && delta <= 7) {
+    return d.toLocaleDateString('en-US', { weekday: 'long' })
+  }
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
