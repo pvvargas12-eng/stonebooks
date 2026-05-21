@@ -25,7 +25,6 @@ import {
   inferWaitingStatusFromMilestone,
   JOB_OVERALL_STATUSES, JOB_MILESTONE_STATUSES, JOB_TEAMS,
   jobStatusInfo, milestoneStatusInfo, teamInfo,
-  summarizeMilestonesByGroup, suggestNextActionableMilestone, daysSinceUpdate,
   isMilestoneOverdue, daysPastDue, hasUnsatisfiedRequires,
   customerName, fmtDate, fmtRelative, fmtUSD,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
@@ -202,7 +201,7 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
             ))}
           </div>
 
-          {/* Table */}
+          {/* List */}
           {filteredJobs === null ? (
             <div className="sb-empty">Loading jobs…</div>
           ) : filteredJobs.length === 0 ? (
@@ -212,7 +211,7 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
           ) : (
             <>
               <div className="sb-cust-meta">{filteredJobs.length} job{filteredJobs.length === 1 ? '' : 's'}</div>
-              <JobsTable
+              <JobsList
                 jobs={filteredJobs}
                 onSelectJob={setSelectedJobId}
               />
@@ -414,123 +413,93 @@ function EmptyState({ hasFilters }) {
 }
 
 // =============================================================================
-// TABLE
+// JOBS LIST — narrative two-line rows (Phase A redesign 2026-05-21)
 // =============================================================================
+// Replaces the 7-column table (JobsTable + JobRow + GroupBadge) with a list
+// of operational rows in the same posture as the queue rows in QueuesView.
+// Each row tells a complete operational story in two lines:
+//   Top:    customer surname · #order-num                    [status if waiting/blocked]
+//   Bottom: NRA sentence (the operational center of gravity)   · cemetery name (muted)
+//
+// Driven by the foundational reviewer findings (workflow-simplifier,
+// friction-detector, paperless-operations-reviewer): subtract the table grid,
+// drop GroupBadge chip decoding, use getNextRequiredAction as canonical
+// "next action", surface status only when operationally meaningful (not for
+// 'active' jobs), preserve cemetery as quiet metadata.
+//
+// What deliberately does NOT land in Phase A:
+//   • Recent activity cue (Phase C)
+//   • Drift-aware aging signal (Phase C)
+//   • Cemetery contact info on hover (Phase C)
+//   • Hidden filter rows with progressive disclosure (Phase B)
+//   • Sticky search across navigation (Phase B)
 
-function JobsTable({ jobs, onSelectJob }) {
+function JobsList({ jobs, onSelectJob }) {
   return (
-    <div className="sb-jobs-table">
-      <div className="sb-jobs-row sb-jobs-row-head">
-        <div>Customer</div>
-        <div>Service</div>
-        <div>Cemetery</div>
-        <div>Status</div>
-        <div>Progress</div>
-        <div>Next action</div>
-        <div className="sb-num">Updated</div>
-      </div>
-      {jobs.map(j => <JobRow key={j.id} job={j} onClick={() => onSelectJob(j.id)} />)}
+    <div className="sb-jobs-list">
+      {jobs.map(j => (
+        <JobsListRow
+          key={j.id}
+          job={j}
+          onClick={() => onSelectJob(j.id)}
+        />
+      ))}
     </div>
   )
 }
 
-function JobRow({ job, onClick }) {
+function JobsListRow({ job, onClick }) {
   const customer = job.customer
   const cemetery = job.cemetery
   const order = job.order
-  const statusInfo = jobStatusInfo(job.overall_status)
-  const days = daysSinceUpdate(job)
-  const suggested = job.next_action || suggestSuggestedActionLabel(job.milestones)
 
-  const groupedSummary = useMemo(() => {
-    const summary = summarizeMilestonesByGroup(job.milestones)
-    const byKey = new Map(summary.map(s => [s.group, s]))
-    return GROUP_ORDER
-      .map(g => byKey.get(g))
-      .filter(Boolean)
-  }, [job.milestones])
+  const customerLabel = order?.primary_lastname || customerName(customer) || '—'
+  const orderNum = order?.order_number || ''
+
+  // NRA — canonical "what does this job need?" Manual override (job.next_action)
+  // wins over derived NRA, per the established operational hierarchy.
+  const nra = getNextRequiredAction(job)
+  const nraLabel = job.next_action || nra?.label || null
+
+  // Status indicator — surface ONLY when operationally noteworthy (waiting_*,
+  // blocked, weather_delayed, etc.). 'active' is the default healthy state
+  // and doesn't need a pill on every row.
+  const isStatusNoteworthy =
+    job.overall_status &&
+    job.overall_status !== 'active' &&
+    job.overall_status !== 'closed'
+  const statusInfo = isStatusNoteworthy ? jobStatusInfo(job.overall_status) : null
 
   return (
-    <button type="button" className="sb-jobs-row" onClick={onClick}>
-      <div>
-        <div className="sb-cust-name">
-          {order?.primary_lastname || customerName(customer)}
+    <button type="button" className="sb-jobs-list-row" onClick={onClick}>
+      {/* Top line: identity left, (optional) status right */}
+      <div className="sb-jobs-list-row-primary">
+        <div className="sb-jobs-list-row-identity">
+          <span className="sb-jobs-list-row-name">{customerLabel}</span>
+          {orderNum && (
+            <span className="sb-jobs-list-row-ordernum">#{orderNum}</span>
+          )}
         </div>
-        {order?.order_number && (
-          <div style={{ fontSize: 11, color: 'var(--sb-text-muted)', fontFamily: 'var(--sb-font-mono)', marginTop: 2 }}>
-            {order.order_number}
-          </div>
+        {statusInfo && (
+          <span
+            className="sb-status-pill"
+            style={{ '--pill-color': statusInfo.color }}
+          >
+            {statusInfo.label}
+          </span>
         )}
       </div>
 
-      <div className="sb-cust-location">
-        {(order?.service_types || []).join(', ') || '—'}
-      </div>
-
-      <div className="sb-cust-location">
-        {cemetery?.name || '—'}
-      </div>
-
-      <div>
-        <span className="sb-status-pill" style={{ '--pill-color': statusInfo.color }}>
-          {statusInfo.label}
+      {/* Bottom line: NRA sentence left, cemetery (muted) right */}
+      <div className="sb-jobs-list-row-secondary">
+        <span className="sb-jobs-list-row-nra">
+          {nraLabel || <span className="sb-jobs-list-row-empty">—</span>}
         </span>
-      </div>
-
-      <div className="sb-jobs-progress">
-        {groupedSummary.map(s => (
-          <GroupBadge key={s.group} summary={s} />
-        ))}
-      </div>
-
-      <div className="sb-cust-location" style={{ fontSize: 12 }}>
-        {suggested || <span className="sb-muted">—</span>}
-      </div>
-
-      <div className="sb-num" style={{ fontSize: 11, color: 'var(--sb-text-muted)', fontFamily: 'var(--sb-font-mono)' }}>
-        {days != null ? `${days}d ago` : '—'}
+        {cemetery?.name && (
+          <span className="sb-jobs-list-row-cemetery">{cemetery.name}</span>
+        )}
       </div>
     </button>
-  )
-}
-
-function suggestSuggestedActionLabel(milestones) {
-  const m = suggestNextActionableMilestone(milestones)
-  if (!m) return null
-  return m.label
-}
-
-function GroupBadge({ summary }) {
-  const { group, total, done, notNeeded, inProgress, blocked, notStarted } = summary
-  const effectiveTotal = total - notNeeded
-  let color = 'var(--sb-text-muted)'
-  let bg = 'var(--sb-surface-muted)'
-  if (blocked > 0) {
-    color = 'var(--sb-red)'
-    bg = 'var(--sb-red-bg)'
-  } else if (effectiveTotal === 0) {
-    // entire group is not_needed for this job — show very muted
-    color = 'var(--sb-text-muted)'
-    bg = 'transparent'
-  } else if (done === effectiveTotal) {
-    color = 'var(--sb-green)'
-    bg = 'var(--sb-green-bg)'
-  } else if (inProgress > 0) {
-    color = 'var(--sb-accent)'
-    bg = 'var(--sb-accent-bg)'
-  }
-  const label = effectiveTotal === 0
-    ? '—'
-    : `${done}/${effectiveTotal}`
-  return (
-    <div
-      className="sb-jobs-group-badge"
-      title={`${GROUP_LABEL[group] || group}: ${done} done, ${inProgress} in progress, ${notStarted} not started${blocked ? `, ${blocked} blocked` : ''}${notNeeded ? `, ${notNeeded} not needed` : ''}`}
-      style={{ '--badge-color': color, '--badge-bg': bg }}
-    >
-      <div className="sb-jobs-group-label">{(GROUP_LABEL[group] || group).slice(0, 4)}</div>
-      <div className="sb-jobs-group-count">{label}</div>
-    </div>
   )
 }
 
@@ -1909,73 +1878,108 @@ const localStyles = `
     }
   }
 
-  .sb-jobs-table {
-    background: var(--sb-surface);
-    border: 0.5px solid var(--sb-border);
-    border-radius: var(--sb-r-md);
-    overflow: hidden;
-  }
-  .sb-jobs-row {
-    display: grid;
-    grid-template-columns: 1.4fr 1fr 1.2fr 130px 2fr 1.5fr 80px;
-    gap: 12px;
-    padding: 12px 16px;
-    border-bottom: 0.5px solid var(--sb-border);
-    background: transparent;
-    border-left: none; border-right: none; border-top: none;
-    font: inherit; color: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.1s;
-    align-items: center;
-  }
-  .sb-jobs-row:hover { background: var(--sb-surface-muted); }
-  .sb-jobs-row:last-child { border-bottom: none; }
-  .sb-jobs-row-head {
-    background: var(--sb-bg);
-    font-size: 10px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--sb-text-muted);
-    cursor: default;
-  }
-  .sb-jobs-row-head:hover { background: var(--sb-bg); }
+  /* ── JOBS LIST — narrative list rows (Phase A redesign 2026-05-21) ─────────
+     Replaces the previous 7-column .sb-jobs-table grid. Same posture as the
+     queue rows in QueuesView.jsx — full-width clickable rows with a hairline
+     bottom divider, two lines of content, subtle hover tint. No card chrome,
+     no column headers, no colored chip grids. */
 
-  .sb-jobs-progress {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .sb-jobs-group-badge {
+  .sb-jobs-list {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    padding: 3px 7px;
-    border-radius: var(--sb-r-sm);
-    background: var(--badge-bg, var(--sb-surface-muted));
-    color: var(--badge-color, var(--sb-text-muted));
-    min-width: 38px;
-  }
-  .sb-jobs-group-label {
-    font-size: 9px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    opacity: 0.75;
-    line-height: 1;
-  }
-  .sb-jobs-group-count {
-    font-size: 11px;
-    font-family: var(--sb-font-mono);
-    font-weight: 500;
-    margin-top: 2px;
-    line-height: 1;
   }
 
-  @media (max-width: 1100px) {
-    .sb-jobs-row { grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; }
-    .sb-jobs-row-head { display: none; }
+  .sb-jobs-list-row {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 0.5px solid var(--sb-border);
+    padding: 16px 4px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition: background 0.12s;
+  }
+  .sb-jobs-list-row:hover {
+    background: var(--sb-surface-muted);
+  }
+  .sb-jobs-list-row:focus-visible {
+    outline: 0.5px solid var(--sb-accent);
+    outline-offset: -2px;
+  }
+
+  /* Top line — identity left, optional status pill right.
+     Status appears ONLY when overall_status is operationally noteworthy
+     (waiting_*, blocked, weather_delayed) — never for 'active'. */
+  .sb-jobs-list-row-primary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .sb-jobs-list-row-identity {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex: 1;
+    min-width: 0;
+  }
+  .sb-jobs-list-row-name {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--sb-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sb-jobs-list-row-ordernum {
+    font-size: 13px;
+    font-family: var(--sb-font-mono);
+    color: var(--sb-text-muted);
+    white-space: nowrap;
+  }
+
+  /* Bottom line — NRA sentence left (operational center of gravity),
+     cemetery quiet metadata right. */
+  .sb-jobs-list-row-secondary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 6px;
+    font-size: 14px;
+    color: var(--sb-text-secondary);
+    line-height: 1.5;
+  }
+  .sb-jobs-list-row-nra {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sb-jobs-list-row-cemetery {
+    color: var(--sb-text-muted);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .sb-jobs-list-row-empty {
+    color: var(--sb-text-muted);
+  }
+
+  /* Responsive — phone (under 600) stacks the cemetery below the NRA so
+     long NRA sentences and cemetery names don't collide. */
+  @media (max-width: 600px) {
+    .sb-jobs-list-row-secondary {
+      flex-direction: column;
+      gap: 4px;
+      align-items: flex-start;
+    }
+    .sb-jobs-list-row-cemetery {
+      font-size: 12px;
+    }
   }
 
   /* ── Commit 4 additions ────────────────────────────────────────────────── */
