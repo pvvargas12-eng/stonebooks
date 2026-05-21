@@ -242,21 +242,11 @@ function ViewModeToggle({ viewMode, onChange }) {
     <div
       style={{
         display: 'flex',
-        gap: 4,
-        marginBottom: 16,
+        gap: 24,
+        marginBottom: 24,
         alignItems: 'center',
       }}
     >
-      <span
-        style={{
-          fontSize: 11,
-          color: 'var(--sb-text-muted)',
-          fontFamily: 'var(--sb-font-mono)',
-          marginRight: 6,
-        }}
-      >
-        View:
-      </span>
       {modes.map(m => {
         const active = m.code === viewMode
         return (
@@ -265,15 +255,18 @@ function ViewModeToggle({ viewMode, onChange }) {
             type="button"
             onClick={() => onChange(m.code)}
             style={{
-              padding: '6px 12px',
-              border: '0.5px solid var(--sb-border)',
-              borderRadius: 'var(--sb-r-sm)',
-              background: active ? 'var(--sb-text)' : 'transparent',
-              color: active ? 'var(--sb-surface)' : 'var(--sb-text-secondary)',
-              fontSize: 12,
-              fontWeight: active ? 600 : 400,
+              padding: '6px 0',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: active
+                ? '2px solid var(--sb-accent)'
+                : '2px solid transparent',
+              color: active ? 'var(--sb-text)' : 'var(--sb-text-muted)',
+              fontSize: 15,
+              fontWeight: active ? 500 : 400,
               cursor: 'pointer',
               font: 'inherit',
+              transition: 'color 0.15s',
             }}
           >
             {m.label}

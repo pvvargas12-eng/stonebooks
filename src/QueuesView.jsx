@@ -19,7 +19,6 @@ import {
   deriveStonesQueueRows,
   deriveProductionQueueRows,
   deriveWaitingOnCustomerQueueRows,
-  teamInfo,
   jobStatusInfo,
   fmtDate,
 } from './lib/stonebooksData'
@@ -156,42 +155,47 @@ function QueuePicker({ active, counts, onSelect }) {
     <div
       style={{
         display: 'flex',
-        gap: 6,
-        marginBottom: 16,
+        gap: 24,
+        marginBottom: 32,
         flexWrap: 'wrap',
+        borderBottom: '0.5px solid var(--sb-border)',
+        paddingBottom: 4,
       }}
     >
       {tabs.map(t => {
         const isActive = t.code === active
+        const count = counts[t.code] ?? 0
         return (
           <button
             key={t.code}
             type="button"
             onClick={() => onSelect?.(t.code)}
             style={{
-              padding: '8px 14px',
-              border: '0.5px solid var(--sb-border)',
-              borderRadius: 'var(--sb-r-sm)',
-              background: isActive ? 'var(--sb-surface-elevated, #f5ede0)' : 'transparent',
-              color: isActive ? 'var(--sb-text)' : 'var(--sb-text-secondary)',
-              fontSize: 13,
-              fontWeight: isActive ? 600 : 400,
+              padding: '8px 0',
+              marginBottom: -1,                          /* aligns underline with parent border */
+              background: 'transparent',
+              border: 'none',
+              borderBottom: isActive
+                ? '2px solid var(--sb-accent)'
+                : '2px solid transparent',
+              color: isActive ? 'var(--sb-text)' : 'var(--sb-text-muted)',
+              fontSize: 15,
+              fontWeight: isActive ? 500 : 400,
               cursor: 'pointer',
               display: 'inline-flex',
-              alignItems: 'center',
+              alignItems: 'baseline',
               gap: 8,
               font: 'inherit',
+              transition: 'color 0.15s',
             }}
           >
             <span>{t.label}</span>
-            <span
-              style={{
-                fontFamily: 'var(--sb-font-mono)',
-                fontSize: 11,
-                color: 'var(--sb-text-muted)',
-              }}
-            >
-              ({counts[t.code] ?? 0})
+            <span style={{
+              fontSize: 13,
+              color: 'var(--sb-text-muted)',
+              fontVariantNumeric: 'tabular-nums',
+            }}>
+              {count}
             </span>
           </button>
         )
@@ -222,25 +226,25 @@ function LayoutsQueue({ rows, onOpenJob }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {LAYOUTS_SECTIONS.map(section => {
         const sectionRows = bySection.get(section.code) || []
         return (
           <div key={section.code}>
             <div
               className="sb-section-label"
-              style={{ margin: 0, marginBottom: 6 }}
+              style={{ margin: '32px 0 12px', display: 'flex', alignItems: 'baseline', gap: 12 }}
             >
               {section.label}
               <span
                 style={{
-                  marginLeft: 8,
-                  fontFamily: 'var(--sb-font-mono)',
-                  fontSize: 11,
+                  fontSize: 13,
+                  fontWeight: 400,
                   color: 'var(--sb-text-muted)',
+                  fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                ({sectionRows.length})
+                {sectionRows.length}
               </span>
             </div>
             {sectionRows.length === 0 ? (
@@ -259,7 +263,7 @@ function LayoutsQueue({ rows, onOpenJob }) {
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: 6,
+                  gap: 0,
                 }}
               >
                 {sectionRows.map(row => (
@@ -302,25 +306,25 @@ function StonesQueue({ rows, onOpenJob }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {STONES_SECTIONS.map(section => {
         const sectionRows = bySection.get(section.code) || []
         return (
           <div key={section.code}>
             <div
               className="sb-section-label"
-              style={{ margin: 0, marginBottom: 6 }}
+              style={{ margin: '32px 0 12px', display: 'flex', alignItems: 'baseline', gap: 12 }}
             >
               {section.label}
               <span
                 style={{
-                  marginLeft: 8,
-                  fontFamily: 'var(--sb-font-mono)',
-                  fontSize: 11,
+                  fontSize: 13,
+                  fontWeight: 400,
                   color: 'var(--sb-text-muted)',
+                  fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                ({sectionRows.length})
+                {sectionRows.length}
               </span>
             </div>
             {sectionRows.length === 0 ? (
@@ -339,7 +343,7 @@ function StonesQueue({ rows, onOpenJob }) {
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: 6,
+                  gap: 0,
                 }}
               >
                 {sectionRows.map(row => (
@@ -384,25 +388,25 @@ function ProductionQueue({ rows, onOpenJob }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {PRODUCTION_SECTIONS.map(section => {
         const sectionRows = bySection.get(section.code) || []
         return (
           <div key={section.code}>
             <div
               className="sb-section-label"
-              style={{ margin: 0, marginBottom: 6 }}
+              style={{ margin: '32px 0 12px', display: 'flex', alignItems: 'baseline', gap: 12 }}
             >
               {section.label}
               <span
                 style={{
-                  marginLeft: 8,
-                  fontFamily: 'var(--sb-font-mono)',
-                  fontSize: 11,
+                  fontSize: 13,
+                  fontWeight: 400,
                   color: 'var(--sb-text-muted)',
+                  fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                ({sectionRows.length})
+                {sectionRows.length}
               </span>
             </div>
             {sectionRows.length === 0 ? (
@@ -421,7 +425,7 @@ function ProductionQueue({ rows, onOpenJob }) {
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: 6,
+                  gap: 0,
                 }}
               >
                 {sectionRows.map(row => (
@@ -454,7 +458,7 @@ function WaitingOnCustomerQueue({ rows, onOpenJob }) {
     )
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
       {rows.map(row => (
         <WaitingJobRow
           key={row.job.id}
@@ -476,106 +480,101 @@ function MilestoneQueueRow({ row, onOpenJob }) {
     ? (order?.primary_lastname || `${row.customer?.last_name || ''}`).trim() || '—'
     : '—'
   const orderNum = order?.order_number || ''
-  const team = row.team ? teamInfo(row.team) : null
   const waitingPill = row.waitingStatus ? jobStatusInfo(row.waitingStatus) : null
 
-  const hasSecondary =
-    row.cemetery?.name ||
-    row.dueDate ||
-    row.blockerKeys?.length > 0 ||
-    waitingPill
+  // Build secondary metadata as middle-dot-separated parts
+  const secondaryParts = []
+  secondaryParts.push(row.milestone.label)
+  if (row.cemetery?.name) secondaryParts.push(row.cemetery.name)
+  if (row.dueDate) secondaryParts.push(`due ${fmtDate(row.dueDate)}`)
+  if (row.blockerKeys?.length > 0) {
+    secondaryParts.push(`blocked by ${row.blockerKeys.join(', ')}`)
+  }
+  if (waitingPill) secondaryParts.push(`Job: ${waitingPill.label}`)
 
   return (
-    <div
+    <button
+      type="button"
+      onClick={() => onOpenJob?.(row.job.id)}
       style={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 12,
-        padding: '10px 14px',
-        border: '0.5px solid var(--sb-border)',
-        borderRadius: 'var(--sb-r-sm)',
-        background: 'var(--sb-surface)',
-        flexWrap: 'wrap',
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
+        background: 'transparent',
+        border: 'none',
+        borderBottom: '0.5px solid var(--sb-border)',
+        padding: '16px 4px',
+        cursor: 'pointer',
+        font: 'inherit',
+        color: 'inherit',
+        transition: 'background 0.12s',
       }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--sb-surface-muted)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
     >
-      <div style={{ flex: '1 1 280px', minWidth: 240 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 500, color: 'var(--sb-text)' }}>{handle}</span>
+      {/* Primary line: customer name + order# on left, aging + overdue on right */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 16,
+      }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 12,
+          flex: 1,
+          minWidth: 0,
+        }}>
+          <span style={{ fontSize: 16, fontWeight: 500, color: 'var(--sb-text)' }}>
+            {handle}
+          </span>
           {orderNum && (
-            <span
-              className="sb-mono"
-              style={{ fontSize: 11, color: 'var(--sb-text-muted)' }}
-            >
+            <span style={{
+              fontSize: 13,
+              fontFamily: 'var(--sb-font-mono)',
+              color: 'var(--sb-text-muted)',
+            }}>
               #{orderNum}
             </span>
           )}
-          <span style={{ fontSize: 13, color: 'var(--sb-text)' }}>
-            {row.milestone.label}
-          </span>
-          {team && <TeamPill team={team} />}
         </div>
-        {hasSecondary && (
-          <div
-            style={{
-              marginTop: 4,
-              fontSize: 11,
-              color: 'var(--sb-text-muted)',
-              fontFamily: 'var(--sb-font-mono)',
-              display: 'flex',
-              gap: 10,
-              flexWrap: 'wrap',
-            }}
-          >
-            {row.cemetery?.name && <span>{row.cemetery.name}</span>}
-            {row.dueDate && <span>due {fmtDate(row.dueDate)}</span>}
-            {row.blockerKeys?.length > 0 && (
-              <span style={{ color: 'var(--sb-text-secondary)' }}>
-                blocked by {row.blockerKeys.join(', ')}
-              </span>
-            )}
-            {waitingPill && (
-              <span style={{ color: waitingPill.color }}>
-                Job: {waitingPill.label}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div
-        style={{
+        <div style={{
           display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-end',
-          gap: 2,
-          minWidth: 110,
-        }}
-      >
-        <AgingBadge days={row.agingDays} variant="idle" />
-        {row.overdue && (
-          <span
-            style={{
-              fontSize: 11,
-              fontFamily: 'var(--sb-font-mono)',
-              color: 'var(--sb-red, #b54040)',
-            }}
-          >
-            ⚠ {row.overdueDays}d overdue
-          </span>
-        )}
+          alignItems: 'baseline',
+          gap: 12,
+          fontSize: 13,
+          fontFamily: 'var(--sb-font-mono)',
+          fontVariantNumeric: 'tabular-nums',
+          color: 'var(--sb-text-muted)',
+          whiteSpace: 'nowrap',
+        }}>
+          {row.agingDays != null && (
+            <span>{formatDays(row.agingDays)} idle</span>
+          )}
+          {row.overdue && (
+            <span style={{ color: 'var(--sb-red, #b54040)' }}>
+              ⚠ {row.overdueDays}d overdue
+            </span>
+          )}
+        </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        <button
-          type="button"
-          className="sb-btn-secondary"
-          onClick={() => onOpenJob?.(row.job.id)}
-          style={{ fontSize: 12 }}
-        >
-          Open job →
-        </button>
+      {/* Secondary line: milestone label + supporting metadata, middle-dot separated */}
+      <div style={{
+        marginTop: 6,
+        fontSize: 14,
+        color: 'var(--sb-text-secondary)',
+        lineHeight: 1.5,
+      }}>
+        {secondaryParts.map((part, i) => (
+          <span key={i}>
+            {i > 0 && <span style={{ margin: '0 8px', color: 'var(--sb-text-muted)' }}>·</span>}
+            {part}
+          </span>
+        ))}
       </div>
-    </div>
+    </button>
   )
 }
 
@@ -584,7 +583,6 @@ function WaitingJobRow({ row, onOpenJob }) {
   const handle = order?.primary_lastname || `${row.customer?.last_name || ''}`.trim() || '—'
   const orderNum = order?.order_number || ''
   const awaiting = row.awaitingMilestone
-  const team = row.awaitingTeam ? teamInfo(row.awaitingTeam) : null
 
   // Tier the badge: 0-6d nothing, 7-13d soft amber, 14+ red+escalate
   const days = row.daysWaiting ?? 0
@@ -596,133 +594,93 @@ function WaitingJobRow({ row, onOpenJob }) {
   }
 
   return (
-    <div
+    <button
+      type="button"
+      onClick={() => onOpenJob?.(row.job.id)}
       style={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 12,
-        padding: '10px 14px',
-        border: '0.5px solid var(--sb-border)',
-        borderRadius: 'var(--sb-r-sm)',
-        background: 'var(--sb-surface)',
-        flexWrap: 'wrap',
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
+        background: 'transparent',
+        border: 'none',
+        borderBottom: '0.5px solid var(--sb-border)',
+        padding: '16px 4px',
+        cursor: 'pointer',
+        font: 'inherit',
+        color: 'inherit',
+        transition: 'background 0.12s',
       }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--sb-surface-muted)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
     >
-      <div style={{ flex: '1 1 280px', minWidth: 240 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 500, color: 'var(--sb-text)' }}>{handle}</span>
+      {/* Primary line: customer + waiting duration on right */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 16,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 16, fontWeight: 500, color: 'var(--sb-text)' }}>
+            {handle}
+          </span>
           {orderNum && (
-            <span
-              className="sb-mono"
-              style={{ fontSize: 11, color: 'var(--sb-text-muted)' }}
-            >
+            <span style={{
+              fontSize: 13,
+              fontFamily: 'var(--sb-font-mono)',
+              color: 'var(--sb-text-muted)',
+            }}>
               #{orderNum}
             </span>
           )}
-          <span style={{ fontSize: 13, color: 'var(--sb-text)' }}>
-            Waiting {formatDays(days)}
-          </span>
-          {team && <TeamPill team={team} />}
         </div>
-        <div
-          style={{
-            marginTop: 4,
-            fontSize: 11,
-            color: 'var(--sb-text-muted)',
-            fontFamily: 'var(--sb-font-mono)',
-            display: 'flex',
-            gap: 10,
-            flexWrap: 'wrap',
-          }}
-        >
-          {awaiting ? (
-            <span>
-              Awaiting: {awaiting.label}
-              {row.awaitingDays != null && ` · ${formatDays(row.awaitingDays)} ago`}
-            </span>
-          ) : (
-            <span>Awaiting: see job for details</span>
-          )}
-          {row.cemetery?.name && <span>{row.cemetery.name}</span>}
+        <div style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 12,
+          fontSize: 13,
+          fontFamily: 'var(--sb-font-mono)',
+          fontVariantNumeric: 'tabular-nums',
+          color: tierBadge?.color || 'var(--sb-text-muted)',
+          whiteSpace: 'nowrap',
+        }}>
+          {tierBadge ? tierBadge.label : `Waiting ${formatDays(days)}`}
         </div>
       </div>
 
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-end',
-          gap: 2,
-          minWidth: 110,
-        }}
-      >
-        {tierBadge && (
-          <span
-            style={{
-              fontSize: 11,
-              fontFamily: 'var(--sb-font-mono)',
-              color: tierBadge.color,
-            }}
-          >
-            {tierBadge.label}
-          </span>
+      {/* Secondary line: what we're awaiting + cemetery */}
+      <div style={{
+        marginTop: 6,
+        fontSize: 14,
+        color: 'var(--sb-text-secondary)',
+        lineHeight: 1.5,
+      }}>
+        {awaiting ? (
+          <>
+            Awaiting: {awaiting.label}
+            {row.awaitingDays != null && ` · ${formatDays(row.awaitingDays)} ago`}
+          </>
+        ) : (
+          <>Awaiting: see job for details</>
+        )}
+        {row.cemetery?.name && (
+          <>
+            <span style={{ margin: '0 8px', color: 'var(--sb-text-muted)' }}>·</span>
+            {row.cemetery.name}
+          </>
         )}
       </div>
-
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        <button
-          type="button"
-          className="sb-btn-secondary"
-          onClick={() => onOpenJob?.(row.job.id)}
-          style={{ fontSize: 12 }}
-        >
-          Open job →
-        </button>
-      </div>
-    </div>
+    </button>
   )
 }
 
 // =============================================================================
-// SHARED ROW BITS
+// SHARED HELPERS
 // =============================================================================
-
-// Subtle uppercase team chip — operational ownership at a glance.
-function TeamPill({ team }) {
-  return (
-    <span
-      style={{
-        fontSize: 10,
-        fontFamily: 'var(--sb-font-mono)',
-        letterSpacing: '0.06em',
-        textTransform: 'uppercase',
-        color: team.color || 'var(--sb-text-muted)',
-        border: `0.5px solid ${team.color || 'var(--sb-border)'}`,
-        borderRadius: 'var(--sb-r-sm)',
-        padding: '1px 6px',
-        background: 'transparent',
-      }}
-    >
-      {team.label}
-    </span>
-  )
-}
-
-// Subtle right-aligned aging badge. variant === 'idle' → "Nd idle" / "Today".
-function AgingBadge({ days, variant }) {
-  if (days == null) return null
-  return (
-    <span
-      style={{
-        fontSize: 11,
-        fontFamily: 'var(--sb-font-mono)',
-        color: 'var(--sb-text-muted)',
-      }}
-    >
-      {formatDays(days)}{variant === 'idle' ? ' idle' : ''}
-    </span>
-  )
-}
+// Visual rebalance 2026-05-21: TeamPill and AgingBadge components removed.
+// Team is no longer surfaced as a pill chip (operational ownership will be
+// surfaced through other means in a future commit). Aging is rendered inline
+// on each row's primary line as mono text — no badge component needed.
 
 function formatDays(days) {
   if (days === 0) return 'Today'

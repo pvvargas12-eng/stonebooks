@@ -671,23 +671,20 @@ const shellStyles = `
     background: var(--sb-sidebar);
     color: var(--sb-text-on-dark);
     display: flex; flex-direction: column;
-    padding: 16px 12px;
+    padding: 24px 16px;
     border-right: 0.5px solid var(--sb-border);
   }
   .sb-sidebar-brand {
-    padding: 8px 8px 20px;
-    border-bottom: 0.5px solid rgba(255,255,255,0.06);
+    padding: 8px 8px 32px;
     margin-bottom: 16px;
   }
   .sb-nav { flex: 1; display: flex; flex-direction: column; }
   .sb-nav-section-label {
-    font-size: 10px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 500;
     color: var(--sb-text-on-dark-muted);
-    padding: 0 8px;
-    margin-bottom: 6px;
+    padding: 0 12px;
+    margin: 24px 0 8px;
   }
   .sb-nav-item {
     display: block;
@@ -697,11 +694,12 @@ const shellStyles = `
     border: none;
     color: var(--sb-text-on-dark-muted);
     font: inherit;
-    padding: 7px 10px;
+    font-size: 14px;
+    padding: 10px 12px;
     border-radius: var(--sb-r-md);
     cursor: pointer;
-    margin-bottom: 1px;
-    transition: background 0.1s, color 0.1s;
+    margin-bottom: 2px;
+    transition: background 0.15s, color 0.15s;
   }
   .sb-nav-item:hover { background: rgba(255,255,255,0.06); color: var(--sb-text-on-dark); }
   .sb-nav-item.on    { background: rgba(255,255,255,0.10); color: var(--sb-text-on-dark); font-weight: 500; }
@@ -711,7 +709,8 @@ const shellStyles = `
   }
   .sb-sidebar-foot {
     border-top: 0.5px solid rgba(255,255,255,0.06);
-    padding-top: 12px;
+    padding-top: 16px;
+    margin-top: 16px;
   }
   .sb-user-row {
     display: flex; align-items: center; gap: 10px;
@@ -745,41 +744,37 @@ const shellStyles = `
   /* MAIN */
   .sb-main {
     overflow-y: auto;
-    padding: 32px 40px;
+    padding: 48px 48px;
   }
-  .sb-page { max-width: 920px; }
-  .sb-page-head { margin-bottom: 24px; }
+  .sb-page { max-width: 960px; }
+  .sb-page-head { margin-bottom: 40px; }
   .sb-page-eyebrow {
-    font-size: 11px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
+    font-weight: 400;
     color: var(--sb-text-muted);
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
   .sb-page-title {
-    font-size: 24px;
+    font-size: 28px;
     font-weight: 500;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
     color: var(--sb-text);
     margin: 0;
+    line-height: 1.15;
   }
   .sb-section-label {
-    font-size: 11px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--sb-text-muted);
-    margin: 24px 0 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--sb-text);
+    margin: 40px 0 16px;
   }
 
   .sb-empty {
-    background: var(--sb-surface);
-    border: 0.5px solid var(--sb-border);
-    border-radius: var(--sb-r-md);
-    padding: 24px;
+    background: transparent;
+    padding: 32px 0;
     color: var(--sb-text-secondary);
-    line-height: 1.6;
+    font-size: 16px;
+    line-height: 1.7;
   }
 
   /* METRICS */
@@ -789,29 +784,26 @@ const shellStyles = `
     gap: 8px;
   }
   .sb-metric {
-    background: var(--sb-surface);
-    border: 0.5px solid var(--sb-border);
-    border-radius: var(--sb-r-md);
-    padding: 14px 16px;
+    background: transparent;
+    padding: 4px 0;
   }
   .sb-metric-label {
-    font-size: 10px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
+    font-weight: 400;
     color: var(--sb-text-muted);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
   }
   .sb-metric-value {
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 500;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
     color: var(--sb-text);
     font-family: var(--sb-font-mono);
+    font-variant-numeric: tabular-nums;
   }
   .sb-metric-sub {
-    margin-top: 4px;
-    font-size: 11px;
+    margin-top: 6px;
+    font-size: 13px;
     color: var(--sb-text-muted);
   }
 
@@ -923,33 +915,35 @@ const shellStyles = `
     color: var(--sb-bg);
     border: none;
     border-radius: var(--sb-r-md);
-    padding: 9px 14px;
+    padding: 10px 18px;
     font: inherit;
+    font-size: 14px;
     font-weight: 500;
     cursor: pointer;
     margin-top: 12px;
-    transition: opacity 0.1s;
+    transition: opacity 0.15s;
   }
-  .sb-btn-primary:hover { opacity: 0.9; }
+  .sb-btn-primary:hover { opacity: 0.88; }
   .sb-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .sb-btn-secondary {
-    background: var(--sb-surface);
+    background: transparent;
     color: var(--sb-text);
-    border: 0.5px solid var(--sb-border);
+    border: none;
     border-radius: var(--sb-r-md);
-    padding: 9px 14px;
+    padding: 8px 14px;
     font: inherit;
+    font-size: 14px;
     cursor: pointer;
-    transition: border-color 0.1s;
+    transition: background 0.15s;
   }
-  .sb-btn-secondary:hover { border-color: var(--sb-border-hover); }
+  .sb-btn-secondary:hover { background: var(--sb-surface-muted); }
 
   .sb-link {
     background: none; border: none;
     color: var(--sb-accent);
     font: inherit;
-    font-size: 12px;
+    font-size: 14px;
     cursor: pointer;
     padding: 0;
   }
@@ -1088,18 +1082,15 @@ const shellStyles = `
   .sb-link-danger:hover { color: var(--sb-red); opacity: 0.8; }
   .sb-card {
     background: var(--sb-surface);
-    border: 0.5px solid var(--sb-border);
     border-radius: var(--sb-r-md);
-    padding: 16px 18px;
-    margin-bottom: 8px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
   }
   .sb-meta-label {
-    font-size: 10px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 500;
     color: var(--sb-text-muted);
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
 
   /* ── CUSTOMERS TAB ─────────────────────────────────────────────── */
@@ -1240,44 +1231,44 @@ const shellStyles = `
     border-top: 0.5px solid var(--sb-border);
   }
 
-  /* STATUS PILL */
+  /* STATUS PILL — canonical pill, kept for order/job status displays */
   .sb-status-pill {
     display: inline-block;
-    font-size: 10px;
-    font-family: var(--sb-font-mono);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 3px 8px;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    padding: 4px 10px;
     border-radius: var(--sb-r-sm);
     font-weight: 500;
     color: var(--pill-color, var(--sb-text));
-    background: color-mix(in srgb, var(--pill-color, #888) 12%, transparent);
-    border: 0.5px solid color-mix(in srgb, var(--pill-color, #888) 30%, transparent);
+    background: color-mix(in srgb, var(--pill-color, #888) 10%, transparent);
+    border: none;
   }
 
-  /* PILL ROW (filter pills) */
+  /* FILTER ROW — quieter: text-link aesthetic, no pill chrome */
   .sb-pill-row {
-    display: flex; gap: 4px; flex-wrap: wrap;
-    padding: 12px 0;
+    display: flex; gap: 16px; flex-wrap: wrap;
+    padding: 8px 0 16px;
     align-items: center;
   }
   .sb-pill {
     background: transparent;
-    border: 0.5px solid var(--sb-border);
-    color: var(--sb-text-secondary);
+    border: none;
+    color: var(--sb-text-muted);
     font: inherit;
-    font-size: 12px;
-    padding: 5px 12px;
-    border-radius: var(--sb-r-sm);
+    font-size: 14px;
+    padding: 4px 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
     cursor: pointer;
     display: inline-flex; align-items: center; gap: 6px;
+    transition: color 0.15s;
   }
-  .sb-pill:hover { border-color: var(--sb-border-hover); color: var(--sb-text); }
+  .sb-pill:hover { color: var(--sb-text); }
   .sb-pill.on {
-    background: var(--sb-text);
-    color: var(--sb-bg);
-    border-color: var(--sb-text);
+    color: var(--sb-text);
     font-weight: 500;
+    border-bottom-color: var(--sb-accent);
   }
   .sb-pill-dot {
     width: 6px; height: 6px;
@@ -1286,17 +1277,17 @@ const shellStyles = `
     display: inline-block;
   }
   .sb-pill-count {
-    font-size: 10px;
-    font-family: var(--sb-font-mono);
-    background: var(--sb-surface-muted);
-    padding: 1px 5px;
-    border-radius: var(--sb-r-full);
+    font-size: 13px;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
     color: var(--sb-text-muted);
   }
   .sb-pill-divider {
-    width: 1px; height: 16px;
+    width: 1px; height: 14px;
     background: var(--sb-border);
     margin: 0 4px;
+    opacity: 0.6;
   }
 
   /* ── ADD CUSTOMER FORM ─────────────────────────────────────────── */

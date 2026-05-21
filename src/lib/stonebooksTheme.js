@@ -36,17 +36,21 @@ export const STONEBOOKS_TOKENS = {
     mono: '"JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Monaco, Consolas, monospace',
   },
 
-  // Type scale — flat hierarchy
+  // Type scale — calibrated 2026-05-21 for "calm premium operational
+  // software" feel. Gaps between adjacent sizes are deliberately spread
+  // so hierarchy is visible (clusters in 10–13px range removed). World-
+  // class operational software (Linear 14, Stripe 14, Notion 16, Superhuman
+  // 14) sits in this range for primary body — Stonebooks now matches.
   fontSize: {
-    xs:   '11px',
-    sm:   '12px',
-    base: '13px',
-    md:   '14px',
-    lg:   '15px',
-    xl:   '17px',
-    '2xl':'20px',
-    '3xl':'24px',
-    '4xl':'32px',
+    xs:    '12px',  // smallest UI text — mono IDs, timestamps, chrome
+    sm:    '13px',  // small labels, hover tooltips (used sparingly)
+    base:  '14px',  // secondary body — meta lines on rows, dates, captions
+    md:    '16px',  // PRIMARY body — list rows, customer names, milestone labels
+    lg:    '17px',  // medium emphasis — JobDetail field labels
+    xl:    '20px',  // section emphasis, NRA badge, page subheaders
+    '2xl': '24px',  // intermediate (rarely used)
+    '3xl': '28px',  // page titles (Today, Jobs, Orders, Customers)
+    '4xl': '40px',  // hero text (home opening sentence, deceased name reveal)
   },
 }
 
