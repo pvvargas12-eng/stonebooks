@@ -78,6 +78,13 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
   const [search, setSearch] = useState('')
   const [reloadCount, setReloadCount] = useState(0)
 
+  // Phase B (2026-05-21) — filter pill rows are hidden by default. The user
+  // clicks the quiet "Filter" link to open the panel; closing it returns the
+  // toolbar to its calm default state. When filters are active but the panel
+  // is closed, a single quiet summary line shows what's filtering without
+  // exposing the full pill chrome.
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false)
+
   // Sprint J1-P1 Commit 2 — view-mode + active-queue state. Mode toggle swaps
   // the jobs body for QueuesView; activeQueue picks which queue renders inside
   // it. Component-local, no URL persistence (reload returns to Jobs mode by
@@ -148,7 +155,10 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
 
       {viewMode === 'jobs' && (
         <>
-          {/* Filters */}
+          {/* Search + Filter affordance. The filter panel is hidden by default
+              (Phase B 2026-05-21). Clicking "Filter" reveals the pill rows.
+              When filters are active and the panel is closed, a quiet summary
+              line shows what's filtering instead of the full pill chrome. */}
           <div className="sb-cust-toolbar">
             <input
               type="text"
@@ -157,49 +167,71 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
-          </div>
-
-          <div className="sb-pill-row">
             <button
               type="button"
-              className={`sb-pill ${teamFilter === null ? 'on' : ''}`}
-              onClick={() => setTeamFilter(null)}
-            >All teams</button>
-            <span className="sb-pill-divider" />
-            {JOB_TEAMS.map(t => (
-              <button
-                key={t.code}
-                type="button"
-                className={`sb-pill ${teamFilter === t.code ? 'on' : ''}`}
-                style={{ '--pill-dot': t.color }}
-                onClick={() => setTeamFilter(teamFilter === t.code ? null : t.code)}
-              >
-                <span className="sb-pill-dot" />
-                {t.label}
-              </button>
-            ))}
+              className="sb-jobs-filter-toggle"
+              onClick={() => setFilterPanelOpen(o => !o)}
+              aria-expanded={filterPanelOpen}
+            >
+              Filter {filterPanelOpen ? '▴' : '▾'}
+            </button>
           </div>
 
-          <div className="sb-pill-row">
-            <button
-              type="button"
-              className={`sb-pill ${statusFilter === null ? 'on' : ''}`}
-              onClick={() => setStatusFilter(null)}
-            >Any status</button>
-            <span className="sb-pill-divider" />
-            {JOB_OVERALL_STATUSES.filter(s => s.code !== 'closed').map(s => (
+          {filterPanelOpen && (
+            <div className="sb-jobs-filter-panel">
+              <div className="sb-jobs-filter-row">
+                <span className="sb-jobs-filter-label">Team</span>
+                {JOB_TEAMS.map(t => (
+                  <button
+                    key={t.code}
+                    type="button"
+                    className={`sb-pill ${teamFilter === t.code ? 'on' : ''}`}
+                    onClick={() => setTeamFilter(teamFilter === t.code ? null : t.code)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <div className="sb-jobs-filter-row">
+                <span className="sb-jobs-filter-label">Status</span>
+                {JOB_OVERALL_STATUSES.filter(s => s.code !== 'closed').map(s => (
+                  <button
+                    key={s.code}
+                    type="button"
+                    className={`sb-pill ${statusFilter === s.code ? 'on' : ''}`}
+                    onClick={() => setStatusFilter(statusFilter === s.code ? null : s.code)}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Active filter summary — visible when filters are set AND the
+              full panel is closed. One quiet line. */}
+          {!filterPanelOpen && (teamFilter || statusFilter) && (
+            <div className="sb-jobs-filter-summary">
+              <span className="sb-jobs-filter-summary-label">Filtering:</span>
+              {teamFilter && (
+                <span className="sb-jobs-filter-summary-tag">
+                  {JOB_TEAMS.find(t => t.code === teamFilter)?.label || teamFilter}
+                </span>
+              )}
+              {statusFilter && (
+                <span className="sb-jobs-filter-summary-tag">
+                  {JOB_OVERALL_STATUSES.find(s => s.code === statusFilter)?.label || statusFilter}
+                </span>
+              )}
               <button
-                key={s.code}
                 type="button"
-                className={`sb-pill ${statusFilter === s.code ? 'on' : ''}`}
-                style={{ '--pill-dot': s.color }}
-                onClick={() => setStatusFilter(statusFilter === s.code ? null : s.code)}
+                className="sb-jobs-filter-summary-clear"
+                onClick={() => { setTeamFilter(null); setStatusFilter(null) }}
               >
-                <span className="sb-pill-dot" />
-                {s.label}
+                Clear
               </button>
-            ))}
-          </div>
+            </div>
+          )}
 
           {/* List */}
           {filteredJobs === null ? (
@@ -1876,6 +1908,85 @@ const localStyles = `
     .sb-job-hero-service {
       margin-bottom: 32px;
     }
+  }
+
+  /* ── JOBS FILTER (Phase B redesign 2026-05-21) ─────────────────────────────
+     The filter pill rows are hidden by default. A quiet "Filter" link in the
+     toolbar opens an inline panel; closing it returns the page to its calm
+     default. When filters are active and the panel is closed, a single quiet
+     summary line shows what's filtering — no chip chrome, no pill row. */
+
+  .sb-jobs-filter-toggle {
+    background: transparent;
+    border: none;
+    color: var(--sb-text-muted);
+    font: inherit;
+    font-size: 14px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: color 0.15s;
+    white-space: nowrap;
+  }
+  .sb-jobs-filter-toggle:hover {
+    color: var(--sb-text);
+  }
+  .sb-jobs-filter-toggle[aria-expanded="true"] {
+    color: var(--sb-text);
+  }
+
+  .sb-jobs-filter-panel {
+    margin-bottom: 16px;
+    padding: 12px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sb-jobs-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .sb-jobs-filter-label {
+    font-size: 13px;
+    color: var(--sb-text-muted);
+    min-width: 56px;
+  }
+
+  /* Active-filter summary — one quiet line, replaces pill chrome at rest. */
+  .sb-jobs-filter-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: var(--sb-text-muted);
+  }
+  .sb-jobs-filter-summary-label {
+    color: var(--sb-text-muted);
+  }
+  .sb-jobs-filter-summary-tag {
+    color: var(--sb-text);
+  }
+  .sb-jobs-filter-summary-tag + .sb-jobs-filter-summary-tag::before {
+    content: '·';
+    color: var(--sb-text-muted);
+    margin: 0 6px 0 0;
+  }
+  .sb-jobs-filter-summary-clear {
+    background: transparent;
+    border: none;
+    color: var(--sb-accent);
+    font: inherit;
+    font-size: 13px;
+    padding: 0;
+    cursor: pointer;
+    margin-left: 6px;
+  }
+  .sb-jobs-filter-summary-clear:hover {
+    color: var(--sb-accent-hover);
+    text-decoration: underline;
   }
 
   /* ── JOBS LIST — narrative list rows (Phase A redesign 2026-05-21) ─────────
