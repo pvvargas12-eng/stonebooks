@@ -21,14 +21,15 @@ import {
   getJobs, getJob, getJobEvents,
   createJobFromOrder,
   updateMilestone, updateMilestoneWithOverride,
-  setJobOverallStatus, setNextAction, addJobNote,
+  setJobOverallStatus, addJobNote,
   inferWaitingStatusFromMilestone,
   JOB_OVERALL_STATUSES, JOB_MILESTONE_STATUSES, JOB_TEAMS,
   jobStatusInfo, milestoneStatusInfo, teamInfo,
   summarizeMilestonesByGroup, suggestNextActionableMilestone, daysSinceUpdate,
   isMilestoneOverdue, daysPastDue, hasUnsatisfiedRequires,
   customerName, fmtDate, fmtRelative, fmtUSD,
-  rowGrandTotal, rowTotalPaid,
+  rowGrandTotal, rowTotalPaid, rowBalanceDue,
+  getNextRequiredAction,
   SOLD_STATUSES,
 } from './lib/stonebooksData'
 
@@ -585,7 +586,7 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   const byGroup = useMemoGroupMilestones(job?.milestones || [])
 
   if (!job) return (
-    <div className="sb-page sb-page-wide">
+    <div className="sb-page">
       <BackBar onBack={onBack} />
       <div className="sb-empty">Loading job…</div>
     </div>
@@ -595,14 +596,13 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   const order = job.order
   const customer = job.customer
   const cemetery = job.cemetery
-  const days = daysSinceUpdate(job)
-  const suggested = suggestNextActionableMilestone(job.milestones || [])
 
   const orderedGroups = GROUP_ORDER.filter(g => byGroup.has(g))
 
   const total = order ? rowGrandTotal(order) : 0
   const paid = order ? rowTotalPaid(order) : 0
-  const balance = total - paid
+  const balance = order ? rowBalanceDue(order) : 0
+  const nra = getNextRequiredAction(job)
 
   // Waiting-hint logic — consult the heuristic when a milestone transitions
   // to in_progress, gated on:
@@ -652,76 +652,23 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   }
 
   return (
-    <div className="sb-page sb-page-wide">
+    <div className="sb-page">
       <BackBar onBack={onBack} />
 
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">
-          Job · {order?.order_number || job.id.slice(0, 8)}
-        </div>
-        <h1 className="sb-page-title" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          {order?.primary_lastname || customerName(customer)}
-          <span className="sb-status-pill" style={{ '--pill-color': statusInfo.color }}>
-            {statusInfo.label}
-          </span>
-        </h1>
-        <div className="sb-cust-detail-meta">
-          {(order?.service_types || []).length > 0 && (
-            <div>
-              <div className="sb-meta-label">Service</div>
-              <div>{(order.service_types || []).join(', ')}</div>
-            </div>
-          )}
-          {cemetery && (
-            <div>
-              <div className="sb-meta-label">Cemetery</div>
-              <div>{cemetery.name || '—'}</div>
-            </div>
-          )}
-          {order?.target_completion_date && (
-            <div>
-              <div className="sb-meta-label">Target date</div>
-              <div>
-                {fmtDate(order.target_completion_date)}
-                {order.target_completion_end_date && ` – ${fmtDate(order.target_completion_end_date)}`}
-              </div>
-            </div>
-          )}
-          <div>
-            <div className="sb-meta-label">Last update</div>
-            <div>{days != null ? `${days}d ago` : '—'}</div>
-          </div>
-          <div>
-            <div className="sb-meta-label">Job type</div>
-            <div className="sb-mono" style={{ fontSize: 12 }}>{job.job_type}</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Quick jump to the order in Sales Mode */}
-      <div className="sb-cust-detail-actions" style={{ flexDirection: 'row', marginBottom: 16 }}>
-        {order && (
-          <button type="button" className="sb-btn-secondary" onClick={() => onOpenOrder?.(order.id)}>
-            Open order in Sales Mode
-          </button>
-        )}
-        {customer && (
-          <button type="button" className="sb-btn-secondary" onClick={() => onOpenCustomer?.(customer.id)}>
-            View customer
-          </button>
-        )}
-      </div>
-
-      {/* Summary cards */}
-      <div className="sb-metric-grid" style={{ marginBottom: 24 }}>
-        <MetricMini label="Next action" value={job.next_action || suggested?.label || '—'} />
-        <MetricMini label="Balance" value={balance > 0 ? fmtUSD(balance) : 'Paid'} accent={balance > 0 ? 'amber' : 'green'} />
-        <MetricMini label="Milestones done" value={`${countDone(job.milestones)} / ${countEffective(job.milestones)}`} />
-        <MetricMini label="Events logged" value={events ? events.length : '…'} />
-      </div>
-
-      {/* Job-level controls — overall status, next action, free-form note */}
-      <JobControls job={job} suggested={suggested} onRefresh={loadJob} />
+      <JobDetailHero
+        job={job}
+        order={order}
+        customer={customer}
+        cemetery={cemetery}
+        statusInfo={statusInfo}
+        nra={nra}
+        total={total}
+        paid={paid}
+        balance={balance}
+        onOpenOrder={onOpenOrder}
+        onOpenCustomer={onOpenCustomer}
+        onRefresh={loadJob}
+      />
 
       {/* Waiting-state transition hint — soft suggestion only, never automation */}
       {waitingHint && (
@@ -785,24 +732,370 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
 
 function BackBar({ onBack }) {
   return (
-    <button type="button" className="sb-link" onClick={onBack} style={{ marginBottom: 12 }}>
-      ← Back to jobs
+    <button
+      type="button"
+      onClick={onBack}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        color: 'var(--sb-text-muted)',
+        font: 'inherit',
+        fontSize: 13,
+        cursor: 'pointer',
+        padding: '4px 0',
+        marginBottom: 32,
+      }}
+    >
+      ← Back
     </button>
   )
 }
 
-function MetricMini({ label, value, accent }) {
-  const cls = accent === 'amber' ? 'sb-metric sb-metric-amber'
-            : accent === 'green' ? 'sb-metric sb-metric-green'
-            : accent === 'red'   ? 'sb-metric sb-metric-red'
-            : 'sb-metric'
+// =============================================================================
+// JOB DETAIL — HERO ZONE
+// =============================================================================
+// The hero is the upper portion of JobDetail. It carries:
+//   • who this is for (customer surname, the deceased's name + dates)
+//   • what it is (service descriptor + cemetery)
+//   • what it needs (NRA sentence — the operational center of gravity)
+//   • the financial fact (one-line balance summary)
+//   • a small status indicator
+//   • a quiet right-aligned meta strip with quick links and a Job Actions
+//     disclosure (status changer, free-form note)
+//
+// Composed for continuity — no bordered cards, single column reading width,
+// generous vertical rhythm. The eye flows top-to-bottom through restrained
+// typography. Reference posture: Linear issue page, Notion document.
+
+function JobDetailHero({
+  job, order, customer, cemetery, statusInfo, nra,
+  total, paid, balance,
+  onOpenOrder, onOpenCustomer, onRefresh,
+}) {
+  const customerLabel = order?.primary_lastname
+    || customerName(customer)
+    || '—'
+  const orderNum = order?.order_number || job.id.slice(0, 8)
+  const salesRep = order?.sales_rep || null
+
+  // Deceased — primary entry from order.deceased[]. May be empty for legacy
+  // orders or for non-stone job types where deceased wasn't captured.
+  const deceasedArr = Array.isArray(order?.deceased) ? order.deceased : []
+  const primaryDeceased = deceasedArr.find(d => d && !d.isReserved) || deceasedArr[0] || null
+  const deceasedDisplay = primaryDeceased ? formatDeceasedForHero(primaryDeceased) : null
+  const otherDeceasedCount = deceasedArr.filter(d => d && d !== primaryDeceased && !d.isReserved).length
+
+  // Service descriptor — "New stone · Hillside Cemetery"
+  // (no labels — the words themselves are the data)
+  const serviceParts = []
+  const serviceTypes = order?.service_types || []
+  if (serviceTypes.length > 0) {
+    serviceParts.push(formatServiceTypes(serviceTypes))
+  }
+  if (cemetery?.name) serviceParts.push(cemetery.name)
+
+  // NRA sentence — the operational center of gravity
+  const nraText = job.next_action || nra?.label || null
+  const nraIsManual = !!job.next_action  // manual override wins
+  const nraPriority = nra?.priority || 'soft'
+
   return (
-    <div className={cls}>
-      <div className="sb-metric-label">{label}</div>
-      <div className="sb-metric-value" style={{ fontSize: 16, fontFamily: 'var(--sb-font-sans)' }}>{value}</div>
+    <div className="sb-job-hero">
+      <div className="sb-job-hero-content">
+        <div className="sb-page-eyebrow" style={{ marginBottom: 24 }}>
+          Job · {orderNum}
+        </div>
+
+        <h1 className="sb-job-hero-name">{customerLabel}</h1>
+
+        {deceasedDisplay && (
+          <div className="sb-job-hero-deceased">
+            {deceasedDisplay}
+            {otherDeceasedCount > 0 && (
+              <span className="sb-job-hero-deceased-other"> + {otherDeceasedCount} other</span>
+            )}
+          </div>
+        )}
+
+        {serviceParts.length > 0 && (
+          <div className="sb-job-hero-service">
+            {serviceParts.join('  ·  ')}
+          </div>
+        )}
+
+        {nraText && (
+          <div
+            className={
+              'sb-job-hero-nra' +
+              (nraPriority === 'urgent' ? ' sb-job-hero-nra-urgent' : '') +
+              (nraIsManual ? ' sb-job-hero-nra-manual' : '')
+            }
+          >
+            {nraText}
+          </div>
+        )}
+
+        <div className="sb-job-hero-fact-row">
+          <span
+            className="sb-status-pill"
+            style={{ '--pill-color': statusInfo.color }}
+          >
+            {statusInfo.label}
+          </span>
+
+          {total > 0 && (
+            <span className="sb-job-hero-balance">
+              {balance <= 0
+                ? <>Paid in full · <span className="sb-job-hero-balance-num">{fmtUSD(total)}</span></>
+                : <>
+                    <span className="sb-job-hero-balance-num">{fmtUSD(total)}</span>
+                    <span className="sb-job-hero-balance-sep">grand</span>
+                    <span className="sb-job-hero-balance-num">{fmtUSD(paid)}</span>
+                    <span className="sb-job-hero-balance-sep">paid</span>
+                    <span
+                      className="sb-job-hero-balance-num"
+                      style={{ color: 'var(--sb-text)' }}
+                    >
+                      {fmtUSD(balance)}
+                    </span>
+                    <span className="sb-job-hero-balance-sep">balance</span>
+                  </>
+              }
+            </span>
+          )}
+        </div>
+      </div>
+
+      <JobDetailHeroMeta
+        job={job}
+        order={order}
+        customer={customer}
+        salesRep={salesRep}
+        onOpenOrder={onOpenOrder}
+        onOpenCustomer={onOpenCustomer}
+        onRefresh={onRefresh}
+      />
     </div>
   )
 }
+
+// Formats a deceased person for the hero line.
+// "Margaret Eleanor Vargas · 1935–2025"
+// Pre-need (no death date): "Margaret Vargas · b. 1935"
+// All-blank: "Reserved" or skipped at caller.
+function formatDeceasedForHero(d) {
+  const first = (d.firstName || '').trim()
+  const middle = (d.middleName || '').trim()
+  const last = (d.lastName || '').trim()
+  const nameParts = [first, middle, last].filter(Boolean)
+  const name = nameParts.join(' ') || 'Reserved'
+
+  const birthY = (d.dateOfBirth || '').slice(0, 4)
+  const deathY = (d.dateOfDeath || '').slice(0, 4)
+  let dates = null
+  if (birthY && deathY) dates = `${birthY}–${deathY}`
+  else if (birthY)      dates = `b. ${birthY}`
+  else if (deathY)      dates = `d. ${deathY}`
+
+  return dates ? <>{name}<span className="sb-job-hero-dates"> · {dates}</span></> : name
+}
+
+function formatServiceTypes(arr) {
+  const human = {
+    NEW_STONE: 'New stone',
+    INSCRIPTION: 'Inscription',
+    BRONZE: 'Bronze memorial',
+    ACID_WASH: 'Acid wash',
+    REPAIR: 'Repair',
+    CIVIC_MEMORIAL: 'Civic memorial',
+    MAUSOLEUM: 'Mausoleum',
+    ADD_PHOTO: 'Add photo',
+    OTHER: 'Other',
+  }
+  return arr.map(s => human[s] || s).join(' + ')
+}
+
+// =============================================================================
+// JOB DETAIL — HERO META STRIP
+// =============================================================================
+// Right-aligned strip containing the sales rep, quick links to related
+// surfaces, and a Job Actions disclosure (status changer + add-note).
+// Quiet typography. No card chrome. Discoverable but not loud.
+
+function JobDetailHeroMeta({
+  job, order, customer, salesRep,
+  onOpenOrder, onOpenCustomer, onRefresh,
+}) {
+  const [actionsOpen, setActionsOpen] = useState(false)
+
+  return (
+    <div className="sb-job-hero-meta">
+      {salesRep && (
+        <div className="sb-job-hero-meta-line">
+          Sales · {salesRep}
+        </div>
+      )}
+      {order && (
+        <button
+          type="button"
+          className="sb-job-hero-meta-link"
+          onClick={() => onOpenOrder?.(order.id)}
+        >
+          Open order →
+        </button>
+      )}
+      {customer && (
+        <button
+          type="button"
+          className="sb-job-hero-meta-link"
+          onClick={() => onOpenCustomer?.(customer.id)}
+        >
+          View customer →
+        </button>
+      )}
+
+      <button
+        type="button"
+        className="sb-job-hero-meta-link"
+        onClick={() => setActionsOpen(o => !o)}
+      >
+        Job actions {actionsOpen ? '▴' : '▾'}
+      </button>
+
+      {actionsOpen && (
+        <JobActionsDisclosure
+          job={job}
+          onRefresh={onRefresh}
+          onClose={() => setActionsOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// =============================================================================
+// JOB DETAIL — JOB ACTIONS DISCLOSURE
+// =============================================================================
+// Inline disclosure inside the hero meta strip. Houses the status changer
+// (formerly the JobControls overall_status panel) and the add-note affordance
+// (formerly the JobControls free-form note panel). Quiet, contained, and
+// dismissible — staff opens it when they need to change status or log a note;
+// most of the time it stays collapsed.
+
+function JobActionsDisclosure({ job, onRefresh, onClose }) {
+  const [statusDraft, setStatusDraft] = useState(job.overall_status || 'active')
+  const [statusNote, setStatusNote] = useState('')
+  const [busyStatus, setBusyStatus] = useState(false)
+  const [statusErr, setStatusErr] = useState(null)
+
+  const [noteDraft, setNoteDraft] = useState('')
+  const [busyNote, setBusyNote] = useState(false)
+  const [noteErr, setNoteErr] = useState(null)
+
+  const saveStatus = async () => {
+    if (statusDraft === job.overall_status && !statusNote.trim()) {
+      onClose?.()
+      return
+    }
+    setBusyStatus(true); setStatusErr(null)
+    const res = await setJobOverallStatus(job.id, statusDraft, statusNote.trim() || null)
+    setBusyStatus(false)
+    if (res.ok) {
+      setStatusNote('')
+      onRefresh?.()
+      onClose?.()
+    } else {
+      setStatusErr(res.error || 'Update failed')
+    }
+  }
+
+  const saveNote = async () => {
+    const text = noteDraft.trim()
+    if (!text) return
+    setBusyNote(true); setNoteErr(null)
+    const res = await addJobNote(job.id, text)
+    setBusyNote(false)
+    if (res.ok) {
+      setNoteDraft('')
+      onRefresh?.()
+      onClose?.()
+    } else {
+      setNoteErr(res.error || 'Failed to save note')
+    }
+  }
+
+  return (
+    <div className="sb-job-hero-actions">
+      <div className="sb-job-hero-action-section">
+        <div className="sb-job-hero-action-label">Status</div>
+        <select
+          value={statusDraft}
+          onChange={e => setStatusDraft(e.target.value)}
+          className="sb-status-select"
+          disabled={busyStatus}
+          style={{ '--pill-color': jobStatusInfo(statusDraft).color, minWidth: 160 }}
+        >
+          {JOB_OVERALL_STATUSES.map(s => (
+            <option key={s.code} value={s.code}>{s.label}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          className="sb-text-input"
+          value={statusNote}
+          onChange={e => setStatusNote(e.target.value)}
+          placeholder="Optional note for this change"
+          disabled={busyStatus}
+          style={{ marginTop: 8, width: '100%' }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            type="button"
+            className="sb-btn-primary"
+            style={{ marginTop: 0 }}
+            onClick={saveStatus}
+            disabled={busyStatus}
+          >Save status</button>
+          <button
+            type="button"
+            className="sb-btn-secondary"
+            onClick={onClose}
+            disabled={busyStatus}
+          >Cancel</button>
+        </div>
+        {statusErr && <div style={{ fontSize: 12, color: 'var(--sb-red)', marginTop: 6 }}>{statusErr}</div>}
+      </div>
+
+      <div className="sb-job-hero-action-section">
+        <div className="sb-job-hero-action-label">Add note</div>
+        <textarea
+          className="sb-textarea"
+          value={noteDraft}
+          onChange={e => setNoteDraft(e.target.value)}
+          placeholder="Free-form note (logged as a job event)"
+          rows={3}
+          disabled={busyNote}
+          style={{ width: '100%' }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            type="button"
+            className="sb-btn-primary"
+            style={{ marginTop: 0 }}
+            onClick={saveNote}
+            disabled={busyNote || !noteDraft.trim()}
+          >Log note</button>
+        </div>
+        {noteErr && <div style={{ fontSize: 12, color: 'var(--sb-red)', marginTop: 6 }}>{noteErr}</div>}
+      </div>
+    </div>
+  )
+}
+
+// MetricMini removed 2026-05-21 in the JobDetail Phase 1 redesign — the
+// metric grid (Next action / Balance / Milestones done / Events logged)
+// no longer appears on JobDetail. The hero conveys the same operational
+// state through sentence form (NRA + balance line). No other consumers.
 
 // ── Stabilization (post-J1-P1): overdue derivation + actionable-first sort ───
 // The pure helpers (isMilestoneOverdue, daysPastDue, hasUnsatisfiedRequires,
@@ -856,12 +1149,9 @@ function useMemoGroupMilestones(milestones) {
   }, [milestones])
 }
 
-function countDone(milestones) {
-  return (milestones || []).filter(m => m.status === 'done').length
-}
-function countEffective(milestones) {
-  return (milestones || []).filter(m => m.status !== 'not_needed').length
-}
+// countDone / countEffective removed 2026-05-21 alongside MetricMini —
+// these were only used to render the "Milestones done" metric. Milestone
+// progress is now communicated through the timeline itself (Phase 2).
 
 // =============================================================================
 // MILESTONE GROUP CARD
@@ -1220,151 +1510,19 @@ function formatVal(v) {
 }
 
 // =============================================================================
-// JOB-LEVEL CONTROLS
+// JOB-LEVEL CONTROLS — DELETED 2026-05-21
 // =============================================================================
-// Sits above the milestone list. Three independent panels — overall status
-// (with optional note), next action (text + due date), free-form job note.
-// All writes go through the data layer and trigger a refetch on success.
-
-function JobControls({ job, suggested, onRefresh }) {
-  const [statusDraft, setStatusDraft] = useState(job.overall_status || 'active')
-  const [statusNote, setStatusNote] = useState('')
-  const [busyStatus, setBusyStatus] = useState(false)
-  const [statusErr, setStatusErr] = useState(null)
-
-  // Pre-fill next-action text with the manual value if set, else the
-  // suggested-next-actionable milestone label.
-  const [actionText, setActionText] = useState(job.next_action || suggested?.label || '')
-  const [actionDue, setActionDue] = useState(job.next_action_due || '')
-  const [busyAction, setBusyAction] = useState(false)
-  const [actionErr, setActionErr] = useState(null)
-
-  const [noteDraft, setNoteDraft] = useState('')
-  const [busyNote, setBusyNote] = useState(false)
-  const [noteErr, setNoteErr] = useState(null)
-
-  const saveStatus = async () => {
-    if (statusDraft === job.overall_status && !statusNote.trim()) return
-    setBusyStatus(true); setStatusErr(null)
-    const res = await setJobOverallStatus(job.id, statusDraft, statusNote.trim() || null)
-    setBusyStatus(false)
-    if (res.ok) { setStatusNote(''); onRefresh?.() }
-    else setStatusErr(res.error || 'Update failed')
-  }
-
-  const saveAction = async () => {
-    setBusyAction(true); setActionErr(null)
-    const res = await setNextAction(job.id, actionText.trim() || null, actionDue || null)
-    setBusyAction(false)
-    if (res.ok) onRefresh?.()
-    else setActionErr(res.error || 'Update failed')
-  }
-
-  const saveNote = async () => {
-    const text = noteDraft.trim()
-    if (!text) return
-    setBusyNote(true); setNoteErr(null)
-    const res = await addJobNote(job.id, text)
-    setBusyNote(false)
-    if (res.ok) { setNoteDraft(''); onRefresh?.() }
-    else setNoteErr(res.error || 'Update failed')
-  }
-
-  return (
-    <div className="sb-card sb-job-controls" style={{ marginBottom: 24 }}>
-      <div className="sb-section-label" style={{ margin: 0, marginBottom: 8 }}>Job controls</div>
-
-      <div className="sb-job-controls-grid">
-        {/* Overall status */}
-        <div>
-          <div className="sb-meta-label">Overall status</div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-            <select
-              value={statusDraft}
-              onChange={e => setStatusDraft(e.target.value)}
-              className="sb-status-select"
-              disabled={busyStatus}
-              style={{ '--pill-color': jobStatusInfo(statusDraft).color, minWidth: 180 }}
-            >
-              {JOB_OVERALL_STATUSES.map(s => (
-                <option key={s.code} value={s.code}>{s.label}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="sb-btn-primary"
-              onClick={saveStatus}
-              disabled={busyStatus || (statusDraft === job.overall_status && !statusNote.trim())}
-            >Save</button>
-          </div>
-          <input
-            type="text"
-            className="sb-text-input"
-            value={statusNote}
-            onChange={e => setStatusNote(e.target.value)}
-            placeholder="Optional note for this status change"
-            disabled={busyStatus}
-            style={{ marginTop: 6, width: '100%' }}
-          />
-          {statusErr && <div style={{ fontSize: 11, color: 'var(--sb-red)', marginTop: 4 }}>{statusErr}</div>}
-        </div>
-
-        {/* Next action */}
-        <div>
-          <div className="sb-meta-label">Next action</div>
-          <input
-            type="text"
-            className="sb-text-input"
-            value={actionText}
-            onChange={e => setActionText(e.target.value)}
-            placeholder={suggested?.label ? `Suggested: ${suggested.label}` : 'Describe the next action'}
-            disabled={busyAction}
-            style={{ marginTop: 4, width: '100%' }}
-          />
-          <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
-            <input
-              type="date"
-              className="sb-date-input"
-              value={actionDue}
-              onChange={e => setActionDue(e.target.value)}
-              disabled={busyAction}
-            />
-            <button
-              type="button"
-              className="sb-btn-primary"
-              onClick={saveAction}
-              disabled={busyAction}
-            >Save</button>
-          </div>
-          {actionErr && <div style={{ fontSize: 11, color: 'var(--sb-red)', marginTop: 4 }}>{actionErr}</div>}
-        </div>
-
-        {/* Free-form note */}
-        <div>
-          <div className="sb-meta-label">Add a note</div>
-          <textarea
-            className="sb-textarea"
-            value={noteDraft}
-            onChange={e => setNoteDraft(e.target.value)}
-            placeholder="Free-form note (logged as a job event)"
-            rows={2}
-            disabled={busyNote}
-            style={{ marginTop: 4, width: '100%' }}
-          />
-          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-            <button
-              type="button"
-              className="sb-btn-primary"
-              onClick={saveNote}
-              disabled={busyNote || !noteDraft.trim()}
-            >Log note</button>
-          </div>
-          {noteErr && <div style={{ fontSize: 11, color: 'var(--sb-red)', marginTop: 4 }}>{noteErr}</div>}
-        </div>
-      </div>
-    </div>
-  )
-}
+// JobControls (the 3-up status / next-action / note panel) was removed in
+// the JobDetail Phase 1 redesign. Its operational functions live elsewhere now:
+//   • overall_status changes → JobActionsDisclosure inside the hero meta strip
+//   • next_action manual override → derived NRA in the hero (manual edit UI
+//     to land in a later phase if operationally needed; deferred)
+//   • free-form note → JobActionsDisclosure "Add note" section (Phase 1).
+//                       In Phase 3, this becomes the "+ Add note" affordance
+//                       at the bottom of the activity stream.
+//
+// All existing writes (setJobOverallStatus, setNextAction, addJobNote) are
+// preserved; only the UI surface changed.
 
 // =============================================================================
 // WAITING-STATE TRANSITION HINT BANNER
@@ -1515,6 +1673,242 @@ function OverrideModal({ jobId, request, onClose, onConfirmed }) {
 // =============================================================================
 
 const localStyles = `
+  /* ── JOB DETAIL — HERO ZONE ──────────────────────────────────────────── */
+  /* JobDetail Phase 1 redesign (2026-05-21). Replaces the previous
+     page-head + metric grid + JobControls panel block. Crafted-document
+     posture: single column, generous vertical rhythm, no card chrome,
+     restrained typography. */
+
+  /* JobDetail hero — refinement pass 2026-05-21.
+     Spacing rhythm follows a deliberate geometric climb then settle:
+       eyebrow:24 → surname:16 → deceased:32 → service:48 → NRA:40 → fact row:64
+     The largest gap (48) lands above the NRA so the eye registers it as a
+     distinct moment, not a paragraph. */
+
+  .sb-job-hero {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 56px;
+    margin-bottom: 64px;
+    align-items: start;
+  }
+  /* Constrain the content column to an intimate reading measure (~680px).
+     The hero is composed, not panoramic. Meta strip floats outside this width. */
+  .sb-job-hero-content {
+    min-width: 0;
+    max-width: 680px;
+  }
+
+  /* Customer surname — declarative, near-black. Slightly smaller than the
+     first pass (32 vs 36) for operational density; letter-spacing relaxed
+     by a hair so the type doesn't read as compressed. Primary read. */
+  .sb-job-hero-name {
+    font-size: 32px;
+    font-weight: 500;
+    letter-spacing: -0.018em;
+    color: var(--sb-text);
+    margin: 0 0 16px;
+    line-height: 1.1;
+  }
+
+  /* Deceased's name + dates — the most human element. Generous line-height
+     so the name + dates read as a quiet unit, not crowded. Full contrast
+     color (not muted) — the deceased deserves typographic gravity. */
+  .sb-job-hero-deceased {
+    font-size: 22px;
+    font-weight: 400;
+    letter-spacing: -0.003em;
+    color: var(--sb-text);
+    margin-bottom: 32px;
+    line-height: 1.45;
+  }
+  .sb-job-hero-dates {
+    color: var(--sb-text-muted);
+    font-family: var(--sb-font-mono);
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+  .sb-job-hero-deceased-other {
+    color: var(--sb-text-muted);
+    font-size: 15px;
+    margin-left: 8px;
+  }
+
+  /* Service descriptor — one quiet line. Service type + cemetery, middle-
+     dot separated by the JSX. The 48px below sets up the NRA's moment. */
+  .sb-job-hero-service {
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--sb-text-secondary);
+    margin-bottom: 48px;
+    line-height: 1.5;
+  }
+
+  /* NRA sentence — the operational center of gravity. Weight 500 (slight
+     emphasis lifts it from the surrounding paragraph rhythm). Full-contrast
+     color so the eye lands. Max-width 52ch keeps it composed. Bronze accent
+     on urgent priority. */
+  .sb-job-hero-nra {
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--sb-text);
+    line-height: 1.45;
+    letter-spacing: -0.005em;
+    margin-bottom: 40px;
+    max-width: 52ch;
+  }
+  .sb-job-hero-nra-urgent {
+    color: var(--sb-accent);
+  }
+  /* Manual override: same visual prominence as derived NRA. Removed the
+     italic signal — manual vs derived doesn't need typographic distinction;
+     the NRA is the NRA. */
+  .sb-job-hero-nra-manual {}
+
+  /* Fact row — status pill on left, balance summary aligned to the right
+     edge of the reading column. Aligned baseline so they read as one line. */
+  .sb-job-hero-fact-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .sb-job-hero-balance {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px 12px;
+    flex-wrap: wrap;
+    font-size: 14px;
+    color: var(--sb-text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  /* Each (number, label) pair sits tight; the gap between pairs is wider.
+     Achieved via flex gap on the parent + 4px column gap, 12px row gap. */
+  .sb-job-hero-balance-num {
+    font-family: var(--sb-font-mono);
+    color: var(--sb-text);
+    font-size: 15px;
+    margin-right: 4px;
+  }
+  .sb-job-hero-balance-sep {
+    color: var(--sb-text-muted);
+    font-size: 12px;
+    margin-right: 8px;
+  }
+
+  /* Meta strip — right-aligned, quiet. Generous gap so each line reads as
+     its own element. No borders, no chrome. */
+  .sb-job-hero-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+    min-width: 180px;
+    text-align: right;
+    font-size: 13px;
+  }
+  .sb-job-hero-meta-line {
+    color: var(--sb-text-muted);
+  }
+  .sb-job-hero-meta-link {
+    background: transparent;
+    border: none;
+    padding: 4px 0;
+    color: var(--sb-text-secondary);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.15s;
+  }
+  .sb-job-hero-meta-link:hover {
+    color: var(--sb-text);
+  }
+
+  /* Job actions disclosure — quieter, less form-chrome. Lighter separator
+     above (background-tinted instead of full border). Inputs lose visible
+     borders and gain a subtle background; buttons slimmer. */
+  .sb-job-hero-actions {
+    margin-top: 16px;
+    text-align: left;
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    padding: 20px 0 8px;
+    border-top: 0.5px solid var(--sb-border);
+  }
+  .sb-job-hero-action-section {
+    display: flex;
+    flex-direction: column;
+  }
+  .sb-job-hero-action-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--sb-text-muted);
+    margin-bottom: 10px;
+    letter-spacing: 0.01em;
+  }
+  /* Quieter form controls inside the disclosure. */
+  .sb-job-hero-actions .sb-text-input,
+  .sb-job-hero-actions .sb-textarea {
+    background: var(--sb-surface-muted);
+    border: none;
+    border-radius: var(--sb-r-sm);
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+  .sb-job-hero-actions .sb-text-input:focus,
+  .sb-job-hero-actions .sb-textarea:focus {
+    background: var(--sb-surface);
+    outline: 0.5px solid var(--sb-border);
+  }
+  .sb-job-hero-actions .sb-status-select {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+  .sb-job-hero-actions .sb-btn-primary {
+    font-size: 13px;
+    padding: 8px 14px;
+  }
+  .sb-job-hero-actions .sb-btn-secondary {
+    font-size: 13px;
+    padding: 8px 12px;
+  }
+
+  /* Responsive — three tiers: tablet (under 900) collapses meta below
+     content; phone (under 600) tightens hero typography slightly so
+     wrapping stays elegant. */
+  @media (max-width: 900px) {
+    .sb-job-hero {
+      grid-template-columns: 1fr;
+      gap: 40px;
+    }
+    .sb-job-hero-meta {
+      align-items: flex-start;
+      text-align: left;
+    }
+    .sb-job-hero-actions {
+      width: 100%;
+      max-width: 360px;
+    }
+  }
+  @media (max-width: 600px) {
+    .sb-job-hero-name {
+      font-size: 28px;
+    }
+    .sb-job-hero-deceased {
+      font-size: 19px;
+    }
+    .sb-job-hero-nra {
+      font-size: 18px;
+    }
+    .sb-job-hero-service {
+      margin-bottom: 32px;
+    }
+  }
+
   .sb-jobs-table {
     background: var(--sb-surface);
     border: 0.5px solid var(--sb-border);
