@@ -1677,11 +1677,16 @@ export function getMilestoneSectionKey(milestone, allInJob) {
               || role === 'send_to_cemetery'
   if (isSend && status === 'in_progress') return 'awaiting_external'
 
-  // Receive milestones that are pending (not yet done) — still awaiting external
+  // Receive milestones that are pending (not yet done) — still awaiting external.
+  // Both not_started (after requires are satisfied) and in_progress count: an
+  // actively-pending receive is by definition waiting on the external party,
+  // not internal work. The locked not_started case is already caught above.
   const isReceive = role === 'receive_from_customer'
                  || role === 'receive_from_supplier'
                  || role === 'receive_from_cemetery'
-  if (isReceive && status === 'in_progress') return 'awaiting_external'
+  if (isReceive && (status === 'in_progress' || status === 'not_started')) {
+    return 'awaiting_external'
+  }
 
   // Everything else actionable defaults to internal work (internal_work,
   // scheduling, field_work, send_* not yet sent, etc.)
@@ -1770,6 +1775,95 @@ export function deriveLayoutsQueueRows(jobs) {
   rows.sort((a, b) => {
     const sa = LAYOUTS_SECTION_ORDER.indexOf(a.section)
     const sb = LAYOUTS_SECTION_ORDER.indexOf(b.section)
+    if (sa !== sb) return sa - sb
+    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
+    if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
+      return b.overdueDays - a.overdueDays
+    }
+    const aAge = a.agingDays ?? 0
+    const bAge = b.agingDays ?? 0
+    if (aAge !== bAge) return bAge - aAge
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    if (aN !== bN) return aN.localeCompare(bN)
+    const aO = a.order?.order_number || ''
+    const bO = b.order?.order_number || ''
+    return aO.localeCompare(bO)
+  })
+  return rows
+}
+
+const STONES_SECTION_ORDER = [
+  'to_order',
+  'ordered_awaiting_supplier',
+  'received_awaiting_production',
+  'blocked',
+]
+
+// Maps the universal operational state code to a Stones-queue section key.
+// Returns null if the milestone is not in the Stones queue.
+//
+// Group boundary: m.group === 'stone' is the entire scope. Downstream
+// production milestones (stencil_*, production_*, ready_to_install, etc.)
+// have group !== 'stone' and are structurally excluded — they belong to a
+// future Production queue. The 'received_awaiting_production' section uses
+// the universal received_unprocessed state to surface the handoff drift
+// without rendering the production milestones themselves.
+function _stonesSectionFor(milestone, allInJob) {
+  if (!milestone || milestone.group !== 'stone') return null
+  if (getMilestoneOperationalRole(milestone) === 'decision') return null
+  const state = getMilestoneSectionKey(milestone, allInJob)
+  if (state === 'complete' || state === 'skipped' || state == null) return null
+  if (state === 'blocked')              return 'blocked'
+  if (state === 'awaiting_internal')    return 'to_order'
+  if (state === 'awaiting_external')    return 'ordered_awaiting_supplier'
+  if (state === 'received_unprocessed') return 'received_awaiting_production'
+  // Unclassified — log in dev for smoke-test visibility, suppress in prod.
+  if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
+    console.warn(
+      `[Stones queue] Unclassified stone milestone fell through: ` +
+      `key=${milestone.milestone_key} status=${milestone.status} state=${state}`,
+    )
+  }
+  return null
+}
+
+export function deriveStonesQueueRows(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const milestones = job.milestones || []
+    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+    for (const m of milestones) {
+      if (m.group !== 'stone') continue
+      const section = _stonesSectionFor(m, milestones)
+      if (!section) continue
+      const overdue = isMilestoneOverdue(m)
+      rows.push({
+        section,
+        milestone: m,
+        job,
+        order: job.order || null,
+        customer: job.customer || null,
+        cemetery: job.cemetery || null,
+        team: m.team || null,
+        agingDays: daysSinceMs(m.updated_at),
+        updatedAt: m.updated_at || null,
+        overdue,
+        overdueDays: overdue ? daysPastDue(m) : 0,
+        dueDate: m.due_date || null,
+        blockerKeys: (m.requires || []).filter(k => {
+          const dep = byKey.get(k)
+          return dep && dep.status !== 'done' && dep.status !== 'not_needed'
+        }),
+        waitingStatus: (job.overall_status || '').startsWith('waiting_')
+          ? job.overall_status : null,
+      })
+    }
+  }
+  rows.sort((a, b) => {
+    const sa = STONES_SECTION_ORDER.indexOf(a.section)
+    const sb = STONES_SECTION_ORDER.indexOf(b.section)
     if (sa !== sb) return sa - sb
     if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
     if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {

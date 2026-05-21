@@ -16,6 +16,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   getJobs,
   deriveLayoutsQueueRows,
+  deriveStonesQueueRows,
   deriveWaitingOnCustomerQueueRows,
   teamInfo,
   jobStatusInfo,
@@ -30,6 +31,18 @@ const LAYOUTS_SECTIONS = [
   { code: 'awaiting_approval', label: 'Awaiting customer approval' },
   { code: 'ready_to_advance', label: 'Approved, ready to advance' },
   { code: 'blocked',          label: 'Blocked' },
+]
+
+// Static section metadata for the Stones queue. Section codes come from the
+// data layer (deriveStonesQueueRows assigns row.section); this map provides
+// the human label and order. The "Received / awaiting production" section
+// surfaces stone_received-done rows whose downstream production milestone
+// hasn't moved — handoff drift, not the production work itself.
+const STONES_SECTIONS = [
+  { code: 'to_order',                     label: 'To order' },
+  { code: 'ordered_awaiting_supplier',    label: 'Ordered, awaiting supplier' },
+  { code: 'received_awaiting_production', label: 'Received / awaiting production' },
+  { code: 'blocked',                      label: 'Blocked' },
 ]
 
 // =============================================================================
@@ -57,6 +70,10 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
     () => deriveLayoutsQueueRows(jobs || []),
     [jobs],
   )
+  const stonesRows = useMemo(
+    () => deriveStonesQueueRows(jobs || []),
+    [jobs],
+  )
   const waitingRows = useMemo(
     () => deriveWaitingOnCustomerQueueRows(jobs || []),
     [jobs],
@@ -64,6 +81,7 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
 
   const counts = {
     layouts: layoutsRows.length,
+    stones: stonesRows.length,
     waiting_on_customer: waitingRows.length,
   }
 
@@ -89,6 +107,10 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
         <LayoutsQueue rows={layoutsRows} onOpenJob={onOpenJob} />
       )}
 
+      {jobs !== null && !loadErr && activeQueue === 'stones' && (
+        <StonesQueue rows={stonesRows} onOpenJob={onOpenJob} />
+      )}
+
       {jobs !== null && !loadErr && activeQueue === 'waiting_on_customer' && (
         <WaitingOnCustomerQueue rows={waitingRows} onOpenJob={onOpenJob} />
       )}
@@ -103,6 +125,7 @@ export default function QueuesView({ activeQueue, onSelectQueue, onOpenJob }) {
 function QueuePicker({ active, counts, onSelect }) {
   const tabs = [
     { code: 'layouts',             label: 'Layouts' },
+    { code: 'stones',              label: 'Stones' },
     { code: 'waiting_on_customer', label: 'Waiting on customer' },
   ]
   return (
@@ -177,6 +200,86 @@ function LayoutsQueue({ rows, onOpenJob }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {LAYOUTS_SECTIONS.map(section => {
+        const sectionRows = bySection.get(section.code) || []
+        return (
+          <div key={section.code}>
+            <div
+              className="sb-section-label"
+              style={{ margin: 0, marginBottom: 6 }}
+            >
+              {section.label}
+              <span
+                style={{
+                  marginLeft: 8,
+                  fontFamily: 'var(--sb-font-mono)',
+                  fontSize: 11,
+                  color: 'var(--sb-text-muted)',
+                }}
+              >
+                ({sectionRows.length})
+              </span>
+            </div>
+            {sectionRows.length === 0 ? (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--sb-text-muted)',
+                  fontStyle: 'italic',
+                  padding: '6px 0',
+                }}
+              >
+                —
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                {sectionRows.map(row => (
+                  <MilestoneQueueRow
+                    key={`${row.job.id}::${row.milestone.milestone_key}`}
+                    row={row}
+                    onOpenJob={onOpenJob}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// =============================================================================
+// STONES QUEUE — per-milestone rows grouped by operational section
+// =============================================================================
+// Scope: stone-group milestones only (supplier ordering + receiving). Downstream
+// production work (stencil_*, production_*, ready_to_install, installed) lives
+// in a future Production queue — structurally excluded here because the data
+// layer's deriveStonesQueueRows filters strictly on m.group === 'stone'.
+
+function StonesQueue({ rows, onOpenJob }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="sb-empty">
+        No open stone work. Either every stone is received and production has
+        picked it up, or no jobs have reached the stone-order step yet.
+      </div>
+    )
+  }
+
+  const bySection = new Map(STONES_SECTIONS.map(s => [s.code, []]))
+  for (const row of rows) {
+    if (bySection.has(row.section)) bySection.get(row.section).push(row)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {STONES_SECTIONS.map(section => {
         const sectionRows = bySection.get(section.code) || []
         return (
           <div key={section.code}>
