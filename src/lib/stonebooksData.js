@@ -1715,6 +1715,219 @@ function _hasCrossGroupDownstreamNotStarted(m, allInJob) {
   return false
 }
 
+// ── Next Required Action (NRA) — per-job operational primitive ──────────────
+// Pure derived helper. Given a job (with joined order + milestones), returns
+// the single most-relevant next action as a structured NRAResult, or null if
+// the job is missing.
+//
+// Resolution priority (first match wins):
+//   1. closed                       — terminal, no action
+//   2. job_complete                 — paid + all done
+//   3. follow_up_external           — overall_status starts with waiting_on_
+//   4. collect_deposit              — balance unpaid + production-actionable
+//   5. collect_balance              — production_completed done + install pending
+//   6. resolve_decision             — open decision milestone ready
+//   7. advance_milestone (active)   — any in_progress milestone (latest updated)
+//   8. advance_milestone (queued)   — earliest ready not_started milestone
+//   9. resolve_blocker              — only blocked/locked remain; walk chain
+//  10. unknown                      — fallback (no milestones, or all not_needed)
+//
+// Composes existing classification helpers (getMilestoneOperationalRole,
+// getMilestoneWaitingOn, getMilestoneSectionKey, hasUnsatisfiedRequires,
+// isMilestoneOverdue, etc.) — does NOT introduce new classification logic.
+//
+// Three forward-compatibility hooks are populated when data exists, omitted
+// otherwise. These cost nothing now and give future systems a clean point of
+// consumption without breaking changes:
+//   • team                  — from source milestone's `team` field (ownership lens)
+//   • expectedDurationDays  — from MILESTONE_GROUP_DEFAULT_DAYS (time physics)
+//   • route                 — reserved for Today→queue navigation (set by callers
+//                              later; null here)
+//
+// NRA returns a SINGLE result per job. Operations needing multi-result lenses
+// (queues, Today aggregates) compose NRA across many jobs at their own layer.
+
+export function getNextRequiredAction(job) {
+  if (!job) return null
+
+  const milestones = job.milestones || []
+  const order = job.order || null
+  const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+
+  // Helper: build the standard result with forward-compat hooks populated.
+  const result = (kind, label, opts = {}) => {
+    const m = opts.milestone || null
+    return {
+      kind,
+      label,
+      priority: opts.priority || 'soft',
+      party:    opts.party    || null,
+      team:     m?.team       || opts.team       || null,
+      milestone: m,
+      blockers: opts.blockers || [],
+      agingDays:  opts.agingDays  ?? (m ? daysSinceMs(m.updated_at) : null),
+      overdueDays: opts.overdueDays ?? 0,
+      expectedDurationDays:
+        m?.group
+          ? (MILESTONE_GROUP_DEFAULT_DAYS[m.group] ?? MILESTONE_GROUP_DEFAULT_DAYS._default)
+          : null,
+      route: null,
+    }
+  }
+
+  // 1. Closed — terminal.
+  if (job.overall_status === 'closed') {
+    return result('closed', 'Closed — no action required', { priority: 'none' })
+  }
+
+  // 2. Job complete — paid in full + all non-skipped milestones done.
+  const balance = order ? rowBalanceDue(order) : 0
+  const activeMs = milestones.filter(m => m.status !== 'not_needed')
+  const allDone  = activeMs.length > 0 && activeMs.every(m => m.status === 'done')
+  if (allDone && balance <= 0) {
+    return result('job_complete', 'All work complete — close out', { priority: 'soft' })
+  }
+
+  // 3. Explicit waiting state on the job. Find the in_progress milestone whose
+  // operational waiting party matches. Falls back to any in_progress milestone
+  // if no perfect match, or to job-level aging if no milestone is in_progress.
+  if (job.overall_status?.startsWith('waiting_on_')) {
+    const party = job.overall_status.replace('waiting_on_', '')
+    const matching = milestones
+      .filter(m => m.status === 'in_progress' && getMilestoneWaitingOn(m) === party)
+      .sort((a, b) =>
+        new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
+      )[0]
+    const fallback = matching || milestones
+      .filter(m => m.status === 'in_progress')
+      .sort((a, b) =>
+        new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
+      )[0]
+    const aging = fallback ? daysSinceMs(fallback.updated_at) : daysSinceUpdate(job)
+    const priority = aging >= 14 ? 'urgent' : aging >= 7 ? 'normal' : 'soft'
+    return result(
+      'follow_up_external',
+      `Follow up with ${party}${fallback ? ` — ${fallback.label}` : ''}`,
+      { milestone: fallback, party, priority, agingDays: aging },
+    )
+  }
+
+  // 4. Collect deposit — balance unpaid AND any production-side milestone is
+  // actionable AND no payment received yet. Money blockers are operational.
+  const totalPaid = order ? rowTotalPaid(order) : 0
+  const productionActionable = milestones.some(m =>
+    (m.group === 'production' || m.group === 'stone') &&
+    (m.status === 'in_progress' ||
+      (m.status === 'not_started' && !hasUnsatisfiedRequires(m, byKey)))
+  )
+  if (balance > 0 && totalPaid <= 0 && productionActionable) {
+    return result('collect_deposit', 'Collect deposit before production', {
+      priority: 'urgent',
+    })
+  }
+
+  // 5. Collect balance — production_completed done AND ready_to_install
+  // not_started AND balance still outstanding.
+  const productionCompleted = byKey.get('production_completed')
+  const readyToInstall      = byKey.get('ready_to_install')
+  if (
+    balance > 0 &&
+    productionCompleted?.status === 'done' &&
+    readyToInstall?.status === 'not_started'
+  ) {
+    return result('collect_balance', 'Collect balance before install', {
+      priority: 'urgent',
+    })
+  }
+
+  // 6. Open decision — is_decision milestone that's ready but not started.
+  const openDecision = milestones.find(m =>
+    m.is_decision &&
+    m.status === 'not_started' &&
+    !hasUnsatisfiedRequires(m, byKey)
+  )
+  if (openDecision) {
+    return result('resolve_decision', `Decide: ${openDecision.label}`, {
+      milestone: openDecision,
+      priority: 'normal',
+    })
+  }
+
+  // 7. Any in_progress milestone — pick most-recently-updated (the one staff
+  // most recently touched is most likely what's active).
+  const inProgress = milestones
+    .filter(m => m.status === 'in_progress')
+    .sort((a, b) =>
+      new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
+    )[0]
+  if (inProgress) {
+    const overdue = isMilestoneOverdue(inProgress)
+    const idleDays = daysSinceMs(inProgress.updated_at) || 0
+    const priority = overdue ? 'urgent' : idleDays >= 5 ? 'normal' : 'soft'
+    const party = getMilestoneWaitingOn(inProgress)
+    return result('advance_milestone', inProgress.label, {
+      milestone: inProgress,
+      party: party === 'internal' ? null : party,
+      priority,
+      overdueDays: overdue ? daysPastDue(inProgress) : 0,
+    })
+  }
+
+  // 8. Earliest ready not_started milestone (workflow order).
+  const readyNotStarted = milestones
+    .filter(m =>
+      m.status === 'not_started' && !hasUnsatisfiedRequires(m, byKey)
+    )
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))[0]
+  if (readyNotStarted) {
+    return result('advance_milestone', readyNotStarted.label, {
+      milestone: readyNotStarted,
+      priority: 'normal',
+    })
+  }
+
+  // 9. Only blocked/locked milestones remain — walk the requires chain from
+  // the earliest blocked milestone to find the actual leaf blocker.
+  const blocked = milestones
+    .filter(m =>
+      m.status === 'blocked' ||
+      (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey))
+    )
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))[0]
+  if (blocked) {
+    const { leaf, chain } = _walkBlockerChain(blocked, byKey)
+    return result('resolve_blocker', `Resolve blocker: ${leaf.label}`, {
+      milestone: leaf,
+      blockers: chain,
+      priority: 'normal',
+    })
+  }
+
+  // 10. Fallback — no milestones, all not_needed, or unexpected state.
+  return result('unknown', 'No action identified', { priority: 'soft' })
+}
+
+// File-local. Walks the requires[] chain from a blocked milestone to find the
+// leaf upstream blocker — the deepest milestone that's not done AND has no
+// unmet requires of its own. Cycle-protected via depth cap.
+function _walkBlockerChain(start, byKey) {
+  const chain = []
+  let current = start
+  for (let depth = 0; depth < 20; depth++) {
+    const unmet = (current.requires || []).filter(k => {
+      const dep = byKey.get(k)
+      return dep && dep.status !== 'done' && dep.status !== 'not_needed'
+    })
+    if (unmet.length === 0) break
+    // Follow the first unmet dependency. Record this key as part of the chain.
+    chain.push(current.milestone_key)
+    const next = byKey.get(unmet[0])
+    if (!next) break
+    current = next
+  }
+  return { leaf: current, chain }
+}
+
 // ── Queue derivation — operational lenses on milestone state ────────────────
 // Each function takes the array of jobs (as returned by getJobs) and returns
 // queue-ready row objects with section assignments and sort applied. UI
