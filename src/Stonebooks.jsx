@@ -26,6 +26,22 @@ import ReportsTab from './ReportsTab'
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
 import TodayTab from './TodayTab'
 
+// Stonebooks v2 — Workspace transition W-0 + W-1. The Command Surface is the
+// first keystone primitive: a ⌘K / Ctrl+K / "/" overlay that finds entities
+// and dispatches actions via the sb:cmd event bus. Lives ABOVE the existing
+// tabbed app and dispatches commands the shell routes to the existing nav /
+// drill-in mechanisms. Sidebar and tabs continue to function unchanged.
+import CommandSurface from './CommandSurface'
+import { useCommandSurface } from './lib/useCommandSurface'
+import { subscribeCommand, refreshEntityIndex, lookupEntityRecord } from './lib/commandSurface'
+
+// v2 W-2 — Workspace Strip + workpiece registry. Persisted operational
+// context that survives refresh/reopen. The strip is a subdued chip row
+// rendered at the top of main; chips mirror the operator's open detail
+// views. Sidebar, tabs, and existing routing are all unchanged.
+import WorkspaceStrip from './WorkspaceStrip'
+import { useWorkpieces, workpieceKey } from './lib/useWorkpieces'
+
 // =============================================================================
 // LOGO COMPONENTS
 // =============================================================================
@@ -201,6 +217,27 @@ export default function Stonebooks() {
   // to auto-open the job detail when the user clicks an operational item.
   const [selectedJobId, setSelectedJobId] = useState(null)
 
+  // v2 W-1 — Command Surface state. `useCommandSurface` registers the global
+  // ⌘K / Ctrl+K / "/" key listeners and returns the open/close handle.
+  const cmd = useCommandSurface()
+
+  // v2 W-1 — Queue request relay. When the operator types e.g. "stones" in
+  // the Command Surface, we land in the Jobs tab and signal which queue
+  // should be opened. JobsTab reads this via the `initialQueue` prop and
+  // clears it on consumption. Same pattern as `selectedJobId`.
+  const [pendingQueue, setPendingQueue] = useState(null)
+
+  // v2 W-2 — Workpiece registry. Persists open jobs / customers across
+  // refresh and reopen. The strip renders one chip per workpiece; clicking
+  // a chip re-focuses that workpiece (sets selectedJobId/etc + tab). The
+  // hook handles all localStorage I/O; the shell owns the routing.
+  const workpieces = useWorkpieces(user?.id)
+
+  // One-shot restoration guard — prevents the restore-on-mount effect from
+  // re-firing after the operator manually navigates away. Without this,
+  // re-entering Today after closing a chip would re-restore the chip.
+  const restoredRef = useRef(false)
+
   // Open Sales Mode — either fresh (no id) or with a specific order
   const openSales = (orderId = null) => {
     setSalesOrderId(orderId)
@@ -240,6 +277,131 @@ export default function Stonebooks() {
     window.addEventListener('sb:nav', handler)
     return () => window.removeEventListener('sb:nav', handler)
   }, [])
+
+  // v2 W-1 — Command Surface bus. Routes structured commands from the
+  // ⌘K overlay through the existing nav / drill-in / sales-mode mechanisms.
+  // Designing the API as events (not props on the overlay) lets later phases
+  // extract the surface without rewiring every consumer.
+  useEffect(() => {
+    return subscribeCommand((cmdDetail) => {
+      if (!cmdDetail || typeof cmdDetail !== 'object') return
+      switch (cmdDetail.kind) {
+        case 'open-tab':
+          if (cmdDetail.tab) setTab(cmdDetail.tab)
+          return
+        case 'open-job':
+          if (cmdDetail.id) { setSelectedJobId(cmdDetail.id); setTab('jobs') }
+          return
+        case 'open-customer':
+          if (cmdDetail.id) { setSelectedCustomerId(cmdDetail.id); setTab('customers') }
+          return
+        case 'open-order':
+          if (cmdDetail.id) openSales(cmdDetail.id)
+          return
+        case 'open-sales':
+          openSales()
+          return
+        case 'open-queue':
+          // Jobs tab hosts the queues. Route there and let JobsTab open the
+          // requested queue via its initialQueue prop.
+          if (cmdDetail.queue) { setPendingQueue(cmdDetail.queue); setTab('jobs') }
+          return
+        case 'time-query':
+          // W-1: the true time-lens isn't built yet (W-5). The Calendar tab
+          // is the closest existing surface, so time queries land there.
+          // The parsed `when` payload is preserved on a global for future
+          // consumers that want to honor the date/range.
+          window.__sb_pending_time_lens = cmdDetail.when || null
+          setTab('calendar')
+          return
+        default:
+          return
+      }
+    })
+  }, [])
+
+  // v2 W-1 — Warm the entity index on first sign-in so the Command Surface
+  // is instantly responsive when the operator first hits ⌘K. The refresh is
+  // de-duped internally; calling it on every user-change is safe.
+  useEffect(() => {
+    if (!user?.id) return
+    refreshEntityIndex().catch(err => {
+      console.warn('[Stonebooks] entity index warm-up failed:', err)
+    })
+  }, [user?.id])
+
+  // v2 W-2 — On sign-in, restore the last-focused workpiece. One-shot per
+  // session — once the operator manually navigates away, we don't re-fire.
+  // If the stored focus references an entity that no longer exists, the
+  // detail view will surface that on its own; we don't validate here.
+  useEffect(() => {
+    if (!user?.id) return
+    if (restoredRef.current) return
+    const key = workpieces.focusedKey
+    if (!key) { restoredRef.current = true; return }
+    const wp = workpieces.workpieces.find(w => workpieceKey(w) === key)
+    if (!wp) { restoredRef.current = true; return }
+    if (wp.type === 'job')      { setSelectedJobId(wp.id); setTab('jobs') }
+    else if (wp.type === 'customer') { setSelectedCustomerId(wp.id); setTab('customers') }
+    restoredRef.current = true
+  }, [user?.id, workpieces.focusedKey, workpieces.workpieces])
+
+  // v2 W-2 — Activate a workpiece whenever the operator opens a job or
+  // customer detail (regardless of entry point — sidebar click, Today drill-
+  // in, command surface, workspace chip). Label comes from the entity index
+  // when available; falls back to a placeholder until the next refresh.
+  useEffect(() => {
+    if (!selectedJobId) return
+    const rec = lookupEntityRecord('job', selectedJobId)
+    workpieces.activate({
+      type: 'job',
+      id: selectedJobId,
+      label:    rec?.label    || null,
+      sublabel: rec?.sublabel || null,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedJobId])
+
+  useEffect(() => {
+    if (!selectedCustomerId) return
+    const rec = lookupEntityRecord('customer', selectedCustomerId)
+    workpieces.activate({
+      type: 'customer',
+      id: selectedCustomerId,
+      label:    rec?.label    || null,
+      sublabel: rec?.sublabel || null,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCustomerId])
+
+  // v2 W-2 — Tab changes that leave both detail views clear the focused
+  // workpiece (the operator is now on Today / Reports / etc., which aren't
+  // entities). Chips remain in the strip; nothing highlights as current.
+  useEffect(() => {
+    const onJobDetail = tab === 'jobs' && selectedJobId
+    const onCustomerDetail = tab === 'customers' && selectedCustomerId
+    if (!onJobDetail && !onCustomerDetail) {
+      if (workpieces.focusedKey) workpieces.focus(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, selectedJobId, selectedCustomerId])
+
+  // v2 W-2 — Strip click handlers. Focus routes through the shell's existing
+  // selected* state + tab setter; close removes the chip AND (if the closed
+  // chip was the currently-viewed entity) exits the detail view so the
+  // operator isn't left on a page for a workpiece they just closed.
+  const handleWorkpieceFocus = (wp) => {
+    if (wp.type === 'job')      { setSelectedJobId(wp.id); setTab('jobs') }
+    else if (wp.type === 'customer') { setSelectedCustomerId(wp.id); setTab('customers') }
+  }
+  const handleWorkpieceClose = (wp) => {
+    const wasFocused = workpieces.focusedKey === workpieceKey(wp)
+    workpieces.close(wp)
+    if (wasFocused) {
+      if (wp.type === 'job')      setSelectedJobId(null)
+      else if (wp.type === 'customer') setSelectedCustomerId(null)
+    }
+  }
 
   // Build CSS once per theme
   const themeCSS = useMemo(() => buildThemeCSS(theme), [theme])
@@ -330,10 +492,21 @@ export default function Stonebooks() {
         </aside>
 
         <main className="sb-main">
+          {/* v2 W-2 — Workspace Strip. Renders only when workpieces exist;
+              otherwise the operator sees the unchanged tab content. The
+              strip lives inside main so it sits above the page header and
+              survives every tab change. */}
+          <WorkspaceStrip
+            workpieces={workpieces.workpieces}
+            focusedKey={workpieces.focusedKey}
+            onFocus={handleWorkpieceFocus}
+            onClose={handleWorkpieceClose}
+          />
+
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
-{tab === 'jobs'      && <JobsTab initialJobId={selectedJobId} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+{tab === 'jobs'      && <JobsTab selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'calendar'  && <CalendarTab onOpenOrder={openSales} />}
 {tab === 'reports'   && <ReportsTab />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
@@ -343,6 +516,12 @@ export default function Stonebooks() {
           {tab === 'settings'  && <SettingsTab user={user} profile={profile} theme={theme} setTheme={setTheme} onProfileChange={reloadProfile} />}
         </main>
       </div>
+
+      {/* v2 W-1 — Command Surface overlay. Mounted at the shell root so the
+          ⌘K / Ctrl+K / "/" listener captures keys regardless of which tab is
+          focused. The overlay is ephemeral; closing it returns the operator
+          to whichever tab they were on. */}
+      <CommandSurface isOpen={cmd.isOpen} onClose={cmd.close} userId={user?.id} />
     </>
   )
 }

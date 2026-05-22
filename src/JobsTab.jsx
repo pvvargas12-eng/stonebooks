@@ -62,16 +62,20 @@ const GROUP_LABEL = {
 // MAIN
 // =============================================================================
 
-export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustomer }) {
+export default function JobsTab({
+  selectedJobId = null,
+  setSelectedJobId,
+  initialQueue = null,
+  onConsumeInitialQueue,
+  onOpenOrder,
+  onOpenCustomer,
+}) {
   const [jobs, setJobs] = useState(null) // null = loading, [] = empty
-  // Sprint J1-P1 Today Commit B — initialJobId lets Today drill into a
-  // specific job via onOpenJob → setSelectedJobId in Stonebooks shell.
-  // We seed local state from the prop and re-sync on prop changes so
-  // subsequent Today clicks redirect correctly.
-  const [selectedJobId, setSelectedJobId] = useState(initialJobId || null)
-  useEffect(() => {
-    if (initialJobId) setSelectedJobId(initialJobId)
-  }, [initialJobId])
+  // v2 W-2 — selectedJobId / setSelectedJobId are now lifted to the shell
+  // (Stonebooks.jsx) so the workspace-strip and the workpiece registry
+  // can react to every detail-view open, regardless of how the operator
+  // got there (Today drill-in, Jobs list row click, command surface,
+  // workspace chip click). Locally we just consume the controlled value.
 
   const [teamFilter, setTeamFilter] = useState(null)         // single team or null
   const [statusFilter, setStatusFilter] = useState(null)     // single status or null
@@ -91,6 +95,28 @@ export default function JobsTab({ initialJobId = null, onOpenOrder, onOpenCustom
   // design). Survives drill-into-JobDetail/back because JobsTab doesn't unmount.
   const [viewMode, setViewMode] = useState('jobs')           // 'jobs' | 'queues'
   const [activeQueue, setActiveQueue] = useState('layouts')   // 'layouts' | 'waiting_on_customer'
+
+  // v2 W-1 — Command Surface queue invocation. When the operator runs e.g.
+  // "stones" in the Command Surface, the shell sets initialQueue; we honor
+  // it once and tell the shell to clear via onConsumeInitialQueue so the
+  // same queue isn't re-opened on every prop reflow.
+  useEffect(() => {
+    if (!initialQueue) return
+    const QUEUE_ALIASES = {
+      stones: 'stones',
+      layouts: 'layouts',
+      production: 'production',
+      waiting: 'waiting_on_customer',
+      waiting_on_customer: 'waiting_on_customer',
+    }
+    const target = QUEUE_ALIASES[initialQueue]
+    if (target) {
+      setViewMode('queues')
+      setActiveQueue(target)
+      setSelectedJobId(null) // exit any JobDetail drill-in
+    }
+    onConsumeInitialQueue?.()
+  }, [initialQueue, onConsumeInitialQueue])
 
   // Load list
   useEffect(() => {
