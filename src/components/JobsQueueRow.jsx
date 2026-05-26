@@ -13,11 +13,15 @@
 // ramp so the row reads as one signal, not two competing ones.
 // =============================================================================
 
+import { useMemo } from 'react'
 import {
   URGENCY,
   fmtDate,
   customerName,
   teamInfo,
+  projectJobDates,
+  compareMilestoneDates,
+  formatMilestoneDateDisplay,
 } from '../lib/stonebooksData'
 
 // Standard queue pill — surfaces internal-due-date overdueness or aging.
@@ -77,7 +81,16 @@ function formatStoneSize(order) {
   return `${w}×${h}`
 }
 
-export default function JobsQueueRow({ row, onClick, showPlot = false, variant = null }) {
+export default function JobsQueueRow({
+  row,
+  onClick,
+  showPlot = false,
+  variant = null,
+  bulkOrders = null,
+  selectable = false,
+  selected = false,
+  onSelectToggle,
+}) {
   const urgency = row.urgency || URGENCY.NEUTRAL
   const stage = row.stage
   const useUrgencyChip = urgency !== URGENCY.NEUTRAL
@@ -125,6 +138,20 @@ export default function JobsQueueRow({ row, onClick, showPlot = false, variant =
     ? [cemetery?.name, expectedBack].filter(Boolean).join(' · ')
     : [cemetery?.name, stoneSize].filter(Boolean).join(' · ')
 
+  // Date projection — the date column shows the divergence between the
+  // customer-facing promise and the system's projection. When they agree
+  // (within 1 day) we show a single date; when they diverge by 2+ days we
+  // stack "Promised X" / "Projected Y" with the projected line styled by
+  // urgency. Completed milestones show "Done X" muted.
+  const projectionMap = useMemo(
+    () => projectJobDates(row.job, { bulkOrders: bulkOrders || [] }),
+    [row.job, bulkOrders],
+  )
+  const dateDisplay = useMemo(
+    () => formatMilestoneDateDisplay(compareMilestoneDates(row.milestone, projectionMap)),
+    [row.milestone, projectionMap],
+  )
+
   // Stage chip styling — yields to urgency ramp when row is amber/red so the
   // row reads as a single signal. Otherwise it uses its palette entry.
   const chipStyle = useUrgencyChip
@@ -132,13 +159,37 @@ export default function JobsQueueRow({ row, onClick, showPlot = false, variant =
     : (stage ? { color: stage.text, background: stage.bg } : null)
   const chipLabel = row.milestone?.label || stage?.code || ''
 
-  return (
-    <button
-      type="button"
-      className={`sb-queue-row sb-queue-row-${urgency}${showPlot ? ' sb-queue-row-plot' : ''}`}
-      onClick={() => onClick?.(row)}
-      style={{ background: URGENCY_ROW_TINT[urgency] }}
-    >
+  const rowClass = [
+    'sb-queue-row',
+    `sb-queue-row-${urgency}`,
+    showPlot ? 'sb-queue-row-plot' : '',
+    selectable ? 'sb-queue-row-selectable' : '',
+    selected ? 'sb-queue-row-selected' : '',
+  ].filter(Boolean).join(' ')
+
+  // When the section is in multi-select mode, the row is wrapped in a div
+  // that holds the checkbox alongside the click button. The button still
+  // covers the rest of the grid so the row remains tappable for drill-in.
+  // Pre-selectable behavior is unchanged (single <button> row).
+  const rowBody = (
+    <>
+      {selectable && (
+        <div
+          className="sb-queue-row-checkbox"
+          // Stop the click from bubbling to the row button; the label is
+          // already inside a flex cell, but click-suppression keeps the row
+          // click predictable when the operator drags-or-double-clicks.
+          onClick={e => e.stopPropagation()}
+        >
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={e => onSelectToggle?.(row, e.target.checked)}
+            aria-label={`Select ${surname} ${row.milestone?.label || ''}`}
+          />
+        </div>
+      )}
+
       <div className="sb-queue-row-identity">
         <div className="sb-queue-row-primary">
           <span className="sb-queue-row-name">{surname}</span>
@@ -180,15 +231,56 @@ export default function JobsQueueRow({ row, onClick, showPlot = false, variant =
 
       {!showPlot && (
         <div className="sb-queue-row-due">
-          {row.dueDate ? fmtDate(row.dueDate) : '—'}
+          <DateDisplay display={dateDisplay} fallback={row.dueDate} />
         </div>
       )}
 
       {!showPlot && (
         <div className="sb-queue-row-owner">{owner || '—'}</div>
       )}
+    </>
+  )
+
+  return (
+    <button
+      type="button"
+      className={rowClass}
+      onClick={() => onClick?.(row)}
+      style={{ background: URGENCY_ROW_TINT[urgency] }}
+    >
+      {rowBody}
     </button>
   )
+}
+
+// Date column renderer. Three modes:
+//   • done: muted "Done Jun 5"
+//   • stacked: two-line "Promised Jun 5" / "Projected Jun 8" with the
+//     projected line tone-styled (amber / red on divergence)
+//   • single: one line — used when the dates agree or only one is set
+// `fallback` is the legacy milestone.due_date — used when no projection is
+// available (pre-migration safety net so the column never reads as broken).
+function DateDisplay({ display, fallback }) {
+  if (!display) {
+    return <span>{fallback ? fmtDate(fallback) : '—'}</span>
+  }
+  if (display.tone === 'done') {
+    return <span className="sb-queue-row-due-done">{display.single}</span>
+  }
+  if (display.promised && display.projected) {
+    const projectedClass = display.tone === 'red'
+      ? 'sb-queue-row-due-projected-red'
+      : display.tone === 'amber'
+        ? 'sb-queue-row-due-projected-amber'
+        : 'sb-queue-row-due-projected'
+    return (
+      <span className="sb-queue-row-due-stacked">
+        <span className="sb-queue-row-due-promised">Promised {display.promised}</span>
+        <span className={projectedClass}>Projected {display.projected}</span>
+      </span>
+    )
+  }
+  return <span>{display.single || (fallback ? fmtDate(fallback) : '—')}</span>
 }
 
 // =============================================================================
@@ -307,6 +399,61 @@ const localStyles = `
     font-variant-numeric: tabular-nums;
     font-family: var(--sb-font-mono);
     white-space: nowrap;
+    line-height: 1.35;
+  }
+  /* Single-date "Done Jun 5" — completed milestones; muted so a finished
+     stage doesn't compete visually with the actionable rows above it. */
+  .sb-queue-row-due-done {
+    color: var(--sb-text-muted);
+    font-style: italic;
+  }
+  /* Stacked promised + projected when the two diverge by 2+ days. The
+     promised line stays muted (it's the historical reference); the
+     projected line takes the urgency tone so the operator's eye lands on
+     the live forecast. */
+  .sb-queue-row-due-stacked {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 1px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  .sb-queue-row-due-promised {
+    color: var(--sb-text-muted);
+    text-decoration: line-through;
+    text-decoration-color: var(--sb-text-muted);
+    text-decoration-thickness: 0.5px;
+  }
+  .sb-queue-row-due-projected {
+    color: var(--sb-text-secondary);
+  }
+  .sb-queue-row-due-projected-amber {
+    color: var(--sb-amber, #b8842a);
+    font-weight: 500;
+  }
+  .sb-queue-row-due-projected-red {
+    color: var(--sb-red, #b54040);
+    font-weight: 500;
+  }
+
+  /* Selectable variant — the section is in multi-select mode; rows get a
+     leading checkbox column. Grid widens by ~32px to accommodate. */
+  .sb-queue-row-selectable {
+    grid-template-columns: 28px minmax(0, 1fr) 180px 130px 110px 110px;
+  }
+  .sb-queue-row-checkbox {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sb-queue-row-checkbox input {
+    cursor: pointer;
+    accent-color: var(--sb-accent, #b8842a);
+  }
+  /* Subtle selected highlight — keeps the row identifiable as the operator
+     builds up the multi-select set. */
+  .sb-queue-row-selected {
+    background: var(--sb-accent-bg, rgba(184, 132, 42, 0.08)) !important;
   }
   .sb-queue-row-owner {
     font-size: 12px;
@@ -319,6 +466,9 @@ const localStyles = `
     .sb-queue-row {
       grid-template-columns: minmax(0, 1fr) 140px 120px;
     }
+    .sb-queue-row-selectable {
+      grid-template-columns: 28px minmax(0, 1fr) 140px 120px;
+    }
     .sb-queue-row-due,
     .sb-queue-row-owner {
       display: none;
@@ -329,6 +479,9 @@ const localStyles = `
       grid-template-columns: minmax(0, 1fr) 110px;
       gap: 12px;
       padding: 12px 14px;
+    }
+    .sb-queue-row-selectable {
+      grid-template-columns: 28px minmax(0, 1fr) 110px;
     }
     .sb-queue-row-stage-col {
       display: none;

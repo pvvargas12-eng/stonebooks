@@ -1130,6 +1130,18 @@ async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, 
   if (patch.due_date !== undefined) rowPatch.due_date = patch.due_date
   if (patch.assignee_user_id !== undefined) rowPatch.assignee_user_id = patch.assignee_user_id
   if (patch.note !== undefined) rowPatch.note = patch.note
+  // Date-projection write-through. The user-set flag travels with the value:
+  // clearing the projected date (null) resets user_set to false so live
+  // projection takes over again. Setting a value flips user_set to true.
+  if (patch.projected_completion_at !== undefined) {
+    rowPatch.projected_completion_at = patch.projected_completion_at || null
+  }
+  if (patch.projected_completion_at_user_set !== undefined) {
+    rowPatch.projected_completion_at_user_set = !!patch.projected_completion_at_user_set
+  }
+  if (patch.contract_due_at !== undefined) {
+    rowPatch.contract_due_at = patch.contract_due_at || null
+  }
   // Operational Truth Substrate write-through. Empty-string inputs are
   // normalized to null so the engine can treat "captured then cleared" the
   // same as "never captured" (no false-positive signals).
@@ -2099,7 +2111,280 @@ export const BUCKET_AGING_THRESHOLDS = {
 }
 
 // Three-state urgency. Earned only by signal — never painted by category.
+// Declared here so the date-projection helpers below can reference URGENCY
+// without a hoisting issue; the operational classification block that
+// previously held this constant moves further down.
 export const URGENCY = { NEUTRAL: 'neutral', AMBER: 'amber', RED: 'red' }
+
+// =============================================================================
+// DATE PROJECTION — honest timeline forecasting
+// =============================================================================
+// Every milestone now carries three conceptual dates:
+//   • contract_due_at      — the customer-facing promise (set at job creation;
+//                            never auto-moves)
+//   • projected_completion_at — the system's honest projection; recalculated
+//                            live as upstream stages slip or accelerate. The
+//                            stored DB value is only authoritative when the
+//                            operator manually overrides it (see the
+//                            projected_completion_at_user_set flag).
+//   • actual_completion_at — derived from status_date when status='done'.
+//                            We don't add a new column; we read what's there.
+//                            Compromise: status_date is also touched on the
+//                            in_progress transition, but projection only
+//                            consults it when status==='done'.
+//
+// The migration at supabase/migrations/20260526_date_projection_and_bulk_orders.sql
+// adds the new columns. Pre-migration runtime sees `undefined` for the new
+// fields and projectJobDates falls back to its defaults — never throws.
+//
+// Pacing values capture Paul's measurements of typical stage durations from
+// the moment a milestone's requires[] are satisfied to its own completion.
+// Tune as the shop's lived experience tells us the numbers are off.
+export const PACING_DAYS = {
+  intake_complete:       1,
+  design_needed:         1,
+  layout_created:       14,
+  proof_created:        14,
+  proof_sent:            7,
+  proof_approved:        1,
+  permit_submitted:     14,
+  permit_approved:       1,
+  stone_ordered:        30,
+  stone_received:        0,
+  stencil_created:       3,
+  stencil_cut:           2,
+  production_started:   14,
+  production_completed:  3,
+  foundation_poured:    30,
+  ready_to_install:     14,
+  installed:             1,
+  job_closed:            7,
+}
+
+// Foundation must cure 30 days before install per Paul's shop rule. Used as
+// the reverse-propagation gap: foundation_poured.projected = installed.projected - 30.
+const FOUNDATION_LEAD_DAYS = 30
+const _DAY_MS = 86400000
+
+// ISO-date math — operates on YYYY-MM-DD strings, parses as local midnight
+// to avoid the UTC drift that plain toISOString-based math introduces near
+// midnight in NJ.
+function _addDays(isoDateLike, days) {
+  if (!isoDateLike) return null
+  const base = new Date(`${String(isoDateLike).slice(0, 10)}T00:00:00`)
+  base.setDate(base.getDate() + days)
+  const y = base.getFullYear()
+  const m = String(base.getMonth() + 1).padStart(2, '0')
+  const d = String(base.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+// Project completion dates for every milestone in a job. Returns a Map from
+// milestone_key to ISO YYYY-MM-DD. Pure function — no side effects, no DB.
+//
+// Anchor: job.order.signed_at (the contract sign date, the existing sale
+// anchor used elsewhere in the codebase). Falls back to job.created_at when
+// the order isn't joined, then to today as a last resort so the function
+// never returns nulls for actionable jobs.
+//
+// Algorithm:
+//   • Each non-foundation milestone projects forward from max(parents'
+//     projected dates, anchor) + pacingFor(key). Parents are the milestone's
+//     requires[] siblings — same dependency graph the readiness gate uses.
+//   • `foundation_poured` reverse-propagates: installed.projected - 30 days.
+//     This implements the shop rule that the foundation must cure 30 days
+//     before install. The forward edge through foundation_poured is skipped
+//     in pass 1 to avoid a circular dependency through installed.requires.
+//   • If a milestone has status='done' with a status_date, projection treats
+//     that as actual completion. Downstream milestones project from it.
+//   • If projected_completion_at_user_set is true, the stored DB value is
+//     fixed and downstream milestones project from it.
+//   • For `stone_ordered` linked to a bulk_order with supplier_eta and
+//     placed_at, the per-milestone pacing is overridden with the supplier's
+//     quoted lead time (eta - placed) instead of the generic 30-day default.
+//
+// `opts.bulkOrders` is an optional array. When passed, the engine consults
+// each milestone's bulk_order_id to find a linked supplier order.
+export function projectJobDates(job, opts = {}) {
+  const projections = new Map()
+  if (!job) return projections
+
+  const anchorRaw = job.order?.signed_at || job.created_at || new Date().toISOString()
+  const anchorISO = String(anchorRaw).slice(0, 10)
+  const milestones = job.milestones || []
+  const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+  const bulkById = new Map()
+  for (const b of (opts.bulkOrders || [])) {
+    if (b?.id) bulkById.set(b.id, b)
+  }
+
+  // Per-milestone pacing — same as PACING_DAYS unless the milestone is a
+  // stone_ordered linked to a bulk_order with supplier-quoted dates, in
+  // which case the supplier's actual lead time wins.
+  function pacingFor(m) {
+    if (m.milestone_key === 'stone_ordered' && m.bulk_order_id) {
+      const bo = bulkById.get(m.bulk_order_id)
+      if (bo && bo.placed_at && bo.supplier_eta) {
+        const placed = new Date(`${String(bo.placed_at).slice(0, 10)}T00:00:00`).getTime()
+        const eta    = new Date(`${String(bo.supplier_eta).slice(0, 10)}T00:00:00`).getTime()
+        const days = Math.round((eta - placed) / _DAY_MS)
+        if (Number.isFinite(days) && days >= 0) return days
+      }
+    }
+    return PACING_DAYS[m.milestone_key] ?? 0
+  }
+
+  // Treat status='done' + status_date as actual completion. We deliberately
+  // don't add a separate column for this — see header comment for the
+  // compromise. Bulk-order-received cascade goes through the normal status
+  // update path so it lands here too.
+  function actualOf(m) {
+    if (m.status === 'done' && m.status_date) return String(m.status_date).slice(0, 10)
+    return null
+  }
+
+  function projectOne(key, visiting) {
+    if (projections.has(key)) return projections.get(key)
+    if (visiting.has(key)) return null
+    const m = byKey.get(key)
+    if (!m) return null
+
+    const actual = actualOf(m)
+    if (actual) {
+      projections.set(key, actual)
+      return actual
+    }
+    if (m.projected_completion_at_user_set && m.projected_completion_at) {
+      const v = String(m.projected_completion_at).slice(0, 10)
+      projections.set(key, v)
+      return v
+    }
+    // Foundation handled in pass 2 (reverse-propagated from installed).
+    if (key === 'foundation_poured') return null
+
+    visiting.add(key)
+    let parentMax = anchorISO
+    for (const req of (m.requires || [])) {
+      // Skip the foundation edge — install pulls foundation back, never the
+      // other way. Other milestones' requires propagate normally.
+      if (req === 'foundation_poured') continue
+      const v = projectOne(req, visiting)
+      if (v && v > parentMax) parentMax = v
+    }
+    visiting.delete(key)
+
+    const result = _addDays(parentMax, pacingFor(m))
+    projections.set(key, result)
+    return result
+  }
+
+  // Pass 1 — forward-project every milestone except foundation_poured.
+  for (const m of milestones) {
+    if (m.milestone_key === 'foundation_poured') continue
+    projectOne(m.milestone_key, new Set())
+  }
+
+  // Pass 2 — foundation_poured reverse-propagates from installed. When
+  // installed is absent (e.g. cleaning_repair jobs with no install stage),
+  // foundation falls back to a normal forward projection from its own
+  // requires so the function still returns a useful date.
+  const fnd = byKey.get('foundation_poured')
+  if (fnd) {
+    const actual = actualOf(fnd)
+    if (actual) {
+      projections.set('foundation_poured', actual)
+    } else if (fnd.projected_completion_at_user_set && fnd.projected_completion_at) {
+      projections.set('foundation_poured', String(fnd.projected_completion_at).slice(0, 10))
+    } else {
+      const installedProj = projections.get('installed')
+      if (installedProj) {
+        projections.set('foundation_poured', _addDays(installedProj, -FOUNDATION_LEAD_DAYS))
+      } else {
+        let parentMax = anchorISO
+        for (const req of (fnd.requires || [])) {
+          const v = projections.get(req)
+          if (v && v > parentMax) parentMax = v
+        }
+        projections.set('foundation_poured', _addDays(parentMax, pacingFor(fnd)))
+      }
+    }
+  }
+
+  return projections
+}
+
+// Divergence comparison between the customer-facing promise and the system's
+// projection. Returned shape is consumed by row components to decide whether
+// to show a single date or both. "Within 1 day" counts as agreement per the
+// spec; 2–7 days late = amber, 8+ days late = red. Early projection (negative
+// divergence) stays neutral — that's good news, never an alarm.
+//
+// `projectionMap` is the Map returned by projectJobDates. Optional — when
+// omitted, the milestone's stored projected_completion_at is used.
+export function compareMilestoneDates(milestone, projectionMap) {
+  const out = {
+    promised:       null,
+    projected:      null,
+    actual:         null,
+    divergenceDays: 0,
+    urgency:        URGENCY.NEUTRAL,
+    userSet:        false,
+  }
+  if (!milestone) return out
+
+  out.actual = (milestone.status === 'done' && milestone.status_date)
+    ? String(milestone.status_date).slice(0, 10)
+    : null
+  out.promised = milestone.contract_due_at
+    ? String(milestone.contract_due_at).slice(0, 10)
+    : null
+  out.projected = projectionMap && projectionMap.get
+    ? (projectionMap.get(milestone.milestone_key) || null)
+    : (milestone.projected_completion_at
+        ? String(milestone.projected_completion_at).slice(0, 10)
+        : null)
+  out.userSet = !!milestone.projected_completion_at_user_set
+
+  if (out.promised && out.projected) {
+    out.divergenceDays = Math.round(
+      (new Date(`${out.projected}T00:00:00`).getTime() -
+       new Date(`${out.promised}T00:00:00`).getTime()) / _DAY_MS
+    )
+  }
+  if (out.divergenceDays >= 8) out.urgency = URGENCY.RED
+  else if (out.divergenceDays >= 2) out.urgency = URGENCY.AMBER
+
+  return out
+}
+
+// Format a divergence object for display. Three modes:
+//   • { single: 'Done Jun 5', tone: 'done' }     — completed work
+//   • { single: 'Jun 5',      tone: 'calm' }     — within 1d (or only one date set)
+//   • { promised: 'Jun 5', projected: 'Jun 8',
+//       tone: 'amber' | 'red' }                  — diverged
+// The row component decides how to render based on the shape.
+export function formatMilestoneDateDisplay(dates) {
+  if (!dates) return { single: '—', tone: 'calm' }
+  if (dates.actual) {
+    return { single: `Done ${fmtDate(dates.actual)}`, tone: 'done' }
+  }
+  if (dates.promised && dates.projected && Math.abs(dates.divergenceDays) >= 2) {
+    const tone = dates.urgency === URGENCY.RED ? 'red'
+               : dates.urgency === URGENCY.AMBER ? 'amber'
+               : 'calm'
+    return {
+      promised:  fmtDate(dates.promised),
+      projected: fmtDate(dates.projected),
+      tone,
+    }
+  }
+  const single = dates.projected || dates.promised
+  return { single: single ? fmtDate(single) : '—', tone: 'calm' }
+}
+
+// =============================================================================
+// END date projection
+// =============================================================================
 
 // Classifies a single row's urgency. A row is:
 //   • red    — milestone past its internal due_date, OR external party past
@@ -2667,7 +2952,7 @@ export function getProductionBuckets(jobs) {
   ]
 }
 
-export function getAdminBuckets(jobs) {
+export function getAdminBuckets(jobs, bulkOrders) {
   const intake     = _bucketIntakeToComplete(jobs)
   const permitsTo  = _bucketPermitsToFile(jobs)
   const waitingCem = _bucketWaitingCemetery(jobs)
@@ -2675,6 +2960,8 @@ export function getAdminBuckets(jobs) {
   const waitingSup = _bucketWaitingSupplier(jobs)
   const photosReq  = _bucketPhotosToRequest(jobs)
   const closeouts  = _bucketCloseouts(jobs)
+  const linkedCounts = bulkOrderLinkedCounts(jobs)
+  const openBulk = getOpenBulkOrdersBucket(bulkOrders || [], linkedCounts)
   return [
     _bucket('intake_to_complete', 'Intake to complete', intake, {
       subline: _agingSummary(intake, BUCKET_AGING_THRESHOLDS.intake_to_complete),
@@ -2699,6 +2986,10 @@ export function getAdminBuckets(jobs) {
     _bucket('closeouts', 'Closeouts', closeouts, {
       subline: _agingSummary(closeouts, BUCKET_AGING_THRESHOLDS.closeouts),
     }),
+    // Open bulk orders — surfaces active POs across all suppliers. The
+    // bucket's `kind: 'bulk_order_list'` signals JobsQueueSection to render
+    // BulkOrderRow components instead of the default milestone-row panel.
+    openBulk,
   ]
 }
 
@@ -2798,8 +3089,12 @@ export const DEPARTMENTS = [
   { code: 'installation', label: 'Installation', stub: false },
 ]
 
-export function bucketsForDepartment(department, jobs) {
-  if (department === 'admin')        return getAdminBuckets(jobs)
+// `opts.bulkOrders` is consumed only by Admin (for the Open bulk orders
+// bucket). Other departments ignore it. Defaults to an empty array when
+// callers don't have bulk_orders loaded yet — the Admin bucket renders an
+// empty count rather than throwing.
+export function bucketsForDepartment(department, jobs, opts = {}) {
+  if (department === 'admin')        return getAdminBuckets(jobs, opts.bulkOrders || [])
   if (department === 'design')       return getDesignBuckets(jobs)
   if (department === 'production')   return getProductionBuckets(jobs)
   if (department === 'installation') return getInstallationBuckets(jobs)
@@ -3363,6 +3658,250 @@ export function deriveTodayForRole(jobs, role, { now = new Date() } = {}) {
       aging:    aging.length,
     },
   }
+}
+
+// =============================================================================
+// BULK SUPPLIER ORDERS — grouped POs across multiple milestones
+// =============================================================================
+// A bulk_order is one PO to a supplier covering one or more job milestones.
+// Created from the multi-select action bar on Admin's "Stones to order" and
+// "Photos to request" queues. When received, the order cascades — every
+// linked milestone moves to done with status_date = today (which the
+// projection engine reads as actual_completion_at).
+//
+// Pre-migration: the `bulk_orders` table doesn't exist. The list/create
+// calls below catch the Supabase error and degrade — listOpenBulkOrders
+// returns [] so the Admin bucket renders an empty data-gap card instead of
+// throwing. Post-migration: full lifecycle works.
+
+// Valid kinds. Mirrors the CHECK constraint in the migration so client-side
+// errors surface before the DB rejects.
+export const BULK_ORDER_KINDS = [
+  { code: 'stone',   label: 'Stone'   },
+  { code: 'photo',   label: 'Photo'   },
+  { code: 'etching', label: 'Etching' },
+  { code: 'bronze',  label: 'Bronze'  },
+]
+
+// Today's local YMD — used by the cascade-on-receive path. Reuses
+// todayLocalISO already defined above.
+function _todayYMD() {
+  return todayLocalISO()
+}
+
+// Fetch every active (un-received) bulk_order. Pre-migration the table
+// doesn't exist; we catch the error and return []. Same defensive pattern
+// every helper in this file uses for missing-schema cases.
+export async function listOpenBulkOrders() {
+  const { data, error } = await supabase
+    .from('bulk_orders')
+    .select('*')
+    .is('received_at', null)
+    .order('placed_at', { ascending: true })
+  if (error) {
+    console.warn('[bulkOrders] listOpenBulkOrders failed:', error.message)
+    return []
+  }
+  return data || []
+}
+
+// Fetch every bulk_order (open + received). Used by the projection engine
+// so milestones linked to RECEIVED orders also get the supplier's actual
+// lead time when computing dates for downstream stages. Same graceful-
+// degrade pattern as listOpenBulkOrders.
+export async function listAllBulkOrders() {
+  const { data, error } = await supabase
+    .from('bulk_orders')
+    .select('*')
+    .order('placed_at', { ascending: false })
+  if (error) {
+    console.warn('[bulkOrders] listAllBulkOrders failed:', error.message)
+    return []
+  }
+  return data || []
+}
+
+// Create a bulk_order + link each selected milestone via bulk_order_id, +
+// transition each linked milestone to in_progress (the order is now placed,
+// so the milestone is awaiting external — exactly what in_progress means in
+// the operational classifier). Returns { ok, bulkOrder, error }.
+//
+// `milestoneIds` is an array of job_milestones.id (the UUID PK), not
+// milestone_key. The UI tracks selected rows by id because the same
+// milestone_key can appear on many jobs.
+export async function createBulkOrder(input) {
+  const payload = {
+    kind:          input.kind,
+    supplier_name: (input.supplier_name || '').trim(),
+    po_number:     (input.po_number || '').trim() || null,
+    po_file_url:   input.po_file_url || null,
+    po_uploaded_at: input.po_file_url ? new Date().toISOString() : null,
+    placed_at:     input.placed_at || _todayYMD(),
+    supplier_eta:  input.supplier_eta || null,
+    notes:         (input.notes || '').trim() || null,
+  }
+  if (!payload.kind)          return { ok: false, error: 'Kind is required' }
+  if (!payload.supplier_name) return { ok: false, error: 'Supplier name is required' }
+
+  const { data: bulkOrder, error: insertErr } = await supabase
+    .from('bulk_orders')
+    .insert(payload)
+    .select()
+    .single()
+  if (insertErr) return { ok: false, error: insertErr.message }
+
+  const milestoneIds = (input.milestoneIds || []).filter(Boolean)
+  if (milestoneIds.length === 0) {
+    return { ok: true, bulkOrder, linkedCount: 0 }
+  }
+
+  // Link each milestone + flip to in_progress + stamp status_date. We do
+  // this in one update because every linked milestone gets the same patch.
+  const today = _todayYMD()
+  const { error: linkErr } = await supabase
+    .from('job_milestones')
+    .update({
+      bulk_order_id: bulkOrder.id,
+      status:        'in_progress',
+      status_date:   today,
+      updated_at:    new Date().toISOString(),
+    })
+    .in('id', milestoneIds)
+  if (linkErr) {
+    // The bulk_order was created but linking failed. Surface the partial
+    // state so the caller can decide whether to retry or warn the operator.
+    return { ok: false, error: `Bulk order created but linking failed: ${linkErr.message}`, bulkOrder }
+  }
+
+  return { ok: true, bulkOrder, linkedCount: milestoneIds.length }
+}
+
+// Cascade — mark the bulk_order received, then push every linked milestone
+// to done with today's status_date (which the projection engine reads as
+// actual_completion_at). Returns { ok, error, cascadedCount }.
+export async function markBulkOrderReceived(bulkOrderId, { actorUserId } = {}) {
+  if (!bulkOrderId) return { ok: false, error: 'Missing bulk order id' }
+  const today = _todayYMD()
+  const nowISO = new Date().toISOString()
+
+  const { error: updErr } = await supabase
+    .from('bulk_orders')
+    .update({
+      received_at: today,
+      received_by: actorUserId || null,
+      updated_at:  nowISO,
+    })
+    .eq('id', bulkOrderId)
+  if (updErr) return { ok: false, error: updErr.message }
+
+  // Find linked milestones and cascade their completion. We pull-then-update
+  // (instead of a single SQL UPDATE) so we have explicit visibility into
+  // which milestones were touched and so milestones that are already done
+  // don't get their status_date stomped.
+  const { data: linked, error: fetchErr } = await supabase
+    .from('job_milestones')
+    .select('id, status, status_date')
+    .eq('bulk_order_id', bulkOrderId)
+  if (fetchErr) return { ok: false, error: fetchErr.message }
+
+  const toCascade = (linked || []).filter(m => m.status !== 'done')
+  if (toCascade.length === 0) {
+    return { ok: true, cascadedCount: 0 }
+  }
+  const ids = toCascade.map(m => m.id)
+  const { error: cascadeErr } = await supabase
+    .from('job_milestones')
+    .update({
+      status:      'done',
+      status_date: today,
+      updated_at:  nowISO,
+    })
+    .in('id', ids)
+  if (cascadeErr) return { ok: false, error: cascadeErr.message }
+
+  return { ok: true, cascadedCount: ids.length }
+}
+
+// Build a row shape for the "Open bulk orders" Admin bucket. The row carries
+// the bulk_order + a count of linked jobs + an urgency state earned by
+// supplier_eta past today (red) or aging from placed_at (amber when older
+// than the supplier_waiting threshold).
+function _buildBulkOrderRow(bulkOrder, linkedCount) {
+  const today = _todayYMD()
+  const placedAge = bulkOrder.placed_at
+    ? Math.max(0, Math.floor((Date.now() - new Date(`${bulkOrder.placed_at}T00:00:00`).getTime()) / _DAY_MS))
+    : null
+  let urgency = URGENCY.NEUTRAL
+  let overdueDays = 0
+  if (bulkOrder.supplier_eta) {
+    const etaTime = new Date(`${String(bulkOrder.supplier_eta).slice(0, 10)}T00:00:00`).getTime()
+    const todayTime = new Date(`${today}T00:00:00`).getTime()
+    if (etaTime < todayTime) {
+      overdueDays = Math.floor((todayTime - etaTime) / _DAY_MS)
+      urgency = URGENCY.RED
+    }
+  }
+  if (urgency === URGENCY.NEUTRAL && placedAge != null && placedAge > BUCKET_AGING_THRESHOLDS.waiting_supplier) {
+    urgency = URGENCY.AMBER
+  }
+  return {
+    kind:        'bulk_order',
+    bulkOrder,
+    linkedCount,
+    placedAge,
+    overdueDays,
+    urgency,
+  }
+}
+
+// Derives the "Open bulk orders" bucket for the Admin role. `linkedCountsById`
+// is a Map of bulk_order.id → count of milestones linked to it (passed in
+// from the parent so we don't refetch milestones inside the derive).
+export function getOpenBulkOrdersBucket(bulkOrders, linkedCountsById) {
+  const rows = (bulkOrders || [])
+    .filter(b => !b.received_at)
+    .map(b => _buildBulkOrderRow(b, linkedCountsById?.get?.(b.id) || 0))
+    .sort((a, b) => {
+      // Worst-first: red urgency, then highest overdueDays, then oldest placed_at.
+      const ua = a.urgency === URGENCY.RED ? 0 : a.urgency === URGENCY.AMBER ? 1 : 2
+      const ub = b.urgency === URGENCY.RED ? 0 : b.urgency === URGENCY.AMBER ? 1 : 2
+      if (ua !== ub) return ua - ub
+      if (a.overdueDays !== b.overdueDays) return b.overdueDays - a.overdueDays
+      const ap = a.bulkOrder.placed_at || ''
+      const bp = b.bulkOrder.placed_at || ''
+      return ap.localeCompare(bp)
+    })
+  const reds = rows.filter(r => r.urgency === URGENCY.RED).length
+  const subline = rows.length === 0
+    ? null
+    : (reds > 0 ? `${reds} past supplier ETA` : `${rows.length} open`)
+  return {
+    code:     'open_bulk_orders',
+    label:    'Open bulk orders',
+    rows,
+    count:    rows.length,
+    urgency:  worstUrgency(rows),
+    dataGap:  false,
+    subline,
+    sortLabel: 'Sorted by days past ETA',
+    kind:      'bulk_order_list',  // signals the panel to render BulkOrderRow
+    grouping:  null,
+    groups:    null,
+  }
+}
+
+// Compute the linked-milestone count for each bulk_order from the in-memory
+// jobs list. Avoids a second DB round-trip — the jobs fetch already pulled
+// every milestone including bulk_order_id (since getJobs selects *).
+export function bulkOrderLinkedCounts(jobs) {
+  const counts = new Map()
+  for (const job of (jobs || [])) {
+    for (const m of (job.milestones || [])) {
+      if (!m.bulk_order_id) continue
+      counts.set(m.bulk_order_id, (counts.get(m.bulk_order_id) || 0) + 1)
+    }
+  }
+  return counts
 }
 
 // =============================================================================

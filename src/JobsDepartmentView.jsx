@@ -26,6 +26,8 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   getJobs,
   listAllOrders,
+  listAllBulkOrders,
+  markBulkOrderReceived,
   DEPARTMENTS,
   bucketsForDepartment,
   getOwnerOverviewBuckets,
@@ -47,6 +49,7 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
   const [ownerMode, setOwnerMode] = useState(() => getOwnerViewMode(userId))
   const [jobs, setJobs] = useState(null)
   const [orders, setOrders] = useState(null)
+  const [bulkOrders, setBulkOrders] = useState(null)
   const [loadErr, setLoadErr] = useState(null)
 
   // When an Overview card click drives a role switch, this captures the
@@ -55,25 +58,39 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
   // don't fight the user's scroll.
   const [pendingBucketScroll, setPendingBucketScroll] = useState(null)
 
-  // One fetch each on mount — jobs for every department's buckets, orders
-  // only for the Estimates Overview card (single small select; fine to load
-  // eagerly so the count is ready when the operator lands on Owner overview).
+  // One parallel fetch on mount — jobs for every department's buckets,
+  // orders for the Estimates Overview card, bulk_orders for the Admin
+  // "Open bulk orders" bucket + the projection engine (stone milestones
+  // linked to a bulk_order use the supplier's quoted lead time instead of
+  // the generic 30-day default).
   const loadJobs = useCallback(async () => {
     setLoadErr(null)
     try {
-      const [jobData, orderData] = await Promise.all([
+      const [jobData, orderData, bulkData] = await Promise.all([
         getJobs({ includeClosed: false }),
         listAllOrders({ limit: 500 }),
+        listAllBulkOrders(),
       ])
       setJobs(jobData || [])
       setOrders(orderData || [])
+      setBulkOrders(bulkData || [])
     } catch (e) {
       setLoadErr(e?.message || 'Failed to load operations data')
       setJobs([])
       setOrders([])
+      setBulkOrders([])
     }
   }, [])
   useEffect(() => { loadJobs() }, [loadJobs])
+
+  // Cascade-on-receive — the BulkOrderRow's "Mark received" button calls
+  // through here so we can reload after the cascade completes. Returns the
+  // helper's { ok, error } so the row can surface the error inline.
+  const handleMarkBulkReceived = useCallback(async (bulkOrderId) => {
+    const res = await markBulkOrderReceived(bulkOrderId, { actorUserId: userId })
+    if (res.ok) loadJobs()
+    return res
+  }, [userId, loadJobs])
 
   const handleRoleChange = (next) => {
     setRole(next)
@@ -124,17 +141,23 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
             <OwnerView
               jobs={jobs}
               orders={orders || []}
+              bulkOrders={bulkOrders || []}
               mode={ownerMode}
               onModeChange={handleOwnerModeChange}
               onOpenJob={onOpenJob}
               onOverviewCardClick={handleOverviewCardClick}
+              onReload={loadJobs}
+              onMarkBulkReceived={handleMarkBulkReceived}
             />
           )
           : (
             <DepartmentBody
               role={role}
               jobs={jobs}
+              bulkOrders={bulkOrders || []}
               onOpenJob={onOpenJob}
+              onReload={loadJobs}
+              onMarkBulkReceived={handleMarkBulkReceived}
               initialScrollBucket={pendingBucketScroll}
               onConsumeInitialScroll={consumePendingScroll}
             />
@@ -148,7 +171,7 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
 // DEPARTMENT BODY — non-Owner roles
 // =============================================================================
 
-function DepartmentBody({ role, jobs, onOpenJob, initialScrollBucket, onConsumeInitialScroll }) {
+function DepartmentBody({ role, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll }) {
   const dept = DEPARTMENTS.find(d => d.code === role)
   if (!dept) return null
   if (dept.stub) {
@@ -158,12 +181,21 @@ function DepartmentBody({ role, jobs, onOpenJob, initialScrollBucket, onConsumeI
     <DepartmentBuckets
       dept={dept}
       jobs={jobs}
+      bulkOrders={bulkOrders}
       onOpenJob={onOpenJob}
+      onReload={onReload}
+      onMarkBulkReceived={onMarkBulkReceived}
       initialScrollBucket={initialScrollBucket}
       onConsumeInitialScroll={onConsumeInitialScroll}
     />
   )
 }
+
+// Bucket codes that gain multi-select checkboxes on their rows. Limited to
+// Admin's two supplier-bound queues — stones and photos can group into one
+// PO each. Adding a new selectable queue means registering its code here AND
+// in SELECTABLE_BUCKET_KINDS inside JobsQueueSection.
+const SELECTABLE_BUCKET_CODES = new Set(['stones_to_order', 'photos_to_request'])
 
 // Render: bucket-card grid + queue sections. Each card focus-scrolls its
 // queue section into view (smooth scroll, scroll-margin-top on the section).
@@ -171,10 +203,10 @@ function DepartmentBody({ role, jobs, onOpenJob, initialScrollBucket, onConsumeI
 // that switched to this role), the matching section is scrolled into view on
 // mount and the pending target is cleared via onConsumeInitialScroll so
 // future re-renders don't fight the user's scroll.
-function DepartmentBuckets({ dept, jobs, onOpenJob, initialScrollBucket, onConsumeInitialScroll }) {
+function DepartmentBuckets({ dept, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll }) {
   const buckets = useMemo(
-    () => bucketsForDepartment(dept.code, jobs) || [],
-    [dept.code, jobs],
+    () => bucketsForDepartment(dept.code, jobs, { bulkOrders }) || [],
+    [dept.code, jobs, bulkOrders],
   )
 
   // One ref per bucket section so the bucket card can focus-scroll its queue
@@ -218,7 +250,11 @@ function DepartmentBuckets({ dept, jobs, onOpenJob, initialScrollBucket, onConsu
             key={b.code}
             ref={el => { sectionRefs.current[b.code] = el }}
             bucket={b}
+            bulkOrders={bulkOrders}
+            selectable={SELECTABLE_BUCKET_CODES.has(b.code)}
             onOpenRow={(row) => onOpenJob?.(row.job.id)}
+            onReload={onReload}
+            onMarkBulkReceived={onMarkBulkReceived}
           />
         ))}
       </div>
@@ -276,13 +312,21 @@ const URGENCY_DOT_COLOR = {
   [URGENCY.RED]:     'var(--sb-red, #b54040)',
 }
 
-function OwnerView({ jobs, orders, mode, onModeChange, onOpenJob, onOverviewCardClick }) {
+function OwnerView({ jobs, orders, bulkOrders, mode, onModeChange, onOpenJob, onOverviewCardClick, onReload, onMarkBulkReceived }) {
   return (
     <div className="sb-dept-owner-wrap">
       <OwnerViewToggle mode={mode} onChange={onModeChange} />
       {mode === 'overview'
         ? <OwnerOverview jobs={jobs} orders={orders} onCardClick={onOverviewCardClick} />
-        : <OwnerStack jobs={jobs} onOpenJob={onOpenJob} />}
+        : (
+          <OwnerStack
+            jobs={jobs}
+            bulkOrders={bulkOrders}
+            onOpenJob={onOpenJob}
+            onReload={onReload}
+            onMarkBulkReceived={onMarkBulkReceived}
+          />
+        )}
     </div>
   )
 }
@@ -342,21 +386,21 @@ function OwnerOverview({ jobs, orders, onCardClick }) {
 // Compute the per-department summary used by the jump strip and the eyebrows.
 // Returns [{ dept, anchorId, totalCount, urgency }] in DEPARTMENTS order so
 // stub departments slot into the strip at their natural position.
-function _ownerDeptSummaries(jobs) {
+function _ownerDeptSummaries(jobs, bulkOrders) {
   return DEPARTMENTS.map(dept => {
     const anchorId = `dept-${dept.code}`
     if (dept.stub) {
       return { dept, anchorId, totalCount: null, urgency: URGENCY.NEUTRAL }
     }
-    const buckets = bucketsForDepartment(dept.code, jobs) || []
+    const buckets = bucketsForDepartment(dept.code, jobs, { bulkOrders }) || []
     const totalCount = buckets.reduce((sum, b) => sum + (b.count || 0), 0)
     const allRows = buckets.flatMap(b => b.rows || [])
     return { dept, anchorId, totalCount, urgency: worstUrgency(allRows) }
   })
 }
 
-function OwnerStack({ jobs, onOpenJob }) {
-  const summaries = useMemo(() => _ownerDeptSummaries(jobs), [jobs])
+function OwnerStack({ jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived }) {
+  const summaries = useMemo(() => _ownerDeptSummaries(jobs, bulkOrders), [jobs, bulkOrders])
 
   // Smooth-scroll the corresponding department block into view. scroll-margin-
   // top on the block lets the dept eyebrow clear any sticky chrome above.
@@ -398,14 +442,17 @@ function OwnerStack({ jobs, onOpenJob }) {
           totalCount={totalCount}
           urgency={urgency}
           jobs={jobs}
+          bulkOrders={bulkOrders}
           onOpenJob={onOpenJob}
+          onReload={onReload}
+          onMarkBulkReceived={onMarkBulkReceived}
         />
       ))}
     </div>
   )
 }
 
-function OwnerDepartmentBlock({ dept, anchorId, totalCount, urgency, jobs, onOpenJob }) {
+function OwnerDepartmentBlock({ dept, anchorId, totalCount, urgency, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived }) {
   return (
     <section className="sb-dept-owner-block" id={anchorId}>
       <header className="sb-dept-owner-eyebrow">
@@ -428,7 +475,14 @@ function OwnerDepartmentBlock({ dept, anchorId, totalCount, urgency, jobs, onOpe
             : `Coming soon — queues for ${dept.label.toLowerCase()} will land in a follow-up pass.`}
         </div>
       ) : (
-        <DepartmentBuckets dept={dept} jobs={jobs} onOpenJob={onOpenJob} />
+        <DepartmentBuckets
+          dept={dept}
+          jobs={jobs}
+          bulkOrders={bulkOrders}
+          onOpenJob={onOpenJob}
+          onReload={onReload}
+          onMarkBulkReceived={onMarkBulkReceived}
+        />
       )}
     </section>
   )

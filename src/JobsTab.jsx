@@ -37,6 +37,10 @@ import {
   getNextRequiredAction,
   SOLD_STATUSES,
   BLOCK_REASON_CODES,
+  listAllBulkOrders,
+  projectJobDates,
+  compareMilestoneDates,
+  formatMilestoneDateDisplay,
 } from './lib/stonebooksData'
 
 // ── Milestone group ordering for the JobDetail per-group cards ───────────────
@@ -243,6 +247,10 @@ function BackfillBanner({ reloadCount, onComplete }) {
 function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   const [job, setJob] = useState(null)
   const [events, setEvents] = useState(null)
+  // Bulk orders feed projectJobDates so stone milestones linked to a PO
+  // project against the supplier's quoted ETA instead of the default 30d.
+  // One fetch on mount; refreshes whenever the job reloads (post-cascade).
+  const [bulkOrders, setBulkOrders] = useState([])
   // Override-readiness modal state — set when the data layer rejects a status
   // change with requiresOverride. Confirm calls updateMilestoneWithOverride.
   const [overrideReq, setOverrideReq] = useState(null)
@@ -257,20 +265,38 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   const [dismissedKinds, setDismissedKinds] = useState(() => new Set())
 
   const loadJob = useCallback(async () => {
-    const [j, e] = await Promise.all([getJob(jobId), getJobEvents(jobId)])
+    const [j, e, bo] = await Promise.all([
+      getJob(jobId),
+      getJobEvents(jobId),
+      listAllBulkOrders(),
+    ])
     setJob(j)
     setEvents(e)
+    setBulkOrders(bo || [])
   }, [jobId])
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([getJob(jobId), getJobEvents(jobId)]).then(([j, e]) => {
+    Promise.all([
+      getJob(jobId),
+      getJobEvents(jobId),
+      listAllBulkOrders(),
+    ]).then(([j, e, bo]) => {
       if (cancelled) return
       setJob(j)
       setEvents(e)
+      setBulkOrders(bo || [])
     })
     return () => { cancelled = true }
   }, [jobId])
+
+  // Project once per (job, bulkOrders) change. Each MilestoneRow reads its
+  // milestone's projected date out of this map rather than re-running the
+  // O(N) projection. Pure derivation — no side effects.
+  const projectionMap = useMemo(
+    () => job ? projectJobDates(job, { bulkOrders }) : new Map(),
+    [job, bulkOrders],
+  )
 
   // Auto-clear the waiting hint whenever overall_status changes. Covers manual
   // JobControls saves, hint acceptance, and any other path that updates the
@@ -391,6 +417,7 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
             milestones={byGroup.get(g)}
             allMilestones={job.milestones}
             jobId={jobId}
+            projectionMap={projectionMap}
             onRefresh={loadJob}
             onOverrideRequest={setOverrideReq}
             onTransition={considerWaitingHint}
@@ -859,7 +886,7 @@ function useMemoGroupMilestones(milestones) {
 // MILESTONE GROUP CARD
 // =============================================================================
 
-function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh, onOverrideRequest, onTransition }) {
+function MilestoneGroupCard({ group, milestones, allMilestones, jobId, projectionMap, onRefresh, onOverrideRequest, onTransition }) {
   const [open, setOpen] = useState(true)
   const summary = useMemo(() => {
     const total = milestones.length
@@ -912,6 +939,7 @@ function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh
               milestone={m}
               allMilestones={allMilestones}
               jobId={jobId}
+              projectionMap={projectionMap}
               onRefresh={onRefresh}
               onOverrideRequest={onOverrideRequest}
               onTransition={onTransition}
@@ -923,7 +951,7 @@ function MilestoneGroupCard({ group, milestones, allMilestones, jobId, onRefresh
   )
 }
 
-function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRequest, onTransition }) {
+function MilestoneRow({ milestone, allMilestones, jobId, projectionMap, onRefresh, onOverrideRequest, onTransition }) {
   const team = milestone.team ? teamInfo(milestone.team) : null
   const [noteOpen, setNoteOpen] = useState(false)
   const [noteDraft, setNoteDraft] = useState('')
@@ -1011,6 +1039,40 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
     if (res.ok) onRefresh?.()
     else setError(res.error || 'Update failed')
   }
+
+  // Project-date editing — setting a value flips the user-set flag true so
+  // future recomputes preserve the operator's judgment. Clearing the input
+  // (empty value) resets user_set to false so live projection takes over.
+  const handleProjectedChange = async (e) => {
+    const v = e.target.value || null
+    setBusy(true); setError(null)
+    const res = await updateMilestone(jobId, milestone.milestone_key, {
+      projected_completion_at: v,
+      projected_completion_at_user_set: !!v,
+    })
+    setBusy(false)
+    if (res.ok) onRefresh?.()
+    else setError(res.error || 'Update failed')
+  }
+
+  const handleProjectedReset = async () => {
+    setBusy(true); setError(null)
+    const res = await updateMilestone(jobId, milestone.milestone_key, {
+      projected_completion_at: null,
+      projected_completion_at_user_set: false,
+    })
+    setBusy(false)
+    if (res.ok) onRefresh?.()
+    else setError(res.error || 'Update failed')
+  }
+
+  // Live projection for this milestone — whatever the engine derives, given
+  // the user-set value (when set) or the upstream chain.
+  const projectedDates = compareMilestoneDates(milestone, projectionMap)
+  const dateDisplay = formatMilestoneDateDisplay(projectedDates)
+  const projectedInputValue = projectedDates.userSet
+    ? (milestone.projected_completion_at ? String(milestone.projected_completion_at).slice(0, 10) : '')
+    : (projectedDates.projected || '')
 
   // Save the three operational-truth fields in one patch. Empty inputs
   // are normalized to null in the data layer (clears prior values).
@@ -1131,14 +1193,61 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
           )}
         </div>
 
-        <div>
-          <input
-            type="date"
-            className={`sb-date-input ${overdue ? 'is-overdue' : ''}`}
-            value={milestone.due_date || ''}
-            onChange={handleDueDateChange}
-            disabled={busy}
-          />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--sb-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>
+              Due
+            </div>
+            <input
+              type="date"
+              className={`sb-date-input ${overdue ? 'is-overdue' : ''}`}
+              value={milestone.due_date || ''}
+              onChange={handleDueDateChange}
+              disabled={busy}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--sb-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 6 }}>
+              <span>Projected{projectedDates.userSet ? ' · manual' : ''}</span>
+              {projectedDates.userSet && (
+                <button
+                  type="button"
+                  className="sb-link"
+                  style={{ fontSize: 10, padding: 0, textTransform: 'none', letterSpacing: 0 }}
+                  onClick={handleProjectedReset}
+                  disabled={busy}
+                >
+                  reset
+                </button>
+              )}
+            </div>
+            <input
+              type="date"
+              className="sb-date-input"
+              value={projectedInputValue}
+              onChange={handleProjectedChange}
+              disabled={busy}
+            />
+            {dateDisplay && dateDisplay.tone && dateDisplay.tone !== 'calm' && dateDisplay.tone !== 'done' && dateDisplay.promised && dateDisplay.projected && (
+              <div
+                style={{
+                  fontSize: 11,
+                  marginTop: 4,
+                  color: dateDisplay.tone === 'red'
+                    ? 'var(--sb-red, #b54040)'
+                    : 'var(--sb-amber, #b8842a)',
+                  fontWeight: 500,
+                }}
+              >
+                Promised {dateDisplay.promised} · diverges by {projectedDates.divergenceDays}d
+              </div>
+            )}
+            {dateDisplay && dateDisplay.tone === 'done' && (
+              <div style={{ fontSize: 11, marginTop: 4, color: 'var(--sb-text-muted)', fontStyle: 'italic' }}>
+                {dateDisplay.single}
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ fontSize: 11, color: 'var(--sb-text-muted)', fontFamily: 'var(--sb-font-mono)' }}>

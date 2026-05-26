@@ -14,9 +14,13 @@
 // single signal, not two competing ones.
 // =============================================================================
 
+import { useMemo } from 'react'
 import {
   URGENCY,
   teamInfo,
+  projectJobDates,
+  compareMilestoneDates,
+  formatMilestoneDateDisplay,
 } from '../lib/stonebooksData'
 
 const URGENCY_PILL_STYLE = {
@@ -42,7 +46,7 @@ const TEAM_INITIALS = {
   installation: 'IN',
 }
 
-export default function TodayRow({ row, onClick, urgency: urgencyOverride }) {
+export default function TodayRow({ row, onClick, urgency: urgencyOverride, bulkOrders = null }) {
   const urgency = urgencyOverride || row.urgency || URGENCY.NEUTRAL
   const pill = URGENCY_PILL_STYLE[urgency]
   const stage = row.stage
@@ -86,6 +90,26 @@ export default function TodayRow({ row, onClick, urgency: urgencyOverride }) {
   // nextAction came through (shouldn't happen post-derive, but defensive).
   const primary = row.nextAction || row.milestone?.label || 'Action needed'
 
+  // Date projection — only surfaced when the customer promise and the
+  // system projection diverge by 2+ days. Keeps Today's row calm by default;
+  // when a divergence appears, it reads as a single tertiary line beneath
+  // the identity row ("Promised Jun 5 · Projected Jun 8" in the tone of the
+  // divergence). Pre-migration contract_due_at is null → never shows.
+  const projectionMap = useMemo(
+    () => projectJobDates(row.job, { bulkOrders: bulkOrders || [] }),
+    [row.job, bulkOrders],
+  )
+  const dateDisplay = useMemo(
+    () => formatMilestoneDateDisplay(compareMilestoneDates(row.milestone, projectionMap)),
+    [row.milestone, projectionMap],
+  )
+  const showDivergence = !!(dateDisplay?.promised && dateDisplay?.projected)
+  const divergenceClass = dateDisplay?.tone === 'red'
+    ? 'sb-today-row-divergence sb-today-row-divergence-red'
+    : dateDisplay?.tone === 'amber'
+      ? 'sb-today-row-divergence sb-today-row-divergence-amber'
+      : 'sb-today-row-divergence'
+
   return (
     <button
       type="button"
@@ -97,6 +121,11 @@ export default function TodayRow({ row, onClick, urgency: urgencyOverride }) {
         <div className="sb-today-row-primary">{primary}</div>
         {secondary && (
           <div className="sb-today-row-secondary">{secondary}</div>
+        )}
+        {showDivergence && (
+          <div className={divergenceClass}>
+            Promised {dateDisplay.promised} · Projected {dateDisplay.projected}
+          </div>
         )}
       </div>
 
@@ -184,6 +213,25 @@ const localStyles = `
     text-overflow: ellipsis;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Divergence line — surfaces ONLY when the customer promise and the
+     system projection differ by 2+ days. Calm by default (neutral tone);
+     amber/red when the divergence is genuinely alarming. Same 12px tier
+     as the secondary so the row's vertical rhythm stays orderly. */
+  .sb-today-row-divergence {
+    font-size: 12px;
+    color: var(--sb-text-secondary);
+    margin-top: 3px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+  }
+  .sb-today-row-divergence-amber {
+    color: var(--sb-amber, #b8842a);
+  }
+  .sb-today-row-divergence-red {
+    color: var(--sb-red, #b54040);
+    font-weight: 500;
   }
 
   .sb-today-row-stage-col {
