@@ -20,16 +20,51 @@ import {
   teamInfo,
 } from '../lib/stonebooksData'
 
+// Standard queue pill — surfaces internal-due-date overdueness or aging.
 const URGENCY_PILL_STYLE = {
   [URGENCY.NEUTRAL]: { text: 'var(--sb-text-muted)', bg: 'transparent',           label: 'In queue' },
   [URGENCY.AMBER]:   { text: 'var(--sb-amber, #b8842a)', bg: 'var(--sb-amber-bg, #fbe5b8)', label: 'Aging' },
   [URGENCY.RED]:     { text: 'var(--sb-red, #b54040)',  bg: 'var(--sb-red-bg, #fbe5e5)',   label: 'Overdue' },
 }
 
+// "Waiting" variant pill — these queues are tracking an external party we've
+// already handed off to (customer for approval, cemetery for permit, supplier
+// for stone). The relevant signal is *how long they've been holding it*, and
+// whether they're past their quoted-back date. "In queue" doesn't fit —
+// nobody internally is "queued" for this work, so we substitute "Waiting Nd".
+const WAITING_PILL_STYLE = {
+  [URGENCY.NEUTRAL]: { text: 'var(--sb-text-muted)',    bg: 'transparent',                 label: 'Waiting' },
+  [URGENCY.AMBER]:   { text: 'var(--sb-amber, #b8842a)', bg: 'var(--sb-amber-bg, #fbe5b8)', label: 'Waiting' },
+  [URGENCY.RED]:     { text: 'var(--sb-red, #b54040)',   bg: 'var(--sb-red-bg, #fbe5e5)',   label: 'Past quoted date' },
+}
+
 const URGENCY_ROW_TINT = {
   [URGENCY.NEUTRAL]: 'transparent',
   [URGENCY.AMBER]:   'rgba(184, 132, 42, 0.045)',
   [URGENCY.RED]:     'rgba(181, 64, 64, 0.055)',
+}
+
+// Days past the external party's quoted resolution date. Returns 0 when the
+// milestone has no expected_resolution_at, or when the quoted date is still
+// in the future. Used by the waiting-variant pill to render "Past quoted
+// date · Nd" — distinct from internal due-date overdueness, which uses the
+// existing row.overdueDays.
+function _daysPastExpected(milestone) {
+  if (!milestone?.expected_resolution_at) return 0
+  const expected = new Date(`${milestone.expected_resolution_at.slice(0, 10)}T00:00:00`)
+  const t = new Date()
+  t.setHours(0, 0, 0, 0)
+  if (expected >= t) return 0
+  return Math.floor((t - expected) / 86400000)
+}
+
+// Secondary-line text for waiting rows. Either "Expected back Jun 14, 2026"
+// when the external party gave us a quoted resolution date, or a soft
+// "No expected date set" so the row still reads as a tracked hand-off rather
+// than something the operator forgot to date.
+function _expectedBackText(milestone) {
+  if (!milestone?.expected_resolution_at) return 'No expected date set'
+  return `Expected back ${fmtDate(milestone.expected_resolution_at)}`
 }
 
 function formatStoneSize(order) {
@@ -42,11 +77,12 @@ function formatStoneSize(order) {
   return `${w}×${h}`
 }
 
-export default function JobsQueueRow({ row, onClick, showPlot = false }) {
+export default function JobsQueueRow({ row, onClick, showPlot = false, variant = null }) {
   const urgency = row.urgency || URGENCY.NEUTRAL
   const stage = row.stage
   const useUrgencyChip = urgency !== URGENCY.NEUTRAL
-  const pill = URGENCY_PILL_STYLE[urgency]
+  const isWaiting = variant === 'waiting'
+  const pill = isWaiting ? WAITING_PILL_STYLE[urgency] : URGENCY_PILL_STYLE[urgency]
 
   const order = row.order
   const customer = row.customer
@@ -54,18 +90,40 @@ export default function JobsQueueRow({ row, onClick, showPlot = false }) {
   const surname = order?.primary_lastname || customerName(customer) || '—'
   const orderNum = order?.order_number || (row.job?.id ? row.job.id.slice(0, 8) : '')
 
-  // Urgency pill — for amber/red the label includes the day count; neutral is
-  // a plain "In queue" with no number.
+  // Pill text. Standard buckets read "Overdue · Nd" / "Aging · Nd" / "In queue".
+  // Waiting buckets read "Past quoted date · Nd" (when red) or "Waiting Nd"
+  // (otherwise). The day count for waiting rows is the aging since last
+  // touch — which for an in-progress milestone is the time since the office
+  // sent it out. The red-urgency day count for waiting rows comes from the
+  // external party's expected_resolution_at via classifyRowUrgency upstream.
   let pillLabel = pill.label
-  if (urgency === URGENCY.RED && row.overdueDays > 0) {
-    pillLabel = `Overdue · ${row.overdueDays}d`
-  } else if (urgency === URGENCY.AMBER && row.agingDays) {
-    pillLabel = `Aging · ${row.agingDays}d`
+  if (isWaiting) {
+    const expectedLate = _daysPastExpected(row.milestone)
+    if (urgency === URGENCY.RED && expectedLate > 0) {
+      pillLabel = `Past quoted date · ${expectedLate}d`
+    } else if (urgency === URGENCY.RED && row.overdueDays > 0) {
+      // Internal due_date breached even though no external expectation set.
+      pillLabel = `Overdue · ${row.overdueDays}d`
+    } else if (row.agingDays != null) {
+      pillLabel = `Waiting ${row.agingDays}d`
+    }
+  } else {
+    if (urgency === URGENCY.RED && row.overdueDays > 0) {
+      pillLabel = `Overdue · ${row.overdueDays}d`
+    } else if (urgency === URGENCY.AMBER && row.agingDays) {
+      pillLabel = `Aging · ${row.agingDays}d`
+    }
   }
 
   const owner = row.owner ? teamInfo(row.owner)?.label : null
   const stoneSize = formatStoneSize(order)
-  const secondaryLeft = [cemetery?.name, stoneSize].filter(Boolean).join(' · ')
+  // Waiting rows replace the stone-size half of the secondary line with the
+  // expected-back date — the operator's question is "when did they say they'd
+  // be done?" not "what size is the stone?".
+  const expectedBack = isWaiting ? _expectedBackText(row.milestone) : null
+  const secondaryLeft = isWaiting
+    ? [cemetery?.name, expectedBack].filter(Boolean).join(' · ')
+    : [cemetery?.name, stoneSize].filter(Boolean).join(' · ')
 
   // Stage chip styling — yields to urgency ramp when row is amber/red so the
   // row reads as a single signal. Otherwise it uses its palette entry.

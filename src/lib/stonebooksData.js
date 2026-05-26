@@ -2060,18 +2060,35 @@ export function stageChipFor(group) {
 // but the milestone isn't overdue, it earns the amber urgency state. Tune
 // after watching the live page for a week (default values per L2-followup spec).
 export const BUCKET_AGING_THRESHOLDS = {
-  rubs_to_grab:        5,
-  cut_stencil:         3,
-  stick_stencil:       3,
-  sandblast:           4,
-  wash_clean:          2,
-  foundations:        14,
-  inscriptions_onsite: 7,
-  new_stone_setting:   7,
-  bronze_setting:      7,
-  doors_pick_up:       7,
-  doors_drop_off:      7,
-  installs_scheduled:  7,
+  // Production
+  rubs_to_grab:              5,
+  cut_stencil:               3,
+  stick_stencil:             3,
+  sandblast:                 4,
+  wash_clean:                2,
+  foundations:              14,
+  // Installation
+  inscriptions_onsite:       7,
+  new_stone_setting:         7,
+  bronze_setting:            7,
+  doors_pick_up:             7,
+  doors_drop_off:            7,
+  installs_scheduled:        7,
+  // Admin
+  intake_to_complete:        3,
+  permits_to_file:           5,
+  waiting_cemetery:         14,
+  stones_to_order:           3,
+  waiting_supplier:         14,
+  photos_to_request:         7,
+  closeouts:                10,
+  // Design
+  layouts_to_draw:           5,
+  awaiting_layout_approval:  7,
+  bronze_layouts_to_draw:    5,
+  awaiting_bronze_approval:  7,
+  photos_to_log:             3,
+  etching_layouts:           5,
 }
 
 // Three-state urgency. Earned only by signal — never painted by category.
@@ -2293,6 +2310,189 @@ function _bucketNewStoneSetting(jobs) {
 // TODO(L3+): add `install_scheduled_at` column to orders or a scheduling
 // substate on the install milestone, then derive here.
 
+// ─── ADMIN buckets ──────────────────────────────────────────────────────────
+// The Admin role owns office-floor work — intake, permit paperwork, supplier
+// POs, photo chasing, closeouts. Some of these buckets are "waiting" queues
+// (work the office is tracking but not actively doing — the operational
+// question is *who do I need to chase today?*). Those buckets are tagged
+// `kind: 'waiting'` in the bucket descriptor and the row variant emphasizes
+// the external party and the expected-back date.
+
+// Shared helper — filter a job's milestones to those that are actionable now
+// (not done, not skipped, not blocked by unsatisfied requires). Used by every
+// "to do" bucket below. Closed jobs are filtered at the outer for-loop.
+function _actionableMilestonesByPredicate(jobs, predicate, opts = {}) {
+  const onlyStatus = opts.status || null
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    for (const m of (job.milestones || [])) {
+      if (!predicate(m)) continue
+      if (m.status === 'done' || m.status === 'not_needed') continue
+      if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
+      if (onlyStatus && m.status !== onlyStatus) continue
+      rows.push(_buildMilestoneRow(job, m))
+    }
+  }
+  return rows
+}
+
+// Intake to complete — `intake_complete` actionable. Falls back to any
+// actionable milestone in the `intake` group when the canonical key is missing
+// (older templates may use a different key name; the group is invariant).
+function _bucketIntakeToComplete(jobs) {
+  const rows = _actionableMilestonesByPredicate(jobs, m =>
+    m.milestone_key === 'intake_complete' || m.group === 'intake'
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.intake_to_complete)
+}
+
+// Permits to file — permit-group milestones in `not_started` ready state. Per
+// the operational classifier, only the send-side milestones (*_submitted,
+// *_filed, to_cemetery) represent work the office actively files. Receive-
+// side (*_approved) is the "log the approval" step, not the file step.
+function _bucketPermitsToFile(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.group === 'permit' && getMilestoneOperationalRole(m) === 'send_to_cemetery',
+    { status: 'not_started' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.permits_to_file)
+}
+
+// Waiting on cemetery — permit-group milestones in `in_progress`. We've filed
+// the permit; the cemetery hasn't responded yet. `expected_resolution_at` (if
+// set) drives the row's red-urgency trigger via classifyRowUrgency's existing
+// external-party-late check.
+function _bucketWaitingCemetery(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.group === 'permit',
+    { status: 'in_progress' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.waiting_cemetery)
+}
+
+// Stones to order — `stone_ordered` in `not_started` ready state. Office
+// places the PO.
+function _bucketStonesToOrder(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.milestone_key === 'stone_ordered',
+    { status: 'not_started' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.stones_to_order)
+}
+
+// Waiting on supplier — any `stone` or `etching` group milestone in
+// `in_progress`. The PO is out; we're waiting on the supplier. Same
+// expected-back / past-quoted-date semantics as waiting-on-cemetery.
+function _bucketWaitingSupplier(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => (m.group === 'stone' || m.group === 'etching'),
+    { status: 'in_progress' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.waiting_supplier)
+}
+
+// Photos to request — photo-group send-to-customer milestones not yet started.
+// Anchors on `photo_requested` when present; falls back to any photo-group
+// milestone whose operational role is `send_to_customer` (defensive against
+// template key drift). This is the "we need to ask the customer for the photo"
+// queue — distinct from "Photos to log" (Design) which fires once it arrives.
+function _bucketPhotosToRequest(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.group === 'photo' && (
+      m.milestone_key === 'photo_requested' ||
+      getMilestoneOperationalRole(m) === 'send_to_customer'
+    ),
+    { status: 'not_started' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.photos_to_request)
+}
+
+// Closeouts — actionable milestones in the `closeout` group. Final paperwork,
+// payment confirmation, mark-job-complete. Anchors on group, not a specific
+// key, because the closeout templates have several sub-steps.
+function _bucketCloseouts(jobs) {
+  const rows = _actionableMilestonesByPredicate(jobs, m => m.group === 'closeout')
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.closeouts)
+}
+
+// ─── DESIGN buckets ─────────────────────────────────────────────────────────
+// The Design role owns layout authoring and customer approval cycles.
+// "Layouts to draw" and "Bronze layouts to draw" are the active-work queues;
+// the two "Awaiting … approval" queues are waiting queues that surface
+// expected-back dates and prompt the chase-the-customer conversation.
+
+// Layouts to draw — `layout_created` or `proof_created` (legacy alias) in
+// actionable state. Either not_started ready (draft from scratch) or
+// in_progress (in progress on the table). Etching layouts are filtered out
+// here because they have their own bucket below.
+function _bucketLayoutsToDraw(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.group === 'design' && (
+      m.milestone_key === 'layout_created' ||
+      m.milestone_key === 'proof_created'
+    ),
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.layouts_to_draw)
+}
+
+// Awaiting customer approval — `proof_sent` in_progress. Sent out, waiting
+// for the customer to approve.
+function _bucketAwaitingLayoutApproval(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.milestone_key === 'proof_sent' || m.milestone_key === 'layout_sent',
+    { status: 'in_progress' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.awaiting_layout_approval)
+}
+
+// Bronze layouts to draw — `bronze_proof_created` actionable (or legacy
+// `bronze_layout_created` if a template ever uses that key).
+function _bucketBronzeLayoutsToDraw(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.milestone_key === 'bronze_proof_created' ||
+         m.milestone_key === 'bronze_layout_created',
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.bronze_layouts_to_draw)
+}
+
+// Awaiting bronze approval — `bronze_proof_sent` in_progress.
+function _bucketAwaitingBronzeApproval(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.milestone_key === 'bronze_proof_sent',
+    { status: 'in_progress' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.awaiting_bronze_approval)
+}
+
+// Photos to log — `photo_received` actionable. The customer-supplied photo
+// arrived; design needs to log it and apply it to the layout.
+function _bucketPhotosToLog(jobs) {
+  const rows = _actionableMilestonesByPredicate(
+    jobs,
+    m => m.milestone_key === 'photo_received',
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.photos_to_log)
+}
+
+// Etching layouts — any actionable milestone in the `etching` group. Etching
+// templates today have author/sent/approved sub-steps; this surfaces them all
+// in one bucket until they earn their own queues.
+function _bucketEtchingLayouts(jobs) {
+  const rows = _actionableMilestonesByPredicate(jobs, m => m.group === 'etching')
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.etching_layouts)
+}
+
 // ─── Urgency attachment + bucket assembly ───────────────────────────────────
 
 function _attachUrgency(rows, threshold) {
@@ -2329,7 +2529,8 @@ function _groupRowsByCemetery(rows) {
 function _bucket(code, label, rows, opts = {}) {
   const dataGap = !!opts.dataGap
   const subline = opts.subline || null
-  const sortLabel = opts.sortLabel || 'Sorted by aging'
+  const kind = opts.kind || null   // 'waiting' for queues that are tracking, not doing
+  const sortLabel = opts.sortLabel || (kind === 'waiting' ? 'Sorted by days waiting' : 'Sorted by aging')
   const grouping = opts.grouping || null
   return {
     code,
@@ -2339,6 +2540,7 @@ function _bucket(code, label, rows, opts = {}) {
     urgency: dataGap ? URGENCY.NEUTRAL : worstUrgency(rows),
     dataGap,
     subline,
+    kind,
     sortLabel,
     grouping,
     groups: grouping === 'cemetery' ? _groupRowsByCemetery(rows) : null,
@@ -2352,6 +2554,18 @@ function _agingSummary(rows, threshold) {
   if (reds > 0) return `${reds} overdue`
   if (ambers > 0) return `${ambers} aging > ${threshold}d`
   return 'all calm'
+}
+
+// Subline variant for waiting buckets — the operational question is "is anyone
+// past their quoted date?" rather than "how long has the work been sitting?"
+// Red rows here mean the external party broke their committed-back date.
+function _waitingSummary(rows, threshold) {
+  if (!rows.length) return null
+  const reds = rows.filter(r => r.urgency === URGENCY.RED).length
+  const ambers = rows.filter(r => r.urgency === URGENCY.AMBER).length
+  if (reds > 0) return `${reds} past quoted date`
+  if (ambers > 0) return `${ambers} waiting > ${threshold}d`
+  return 'all on schedule'
 }
 
 export function getProductionBuckets(jobs) {
@@ -2391,6 +2605,72 @@ export function getProductionBuckets(jobs) {
   ]
 }
 
+export function getAdminBuckets(jobs) {
+  const intake     = _bucketIntakeToComplete(jobs)
+  const permitsTo  = _bucketPermitsToFile(jobs)
+  const waitingCem = _bucketWaitingCemetery(jobs)
+  const stonesTo   = _bucketStonesToOrder(jobs)
+  const waitingSup = _bucketWaitingSupplier(jobs)
+  const photosReq  = _bucketPhotosToRequest(jobs)
+  const closeouts  = _bucketCloseouts(jobs)
+  return [
+    _bucket('intake_to_complete', 'Intake to complete', intake, {
+      subline: _agingSummary(intake, BUCKET_AGING_THRESHOLDS.intake_to_complete),
+    }),
+    _bucket('permits_to_file', 'Permits to file', permitsTo, {
+      subline: _agingSummary(permitsTo, BUCKET_AGING_THRESHOLDS.permits_to_file),
+    }),
+    _bucket('waiting_cemetery', 'Waiting on cemetery', waitingCem, {
+      kind: 'waiting',
+      subline: _waitingSummary(waitingCem, BUCKET_AGING_THRESHOLDS.waiting_cemetery),
+    }),
+    _bucket('stones_to_order', 'Stones to order', stonesTo, {
+      subline: _agingSummary(stonesTo, BUCKET_AGING_THRESHOLDS.stones_to_order),
+    }),
+    _bucket('waiting_supplier', 'Waiting on supplier', waitingSup, {
+      kind: 'waiting',
+      subline: _waitingSummary(waitingSup, BUCKET_AGING_THRESHOLDS.waiting_supplier),
+    }),
+    _bucket('photos_to_request', 'Photos to request', photosReq, {
+      subline: _agingSummary(photosReq, BUCKET_AGING_THRESHOLDS.photos_to_request),
+    }),
+    _bucket('closeouts', 'Closeouts', closeouts, {
+      subline: _agingSummary(closeouts, BUCKET_AGING_THRESHOLDS.closeouts),
+    }),
+  ]
+}
+
+export function getDesignBuckets(jobs) {
+  const layouts        = _bucketLayoutsToDraw(jobs)
+  const awaitingLayout = _bucketAwaitingLayoutApproval(jobs)
+  const bronzeLayouts  = _bucketBronzeLayoutsToDraw(jobs)
+  const awaitingBronze = _bucketAwaitingBronzeApproval(jobs)
+  const photosLog      = _bucketPhotosToLog(jobs)
+  const etching        = _bucketEtchingLayouts(jobs)
+  return [
+    _bucket('layouts_to_draw', 'Layouts to draw', layouts, {
+      subline: _agingSummary(layouts, BUCKET_AGING_THRESHOLDS.layouts_to_draw),
+    }),
+    _bucket('awaiting_layout_approval', 'Awaiting customer approval', awaitingLayout, {
+      kind: 'waiting',
+      subline: _waitingSummary(awaitingLayout, BUCKET_AGING_THRESHOLDS.awaiting_layout_approval),
+    }),
+    _bucket('bronze_layouts_to_draw', 'Bronze layouts to draw', bronzeLayouts, {
+      subline: _agingSummary(bronzeLayouts, BUCKET_AGING_THRESHOLDS.bronze_layouts_to_draw),
+    }),
+    _bucket('awaiting_bronze_approval', 'Awaiting bronze approval', awaitingBronze, {
+      kind: 'waiting',
+      subline: _waitingSummary(awaitingBronze, BUCKET_AGING_THRESHOLDS.awaiting_bronze_approval),
+    }),
+    _bucket('photos_to_log', 'Photos to log', photosLog, {
+      subline: _agingSummary(photosLog, BUCKET_AGING_THRESHOLDS.photos_to_log),
+    }),
+    _bucket('etching_layouts', 'Etching layouts', etching, {
+      subline: _agingSummary(etching, BUCKET_AGING_THRESHOLDS.etching_layouts),
+    }),
+  ]
+}
+
 export function getInstallationBuckets(jobs) {
   const newStone = _bucketNewStoneSetting(jobs)
   return [
@@ -2422,18 +2702,24 @@ export function getInstallationBuckets(jobs) {
 
 // Department descriptor — used by the role selector + the Owner stack.
 // Stubs surface as cards with no buckets and a single "Coming soon" panel.
+// Sales stays a stub on purpose — most sales work happens in the Orders tab
+// before a job exists, so job-stage buckets for Sales would be sparse and
+// would feel forced. See the DepartmentStub copy in JobsDepartmentView for
+// the operator-facing explanation.
 export const DEPARTMENTS = [
-  { code: 'admin',        label: 'Admin',        stub: true  },
-  { code: 'design',       label: 'Design',       stub: true  },
+  { code: 'admin',        label: 'Admin',        stub: false },
+  { code: 'design',       label: 'Design',       stub: false },
   { code: 'sales',        label: 'Sales',        stub: true  },
   { code: 'production',   label: 'Production',   stub: false },
   { code: 'installation', label: 'Installation', stub: false },
 ]
 
 export function bucketsForDepartment(department, jobs) {
+  if (department === 'admin')        return getAdminBuckets(jobs)
+  if (department === 'design')       return getDesignBuckets(jobs)
   if (department === 'production')   return getProductionBuckets(jobs)
   if (department === 'installation') return getInstallationBuckets(jobs)
-  return null   // stub departments
+  return null   // stub departments (sales)
 }
 
 // =============================================================================

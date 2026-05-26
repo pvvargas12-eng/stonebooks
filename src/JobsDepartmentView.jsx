@@ -6,17 +6,16 @@
 //     Installation · Owner). Persisted per-user via workspaceState.
 //   • A row of bucket cards for the selected department
 //   • A column of queue sections below, each anchored to one bucket
-//   • Stub panels for Admin / Design / Sales (single "Coming soon" message)
-//   • Owner view stacks all five departments — Production and Installation
-//     get real bucket grids + queue sections, the other three are stubs.
+//   • Sales is the only stub left — its work mostly lives in the Orders tab.
+//   • Owner view stacks all five departments — Admin, Design, Production, and
+//     Installation render real bucket grids + queue sections; Sales renders an
+//     honest stub. A small jump-link strip at the top of Owner view lets the
+//     operator skip to a department; each department block carries a total
+//     work-in-flight count + a worst-urgency dot in its eyebrow.
 //
 // Data layer: every bucket is built by stonebooksData.bucketsForDepartment()
 // from a single jobs-fetch on mount. No per-bucket queries. The same row
 // click handler from JobsTab is threaded through to open a JobDetail drill.
-//
-// The L2-followup spec deliberately defers role-driven Today views, one-tap
-// status updates inside queue rows, and any data-model changes. Those land in
-// follow-up passes.
 // =============================================================================
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
@@ -24,6 +23,8 @@ import {
   getJobs,
   DEPARTMENTS,
   bucketsForDepartment,
+  worstUrgency,
+  URGENCY,
 } from './lib/stonebooksData'
 import {
   getSelectedRole,
@@ -132,15 +133,30 @@ function DepartmentBuckets({ dept, jobs, onOpenJob }) {
   )
 }
 
-// Coming-soon stub for Admin / Design / Sales until their queues are built.
+// Stub panel — Sales is the only remaining stub. Admin / Design / Production /
+// Installation are wired. The Sales copy is intentionally honest: most sales
+// work happens in the Orders tab before a job ever exists, so job-stage
+// buckets for Sales would feel forced. The role selector still shows Sales so
+// the surface is consistent across departments and so the gap is visible.
 function DepartmentStub({ label }) {
+  if (label === 'Sales') {
+    return (
+      <div className="sb-dept-stub">
+        <div className="sb-dept-stub-eyebrow">{label}</div>
+        <div className="sb-dept-stub-body">
+          Sales work mostly lives in the Orders tab — estimates, quotes,
+          follow-ups. Sales doesn't have job-stage buckets yet. We'll wire
+          this up after the Orders vs Jobs model is settled.
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="sb-dept-stub">
       <div className="sb-dept-stub-eyebrow">{label}</div>
       <div className="sb-dept-stub-body">
         Coming soon. The {label.toLowerCase()} department's bucket grid and
-        queues will land in a follow-up pass. The page shape is reserved here
-        so the role selector behaves consistently while the work is being done.
+        queues will land in a follow-up pass.
       </div>
     </div>
   )
@@ -150,18 +166,80 @@ function DepartmentStub({ label }) {
 // OWNER VIEW
 // =============================================================================
 // Stacks all five departments in a single scrollable page. Each department
-// gets a header eyebrow, its bucket grid, and (for Production / Installation)
-// its queue sections. Stub departments only show the header + a one-line
-// "Coming soon" note — no bucket grid for stubs in Owner view, keeps the
-// page from feeling padded with empty surfaces.
+// gets a header eyebrow, its bucket grid, and its queue sections. Four of
+// the five departments (Admin, Design, Production, Installation) are real;
+// Sales remains a stub with an honest one-liner explaining that its work
+// mostly lives in the Orders tab. Stub blocks render only the header + the
+// one-liner — no bucket grid for stubs, keeping the page from feeling padded
+// with empty surfaces.
+
+// Worst-urgency dot color used in both the Owner jump strip and each
+// department's eyebrow. Mirrors the JobsBucketCard / JobsQueueSection palette
+// so the operator's eye learns one color vocabulary across the page.
+const URGENCY_DOT_COLOR = {
+  [URGENCY.NEUTRAL]: 'var(--sb-border)',
+  [URGENCY.AMBER]:   'var(--sb-amber, #b8842a)',
+  [URGENCY.RED]:     'var(--sb-red, #b54040)',
+}
+
+// Compute the per-department summary used by the jump strip and the eyebrows.
+// Returns [{ dept, anchorId, totalCount, urgency }] in DEPARTMENTS order so
+// stub departments slot into the strip at their natural position.
+function _ownerDeptSummaries(jobs) {
+  return DEPARTMENTS.map(dept => {
+    const anchorId = `dept-${dept.code}`
+    if (dept.stub) {
+      return { dept, anchorId, totalCount: null, urgency: URGENCY.NEUTRAL }
+    }
+    const buckets = bucketsForDepartment(dept.code, jobs) || []
+    const totalCount = buckets.reduce((sum, b) => sum + (b.count || 0), 0)
+    const allRows = buckets.flatMap(b => b.rows || [])
+    return { dept, anchorId, totalCount, urgency: worstUrgency(allRows) }
+  })
+}
 
 function OwnerStack({ jobs, onOpenJob }) {
+  const summaries = useMemo(() => _ownerDeptSummaries(jobs), [jobs])
+
+  // Smooth-scroll the corresponding department block into view. scroll-margin-
+  // top on the block lets the dept eyebrow clear any sticky chrome above.
+  const scrollToDept = (anchorId) => {
+    const node = document.getElementById(anchorId)
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
   return (
     <div className="sb-dept-owner">
-      {DEPARTMENTS.map(dept => (
+      <nav className="sb-dept-owner-jumps" aria-label="Jump to department">
+        {summaries.map(({ dept, anchorId, totalCount, urgency }) => (
+          <button
+            key={dept.code}
+            type="button"
+            className="sb-dept-owner-jump"
+            onClick={() => scrollToDept(anchorId)}
+          >
+            <span
+              className="sb-dept-owner-jump-dot"
+              style={{ background: URGENCY_DOT_COLOR[urgency] }}
+              aria-hidden="true"
+            />
+            <span className="sb-dept-owner-jump-label">{dept.label}</span>
+            {totalCount != null && (
+              <span className="sb-dept-owner-jump-count">{totalCount}</span>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {summaries.map(({ dept, anchorId, totalCount, urgency }) => (
         <OwnerDepartmentBlock
           key={dept.code}
           dept={dept}
+          anchorId={anchorId}
+          totalCount={totalCount}
+          urgency={urgency}
           jobs={jobs}
           onOpenJob={onOpenJob}
         />
@@ -170,14 +248,27 @@ function OwnerStack({ jobs, onOpenJob }) {
   )
 }
 
-function OwnerDepartmentBlock({ dept, jobs, onOpenJob }) {
+function OwnerDepartmentBlock({ dept, anchorId, totalCount, urgency, jobs, onOpenJob }) {
   return (
-    <section className="sb-dept-owner-block">
-      <div className="sb-dept-owner-eyebrow">{dept.label}</div>
+    <section className="sb-dept-owner-block" id={anchorId}>
+      <header className="sb-dept-owner-eyebrow">
+        <span
+          className="sb-dept-owner-eyebrow-dot"
+          style={{ background: URGENCY_DOT_COLOR[urgency] }}
+          aria-hidden="true"
+        />
+        <span className="sb-dept-owner-eyebrow-label">{dept.label}</span>
+        {totalCount != null && (
+          <span className="sb-dept-owner-eyebrow-count">
+            {totalCount === 0 ? 'nothing in flight' : `${totalCount} in flight`}
+          </span>
+        )}
+      </header>
       {dept.stub ? (
         <div className="sb-dept-owner-stub">
-          Coming soon — queues for {dept.label.toLowerCase()} will land in a
-          follow-up pass.
+          {dept.code === 'sales'
+            ? 'Sales work mostly lives in the Orders tab — job-stage buckets will come once the Orders vs Jobs model is settled.'
+            : `Coming soon — queues for ${dept.label.toLowerCase()} will land in a follow-up pass.`}
         </div>
       ) : (
         <DepartmentBuckets dept={dept} jobs={jobs} onOpenJob={onOpenJob} />
@@ -247,10 +338,66 @@ const localStyles = `
     flex-direction: column;
     gap: 64px;
   }
-  .sb-dept-owner-block {
-    /* Anchors to allow eventual nav-from-roll-up if Owner ever needs it. */
+
+  /* Department jump strip — small horizontal nav at the top of the Owner
+     view. Click a chip → smooth-scroll to that department block. Each chip
+     shows a dot (worst urgency across that dept's buckets), the dept label,
+     and the total count of work in flight. Stubs render without a count. */
+  .sb-dept-owner-jumps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 0 18px;
+    margin-bottom: -8px;
+    border-bottom: 0.5px solid var(--sb-border);
   }
+  .sb-dept-owner-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 999px;
+    color: var(--sb-text);
+    font: inherit;
+    font-size: 13px;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .sb-dept-owner-jump:hover {
+    background: var(--sb-surface-muted);
+  }
+  .sb-dept-owner-jump:focus-visible {
+    outline: 0.5px solid var(--sb-accent);
+    outline-offset: 1px;
+  }
+  .sb-dept-owner-jump-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+  }
+  .sb-dept-owner-jump-label {
+    font-weight: 500;
+  }
+  .sb-dept-owner-jump-count {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sb-dept-owner-block {
+    scroll-margin-top: 16px;
+  }
+  /* Eyebrow — strong enough to break up a long Owner stack. Inline flex so
+     the dot, label, and count sit on one baseline. Uppercase + letter-spacing
+     gives the section a section-header presence; the hairline below seals it. */
   .sb-dept-owner-eyebrow {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
     font-size: 12px;
     font-weight: 500;
     letter-spacing: 0.08em;
@@ -259,6 +406,23 @@ const localStyles = `
     margin-bottom: 18px;
     padding-bottom: 8px;
     border-bottom: 0.5px solid var(--sb-border);
+  }
+  .sb-dept-owner-eyebrow-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    align-self: center;
+  }
+  .sb-dept-owner-eyebrow-label {
+    color: var(--sb-text);
+  }
+  .sb-dept-owner-eyebrow-count {
+    color: var(--sb-text-muted);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
   }
   .sb-dept-owner-stub {
     font-size: 14px;

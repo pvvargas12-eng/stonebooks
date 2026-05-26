@@ -62,6 +62,7 @@ const JobsQueueSection = forwardRef(function JobsQueueSection(
               <JobsQueueRow
                 key={row.job.id + ':' + (row.milestone?.id || '')}
                 row={row}
+                variant={bucket.kind}
                 onClick={onOpenRow}
               />
             ))}
