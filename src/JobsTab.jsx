@@ -1,29 +1,35 @@
 // =============================================================================
-// 📚 Stonebooks — Jobs tab (Sprint J1-P1 commit 4: editable)
+// 📚 Stonebooks — Jobs tab (L2 followup: department-aware operational view)
 // =============================================================================
-// Operational view of every signed order. One row per job. Click a row to
-// open the detail panel; edit milestones, set job-level status, log notes,
-// override readiness gates with a logged reason.
+// The Jobs page is now a department-aware operational dashboard:
+//   • Top: page heading + the workspace-strip-managed chrome
+//   • Top-right: role selector (Admin · Design · Sales · Production ·
+//                 Installation · Owner) — see JobsDepartmentView
+//   • Body: per-department bucket grid + queue sections. Production and
+//           Installation are fully fleshed out; Admin / Design / Sales are
+//           stubs; Owner stacks all five.
 //
-// The empty state still offers a "Create test job from order" picker; the
-// wizard handoff replaces that in commit 6.
+// JobDetail (the per-job drill-down with the full milestone grid, the ETA &
+// supplier inline form, the override modal, the waiting-hint banner, etc.)
+// is unchanged — clicking any queue row routes here as before.
 //
-// Data-layer contracts (commit 2) own readiness gating, override events,
-// not_needed cascades, and event log writes. This file is UI only — every
-// write goes through stonebooksData.js helpers, and every successful write
-// triggers a server refetch (no optimistic state).
+// Deleted in this pass (replaced by the department lens):
+//   • The Jobs / Queues mode toggle
+//   • The per-job narrative-row table (JobsList / JobsListRow)
+//   • The Filter panel + search bar (department selection is the new filter)
+//   • src/QueuesView.jsx (its job is now done by JobsDepartmentView)
 // =============================================================================
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
-import QueuesView from './QueuesView'
+import JobsDepartmentView from './JobsDepartmentView'
 import {
-  getJobs, getJob, getJobEvents,
+  getJob, getJobEvents,
   createJobFromOrder,
   updateMilestone, updateMilestoneWithOverride,
   setJobOverallStatus, addJobNote,
   inferWaitingStatusFromMilestone,
-  JOB_OVERALL_STATUSES, JOB_MILESTONE_STATUSES, JOB_TEAMS,
+  JOB_OVERALL_STATUSES, JOB_MILESTONE_STATUSES,
   jobStatusInfo, milestoneStatusInfo, teamInfo,
   isMilestoneOverdue, daysPastDue, hasUnsatisfiedRequires,
   customerName, fmtDate, fmtRelative, fmtUSD,
@@ -33,7 +39,7 @@ import {
   BLOCK_REASON_CODES,
 } from './lib/stonebooksData'
 
-// ── Milestone group ordering for the table summary columns ───────────────────
+// ── Milestone group ordering for the JobDetail per-group cards ───────────────
 const GROUP_ORDER = [
   'intake',
   'design',
@@ -62,6 +68,10 @@ const GROUP_LABEL = {
 // =============================================================================
 // MAIN
 // =============================================================================
+// The page is a thin shell now: page heading, backfill banner, and either the
+// per-job drill-down (JobDetail, when a job is selected) or the department
+// dashboard (JobsDepartmentView). All filtering, queue selection, and
+// view-mode toggling has been retired in favor of the role-based lens.
 
 export default function JobsTab({
   selectedJobId = null,
@@ -70,90 +80,24 @@ export default function JobsTab({
   onConsumeInitialQueue,
   onOpenOrder,
   onOpenCustomer,
+  userId = null,
 }) {
-  const [jobs, setJobs] = useState(null) // null = loading, [] = empty
-  // v2 W-2 — selectedJobId / setSelectedJobId are now lifted to the shell
-  // (Stonebooks.jsx) so the workspace-strip and the workpiece registry
-  // can react to every detail-view open, regardless of how the operator
-  // got there (Today drill-in, Jobs list row click, command surface,
-  // workspace chip click). Locally we just consume the controlled value.
-
-  const [teamFilter, setTeamFilter] = useState(null)         // single team or null
-  const [statusFilter, setStatusFilter] = useState(null)     // single status or null
-  const [search, setSearch] = useState('')
   const [reloadCount, setReloadCount] = useState(0)
-
-  // Phase B (2026-05-21) — filter pill rows are hidden by default. The user
-  // clicks the quiet "Filter" link to open the panel; closing it returns the
-  // toolbar to its calm default state. When filters are active but the panel
-  // is closed, a single quiet summary line shows what's filtering without
-  // exposing the full pill chrome.
-  const [filterPanelOpen, setFilterPanelOpen] = useState(false)
-
-  // Sprint J1-P1 Commit 2 — view-mode + active-queue state. Mode toggle swaps
-  // the jobs body for QueuesView; activeQueue picks which queue renders inside
-  // it. Component-local, no URL persistence (reload returns to Jobs mode by
-  // design). Survives drill-into-JobDetail/back because JobsTab doesn't unmount.
-  const [viewMode, setViewMode] = useState('jobs')           // 'jobs' | 'queues'
-  const [activeQueue, setActiveQueue] = useState('layouts')   // 'layouts' | 'waiting_on_customer'
-
-  // v2 W-1 — Command Surface queue invocation. When the operator runs e.g.
-  // "stones" in the Command Surface, the shell sets initialQueue; we honor
-  // it once and tell the shell to clear via onConsumeInitialQueue so the
-  // same queue isn't re-opened on every prop reflow.
-  useEffect(() => {
-    if (!initialQueue) return
-    const QUEUE_ALIASES = {
-      stones: 'stones',
-      layouts: 'layouts',
-      production: 'production',
-      waiting: 'waiting_on_customer',
-      waiting_on_customer: 'waiting_on_customer',
-    }
-    const target = QUEUE_ALIASES[initialQueue]
-    if (target) {
-      setViewMode('queues')
-      setActiveQueue(target)
-      setSelectedJobId(null) // exit any JobDetail drill-in
-    }
-    onConsumeInitialQueue?.()
-  }, [initialQueue, onConsumeInitialQueue])
-
-  // Load list
-  useEffect(() => {
-    let cancelled = false
-    setJobs(null)
-    const opts = {}
-    if (teamFilter)   opts.teamFilter   = [teamFilter]
-    if (statusFilter) opts.statusFilter = [statusFilter]
-    getJobs(opts).then(rows => {
-      if (cancelled) return
-      setJobs(rows)
-    })
-    return () => { cancelled = true }
-  }, [teamFilter, statusFilter, reloadCount])
-
   const triggerReload = () => setReloadCount(c => c + 1)
 
-  // Client-side search filter
-  const filteredJobs = useMemo(() => {
-    if (!jobs) return null
-    const q = search.trim().toLowerCase()
-    if (!q) return jobs
-    return jobs.filter(j => {
-      const fields = [
-        j.order?.order_number,
-        j.order?.primary_lastname,
-        customerName(j.customer),
-        j.cemetery?.name,
-        j.next_action,
-        (j.order?.service_types || []).join(' '),
-      ].filter(Boolean).map(s => String(s).toLowerCase())
-      return fields.some(f => f.includes(q))
-    })
-  }, [jobs, search])
+  // The Command Surface used to set `initialQueue` (e.g. "stones", "layouts")
+  // to deep-link into the old QueuesView. The L2 followup retired QueuesView.
+  // For now we accept and discard the prop so the Command Surface doesn't
+  // re-open a now-deleted view on every prop reflow. A follow-up pass can
+  // wire those aliases to department/bucket scrolls in JobsDepartmentView.
+  useEffect(() => {
+    if (!initialQueue) return
+    setSelectedJobId(null)
+    onConsumeInitialQueue?.()
+  }, [initialQueue, onConsumeInitialQueue, setSelectedJobId])
 
-  // Detail view
+  // Detail view — unchanged from prior passes. Reached by clicking any queue
+  // row in the department view (JobsQueueRow → onOpenJob(jobId)).
   if (selectedJobId) {
     return (
       <JobDetail
@@ -166,172 +110,17 @@ export default function JobsTab({
   }
 
   return (
-    <div className="sb-page">
+    <div className="sb-page sb-page-wide">
       <div className="sb-page-head">
         <div className="sb-page-eyebrow">Operations</div>
         <h1 className="sb-page-title">Jobs</h1>
       </div>
 
       {/* Backfill banner — surfaces signed orders that don't yet have jobs.
-          Disappears automatically when count hits zero. Visible in BOTH modes. */}
+          Disappears automatically when count hits zero. */}
       <BackfillBanner reloadCount={reloadCount} onComplete={triggerReload} />
 
-      {/* Mode toggle — Jobs (per-job view) vs Queues (cross-job operational
-          lenses). Component-local state, no URL persistence. */}
-      <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
-
-      {viewMode === 'jobs' && (
-        <>
-          {/* Search + Filter affordance. The filter panel is hidden by default
-              (Phase B 2026-05-21). Clicking "Filter" reveals the pill rows.
-              When filters are active and the panel is closed, a quiet summary
-              line shows what's filtering instead of the full pill chrome. */}
-          <div className="sb-cust-toolbar">
-            <input
-              type="text"
-              className="sb-input sb-cust-search"
-              placeholder="Search by customer, order #, cemetery, next action…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-            <button
-              type="button"
-              className="sb-jobs-filter-toggle"
-              onClick={() => setFilterPanelOpen(o => !o)}
-              aria-expanded={filterPanelOpen}
-            >
-              Filter {filterPanelOpen ? '▴' : '▾'}
-            </button>
-          </div>
-
-          {filterPanelOpen && (
-            <div className="sb-jobs-filter-panel">
-              <div className="sb-jobs-filter-row">
-                <span className="sb-jobs-filter-label">Team</span>
-                {JOB_TEAMS.map(t => (
-                  <button
-                    key={t.code}
-                    type="button"
-                    className={`sb-pill ${teamFilter === t.code ? 'on' : ''}`}
-                    onClick={() => setTeamFilter(teamFilter === t.code ? null : t.code)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-              <div className="sb-jobs-filter-row">
-                <span className="sb-jobs-filter-label">Status</span>
-                {JOB_OVERALL_STATUSES.filter(s => s.code !== 'closed').map(s => (
-                  <button
-                    key={s.code}
-                    type="button"
-                    className={`sb-pill ${statusFilter === s.code ? 'on' : ''}`}
-                    onClick={() => setStatusFilter(statusFilter === s.code ? null : s.code)}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Active filter summary — visible when filters are set AND the
-              full panel is closed. One quiet line. */}
-          {!filterPanelOpen && (teamFilter || statusFilter) && (
-            <div className="sb-jobs-filter-summary">
-              <span className="sb-jobs-filter-summary-label">Filtering:</span>
-              {teamFilter && (
-                <span className="sb-jobs-filter-summary-tag">
-                  {JOB_TEAMS.find(t => t.code === teamFilter)?.label || teamFilter}
-                </span>
-              )}
-              {statusFilter && (
-                <span className="sb-jobs-filter-summary-tag">
-                  {JOB_OVERALL_STATUSES.find(s => s.code === statusFilter)?.label || statusFilter}
-                </span>
-              )}
-              <button
-                type="button"
-                className="sb-jobs-filter-summary-clear"
-                onClick={() => { setTeamFilter(null); setStatusFilter(null) }}
-              >
-                Clear
-              </button>
-            </div>
-          )}
-
-          {/* List */}
-          {filteredJobs === null ? (
-            <div className="sb-empty">Loading jobs…</div>
-          ) : filteredJobs.length === 0 ? (
-            <EmptyState
-              hasFilters={!!teamFilter || !!statusFilter || !!search.trim()}
-            />
-          ) : (
-            <>
-              <div className="sb-cust-meta">{filteredJobs.length} job{filteredJobs.length === 1 ? '' : 's'}</div>
-              <JobsList
-                jobs={filteredJobs}
-                onSelectJob={setSelectedJobId}
-              />
-            </>
-          )}
-        </>
-      )}
-
-      {viewMode === 'queues' && (
-        <QueuesView
-          activeQueue={activeQueue}
-          onSelectQueue={setActiveQueue}
-          onOpenJob={setSelectedJobId}
-        />
-      )}
-    </div>
-  )
-}
-
-// View-mode segmented toggle. Visual language: same inline-styled pattern as
-// BackfillBanner; muted/active distinction matches the existing tab strip vibe.
-function ViewModeToggle({ viewMode, onChange }) {
-  const modes = [
-    { code: 'jobs',   label: 'Jobs' },
-    { code: 'queues', label: 'Queues' },
-  ]
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 24,
-        marginBottom: 24,
-        alignItems: 'center',
-      }}
-    >
-      {modes.map(m => {
-        const active = m.code === viewMode
-        return (
-          <button
-            key={m.code}
-            type="button"
-            onClick={() => onChange(m.code)}
-            style={{
-              padding: '6px 0',
-              background: 'transparent',
-              border: 'none',
-              borderBottom: active
-                ? '2px solid var(--sb-accent)'
-                : '2px solid transparent',
-              color: active ? 'var(--sb-text)' : 'var(--sb-text-muted)',
-              fontSize: 15,
-              fontWeight: active ? 500 : 400,
-              cursor: 'pointer',
-              font: 'inherit',
-              transition: 'color 0.15s',
-            }}
-          >
-            {m.label}
-          </button>
-        )
-      })}
+      <JobsDepartmentView userId={userId} onOpenJob={setSelectedJobId} />
     </div>
   )
 }
@@ -443,122 +232,6 @@ function BackfillBanner({ reloadCount, onComplete }) {
         </button>
       )}
     </div>
-  )
-}
-
-// =============================================================================
-// EMPTY STATE
-// =============================================================================
-
-function EmptyState({ hasFilters }) {
-  if (hasFilters) {
-    return (
-      <div className="sb-empty">
-        No jobs match the current filters. Clear filters above to see all jobs.
-      </div>
-    )
-  }
-  return (
-    <div className="sb-empty">
-      <p style={{ marginBottom: 12, fontSize: 14, color: 'var(--sb-text)', fontWeight: 500 }}>
-        No jobs yet.
-      </p>
-      <p>
-        Jobs are created automatically when a contract is signed. If signed
-        orders exist without jobs, a backfill banner will appear above.
-      </p>
-    </div>
-  )
-}
-
-// =============================================================================
-// JOBS LIST — narrative two-line rows (Phase A redesign 2026-05-21)
-// =============================================================================
-// Replaces the 7-column table (JobsTable + JobRow + GroupBadge) with a list
-// of operational rows in the same posture as the queue rows in QueuesView.
-// Each row tells a complete operational story in two lines:
-//   Top:    customer surname · #order-num                    [status if waiting/blocked]
-//   Bottom: NRA sentence (the operational center of gravity)   · cemetery name (muted)
-//
-// Driven by the foundational reviewer findings (workflow-simplifier,
-// friction-detector, paperless-operations-reviewer): subtract the table grid,
-// drop GroupBadge chip decoding, use getNextRequiredAction as canonical
-// "next action", surface status only when operationally meaningful (not for
-// 'active' jobs), preserve cemetery as quiet metadata.
-//
-// What deliberately does NOT land in Phase A:
-//   • Recent activity cue (Phase C)
-//   • Drift-aware aging signal (Phase C)
-//   • Cemetery contact info on hover (Phase C)
-//   • Hidden filter rows with progressive disclosure (Phase B)
-//   • Sticky search across navigation (Phase B)
-
-function JobsList({ jobs, onSelectJob }) {
-  return (
-    <div className="sb-jobs-list">
-      {jobs.map(j => (
-        <JobsListRow
-          key={j.id}
-          job={j}
-          onClick={() => onSelectJob(j.id)}
-        />
-      ))}
-    </div>
-  )
-}
-
-function JobsListRow({ job, onClick }) {
-  const customer = job.customer
-  const cemetery = job.cemetery
-  const order = job.order
-
-  const customerLabel = order?.primary_lastname || customerName(customer) || '—'
-  const orderNum = order?.order_number || ''
-
-  // NRA — canonical "what does this job need?" Manual override (job.next_action)
-  // wins over derived NRA, per the established operational hierarchy.
-  const nra = getNextRequiredAction(job)
-  const nraLabel = job.next_action || nra?.label || null
-
-  // Status indicator — surface ONLY when operationally noteworthy (waiting_*,
-  // blocked, weather_delayed, etc.). 'active' is the default healthy state
-  // and doesn't need a pill on every row.
-  const isStatusNoteworthy =
-    job.overall_status &&
-    job.overall_status !== 'active' &&
-    job.overall_status !== 'closed'
-  const statusInfo = isStatusNoteworthy ? jobStatusInfo(job.overall_status) : null
-
-  return (
-    <button type="button" className="sb-jobs-list-row" onClick={onClick}>
-      {/* Top line: identity left, (optional) status right */}
-      <div className="sb-jobs-list-row-primary">
-        <div className="sb-jobs-list-row-identity">
-          <span className="sb-jobs-list-row-name">{customerLabel}</span>
-          {orderNum && (
-            <span className="sb-jobs-list-row-ordernum">#{orderNum}</span>
-          )}
-        </div>
-        {statusInfo && (
-          <span
-            className="sb-status-pill"
-            style={{ '--pill-color': statusInfo.color }}
-          >
-            {statusInfo.label}
-          </span>
-        )}
-      </div>
-
-      {/* Bottom line: NRA sentence left, cemetery (muted) right */}
-      <div className="sb-jobs-list-row-secondary">
-        <span className="sb-jobs-list-row-nra">
-          {nraLabel || <span className="sb-jobs-list-row-empty">—</span>}
-        </span>
-        {cemetery?.name && (
-          <span className="sb-jobs-list-row-cemetery">{cemetery.name}</span>
-        )}
-      </div>
-    </button>
   )
 }
 
@@ -2065,188 +1738,14 @@ const localStyles = `
     }
   }
 
-  /* ── JOBS FILTER (Phase B redesign 2026-05-21) ─────────────────────────────
-     The filter pill rows are hidden by default. A quiet "Filter" link in the
-     toolbar opens an inline panel; closing it returns the page to its calm
-     default. When filters are active and the panel is closed, a single quiet
-     summary line shows what's filtering — no chip chrome, no pill row. */
-
-  .sb-jobs-filter-toggle {
-    background: transparent;
-    border: none;
-    color: var(--sb-text-muted);
-    font: inherit;
-    font-size: 15px;
-    padding: 9px 13px;
-    cursor: pointer;
-    transition: color 0.15s;
-    white-space: nowrap;
-  }
-  .sb-jobs-filter-toggle:hover {
-    color: var(--sb-text);
-  }
-  .sb-jobs-filter-toggle[aria-expanded="true"] {
-    color: var(--sb-text);
-  }
-
-  .sb-jobs-filter-panel {
-    margin-bottom: 16px;
-    padding: 12px 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .sb-jobs-filter-row {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-  .sb-jobs-filter-label {
-    font-size: 14px;
-    color: var(--sb-text-muted);
-    min-width: 60px;
-  }
-
-  /* Active-filter summary — one quiet line, replaces pill chrome at rest. */
-  .sb-jobs-filter-summary {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-bottom: 16px;
-    font-size: 14px;
-    color: var(--sb-text-muted);
-  }
-  .sb-jobs-filter-summary-label {
-    color: var(--sb-text-muted);
-  }
-  .sb-jobs-filter-summary-tag {
-    color: var(--sb-text);
-  }
-  .sb-jobs-filter-summary-tag + .sb-jobs-filter-summary-tag::before {
-    content: '·';
-    color: var(--sb-text-muted);
-    margin: 0 6px 0 0;
-  }
-  .sb-jobs-filter-summary-clear {
-    background: transparent;
-    border: none;
-    color: var(--sb-accent);
-    font: inherit;
-    font-size: 14px;
-    padding: 0;
-    cursor: pointer;
-    margin-left: 6px;
-  }
-  .sb-jobs-filter-summary-clear:hover {
-    color: var(--sb-accent-hover);
-    text-decoration: underline;
-  }
-
-  /* ── JOBS LIST — narrative list rows (Phase A redesign 2026-05-21) ─────────
-     Replaces the previous 7-column .sb-jobs-table grid. Same posture as the
-     queue rows in QueuesView.jsx — full-width clickable rows with a hairline
-     bottom divider, two lines of content, subtle hover tint. No card chrome,
-     no column headers, no colored chip grids. */
-
-  .sb-jobs-list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .sb-jobs-list-row {
-    display: block;
-    width: 100%;
-    text-align: left;
-    background: transparent;
-    border: none;
-    border-bottom: 0.5px solid var(--sb-border);
-    padding: 20px 4px;
-    cursor: pointer;
-    font: inherit;
-    color: inherit;
-    transition: background 0.12s;
-  }
-  .sb-jobs-list-row:hover {
-    background: var(--sb-surface-muted);
-  }
-  .sb-jobs-list-row:focus-visible {
-    outline: 0.5px solid var(--sb-accent);
-    outline-offset: -2px;
-  }
-
-  /* Top line — identity left, optional status pill right.
-     Status appears ONLY when overall_status is operationally noteworthy
-     (waiting_*, blocked, weather_delayed) — never for 'active'. */
-  .sb-jobs-list-row-primary {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-  }
-  .sb-jobs-list-row-identity {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    flex: 1;
-    min-width: 0;
-  }
-  .sb-jobs-list-row-name {
-    font-size: 17px;
-    font-weight: 500;
-    color: var(--sb-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    letter-spacing: -0.005em;
-  }
-  .sb-jobs-list-row-ordernum {
-    font-size: 14px;
-    font-family: var(--sb-font-mono);
-    color: var(--sb-text-muted);
-    white-space: nowrap;
-  }
-
-  /* Bottom line — NRA sentence left (operational center of gravity),
-     cemetery quiet metadata right. */
-  .sb-jobs-list-row-secondary {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-    margin-top: 8px;
-    font-size: 15px;
-    color: var(--sb-text-secondary);
-    line-height: 1.5;
-  }
-  .sb-jobs-list-row-nra {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .sb-jobs-list-row-cemetery {
-    color: var(--sb-text-muted);
-    font-size: 14px;
-    white-space: nowrap;
-  }
-  .sb-jobs-list-row-empty {
-    color: var(--sb-text-muted);
-  }
-
-  /* Responsive — phone (under 600) stacks the cemetery below the NRA so
-     long NRA sentences and cemetery names don't collide. */
-  @media (max-width: 600px) {
-    .sb-jobs-list-row-secondary {
-      flex-direction: column;
-      gap: 4px;
-      align-items: flex-start;
-    }
-    .sb-jobs-list-row-cemetery {
-      font-size: 13px;
-    }
+  /* ── Wide page variant — the department dashboard ──────────────────────────
+     The default sb-page is constrained to a reading measure. The Jobs tab now
+     hosts a department-aware grid that wants full-width breathing room. The
+     .sb-page-wide modifier removes the inner max-width while preserving the
+     standard page padding. JobDetail keeps the calm reading-measure layout
+     because that route renders without sb-page-wide. */
+  .sb-page-wide {
+    max-width: none;
   }
 
   /* ── Commit 4 additions ────────────────────────────────────────────────── */

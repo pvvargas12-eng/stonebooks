@@ -2021,76 +2021,120 @@ function _walkBlockerChain(start, byKey) {
   return { leaf: current, chain }
 }
 
-// ── Queue derivation — operational lenses on milestone state ────────────────
-// Each function takes the array of jobs (as returned by getJobs) and returns
-// queue-ready row objects with section assignments and sort applied. UI
-// iterates and renders; UI does not filter, sort, or classify.
 
-const LAYOUTS_SECTION_ORDER = [
-  'needs_drawing',
-  'awaiting_approval',
-  'ready_to_advance',
-  'blocked',
-]
+// =============================================================================
+// DEPARTMENT BUCKETS — operational lens for the Jobs tab (L2-followup)
+// =============================================================================
+// Each department (Production, Installation, …) exposes a set of buckets.
+// A bucket is { code, label, subline, count, urgency, rows, dataGap, sortLabel,
+// grouping }. Buckets are derived from the existing milestone substrate; no
+// schema changes. Gap buckets (work the business does but doesn't yet have a
+// milestone for) render with count 0 and `dataGap: true` so the operational
+// shape is visible from day one and the gap is honest.
+//
+// All pattern matching against milestone_key is contained in this file. The
+// React components in src/components/Jobs* read structured shapes only.
+// =============================================================================
 
-// Maps the universal operational state code to a Layouts-queue section key.
-// Returns null if the milestone is not in the Layouts queue.
-function _layoutsSectionFor(milestone, allInJob) {
-  if (!milestone || milestone.group !== 'design') return null
-  if (getMilestoneOperationalRole(milestone) === 'decision') return null
-  const state = getMilestoneSectionKey(milestone, allInJob)
-  if (state === 'complete' || state === 'skipped' || state == null) return null
-  if (state === 'blocked')              return 'blocked'
-  if (state === 'awaiting_internal')    return 'needs_drawing'
-  if (state === 'awaiting_external')    return 'awaiting_approval'
-  if (state === 'handoff_pending')      return 'ready_to_advance'
-  // Unclassified — log in dev for smoke-test visibility, suppress in prod.
-  if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
-    console.warn(
-      `[Layouts queue] Unclassified design milestone fell through: ` +
-      `key=${milestone.milestone_key} status=${milestone.status} state=${state}`,
-    )
-  }
-  return null
+// Stage chip palette. Amber and red are RESERVED for urgency, never used as
+// stage colors. When a row is in an amber/red urgency state, the stage chip
+// yields to the urgency ramp so the row reads as one signal, not two.
+export const STAGE_CHIP_PALETTE = {
+  intake:     { code: 'blue',   text: '#1d4ed8', bg: '#e6efff' },
+  design:     { code: 'purple', text: '#7c3aed', bg: '#efe6ff' },
+  permit:     { code: 'teal',   text: '#0d8a8a', bg: '#dff3f3' },
+  photo:      { code: 'pink',   text: '#be185d', bg: '#fce7f3' },
+  etching:    { code: 'pink',   text: '#be185d', bg: '#fce7f3' },
+  stone:      { code: 'gray',   text: '#5d5d5a', bg: '#ececea' },
+  production: { code: 'gray',   text: '#5d5d5a', bg: '#ececea' },
+  foundation: { code: 'coral',  text: '#c2410c', bg: '#ffe6dc' },
+  install:    { code: 'green',  text: '#2d7a4f', bg: '#e0f0e6' },
+  closeout:   { code: 'gray',   text: '#5d5d5a', bg: '#ececea' },
+}
+const STAGE_CHIP_FALLBACK = { code: 'gray', text: '#5d5d5a', bg: '#ececea' }
+export function stageChipFor(group) {
+  return STAGE_CHIP_PALETTE[group] || STAGE_CHIP_FALLBACK
 }
 
-export function deriveLayoutsQueueRows(jobs) {
-  const rows = []
-  for (const job of (jobs || [])) {
-    if (job.overall_status === 'closed') continue
-    const milestones = job.milestones || []
-    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
-    for (const m of milestones) {
-      if (m.group !== 'design') continue
-      const section = _layoutsSectionFor(m, milestones)
-      if (!section) continue
-      const overdue = isMilestoneOverdue(m)
-      rows.push({
-        section,
-        milestone: m,
-        job,
-        order: job.order || null,
-        customer: job.customer || null,
-        cemetery: job.cemetery || null,
-        team: m.team || null,
-        agingDays: daysSinceMs(m.updated_at),
-        updatedAt: m.updated_at || null,
-        overdue,
-        overdueDays: overdue ? daysPastDue(m) : 0,
-        dueDate: m.due_date || null,
-        blockerKeys: (m.requires || []).filter(k => {
-          const dep = byKey.get(k)
-          return dep && dep.status !== 'done' && dep.status !== 'not_needed'
-        }),
-        waitingStatus: (job.overall_status || '').startsWith('waiting_')
-          ? job.overall_status : null,
-      })
-    }
+// Per-bucket aging thresholds (days). When a row's aging exceeds the threshold
+// but the milestone isn't overdue, it earns the amber urgency state. Tune
+// after watching the live page for a week (default values per L2-followup spec).
+export const BUCKET_AGING_THRESHOLDS = {
+  rubs_to_grab:        5,
+  cut_stencil:         3,
+  stick_stencil:       3,
+  sandblast:           4,
+  wash_clean:          2,
+  foundations:        14,
+  inscriptions_onsite: 7,
+  new_stone_setting:   7,
+  bronze_setting:      7,
+  doors_pick_up:       7,
+  doors_drop_off:      7,
+  installs_scheduled:  7,
+}
+
+// Three-state urgency. Earned only by signal — never painted by category.
+export const URGENCY = { NEUTRAL: 'neutral', AMBER: 'amber', RED: 'red' }
+
+// Classifies a single row's urgency. A row is:
+//   • red    — milestone past its internal due_date, OR external party past
+//              their `expected_resolution_at` (the substrate's quoted-back date)
+//   • amber  — aging beyond the bucket's threshold (no due_date breach yet)
+//   • neutral — fresh enough to be calm
+export function classifyRowUrgency(row, threshold) {
+  if (!row) return URGENCY.NEUTRAL
+  if (row.overdue) return URGENCY.RED
+  const late = row.milestone ? isLateAgainstExpectedResolution(row.milestone) : null
+  if (late && late.daysLate > 0) return URGENCY.RED
+  const age = row.agingDays ?? 0
+  if (threshold && age > threshold) return URGENCY.AMBER
+  return URGENCY.NEUTRAL
+}
+
+// Returns the worst urgency across an array of rows. Used by bucket cards.
+export function worstUrgency(rows) {
+  let worst = URGENCY.NEUTRAL
+  for (const r of (rows || [])) {
+    if (r.urgency === URGENCY.RED) return URGENCY.RED
+    if (r.urgency === URGENCY.AMBER) worst = URGENCY.AMBER
   }
-  rows.sort((a, b) => {
-    const sa = LAYOUTS_SECTION_ORDER.indexOf(a.section)
-    const sb = LAYOUTS_SECTION_ORDER.indexOf(b.section)
-    if (sa !== sb) return sa - sb
+  return worst
+}
+
+// ─── Row builders ───────────────────────────────────────────────────────────
+// Shared row shape across queues:
+//   { kind: 'milestone', job, order, customer, cemetery, milestone, stage,
+//     agingDays, overdue, overdueDays, dueDate, owner, urgency, plot? }
+// Where `kind: 'cemetery-header'` is reserved for the location-grouped panel.
+
+function _buildMilestoneRow(job, milestone, opts = {}) {
+  if (!job || !milestone) return null
+  const overdue = isMilestoneOverdue(milestone)
+  return {
+    kind: 'milestone',
+    job,
+    order: job.order || null,
+    customer: job.customer || null,
+    cemetery: job.cemetery || null,
+    milestone,
+    stage: stageChipFor(milestone.group),
+    agingDays: daysSinceMs(milestone.updated_at),
+    overdue,
+    overdueDays: overdue ? daysPastDue(milestone) : 0,
+    dueDate: milestone.due_date || null,
+    owner: milestone.team || null,
+    plot: opts.plot || null,
+  }
+}
+
+// Standard sort: red urgency first, then amber, then by aging desc, then by
+// surname asc. Stable enough for "worst first" reading.
+function _sortByUrgencyThenAging(rows) {
+  return rows.slice().sort((a, b) => {
+    const ua = a.urgency === URGENCY.RED ? 0 : a.urgency === URGENCY.AMBER ? 1 : 2
+    const ub = b.urgency === URGENCY.RED ? 0 : b.urgency === URGENCY.AMBER ? 1 : 2
+    if (ua !== ub) return ua - ub
     if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
     if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
       return b.overdueDays - a.overdueDays
@@ -2098,287 +2142,298 @@ export function deriveLayoutsQueueRows(jobs) {
     const aAge = a.agingDays ?? 0
     const bAge = b.agingDays ?? 0
     if (aAge !== bAge) return bAge - aAge
-    const aN = a.order?.primary_lastname || ''
-    const bN = b.order?.primary_lastname || ''
-    if (aN !== bN) return aN.localeCompare(bN)
-    const aO = a.order?.order_number || ''
-    const bO = b.order?.order_number || ''
-    return aO.localeCompare(bO)
-  })
-  return rows
-}
-
-const STONES_SECTION_ORDER = [
-  'to_order',
-  'ordered_awaiting_supplier',
-  'received_awaiting_production',
-  'blocked',
-]
-
-// Maps the universal operational state code to a Stones-queue section key.
-// Returns null if the milestone is not in the Stones queue.
-//
-// Group boundary: m.group === 'stone' is the entire scope. Downstream
-// production milestones (stencil_*, production_*, ready_to_install, etc.)
-// have group !== 'stone' and are structurally excluded — they belong to the
-// Production queue. The 'received_awaiting_production' section uses the
-// universal handoff_pending state to surface the cross-group handoff drift
-// without rendering the production milestones themselves.
-function _stonesSectionFor(milestone, allInJob) {
-  if (!milestone || milestone.group !== 'stone') return null
-  if (getMilestoneOperationalRole(milestone) === 'decision') return null
-  const state = getMilestoneSectionKey(milestone, allInJob)
-  if (state === 'complete' || state === 'skipped' || state == null) return null
-  if (state === 'blocked')           return 'blocked'
-  if (state === 'awaiting_internal') return 'to_order'
-  if (state === 'awaiting_external') return 'ordered_awaiting_supplier'
-  if (state === 'handoff_pending')   return 'received_awaiting_production'
-  // Unclassified — log in dev for smoke-test visibility, suppress in prod.
-  if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
-    console.warn(
-      `[Stones queue] Unclassified stone milestone fell through: ` +
-      `key=${milestone.milestone_key} status=${milestone.status} state=${state}`,
-    )
-  }
-  return null
-}
-
-export function deriveStonesQueueRows(jobs) {
-  const rows = []
-  const today = new Date()
-  for (const job of (jobs || [])) {
-    if (job.overall_status === 'closed') continue
-    const milestones = job.milestones || []
-    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
-    for (const m of milestones) {
-      if (m.group !== 'stone') continue
-      const section = _stonesSectionFor(m, milestones)
-      if (!section) continue
-      const overdue = isMilestoneOverdue(m)
-      // Operational Truth Substrate — read structured fields (nullable).
-      // `lateAgainstExpectation` is the row's authoritative signal for
-      // "the external party broke their quoted-back date" — distinct from
-      // `overdue`, which is "we broke our internal due_date."
-      const lateInfo = isLateAgainstExpectedResolution(m, today)
-      rows.push({
-        section,
-        milestone: m,
-        job,
-        order: job.order || null,
-        customer: job.customer || null,
-        cemetery: job.cemetery || null,
-        team: m.team || null,
-        agingDays: daysSinceMs(m.updated_at),
-        updatedAt: m.updated_at || null,
-        overdue,
-        overdueDays: overdue ? daysPastDue(m) : 0,
-        dueDate: m.due_date || null,
-        blockerKeys: (m.requires || []).filter(k => {
-          const dep = byKey.get(k)
-          return dep && dep.status !== 'done' && dep.status !== 'not_needed'
-        }),
-        waitingStatus: (job.overall_status || '').startsWith('waiting_')
-          ? job.overall_status : null,
-        // Operational Truth Substrate fields (nullable):
-        expectedResolutionAt: m.expected_resolution_at || null,
-        externalPartyRef:     m.external_party_ref     || null,
-        lateAgainstExpectation: lateInfo, // null | false | { daysLate }
-      })
-    }
-  }
-  rows.sort((a, b) => {
-    const sa = STONES_SECTION_ORDER.indexOf(a.section)
-    const sb = STONES_SECTION_ORDER.indexOf(b.section)
-    if (sa !== sb) return sa - sb
-    // Expectation-lateness floats to the top of any section where it applies
-    // (primarily ordered_awaiting_supplier, but harmless elsewhere — rows
-    // without expected_resolution_at set carry lateAgainstExpectation === null
-    // and fall through to the existing tiebreaks unchanged).
-    const aLate = a.lateAgainstExpectation && a.lateAgainstExpectation.daysLate > 0
-    const bLate = b.lateAgainstExpectation && b.lateAgainstExpectation.daysLate > 0
-    if (aLate !== bLate) return aLate ? -1 : 1
-    if (aLate && bLate) {
-      const dL = (b.lateAgainstExpectation.daysLate || 0) - (a.lateAgainstExpectation.daysLate || 0)
-      if (dL !== 0) return dL
-    }
-    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
-    if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
-      return b.overdueDays - a.overdueDays
-    }
-    const aAge = a.agingDays ?? 0
-    const bAge = b.agingDays ?? 0
-    if (aAge !== bAge) return bAge - aAge
-    const aN = a.order?.primary_lastname || ''
-    const bN = b.order?.primary_lastname || ''
-    if (aN !== bN) return aN.localeCompare(bN)
-    const aO = a.order?.order_number || ''
-    const bO = b.order?.order_number || ''
-    return aO.localeCompare(bO)
-  })
-  return rows
-}
-
-const PRODUCTION_SECTION_ORDER = [
-  'stencil_prep_needed',
-  'ready_for_carving',
-  'in_production',
-  'complete_awaiting_install',
-  'blocked',
-]
-
-// Production-queue stage classifier. Explicit map of milestone_key →
-// production-stage code. Pattern matching contained here, never in JSX.
-// Adding a new production milestone is a one-line addition; the dev warning
-// in _productionSectionFor catches forgotten cases during smoke-test.
-//
-// Architectural note: this is queue-local pattern matching, analogous to
-// (but smaller-scope than) getMilestoneOperationalRole. v2 metadata migration
-// will replace the map's internals with template-side metadata reads; the
-// helper's signature and consumers stay unchanged.
-const PRODUCTION_STAGE_MAP = {
-  stencil_created:      'stencil_created',
-  stencil_cut:          'stencil_cut',
-  production_started:   'production_started',
-  production_completed: 'production_completed',
-}
-
-function _productionStage(milestone) {
-  return PRODUCTION_STAGE_MAP[milestone?.milestone_key] || null
-}
-
-// Maps universal state + production stage to a Production-queue section key.
-// Section structure (per the corrected operational model):
-//   stencil_prep_needed     — stencil_created OR stencil_cut, actionable
-//   ready_for_carving       — production_started not_started, all requires met
-//   in_production           — production_started in_progress, OR
-//                             production_completed actionable
-//   complete_awaiting_install — universal handoff_pending (production_completed
-//                             done + cross-group ready_to_install not_started)
-//   blocked                 — locked or explicitly blocked
-//
-// Group boundary: m.group === 'production' is the entire scope. Install
-// milestones (ready_to_install, installed) are structurally excluded; they
-// belong to a future Install queue.
-function _productionSectionFor(milestone, allInJob) {
-  if (!milestone || milestone.group !== 'production') return null
-  if (getMilestoneOperationalRole(milestone) === 'decision') return null
-
-  const state = getMilestoneSectionKey(milestone, allInJob)
-  if (state === 'complete' || state === 'skipped' || state == null) return null
-  if (state === 'blocked')         return 'blocked'
-  if (state === 'handoff_pending') return 'complete_awaiting_install'
-  if (state !== 'awaiting_internal') return null
-
-  const stage = _productionStage(milestone)
-  if (stage === 'stencil_created' || stage === 'stencil_cut') {
-    return 'stencil_prep_needed'
-  }
-  if (stage === 'production_started') {
-    return milestone.status === 'not_started' ? 'ready_for_carving' : 'in_production'
-  }
-  if (stage === 'production_completed') {
-    return 'in_production'
-  }
-
-  // Unknown production-group milestone — log in dev for smoke-test visibility.
-  // If a new production key is added to a template without updating
-  // PRODUCTION_STAGE_MAP, this fires on localhost during testing.
-  if (typeof window !== 'undefined' && window.location?.hostname === 'localhost') {
-    console.warn(
-      `[Production queue] Unstaged production milestone: ${milestone.milestone_key}`,
-    )
-  }
-  return null
-}
-
-export function deriveProductionQueueRows(jobs) {
-  const rows = []
-  for (const job of (jobs || [])) {
-    if (job.overall_status === 'closed') continue
-    const milestones = job.milestones || []
-    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
-    for (const m of milestones) {
-      if (m.group !== 'production') continue
-      const section = _productionSectionFor(m, milestones)
-      if (!section) continue
-      const overdue = isMilestoneOverdue(m)
-      rows.push({
-        section,
-        milestone: m,
-        job,
-        order: job.order || null,
-        customer: job.customer || null,
-        cemetery: job.cemetery || null,
-        team: m.team || null,
-        agingDays: daysSinceMs(m.updated_at),
-        updatedAt: m.updated_at || null,
-        overdue,
-        overdueDays: overdue ? daysPastDue(m) : 0,
-        dueDate: m.due_date || null,
-        blockerKeys: (m.requires || []).filter(k => {
-          const dep = byKey.get(k)
-          return dep && dep.status !== 'done' && dep.status !== 'not_needed'
-        }),
-        waitingStatus: (job.overall_status || '').startsWith('waiting_')
-          ? job.overall_status : null,
-      })
-    }
-  }
-  rows.sort((a, b) => {
-    const sa = PRODUCTION_SECTION_ORDER.indexOf(a.section)
-    const sb = PRODUCTION_SECTION_ORDER.indexOf(b.section)
-    if (sa !== sb) return sa - sb
-    if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
-    if (a.overdue && b.overdue && a.overdueDays !== b.overdueDays) {
-      return b.overdueDays - a.overdueDays
-    }
-    const aAge = a.agingDays ?? 0
-    const bAge = b.agingDays ?? 0
-    if (aAge !== bAge) return bAge - aAge
-    const aN = a.order?.primary_lastname || ''
-    const bN = b.order?.primary_lastname || ''
-    if (aN !== bN) return aN.localeCompare(bN)
-    const aO = a.order?.order_number || ''
-    const bO = b.order?.order_number || ''
-    return aO.localeCompare(bO)
-  })
-  return rows
-}
-
-export function deriveWaitingOnCustomerQueueRows(jobs) {
-  const rows = []
-  for (const job of (jobs || [])) {
-    if (job.overall_status !== 'waiting_on_customer') continue
-    // Identify the most-recent in_progress milestone whose operational
-    // waiting party is the customer. Falls back to null if none match.
-    const candidates = (job.milestones || []).filter(m =>
-      m.status === 'in_progress' && getMilestoneWaitingOn(m) === 'customer'
-    )
-    candidates.sort((a, b) =>
-      new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
-    )
-    const awaiting = candidates[0] || null
-    rows.push({
-      job,
-      order: job.order || null,
-      customer: job.customer || null,
-      cemetery: job.cemetery || null,
-      awaitingMilestone: awaiting,
-      awaitingDays: awaiting ? daysSinceMs(awaiting.updated_at) : null,
-      awaitingTeam: awaiting?.team || null,
-      daysWaiting: daysSinceUpdate(job),
-      jobUpdatedAt: job.last_update_at || null,
-    })
-  }
-  rows.sort((a, b) => {
-    const ad = a.daysWaiting ?? 0
-    const bd = b.daysWaiting ?? 0
-    if (ad !== bd) return bd - ad
     const aN = a.order?.primary_lastname || ''
     const bN = b.order?.primary_lastname || ''
     return aN.localeCompare(bN)
   })
-  return rows
+}
+
+// ─── PRODUCTION buckets ─────────────────────────────────────────────────────
+
+// Cut stencil — actionable `stencil_cut` (not_started ready, OR in_progress).
+function _bucketCutStencil(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const m = byKey.get('stencil_cut')
+    if (!m) continue
+    if (m.status === 'done' || m.status === 'not_needed') continue
+    if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
+    rows.push(_buildMilestoneRow(job, m))
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.cut_stencil)
+}
+
+// Stick stencil — INFERRED. `stencil_cut` done AND `production_started`
+// not_started ready (i.e. cut is done, sandblast hasn't started yet).
+// TODO(L3+): add a real `stencil_stuck` milestone to the new_stone template
+// and retire the inferred signal here.
+function _bucketStickStencil(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const cut = byKey.get('stencil_cut')
+    const blast = byKey.get('production_started')
+    if (!cut || !blast) continue
+    if (cut.status !== 'done') continue
+    if (blast.status !== 'not_started') continue
+    if (hasUnsatisfiedRequires(blast, byKey)) continue
+    // Anchor the row on stencil_cut (it's done, so its updated_at is when the
+    // cut completed — i.e. how long the stencil has been sitting waiting to
+    // be stuck onto the stone). That's the right aging signal for this gap.
+    rows.push(_buildMilestoneRow(job, cut))
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.stick_stencil)
+}
+
+// Sandblast — actionable `production_started` (not_started ready, OR in_progress).
+function _bucketSandblast(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const m = byKey.get('production_started')
+    if (!m) continue
+    if (m.status === 'done' || m.status === 'not_needed') continue
+    if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
+    rows.push(_buildMilestoneRow(job, m))
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.sandblast)
+}
+
+// Wash & clean — INFERRED. `production_started` done AND `production_completed`
+// not yet done. Anchor on production_completed (the actionable one).
+// TODO(L3+): add a real `washed_cleaned` milestone and retire the inferred
+// signal here.
+function _bucketWashClean(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const blast = byKey.get('production_started')
+    const done  = byKey.get('production_completed')
+    if (!blast || !done) continue
+    if (blast.status !== 'done') continue
+    if (done.status === 'done' || done.status === 'not_needed') continue
+    if (done.status === 'not_started' && hasUnsatisfiedRequires(done, byKey)) continue
+    rows.push(_buildMilestoneRow(job, done))
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.wash_clean)
+}
+
+// Foundations — `foundation_poured` actionable. One bucket in Production;
+// hole-dug / poured / complete sub-states don't exist in the current template
+// and are deferred (would need new milestones).
+function _bucketFoundations(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    for (const m of (job.milestones || [])) {
+      if (m.group !== 'foundation') continue
+      if (m.status === 'done' || m.status === 'not_needed') continue
+      if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
+      rows.push(_buildMilestoneRow(job, m))
+    }
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.foundations)
+}
+
+// Rubs to grab — GAP. Pre-stencil cemetery tracing step doesn't exist in any
+// template today. Render as a card with count 0 and dataGap: true so the
+// operational shape is visible. The card's row panel renders a calm
+// "Not wired yet — needs a new milestone." message instead of an empty table.
+// TODO(L3+): add a `rub_grabbed` milestone to the inscription / bronze
+// templates and a `rub_needed` decision milestone to new_stone (companion
+// stones only). Replace the empty array here with a real derive function.
+
+// ─── INSTALLATION buckets ───────────────────────────────────────────────────
+
+// New stone setting — actionable `ready_to_install` on new_stone job types.
+function _bucketNewStoneSetting(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    if (job.job_type !== 'new_stone') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const m = byKey.get('ready_to_install')
+    if (!m) continue
+    if (m.status === 'done' || m.status === 'not_needed') continue
+    if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
+    rows.push(_buildMilestoneRow(job, m))
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.new_stone_setting)
+}
+
+// Inscriptions on-site — would consume an install-side milestone on the
+// inscription template (e.g. `inscription_completed_on_site` or similar). The
+// inscription template milestones aren't visible from the app code today; the
+// known keys (layout_created, proof_sent, proof_approved) cover the design
+// half only. Treat as a gap bucket until the template is inspected and either
+// a real install-side milestone is mapped here or a new one is added.
+// TODO(L3+): inspect milestone_templates row for job_type='inscription' and
+// wire the on-site install milestone if one exists.
+
+// Bronze setting — same situation as inscriptions on-site. Known bronze keys
+// (bronze_proof_sent, bronze_proof_approved) cover the layout cycle, not
+// install. Treat as a gap bucket.
+// TODO(L3+): inspect milestone_templates row for job_type='bronze' and wire
+// the install milestone (likely `bronze_set_on_site` or similar).
+
+// Doors to pick up / Doors to drop off — mausoleum door pickup/dropoff. No
+// milestones exist anywhere. Pure gap buckets, surfaced so the operational
+// shape is visible.
+// TODO(L3+): add door-cycle milestones to the new_stone template (or a new
+// mausoleum sub-template) and replace these with real derive functions.
+
+// Installs scheduled — would read an install_scheduled_at field or a
+// scheduled-status on ready_to_install. Neither exists today. Gap bucket.
+// TODO(L3+): add `install_scheduled_at` column to orders or a scheduling
+// substate on the install milestone, then derive here.
+
+// ─── Urgency attachment + bucket assembly ───────────────────────────────────
+
+function _attachUrgency(rows, threshold) {
+  return _sortByUrgencyThenAging(
+    rows.filter(Boolean).map(r => ({ ...r, urgency: classifyRowUrgency(r, threshold) }))
+  )
+}
+
+// ─── RUBS — location-grouped (by cemetery) ──────────────────────────────────
+// Reusable grouping pattern: returns { groups: [{ cemetery, rows }] } when
+// the bucket is location-grouped. Components use `bucket.grouping === 'cemetery'`
+// to switch between flat-panel and grouped-panel render. (Rubs is a gap bucket
+// today, so this returns an empty groups array — but the grouping flag stays
+// on the bucket so the panel renders the location-grouped empty state, which
+// is the operational shape we want visible.)
+function _groupRowsByCemetery(rows) {
+  const map = new Map()
+  for (const r of rows) {
+    const key = r.cemetery?.id || '__none__'
+    if (!map.has(key)) {
+      map.set(key, { cemetery: r.cemetery || null, rows: [] })
+    }
+    map.get(key).rows.push(r)
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const an = a.cemetery?.name || 'zzz'
+    const bn = b.cemetery?.name || 'zzz'
+    return an.localeCompare(bn)
+  })
+}
+
+// ─── Bucket assembly per department ─────────────────────────────────────────
+
+function _bucket(code, label, rows, opts = {}) {
+  const dataGap = !!opts.dataGap
+  const subline = opts.subline || null
+  const sortLabel = opts.sortLabel || 'Sorted by aging'
+  const grouping = opts.grouping || null
+  return {
+    code,
+    label,
+    rows,
+    count: rows.length,
+    urgency: dataGap ? URGENCY.NEUTRAL : worstUrgency(rows),
+    dataGap,
+    subline,
+    sortLabel,
+    grouping,
+    groups: grouping === 'cemetery' ? _groupRowsByCemetery(rows) : null,
+  }
+}
+
+function _agingSummary(rows, threshold) {
+  if (!rows.length) return null
+  const reds = rows.filter(r => r.urgency === URGENCY.RED).length
+  const ambers = rows.filter(r => r.urgency === URGENCY.AMBER).length
+  if (reds > 0) return `${reds} overdue`
+  if (ambers > 0) return `${ambers} aging > ${threshold}d`
+  return 'all calm'
+}
+
+export function getProductionBuckets(jobs) {
+  const cut    = _bucketCutStencil(jobs)
+  const stick  = _bucketStickStencil(jobs)
+  const blast  = _bucketSandblast(jobs)
+  const wash   = _bucketWashClean(jobs)
+  const found  = _bucketFoundations(jobs)
+  return [
+    _bucket('rubs_to_grab', 'Rubs to grab', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs a new milestone',
+      grouping: 'cemetery',
+      sortLabel: 'Grouped by cemetery — one trip each',
+    }),
+    _bucket('cut_stencil', 'Cut stencil', cut, {
+      subline: _agingSummary(cut, BUCKET_AGING_THRESHOLDS.cut_stencil),
+    }),
+    _bucket('stick_stencil', 'Stick stencil', stick, {
+      dataGap: true,
+      subline: stick.length
+        ? `${stick.length} inferred from cut + pre-blast`
+        : 'Inferred from cut + pre-blast — needs its own milestone',
+    }),
+    _bucket('sandblast', 'Sandblast', blast, {
+      subline: _agingSummary(blast, BUCKET_AGING_THRESHOLDS.sandblast),
+    }),
+    _bucket('wash_clean', 'Wash & clean', wash, {
+      dataGap: true,
+      subline: wash.length
+        ? `${wash.length} inferred — derived signal`
+        : 'Inferred from post-blast gap — needs its own milestone',
+    }),
+    _bucket('foundations', 'Foundations', found, {
+      subline: _agingSummary(found, BUCKET_AGING_THRESHOLDS.foundations),
+    }),
+  ]
+}
+
+export function getInstallationBuckets(jobs) {
+  const newStone = _bucketNewStoneSetting(jobs)
+  return [
+    _bucket('inscriptions_onsite', 'Inscriptions on-site', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs inscription template install milestone',
+    }),
+    _bucket('new_stone_setting', 'New stone setting', newStone, {
+      subline: _agingSummary(newStone, BUCKET_AGING_THRESHOLDS.new_stone_setting),
+    }),
+    _bucket('bronze_setting', 'Bronze setting', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs bronze template install milestone',
+    }),
+    _bucket('doors_pick_up', 'Doors to pick up', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs a new milestone',
+    }),
+    _bucket('doors_drop_off', 'Doors to drop off', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs a new milestone',
+    }),
+    _bucket('installs_scheduled', 'Installs scheduled', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs a schedule field on the install milestone',
+    }),
+  ]
+}
+
+// Department descriptor — used by the role selector + the Owner stack.
+// Stubs surface as cards with no buckets and a single "Coming soon" panel.
+export const DEPARTMENTS = [
+  { code: 'admin',        label: 'Admin',        stub: true  },
+  { code: 'design',       label: 'Design',       stub: true  },
+  { code: 'sales',        label: 'Sales',        stub: true  },
+  { code: 'production',   label: 'Production',   stub: false },
+  { code: 'installation', label: 'Installation', stub: false },
+]
+
+export function bucketsForDepartment(department, jobs) {
+  if (department === 'production')   return getProductionBuckets(jobs)
+  if (department === 'installation') return getInstallationBuckets(jobs)
+  return null   // stub departments
 }
 
 // =============================================================================

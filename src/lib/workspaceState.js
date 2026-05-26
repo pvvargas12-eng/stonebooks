@@ -175,6 +175,25 @@ function fallbackLabel(type, id) {
   return `${type} ${stub}`
 }
 
+// ─── ROLE (department lens) ─────────────────────────────────────────────────
+// Per-operator selection of which department's view to show on the Jobs tab.
+// One of: 'admin' | 'design' | 'sales' | 'production' | 'installation' | 'owner'.
+// Not real auth — anyone can switch. Default is 'owner' (stacks all five).
+
+const VALID_ROLES = ['admin', 'design', 'sales', 'production', 'installation', 'owner']
+
+export function getSelectedRole(userId) {
+  const raw = readRaw(userId)
+  const role = raw?.selectedRole
+  return VALID_ROLES.includes(role) ? role : 'owner'
+}
+
+export function setSelectedRole(userId, role) {
+  if (!VALID_ROLES.includes(role)) return
+  const state = withDefaults(readRaw(userId))
+  writeRaw(userId, { ...state, selectedRole: role })
+}
+
 // ─── FUTURE-PHASE STUBS ─────────────────────────────────────────────────────
 
 export function getTimeLens(userId) {
