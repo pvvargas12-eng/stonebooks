@@ -40,7 +40,7 @@ import { subscribeCommand, refreshEntityIndex, lookupEntityRecord } from './lib/
 // rendered at the top of main; chips mirror the operator's open detail
 // views. Sidebar, tabs, and existing routing are all unchanged.
 import WorkspaceStrip from './WorkspaceStrip'
-import { useWorkpieces, workpieceKey } from './lib/useWorkpieces'
+import { useWorkpieces } from './lib/useWorkpieces'
 
 // =============================================================================
 // LOGO COMPONENTS
@@ -330,21 +330,22 @@ export default function Stonebooks() {
     })
   }, [user?.id])
 
-  // v2 W-2 — On sign-in, restore the last-focused workpiece. One-shot per
-  // session — once the operator manually navigates away, we don't re-fire.
-  // If the stored focus references an entity that no longer exists, the
-  // detail view will surface that on its own; we don't validate here.
+  // v2 W-2 — On sign-in, restore the most-recently-focused workpiece.
+  // We restore from workpieces[0] (the registry orders most-recent-first
+  // via activateWorkpiece) rather than from focusedKey, because focusedKey
+  // is cleared when the operator navigates away to Today. Using the array
+  // order means the restoration honors "last operational context" even
+  // when the operator was on Today at refresh time — matching the
+  // workspace-trust success metric. One-shot per session.
   useEffect(() => {
     if (!user?.id) return
     if (restoredRef.current) return
-    const key = workpieces.focusedKey
-    if (!key) { restoredRef.current = true; return }
-    const wp = workpieces.workpieces.find(w => workpieceKey(w) === key)
+    const wp = workpieces.workpieces[0]
     if (!wp) { restoredRef.current = true; return }
     if (wp.type === 'job')      { setSelectedJobId(wp.id); setTab('jobs') }
     else if (wp.type === 'customer') { setSelectedCustomerId(wp.id); setTab('customers') }
     restoredRef.current = true
-  }, [user?.id, workpieces.focusedKey, workpieces.workpieces])
+  }, [user?.id, workpieces.workpieces])
 
   // v2 W-2 — Activate a workpiece whenever the operator opens a job or
   // customer detail (regardless of entry point — sidebar click, Today drill-
@@ -387,20 +388,24 @@ export default function Stonebooks() {
   }, [tab, selectedJobId, selectedCustomerId])
 
   // v2 W-2 — Strip click handlers. Focus routes through the shell's existing
-  // selected* state + tab setter; close removes the chip AND (if the closed
-  // chip was the currently-viewed entity) exits the detail view so the
-  // operator isn't left on a page for a workpiece they just closed.
+  // selected* state + tab setter. Close removes the chip and, if the closed
+  // workpiece's entity is the value of the corresponding selected* state,
+  // also clears that state — preventing the "JobDetail open for an entity
+  // with no chip in the strip" inconsistency. Strip and detail views stay
+  // in lockstep regardless of which tab the operator is currently on.
   const handleWorkpieceFocus = (wp) => {
     if (wp.type === 'job')      { setSelectedJobId(wp.id); setTab('jobs') }
     else if (wp.type === 'customer') { setSelectedCustomerId(wp.id); setTab('customers') }
+    // Always re-activate — covers the case where the clicked chip's entity
+    // is already the current selected* value (React no-ops same-value
+    // setState, so the activation useEffect wouldn't fire). This makes
+    // chip click visibly re-focus regardless of prior state.
+    workpieces.activate({ type: wp.type, id: wp.id, label: wp.label, sublabel: wp.sublabel })
   }
   const handleWorkpieceClose = (wp) => {
-    const wasFocused = workpieces.focusedKey === workpieceKey(wp)
     workpieces.close(wp)
-    if (wasFocused) {
-      if (wp.type === 'job')      setSelectedJobId(null)
-      else if (wp.type === 'customer') setSelectedCustomerId(null)
-    }
+    if (wp.type === 'job' && selectedJobId === wp.id) setSelectedJobId(null)
+    else if (wp.type === 'customer' && selectedCustomerId === wp.id) setSelectedCustomerId(null)
   }
 
   // Build CSS once per theme

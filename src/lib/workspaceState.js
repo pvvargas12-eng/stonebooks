@@ -28,7 +28,8 @@
 // =============================================================================
 
 const RECENTS_CAP = 10
-const WORKPIECES_CAP = 8       // soft cap — older workpieces fall off the strip
+const WORKPIECES_CAP = 5       // strict cap — older workpieces fall off silently;
+                               // the strip is operational memory, not a tab bar
 const STORAGE_KEY_PREFIX = 'sb:workspace:'
 
 function storageKey(userId) {

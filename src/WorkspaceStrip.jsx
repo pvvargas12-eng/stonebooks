@@ -66,47 +66,50 @@ export default function WorkspaceStrip({ workpieces, focusedKey, onFocus, onClos
 // peripheral chrome without competing with the page title beneath.
 
 const localStyles = `
+  /* Strip — no divider, no bordered "tab-bar" look. The strip is operational
+     memory, not navigation chrome. Vertical breathing room replaces a hairline
+     so the page title beneath has its own visual space without competing for
+     attention with the strip. */
   .sb-workspace-strip {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    padding: 0 0 14px;
-    margin-bottom: 24px;
-    border-bottom: 0.5px solid var(--sb-border);
+    gap: 2px;
+    padding: 2px 0 8px;
+    margin-bottom: 22px;
     align-items: center;
   }
 
-  /* Each chip is a two-element compound: a focus button (the body) and a
-     close button. Both share a single rounded outer frame so they read as
-     one operational object, not two adjacent controls. */
+  /* Borderless chips. Inactive chips read as muted text on the page
+     background; focus emerges via a subtle surface-muted fill plus weight
+     500. No outline, no border, no tab-shaped container. */
   .sb-workspace-chip {
     display: inline-flex;
     align-items: stretch;
     background: transparent;
-    border: 0.5px solid var(--sb-border);
+    border: none;
     border-radius: 6px;
     overflow: hidden;
-    transition: border-color 0.12s, background 0.12s;
-    max-width: 280px;
+    transition: background 0.12s;
+    max-width: 240px;
   }
   .sb-workspace-chip:hover {
-    border-color: var(--sb-border-hover);
+    background: var(--sb-surface-muted);
   }
   .sb-workspace-chip-focused {
-    background: var(--sb-surface);
-    border-color: var(--sb-border-hover);
+    background: var(--sb-surface-muted);
   }
 
-  /* Focus button — the label-clickable surface that re-opens the workpiece. */
+  /* Focus button — the label-clickable surface that re-opens the workpiece.
+     Padding is light so chips read as text-with-a-soft-pill, not as buttons. */
   .sb-workspace-chip-body {
     display: inline-flex;
     align-items: center;
-    padding: 5px 4px 5px 11px;
+    padding: 4px 6px 4px 10px;
     background: transparent;
     border: none;
-    color: var(--sb-text-secondary);
+    color: var(--sb-text-muted);
     font: inherit;
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
     min-width: 0;
     flex: 1;
@@ -127,33 +130,44 @@ const localStyles = `
     letter-spacing: -0.005em;
   }
 
-  /* Close × — always present, low contrast, expands its hover area gently. */
+  /* Close × — hidden at rest, revealed on hover OR when the chip is
+     focused. Reduces visual noise across the strip; the operator still
+     always has access to the close on the chip they're actively engaged
+     with. */
   .sb-workspace-chip-close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
+    width: 20px;
     background: transparent;
     border: none;
     color: var(--sb-text-muted);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
     padding: 0;
-    transition: color 0.12s, background 0.12s;
+    opacity: 0;
+    transition: opacity 0.12s, color 0.12s;
+  }
+  .sb-workspace-chip:hover .sb-workspace-chip-close,
+  .sb-workspace-chip-focused .sb-workspace-chip-close {
+    opacity: 0.55;
   }
   .sb-workspace-chip-close:hover {
+    opacity: 1;
     color: var(--sb-text);
-    background: var(--sb-surface-muted);
   }
 
   /* Phone — same strip; chips wrap naturally. */
   @media (max-width: 600px) {
     .sb-workspace-strip {
-      padding-bottom: 10px;
-      margin-bottom: 20px;
+      padding-bottom: 6px;
+      margin-bottom: 18px;
     }
     .sb-workspace-chip { max-width: 100%; }
+    /* On touch devices, the hover-reveal pattern doesn't apply — keep the
+       close visible at low contrast so it's always tappable. */
+    .sb-workspace-chip-close { opacity: 0.55; }
   }
 `
 
