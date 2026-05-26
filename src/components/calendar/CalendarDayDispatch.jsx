@@ -129,10 +129,13 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, o
         <div className="sb-dispatch-error">{error}</div>
       )}
 
+      {/* Zero-stop batches are ad-hoc events (site_visit / errand) — their
+          operational content lives entirely in the title + notes, so the
+          stops list is suppressed instead of rendering an "empty" message
+          that misreads as "something's wrong." */}
+      {stops.length === 0 ? null : (
       <ol className="sb-dispatch-stops">
-        {stops.length === 0 ? (
-          <li className="sb-dispatch-stops-empty">No stops on this batch.</li>
-        ) : stops.map((stop, idx) => {
+        {stops.map((stop, idx) => {
           const job = stop.job
           const surname = job?.order?.primary_lastname || customerName(job?.order?.customer) || '—'
           const cem = batch.cemetery?.name || job?.order?.cemetery?.name || job?.cemetery?.name
@@ -193,6 +196,7 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, o
           )
         })}
       </ol>
+      )}
     </article>
   )
 }
@@ -385,7 +389,7 @@ const localStyles = `
     font-family: var(--sb-font-mono);
   }
   .sb-dispatch-stop-name {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--sb-text);
   }
@@ -399,10 +403,11 @@ const localStyles = `
     border-radius: 999px;
   }
   .sb-dispatch-stop-spec {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--sb-text-secondary);
-    margin-top: 3px;
+    margin-top: 4px;
     font-variant-numeric: tabular-nums;
+    line-height: 1.45;
   }
   .sb-dispatch-stop-cem {
     font-size: 11px;

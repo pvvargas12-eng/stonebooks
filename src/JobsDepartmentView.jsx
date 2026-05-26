@@ -38,6 +38,7 @@ import {
 } from './lib/stonebooksData'
 import OwnerAttentionListView from './components/OwnerAttentionListView'
 import SalesView from './components/SalesView'
+import AddPromiseModal from './components/AddPromiseModal'
 import {
   getSelectedRole,
   setSelectedRole,
@@ -61,6 +62,20 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab, onO
   // mounts. The consumer clears it on consumption so subsequent re-renders
   // don't fight the user's scroll.
   const [pendingBucketScroll, setPendingBucketScroll] = useState(null)
+
+  // Promise quick-add target — set when an operator clicks the 🤡 hover
+  // affordance on a queue row. AddPromiseModal opens pre-filled with that
+  // job. Reload after save so any new badge surfaces on next render.
+  const [promiseTarget, setPromiseTarget] = useState(null)
+  const handlePromiseClick = useCallback((row) => {
+    const jobId = row?.job?.id
+    if (!jobId) return
+    const label = row?.order?.primary_lastname
+      || row?.customer?.last_name
+      || row?.customer?.lastName
+      || 'this job'
+    setPromiseTarget({ jobId, label })
+  }, [])
 
   // One parallel fetch on mount — jobs for every department's buckets,
   // orders for the Estimates Overview card, bulk_orders for the Admin
@@ -167,9 +182,18 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab, onO
               onMarkBulkReceived={handleMarkBulkReceived}
               initialScrollBucket={pendingBucketScroll}
               onConsumeInitialScroll={consumePendingScroll}
+              onPromiseClick={handlePromiseClick}
             />
           )
       )}
+
+      <AddPromiseModal
+        open={!!promiseTarget}
+        jobId={promiseTarget?.jobId || null}
+        jobLabel={promiseTarget?.label || null}
+        onClose={() => setPromiseTarget(null)}
+        onSaved={() => { setPromiseTarget(null); loadJobs() }}
+      />
     </div>
   )
 }
@@ -178,7 +202,7 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab, onO
 // DEPARTMENT BODY — non-Owner roles
 // =============================================================================
 
-function DepartmentBody({ role, jobs, orders, bulkOrders, onOpenJob, onOpenOrder, onSwitchTab, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll }) {
+function DepartmentBody({ role, jobs, orders, bulkOrders, onOpenJob, onOpenOrder, onSwitchTab, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll, onPromiseClick }) {
   const dept = DEPARTMENTS.find(d => d.code === role)
   if (!dept) return null
 
@@ -207,6 +231,7 @@ function DepartmentBody({ role, jobs, orders, bulkOrders, onOpenJob, onOpenOrder
       onMarkBulkReceived={onMarkBulkReceived}
       initialScrollBucket={initialScrollBucket}
       onConsumeInitialScroll={onConsumeInitialScroll}
+      onPromiseClick={onPromiseClick}
     />
   )
 }
@@ -223,7 +248,7 @@ const SELECTABLE_BUCKET_CODES = new Set(['stones_to_order', 'photos_to_request']
 // that switched to this role), the matching section is scrolled into view on
 // mount and the pending target is cleared via onConsumeInitialScroll so
 // future re-renders don't fight the user's scroll.
-function DepartmentBuckets({ dept, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll }) {
+function DepartmentBuckets({ dept, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll, onPromiseClick }) {
   const buckets = useMemo(
     () => bucketsForDepartment(dept.code, jobs, { bulkOrders }) || [],
     [dept.code, jobs, bulkOrders],
@@ -275,6 +300,7 @@ function DepartmentBuckets({ dept, jobs, bulkOrders, onOpenJob, onReload, onMark
             onOpenRow={(row) => onOpenJob?.(row.job.id)}
             onReload={onReload}
             onMarkBulkReceived={onMarkBulkReceived}
+            onPromiseClick={onPromiseClick}
           />
         ))}
       </div>

@@ -28,6 +28,7 @@ import {
 } from './lib/workspaceState'
 import RoleSelector from './components/RoleSelector'
 import TodaySection from './components/TodaySection'
+import AddPromiseModal from './components/AddPromiseModal'
 
 // eslint-disable-next-line no-unused-vars
 export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOpenJob, onOpenCustomer }) {
@@ -60,6 +61,16 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     () => indexPromisesByJob(promises),
     [promises],
   )
+
+  // Quick-add promise — row hover button opens the modal with the job
+  // already pinned. Reload after save so the new badge appears.
+  const [promiseTarget, setPromiseTarget] = useState(null)
+  const handlePromiseClick = (row) => {
+    setPromiseTarget({
+      jobId: row?.job?.id || null,
+      label: row?.surname || row?.order?.primary_lastname || 'this job',
+    })
+  }
 
   const handleRoleChange = (next) => {
     setRole(next)
@@ -113,6 +124,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             emptyText="Nothing overdue. Good."
             onOpenRow={handleOpenRow}
             promisesByJob={promisesByJob}
+            onPromiseClick={handlePromiseClick}
           />
 
           <TodaySection
@@ -122,6 +134,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             emptyText={`Nothing due today for ${roleNoun(role)}.`}
             onOpenRow={handleOpenRow}
             promisesByJob={promisesByJob}
+            onPromiseClick={handlePromiseClick}
           />
 
           {/* Aging hides entirely when empty — keeps quiet days quiet. */}
@@ -133,9 +146,18 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             hideWhenEmpty
             onOpenRow={handleOpenRow}
             promisesByJob={promisesByJob}
+            onPromiseClick={handlePromiseClick}
           />
         </>
       )}
+
+      <AddPromiseModal
+        open={!!promiseTarget}
+        jobId={promiseTarget?.jobId || null}
+        jobLabel={promiseTarget?.label || null}
+        onClose={() => setPromiseTarget(null)}
+        onSaved={() => { setPromiseTarget(null); loadJobs() }}
+      />
     </div>
   )
 }

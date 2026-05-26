@@ -127,7 +127,7 @@ const localStyles = `
     font-variant-numeric: tabular-nums;
   }
   .sb-cal-card-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--sb-text);
     white-space: nowrap;

@@ -35,7 +35,7 @@ const SELECTABLE_BUCKET_KINDS = {
 }
 
 const JobsQueueSection = forwardRef(function JobsQueueSection(
-  { bucket, onOpenRow, bulkOrders, selectable = false, onReload, onMarkBulkReceived },
+  { bucket, onOpenRow, bulkOrders, selectable = false, onReload, onMarkBulkReceived, onPromiseClick },
   ref,
 ) {
   const urgency = bucket.urgency || URGENCY.NEUTRAL
@@ -133,6 +133,7 @@ const JobsQueueSection = forwardRef(function JobsQueueSection(
                 selectable={selectable}
                 selected={selectable && row.milestone?.id && selectedIds.has(row.milestone.id)}
                 onSelectToggle={handleToggle}
+                onPromiseClick={onPromiseClick}
               />
             ))}
           </div>

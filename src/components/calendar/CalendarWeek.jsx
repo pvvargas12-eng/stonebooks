@@ -11,6 +11,7 @@
 import { useMemo, useState } from 'react'
 import { getDayRange, fmtDate, swapBatchDays } from '../../lib/stonebooksData'
 import CalendarBatchCard from './CalendarBatchCard'
+import WeatherStrip from './WeatherStrip'
 
 export default function CalendarWeek({
   startDate,
@@ -89,11 +90,13 @@ export default function CalendarWeek({
                 onDrop={handleDrop(cell.iso)}
                 title="Drag onto another day to swap"
               >
+                <span className="sb-cal-week-head-grip" aria-hidden="true">⠿</span>
                 <span className="sb-cal-week-head-day">{dayName}</span>
                 <span className="sb-cal-week-head-date">{monthDay}</span>
                 {cell.batches.length >= 5 && (
                   <span className="sb-cal-week-head-heavy">Heavy</span>
                 )}
+                <WeatherStrip date={cell.date} variant="week" />
               </div>
               <div
                 className="sb-cal-week-stack"
@@ -221,9 +224,23 @@ const localStyles = `
     border-bottom: 0.5px solid var(--sb-border);
     cursor: grab;
     user-select: none;
+    flex-wrap: wrap;
   }
   .sb-cal-week-head:active {
     cursor: grabbing;
+  }
+  /* Drag handle — quiet by default, becomes more visible on hover so the
+     swap-day affordance is discoverable. */
+  .sb-cal-week-head-grip {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.12s;
+  }
+  .sb-cal-week-head:hover .sb-cal-week-head-grip {
+    opacity: 1;
+    color: var(--sb-text);
   }
   .sb-cal-week-head-day {
     font-size: 11px;

@@ -47,7 +47,14 @@ const TEAM_INITIALS = {
   installation: 'IN',
 }
 
-export default function TodayRow({ row, onClick, urgency: urgencyOverride, bulkOrders = null, promise = null }) {
+export default function TodayRow({
+  row,
+  onClick,
+  urgency: urgencyOverride,
+  bulkOrders = null,
+  promise = null,
+  onPromiseClick,
+}) {
   const urgency = urgencyOverride || row.urgency || URGENCY.NEUTRAL
   const pill = URGENCY_PILL_STYLE[urgency]
   const stage = row.stage
@@ -154,7 +161,20 @@ export default function TodayRow({ row, onClick, urgency: urgencyOverride, bulkO
         </span>
       </div>
 
-      <div className="sb-today-row-owner">{ownerInitials}</div>
+      <div className="sb-today-row-owner">
+        <span className="sb-today-row-owner-text">{ownerInitials}</span>
+        {onPromiseClick && (
+          <button
+            type="button"
+            className="sb-today-row-promise-add"
+            onClick={(e) => { e.stopPropagation(); onPromiseClick(row) }}
+            title="Mark as promised"
+            aria-label="Mark as promised"
+          >
+            🤡
+          </button>
+        )}
+      </div>
     </button>
   )
 }
@@ -281,6 +301,10 @@ const localStyles = `
   }
 
   .sb-today-row-owner {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
     font-size: 11px;
     font-weight: 500;
     color: var(--sb-text-muted);
@@ -288,6 +312,32 @@ const localStyles = `
     text-align: right;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+  }
+  .sb-today-row-owner-text {
+    min-width: 0;
+  }
+  .sb-today-row-promise-add {
+    opacity: 0;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.12s, background 0.12s;
+  }
+  .sb-today-row:hover .sb-today-row-promise-add,
+  .sb-today-row-promise-add:focus-visible {
+    opacity: 1;
+  }
+  .sb-today-row-promise-add:hover {
+    background: var(--sb-red-bg, #fbe5e5);
   }
 
   /* Red rows promote the urgency without overpainting — the row tint, the

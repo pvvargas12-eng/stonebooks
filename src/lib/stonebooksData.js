@@ -4066,6 +4066,15 @@ export const BATCH_KINDS = [
   { code: 'rub_grab',        label: 'Rub-grab trip',    color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
   { code: 'foundation_trip', label: 'Foundation trip',  color: '#D85A30', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
   { code: 'door_trip',       label: 'Door pickup/drop', color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
+  // Custom calendar events — zero-job batches that serve as ad-hoc entries.
+  // site_visit: estimate visits, customer-home meetings, cemetery walks.
+  // errand:     pick up parts, drop off paperwork, generic schedule item.
+  // Both are field by default (operator can override notes/address inline).
+  // requiresDestination=false so the AddEventModal isn't forced into a
+  // cemetery picker when the destination is a customer's house or a parts
+  // store; the modal exposes optional free-text address for those cases.
+  { code: 'site_visit',      label: 'Site visit',       color: '#7F77DD', isField: true,  requiresDestination: false, requiresCompletionPhoto: false },
+  { code: 'errand',          label: 'Errand',           color: '#5F5E5A', isField: true,  requiresDestination: false, requiresCompletionPhoto: false },
 ]
 
 const _BATCH_KIND_BY_CODE = new Map(BATCH_KINDS.map(k => [k.code, k]))
@@ -4074,10 +4083,8 @@ export function batchKindInfo(code) {
 }
 
 // Shop coordinates — the origin point for every field-trip mileage
-// calculation. Paul fills in the real numbers; the default below is a
-// rough Perth Amboy NJ center so the math doesn't return NaN pre-config.
-// TODO(paul): set actual shop coordinates.
-export const SHOP_COORDINATES = { lat: 40.5074, lng: -74.2654 }
+// calculation. Set to Shevchenko Monuments' actual Perth Amboy address.
+export const SHOP_COORDINATES = { lat: 40.525008314072224, lng: -74.28993820409238 }
 
 // Map of milestone_key → which batch kind a job qualifies for when that
 // milestone is the next actionable step. Used by getSchedulableJobs to

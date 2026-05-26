@@ -23,6 +23,9 @@ import {
 } from './lib/stonebooksData'
 import CalendarWeek from './components/calendar/CalendarWeek'
 import CalendarDay from './components/calendar/CalendarDay'
+import WeatherStrip from './components/calendar/WeatherStrip'
+import AddEventModal from './components/AddEventModal'
+import { supabase } from './lib/supabase'
 
 const ZOOMS = [
   { code: 'week', label: 'Week' },
@@ -36,8 +39,10 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
   const [batches, setBatches] = useState([])
   const [promises, setPromises] = useState([])
   const [carryover, setCarryover] = useState([])
+  const [cemeteries, setCemeteries] = useState([])
   const [loadErr, setLoadErr] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [addEventOpen, setAddEventOpen] = useState(false)
 
   const actorName = profile?.display_name || 'Operator'
 
@@ -45,14 +50,16 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
     setLoading(true)
     setLoadErr(null)
     try {
-      const [b, p, c] = await Promise.all([
+      const [b, p, c, cems] = await Promise.all([
         getBatches({}),
         getAllOpenPromises({}),
         getCarryoverForToday(todayLocalISO()),
+        _listCemeteriesForEvent(),
       ])
       setBatches(b || [])
       setPromises(p || [])
       setCarryover(c || [])
+      setCemeteries(cems || [])
     } catch (e) {
       setLoadErr(e?.message || 'Failed to load calendar data')
     }
@@ -141,6 +148,13 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
           <button type="button" className="sb-calendar-nav-btn" onClick={goToday}>Today</button>
           <button type="button" className="sb-calendar-nav-btn" onClick={goNext}>›</button>
         </div>
+        <button
+          type="button"
+          className="sb-calendar-add-event"
+          onClick={() => setAddEventOpen(true)}
+        >
+          + Add event
+        </button>
       </div>
 
       {loadErr && (
@@ -165,17 +179,42 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
       )}
 
       {!loading && !loadErr && zoom === 'day' && (
-        <CalendarDay
-          date={anchor}
-          batches={dayBatches || batches}
-          carryover={carryover}
-          promisesByJob={promisesByJob}
-          actorName={actorName}
-          onReload={loadAll}
-        />
+        <>
+          <WeatherStrip date={anchor} variant="day" />
+          <CalendarDay
+            date={anchor}
+            batches={dayBatches || batches}
+            carryover={carryover}
+            promisesByJob={promisesByJob}
+            actorName={actorName}
+            onReload={loadAll}
+          />
+        </>
       )}
+
+      <AddEventModal
+        open={addEventOpen}
+        cemeteries={cemeteries}
+        defaultDate={
+          (() => {
+            const d = anchor
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+          })()
+        }
+        onClose={() => setAddEventOpen(false)}
+        onCreated={() => { setAddEventOpen(false); loadAll() }}
+      />
     </div>
   )
+}
+
+async function _listCemeteriesForEvent() {
+  const { data, error } = await supabase
+    .from('cemeteries')
+    .select('id, name')
+    .order('name', { ascending: true })
+  if (error) { console.warn('[calendar] cemeteries fetch failed:', error.message); return [] }
+  return data || []
 }
 
 // Lazy day-batch fetch with rich joins — getBatches gives the date-scoped
@@ -252,6 +291,25 @@ const localStyles = `
   .sb-calendar-nav-btn:hover {
     color: var(--sb-text);
     background: var(--sb-surface-muted);
+  }
+
+  /* + Add event — the accent-tinted entry point for ad-hoc calendar
+     entries. Sits at the right edge of the controls row so it never
+     competes with the zoom toggle for primary attention. */
+  .sb-calendar-add-event {
+    background: var(--sb-accent, #b8842a);
+    border: 0.5px solid transparent;
+    color: white;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 14px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-calendar-add-event:hover {
+    filter: brightness(0.95);
   }
 `
 

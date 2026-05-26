@@ -90,6 +90,7 @@ export default function JobsQueueRow({
   selectable = false,
   selected = false,
   onSelectToggle,
+  onPromiseClick,    // optional — when supplied, renders a 🤡 quick-add affordance on hover
 }) {
   const urgency = row.urgency || URGENCY.NEUTRAL
   const stage = row.stage
@@ -241,7 +242,20 @@ export default function JobsQueueRow({
       )}
 
       {!showPlot && (
-        <div className="sb-queue-row-owner">{owner || '—'}</div>
+        <div className="sb-queue-row-owner">
+          <span className="sb-queue-row-owner-text">{owner || '—'}</span>
+          {onPromiseClick && (
+            <button
+              type="button"
+              className="sb-queue-row-promise-add"
+              onClick={(e) => { e.stopPropagation(); onPromiseClick(row) }}
+              title="Mark as promised"
+              aria-label="Mark as promised"
+            >
+              🤡
+            </button>
+          )}
+        </div>
       )}
     </>
   )
@@ -477,10 +491,43 @@ const localStyles = `
     background: var(--sb-accent-bg, rgba(184, 132, 42, 0.08)) !important;
   }
   .sb-queue-row-owner {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
     font-size: 12px;
     color: var(--sb-text-muted);
     text-align: right;
     white-space: nowrap;
+  }
+  .sb-queue-row-owner-text {
+    min-width: 0;
+  }
+  /* Quick-add promise affordance — hidden until row hover, surfaces a 🤡
+     button beside the owner column. The button stops click propagation so
+     it doesn't trigger the row's main click handler. */
+  .sb-queue-row-promise-add {
+    opacity: 0;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.12s, background 0.12s;
+  }
+  .sb-queue-row:hover .sb-queue-row-promise-add,
+  .sb-queue-row-promise-add:focus-visible {
+    opacity: 1;
+  }
+  .sb-queue-row-promise-add:hover {
+    background: var(--sb-red-bg, #fbe5e5);
   }
 
   @media (max-width: 1000px) {

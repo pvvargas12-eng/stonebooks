@@ -218,10 +218,16 @@ const localStyles = `
     gap: 6px;
   }
   .sb-month-cell-day {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--sb-text);
     font-variant-numeric: tabular-nums;
+  }
+  /* Today's date number gets a slight bump so the operator's eye lands
+     on it even when the surrounding cells carry promise / batch dots. */
+  .sb-month-cell-today .sb-month-cell-day {
+    font-weight: 600;
+    color: var(--sb-accent, #b8842a);
   }
   .sb-month-cell-count {
     font-size: 11px;
@@ -261,11 +267,11 @@ const localStyles = `
     gap: 4px;
   }
   .sb-month-cell-promise-icon {
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1;
   }
   .sb-month-cell-promise-surname {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--sb-red, #b54040);
     white-space: nowrap;

@@ -42,11 +42,10 @@ import {
   compareMilestoneDates,
   formatMilestoneDateDisplay,
   getActivePromisesForJob,
-  addPromise,
-  todayLocalISO,
 } from './lib/stonebooksData'
-import { TEAM_ROSTER, DEFAULT_PROMISE_MAKER } from './lib/team'
 import PromiseBadge from './components/scheduler/PromiseBadge'
+import AddPromiseModal from './components/AddPromiseModal'
+import SearchBar from './components/SearchBar'
 
 // ── Milestone group ordering for the JobDetail per-group cards ───────────────
 const GROUP_ORDER = [
@@ -124,6 +123,10 @@ export default function JobsTab({
       <div className="sb-page-head">
         <div className="sb-page-eyebrow">Operations</div>
         <h1 className="sb-page-title">Jobs</h1>
+      </div>
+
+      <div className="sb-jobs-search-row">
+        <SearchBar placeholder="Search customers, jobs, orders…" />
       </div>
 
       {/* Backfill banner — surfaces signed orders that don't yet have jobs.
@@ -476,13 +479,15 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
         />
       )}
 
-      {promiseModalOpen && (
-        <PromiseModal
-          jobId={jobId}
-          onClose={() => setPromiseModalOpen(false)}
-          onSaved={() => { setPromiseModalOpen(false); loadJob() }}
-        />
-      )}
+      <AddPromiseModal
+        open={promiseModalOpen}
+        jobId={jobId}
+        jobLabel={
+          (job?.order?.primary_lastname || customerName(job?.order?.customer) || 'this job')
+        }
+        onClose={() => setPromiseModalOpen(false)}
+        onSaved={() => { setPromiseModalOpen(false); loadJob() }}
+      />
     </div>
   )
 }
@@ -496,18 +501,19 @@ function PromiseStrip({ promises, onAddClick }) {
   return (
     <div className={`sb-job-promise-strip ${hasPromises ? 'sb-job-promise-strip-active' : ''}`}>
       <div className="sb-job-promise-strip-body">
+        <span className="sb-job-promise-strip-eyebrow">Promise tracker</span>
         {hasPromises ? (
-          <>
+          <div className="sb-job-promise-strip-active-body">
             <span className="sb-job-promise-strip-icon" aria-hidden="true">🤡</span>
             <span className="sb-job-promise-strip-label">
-              {promises.length === 1 ? 'Active promise:' : `${promises.length} active promises:`}
+              {promises.length === 1 ? 'Active promise' : `${promises.length} active promises`}
             </span>
             <div className="sb-job-promise-strip-badges">
               {promises.map(p => (
                 <PromiseBadge key={p.id} promise={p} size="md" />
               ))}
             </div>
-          </>
+          </div>
         ) : (
           <span className="sb-job-promise-strip-empty">No active promises on this job.</span>
         )}
@@ -517,101 +523,8 @@ function PromiseStrip({ promises, onAddClick }) {
         className="sb-job-promise-strip-add"
         onClick={onAddClick}
       >
-        + Mark as promised
+        <span aria-hidden="true">🤡</span> Mark as promised
       </button>
-    </div>
-  )
-}
-
-// Promise creation modal. Defaults to Cathy + today's date. Saves via the
-// addPromise helper; parent reloads to surface the new badge.
-function PromiseModal({ jobId, onClose, onSaved }) {
-  const [promisedBy, setPromisedBy] = useState(DEFAULT_PROMISE_MAKER)
-  const [promisedDate, setPromisedDate] = useState(todayLocalISO())
-  const [notes, setNotes] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
-
-  const handleSave = async () => {
-    setError(null)
-    setSubmitting(true)
-    const res = await addPromise(jobId, {
-      promised_by:   promisedBy,
-      promised_date: promisedDate,
-      notes:         notes.trim() || null,
-    })
-    setSubmitting(false)
-    if (!res.ok) {
-      setError(res.error || 'Failed to save promise.')
-      return
-    }
-    onSaved?.()
-  }
-
-  return (
-    <div className="sb-promise-modal-backdrop" onClick={onClose}>
-      <div className="sb-promise-modal" onClick={e => e.stopPropagation()}>
-        <h3 className="sb-promise-modal-title">Mark this job as promised</h3>
-        <p className="sb-promise-modal-body">
-          Capture who promised what and when. The job will carry the 🤡
-          treatment everywhere it appears until the promise is resolved.
-        </p>
-        <div className="sb-promise-modal-row">
-          <div className="sb-promise-modal-field">
-            <label className="sb-promise-modal-label">Promised by</label>
-            <select
-              className="sb-promise-modal-input"
-              value={promisedBy}
-              onChange={e => setPromisedBy(e.target.value)}
-              disabled={submitting}
-            >
-              {TEAM_ROSTER.map(m => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </div>
-          <div className="sb-promise-modal-field">
-            <label className="sb-promise-modal-label">Promised date</label>
-            <input
-              type="date"
-              className="sb-promise-modal-input"
-              value={promisedDate}
-              onChange={e => setPromisedDate(e.target.value)}
-              disabled={submitting}
-            />
-          </div>
-        </div>
-        <div className="sb-promise-modal-field">
-          <label className="sb-promise-modal-label">Notes (optional)</label>
-          <textarea
-            className="sb-promise-modal-input sb-promise-modal-textarea"
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-            placeholder="What did the customer ask for? Any context the team should know?"
-            rows={3}
-            disabled={submitting}
-          />
-        </div>
-        {error && <div className="sb-promise-modal-error">{error}</div>}
-        <div className="sb-promise-modal-actions">
-          <button
-            type="button"
-            className="sb-promise-modal-cancel"
-            onClick={onClose}
-            disabled={submitting}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="sb-promise-modal-save"
-            onClick={handleSave}
-            disabled={submitting || !promisedBy || !promisedDate}
-          >
-            {submitting ? 'Saving…' : 'Save promise'}
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -2157,13 +2070,21 @@ const localStyles = `
     gap: 8px;
   }
 
+  /* ── Search row (top of Jobs page) ────────────────────────────────────── */
+  .sb-jobs-search-row {
+    margin-bottom: 20px;
+  }
+
   /* ── Promise strip (top of JobDetail) ─────────────────────────────────── */
+  /* Eyebrow makes the role of this surface unmistakable ("Promise tracker");
+     the add button is the high-contrast accent so it doesn't read as a
+     ghost link. */
   .sb-job-promise-strip {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 10px 14px;
+    padding: 12px 16px;
     margin-bottom: 16px;
     background: var(--sb-surface);
     border: 0.5px solid var(--sb-border);
@@ -2176,10 +2097,26 @@ const localStyles = `
   }
   .sb-job-promise-strip-body {
     display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    flex: 1;
+  }
+  .sb-job-promise-strip-eyebrow {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--sb-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .sb-job-promise-strip-active .sb-job-promise-strip-eyebrow {
+    color: var(--sb-red, #b54040);
+  }
+  .sb-job-promise-strip-active-body {
+    display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-    min-width: 0;
   }
   .sb-job-promise-strip-icon {
     font-size: 18px;
@@ -2201,22 +2138,28 @@ const localStyles = `
     font-style: italic;
   }
   .sb-job-promise-strip-add {
-    background: transparent;
-    border: 0.5px solid var(--sb-border);
-    color: var(--sb-text);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--sb-accent, #b8842a);
+    border: 0.5px solid transparent;
+    color: white;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
-    padding: 4px 12px;
+    padding: 8px 16px;
     border-radius: var(--sb-r-sm, 6px);
     cursor: pointer;
     white-space: nowrap;
   }
   .sb-job-promise-strip-add:hover {
-    background: var(--sb-surface-muted);
+    filter: brightness(0.95);
   }
   .sb-job-promise-strip-active .sb-job-promise-strip-add {
-    background: rgba(255, 255, 255, 0.6);
+    background: var(--sb-red, #b54040);
+  }
+  .sb-job-promise-strip-active .sb-job-promise-strip-add:hover {
+    filter: brightness(0.92);
   }
 
   /* ── Promise modal ────────────────────────────────────────────────────── */

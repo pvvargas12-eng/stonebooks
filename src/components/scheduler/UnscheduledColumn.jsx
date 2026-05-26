@@ -148,7 +148,7 @@ const localStyles = `
     flex-wrap: wrap;
   }
   .sb-uncol-card-surname {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--sb-text);
   }

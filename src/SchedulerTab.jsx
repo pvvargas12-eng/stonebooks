@@ -26,6 +26,8 @@ import MonthLandscape from './components/scheduler/MonthLandscape'
 import TwoWeekView from './components/scheduler/TwoWeekView'
 import WeekWorkbench from './components/scheduler/WeekWorkbench'
 import PromiseBanner from './components/scheduler/PromiseBanner'
+import SearchBar from './components/SearchBar'
+import AddPromiseModal from './components/AddPromiseModal'
 
 const ZOOMS = [
   { code: 'month',    label: 'Month'   },
@@ -41,6 +43,7 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
   const [cemeteries, setCemeteries] = useState([])
   const [promises, setPromises] = useState([])
   const [loadErr, setLoadErr] = useState(null)
+  const [addPromiseOpen, setAddPromiseOpen] = useState(false)
 
   // Parallel load — every subview consumes some slice of (jobs, batches,
   // cemeteries, promises). One round-trip on mount keeps the surface fast.
@@ -116,6 +119,17 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
         <h1 className="sb-page-title">Scheduler</h1>
       </div>
 
+      <div className="sb-scheduler-search-row">
+        <SearchBar placeholder="Search customers, jobs, orders…" />
+        <button
+          type="button"
+          className="sb-scheduler-add-promise"
+          onClick={() => setAddPromiseOpen(true)}
+        >
+          <span aria-hidden="true">🤡</span> Add promise
+        </button>
+      </div>
+
       <PromiseBanner promises={promises} onOpenJob={onOpenJob} />
 
       <div className="sb-scheduler-controls">
@@ -177,6 +191,12 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
           onReload={loadAll}
         />
       )}
+
+      <AddPromiseModal
+        open={addPromiseOpen}
+        onClose={() => setAddPromiseOpen(false)}
+        onSaved={() => { setAddPromiseOpen(false); loadAll() }}
+      />
     </div>
   )
 }
@@ -197,6 +217,40 @@ async function _listCemeteries() {
 }
 
 const localStyles = `
+  /* Search row — sits below the page head, hosts global search + the
+     loud "Add promise" button. The button is the discoverable entry
+     point for the most-important operational verb on this page. */
+  .sb-scheduler-search-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .sb-scheduler-add-promise {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--sb-red, #b54040);
+    border: 0.5px solid transparent;
+    color: white;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 9px 16px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    white-space: nowrap;
+    margin-left: auto;
+  }
+  .sb-scheduler-add-promise:hover {
+    filter: brightness(0.95);
+  }
+  .sb-scheduler-add-promise:focus-visible {
+    outline: 0.5px solid var(--sb-accent);
+    outline-offset: 2px;
+  }
+
   .sb-scheduler-controls {
     display: flex;
     align-items: center;
