@@ -30,6 +30,7 @@ import {
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   getNextRequiredAction,
   SOLD_STATUSES,
+  BLOCK_REASON_CODES,
 } from './lib/stonebooksData'
 
 // ── Milestone group ordering for the table summary columns ───────────────────
@@ -1255,14 +1256,37 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
+  // Operational Truth Substrate write surface — small inline form for
+  // capturing the supplier/cemetery party name, the external party's
+  // quoted-back date, and (when blocked) the structured block reason.
+  // Once filled in, the Today engine produces honest signals like
+  // "Coldspring is 3 days past their quoted date" automatically.
+  const [trackOpen, setTrackOpen] = useState(false)
+  const [trackParty,  setTrackParty]  = useState(milestone.external_party_ref     || '')
+  const [trackDate,   setTrackDate]   = useState(milestone.expected_resolution_at || '')
+  const [trackReason, setTrackReason] = useState(milestone.block_reason_code      || '')
+  const hasTracking = !!(
+    milestone.external_party_ref ||
+    milestone.expected_resolution_at ||
+    milestone.block_reason_code
+  )
+
   // Readiness check: are any required milestones not yet done?
+  // Returns an array of { key, label } for each unmet dependency. The label
+  // is the dependency milestone's human-readable label (e.g. "Stone received")
+  // — never the snake_case schema key — so the "Waiting on:" line in the row
+  // reads as plain English instead of database identifiers.
   const blocking = useMemo(() => {
     if (!milestone.requires || milestone.requires.length === 0) return []
     const byKey = new Map(allMilestones.map(m => [m.milestone_key, m]))
-    return milestone.requires.filter(k => {
-      const dep = byKey.get(k)
-      return dep && dep.status !== 'done' && dep.status !== 'not_needed'
-    })
+    return milestone.requires
+      .map(k => {
+        const dep = byKey.get(k)
+        if (!dep) return null
+        if (dep.status === 'done' || dep.status === 'not_needed') return null
+        return { key: k, label: dep.label || k }
+      })
+      .filter(Boolean)
   }, [milestone, allMilestones])
 
   const isLocked = blocking.length > 0 && milestone.status !== 'done' && milestone.status !== 'not_needed'
@@ -1287,11 +1311,17 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
       return
     }
     if (res.requiresOverride) {
+      const keys = res.blockingKeys || []
+      const labels = keys.map(k => {
+        const dep = allMilestones.find(m => m.milestone_key === k)
+        return dep?.label || k
+      })
       onOverrideRequest?.({
         milestoneKey: milestone.milestone_key,
         milestoneLabel: milestone.label,
         patch: { status: newStatus },
-        blockingKeys: res.blockingKeys || [],
+        blockingKeys: keys,
+        blockingLabels: labels,
       })
       return
     }
@@ -1306,6 +1336,24 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
     setBusy(false)
     if (res.ok) onRefresh?.()
     else setError(res.error || 'Update failed')
+  }
+
+  // Save the three operational-truth fields in one patch. Empty inputs
+  // are normalized to null in the data layer (clears prior values).
+  const handleTrackSave = async () => {
+    setBusy(true); setError(null)
+    const res = await updateMilestone(jobId, milestone.milestone_key, {
+      external_party_ref:     trackParty,
+      expected_resolution_at: trackDate,
+      block_reason_code:      trackReason,
+    })
+    setBusy(false)
+    if (res.ok) {
+      setTrackOpen(false)
+      onRefresh?.()
+    } else {
+      setError(res.error || 'Update failed')
+    }
   }
 
   const handleNoteSave = async () => {
@@ -1350,8 +1398,8 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
             )}
           </div>
           {isLocked && (
-            <div style={{ fontSize: 10, color: 'var(--sb-text-muted)', marginTop: 2, fontFamily: 'var(--sb-font-mono)' }}>
-              Waiting on: {blocking.join(', ')}
+            <div style={{ fontSize: 12, color: 'var(--sb-text-muted)', marginTop: 4 }}>
+              Waiting on: {blocking.map(b => b.label).join(', ')}
             </div>
           )}
           {overdue && (
@@ -1364,17 +1412,39 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
               {milestone.note}
             </div>
           )}
-          <div style={{ marginTop: 4, display: 'flex', gap: 12, alignItems: 'center' }}>
+          {hasTracking && (
+            <div style={{ fontSize: 12, color: 'var(--sb-text-secondary)', marginTop: 6 }}>
+              {[
+                milestone.external_party_ref,
+                milestone.expected_resolution_at
+                  ? `expected ${fmtDate(milestone.expected_resolution_at)}`
+                  : null,
+                milestone.block_reason_code
+                  ? (BLOCK_REASON_CODES.find(r => r.code === milestone.block_reason_code)?.label
+                     || milestone.block_reason_code)
+                  : null,
+              ].filter(Boolean).join(' · ')}
+            </div>
+          )}
+          <div style={{ marginTop: 6, display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <button
               type="button"
               className="sb-link"
-              style={{ fontSize: 11, padding: 0 }}
+              style={{ fontSize: 12, padding: 0 }}
               onClick={() => { setNoteDraft(milestone.note || ''); setNoteOpen(o => !o) }}
             >
               {milestone.note ? 'Edit note' : '+ Add note'}
             </button>
+            <button
+              type="button"
+              className="sb-link"
+              style={{ fontSize: 12, padding: 0 }}
+              onClick={() => setTrackOpen(o => !o)}
+            >
+              {hasTracking ? 'Edit ETA & supplier' : '+ Track ETA & supplier'}
+            </button>
             {error && (
-              <span style={{ fontSize: 11, color: 'var(--sb-red)' }}>{error}</span>
+              <span style={{ fontSize: 12, color: 'var(--sb-red)' }}>{error}</span>
             )}
           </div>
         </div>
@@ -1417,6 +1487,66 @@ function MilestoneRow({ milestone, allMilestones, jobId, onRefresh, onOverrideRe
               Save note
             </button>
             <button type="button" className="sb-btn-secondary" onClick={() => { setNoteOpen(false); setNoteDraft('') }} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {trackOpen && (
+        <div className="sb-milestone-edit-row">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--sb-text-muted)' }}>Supplier / cemetery / party</span>
+              <input
+                type="text"
+                className="sb-input"
+                value={trackParty}
+                onChange={e => setTrackParty(e.target.value)}
+                placeholder="e.g. Coldspring, Holy Cross — Maria, PO #4427"
+                disabled={busy}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--sb-text-muted)' }}>Expected back</span>
+              <input
+                type="date"
+                className="sb-input"
+                value={trackDate}
+                onChange={e => setTrackDate(e.target.value)}
+                disabled={busy}
+              />
+            </label>
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--sb-text-muted)' }}>Block reason (only if this milestone is stuck)</span>
+            <select
+              className="sb-input"
+              value={trackReason}
+              onChange={e => setTrackReason(e.target.value)}
+              disabled={busy}
+            >
+              <option value="">— No block reason —</option>
+              {BLOCK_REASON_CODES.map(r => (
+                <option key={r.code} value={r.code}>{r.label}</option>
+              ))}
+            </select>
+          </label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button type="button" className="sb-btn-primary" onClick={handleTrackSave} disabled={busy}>
+              Save
+            </button>
+            <button
+              type="button"
+              className="sb-btn-secondary"
+              onClick={() => {
+                setTrackOpen(false)
+                setTrackParty(milestone.external_party_ref     || '')
+                setTrackDate(milestone.expected_resolution_at  || '')
+                setTrackReason(milestone.block_reason_code     || '')
+              }}
+              disabled={busy}
+            >
               Cancel
             </button>
           </div>
@@ -1664,8 +1794,8 @@ function OverrideModal({ jobId, request, onClose, onConfirmed }) {
           <div style={{ marginBottom: 8 }}>
             <strong>{request.milestoneLabel}</strong> isn't ready yet.
           </div>
-          <div style={{ fontSize: 12, color: 'var(--sb-text-muted)', marginBottom: 12, fontFamily: 'var(--sb-font-mono)' }}>
-            Waiting on: {request.blockingKeys.join(', ')}
+          <div style={{ fontSize: 13, color: 'var(--sb-text-muted)', marginBottom: 12 }}>
+            Waiting on: {(request.blockingLabels || request.blockingKeys || []).join(', ')}
           </div>
           <div style={{ fontSize: 13, marginBottom: 6 }}>
             Why are you bypassing? (required — will be logged as an override event)

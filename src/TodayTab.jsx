@@ -60,15 +60,12 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
 
   return (
     <div className="sb-page sb-today">
-      {/* L1 — Morning sentence (placeholder; T-3 ships the live briefing). */}
+      {/* L1 — Morning sentence. Derived from the live signal census so the
+          header tells the operator the truth about the morning. No more
+          hardcoded placeholder. */}
       <header className="sb-today-head">
         <div className="sb-today-date">{today.day} · {today.date}</div>
-        <h1 className="sb-today-sentence">
-          Good morning. Five things need you, three installs are scheduled, one signing risk is open.
-        </h1>
-        <div className="sb-today-sentence-note">
-          Placeholder briefing — the live morning sentence ships in a later phase.
-        </div>
+        <h1 className="sb-today-sentence">{morningSentence(signals)}</h1>
       </header>
 
       <TodaySection
@@ -106,6 +103,30 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
       />
     </div>
   )
+}
+
+// ─── Morning sentence — composed from the live signal census ────────────────
+// Replaces the W-1 hardcoded placeholder. Honest counts only — when the
+// numbers are zero, the sentence says so plainly. Same posture as a
+// competent colleague's morning briefing.
+function morningSentence(signals) {
+  if (signals === null) return "Reading the day's signals…"
+  const att   = signals.l2?.length || 0
+  const today = signals.l3?.length || 0
+  const week  = signals.l5?.length || 0
+
+  if (att === 0 && today === 0 && week === 0) {
+    return "Quiet morning. Nothing needs your attention right now."
+  }
+
+  const parts = []
+  if (att > 0)   parts.push(`${att} ${att === 1 ? 'thing needs' : 'things need'} your attention`)
+  if (today > 0) parts.push(`${today} on the calendar today`)
+  if (week > 0 && today === 0) parts.push(`${week} this week`)
+
+  if (parts.length === 0) return "Steady morning."
+  const sentence = parts.join(', ')
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1) + '.'
 }
 
 // ─── Section — header + signal list (or empty / loading) ─────────────────────
@@ -193,13 +214,6 @@ const localStyles = `
     margin: 0;
     max-width: 52ch;
   }
-  .sb-today-sentence-note {
-    margin-top: 18px;
-    font-size: 13px;
-    font-style: italic;
-    color: var(--sb-text-muted);
-  }
-
   /* L2–L5 — Sections. Same structural shape; quieter variants demote the
      section label color/weight only, not the layout. */
   .sb-today-section {

@@ -1130,6 +1130,19 @@ async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, 
   if (patch.due_date !== undefined) rowPatch.due_date = patch.due_date
   if (patch.assignee_user_id !== undefined) rowPatch.assignee_user_id = patch.assignee_user_id
   if (patch.note !== undefined) rowPatch.note = patch.note
+  // Operational Truth Substrate write-through. Empty-string inputs are
+  // normalized to null so the engine can treat "captured then cleared" the
+  // same as "never captured" (no false-positive signals).
+  if (patch.expected_resolution_at !== undefined) {
+    rowPatch.expected_resolution_at = patch.expected_resolution_at || null
+  }
+  if (patch.external_party_ref !== undefined) {
+    const v = (patch.external_party_ref || '').trim()
+    rowPatch.external_party_ref = v || null
+  }
+  if (patch.block_reason_code !== undefined) {
+    rowPatch.block_reason_code = patch.block_reason_code || null
+  }
 
   // Sprint J1-P1 stabilization — auto-seed due_date on FIRST transition to
   // 'in_progress'. Three guards keep this safe and idempotent:
