@@ -21,6 +21,7 @@ import CustomersTab from './CustomersTab'
 import OrdersTab from './OrdersTab'
 import JobsTab from './JobsTab'
 import CalendarTab from './CalendarTab'
+import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
@@ -194,6 +195,7 @@ const NAV_PRIMARY = [
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Orders' },
   { key: 'jobs',      label: 'Jobs' },
+  { key: 'scheduler', label: 'Scheduler' },
   { key: 'calendar',  label: 'Calendar' },
   { key: 'reports',   label: 'Reports' },
 ]
@@ -512,7 +514,8 @@ export default function Stonebooks() {
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} />}
-{tab === 'calendar'  && <CalendarTab onOpenOrder={openSales} />}
+{tab === 'scheduler' && <SchedulerTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onSwitchTab={setTab} />}
+{tab === 'calendar'  && <CalendarTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} />}
 {tab === 'reports'   && <ReportsTab />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
             'Coming next: design library management — upload new monuments, edit metadata, organize by category.',

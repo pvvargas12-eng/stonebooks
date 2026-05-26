@@ -41,7 +41,12 @@ import {
   projectJobDates,
   compareMilestoneDates,
   formatMilestoneDateDisplay,
+  getActivePromisesForJob,
+  addPromise,
+  todayLocalISO,
 } from './lib/stonebooksData'
+import { TEAM_ROSTER, DEFAULT_PROMISE_MAKER } from './lib/team'
+import PromiseBadge from './components/scheduler/PromiseBadge'
 
 // ── Milestone group ordering for the JobDetail per-group cards ───────────────
 const GROUP_ORDER = [
@@ -264,15 +269,23 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
   // a plain Set in component state. No persistence, no DB.
   const [dismissedKinds, setDismissedKinds] = useState(() => new Set())
 
+  // Open promises for this job — drives the loud header badge + powers
+  // the per-job kept-rate context. Refreshed alongside the job whenever
+  // anything that could affect promise state changes.
+  const [promises, setPromises] = useState([])
+  const [promiseModalOpen, setPromiseModalOpen] = useState(false)
+
   const loadJob = useCallback(async () => {
-    const [j, e, bo] = await Promise.all([
+    const [j, e, bo, ps] = await Promise.all([
       getJob(jobId),
       getJobEvents(jobId),
       listAllBulkOrders(),
+      getActivePromisesForJob(jobId),
     ])
     setJob(j)
     setEvents(e)
     setBulkOrders(bo || [])
+    setPromises(ps || [])
   }, [jobId])
 
   useEffect(() => {
@@ -281,11 +294,13 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
       getJob(jobId),
       getJobEvents(jobId),
       listAllBulkOrders(),
-    ]).then(([j, e, bo]) => {
+      getActivePromisesForJob(jobId),
+    ]).then(([j, e, bo, ps]) => {
       if (cancelled) return
       setJob(j)
       setEvents(e)
       setBulkOrders(bo || [])
+      setPromises(ps || [])
     })
     return () => { cancelled = true }
   }, [jobId])
@@ -383,6 +398,11 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
     <div className="sb-page sb-page-hero">
       <BackBar onBack={onBack} />
 
+      <PromiseStrip
+        promises={promises}
+        onAddClick={() => setPromiseModalOpen(true)}
+      />
+
       <JobDetailHero
         job={job}
         order={order}
@@ -455,6 +475,143 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
           }}
         />
       )}
+
+      {promiseModalOpen && (
+        <PromiseModal
+          jobId={jobId}
+          onClose={() => setPromiseModalOpen(false)}
+          onSaved={() => { setPromiseModalOpen(false); loadJob() }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Promise strip — sits between the back affordance and the hero. Shows
+// every active promise loud, plus the "+ Mark as promised" action so a
+// new promise is one click away. When no promises exist the strip is just
+// the action button on its own (no loud red treatment).
+function PromiseStrip({ promises, onAddClick }) {
+  const hasPromises = promises && promises.length > 0
+  return (
+    <div className={`sb-job-promise-strip ${hasPromises ? 'sb-job-promise-strip-active' : ''}`}>
+      <div className="sb-job-promise-strip-body">
+        {hasPromises ? (
+          <>
+            <span className="sb-job-promise-strip-icon" aria-hidden="true">🤡</span>
+            <span className="sb-job-promise-strip-label">
+              {promises.length === 1 ? 'Active promise:' : `${promises.length} active promises:`}
+            </span>
+            <div className="sb-job-promise-strip-badges">
+              {promises.map(p => (
+                <PromiseBadge key={p.id} promise={p} size="md" />
+              ))}
+            </div>
+          </>
+        ) : (
+          <span className="sb-job-promise-strip-empty">No active promises on this job.</span>
+        )}
+      </div>
+      <button
+        type="button"
+        className="sb-job-promise-strip-add"
+        onClick={onAddClick}
+      >
+        + Mark as promised
+      </button>
+    </div>
+  )
+}
+
+// Promise creation modal. Defaults to Cathy + today's date. Saves via the
+// addPromise helper; parent reloads to surface the new badge.
+function PromiseModal({ jobId, onClose, onSaved }) {
+  const [promisedBy, setPromisedBy] = useState(DEFAULT_PROMISE_MAKER)
+  const [promisedDate, setPromisedDate] = useState(todayLocalISO())
+  const [notes, setNotes] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleSave = async () => {
+    setError(null)
+    setSubmitting(true)
+    const res = await addPromise(jobId, {
+      promised_by:   promisedBy,
+      promised_date: promisedDate,
+      notes:         notes.trim() || null,
+    })
+    setSubmitting(false)
+    if (!res.ok) {
+      setError(res.error || 'Failed to save promise.')
+      return
+    }
+    onSaved?.()
+  }
+
+  return (
+    <div className="sb-promise-modal-backdrop" onClick={onClose}>
+      <div className="sb-promise-modal" onClick={e => e.stopPropagation()}>
+        <h3 className="sb-promise-modal-title">Mark this job as promised</h3>
+        <p className="sb-promise-modal-body">
+          Capture who promised what and when. The job will carry the 🤡
+          treatment everywhere it appears until the promise is resolved.
+        </p>
+        <div className="sb-promise-modal-row">
+          <div className="sb-promise-modal-field">
+            <label className="sb-promise-modal-label">Promised by</label>
+            <select
+              className="sb-promise-modal-input"
+              value={promisedBy}
+              onChange={e => setPromisedBy(e.target.value)}
+              disabled={submitting}
+            >
+              {TEAM_ROSTER.map(m => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+          <div className="sb-promise-modal-field">
+            <label className="sb-promise-modal-label">Promised date</label>
+            <input
+              type="date"
+              className="sb-promise-modal-input"
+              value={promisedDate}
+              onChange={e => setPromisedDate(e.target.value)}
+              disabled={submitting}
+            />
+          </div>
+        </div>
+        <div className="sb-promise-modal-field">
+          <label className="sb-promise-modal-label">Notes (optional)</label>
+          <textarea
+            className="sb-promise-modal-input sb-promise-modal-textarea"
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="What did the customer ask for? Any context the team should know?"
+            rows={3}
+            disabled={submitting}
+          />
+        </div>
+        {error && <div className="sb-promise-modal-error">{error}</div>}
+        <div className="sb-promise-modal-actions">
+          <button
+            type="button"
+            className="sb-promise-modal-cancel"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="sb-promise-modal-save"
+            onClick={handleSave}
+            disabled={submitting || !promisedBy || !promisedDate}
+          >
+            {submitting ? 'Saving…' : 'Save promise'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1998,6 +2155,174 @@ const localStyles = `
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+  }
+
+  /* ── Promise strip (top of JobDetail) ─────────────────────────────────── */
+  .sb-job-promise-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    background: var(--sb-surface);
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    flex-wrap: wrap;
+  }
+  .sb-job-promise-strip-active {
+    background: var(--sb-red-bg, #fbe5e5);
+    border-color: var(--sb-red, #b54040);
+  }
+  .sb-job-promise-strip-body {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .sb-job-promise-strip-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
+  .sb-job-promise-strip-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--sb-red, #b54040);
+  }
+  .sb-job-promise-strip-badges {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .sb-job-promise-strip-empty {
+    font-size: 13px;
+    color: var(--sb-text-muted);
+    font-style: italic;
+  }
+  .sb-job-promise-strip-add {
+    background: transparent;
+    border: 0.5px solid var(--sb-border);
+    color: var(--sb-text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-job-promise-strip-add:hover {
+    background: var(--sb-surface-muted);
+  }
+  .sb-job-promise-strip-active .sb-job-promise-strip-add {
+    background: rgba(255, 255, 255, 0.6);
+  }
+
+  /* ── Promise modal ────────────────────────────────────────────────────── */
+  .sb-promise-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 25, 0.42);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .sb-promise-modal {
+    background: var(--sb-surface);
+    border-radius: var(--sb-r-md, 10px);
+    box-shadow: 0 16px 48px rgba(15, 20, 25, 0.24);
+    max-width: 480px;
+    padding: 28px 32px 24px;
+    width: 100%;
+  }
+  .sb-promise-modal-title {
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--sb-text);
+    margin: 0 0 8px;
+  }
+  .sb-promise-modal-body {
+    font-size: 13px;
+    color: var(--sb-text-secondary);
+    line-height: 1.55;
+    margin: 0 0 16px;
+  }
+  .sb-promise-modal-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .sb-promise-modal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .sb-promise-modal-label {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+    font-weight: 500;
+  }
+  .sb-promise-modal-input {
+    font: inherit;
+    font-size: 14px;
+    padding: 8px 10px;
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    background: var(--sb-surface);
+    color: var(--sb-text);
+  }
+  .sb-promise-modal-textarea {
+    resize: vertical;
+    min-height: 64px;
+  }
+  .sb-promise-modal-error {
+    color: var(--sb-red, #b54040);
+    font-size: 13px;
+    padding: 8px 10px;
+    background: var(--sb-red-bg, #fbe5e5);
+    border-radius: var(--sb-r-sm, 6px);
+    margin-bottom: 12px;
+  }
+  .sb-promise-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .sb-promise-modal-cancel,
+  .sb-promise-modal-save {
+    font: inherit;
+    font-size: 14px;
+    padding: 8px 18px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    font-weight: 500;
+    border: 0.5px solid transparent;
+  }
+  .sb-promise-modal-cancel {
+    background: transparent;
+    color: var(--sb-text-muted);
+    border-color: var(--sb-border);
+  }
+  .sb-promise-modal-cancel:hover {
+    color: var(--sb-text);
+    background: var(--sb-surface-muted);
+  }
+  .sb-promise-modal-save {
+    background: var(--sb-accent, #b8842a);
+    color: white;
+  }
+  .sb-promise-modal-save:hover:not(:disabled) {
+    filter: brightness(0.95);
+  }
+  .sb-promise-modal-cancel:disabled,
+  .sb-promise-modal-save:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 `
 

@@ -19,6 +19,8 @@ import {
   deriveTodayForRole,
   roleNoun,
   URGENCY,
+  getAllOpenPromises,
+  indexPromisesByJob,
 } from './lib/stonebooksData'
 import {
   getSelectedRole,
@@ -32,20 +34,32 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const userId = user?.id || null
   const [role, setRole] = useState(() => getSelectedRole(userId))
   const [jobs, setJobs] = useState(null)
+  const [promises, setPromises] = useState([])
   const [loadErr, setLoadErr] = useState(null)
 
-  // Today is live — no caching. One fetch per mount, same shape as Jobs.
+  // Today is live — no caching. One fetch per mount; parallel-load
+  // promises so the 🤡 badge renders on first paint, no flash of un-
+  // badged rows.
   const loadJobs = useCallback(async () => {
     setLoadErr(null)
     try {
-      const data = await getJobs({ includeClosed: false })
+      const [data, ps] = await Promise.all([
+        getJobs({ includeClosed: false }),
+        getAllOpenPromises({}),
+      ])
       setJobs(data || [])
+      setPromises(ps || [])
     } catch (e) {
       setLoadErr(e?.message || 'Failed to load jobs')
       setJobs([])
     }
   }, [])
   useEffect(() => { loadJobs() }, [loadJobs])
+
+  const promisesByJob = useMemo(
+    () => indexPromisesByJob(promises),
+    [promises],
+  )
 
   const handleRoleChange = (next) => {
     setRole(next)
@@ -98,6 +112,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             urgency={today.overdue.length > 0 ? URGENCY.RED : URGENCY.NEUTRAL}
             emptyText="Nothing overdue. Good."
             onOpenRow={handleOpenRow}
+            promisesByJob={promisesByJob}
           />
 
           <TodaySection
@@ -106,6 +121,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             urgency={URGENCY.NEUTRAL}
             emptyText={`Nothing due today for ${roleNoun(role)}.`}
             onOpenRow={handleOpenRow}
+            promisesByJob={promisesByJob}
           />
 
           {/* Aging hides entirely when empty — keeps quiet days quiet. */}
@@ -116,6 +132,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             emptyText=""
             hideWhenEmpty
             onOpenRow={handleOpenRow}
+            promisesByJob={promisesByJob}
           />
         </>
       )}

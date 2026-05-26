@@ -4030,5 +4030,816 @@ export function bulkOrderLinkedCounts(jobs) {
 }
 
 // =============================================================================
+// SCHEDULER SUBSTRATE — work batches, trip optimizer, promises, carryover
+// =============================================================================
+// The substrate behind the Scheduler and Calendar tabs. Models the operator's
+// real workflow:
+//   • Unscheduled actionable jobs sit in per-kind columns.
+//   • The operator selects N jobs, opens the batch builder, picks a kind +
+//     destination + date + worker, and saves. The batch lands on a day.
+//   • The Calendar tab renders placed batches per day. Day view becomes the
+//     crew chief's dispatch sheet, with mileage, stop ordering, and the
+//     carryover banner for unfinished prior-day work.
+//   • Trip optimizer surfaces piggyback opportunities when a destination is
+//     set — same cemetery first, then nearby (haversine), then cross-stage.
+//   • Promises are first-class. The 🤡 treatment renders loud everywhere
+//     a promised job appears.
+//
+// All helpers read/write through the migrated tables:
+//   work_batches, work_batch_jobs, job_promises, cemeteries(.geocoded_*)
+//
+// Pre-migration runtime: every helper catches the missing-table error and
+// returns an empty list / { ok: false } so the UI doesn't crash.
+// =============================================================================
+
+// ── BATCH_KINDS ─────────────────────────────────────────────────────────────
+// Nine kinds covering field trips (isField: true, requiresDestination: true)
+// and shop blocks (isField: false). requiresCompletionPhoto exists in the
+// schema-ready state today; enforcement ships in commit 2.
+export const BATCH_KINDS = [
+  { code: 'inscription',     label: 'Inscriptions',     color: '#534AB7', isField: true,  requiresDestination: true,  requiresCompletionPhoto: true  },
+  { code: 'blasting',        label: 'Blasting',         color: '#5F5E5A', isField: false, requiresDestination: false, requiresCompletionPhoto: false },
+  { code: 'setting',         label: 'Setting',          color: '#1D9E75', isField: true,  requiresDestination: true,  requiresCompletionPhoto: true  },
+  { code: 'delivery',        label: 'Delivery',         color: '#1D9E75', isField: true,  requiresDestination: true,  requiresCompletionPhoto: true  },
+  { code: 'acid_wash',       label: 'Acid wash',        color: '#5F5E5A', isField: false, requiresDestination: false, requiresCompletionPhoto: true  },
+  { code: 'repair',          label: 'Repair',           color: '#D85A30', isField: false, requiresDestination: false, requiresCompletionPhoto: true  },
+  { code: 'rub_grab',        label: 'Rub-grab trip',    color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
+  { code: 'foundation_trip', label: 'Foundation trip',  color: '#D85A30', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
+  { code: 'door_trip',       label: 'Door pickup/drop', color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
+]
+
+const _BATCH_KIND_BY_CODE = new Map(BATCH_KINDS.map(k => [k.code, k]))
+export function batchKindInfo(code) {
+  return _BATCH_KIND_BY_CODE.get(code) || { code, label: code, color: '#5F5E5A', isField: false, requiresDestination: false, requiresCompletionPhoto: false }
+}
+
+// Shop coordinates — the origin point for every field-trip mileage
+// calculation. Paul fills in the real numbers; the default below is a
+// rough Perth Amboy NJ center so the math doesn't return NaN pre-config.
+// TODO(paul): set actual shop coordinates.
+export const SHOP_COORDINATES = { lat: 40.5074, lng: -74.2654 }
+
+// Map of milestone_key → which batch kind a job qualifies for when that
+// milestone is the next actionable step. Used by getSchedulableJobs to
+// drop a job into the right Scheduler column. A job can appear in
+// multiple columns across its lifetime as different milestones come
+// up the chain.
+const _MILESTONE_TO_BATCH_KIND = new Map([
+  // Inscription cycle — the post-approval cut stencil → field install
+  ['stencil_cut',          'inscription'],   // when on a job_type='inscription' job
+  // Sandblast — shop work
+  ['production_started',   'blasting'],
+  // Setting / delivery — field
+  ['ready_to_install',     'setting'],
+  ['installed',            'setting'],
+  // Rub grabs — pre-stencil cemetery trip
+  // (no canonical milestone today — handled via job filter below)
+  // Foundation pour — field trip
+  ['foundation_poured',    'foundation_trip'],
+])
+
+// ── BATCH CRUD ──────────────────────────────────────────────────────────────
+
+// Fetch batches with optional filters. Joined with cemetery for destination
+// display + batch_jobs for the linked-job count. Returns rows with the link
+// rows embedded as `batch_jobs: []`.
+export async function getBatches({ from, to, kind, assigned_to, status } = {}) {
+  let q = supabase
+    .from('work_batches')
+    .select(`
+      *,
+      cemetery:cemeteries(*),
+      batch_jobs:work_batch_jobs(*)
+    `)
+    .order('scheduled_date', { ascending: true, nullsFirst: true })
+  if (from) q = q.gte('scheduled_date', from)
+  if (to)   q = q.lte('scheduled_date', to)
+  if (kind) q = q.eq('kind', kind)
+  if (assigned_to) q = q.eq('assigned_to', assigned_to)
+  if (status) q = q.eq('status', status)
+  const { data, error } = await q
+  if (error) {
+    console.warn('[scheduler] getBatches failed:', error.message)
+    return []
+  }
+  return data || []
+}
+
+// Full single-batch detail. Joins linked jobs with their milestones + order
+// + cemetery so the Calendar Day dispatch sheet has everything to render
+// die specs, color, top, etc.
+export async function getBatch(id) {
+  if (!id) return null
+  const { data, error } = await supabase
+    .from('work_batches')
+    .select(`
+      *,
+      cemetery:cemeteries(*),
+      batch_jobs:work_batch_jobs(
+        *,
+        job:jobs(
+          *,
+          milestones:job_milestones(*),
+          order:orders(*, customer:customers(*), cemetery:cemeteries(*))
+        )
+      )
+    `)
+    .eq('id', id)
+    .single()
+  if (error) {
+    console.warn('[scheduler] getBatch failed:', error.message)
+    return null
+  }
+  if (data?.batch_jobs) {
+    data.batch_jobs.sort((a, b) => (a.stop_order ?? 999) - (b.stop_order ?? 999))
+  }
+  return data
+}
+
+// Create a batch + its linked stops in one go. stop_order is assigned in
+// the order job_ids arrives. For non-trip batches (blasting / acid_wash /
+// repair) stop_order is left NULL — there's no driving order.
+export async function createBatch(input) {
+  const kind = input.kind
+  const kindInfo = batchKindInfo(kind)
+  if (!kindInfo || !BATCH_KINDS.find(k => k.code === kind)) {
+    return { ok: false, error: `Unknown batch kind: ${kind}` }
+  }
+  if (kindInfo.requiresDestination && !input.destination_cemetery_id) {
+    return { ok: false, error: `${kindInfo.label} batches need a destination cemetery.` }
+  }
+  const payload = {
+    kind,
+    title:                   (input.title || '').trim() || null,
+    scheduled_date:          input.scheduled_date || null,
+    destination_cemetery_id: input.destination_cemetery_id || null,
+    assigned_to:             (input.assigned_to || '').trim() || null,
+    notes:                   (input.notes || '').trim() || null,
+    status:                  input.status || 'planned',
+  }
+  const { data: batch, error: insErr } = await supabase
+    .from('work_batches')
+    .insert(payload)
+    .select()
+    .single()
+  if (insErr) return { ok: false, error: insErr.message }
+
+  const jobIds = (input.job_ids || []).filter(Boolean)
+  if (jobIds.length === 0) return { ok: true, batch, linkedCount: 0 }
+
+  const isTrip = kindInfo.isField
+  const links = jobIds.map((jid, idx) => ({
+    batch_id:   batch.id,
+    job_id:     jid,
+    stop_order: isTrip ? (idx + 1) : null,
+  }))
+  const { error: linkErr } = await supabase.from('work_batch_jobs').insert(links)
+  if (linkErr) {
+    return { ok: false, error: `Batch created but linking failed: ${linkErr.message}`, batch }
+  }
+  return { ok: true, batch, linkedCount: jobIds.length }
+}
+
+export async function updateBatch(id, patch) {
+  if (!id) return { ok: false, error: 'Missing batch id' }
+  const row = { updated_at: new Date().toISOString() }
+  if (patch.title !== undefined)                   row.title = patch.title || null
+  if (patch.scheduled_date !== undefined)          row.scheduled_date = patch.scheduled_date || null
+  if (patch.destination_cemetery_id !== undefined) row.destination_cemetery_id = patch.destination_cemetery_id || null
+  if (patch.assigned_to !== undefined)             row.assigned_to = patch.assigned_to || null
+  if (patch.notes !== undefined)                   row.notes = patch.notes || null
+  if (patch.status !== undefined)                  row.status = patch.status
+  const { error } = await supabase.from('work_batches').update(row).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function deleteBatch(id) {
+  if (!id) return { ok: false, error: 'Missing batch id' }
+  const { error } = await supabase.from('work_batches').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function addJobToBatch(batchId, jobId, stop_order = null) {
+  if (!batchId || !jobId) return { ok: false, error: 'Missing batchId or jobId' }
+  const { error } = await supabase.from('work_batch_jobs').insert({
+    batch_id: batchId,
+    job_id:   jobId,
+    stop_order,
+  })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function removeJobFromBatch(batchId, jobId) {
+  if (!batchId || !jobId) return { ok: false, error: 'Missing batchId or jobId' }
+  const { error } = await supabase
+    .from('work_batch_jobs')
+    .delete()
+    .eq('batch_id', batchId)
+    .eq('job_id', jobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Reorder stops in a field-trip batch. Accepts the new ordering as an array
+// of job_ids; we update each link row's stop_order in a single batch UPDATE.
+export async function reorderBatchStops(batchId, orderedJobIds) {
+  if (!batchId || !Array.isArray(orderedJobIds)) {
+    return { ok: false, error: 'Missing batchId or orderedJobIds array' }
+  }
+  // Postgres has no atomic multi-row-update-by-position via supabase-js;
+  // we issue N updates sequentially. Small N (<= 20 typical) keeps this OK.
+  for (let i = 0; i < orderedJobIds.length; i++) {
+    const { error } = await supabase
+      .from('work_batch_jobs')
+      .update({ stop_order: i + 1 })
+      .eq('batch_id', batchId)
+      .eq('job_id', orderedJobIds[i])
+    if (error) return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
+// Swap every batch from dateA onto dateB and vice versa (the rain-day flip).
+// Two-step pass so we don't temporarily collapse both onto the same day in
+// between updates (which the UI would briefly re-render in a weird state).
+export async function swapBatchDays(dateA, dateB) {
+  if (!dateA || !dateB) return { ok: false, error: 'Missing dateA or dateB' }
+  if (dateA === dateB) return { ok: true, swapped: 0 }
+  // Use a sentinel date well outside operational range to park one half.
+  const SENTINEL = '1900-01-01'
+  const { error: e1 } = await supabase
+    .from('work_batches')
+    .update({ scheduled_date: SENTINEL, updated_at: new Date().toISOString() })
+    .eq('scheduled_date', dateA)
+  if (e1) return { ok: false, error: e1.message }
+  const { error: e2 } = await supabase
+    .from('work_batches')
+    .update({ scheduled_date: dateA, updated_at: new Date().toISOString() })
+    .eq('scheduled_date', dateB)
+  if (e2) return { ok: false, error: e2.message }
+  const { error: e3 } = await supabase
+    .from('work_batches')
+    .update({ scheduled_date: dateB, updated_at: new Date().toISOString() })
+    .eq('scheduled_date', SENTINEL)
+  if (e3) return { ok: false, error: e3.message }
+  return { ok: true }
+}
+
+export async function markBatchRunningLate(batchId) {
+  return updateBatch(batchId, { status: 'running_late' })
+}
+export async function markBatchInProgress(batchId) {
+  return updateBatch(batchId, { status: 'in_progress' })
+}
+export async function markBatchCompleted(batchId) {
+  return updateBatch(batchId, { status: 'completed' })
+}
+export async function markBatchCancelled(batchId) {
+  return updateBatch(batchId, { status: 'cancelled' })
+}
+
+// Mark a specific stop done (within a batch). Used by the Day view's per-
+// stop checkboxes + the carryover banner's "mark complete" action.
+export async function markBatchJobComplete(batchJobId, { actorName } = {}) {
+  if (!batchJobId) return { ok: false, error: 'Missing batch_job id' }
+  const { error } = await supabase
+    .from('work_batch_jobs')
+    .update({
+      completed_at: new Date().toISOString(),
+      completed_by: actorName || null,
+    })
+    .eq('id', batchJobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Reschedule a single stop to a new day. Implemented by moving the link
+// row to a NEW batch on the target day (creating one when none exists for
+// the same kind + destination + worker), with carry_over_from set to the
+// original link row so the audit chain is intact.
+export async function rescheduleBatchJobToDay(batchJobRow, targetDate) {
+  if (!batchJobRow?.id || !targetDate) return { ok: false, error: 'Missing batch_job row or target date' }
+  // 1. Look up the original batch to clone its kind/destination/worker.
+  const { data: origBatch, error: bErr } = await supabase
+    .from('work_batches')
+    .select('*')
+    .eq('id', batchJobRow.batch_id)
+    .single()
+  if (bErr) return { ok: false, error: bErr.message }
+  // 2. Find or create a matching target-day batch.
+  const { data: candidates } = await supabase
+    .from('work_batches')
+    .select('id')
+    .eq('scheduled_date', targetDate)
+    .eq('kind', origBatch.kind)
+    .eq('destination_cemetery_id', origBatch.destination_cemetery_id || null)
+    .eq('assigned_to', origBatch.assigned_to || null)
+  let targetBatchId = candidates?.[0]?.id || null
+  if (!targetBatchId) {
+    const { data: newBatch, error: cErr } = await supabase
+      .from('work_batches')
+      .insert({
+        kind:                    origBatch.kind,
+        title:                   origBatch.title,
+        scheduled_date:          targetDate,
+        destination_cemetery_id: origBatch.destination_cemetery_id,
+        assigned_to:             origBatch.assigned_to,
+        notes:                   origBatch.notes,
+      })
+      .select()
+      .single()
+    if (cErr) return { ok: false, error: cErr.message }
+    targetBatchId = newBatch.id
+  }
+  // 3. Insert a new link row on the target batch carrying carry_over_from
+  //    back to the original stop. The original row stays put (historical
+  //    truth: that stop was on the original day, just not completed).
+  const { error: linkErr } = await supabase.from('work_batch_jobs').insert({
+    batch_id:        targetBatchId,
+    job_id:          batchJobRow.job_id,
+    stop_order:      null,
+    carry_over_from: batchJobRow.id,
+  })
+  if (linkErr) return { ok: false, error: linkErr.message }
+  return { ok: true, targetBatchId }
+}
+
+// Send a stop back to the unscheduled pile. Implemented as a hard-delete
+// of the link row (the job itself is untouched and re-surfaces in the
+// Scheduler's UnscheduledColumn next render).
+export async function unscheduleBatchJob(batchJobId) {
+  if (!batchJobId) return { ok: false, error: 'Missing batch_job id' }
+  const { error } = await supabase.from('work_batch_jobs').delete().eq('id', batchJobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// ── SCHEDULABLE JOBS DERIVER ────────────────────────────────────────────────
+// Walks open jobs + active milestones and groups them by which batch kind
+// they could go into. A single job may appear in multiple kind buckets
+// across its lifetime; that's intentional — the operator sees the work
+// where it lives at every stage. Already-batched jobs (jobs whose current
+// actionable milestone is already linked to an open batch) are excluded.
+
+export function getSchedulableJobs(jobs, batches) {
+  const buckets = new Map(BATCH_KINDS.map(k => [k.code, []]))
+  // Build a set of (job_id) that are already in an open (non-completed,
+  // non-cancelled) batch. Those jobs disappear from the unscheduled pile
+  // until the batch is closed or the link is removed.
+  const linked = new Set()
+  for (const b of (batches || [])) {
+    if (b.status === 'completed' || b.status === 'cancelled') continue
+    for (const link of (b.batch_jobs || [])) {
+      if (!link.completed_at) linked.add(link.job_id)
+    }
+  }
+
+  for (const job of (jobs || [])) {
+    if (!job || job.overall_status === 'closed') continue
+    if (linked.has(job.id)) continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    // Walk milestones; only milestones that are actionable now drive a
+    // bucket assignment. A job in mid-design isn't a candidate for a
+    // setting batch; it's a candidate for a layout-stage batch (which
+    // we don't track yet — Layout work isn't a field/shop batch).
+    for (const m of (job.milestones || [])) {
+      if (m.status === 'done' || m.status === 'not_needed') continue
+      if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
+
+      // Special case — inscription job_type uses stencil_cut → inscription
+      // batch. Non-inscription jobs with stencil_cut go to blasting prep
+      // via the inferred stick-stencil signal (not a batch kind today).
+      if (m.milestone_key === 'stencil_cut') {
+        if (job.job_type === 'inscription') {
+          buckets.get('inscription').push({ job, milestone: m })
+        }
+        continue
+      }
+      // Foundation pour → foundation_trip
+      if (m.milestone_key === 'foundation_poured') {
+        buckets.get('foundation_trip').push({ job, milestone: m })
+        continue
+      }
+      // Sandblast / production → blasting (shop)
+      if (m.milestone_key === 'production_started') {
+        buckets.get('blasting').push({ job, milestone: m })
+        continue
+      }
+      // Ready-to-install → setting (new_stone job type) or delivery (others)
+      if (m.milestone_key === 'ready_to_install') {
+        const kind = job.job_type === 'new_stone' ? 'setting' : 'delivery'
+        buckets.get(kind).push({ job, milestone: m })
+        continue
+      }
+      // Acid wash / repair — gap milestones today, leave buckets empty
+      // until the templates carry these keys.
+    }
+  }
+  // Sort each bucket by aging desc so the most-overdue card surfaces first.
+  for (const arr of buckets.values()) {
+    arr.sort((a, b) => {
+      const aOver = isMilestoneOverdue(a.milestone) ? 0 : 1
+      const bOver = isMilestoneOverdue(b.milestone) ? 0 : 1
+      if (aOver !== bOver) return aOver - bOver
+      const aAge = daysSinceMs(a.milestone.updated_at) || 0
+      const bAge = daysSinceMs(b.milestone.updated_at) || 0
+      return bAge - aAge
+    })
+  }
+  return buckets
+}
+
+// ── MONTH / WEEK / DAY VIEW DERIVERS ────────────────────────────────────────
+
+// 6-week month grid (always 42 cells, Sun-Sat) starting from the Sunday
+// before the first of the month. Each cell carries the day's date, an
+// in-month flag, counts of placed batches by status, and any active
+// promises whose promised_date falls on that day.
+export function getMonthLandscape({ year, month, batches, promises }) {
+  // Anchor on the 1st of the requested month; back up to the prior Sunday.
+  const anchor = new Date(year, month, 1)
+  const offset = anchor.getDay()   // 0 = Sunday
+  const start = new Date(year, month, 1 - offset)
+  const todayISO = todayLocalISO()
+
+  const batchesByDate = new Map()
+  for (const b of (batches || [])) {
+    if (!b.scheduled_date) continue
+    const k = String(b.scheduled_date).slice(0, 10)
+    if (!batchesByDate.has(k)) batchesByDate.set(k, [])
+    batchesByDate.get(k).push(b)
+  }
+  const promisesByDate = new Map()
+  for (const p of (promises || [])) {
+    if (p.kept !== null || p.resolved_at) continue   // closed promises off the heat map
+    const k = String(p.promised_date).slice(0, 10)
+    if (!promisesByDate.has(k)) promisesByDate.set(k, [])
+    promisesByDate.get(k).push(p)
+  }
+
+  const cells = []
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const dayBatches = batchesByDate.get(iso) || []
+    const dayPromises = promisesByDate.get(iso) || []
+    cells.push({
+      date:        d,
+      iso,
+      inMonth:     d.getMonth() === month,
+      isToday:     iso === todayISO,
+      batches:     dayBatches,
+      batchCount:  dayBatches.length,
+      promises:    dayPromises,
+      promiseCount: dayPromises.length,
+      // Heavy day signal — 5+ batches OR 1+ promise + 3+ batches.
+      heavy:       dayBatches.length >= 5 ||
+                   (dayPromises.length > 0 && dayBatches.length >= 3),
+    })
+  }
+  return cells
+}
+
+// Two-week / week view — returns the requested number of consecutive days
+// starting from `start` with their placed batches. `start` should be a
+// Date or YYYY-MM-DD. spanDays defaults to 7.
+export function getDayRange({ start, spanDays = 7, batches, promises }) {
+  const anchor = (typeof start === 'string')
+    ? new Date(`${start.slice(0, 10)}T00:00:00`)
+    : new Date(start)
+  const todayISO = todayLocalISO()
+
+  const batchesByDate = new Map()
+  for (const b of (batches || [])) {
+    if (!b.scheduled_date) continue
+    const k = String(b.scheduled_date).slice(0, 10)
+    if (!batchesByDate.has(k)) batchesByDate.set(k, [])
+    batchesByDate.get(k).push(b)
+  }
+  const promisesByDate = new Map()
+  for (const p of (promises || [])) {
+    if (p.kept !== null || p.resolved_at) continue
+    const k = String(p.promised_date).slice(0, 10)
+    if (!promisesByDate.has(k)) promisesByDate.set(k, [])
+    promisesByDate.get(k).push(p)
+  }
+
+  const cells = []
+  for (let i = 0; i < spanDays; i++) {
+    const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + i)
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const dayBatches = batchesByDate.get(iso) || []
+    const dayPromises = promisesByDate.get(iso) || []
+    cells.push({
+      date:    d,
+      iso,
+      isToday: iso === todayISO,
+      batches: dayBatches,
+      promises: dayPromises,
+      heavy:   dayBatches.length >= 5 ||
+               (dayPromises.length > 0 && dayBatches.length >= 3),
+    })
+  }
+  return cells
+}
+
+// Day view — splits a day's batches into field + shop, computes per-trip
+// mileage, and sorts stops within trips. Stop sorting uses the link row's
+// stop_order; missing stop_order falls to the end (defensive).
+export function getDayView({ date, batches }) {
+  const iso = (typeof date === 'string') ? String(date).slice(0, 10) : todayLocalISO()
+  const today = (batches || []).filter(b => String(b.scheduled_date || '').slice(0, 10) === iso)
+  const field = []
+  const shop  = []
+  for (const b of today) {
+    const kindInfo = batchKindInfo(b.kind)
+    const stops = (b.batch_jobs || []).slice().sort((x, y) => (x.stop_order ?? 999) - (y.stop_order ?? 999))
+    const augmented = { ...b, kindInfo, stops }
+    if (kindInfo.isField) {
+      augmented.mileage = computeTripMileage(b)
+      field.push(augmented)
+    } else {
+      shop.push(augmented)
+    }
+  }
+  return { date: iso, field, shop }
+}
+
+// ── TRIP OPTIMIZER ──────────────────────────────────────────────────────────
+// Four reason levels, in precedence order:
+//   1. same_cemetery — any actionable job at the destination cemetery
+//   2. piggyback      — rubs/photos at the destination cemetery (regardless of distance)
+//   3. nearby_cemetery — actionable jobs within NEARBY_RADIUS_MILES
+//   4. cross_stage_same_cemetery — upstream actionable jobs at the destination
+//
+// Returns 4-8 suggestions sorted by precedence then by aging.
+const NEARBY_RADIUS_MILES = 10
+const MAX_TRIP_SUGGESTIONS = 8
+
+export function getTripSuggestions({ cemetery_id, currently_selected_job_ids, jobs, cemeteries }) {
+  if (!cemetery_id) return []
+  const selectedSet = new Set(currently_selected_job_ids || [])
+  const destination = (cemeteries || []).find(c => c.id === cemetery_id)
+  if (!destination) return []
+
+  const sameCemetery = []
+  const piggyback = []
+  const nearbyCemetery = []
+  const crossStageSame = []
+
+  // Precompute cemetery distances from the destination.
+  const distanceById = new Map()
+  if (destination.geocoded_lat != null && destination.geocoded_lng != null) {
+    for (const c of cemeteries) {
+      if (!c.id || c.id === destination.id) continue
+      if (c.geocoded_lat == null || c.geocoded_lng == null) continue
+      distanceById.set(c.id, haversineMiles(
+        Number(destination.geocoded_lat), Number(destination.geocoded_lng),
+        Number(c.geocoded_lat),           Number(c.geocoded_lng),
+      ))
+    }
+  }
+
+  for (const job of (jobs || [])) {
+    if (!job || job.overall_status === 'closed') continue
+    if (selectedSet.has(job.id)) continue
+    const jobCemId = job.order?.cemetery_id || job.cemetery?.id
+    if (!jobCemId) continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const actionable = (job.milestones || []).find(m => {
+      if (m.status === 'done' || m.status === 'not_needed') return false
+      if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) return false
+      return true
+    })
+    if (!actionable) continue
+
+    const fieldKinds = new Set(['stencil_cut', 'ready_to_install', 'installed', 'foundation_poured'])
+    const isFieldReady = fieldKinds.has(actionable.milestone_key)
+
+    if (jobCemId === cemetery_id) {
+      if (isFieldReady) {
+        sameCemetery.push({ job, milestone: actionable, reason: 'same_cemetery', distance_miles: 0 })
+      } else {
+        crossStageSame.push({ job, milestone: actionable, reason: 'cross_stage_same_cemetery', distance_miles: 0 })
+      }
+      continue
+    }
+    const dist = distanceById.get(jobCemId)
+    if (dist != null && dist <= NEARBY_RADIUS_MILES && isFieldReady) {
+      nearbyCemetery.push({ job, milestone: actionable, reason: 'nearby_cemetery', distance_miles: dist })
+    }
+  }
+
+  // Sort each bucket by aging desc within itself.
+  const byAging = (a, b) => (daysSinceMs(b.milestone.updated_at) || 0) - (daysSinceMs(a.milestone.updated_at) || 0)
+  sameCemetery.sort(byAging)
+  piggyback.sort(byAging)
+  nearbyCemetery.sort((a, b) => a.distance_miles - b.distance_miles)
+  crossStageSame.sort(byAging)
+
+  const out = [
+    ...sameCemetery,
+    ...piggyback,
+    ...nearbyCemetery,
+    ...crossStageSame,
+  ]
+  return out.slice(0, MAX_TRIP_SUGGESTIONS)
+}
+
+// ── PROMISE HELPERS ─────────────────────────────────────────────────────────
+// job_promises rows persist as long as the job. Open promises (kept IS NULL,
+// resolved_at IS NULL) drive the loud 🤡 treatment everywhere.
+
+export async function getActivePromisesForJob(jobId) {
+  if (!jobId) return []
+  const { data, error } = await supabase
+    .from('job_promises')
+    .select('*')
+    .eq('job_id', jobId)
+    .is('resolved_at', null)
+    .order('promised_date', { ascending: true })
+  if (error) {
+    console.warn('[scheduler] getActivePromisesForJob failed:', error.message)
+    return []
+  }
+  return data || []
+}
+
+export async function addPromise(jobId, { promised_by, promised_date, notes }) {
+  if (!jobId || !promised_by || !promised_date) {
+    return { ok: false, error: 'job_id, promised_by, and promised_date are required.' }
+  }
+  const { data, error } = await supabase
+    .from('job_promises')
+    .insert({
+      job_id:        jobId,
+      promised_by:   promised_by,
+      promised_date: promised_date,
+      notes:         (notes || '').trim() || null,
+    })
+    .select()
+    .single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, promise: data }
+}
+
+export async function resolvePromise(promiseId, { kept }) {
+  if (!promiseId) return { ok: false, error: 'Missing promise id' }
+  const { error } = await supabase
+    .from('job_promises')
+    .update({
+      kept: !!kept,
+      resolved_at: new Date().toISOString(),
+    })
+    .eq('id', promiseId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Rolling counters for a team member. Returns `{ made, kept, openCount }`
+// across the window. `made` and `kept` include only resolved promises so
+// the kept-rate is honest; openCount tells the operator how many promises
+// are still in the air for this person.
+export async function getPromiseCounts(promised_by, { rolling_days = 90 } = {}) {
+  if (!promised_by) return { made: 0, kept: 0, openCount: 0 }
+  const cutoff = new Date(Date.now() - rolling_days * 86400000).toISOString().slice(0, 10)
+  const { data, error } = await supabase
+    .from('job_promises')
+    .select('id, kept, resolved_at, promised_date')
+    .eq('promised_by', promised_by)
+    .gte('promised_date', cutoff)
+  if (error) {
+    console.warn('[scheduler] getPromiseCounts failed:', error.message)
+    return { made: 0, kept: 0, openCount: 0 }
+  }
+  const rows = data || []
+  const resolved = rows.filter(r => r.resolved_at)
+  return {
+    made:      resolved.length,
+    kept:      resolved.filter(r => r.kept === true).length,
+    openCount: rows.filter(r => r.resolved_at === null).length,
+  }
+}
+
+// Every open promise + the job it's attached to. Used by the Scheduler
+// promise banner + the Today badge derivation. Joins minimal job fields.
+export async function getAllOpenPromises({ since } = {}) {
+  let q = supabase
+    .from('job_promises')
+    .select(`
+      *,
+      job:jobs(id, order_id, order:orders(id, order_number, primary_lastname, customer:customers(*), cemetery:cemeteries(*)))
+    `)
+    .is('resolved_at', null)
+    .order('promised_date', { ascending: true })
+  if (since) q = q.gte('promised_date', since)
+  const { data, error } = await q
+  if (error) {
+    console.warn('[scheduler] getAllOpenPromises failed:', error.message)
+    return []
+  }
+  return data || []
+}
+
+// Build a Map<job_id, promise[]> from a list of open promises for quick
+// per-job lookup inside row components. Keeps the badge render O(1).
+export function indexPromisesByJob(promises) {
+  const map = new Map()
+  for (const p of (promises || [])) {
+    if (!p?.job_id) continue
+    if (!map.has(p.job_id)) map.set(p.job_id, [])
+    map.get(p.job_id).push(p)
+  }
+  return map
+}
+
+// ── CARRYOVER MODEL ─────────────────────────────────────────────────────────
+// Yesterday's unfinished work surfaces as a banner on today's Day view.
+// Original batch row stays put (historical truth that it was scheduled for
+// the prior day). Operator picks one of three actions per stop: mark
+// complete (cascade to completed_at), reschedule to a target day, or send
+// back to unscheduled (link-row delete).
+
+export async function getCarryoverForToday(today) {
+  const iso = (typeof today === 'string') ? String(today).slice(0, 10) : todayLocalISO()
+  const { data, error } = await supabase
+    .from('work_batch_jobs')
+    .select(`
+      *,
+      batch:work_batches(*, cemetery:cemeteries(*)),
+      job:jobs(*, order:orders(*, customer:customers(*), cemetery:cemeteries(*)))
+    `)
+    .is('completed_at', null)
+  if (error) {
+    console.warn('[scheduler] getCarryoverForToday failed:', error.message)
+    return []
+  }
+  // Filter post-fetch: keep only link rows whose batch's scheduled_date is
+  // strictly before today (and not null — null = still in build tray).
+  return (data || [])
+    .filter(r => r.batch?.scheduled_date && String(r.batch.scheduled_date).slice(0, 10) < iso)
+    .filter(r => r.batch?.status !== 'cancelled')
+}
+
+// ── MILEAGE / HAVERSINE ─────────────────────────────────────────────────────
+
+export function haversineMiles(lat1, lng1, lat2, lng2) {
+  if ([lat1, lng1, lat2, lng2].some(v => !Number.isFinite(v))) return null
+  const R = 3958.8   // earth radius in miles
+  const toRad = (x) => (x * Math.PI) / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
+// Compute per-leg + total mileage for a field-trip batch. Returns:
+//   { leg_miles: [number|null], total_miles, estimated_minutes }
+// Legs are: shop → stop1 → stop2 → … → stopN → shop. A leg's miles is null
+// when either endpoint lacks lat/lng (defensive — UI renders "—" instead
+// of pretending to know the distance).
+const _AVG_SPEED_MPH = 45
+export function computeTripMileage(batch) {
+  if (!batch?.batch_jobs) {
+    return { leg_miles: [], total_miles: 0, estimated_minutes: 0 }
+  }
+  const stops = batch.batch_jobs
+    .slice()
+    .sort((a, b) => (a.stop_order ?? 999) - (b.stop_order ?? 999))
+  // Build the stop coordinate list, ending back at the shop.
+  const points = [SHOP_COORDINATES]
+  for (const s of stops) {
+    const cem = s.job?.order?.cemetery || s.job?.cemetery || batch.cemetery
+    if (cem?.geocoded_lat != null && cem?.geocoded_lng != null) {
+      points.push({ lat: Number(cem.geocoded_lat), lng: Number(cem.geocoded_lng) })
+    } else {
+      points.push(null)
+    }
+  }
+  points.push(SHOP_COORDINATES)
+  const legs = []
+  let total = 0
+  let anyKnown = false
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    if (!a || !b) { legs.push(null); continue }
+    const m = haversineMiles(a.lat, a.lng, b.lat, b.lng)
+    legs.push(m)
+    if (Number.isFinite(m)) { total += m; anyKnown = true }
+  }
+  return {
+    leg_miles:         legs,
+    total_miles:       anyKnown ? Math.round(total * 10) / 10 : 0,
+    estimated_minutes: anyKnown ? Math.round((total / _AVG_SPEED_MPH) * 60) : 0,
+  }
+}
+
+// =============================================================================
 // End of Jobs Operations data layer
 // =============================================================================

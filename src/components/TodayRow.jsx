@@ -22,6 +22,7 @@ import {
   compareMilestoneDates,
   formatMilestoneDateDisplay,
 } from '../lib/stonebooksData'
+import PromiseBadge from './scheduler/PromiseBadge'
 
 const URGENCY_PILL_STYLE = {
   [URGENCY.NEUTRAL]: { text: 'var(--sb-text-muted)',       bg: 'transparent',                    label: 'Due today' },
@@ -46,7 +47,7 @@ const TEAM_INITIALS = {
   installation: 'IN',
 }
 
-export default function TodayRow({ row, onClick, urgency: urgencyOverride, bulkOrders = null }) {
+export default function TodayRow({ row, onClick, urgency: urgencyOverride, bulkOrders = null, promise = null }) {
   const urgency = urgencyOverride || row.urgency || URGENCY.NEUTRAL
   const pill = URGENCY_PILL_STYLE[urgency]
   const stage = row.stage
@@ -118,7 +119,10 @@ export default function TodayRow({ row, onClick, urgency: urgencyOverride, bulkO
       style={{ background: URGENCY_ROW_TINT[urgency] }}
     >
       <div className="sb-today-row-body">
-        <div className="sb-today-row-primary">{primary}</div>
+        <div className="sb-today-row-primary">
+          <span>{primary}</span>
+          {promise && <PromiseBadge promise={promise} size="sm" />}
+        </div>
         {secondary && (
           <div className="sb-today-row-secondary">{secondary}</div>
         )}
@@ -192,15 +196,23 @@ const localStyles = `
   }
   /* Primary line — verb-phrase. Lifted from the JobsQueueRow body type (15px,
      weight 500) so both surfaces feel like one design system. Letter-spacing
-     tightens slightly the same way the queue rows do. */
+     tightens slightly the same way the queue rows do. Promise badge sits
+     inline so the operator sees verb + 🤡 + promiser in one read. */
   .sb-today-row-primary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 15px;
     font-weight: 500;
     color: var(--sb-text);
     letter-spacing: -0.005em;
+    min-width: 0;
+  }
+  .sb-today-row-primary > span:first-child {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
   }
   /* Secondary line — identity anchor. 12px so it visibly subordinates to the
      primary, but still readable as a confirmation glance. */

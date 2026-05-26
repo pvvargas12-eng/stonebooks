@@ -28,6 +28,7 @@ export default function TodaySection({
   hideWhenEmpty = false,
   onOpenRow,
   rowUrgency,    // optional override applied to every row in the section
+  promisesByJob, // Map<job_id, promise[]> — drives the 🤡 badge on row identity
 }) {
   const isEmpty = !rows || rows.length === 0
   if (isEmpty && hideWhenEmpty) return null
@@ -59,6 +60,7 @@ export default function TodaySection({
                 row={row}
                 urgency={rowUrgency || row.urgency}
                 onClick={onOpenRow}
+                promise={promisesByJob?.get?.(row.job?.id)?.[0] || null}
               />
             ))}
           </div>
