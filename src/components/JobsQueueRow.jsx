@@ -194,6 +194,11 @@ export default function JobsQueueRow({
         <div className="sb-queue-row-primary">
           <span className="sb-queue-row-name">{surname}</span>
           {orderNum && <span className="sb-queue-row-id">#{orderNum}</span>}
+          {row.department && (
+            <span className="sb-queue-row-dept" aria-label={`Owned by ${row.department}`}>
+              {row.department}
+            </span>
+          )}
         </div>
         {showPlot ? (
           <div className="sb-queue-row-secondary">
@@ -346,6 +351,22 @@ const localStyles = `
     font-variant-numeric: tabular-nums;
     color: var(--sb-text-muted);
     white-space: nowrap;
+  }
+  /* Department chip — only rendered when row.department is set (currently
+     from the Owner attention list). Subtle by design: thin bordered pill,
+     small caps, muted text. Distinct from the stage chip (which is colored
+     by group) and the urgency pill (which is colored by signal). */
+  .sb-queue-row-dept {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--sb-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border: 0.5px solid var(--sb-border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    white-space: nowrap;
+    background: transparent;
   }
   .sb-queue-row-secondary {
     font-size: 12px;

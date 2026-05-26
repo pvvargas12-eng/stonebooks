@@ -31,9 +31,13 @@ import {
   DEPARTMENTS,
   bucketsForDepartment,
   getOwnerOverviewBuckets,
+  getAllAmberTasks,
+  getAllOverdueTasks,
   worstUrgency,
   URGENCY,
 } from './lib/stonebooksData'
+import OwnerAttentionListView from './components/OwnerAttentionListView'
+import SalesView from './components/SalesView'
 import {
   getSelectedRole,
   setSelectedRole,
@@ -44,7 +48,7 @@ import JobsBucketCard from './components/JobsBucketCard'
 import JobsQueueSection from './components/JobsQueueSection'
 import RoleSelector from './components/RoleSelector'
 
-export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
+export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab, onOpenOrder }) {
   const [role, setRole] = useState(() => getSelectedRole(userId))
   const [ownerMode, setOwnerMode] = useState(() => getOwnerViewMode(userId))
   const [jobs, setJobs] = useState(null)
@@ -154,8 +158,11 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
             <DepartmentBody
               role={role}
               jobs={jobs}
+              orders={orders || []}
               bulkOrders={bulkOrders || []}
               onOpenJob={onOpenJob}
+              onOpenOrder={onOpenOrder}
+              onSwitchTab={onSwitchTab}
               onReload={loadJobs}
               onMarkBulkReceived={handleMarkBulkReceived}
               initialScrollBucket={pendingBucketScroll}
@@ -171,9 +178,22 @@ export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
 // DEPARTMENT BODY — non-Owner roles
 // =============================================================================
 
-function DepartmentBody({ role, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll }) {
+function DepartmentBody({ role, jobs, orders, bulkOrders, onOpenJob, onOpenOrder, onSwitchTab, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll }) {
   const dept = DEPARTMENTS.find(d => d.code === role)
   if (!dept) return null
+
+  // Sales is metric-shaped, not queue-shaped — render the dedicated
+  // SalesView instead of the generic DepartmentBuckets. The stub fallback
+  // below remains for any future stub department (none today).
+  if (role === 'sales') {
+    return (
+      <SalesView
+        orders={orders}
+        onSwitchTab={onSwitchTab}
+        onOpenOrder={onOpenOrder}
+      />
+    )
+  }
   if (dept.stub) {
     return <DepartmentStub label={dept.label} />
   }
@@ -313,11 +333,36 @@ const URGENCY_DOT_COLOR = {
 }
 
 function OwnerView({ jobs, orders, bulkOrders, mode, onModeChange, onOpenJob, onOverviewCardClick, onReload, onMarkBulkReceived }) {
+  // Transient navigation — when the operator clicks one of the Overview
+  // summary cards, attentionMode flips to 'amber' or 'red' and the grid is
+  // replaced by OwnerAttentionListView. This is NOT persisted in
+  // workspaceState — it's an in-session drill, not a view preference.
+  const [attentionMode, setAttentionMode] = useState(null)
+
+  // Switching modes (Overview ↔ All departments) should clear any active
+  // attention drill. Otherwise the user could toggle to All-departments,
+  // back to Overview, and find themselves still inside an old list view.
+  const handleModeChange = useCallback((next) => {
+    setAttentionMode(null)
+    onModeChange?.(next)
+  }, [onModeChange])
+
   return (
     <div className="sb-dept-owner-wrap">
-      <OwnerViewToggle mode={mode} onChange={onModeChange} />
+      <OwnerViewToggle mode={mode} onChange={handleModeChange} />
       {mode === 'overview'
-        ? <OwnerOverview jobs={jobs} orders={orders} onCardClick={onOverviewCardClick} />
+        ? (
+          <OwnerOverview
+            jobs={jobs}
+            orders={orders}
+            bulkOrders={bulkOrders}
+            attentionMode={attentionMode}
+            onCardClick={onOverviewCardClick}
+            onAttentionOpen={setAttentionMode}
+            onAttentionBack={() => setAttentionMode(null)}
+            onOpenJob={onOpenJob}
+          />
+        )
         : (
           <OwnerStack
             jobs={jobs}
@@ -360,16 +405,101 @@ function OwnerViewToggle({ mode, onChange }) {
   )
 }
 
-// Curated ten-card Overview. Click hands the selected bucket back to the
-// parent's router. Renders nothing below the grid — Overview is intentionally
-// "the morning scan," not a full department surface.
-function OwnerOverview({ jobs, orders, onCardClick }) {
+// Curated ten-card Overview, prefixed by two headline summary cards when
+// the shop has work in amber or red urgency. The headline cards hide
+// entirely when their count is zero — quiet days look quiet. Clicking a
+// headline card opens an inline attention list (OwnerAttentionListView)
+// that replaces the grid until the operator clicks back.
+function OwnerOverview({
+  jobs,
+  orders,
+  bulkOrders,
+  attentionMode,
+  onCardClick,
+  onAttentionOpen,
+  onAttentionBack,
+  onOpenJob,
+}) {
   const cards = useMemo(
     () => getOwnerOverviewBuckets(jobs, orders) || [],
     [jobs, orders],
   )
+
+  // Walk the same per-department bucket derivers to count amber and red
+  // tasks across the whole shop. Cheap enough — same data we already have
+  // in memory. Deduped by milestone.id inside the helpers.
+  const amberTasks = useMemo(
+    () => getAllAmberTasks(jobs, bulkOrders),
+    [jobs, bulkOrders],
+  )
+  const overdueTasks = useMemo(
+    () => getAllOverdueTasks(jobs, bulkOrders),
+    [jobs, bulkOrders],
+  )
+
+  // Attention list mode — replaces the entire grid until the operator
+  // clicks back. Same Owner role, just a different body slot.
+  if (attentionMode === 'amber' || attentionMode === 'red') {
+    return (
+      <div className="sb-owner-overview">
+        <OwnerAttentionListView
+          mode={attentionMode}
+          rows={attentionMode === 'red' ? overdueTasks : amberTasks}
+          bulkOrders={bulkOrders}
+          onBack={onAttentionBack}
+          onOpenRow={(row) => row?.job?.id && onOpenJob?.(row.job.id)}
+        />
+      </div>
+    )
+  }
+
+  // Bucket shape for the two summary cards — same fields JobsBucketCard
+  // expects so we can reuse the component with summaryStyle=true.
+  const amberCard = amberTasks.length > 0 ? {
+    code:   'attention_amber',
+    label:  'Tasks needing attention',
+    count:  amberTasks.length,
+    urgency: URGENCY.AMBER,
+    subline: `${amberTasks.length} ${amberTasks.length === 1 ? 'task is' : 'tasks are'} aging past threshold`,
+  } : null
+  const redCard = overdueTasks.length > 0 ? {
+    code:   'attention_red',
+    label:  'Tasks overdue',
+    count:  overdueTasks.length,
+    urgency: URGENCY.RED,
+    subline: `${overdueTasks.length} past due — chase first`,
+  } : null
+
+  // The two summary cards live in their own grid above the curated ten so
+  // the visual hierarchy reads "headline → curated" cleanly. If we put them
+  // inline in the same auto-fit grid as the curated cards, the row count
+  // mismatches at typical desktop widths and the summary cards end up
+  // sharing a row with one or two curated cards — same row, different roles.
+  // The separate top grid avoids that.
+  const hasSummary = !!(amberCard || redCard)
+
   return (
     <div className="sb-owner-overview">
+      {hasSummary && (
+        <div className="sb-owner-summary-row">
+          {redCard && (
+            <JobsBucketCard
+              key={redCard.code}
+              bucket={redCard}
+              summaryStyle
+              onClick={() => onAttentionOpen?.('red')}
+            />
+          )}
+          {amberCard && (
+            <JobsBucketCard
+              key={amberCard.code}
+              bucket={amberCard}
+              summaryStyle
+              onClick={() => onAttentionOpen?.('amber')}
+            />
+          )}
+        </div>
+      )}
       <div className="sb-dept-bucket-grid">
         {cards.map(card => (
           <JobsBucketCard
@@ -583,10 +713,24 @@ const localStyles = `
     outline-offset: 1px;
   }
 
-  /* Overview body — just the ten-card grid. No queue sections below; the
-     click handler routes to the owning department's view for drill-in. */
+  /* Overview body — the two summary headline cards (when populated) sit
+     in their own row above the curated ten-card grid. Two equal columns at
+     desktop widths; a single column on phone. Cards keep their summaryStyle
+     treatment (5px left border, 44px count) regardless of which container
+     hosts them — the summary class doesn't depend on grid context. */
   .sb-owner-overview {
     margin-bottom: 16px;
+  }
+  .sb-owner-summary-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  @media (max-width: 720px) {
+    .sb-owner-summary-row {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* ── OWNER STACK ───────────────────────────────────────────────────────── */

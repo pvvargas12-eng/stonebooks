@@ -23,16 +23,26 @@ const URGENCY_COUNT_COLOR = {
   [URGENCY.RED]:     'var(--sb-red, #b54040)',
 }
 
-export default function JobsBucketCard({ bucket, onClick }) {
+export default function JobsBucketCard({ bucket, onClick, summaryStyle = false }) {
   const urgency = bucket.urgency || URGENCY.NEUTRAL
   const borderColor = URGENCY_BORDER[urgency]
   const countColor = URGENCY_COUNT_COLOR[urgency]
   const isDataGap = !!bucket.dataGap
 
+  // Headline variant — used by the Owner Overview's Amber and Red summary
+  // cards above the curated ten. Same component, heavier left border + a
+  // bolder count + a wider grid span so the operator's eye sees the
+  // overall-shop signal first. Tone (amber/red) inherits from the bucket's
+  // urgency, so the parent only has to set summaryStyle.
+  const className = [
+    'sb-bucket-card',
+    summaryStyle ? 'sb-bucket-card-summary' : '',
+  ].filter(Boolean).join(' ')
+
   return (
     <button
       type="button"
-      className="sb-bucket-card"
+      className={className}
       onClick={() => onClick?.(bucket)}
       style={{ borderLeftColor: borderColor }}
     >
@@ -40,7 +50,8 @@ export default function JobsBucketCard({ bucket, onClick }) {
       <div
         className={
           'sb-bucket-card-count' +
-          (isDataGap ? ' sb-bucket-card-count-gap' : '')
+          (isDataGap ? ' sb-bucket-card-count-gap' : '') +
+          (summaryStyle ? ' sb-bucket-card-count-summary' : '')
         }
         style={{ color: isDataGap ? 'var(--sb-text-muted)' : countColor }}
       >
@@ -110,6 +121,22 @@ const localStyles = `
     font-weight: 400;
   }
 
+  /* Summary variant — Owner Overview "Tasks needing attention" / "Tasks
+     overdue" headline cards. Heavier left border (5px vs 3px) and a bolder
+     count are the visual cues that these are summary headlines, not bucket
+     items. Tone (amber/red border) comes from urgency, set by
+     borderLeftColor inline. The summary row itself is laid out by the
+     parent (.sb-owner-summary-row, a 2-col grid), so this rule doesn't
+     touch grid placement. */
+  .sb-bucket-card-summary {
+    border-left-width: 5px;
+    min-height: 124px;
+  }
+  .sb-bucket-card-count-summary {
+    font-size: 44px;
+    font-weight: 600;
+  }
+
   .sb-bucket-card-subline {
     font-size: 12px;
     font-weight: 400;
@@ -125,6 +152,9 @@ const localStyles = `
     }
     .sb-bucket-card-count {
       font-size: 28px;
+    }
+    .sb-bucket-card-count-summary {
+      font-size: 36px;
     }
   }
 `

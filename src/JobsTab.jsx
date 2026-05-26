@@ -125,7 +125,7 @@ export default function JobsTab({
           Disappears automatically when count hits zero. */}
       <BackfillBanner reloadCount={reloadCount} onComplete={triggerReload} />
 
-      <JobsDepartmentView userId={userId} onOpenJob={setSelectedJobId} onSwitchTab={onSwitchTab} />
+      <JobsDepartmentView userId={userId} onOpenJob={setSelectedJobId} onSwitchTab={onSwitchTab} onOpenOrder={onOpenOrder} />
     </div>
   )
 }

@@ -3249,6 +3249,131 @@ export function getOwnerOverviewBuckets(jobs, orders) {
   ].filter(Boolean)
 }
 
+// ─── Owner attention lists ──────────────────────────────────────────────────
+// Two flat lists fed by the Amber/Red headline cards on Owner Overview.
+// Walk every bucket from every real department, collect rows that earned
+// urgency, dedupe by milestone.id (a single milestone can surface in more
+// than one bucket — e.g. an in-progress permit lives in both
+// _bucketPermitsToFile-shape lookups and waiting_cemetery in some
+// configurations; we want it once), attach a `department` field naming
+// who owns the work, then sort worst-first so the operator's eye lands
+// on the most overdue first.
+
+function _collectAllRowsForUrgency(jobs, bulkOrders, urgency) {
+  const all = [
+    ...(getAdminBuckets(jobs, bulkOrders) || []),
+    ...(getDesignBuckets(jobs) || []),
+    ...(getProductionBuckets(jobs) || []),
+    ...(getInstallationBuckets(jobs) || []),
+  ]
+  const seen = new Set()
+  const collected = []
+  for (const bucket of all) {
+    // Skip the Open bulk orders bucket — its rows aren't milestone rows
+    // (they're bulk_order rows) and don't belong in an attention list of
+    // "tasks." Same for any future non-milestone bucket kinds.
+    if (bucket?.kind === 'bulk_order_list') continue
+    for (const row of (bucket.rows || [])) {
+      if (row.urgency !== urgency) continue
+      const id = row.milestone?.id
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      collected.push({
+        ...row,
+        department: roleForMilestone(row.milestone),
+      })
+    }
+  }
+  collected.sort((a, b) => {
+    if (a.overdueDays !== b.overdueDays) return (b.overdueDays || 0) - (a.overdueDays || 0)
+    const aAge = a.agingDays ?? 0
+    const bAge = b.agingDays ?? 0
+    if (aAge !== bAge) return bAge - aAge
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    return aN.localeCompare(bN)
+  })
+  return collected
+}
+
+// Forward declaration — roleForMilestone is defined further down in the
+// file (under the Today section). JavaScript module hoisting makes the
+// function callable from here at runtime; placing the call inside
+// _collectAllRowsForUrgency rather than at module evaluation time is what
+// keeps this safe.
+export function getAllAmberTasks(jobs, bulkOrders) {
+  return _collectAllRowsForUrgency(jobs, bulkOrders, URGENCY.AMBER)
+}
+export function getAllOverdueTasks(jobs, bulkOrders) {
+  return _collectAllRowsForUrgency(jobs, bulkOrders, URGENCY.RED)
+}
+
+// ─── Sales summary ──────────────────────────────────────────────────────────
+// One-shot derivation for the Sales role's hybrid summary view. Returns:
+//   {
+//     potentialRevenue: total dollar value across open estimates,
+//     estimateCount:    how many estimates contribute to that total,
+//     avgEstimateValue: potentialRevenue / estimateCount (0 when no estimates),
+//     followups:        array (top 5) of orders needing follow-up,
+//     followupsCount:   full count (not the 5 displayed),
+//     recentlyWon:      array (top 5) of orders signed in the last 7 days,
+//     recentlyWonCount: full count signed in the window,
+//   }
+// "Recently won" reads `order.signed_at` — the same timestamp used by job
+// creation as the "moment the customer signed the contract." This is the
+// honest source for "won today / yesterday / this week" without inventing
+// a separate status-transition log.
+export function getSalesSummary(orders, { now = new Date(), recentlyWonDays = 7, followupLimit = 5, recentlyWonLimit = 5 } = {}) {
+  const list = orders || []
+
+  // Potential revenue across open estimates. ESTIMATE_STATUSES is the
+  // pre-contract set used by getEstimatesNeedingFollowup so the two views
+  // count the same universe of orders.
+  const estimates = list.filter(o => o && ESTIMATE_STATUSES.includes(o.status))
+  const potentialRevenue = estimates.reduce((sum, o) => sum + rowGrandTotal(o), 0)
+  const estimateCount = estimates.length
+  const avgEstimateValue = estimateCount > 0 ? potentialRevenue / estimateCount : 0
+
+  // Follow-ups due — reuses the existing helper, then slices for display.
+  const followupBucket = getEstimatesNeedingFollowup(list)
+  const followupsAll = followupBucket?.rows || []
+  const followups = followupsAll.slice(0, followupLimit)
+
+  // Recently won — orders with signed_at in the lookback window. signed_at
+  // is the contract execution timestamp on orders; it's the cleanest
+  // available "win moment" without a status-transition log.
+  const cutoffMs = now.getTime() - (recentlyWonDays * _DAY_MS)
+  const wonRows = []
+  for (const o of list) {
+    if (!o?.signed_at) continue
+    const signedMs = new Date(o.signed_at).getTime()
+    if (!Number.isFinite(signedMs) || signedMs < cutoffMs || signedMs > now.getTime()) continue
+    const daysAgo = Math.max(0, Math.floor((now.getTime() - signedMs) / _DAY_MS))
+    wonRows.push({
+      order: o,
+      customer: o.customer || null,
+      value: rowGrandTotal(o),
+      signedAt: o.signed_at,
+      daysAgo,
+    })
+  }
+  wonRows.sort((a, b) => {
+    const aMs = new Date(a.signedAt).getTime()
+    const bMs = new Date(b.signedAt).getTime()
+    return bMs - aMs
+  })
+
+  return {
+    potentialRevenue,
+    estimateCount,
+    avgEstimateValue,
+    followups,
+    followupsCount: followupsAll.length,
+    recentlyWon:      wonRows.slice(0, recentlyWonLimit),
+    recentlyWonCount: wonRows.length,
+  }
+}
+
 // =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================
