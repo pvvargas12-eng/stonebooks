@@ -194,6 +194,27 @@ export function setSelectedRole(userId, role) {
   writeRaw(userId, { ...state, selectedRole: role })
 }
 
+// ─── OWNER VIEW MODE ────────────────────────────────────────────────────────
+// When the selected role is 'owner', the Jobs page can render either a
+// curated ten-queue overview ('overview', the default) or the full stack of
+// every department ('departments', the legacy view). The choice is persisted
+// per-user so the shop owner's preference survives reloads. Values outside
+// the valid set fall through to 'overview'.
+
+const VALID_OWNER_MODES = ['overview', 'departments']
+
+export function getOwnerViewMode(userId) {
+  const raw = readRaw(userId)
+  const mode = raw?.ownerViewMode
+  return VALID_OWNER_MODES.includes(mode) ? mode : 'overview'
+}
+
+export function setOwnerViewMode(userId, mode) {
+  if (!VALID_OWNER_MODES.includes(mode)) return
+  const state = withDefaults(readRaw(userId))
+  writeRaw(userId, { ...state, ownerViewMode: mode })
+}
+
 // ─── FUTURE-PHASE STUBS ─────────────────────────────────────────────────────
 
 export function getTimeLens(userId) {

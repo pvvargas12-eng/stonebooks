@@ -81,6 +81,7 @@ export default function JobsTab({
   onOpenOrder,
   onOpenCustomer,
   userId = null,
+  onSwitchTab,
 }) {
   const [reloadCount, setReloadCount] = useState(0)
   const triggerReload = () => setReloadCount(c => c + 1)
@@ -120,7 +121,7 @@ export default function JobsTab({
           Disappears automatically when count hits zero. */}
       <BackfillBanner reloadCount={reloadCount} onComplete={triggerReload} />
 
-      <JobsDepartmentView userId={userId} onOpenJob={setSelectedJobId} />
+      <JobsDepartmentView userId={userId} onOpenJob={setSelectedJobId} onSwitchTab={onSwitchTab} />
     </div>
   )
 }

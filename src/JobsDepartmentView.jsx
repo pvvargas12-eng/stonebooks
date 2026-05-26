@@ -6,47 +6,71 @@
 //     Installation · Owner). Persisted per-user via workspaceState.
 //   • A row of bucket cards for the selected department
 //   • A column of queue sections below, each anchored to one bucket
-//   • Sales is the only stub left — its work mostly lives in the Orders tab.
-//   • Owner view stacks all five departments — Admin, Design, Production, and
-//     Installation render real bucket grids + queue sections; Sales renders an
-//     honest stub. A small jump-link strip at the top of Owner view lets the
-//     operator skip to a department; each department block carries a total
-//     work-in-flight count + a worst-urgency dot in its eyebrow.
+//   • Sales is the only stub left — its work lives in the Orders tab.
+//   • Owner has TWO modes (toggled at the top of the Owner content area):
+//      – Overview (default): a curated ten-card grid — the things that can
+//        hold up a job at this shop. Clicking a card switches role to the
+//        owning department and scroll-targets the matching queue. The
+//        Estimates card routes to the Orders tab instead.
+//      – All departments: the full stack of every department's buckets +
+//        queues, with a jump strip + per-department eyebrows. The legacy
+//        view kept one click away for the days the owner wants the long
+//        scroll.
 //
-// Data layer: every bucket is built by stonebooksData.bucketsForDepartment()
-// from a single jobs-fetch on mount. No per-bucket queries. The same row
-// click handler from JobsTab is threaded through to open a JobDetail drill.
+// Data layer: every bucket is built by stonebooksData helpers from a single
+// jobs-fetch on mount. Orders are also fetched on mount so the Estimates
+// overview card has its count without a second round-trip.
 // =============================================================================
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   getJobs,
+  listAllOrders,
   DEPARTMENTS,
   bucketsForDepartment,
+  getOwnerOverviewBuckets,
   worstUrgency,
   URGENCY,
 } from './lib/stonebooksData'
 import {
   getSelectedRole,
   setSelectedRole,
+  getOwnerViewMode,
+  setOwnerViewMode,
 } from './lib/workspaceState'
 import JobsBucketCard from './components/JobsBucketCard'
 import JobsQueueSection from './components/JobsQueueSection'
 import RoleSelector from './components/RoleSelector'
 
-export default function JobsDepartmentView({ userId, onOpenJob }) {
+export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab }) {
   const [role, setRole] = useState(() => getSelectedRole(userId))
+  const [ownerMode, setOwnerMode] = useState(() => getOwnerViewMode(userId))
   const [jobs, setJobs] = useState(null)
+  const [orders, setOrders] = useState(null)
   const [loadErr, setLoadErr] = useState(null)
 
+  // When an Overview card click drives a role switch, this captures the
+  // bucket code the new role's DepartmentBuckets should scroll to once it
+  // mounts. The consumer clears it on consumption so subsequent re-renders
+  // don't fight the user's scroll.
+  const [pendingBucketScroll, setPendingBucketScroll] = useState(null)
+
+  // One fetch each on mount — jobs for every department's buckets, orders
+  // only for the Estimates Overview card (single small select; fine to load
+  // eagerly so the count is ready when the operator lands on Owner overview).
   const loadJobs = useCallback(async () => {
     setLoadErr(null)
     try {
-      const data = await getJobs({ includeClosed: false })
-      setJobs(data || [])
+      const [jobData, orderData] = await Promise.all([
+        getJobs({ includeClosed: false }),
+        listAllOrders({ limit: 500 }),
+      ])
+      setJobs(jobData || [])
+      setOrders(orderData || [])
     } catch (e) {
-      setLoadErr(e?.message || 'Failed to load jobs')
+      setLoadErr(e?.message || 'Failed to load operations data')
       setJobs([])
+      setOrders([])
     }
   }, [])
   useEffect(() => { loadJobs() }, [loadJobs])
@@ -55,6 +79,30 @@ export default function JobsDepartmentView({ userId, onOpenJob }) {
     setRole(next)
     setSelectedRole(userId, next)
   }
+
+  const handleOwnerModeChange = (next) => {
+    setOwnerMode(next)
+    setOwnerViewMode(userId, next)
+  }
+
+  // Dispatch for an Overview card click. The Estimates card routes to the
+  // Orders tab (no role change); every other card switches role to the
+  // owning department and captures a pending bucket-scroll target.
+  const handleOverviewCardClick = (bucket) => {
+    if (!bucket?.route) return
+    if (bucket.route.type === 'tab' && bucket.route.tab && onSwitchTab) {
+      onSwitchTab(bucket.route.tab)
+      return
+    }
+    if (bucket.route.type === 'role' && bucket.route.role) {
+      handleRoleChange(bucket.route.role)
+      setPendingBucketScroll(bucket.route.bucketCode || null)
+    }
+  }
+
+  const consumePendingScroll = useCallback(() => {
+    setPendingBucketScroll(null)
+  }, [])
 
   return (
     <div className="sb-jobs-dept">
@@ -72,8 +120,25 @@ export default function JobsDepartmentView({ userId, onOpenJob }) {
 
       {jobs !== null && !loadErr && (
         role === 'owner'
-          ? <OwnerStack jobs={jobs} onOpenJob={onOpenJob} />
-          : <DepartmentBody role={role} jobs={jobs} onOpenJob={onOpenJob} />
+          ? (
+            <OwnerView
+              jobs={jobs}
+              orders={orders || []}
+              mode={ownerMode}
+              onModeChange={handleOwnerModeChange}
+              onOpenJob={onOpenJob}
+              onOverviewCardClick={handleOverviewCardClick}
+            />
+          )
+          : (
+            <DepartmentBody
+              role={role}
+              jobs={jobs}
+              onOpenJob={onOpenJob}
+              initialScrollBucket={pendingBucketScroll}
+              onConsumeInitialScroll={consumePendingScroll}
+            />
+          )
       )}
     </div>
   )
@@ -83,18 +148,30 @@ export default function JobsDepartmentView({ userId, onOpenJob }) {
 // DEPARTMENT BODY — non-Owner roles
 // =============================================================================
 
-function DepartmentBody({ role, jobs, onOpenJob }) {
+function DepartmentBody({ role, jobs, onOpenJob, initialScrollBucket, onConsumeInitialScroll }) {
   const dept = DEPARTMENTS.find(d => d.code === role)
   if (!dept) return null
   if (dept.stub) {
     return <DepartmentStub label={dept.label} />
   }
-  return <DepartmentBuckets dept={dept} jobs={jobs} onOpenJob={onOpenJob} />
+  return (
+    <DepartmentBuckets
+      dept={dept}
+      jobs={jobs}
+      onOpenJob={onOpenJob}
+      initialScrollBucket={initialScrollBucket}
+      onConsumeInitialScroll={onConsumeInitialScroll}
+    />
+  )
 }
 
 // Render: bucket-card grid + queue sections. Each card focus-scrolls its
 // queue section into view (smooth scroll, scroll-margin-top on the section).
-function DepartmentBuckets({ dept, jobs, onOpenJob }) {
+// When `initialScrollBucket` is set (e.g. from an Owner Overview card click
+// that switched to this role), the matching section is scrolled into view on
+// mount and the pending target is cleared via onConsumeInitialScroll so
+// future re-renders don't fight the user's scroll.
+function DepartmentBuckets({ dept, jobs, onOpenJob, initialScrollBucket, onConsumeInitialScroll }) {
   const buckets = useMemo(
     () => bucketsForDepartment(dept.code, jobs) || [],
     [dept.code, jobs],
@@ -110,6 +187,22 @@ function DepartmentBuckets({ dept, jobs, onOpenJob }) {
       node.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }
+
+  // Honour an externally-set scroll target once after buckets render. The
+  // 50ms timeout lets the Section refs populate before we ask the DOM to
+  // scroll. Bucket codes that don't exist in this dept are no-ops — we still
+  // consume the pending target so it doesn't linger.
+  useEffect(() => {
+    if (!initialScrollBucket) return
+    const t = setTimeout(() => {
+      const node = sectionRefs.current[initialScrollBucket]
+      if (node && typeof node.scrollIntoView === 'function') {
+        node.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+      onConsumeInitialScroll?.()
+    }, 50)
+    return () => clearTimeout(t)
+  }, [initialScrollBucket, onConsumeInitialScroll])
 
   return (
     <div className="sb-dept-body">
@@ -144,9 +237,7 @@ function DepartmentStub({ label }) {
       <div className="sb-dept-stub">
         <div className="sb-dept-stub-eyebrow">{label}</div>
         <div className="sb-dept-stub-body">
-          Sales work mostly lives in the Orders tab — estimates, quotes,
-          follow-ups. Sales doesn't have job-stage buckets yet. We'll wire
-          this up after the Orders vs Jobs model is settled.
+          Sales work lives in the Orders tab.
         </div>
       </div>
     )
@@ -163,23 +254,89 @@ function DepartmentStub({ label }) {
 }
 
 // =============================================================================
-// OWNER VIEW
+// OWNER VIEW — Overview (default) vs All departments
 // =============================================================================
-// Stacks all five departments in a single scrollable page. Each department
-// gets a header eyebrow, its bucket grid, and its queue sections. Four of
-// the five departments (Admin, Design, Production, Installation) are real;
-// Sales remains a stub with an honest one-liner explaining that its work
-// mostly lives in the Orders tab. Stub blocks render only the header + the
-// one-liner — no bucket grid for stubs, keeping the page from feeling padded
-// with empty surfaces.
+// Two modes for the Owner role:
+//   • Overview — a curated ten-card grid built by getOwnerOverviewBuckets.
+//     The operator's morning scan. Click a card → switch role + scroll to
+//     that department's bucket (or, for Estimates, jump to the Orders tab).
+//   • All departments — the legacy stacked view. Jump strip on top, every
+//     department's bucket grid + queues below, eyebrows with urgency dots
+//     and "N in flight" counts so the long scroll stays surveyable.
+//
+// The mode toggle persists via workspaceState.ownerViewMode. The toggle is
+// only rendered when role === 'owner'.
 
-// Worst-urgency dot color used in both the Owner jump strip and each
-// department's eyebrow. Mirrors the JobsBucketCard / JobsQueueSection palette
-// so the operator's eye learns one color vocabulary across the page.
+// Worst-urgency dot color used in the Owner jump strip and per-department
+// eyebrows. Mirrors the JobsBucketCard / JobsQueueSection palette so the
+// operator's eye learns one color vocabulary across the page.
 const URGENCY_DOT_COLOR = {
   [URGENCY.NEUTRAL]: 'var(--sb-border)',
   [URGENCY.AMBER]:   'var(--sb-amber, #b8842a)',
   [URGENCY.RED]:     'var(--sb-red, #b54040)',
+}
+
+function OwnerView({ jobs, orders, mode, onModeChange, onOpenJob, onOverviewCardClick }) {
+  return (
+    <div className="sb-dept-owner-wrap">
+      <OwnerViewToggle mode={mode} onChange={onModeChange} />
+      {mode === 'overview'
+        ? <OwnerOverview jobs={jobs} orders={orders} onCardClick={onOverviewCardClick} />
+        : <OwnerStack jobs={jobs} onOpenJob={onOpenJob} />}
+    </div>
+  )
+}
+
+// Small segmented control above the Owner content. Two options; the active
+// option gets the same surface-muted treatment as the role chip selector so
+// both controls feel like they came out of the same toolbox.
+function OwnerViewToggle({ mode, onChange }) {
+  const OPTIONS = [
+    { code: 'overview',    label: 'Overview' },
+    { code: 'departments', label: 'All departments' },
+  ]
+  return (
+    <div className="sb-owner-toggle" role="tablist" aria-label="Owner view mode">
+      {OPTIONS.map(opt => {
+        const active = opt.code === mode
+        return (
+          <button
+            key={opt.code}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className={`sb-owner-toggle-chip ${active ? 'sb-owner-toggle-chip-active' : ''}`}
+            onClick={() => onChange(opt.code)}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// Curated ten-card Overview. Click hands the selected bucket back to the
+// parent's router. Renders nothing below the grid — Overview is intentionally
+// "the morning scan," not a full department surface.
+function OwnerOverview({ jobs, orders, onCardClick }) {
+  const cards = useMemo(
+    () => getOwnerOverviewBuckets(jobs, orders) || [],
+    [jobs, orders],
+  )
+  return (
+    <div className="sb-owner-overview">
+      <div className="sb-dept-bucket-grid">
+        {cards.map(card => (
+          <JobsBucketCard
+            key={card.code}
+            bucket={card}
+            onClick={(b) => onCardClick?.(b)}
+          />
+        ))}
+      </div>
+    </div>
+  )
 }
 
 // Compute the per-department summary used by the jump strip and the eyebrows.
@@ -267,7 +424,7 @@ function OwnerDepartmentBlock({ dept, anchorId, totalCount, urgency, jobs, onOpe
       {dept.stub ? (
         <div className="sb-dept-owner-stub">
           {dept.code === 'sales'
-            ? 'Sales work mostly lives in the Orders tab — job-stage buckets will come once the Orders vs Jobs model is settled.'
+            ? 'Sales work lives in the Orders tab.'
             : `Coming soon — queues for ${dept.label.toLowerCase()} will land in a follow-up pass.`}
         </div>
       ) : (
@@ -330,6 +487,52 @@ const localStyles = `
     line-height: 1.55;
     color: var(--sb-text-secondary);
     max-width: 56ch;
+  }
+
+  /* ── OWNER WRAP + MODE TOGGLE ──────────────────────────────────────────── */
+  /* The Owner wrap holds the mode toggle and whichever mode body is active
+     (Overview grid or the full department stack). The toggle sits above
+     both modes; consistent placement makes it discoverable. */
+  .sb-dept-owner-wrap {
+    width: 100%;
+  }
+  .sb-owner-toggle {
+    display: inline-flex;
+    gap: 4px;
+    margin-bottom: 28px;
+    padding: 4px;
+    background: var(--sb-surface-muted);
+    border-radius: 999px;
+  }
+  .sb-owner-toggle-chip {
+    background: transparent;
+    border: none;
+    color: var(--sb-text-muted);
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .sb-owner-toggle-chip:hover {
+    color: var(--sb-text);
+  }
+  .sb-owner-toggle-chip-active {
+    background: var(--sb-surface);
+    color: var(--sb-text);
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(15, 20, 25, 0.06);
+  }
+  .sb-owner-toggle-chip:focus-visible {
+    outline: 0.5px solid var(--sb-accent);
+    outline-offset: 1px;
+  }
+
+  /* Overview body — just the ten-card grid. No queue sections below; the
+     click handler routes to the owning department's view for drill-in. */
+  .sb-owner-overview {
+    margin-bottom: 16px;
   }
 
   /* ── OWNER STACK ───────────────────────────────────────────────────────── */

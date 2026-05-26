@@ -2089,6 +2089,13 @@ export const BUCKET_AGING_THRESHOLDS = {
   awaiting_bronze_approval:  7,
   photos_to_log:             3,
   etching_layouts:           5,
+  // Inscriptions (cross-department: design + approve in Design, cut in Production)
+  inscriptions_to_design:    5,
+  inscriptions_to_approve:   7,
+  inscriptions_to_cut:       3,
+  // Installation field-work data gaps
+  acid_washes:               5,
+  repairs:                   7,
 }
 
 // Three-state urgency. Earned only by signal — never painted by category.
@@ -2167,11 +2174,14 @@ function _sortByUrgencyThenAging(rows) {
 
 // ─── PRODUCTION buckets ─────────────────────────────────────────────────────
 
-// Cut stencil — actionable `stencil_cut` (not_started ready, OR in_progress).
+// Cut stencil — actionable `stencil_cut` on non-inscription jobs. Inscription
+// jobs route to the dedicated `inscriptions_to_cut` bucket below so the queue
+// reads as one operational pipeline (designer → approval → cut on plotter).
 function _bucketCutStencil(jobs) {
   const rows = []
   for (const job of (jobs || [])) {
     if (job.overall_status === 'closed') continue
+    if (job.job_type === 'inscription') continue
     const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
     const m = byKey.get('stencil_cut')
     if (!m) continue
@@ -2429,12 +2439,14 @@ function _bucketCloseouts(jobs) {
 // expected-back dates and prompt the chase-the-customer conversation.
 
 // Layouts to draw — `layout_created` or `proof_created` (legacy alias) in
-// actionable state. Either not_started ready (draft from scratch) or
-// in_progress (in progress on the table). Etching layouts are filtered out
-// here because they have their own bucket below.
+// actionable state, on NON-inscription jobs. Either not_started ready (draft
+// from scratch) or in_progress. Etching layouts have their own bucket;
+// inscription layouts route to the dedicated `inscriptions_to_design` bucket
+// below so the inscription pipeline reads as one operator-facing flow.
 function _bucketLayoutsToDraw(jobs) {
+  const nonInscription = (jobs || []).filter(j => j.job_type !== 'inscription')
   const rows = _actionableMilestonesByPredicate(
-    jobs,
+    nonInscription,
     m => m.group === 'design' && (
       m.milestone_key === 'layout_created' ||
       m.milestone_key === 'proof_created'
@@ -2443,15 +2455,57 @@ function _bucketLayoutsToDraw(jobs) {
   return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.layouts_to_draw)
 }
 
-// Awaiting customer approval — `proof_sent` in_progress. Sent out, waiting
-// for the customer to approve.
+// Awaiting customer approval — `proof_sent` in_progress on non-inscription
+// jobs. Inscription approvals route to `inscriptions_to_approve` below.
 function _bucketAwaitingLayoutApproval(jobs) {
+  const nonInscription = (jobs || []).filter(j => j.job_type !== 'inscription')
   const rows = _actionableMilestonesByPredicate(
-    jobs,
+    nonInscription,
     m => m.milestone_key === 'proof_sent' || m.milestone_key === 'layout_sent',
     { status: 'in_progress' },
   )
   return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.awaiting_layout_approval)
+}
+
+// ─── INSCRIPTION pipeline (design → approve → cut) ──────────────────────────
+// Inscription jobs touch two departments — Design owns the layout + approval
+// cycle, Production owns the stencil cut on the shop plotter. Each step has
+// its own bucket so the operator sees the handoff explicitly. The inscription
+// template re-uses the shared milestone keys (`layout_created`, `proof_sent`,
+// `stencil_cut`) so we filter the shared-key buckets to non-inscription jobs
+// and surface inscriptions in their own queues here. If the template ever
+// gains inscription-specific keys, swap the key strings — the bucket shape
+// stays the same.
+
+function _bucketInscriptionsToDesign(jobs) {
+  const inscriptionJobs = (jobs || []).filter(j => j.job_type === 'inscription')
+  const rows = _actionableMilestonesByPredicate(
+    inscriptionJobs,
+    m => m.group === 'design' && (
+      m.milestone_key === 'layout_created' ||
+      m.milestone_key === 'proof_created'
+    ),
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.inscriptions_to_design)
+}
+
+function _bucketInscriptionsToApprove(jobs) {
+  const inscriptionJobs = (jobs || []).filter(j => j.job_type === 'inscription')
+  const rows = _actionableMilestonesByPredicate(
+    inscriptionJobs,
+    m => m.milestone_key === 'proof_sent' || m.milestone_key === 'layout_sent',
+    { status: 'in_progress' },
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.inscriptions_to_approve)
+}
+
+function _bucketInscriptionsToCut(jobs) {
+  const inscriptionJobs = (jobs || []).filter(j => j.job_type === 'inscription')
+  const rows = _actionableMilestonesByPredicate(
+    inscriptionJobs,
+    m => m.milestone_key === 'stencil_cut',
+  )
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.inscriptions_to_cut)
 }
 
 // Bronze layouts to draw — `bronze_proof_created` actionable (or legacy
@@ -2569,11 +2623,12 @@ function _waitingSummary(rows, threshold) {
 }
 
 export function getProductionBuckets(jobs) {
-  const cut    = _bucketCutStencil(jobs)
-  const stick  = _bucketStickStencil(jobs)
-  const blast  = _bucketSandblast(jobs)
-  const wash   = _bucketWashClean(jobs)
-  const found  = _bucketFoundations(jobs)
+  const cut       = _bucketCutStencil(jobs)
+  const inscCut   = _bucketInscriptionsToCut(jobs)
+  const stick     = _bucketStickStencil(jobs)
+  const blast     = _bucketSandblast(jobs)
+  const wash      = _bucketWashClean(jobs)
+  const found     = _bucketFoundations(jobs)
   return [
     _bucket('rubs_to_grab', 'Rubs to grab', [], {
       dataGap: true,
@@ -2583,6 +2638,13 @@ export function getProductionBuckets(jobs) {
     }),
     _bucket('cut_stencil', 'Cut stencil', cut, {
       subline: _agingSummary(cut, BUCKET_AGING_THRESHOLDS.cut_stencil),
+    }),
+    // Inscription-side stencil cut. Same plotter work as `cut_stencil`, but
+    // for inscription jobs (the customer-approved layout becomes a stencil
+    // cut for field application). Sits next to Cut stencil so the operator
+    // sees the two stencil queues together.
+    _bucket('inscriptions_to_cut', 'Inscriptions to cut', inscCut, {
+      subline: _agingSummary(inscCut, BUCKET_AGING_THRESHOLDS.inscriptions_to_cut),
     }),
     _bucket('stick_stencil', 'Stick stencil', stick, {
       dataGap: true,
@@ -2643,6 +2705,8 @@ export function getAdminBuckets(jobs) {
 export function getDesignBuckets(jobs) {
   const layouts        = _bucketLayoutsToDraw(jobs)
   const awaitingLayout = _bucketAwaitingLayoutApproval(jobs)
+  const inscDesign     = _bucketInscriptionsToDesign(jobs)
+  const inscApprove    = _bucketInscriptionsToApprove(jobs)
   const bronzeLayouts  = _bucketBronzeLayoutsToDraw(jobs)
   const awaitingBronze = _bucketAwaitingBronzeApproval(jobs)
   const photosLog      = _bucketPhotosToLog(jobs)
@@ -2654,6 +2718,13 @@ export function getDesignBuckets(jobs) {
     _bucket('awaiting_layout_approval', 'Awaiting customer approval', awaitingLayout, {
       kind: 'waiting',
       subline: _waitingSummary(awaitingLayout, BUCKET_AGING_THRESHOLDS.awaiting_layout_approval),
+    }),
+    _bucket('inscriptions_to_design', 'Inscriptions to design', inscDesign, {
+      subline: _agingSummary(inscDesign, BUCKET_AGING_THRESHOLDS.inscriptions_to_design),
+    }),
+    _bucket('inscriptions_to_approve', 'Inscriptions to approve', inscApprove, {
+      kind: 'waiting',
+      subline: _waitingSummary(inscApprove, BUCKET_AGING_THRESHOLDS.inscriptions_to_approve),
     }),
     _bucket('bronze_layouts_to_draw', 'Bronze layouts to draw', bronzeLayouts, {
       subline: _agingSummary(bronzeLayouts, BUCKET_AGING_THRESHOLDS.bronze_layouts_to_draw),
@@ -2680,6 +2751,19 @@ export function getInstallationBuckets(jobs) {
     }),
     _bucket('new_stone_setting', 'New stone setting', newStone, {
       subline: _agingSummary(newStone, BUCKET_AGING_THRESHOLDS.new_stone_setting),
+    }),
+    // Acid washes & Repairs — separate field-work types from the cleaning_
+    // repair job_type. The template's install-side milestones aren't visible
+    // from app code today, so these are honest data gaps. Once the cleaning_
+    // repair template is wired with an actionable on-site milestone, swap
+    // these for real derive functions (see TODO above _bucketNewStoneSetting).
+    _bucket('acid_washes', 'Acid washes', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs a new milestone',
+    }),
+    _bucket('repairs', 'Repairs', [], {
+      dataGap: true,
+      subline: 'Not wired yet — needs a new milestone',
     }),
     _bucket('bronze_setting', 'Bronze setting', [], {
       dataGap: true,
@@ -2720,6 +2804,154 @@ export function bucketsForDepartment(department, jobs) {
   if (department === 'production')   return getProductionBuckets(jobs)
   if (department === 'installation') return getInstallationBuckets(jobs)
   return null   // stub departments (sales)
+}
+
+// =============================================================================
+// OWNER OVERVIEW — curated ten-queue operator's view
+// =============================================================================
+// The Owner role no longer stacks every department by default. Instead it
+// presents a curated grid of ten queues — the things that can hold up a job
+// at this shop. The "All departments" toggle in the UI keeps the old stacked
+// view one click away (persisted via workspaceState.ownerViewMode).
+//
+// Each card carries a `route` descriptor that the UI consumes on click:
+//   { type: 'tab',  tab: 'orders' }                            → switch tab
+//   { type: 'role', role: 'admin', bucketCode: 'permits_to_file' } → switch
+//      role to that department and scroll to that bucket's queue section.
+
+// Pre-contract order statuses. Anything in this list is still an estimate or
+// quote (no contract has been signed yet) — these are the rows that an
+// Estimates-follow-up signal can reasonably draw from.
+const ESTIMATE_STATUSES = ['draft', 'scoping', 'quoted']
+
+// Estimates needing follow-up — pre-contract orders whose `updated_at` is
+// older than `thresholdDays`. Past `redThresholdDays` the row goes red so the
+// operator sees a strong nudge to call. Mirrors the legacy `stale_quote`
+// signal already used by getActionItems — 14 days has historically been the
+// red threshold in this codebase, so we keep that and use 5 days as the
+// amber/include threshold per spec.
+//
+// The signal is imperfect (no structured last_contact column exists), but
+// it's the same shape every other stale-order surface in the app uses today.
+// When the data model adds a real follow-up timestamp, swap the comparison
+// here — the bucket shape stays the same.
+export function getEstimatesNeedingFollowup(orders, opts = {}) {
+  const thresholdDays = opts.thresholdDays ?? 5
+  const redThresholdDays = opts.redThresholdDays ?? 14
+  const now = Date.now()
+  const rows = []
+  for (const o of (orders || [])) {
+    if (!o || !ESTIMATE_STATUSES.includes(o.status)) continue
+    if (!o.updated_at) continue
+    const days = Math.floor((now - new Date(o.updated_at).getTime()) / 86400000)
+    if (days < thresholdDays) continue
+    const urgency = days >= redThresholdDays ? URGENCY.RED : URGENCY.AMBER
+    rows.push({
+      kind: 'order',
+      order: o,
+      customer: o.customer || null,
+      agingDays: days,
+      overdue: urgency === URGENCY.RED,
+      overdueDays: urgency === URGENCY.RED ? days - redThresholdDays : 0,
+      urgency,
+    })
+  }
+  rows.sort((a, b) => (b.agingDays ?? 0) - (a.agingDays ?? 0))
+  const reds = rows.filter(r => r.urgency === URGENCY.RED).length
+  const subline = rows.length === 0
+    ? 'all calm'
+    : (reds > 0 ? `${reds} over ${redThresholdDays}d` : `${rows.length} over ${thresholdDays}d`)
+  return {
+    code: 'estimates_to_followup',
+    label: 'Estimates to follow up on',
+    rows,
+    count: rows.length,
+    urgency: worstUrgency(rows),
+    dataGap: false,
+    subline,
+    sortLabel: null,
+    kind: null,
+    grouping: null,
+    groups: null,
+  }
+}
+
+// File-local helper — pull a bucket out of a department-buckets list by code.
+// Returns null when missing so the caller can decide whether to surface a
+// data-gap placeholder. (Today every code we look up is guaranteed to exist;
+// the null path is defensive against future bucket renames.)
+function _pickBucket(list, code) {
+  return (list || []).find(b => b.code === code) || null
+}
+
+// Combine the three inscription buckets into a single Overview card. The
+// constituent buckets keep their separate identities inside the department
+// views — Overview just aggregates them for at-a-glance scanning. The subline
+// names the per-stage counts so the operator can read which stage is heaviest
+// without leaving the Overview.
+function _combinedInscriptionsBucket(designBuckets, productionBuckets) {
+  const b1 = _pickBucket(designBuckets,     'inscriptions_to_design')
+  const b2 = _pickBucket(designBuckets,     'inscriptions_to_approve')
+  const b3 = _pickBucket(productionBuckets, 'inscriptions_to_cut')
+  const rows = [
+    ...(b1?.rows || []),
+    ...(b2?.rows || []),
+    ...(b3?.rows || []),
+  ]
+  return {
+    code: 'inscriptions_pending',
+    label: 'Inscriptions pending',
+    rows,
+    count: rows.length,
+    urgency: worstUrgency(rows),
+    dataGap: false,
+    subline: `${b1?.count || 0} to design · ${b2?.count || 0} awaiting · ${b3?.count || 0} to cut`,
+    sortLabel: null,
+    kind: null,
+    grouping: null,
+    groups: null,
+  }
+}
+
+// The curated ten-card Owner overview. Order matters — this is the operator's
+// scanning sequence in the morning (sales pipeline → office prep → design →
+// production → installation field work).
+export function getOwnerOverviewBuckets(jobs, orders) {
+  const admin        = getAdminBuckets(jobs)
+  const design       = getDesignBuckets(jobs)
+  const production   = getProductionBuckets(jobs)
+  const installation = getInstallationBuckets(jobs)
+
+  const estimates       = getEstimatesNeedingFollowup(orders)
+  const permitsToFile   = _pickBucket(admin,        'permits_to_file')
+  const layoutsToDraw   = _pickBucket(design,       'layouts_to_draw')
+  const inscriptions    = _combinedInscriptionsBucket(design, production)
+  const stonesToOrder   = _pickBucket(admin,        'stones_to_order')
+  const sandblast       = _pickBucket(production,   'sandblast')
+  const newStoneSetting = _pickBucket(installation, 'new_stone_setting')
+  const acidWashes      = _pickBucket(installation, 'acid_washes')
+  const rubs            = _pickBucket(production,   'rubs_to_grab')
+  const foundations     = _pickBucket(production,   'foundations')
+
+  // Each card carries a route. Estimates → Orders tab; the inscriptions card
+  // routes to Design's first inscription bucket (the head of the pipeline)
+  // because the Overview can only send the operator to one queue at a time,
+  // and the design stage is where most days start. `_overlay` skips cards
+  // whose source bucket is missing — defensive against future bucket-code
+  // renames that haven't been mirrored here.
+  const _overlay = (source, overrides) => source ? { ...source, ...overrides } : null
+  return [
+    _overlay(estimates,       { route: { type: 'tab',  tab: 'orders' } }),
+    _overlay(permitsToFile,   { route: { type: 'role', role: 'admin',        bucketCode: 'permits_to_file' } }),
+    _overlay(layoutsToDraw,   { label: 'Layouts to create',           route: { type: 'role', role: 'design',       bucketCode: 'layouts_to_draw' } }),
+    _overlay(inscriptions,    { route: { type: 'role', role: 'design',       bucketCode: 'inscriptions_to_design' } }),
+    _overlay(stonesToOrder,   { route: { type: 'role', role: 'admin',        bucketCode: 'stones_to_order' } }),
+    _overlay(sandblast,       { label: 'Stones to blast',             route: { type: 'role', role: 'production',   bucketCode: 'sandblast' } }),
+    _overlay(newStoneSetting, { label: 'Stones to set',               route: { type: 'role', role: 'installation', bucketCode: 'new_stone_setting' } }),
+    _overlay(acidWashes,      { label: 'Acid washes to do',           route: { type: 'role', role: 'installation', bucketCode: 'acid_washes' } }),
+    _overlay(rubs,            { label: 'Rubs to take',                route: { type: 'role', role: 'production',   bucketCode: 'rubs_to_grab' } }),
+    _overlay(foundations,     { label: 'Foundations to complete',     route: { type: 'role', role: 'production',   bucketCode: 'foundations' } }),
+  ].filter(Boolean)
 }
 
 // =============================================================================
