@@ -2437,5 +2437,416 @@ export function bucketsForDepartment(department, jobs) {
 }
 
 // =============================================================================
+// TODAY — role-aware operational page
+// =============================================================================
+// The Today tab becomes a per-role briefing surface: morning sentence, then
+// Overdue / Due-today / Aging-this-week sections, each filtered to milestones
+// owned by the selected role. The role selector is shared with the Jobs tab
+// (workspaceState.getSelectedRole / setSelectedRole).
+//
+// Mapping a milestone to a role uses the milestone's `team` field first.
+// When `team` is missing or generic, fall back to the milestone's `group`
+// via ROLE_GROUP_MAP. Owner sees everything (no filter).
+//
+// "Next action in plain English" is the load-bearing piece — the row leads
+// with a verb-phrase the operator can act on, not a milestone key. The map
+// lives in NEXT_ACTION_VERB and the resolver is nextActionPhrase(milestone,
+// surname). Unknown milestone keys fall back to the milestone's own label.
+
+// Milestone.group → owning role. Inferred from the existing group vocabulary
+// used by the templates today. Adjust here if a template adds a new group
+// without updating the team field on each milestone.
+export const ROLE_GROUP_MAP = {
+  intake:     'admin',
+  permit:     'admin',
+  closeout:   'admin',
+  design:     'design',
+  photo:      'design',
+  etching:    'design',
+  stone:      'production',
+  production: 'production',
+  foundation: 'production',
+  install:    'installation',
+}
+
+// Resolve a milestone to its owning role.
+//   1. If the milestone carries a team value matching one of our roles, use it.
+//   2. Otherwise fall back to ROLE_GROUP_MAP[group].
+//   3. Otherwise null (treated as unowned).
+// Sales rarely owns milestones today — most jobs won't surface anything for
+// Sales unless a milestone is explicitly tagged team='sales'. That's the spec.
+export function roleForMilestone(milestone) {
+  if (!milestone) return null
+  const team = milestone.team || null
+  if (team === 'admin' || team === 'design' || team === 'sales' ||
+      team === 'production' || team === 'installation') {
+    return team
+  }
+  const group = milestone.group || null
+  return ROLE_GROUP_MAP[group] || null
+}
+
+// Next-action verb-phrase map. Each entry is a pair of phrase-builders —
+// `notStarted` for `status='not_started'`, and an optional `inProgress` for
+// `status='in_progress'`. Each builder takes the customer surname (already
+// nicely-cased) and returns the rendered phrase. Returning different phrases
+// for "with surname" vs "without" lets us choose the natural English form for
+// each milestone — "Sandblast Anderson" (raw appose), "Cut stencil for
+// Anderson" (prepositional), "Pour Anderson's foundation" (possessive).
+//
+// Tone rules: imperative, sentence-case, short. Production staff read these in
+// a glance. Don't say "the" unless the sentence reads worse without it.
+export const NEXT_ACTION_VERB = {
+  // ── Intake / admin ────────────────────────────────────────────────────────
+  intake_complete: {
+    notStarted: n => n ? `Complete intake for ${n}` : 'Complete intake',
+  },
+
+  // ── Design (layout / proof cycle) ─────────────────────────────────────────
+  design_needed: {
+    notStarted: n => n ? `Start design for ${n}` : 'Start design',
+  },
+  layout_created: {
+    notStarted: n => n ? `Draft layout for ${n}`         : 'Draft layout',
+    inProgress: n => n ? `Finish ${n}'s layout`          : 'Finish the layout',
+  },
+  proof_created: {
+    notStarted: n => n ? `Draft layout for ${n}`         : 'Draft layout',
+    inProgress: n => n ? `Finish ${n}'s layout`          : 'Finish the layout',
+  },
+  proof_sent: {
+    notStarted: n => n ? `Send ${n}'s layout to customer` : 'Send layout to customer',
+    inProgress: () => 'Waiting on customer to approve layout',
+  },
+  proof_approved: {
+    notStarted: n => n ? `Log ${n}'s layout approval`    : 'Log layout approval',
+  },
+  bronze_proof_created: {
+    notStarted: n => n ? `Draft bronze layout for ${n}`  : 'Draft bronze layout',
+    inProgress: n => n ? `Finish ${n}'s bronze layout`   : 'Finish bronze layout',
+  },
+  bronze_proof_sent: {
+    notStarted: n => n ? `Send ${n}'s bronze layout to customer` : 'Send bronze layout to customer',
+    inProgress: () => 'Waiting on customer to approve bronze layout',
+  },
+  bronze_proof_approved: {
+    notStarted: n => n ? `Log ${n}'s bronze approval`    : 'Log bronze approval',
+  },
+
+  // ── Permit / cemetery ────────────────────────────────────────────────────
+  permit_submitted: {
+    notStarted: n => n ? `Submit ${n}'s permit to cemetery` : 'Submit permit to cemetery',
+    inProgress: () => 'Waiting on cemetery for permit',
+  },
+  permit_filed: {
+    notStarted: n => n ? `Submit ${n}'s permit to cemetery` : 'Submit permit to cemetery',
+  },
+  permit_approved: {
+    notStarted: n => n ? `Log ${n}'s permit approval`    : 'Log permit approval',
+  },
+
+  // ── Photo / etching ───────────────────────────────────────────────────────
+  photo_requested: {
+    notStarted: () => 'Request photo from customer',
+    inProgress: () => 'Waiting on customer for photo',
+  },
+  photo_received: {
+    notStarted: n => n ? `Log ${n}'s photo`              : 'Log photo receipt',
+  },
+  etching_ordered: {
+    notStarted: n => n ? `Order etching for ${n}`        : 'Order etching',
+    inProgress: () => 'Waiting on etching from supplier',
+  },
+  etching_received: {
+    notStarted: n => n ? `Log ${n}'s etching arrival`    : 'Log etching arrival',
+  },
+
+  // ── Stone (supplier cycle) ────────────────────────────────────────────────
+  stone_ordered: {
+    notStarted: n => n ? `Order stone for ${n}`          : 'Order stone',
+    inProgress: () => 'Waiting on stone from supplier',
+  },
+  stone_received: {
+    notStarted: n => n ? `Log ${n}'s stone arrival`      : 'Log stone arrival',
+  },
+
+  // ── Production (stencil + sandblast + wash) ───────────────────────────────
+  stencil_created: {
+    notStarted: n => n ? `Cut stencil for ${n}`          : 'Cut stencil',
+    inProgress: n => n ? `Finish cutting ${n}'s stencil` : 'Finish cutting stencil',
+  },
+  stencil_cut: {
+    notStarted: n => n ? `Cut stencil for ${n}`          : 'Cut stencil',
+    inProgress: n => n ? `Finish cutting ${n}'s stencil` : 'Finish cutting stencil',
+  },
+  production_started: {
+    notStarted: n => n ? `Sandblast ${n}`                : 'Sandblast',
+    inProgress: n => n ? `Finish sandblasting ${n}`      : 'Finish sandblasting',
+  },
+  production_completed: {
+    notStarted: n => n ? `Wash and clean ${n}'s stone`   : 'Wash and clean',
+    inProgress: () => 'Finish wash and clean',
+  },
+
+  // ── Foundation + install ──────────────────────────────────────────────────
+  foundation_poured: {
+    notStarted: n => n ? `Pour ${n}'s foundation`        : 'Pour foundation',
+    inProgress: n => n ? `Finish pouring ${n}'s foundation` : 'Finish pouring foundation',
+  },
+  ready_to_install: {
+    notStarted: n => n ? `Schedule install for ${n}`     : 'Schedule install',
+    inProgress: () => 'Finish scheduling install',
+  },
+  installed: {
+    notStarted: n => n ? `Install ${n}`                  : 'Install',
+    inProgress: n => n ? `Finish installing ${n}`        : 'Finish install',
+  },
+
+  // ── Closeout ──────────────────────────────────────────────────────────────
+  job_closed: {
+    notStarted: n => n ? `Close out ${n}'s job`          : 'Close out job',
+  },
+}
+
+// Resolve the row's primary verb-phrase. Unknown milestone keys fall back to
+// the milestone's own label (sentence-cased so the fallback still reads as
+// prose, never as a stray identifier fragment). Surname is normalized to
+// `Anderson`-shape — uppercased first character, rest lowered — so the row
+// reads naturally regardless of how the order's primary_lastname was stored.
+export function nextActionPhrase(milestone, surname) {
+  if (!milestone) return ''
+  const name = (surname || '').trim()
+  const nicelyCased = name
+    ? name[0].toUpperCase() + name.slice(1).toLowerCase()
+    : ''
+
+  const entry = NEXT_ACTION_VERB[milestone.milestone_key]
+  if (entry) {
+    const fn = milestone.status === 'in_progress' && entry.inProgress
+      ? entry.inProgress
+      : entry.notStarted
+    return fn(nicelyCased)
+  }
+
+  const fallback = milestone.label || milestone.milestone_key || ''
+  if (!fallback) return ''
+  return fallback[0].toUpperCase() + fallback.slice(1)
+}
+
+// Today's aging threshold. A milestone whose last activity is older than this
+// (in days) is "aging this week" if it's not already overdue. One threshold
+// across the Today page keeps the section honest — the page is "this week,"
+// not per-bucket pacing.
+export const TODAY_AGING_THRESHOLD_DAYS = 7
+
+// Decide whether a milestone is actionable enough to surface on Today.
+// Closed jobs, done/not_needed milestones, and locked not_started (requires
+// not yet satisfied) are excluded. Everything else is fair game.
+function _isMilestoneActionable(milestone, byKey) {
+  if (!milestone) return false
+  if (milestone.status === 'done' || milestone.status === 'not_needed') return false
+  if (milestone.status === 'not_started' && hasUnsatisfiedRequires(milestone, byKey)) return false
+  return true
+}
+
+// Build a Today row from a (job, milestone) pair. Mirrors the queue row shape
+// just enough that the helpers downstream (classifyRowUrgency, worstUrgency)
+// can be reused without translation. Adds `nextAction` for the verb-phrase
+// the Today row leads with.
+function _buildTodayRow(job, milestone) {
+  if (!job || !milestone) return null
+  const overdue = isMilestoneOverdue(milestone)
+  const surname = job.order?.primary_lastname
+    || job.customer?.last_name
+    || job.customer?.lastName
+    || ''
+  return {
+    kind: 'milestone',
+    job,
+    order: job.order || null,
+    customer: job.customer || null,
+    cemetery: job.cemetery || null,
+    milestone,
+    stage: stageChipFor(milestone.group),
+    agingDays: daysSinceMs(milestone.updated_at),
+    overdue,
+    overdueDays: overdue ? daysPastDue(milestone) : 0,
+    dueDate: milestone.due_date || null,
+    owner: milestone.team || roleForMilestone(milestone) || null,
+    surname,
+    nextAction: nextActionPhrase(milestone, surname),
+  }
+}
+
+// Sort rows worst-first: overdue rows by days-past-due descending, then aging
+// rows by aging-days descending, then by surname ascending. Mirrors the
+// queue-row "worst first" convention so the operator's eye lands on the most
+// urgent row regardless of section.
+function _sortTodayRows(rows) {
+  return rows.slice().sort((a, b) => {
+    if (a.overdueDays !== b.overdueDays) return b.overdueDays - a.overdueDays
+    const aAge = a.agingDays ?? 0
+    const bAge = b.agingDays ?? 0
+    if (aAge !== bAge) return bAge - aAge
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    return aN.localeCompare(bN)
+  })
+}
+
+// Date helpers used by deriveTodayForRole — keep them file-local so the public
+// surface stays small.
+function _isoYMDFromDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Build the morning sentence from the three counts. Role-aware: "Quiet morning
+// for design" reads differently than "Quiet morning" globally. Honest counts
+// only — when the numbers are zero, the sentence says so plainly.
+//
+// Sentence shape:
+//   The first non-zero clause carries the subject ("N things are overdue" /
+//   "N things are due today"); subsequent clauses elide the subject because
+//   the reader is already grounded ("N due today" / "N aging").
+function _morningSentenceFor(role, { overdue, dueToday, aging }) {
+  const isOwner = role === 'owner'
+  const noun = isOwner ? 'the shop' : _roleNoun(role)
+
+  if (overdue === 0 && dueToday === 0 && aging === 0) {
+    return isOwner
+      ? "Quiet morning. Nothing needs attention right now."
+      : `Quiet morning for ${noun}. Nothing needs attention right now.`
+  }
+
+  const parts = []
+  const isFirst = () => parts.length === 0
+  const subject = (n) => `${n} ${n === 1 ? 'thing is' : 'things are'}`
+
+  if (overdue > 0) {
+    parts.push(`${subject(overdue)} overdue`)
+  }
+  if (dueToday > 0) {
+    parts.push(isFirst() ? `${subject(dueToday)} due today` : `${dueToday} due today`)
+  }
+  if (aging > 0) {
+    parts.push(isFirst() ? `${subject(aging)} aging this week` : `${aging} aging this week`)
+  }
+
+  const head = parts.join(', ')
+  const suffix = isOwner ? '' : ` for ${noun}`
+  return head.charAt(0).toUpperCase() + head.slice(1) + suffix + '.'
+}
+
+// Lowercase noun used wherever a role lands inside running prose — the morning
+// sentence's "for [role]" tail, the Today empty states ("Nothing due today
+// for design"), etc. Exported because TodayTab needs the same vocabulary in
+// its empty-section copy. Owner reads as "the shop" (the surface that owner
+// stewards), keeping the rest of the prose consistent.
+export function roleNoun(role) {
+  if (role === 'admin')        return 'admin'
+  if (role === 'design')       return 'design'
+  if (role === 'sales')        return 'sales'
+  if (role === 'production')   return 'production'
+  if (role === 'installation') return 'installation'
+  return 'the shop'
+}
+const _roleNoun = roleNoun  // local alias preserves the private callsite below.
+
+// Main Today derive. Returns the morning sentence + three row lists ready to
+// render. The page does no further filtering — a section that's empty here is
+// empty in the UI.
+//
+// Filtering rules:
+//   • Closed jobs are skipped entirely.
+//   • Milestones whose status is done / not_needed / blocked-by-requires are
+//     skipped (not actionable today).
+//   • Role filter: owner sees everything. Other roles see milestones whose
+//     resolved role (roleForMilestone) matches.
+//
+// Classification rules (one milestone lands in one section):
+//   1. Overdue — past internal due_date OR past expected_resolution_at.
+//   2. Due today — due_date === today's local YMD (and not overdue).
+//   3. Aging — aging beyond TODAY_AGING_THRESHOLD_DAYS (and not overdue/due-today).
+//   Everything else is calm and not surfaced.
+export function deriveTodayForRole(jobs, role, { now = new Date() } = {}) {
+  const todayYMD = _isoYMDFromDate(now)
+  const overdueRows  = []
+  const dueTodayRows = []
+  const agingRows    = []
+
+  for (const job of (jobs || [])) {
+    if (!job || job.overall_status === 'closed') continue
+    const milestones = job.milestones || []
+    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+
+    for (const m of milestones) {
+      if (!_isMilestoneActionable(m, byKey)) continue
+      if (role !== 'owner' && roleForMilestone(m) !== role) continue
+
+      const row = _buildTodayRow(job, m)
+      if (!row) continue
+
+      // Past expected_resolution_at counts as overdue even if the internal
+      // due_date hasn't passed — the external party broke their quoted date.
+      const lateExternal = isLateAgainstExpectedResolution(m, now)
+      const isOverdue = row.overdue || (lateExternal && lateExternal.daysLate > 0)
+
+      if (isOverdue) {
+        // Use the worst overdue source — internal vs external — for the day count.
+        const internalDays = row.overdueDays || 0
+        const externalDays = lateExternal && lateExternal.daysLate > 0 ? lateExternal.daysLate : 0
+        const worstDays = Math.max(internalDays, externalDays)
+        overdueRows.push({
+          ...row,
+          urgency: URGENCY.RED,
+          overdue: true,
+          overdueDays: worstDays,
+        })
+        continue
+      }
+
+      if (m.due_date && m.due_date.slice(0, 10) === todayYMD) {
+        const age = row.agingDays ?? 0
+        const isAlsoAging = age > TODAY_AGING_THRESHOLD_DAYS
+        dueTodayRows.push({
+          ...row,
+          urgency: isAlsoAging ? URGENCY.AMBER : URGENCY.NEUTRAL,
+        })
+        continue
+      }
+
+      if ((row.agingDays ?? 0) > TODAY_AGING_THRESHOLD_DAYS) {
+        agingRows.push({
+          ...row,
+          urgency: URGENCY.AMBER,
+        })
+        continue
+      }
+      // Else: calm; intentionally not surfaced on Today.
+    }
+  }
+
+  const overdue  = _sortTodayRows(overdueRows)
+  const dueToday = _sortTodayRows(dueTodayRows)
+  const aging    = _sortTodayRows(agingRows)
+
+  return {
+    morningSentence: _morningSentenceFor(role, {
+      overdue:  overdue.length,
+      dueToday: dueToday.length,
+      aging:    aging.length,
+    }),
+    overdue,
+    dueToday,
+    aging,
+    counts: {
+      overdue:  overdue.length,
+      dueToday: dueToday.length,
+      aging:    aging.length,
+    },
+  }
+}
+
+// =============================================================================
 // End of Jobs Operations data layer
 // =============================================================================

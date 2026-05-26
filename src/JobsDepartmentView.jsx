@@ -31,15 +31,7 @@ import {
 } from './lib/workspaceState'
 import JobsBucketCard from './components/JobsBucketCard'
 import JobsQueueSection from './components/JobsQueueSection'
-
-const ROLES = [
-  { code: 'admin',        label: 'Admin' },
-  { code: 'design',       label: 'Design' },
-  { code: 'sales',        label: 'Sales' },
-  { code: 'production',   label: 'Production' },
-  { code: 'installation', label: 'Installation' },
-  { code: 'owner',        label: 'Owner' },
-]
+import RoleSelector from './components/RoleSelector'
 
 export default function JobsDepartmentView({ userId, onOpenJob }) {
   const [role, setRole] = useState(() => getSelectedRole(userId))
@@ -82,35 +74,6 @@ export default function JobsDepartmentView({ userId, onOpenJob }) {
           ? <OwnerStack jobs={jobs} onOpenJob={onOpenJob} />
           : <DepartmentBody role={role} jobs={jobs} onOpenJob={onOpenJob} />
       )}
-    </div>
-  )
-}
-
-// =============================================================================
-// ROLE SELECTOR
-// =============================================================================
-// Top-right segmented selector. Not auth — anyone can switch. Persists via
-// workspaceState. Visual posture: borderless chips, weight-500 active, subtle
-// hover; the same calm vocabulary the workspace strip uses.
-
-function RoleSelector({ active, onChange }) {
-  return (
-    <div className="sb-role-selector" role="tablist" aria-label="Department view">
-      {ROLES.map(r => {
-        const isActive = r.code === active
-        return (
-          <button
-            key={r.code}
-            type="button"
-            role="tab"
-            aria-selected={isActive}
-            className={`sb-role-chip ${isActive ? 'sb-role-chip-active' : ''}`}
-            onClick={() => onChange(r.code)}
-          >
-            {r.label}
-          </button>
-        )
-      })}
     </div>
   )
 }
@@ -235,41 +198,6 @@ const localStyles = `
     width: 100%;
   }
 
-  /* ── ROLE SELECTOR ─────────────────────────────────────────────────────── */
-
-  .sb-role-selector {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    justify-content: flex-end;
-    margin-bottom: 32px;
-    padding: 4px 0;
-  }
-  .sb-role-chip {
-    background: transparent;
-    border: none;
-    color: var(--sb-text-muted);
-    font: inherit;
-    font-size: 14px;
-    padding: 6px 12px;
-    border-radius: 999px;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-  }
-  .sb-role-chip:hover {
-    color: var(--sb-text);
-    background: var(--sb-surface-muted);
-  }
-  .sb-role-chip-active {
-    color: var(--sb-text);
-    background: var(--sb-surface-muted);
-    font-weight: 500;
-  }
-  .sb-role-chip:focus-visible {
-    outline: 0.5px solid var(--sb-accent);
-    outline-offset: 1px;
-  }
-
   /* ── BUCKET GRID ───────────────────────────────────────────────────────── */
   /* Auto-fit so buckets reflow gracefully across widths; the min track keeps
      a card readable without crowding the count. Six cards across at desktop
@@ -341,9 +269,6 @@ const localStyles = `
   }
 
   @media (max-width: 720px) {
-    .sb-role-selector {
-      justify-content: flex-start;
-    }
     .sb-dept-bucket-grid {
       grid-template-columns: 1fr 1fr;
     }
