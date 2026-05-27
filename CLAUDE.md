@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE) → L2-P1 → L2-P2 → L2-P3 → L2-P4 (L2 COMPLETE)`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE) → L2-P1 → L2-P2 → L2-P3 → L2-P4 (L2 COMPLETE) → OWNER-CARDS → SCHED → SCHED-UI`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -351,6 +351,47 @@ Six commits + one follow-up. L2 inscription overhaul is now complete end-to-end.
 - **Side-arrangement simplification (Phase 4 Commit 5):** layout style describes the visual arrangement; array order (manipulated by ↑/↓ arrows) describes who-goes-where; explicit checkbox flags confirmation-pending. No more multi-way `sideArrangement` enum in the UI.
 - **Orphaned-but-retained schema fields** — `d.nameDisplayVariant`, `d.nameDisplayCustom`, `d.dateFormat`, `d.dateFormatCustom`, `d.styleTreatment`, `d.styleTreatmentCustom`, `order.inscription.sideArrangement`. All stay in `makeBlankDeceased`/`makeBlankOrder` and `rowToOrder` defensive defaults for backward compatibility with legacy rows; no UI reads or writes them post-Phase-4. A future schema-cleanup sprint may remove.
 - **Parked from Phase 4 mid-sprint discussions:** (a) **Name as Carved Family Name card option** — add a card to the Name picker that says "use the family surname for this person" (defers to the order-level Family Name). (b) **$750 Family Name on back of marker** add-on on Tab 9 — needs its own Tab 9 / add-ons diagnostic before specing. Both deferred to future micro-sprints.
+
+## Sprint OWNER-CARDS — Owner attention cards + Sales hybrid view
+
+**Owner Overview headline cards + a real Sales surface.** One commit (`fad7c72`). New files `src/components/OwnerAttentionListView.jsx` + `src/components/SalesView.jsx`; touches `JobsDepartmentView.jsx`, `JobsBucketCard.jsx`, `JobsQueueRow.jsx`, `JobsTab.jsx`, `lib/stonebooksData.js`. **No DB migration** — pure read-side derivation over existing jobs / orders / bulk_orders.
+
+- **Two headline summary cards above the curated ten buckets** on Owner Overview: **"Tasks needing attention"** (amber count) and **"Tasks overdue"** (red count). Both **hide entirely when their count is zero** — quiet days look quiet. They sit in their own 2-col grid (`.sb-owner-summary-row`) above the curated grid so the hierarchy reads headline → curated; `JobsBucketCard` gains a `summaryStyle` variant (5px left border, 44px count) that inherits amber/red tone from the bucket's urgency.
+- **`OwnerAttentionListView`** — clicking a headline card replaces the grid with a flat list (worst-first) of every amber / overdue milestone across all departments, each row carrying a **department chip** (new `row.department` on `JobsQueueRow`) so the owner sees which department is on fire at a glance. Click a row → JobDetail. The drill is **in-session only** (`attentionMode` state in `OwnerView`), not persisted to `workspaceState`; switching Overview ↔ All-departments clears it.
+- **Data layer:** `getAllAmberTasks` / `getAllOverdueTasks` walk every department's bucket derivers, **dedupe by `milestone.id`** (a milestone qualifying for multiple buckets shows once), tag each row with `roleForMilestone`, skip non-milestone buckets (`bulk_order_list`), and sort worst-first (overdueDays → agingDays → surname).
+- **Sales role: stub → hybrid summary** (`SalesView`) — deliberately **metric-shaped, not queue-shaped** (sales lives in the Orders tab pre-contract; forcing it into job-stage bucket cards "would feel like noise"). Three sections from one `getSalesSummary(orders)` derivation pass: **(1) potential revenue** across open estimates ($-formatted, with count + average), **(2) top-5 follow-ups due** with urgency tinting + a "See all in Orders →" button (reuses `getEstimatesNeedingFollowup`), **(3) recently won** (orders signed in the last 7 days). Recently-won reads `order.signed_at` — the same contract-signed timestamp `createJobFromOrder` uses — so the signal is **honest, no faked status-transition log**.
+
+## Sprint SCHED — Scheduler substrate
+
+**Operational scheduling layer — data substrate only.** Four migrations, **all applied to production manually in Supabase Studio on 2026-05-26/27 and verified live** (tables + columns present; RLS enabled with `authenticated`-all policies on all three scheduler tables; `work_batches_kind_check` carries all eleven kinds). Files live in `supabase/migrations/`.
+
+### What shipped (data layer)
+
+- **`work_batches`** — the unit of crew dispatch. Eleven kinds: nine workflow (`inscription`, `blasting`, `setting`, `delivery`, `acid_wash`, `repair`, `rub_grab`, `foundation_trip`, `door_trip`) + two ad-hoc event kinds (`site_visit`, `errand`) for zero-job calendar entries. Field trips carry `destination_cemetery_id` + stops; shop blocks don't. `scheduled_date` is NULL while in the pre-scheduling build tray. `status` ∈ `planned` / `in_progress` / `running_late` / `completed` / `cancelled`.
+- **`work_batch_jobs`** — link table (many jobs → one batch). `stop_order` sequences field-trip stops (NULL on shop blocks); self-FK `carry_over_from` tracks a stop slipping from one day's batch to another. `ON DELETE CASCADE` from both `work_batches` and `jobs`.
+- **`job_promises`** — per-job, per-team-member promise log. `kept` is NULL while open, true if completed on/before `promised_date`, false if late. Drives the 🤡 treatment everywhere and the rolling per-team kept-rate counters.
+- **`bulk_orders`** — a single supplier PO grouping milestones (kinds: `stone` / `photo` / `etching` / `bronze`). Milestones link via `job_milestones.bulk_order_id` (`ON DELETE SET NULL`); `supplier_eta` feeds the date-projection engine instead of the generic 30-day pacing default.
+- **`cemeteries` geocoding columns** — `geocoded_lat`, `geocoded_lng`, `region_tag`, `geocoded_at`. Feed haversine distance math for the trip optimizer / dispatch mileage. Populated by the one-shot `scripts/geocode_cemeteries.mjs` (Nominatim, 1 req/sec).
+- **`job_milestones` date-projection columns** — `contract_due_at` (customer-facing promise; never auto-moves), `projected_completion_at` (system's honest live estimate; persisted only on operator override), `projected_completion_at_user_set` (sticky-override flag — projection must not overwrite when true), `bulk_order_id` (link above).
+- **RLS** — all three scheduler tables (`work_batches`, `work_batch_jobs`, `job_promises`) get RLS enabled + a single `authenticated`-only full-CRUD policy each (`*_authenticated_all`, `using/with check (true)`). No anon access — staff-internal posture. Without this, authenticated writes fail with *"new row violates row-level security policy."*
+
+### Migration files (all ✅ APPLIED to production 2026-05-26/27 — idempotent, safe to re-run)
+
+- `supabase/migrations/20260526_date_projection_and_bulk_orders.sql` — `bulk_orders` table + the four `job_milestones` projection/link columns.
+- `supabase/migrations/20260526_scheduler_substrate.sql` — `work_batches`, `work_batch_jobs`, `job_promises` + the four `cemeteries` geocoding columns.
+- `supabase/migrations/20260527_custom_event_batch_kinds.sql` — extends `work_batches_kind_check` with `site_visit` + `errand` (nine → eleven kinds).
+- `supabase/migrations/20260527_scheduler_rls.sql` — RLS enable + `authenticated`-all policies on the three scheduler tables.
+
+## Sprint SCHED-UI — Scheduler UI: discoverability + custom events + weather + polish
+
+**The UI layer that sits on top of Sprint SCHED.** One commit (`808457e`) — five operator gaps closed in one focused pass. New files `src/components/SearchBar.jsx`, `AddEventModal.jsx`, `AddPromiseModal.jsx`, `components/calendar/WeatherStrip.jsx`, `lib/weather.js`; touches `SchedulerTab.jsx`, `CalendarTab.jsx`, `TodayTab.jsx` / `TodayRow.jsx`, `JobsTab.jsx`, `JobsQueueRow.jsx`, the calendar/scheduler subcomponents, and `lib/stonebooksData.js`. **Carries migration `20260527_custom_event_batch_kinds.sql`** (also listed under Sprint SCHED — `site_visit` + `errand` kinds, ✅ applied to prod 2026-05-27).
+
+- **Global search** (`SearchBar`) on the Jobs and Scheduler tabs — fuzzy-matches surname + cemetery name + order number across customers, jobs, and orders; click a result to jump to that entity. Repurposes the existing entity-index substrate.
+- **Promise discoverability** — three new entry points beyond the existing JobDetail strip: a **"+ Add promise"** button on the Scheduler page (search-first flow — find the job, then promise it, via the shared `AddPromiseModal`), plus quick-add affordances on **Today rows** and **Jobs queue rows** that open the modal with the job pre-filled. The JobDetail `PromiseStrip` is reworked — clearer "Promise tracker" eyebrow, more prominent button, now powered by the same `AddPromiseModal`.
+- **Custom calendar events** — `work_batches` can now carry **zero jobs** and serve as ad-hoc entries via the two new kinds (`site_visit` = cemetery look / customer meeting; `errand` = pick up parts, drop off paperwork). Surfaced through a **"+ Add event"** button on the Calendar tab (`AddEventModal`). Zero-job batches render cleanly (no empty stops list).
+- **Weather** (`lib/weather.js` + `WeatherStrip`) — weather.gov / NWS forecast in Calendar **Day** view (full line below the date header) and **Week** view (compact per-day pill next to each day header). **Free, no API key, no ongoing cost**; cached in memory for the session; **silent failure** if NWS is unreachable — never blocks the UI. Adverse conditions (snow / storm / heavy rain / freezing) trigger an **amber tint** so the operator sees the warning.
+- **Visual polish** — Scheduler Month date number bumped with a stronger "today" treatment; promise-cell icon + surname enlarged; batch-card / dispatch stop-name / dispatch-spec sizing nudged up so the **dispatch sheet reads as a printable document**; Calendar Week day headers gain a drag-handle glyph so the swap-day affordance is discoverable.
+- **🤡 remains the only emoji in the app.**
 
 ## Deferred / known issues
 
