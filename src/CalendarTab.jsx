@@ -11,13 +11,14 @@
 // pinned to that batch's date.
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getBatches,
   getBatch,
   getAllOpenPromises,
   getCarryoverForToday,
   indexPromisesByJob,
+  updateBatch,
   todayLocalISO,
   fmtDate,
 } from './lib/stonebooksData'
@@ -25,6 +26,7 @@ import CalendarWeek from './components/calendar/CalendarWeek'
 import CalendarDay from './components/calendar/CalendarDay'
 import WeatherStrip from './components/calendar/WeatherStrip'
 import AddEventModal from './components/AddEventModal'
+import UndoToast from './components/calendar/UndoToast'
 import { supabase } from './lib/supabase'
 
 const ZOOMS = [
@@ -44,31 +46,57 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
   const [loading, setLoading] = useState(true)
   const [addEventOpen, setAddEventOpen] = useState(false)
 
+  // Drag-to-schedule undo toast. Only the most recent toast shows; the 8s
+  // auto-dismiss timer is reset on each new toast. `id` forces UndoToast to
+  // remount per toast so its countdown progress bar restarts.
+  const TOAST_MS = 8000
+  const [toast, setToast] = useState(null)        // { id, text, error?, undo?: { batchId, scheduled_date, am_pm } }
+  const toastTimer = useRef(null)
+  const toastSeq = useRef(0)
+  const showToast = useCallback((t) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast({ ...t, id: ++toastSeq.current })
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS)
+  }, [])
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+
   const actorName = profile?.display_name || 'Operator'
 
+  // Monotonic request token — only the latest loadAll response writes state, so
+  // overlapping reloads (rapid drops / undo) can't clobber with stale rows.
+  const loadReqId = useRef(0)
   const loadAll = useCallback(async () => {
+    const reqId = ++loadReqId.current
     setLoading(true)
     setLoadErr(null)
     try {
       const [b, p, c, cems] = await Promise.all([
         getBatches({}),
-        getAllOpenPromises({}),
+        // includeResolved: the Week day-state engine renders settled promises
+        // as permanent green/missed marks (the historical performance record).
+        getAllOpenPromises({ includeResolved: true }),
         getCarryoverForToday(todayLocalISO()),
         _listCemeteriesForEvent(),
       ])
+      if (reqId !== loadReqId.current) return    // superseded by a newer load — drop
       setBatches(b || [])
       setPromises(p || [])
       setCarryover(c || [])
       setCemeteries(cems || [])
     } catch (e) {
+      if (reqId !== loadReqId.current) return
       setLoadErr(e?.message || 'Failed to load calendar data')
     }
-    setLoading(false)
+    if (reqId === loadReqId.current) setLoading(false)
   }, [])
   useEffect(() => { loadAll() }, [loadAll])
 
+  // Card-level 🤡 treatment is for OPEN promises only — a settled (resolved)
+  // promise shouldn't ring a batch card. The Week day-state engine, by
+  // contrast, receives the full `promises` list (incl. resolved) for its
+  // permanent green/missed marks.
   const promisesByJob = useMemo(
-    () => indexPromisesByJob(promises),
+    () => indexPromisesByJob((promises || []).filter(p => p.kept == null && !p.resolved_at)),
     [promises],
   )
 
@@ -95,6 +123,49 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
       setZoom('day')
     }
   }, [])
+
+  // Drill into the Day view for a given ISO date (used by a missed-day click).
+  const handleDayClick = useCallback((iso) => {
+    if (!iso) return
+    setAnchor(new Date(`${String(iso).slice(0, 10)}T00:00:00`))
+    setZoom('day')
+  }, [])
+
+  // Drag-to-schedule: persist the batch's new date + slot via updateBatch,
+  // then surface an undo toast holding the previous { date, slot } for 8s.
+  const handleScheduleBatch = useCallback(async ({ batchId, toDate, toSlot, fromDate, fromSlot, label }) => {
+    try {
+      const res = await updateBatch(batchId, { scheduled_date: toDate, am_pm: toSlot })
+      if (!res.ok) {
+        showToast({ text: "Couldn't save — try again", error: true })
+        return   // no optimistic move was applied; nothing to reload
+      }
+      showToast({
+        text: `Scheduled ${label} for ${_dayLabel(toDate)} ${_slotLabel(toSlot)}.`,
+        undo: { batchId, scheduled_date: fromDate, am_pm: fromSlot },
+      })
+      loadAll()
+    } catch {
+      showToast({ text: "Couldn't save — try again", error: true })
+    }
+  }, [showToast, loadAll])
+
+  const handleUndo = useCallback(async () => {
+    const u = toast?.undo
+    if (!u) return
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast(null)
+    try {
+      const res = await updateBatch(u.batchId, { scheduled_date: u.scheduled_date, am_pm: u.am_pm })
+      if (!res.ok) {
+        showToast({ text: "Couldn't save — try again", error: true })
+        return
+      }
+      loadAll()
+    } catch {
+      showToast({ text: "Couldn't save — try again", error: true })
+    }
+  }, [toast, showToast, loadAll])
 
   // Pre-fetched stops + mileage are only on Day view because getBatch returns
   // a richer joined shape than getBatches. The Week view's per-batch joins
@@ -174,6 +245,8 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
           promises={promises}
           promisesByJob={promisesByJob}
           onBatchClick={handleBatchClick}
+          onScheduleBatch={handleScheduleBatch}
+          onDayClick={handleDayClick}
           onReload={loadAll}
         />
       )}
@@ -204,8 +277,33 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
         onClose={() => setAddEventOpen(false)}
         onCreated={() => { setAddEventOpen(false); loadAll() }}
       />
+
+      {toast && (
+        <UndoToast
+          key={toast.id}
+          text={toast.text}
+          error={!!toast.error}
+          canUndo={!!toast.undo}
+          durationMs={TOAST_MS}
+          onUndo={handleUndo}
+          onClose={() => setToast(null)}
+        />
+      )}
     </div>
   )
+}
+
+// Toast date label, e.g. "Thu Jun 5". Parses the ISO at local midnight to
+// avoid a UTC day shift.
+function _dayLabel(iso) {
+  if (!iso) return 'the tray'
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`)
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+}
+function _slotLabel(slot) {
+  if (slot === 'am') return '(AM)'
+  if (slot === 'pm') return '(PM)'
+  return '(all-day)'
 }
 
 async function _listCemeteriesForEvent() {

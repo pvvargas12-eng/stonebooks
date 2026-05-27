@@ -9,7 +9,14 @@
 
 import { batchKindInfo, customerName } from '../../lib/stonebooksData'
 
-export default function CalendarBatchCard({ batch, hasPromise, onClick }) {
+export default function CalendarBatchCard({
+  batch,
+  hasPromise,
+  onClick,
+  draggable = false,
+  onDragStart,
+  onDragEnd,
+}) {
   const kindInfo = batchKindInfo(batch.kind)
   const stops = batch.batch_jobs || []
   const status = batch.status
@@ -21,6 +28,7 @@ export default function CalendarBatchCard({ batch, hasPromise, onClick }) {
 
   const cls = [
     'sb-cal-card',
+    draggable ? 'sb-cal-card-draggable' : '',
     isLate ? 'sb-cal-card-late' : '',
     isCompleted ? 'sb-cal-card-completed' : '',
     hasPromise ? 'sb-cal-card-promise' : '',
@@ -32,6 +40,9 @@ export default function CalendarBatchCard({ batch, hasPromise, onClick }) {
       className={cls}
       style={{ borderLeftColor: kindInfo.color }}
       onClick={() => onClick?.(batch)}
+      draggable={draggable}
+      onDragStart={draggable ? onDragStart : undefined}
+      onDragEnd={draggable ? onDragEnd : undefined}
     >
       {hasPromise && (
         <span className="sb-cal-card-promise-icon" aria-hidden="true">🤡</span>
@@ -88,6 +99,12 @@ const localStyles = `
   }
   .sb-cal-card:hover {
     background: var(--sb-surface-muted);
+  }
+  .sb-cal-card-draggable {
+    cursor: grab;
+  }
+  .sb-cal-card-draggable:active {
+    cursor: grabbing;
   }
   .sb-cal-card-late {
     background: var(--sb-amber-bg, #fbe5b8);

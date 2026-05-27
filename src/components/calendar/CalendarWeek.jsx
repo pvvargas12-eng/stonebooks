@@ -1,17 +1,39 @@
 // =============================================================================
 // 📚 Stonebooks — Calendar Week view
 // =============================================================================
-// 5 or 7 day columns, placed batches stacked per day. Day headers are
-// draggable; dragging one onto another opens a confirmation modal and on
-// confirm swaps every batch between the two days (the rain-day flip).
+// The dispatcher's single screen: an unscheduled TRAY strip on top, the week
+// grid below. Each day column splits into three drop zones — an all-day band,
+// an AM zone, and a PM zone — and existing scheduled batches render in their
+// zone by `work_batches.am_pm` (NULL → all-day, 'am' → AM, 'pm' → PM).
 //
+// Drag idioms (native HTML5, no library — matching the day-swap + stop-reorder
+// patterns already in this tab):
+//   • Day HEADER drag → drop on another day → swap all batches (rain-day flip),
+//     via component state `dragSrcISO` (no dataTransfer), confirmed by modal.
+//   • BATCH card / tray chip drag → drop on a day zone → reschedule that batch
+//     to {date, slot}, via a dataTransfer payload + `draggingBatch` state.
+//     Persistence is lifted to CalendarTab through `onScheduleBatch` (updateBatch
+//     + undo toast). The two drag styles are disambiguated in the zone handlers:
+//     a header drag (dragSrcISO set) always routes to the swap; otherwise the
+//     batch payload is read.
+//
+// Day cells are colored by the promise-state engine (promiseDayState.js).
 // Click a batch card → drill into Day view focused on that batch's date.
 // =============================================================================
 
 import { useMemo, useState } from 'react'
-import { getDayRange, fmtDate, swapBatchDays } from '../../lib/stonebooksData'
+import {
+  getDayRange,
+  fmtDate,
+  swapBatchDays,
+  batchKindInfo,
+  customerName,
+} from '../../lib/stonebooksData'
+import { computePromiseDayState } from '../../lib/promiseDayState'
 import CalendarBatchCard from './CalendarBatchCard'
 import WeatherStrip from './WeatherStrip'
+
+const BATCH_MIME = 'application/x-sb-batch'
 
 export default function CalendarWeek({
   startDate,
@@ -20,17 +42,36 @@ export default function CalendarWeek({
   promises,
   promisesByJob,
   onBatchClick,
+  onScheduleBatch,
+  onDayClick,
   onReload,
 }) {
   const cells = useMemo(
     () => getDayRange({ start: startDate, spanDays, batches, promises }),
     [startDate, spanDays, batches, promises],
   )
+
+  // Unscheduled batches (build tray). Excludes cancelled, matching the
+  // Scheduler tray's filter.
+  const tray = useMemo(
+    () => (batches || []).filter(b => !b.scheduled_date && b.status !== 'cancelled'),
+    [batches],
+  )
+
+  // Day-swap state (header drag) — unchanged from the original.
   const [dragSrcISO, setDragSrcISO] = useState(null)
   const [swapPending, setSwapPending] = useState(null)   // { fromISO, toISO, fromCount, toCount }
   const [swapping, setSwapping] = useState(false)
   const [swapError, setSwapError] = useState(null)
 
+  // Batch-drag state (card / tray chip drag). Held so zone dragOver can
+  // preventDefault without reading dataTransfer (which browsers restrict
+  // during dragover).
+  const [draggingBatch, setDraggingBatch] = useState(null)
+  // The zone the cursor is currently over during a batch drag ("iso:slot").
+  const [dragOverKey, setDragOverKey] = useState(null)
+
+  // ── Day-swap handlers (header) — preserved behavior ────────────────────────
   const handleDragStart = (iso) => () => setDragSrcISO(iso)
   const handleDragOver = (iso) => (e) => {
     if (!dragSrcISO || dragSrcISO === iso) return
@@ -57,29 +98,172 @@ export default function CalendarWeek({
     if (!swapPending) return
     setSwapping(true)
     setSwapError(null)
-    const res = await swapBatchDays(swapPending.fromISO, swapPending.toISO)
-    setSwapping(false)
-    if (!res.ok) {
-      setSwapError(res.error || 'Failed to swap days.')
+    try {
+      const res = await swapBatchDays(swapPending.fromISO, swapPending.toISO)
+      setSwapping(false)
+      if (!res.ok) {
+        setSwapError(res.error || "Couldn't save — try again")
+        return
+      }
+      setSwapPending(null)
+      onReload?.()
+    } catch {
+      setSwapping(false)
+      setSwapError("Couldn't save — try again")
+    }
+  }
+
+  // ── Batch-drag handlers (card / tray chip → zone) ──────────────────────────
+  const handleBatchDragStart = (batch) => (e) => {
+    const payload = {
+      batchId:  batch.id,
+      fromDate: batch.scheduled_date ? String(batch.scheduled_date).slice(0, 10) : null,
+      fromSlot: batch.am_pm ?? null,
+    }
+    try {
+      e.dataTransfer.setData(BATCH_MIME, JSON.stringify(payload))
+      e.dataTransfer.effectAllowed = 'move'
+    } catch { /* older browsers — draggingBatch state still covers the drop */ }
+    setDraggingBatch({ ...payload, label: _batchLabel(batch) })
+  }
+  const handleBatchDragEnd = () => { setDraggingBatch(null); setDragOverKey(null) }
+
+  const handleZoneDragOver = (cell) => (e) => {
+    // A header day-swap drag takes precedence; otherwise accept a batch drag.
+    if (dragSrcISO && dragSrcISO !== cell.iso) { e.preventDefault(); return }
+    if (draggingBatch) { e.preventDefault() }
+  }
+  const handleZoneDragEnter = (cell, slot) => () => {
+    if (draggingBatch) setDragOverKey(`${cell.iso}:${slot || 'allday'}`)
+  }
+  const handleZoneDragLeave = (cell, slot) => (e) => {
+    // Ignore leaves that just cross into a child element (avoids flicker).
+    if (e.currentTarget.contains(e.relatedTarget)) return
+    const key = `${cell.iso}:${slot || 'allday'}`
+    setDragOverKey(k => (k === key ? null : k))
+  }
+  const handleZoneDrop = (cell, slot) => (e) => {
+    e.preventDefault()
+    e.stopPropagation()   // don't double-handle via the column/header drop
+    setDragOverKey(null)
+
+    // Header day-swap routed through a zone drop.
+    if (dragSrcISO) {
+      if (dragSrcISO !== cell.iso) {
+        const fromCell = cells.find(c => c.iso === dragSrcISO)
+        const toCell = cells.find(c => c.iso === cell.iso)
+        setSwapPending({
+          fromISO:   dragSrcISO,
+          toISO:     cell.iso,
+          fromCount: fromCell?.batches.length || 0,
+          toCount:   toCell?.batches.length || 0,
+        })
+      }
+      setDragSrcISO(null)
       return
     }
-    setSwapPending(null)
-    onReload?.()
+
+    // Batch reschedule.
+    let payload = null
+    try { payload = JSON.parse(e.dataTransfer.getData(BATCH_MIME)) } catch { /* fall back to state */ }
+    const db = draggingBatch
+    setDraggingBatch(null)
+    const batchId = payload?.batchId || db?.batchId
+    if (!batchId) return
+    const fromDate = payload?.fromDate ?? db?.fromDate ?? null
+    const fromSlot = payload?.fromSlot ?? db?.fromSlot ?? null
+    const label = db?.label || 'batch'
+    // No-op if dropped back onto the same date + slot.
+    if (fromDate === cell.iso && (fromSlot ?? null) === (slot ?? null)) return
+    onScheduleBatch?.({ batchId, toDate: cell.iso, toSlot: slot, fromDate, fromSlot, label })
+  }
+
+  // Render one drop zone (all-day / AM / PM) within a day column.
+  const renderZone = (cell, slot, label, zoneBatches) => {
+    const key = `${cell.iso}:${slot || 'allday'}`
+    const zcls = [
+      'sb-cal-zone',
+      `sb-cal-zone-${slot || 'allday'}`,
+      draggingBatch ? 'sb-cal-zone--drag-active' : '',
+      dragOverKey === key ? 'sb-cal-zone--drag-over' : '',
+    ].filter(Boolean).join(' ')
+    return (
+      <div
+        className={zcls}
+        onDragOver={handleZoneDragOver(cell)}
+        onDragEnter={handleZoneDragEnter(cell, slot)}
+        onDragLeave={handleZoneDragLeave(cell, slot)}
+        onDrop={handleZoneDrop(cell, slot)}
+      >
+        <div className="sb-cal-zone-label">{label}</div>
+        {zoneBatches.length === 0 ? (
+          // Hint only appears mid-drag — otherwise idle zones read as quiet.
+          draggingBatch ? <div className="sb-cal-zone-empty">drop here</div> : null
+        ) : (
+          zoneBatches.map(b => (
+            <CalendarBatchCard
+              key={b.id}
+              batch={b}
+              hasPromise={_batchHasPromise(b, promisesByJob)}
+              onClick={() => onBatchClick?.(b)}
+              draggable
+              onDragStart={handleBatchDragStart(b)}
+              onDragEnd={handleBatchDragEnd}
+            />
+          ))
+        )}
+      </div>
+    )
   }
 
   return (
     <div className="sb-cal-week">
+      {/* Unscheduled tray — drag a chip down into any day zone. */}
+      <div className="sb-cal-tray">
+        <span className="sb-cal-tray-label">Tray</span>
+        {tray.length === 0 ? (
+          <span className="sb-cal-tray-empty">No unscheduled batches.</span>
+        ) : (
+          <div className="sb-cal-tray-chips">
+            {tray.map(b => {
+              const kindInfo = batchKindInfo(b.kind)
+              return (
+                <div
+                  key={b.id}
+                  className="sb-cal-tray-chip"
+                  style={{ borderLeftColor: kindInfo.color }}
+                  title={b.notes || kindInfo.label}
+                  draggable
+                  onDragStart={handleBatchDragStart(b)}
+                  onDragEnd={handleBatchDragEnd}
+                >
+                  <span className="sb-cal-tray-chip-label">{_batchLabel(b)}</span>
+                  <span className="sb-cal-tray-chip-count">{(b.batch_jobs || []).length}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="sb-cal-week-grid" style={{ gridTemplateColumns: `repeat(${spanDays}, minmax(0, 1fr))` }}>
         {cells.map(cell => {
           const isDragSrc = dragSrcISO === cell.iso
+          const ps = computePromiseDayState(cell, promises, batches)
           const cls = [
             'sb-cal-week-col',
             cell.isToday ? 'sb-cal-week-col-today' : '',
             cell.heavy ? 'sb-cal-week-col-heavy' : '',
             isDragSrc ? 'sb-cal-week-col-dragging' : '',
+            ps.state ? `sb-cal-week-col-p-${ps.state}` : '',
           ].filter(Boolean).join(' ')
           const dayName = cell.date.toLocaleDateString('en-US', { weekday: 'short' })
           const monthDay = cell.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+          const allDay = cell.batches.filter(b => b.am_pm == null)
+          const amBatches = cell.batches.filter(b => b.am_pm === 'am')
+          const pmBatches = cell.batches.filter(b => b.am_pm === 'pm')
+
           return (
             <div key={cell.iso} className={cls}>
               <div
@@ -88,6 +272,7 @@ export default function CalendarWeek({
                 onDragStart={handleDragStart(cell.iso)}
                 onDragOver={handleDragOver(cell.iso)}
                 onDrop={handleDrop(cell.iso)}
+                onDragEnd={() => setDragSrcISO(null)}
                 title="Drag onto another day to swap"
               >
                 <span className="sb-cal-week-head-grip" aria-hidden="true">⠿</span>
@@ -98,21 +283,22 @@ export default function CalendarWeek({
                 )}
                 <WeatherStrip date={cell.date} variant="week" />
               </div>
-              <div
-                className="sb-cal-week-stack"
-                onDragOver={handleDragOver(cell.iso)}
-                onDrop={handleDrop(cell.iso)}
-              >
-                {cell.batches.length === 0 ? (
-                  <div className="sb-cal-week-empty">No batches.</div>
-                ) : cell.batches.map(b => (
-                  <CalendarBatchCard
-                    key={b.id}
-                    batch={b}
-                    hasPromise={_batchHasPromise(b, promisesByJob)}
-                    onClick={() => onBatchClick?.(b)}
-                  />
-                ))}
+
+              {ps.state === 'missed' && ps.missed.length > 0 && (
+                <button
+                  type="button"
+                  className="sb-cal-week-missed"
+                  onClick={() => onDayClick?.(cell.iso)}
+                  title="Open this day"
+                >
+                  MISSED — {ps.missed.map(m => m.surname).join(', ')}
+                </button>
+              )}
+
+              <div className="sb-cal-week-body">
+                {renderZone(cell, null, 'All-day', allDay)}
+                {renderZone(cell, 'am', 'AM', amBatches)}
+                {renderZone(cell, 'pm', 'PM', pmBatches)}
               </div>
             </div>
           )
@@ -132,8 +318,20 @@ export default function CalendarWeek({
   )
 }
 
-// True when any stop in the batch belongs to a job that has an open
-// promise. Drives the loud red treatment on the card.
+// Implicit batch label for tray chips + the schedule toast — explicit title,
+// else "Surname +N" from the first stop, else the kind label.
+function _batchLabel(b) {
+  if (b.title) return b.title
+  const stops = b.batch_jobs || []
+  if (stops.length === 0) return batchKindInfo(b.kind).label
+  const firstJob = stops[0]?.job
+  const surname = firstJob?.order?.primary_lastname
+    || customerName(firstJob?.order?.customer)
+    || batchKindInfo(b.kind).label
+  return stops.length === 1 ? surname : `${surname} +${stops.length - 1}`
+}
+
+// True when any stop in the batch belongs to a job that has an open promise.
 function _batchHasPromise(batch, promisesByJob) {
   if (!promisesByJob) return false
   for (const link of (batch.batch_jobs || [])) {
@@ -192,6 +390,63 @@ const localStyles = `
   .sb-cal-week {
     width: 100%;
   }
+
+  /* ── Tray strip (unscheduled batches, drag source) ──────────────────────── */
+  .sb-cal-tray {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: var(--sb-surface);
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    overflow-x: auto;
+  }
+  .sb-cal-tray-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--sb-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+  .sb-cal-tray-empty {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+    font-style: italic;
+  }
+  .sb-cal-tray-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .sb-cal-tray-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 10px;
+    background: var(--sb-surface-muted);
+    border: 0.5px solid var(--sb-border);
+    border-left: 3px solid transparent;
+    border-radius: var(--sb-r-sm, 6px);
+    font-size: 12px;
+    cursor: grab;
+  }
+  .sb-cal-tray-chip:active {
+    cursor: grabbing;
+  }
+  .sb-cal-tray-chip-label {
+    font-weight: 500;
+    color: var(--sb-text);
+  }
+  .sb-cal-tray-chip-count {
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Week grid ──────────────────────────────────────────────────────────── */
   .sb-cal-week-grid {
     display: grid;
     gap: 6px;
@@ -200,7 +455,7 @@ const localStyles = `
     display: flex;
     flex-direction: column;
     gap: 6px;
-    min-height: 280px;
+    min-height: 320px;
     background: var(--sb-surface);
     border: 0.5px solid var(--sb-border);
     border-radius: var(--sb-r-sm, 6px);
@@ -216,6 +471,27 @@ const localStyles = `
   .sb-cal-week-col-dragging {
     opacity: 0.5;
   }
+
+  /* Promise-state day coloring. A quiet top accent + a soft wash so the day
+     reads its temperature without drowning the cards. Promise state wins over
+     the heavy-day amber tint (it's the more important signal). */
+  .sb-cal-week-col-p-green {
+    background: var(--sb-green-bg, #e6f4ec);
+    border-top: 2px solid var(--sb-green, #2d7a4f);
+  }
+  .sb-cal-week-col-p-amber {
+    background: var(--sb-amber-bg, #fbe5b8);
+    border-top: 2px solid var(--sb-amber, #b8842a);
+  }
+  .sb-cal-week-col-p-red {
+    background: var(--sb-red-bg, #fbe5e5);
+    border-top: 2px solid var(--sb-red, #b54040);
+  }
+  .sb-cal-week-col-p-missed {
+    background: #f2cccc;
+    border-top: 2px solid #8a2020;
+  }
+
   .sb-cal-week-head {
     display: flex;
     align-items: baseline;
@@ -229,8 +505,6 @@ const localStyles = `
   .sb-cal-week-head:active {
     cursor: grabbing;
   }
-  /* Drag handle — quiet by default, becomes more visible on hover so the
-     swap-day affordance is discoverable. */
   .sb-cal-week-head-grip {
     font-size: 12px;
     color: var(--sb-text-muted);
@@ -263,20 +537,92 @@ const localStyles = `
     letter-spacing: 0.06em;
     margin-left: auto;
   }
-  .sb-cal-week-stack {
+
+  /* Missed-promise overlay bar — darker red, distinct from the cell wash.
+     Clickable: drills into the Day view for that date. */
+  .sb-cal-week-missed {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    background: #8a2020;
+    border: 0.5px solid transparent;
+    border-radius: var(--sb-r-sm, 6px);
+    padding: 3px 8px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .sb-cal-week-missed:hover {
+    background: #761b1b;
+  }
+  .sb-cal-week-missed:focus-visible {
+    outline: 1.5px solid #fff;
+    outline-offset: -2px;
+  }
+
+  /* ── AM / PM / all-day drop zones ───────────────────────────────────────── */
+  .sb-cal-week-body {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    min-height: 50px;
+    flex: 1;
   }
-  .sb-cal-week-empty {
-    font-size: 11px;
+  .sb-cal-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px;
+    border-radius: var(--sb-r-sm, 6px);
+    min-height: 56px;
+  }
+  /* Subtle separation: AM/PM get a faint top rule + label; all-day reads as a
+     thin band above them. Kept quiet so a full day doesn't look striped. */
+  .sb-cal-zone-am,
+  .sb-cal-zone-pm {
+    border-top: 0.5px dashed var(--sb-border);
+  }
+  /* All zones get a quiet dashed outline while a batch is being dragged, so
+     valid drop targets are visible; the zone under the cursor gets a stronger
+     solid accent outline + muted fill. */
+  .sb-cal-zone--drag-active {
+    outline: 1px dashed var(--sb-border);
+    outline-offset: -2px;
+  }
+  .sb-cal-zone--drag-over {
+    outline: 1.5px solid var(--sb-accent, #b8842a);
+    outline-offset: -2px;
+    background: var(--sb-surface-muted);
+  }
+  .sb-cal-zone-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
     color: var(--sb-text-muted);
-    padding: 6px 4px;
+    opacity: 0.7;
+  }
+  .sb-cal-zone-empty {
+    font-size: 10px;
+    color: var(--sb-text-muted);
     font-style: italic;
+    opacity: 0.45;
+    padding: 2px 4px;
+    border: 0.5px dashed transparent;
+  }
+  /* The empty hint gains a dashed outline on hover so the drop affordance is
+     discoverable while dragging. */
+  .sb-cal-zone:hover .sb-cal-zone-empty {
+    border-color: var(--sb-border);
+    opacity: 0.8;
   }
 
-  /* Swap confirmation modal */
+  /* ── Swap confirmation modal ────────────────────────────────────────────── */
   .sb-cal-swap-backdrop {
     position: fixed;
     inset: 0;

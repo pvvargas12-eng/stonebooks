@@ -1479,6 +1479,57 @@ WHERE job_id = 'd0000000-0000-4000-8000-000000000025'
   AND milestone_key IN ('intake_complete', 'design_needed', 'proof_created', 'proof_sent', 'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed', 'foundation_poured', 'ready_to_install', 'installed');
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 6.5 — Scheduler workflow-column demo: park 4 jobs at mapped, actionable
+-- milestone stages so the Scheduler bottom-grid columns populate.
+-- ─────────────────────────────────────────────────────────────────────────────
+-- getSchedulableJobs buckets a job by an ACTIONABLE milestone on one of four
+-- mapped keys: ready_to_install → setting (new_stone), foundation_poured →
+-- foundation_trip, production_started → blasting, stencil_cut → inscription
+-- (inscription job_type only). Setting the target key to 'in_progress' makes it
+-- actionable regardless of requires; predecessors are 'done' and successors
+-- 'not_started', so each job parks in exactly ONE column (no double-bucketing).
+-- These 4 jobs are also left UNBATCHED (their work_batch_jobs links are removed
+-- in demo_seed_scheduler.sql) so the deriver's "already-batched" gate doesn't
+-- hide them. All demo jobs are new_stone, so the delivery column (non-new_stone
+-- ready_to_install) is intentionally not demonstrated.
+
+-- DEMO-023 → SETTING-ready (ready_to_install actionable, new_stone)
+UPDATE job_milestones SET status = 'done', updated_at = now() - interval '5 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000023'
+  AND milestone_key IN ('intake_complete', 'design_needed', 'proof_created', 'proof_sent', 'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed', 'foundation_poured');
+UPDATE job_milestones SET status = 'in_progress', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000023' AND milestone_key = 'ready_to_install';
+UPDATE job_milestones SET status = 'not_started', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000023' AND milestone_key = 'installed';
+
+-- DEMO-018 → SETTING-ready (ready_to_install actionable, new_stone)
+UPDATE job_milestones SET status = 'done', updated_at = now() - interval '5 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000018'
+  AND milestone_key IN ('intake_complete', 'design_needed', 'proof_created', 'proof_sent', 'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed', 'foundation_poured');
+UPDATE job_milestones SET status = 'in_progress', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000018' AND milestone_key = 'ready_to_install';
+UPDATE job_milestones SET status = 'not_started', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000018' AND milestone_key = 'installed';
+
+-- DEMO-021 → FOUNDATION_TRIP-ready (foundation_poured actionable)
+UPDATE job_milestones SET status = 'done', updated_at = now() - interval '5 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000021'
+  AND milestone_key IN ('intake_complete', 'design_needed', 'proof_created', 'proof_sent', 'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed');
+UPDATE job_milestones SET status = 'in_progress', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000021' AND milestone_key = 'foundation_poured';
+UPDATE job_milestones SET status = 'not_started', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000021' AND milestone_key IN ('ready_to_install', 'installed');
+
+-- DEMO-013 → BLASTING-ready (production_started actionable)
+UPDATE job_milestones SET status = 'done', updated_at = now() - interval '5 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000013'
+  AND milestone_key IN ('intake_complete', 'design_needed', 'proof_created', 'proof_sent', 'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut');
+UPDATE job_milestones SET status = 'in_progress', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000013' AND milestone_key = 'production_started';
+UPDATE job_milestones SET status = 'not_started', updated_at = now() - interval '1 days'
+WHERE job_id = 'd0000000-0000-4000-8000-000000000013' AND milestone_key IN ('production_completed', 'foundation_poured', 'ready_to_install', 'installed');
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- STEP 7 — Per-scenario payment seeding (amounts derived from pricing.grandTotal)
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Payment shape per M2:

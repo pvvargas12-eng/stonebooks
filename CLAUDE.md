@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE) → L2-P1 → L2-P2 → L2-P3 → L2-P4 (L2 COMPLETE) → OWNER-CARDS → SCHED → SCHED-UI`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE) → L2-P1 → L2-P2 → L2-P3 → L2-P4 (L2 COMPLETE) → OWNER-CARDS → SCHED → SCHED-UI → CAL-DRAG`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -392,6 +392,51 @@ Six commits + one follow-up. L2 inscription overhaul is now complete end-to-end.
 - **Weather** (`lib/weather.js` + `WeatherStrip`) — weather.gov / NWS forecast in Calendar **Day** view (full line below the date header) and **Week** view (compact per-day pill next to each day header). **Free, no API key, no ongoing cost**; cached in memory for the session; **silent failure** if NWS is unreachable — never blocks the UI. Adverse conditions (snow / storm / heavy rain / freezing) trigger an **amber tint** so the operator sees the warning.
 - **Visual polish** — Scheduler Month date number bumped with a stronger "today" treatment; promise-cell icon + surname enlarged; batch-card / dispatch stop-name / dispatch-spec sizing nudged up so the **dispatch sheet reads as a printable document**; Calendar Week day headers gain a drag-handle glyph so the swap-day affordance is discoverable.
 - **🤡 remains the only emoji in the app.**
+
+## Sprint CAL-DRAG — Drag-to-calendar v1 + promise color engine
+
+**Promise-anchored scheduling on the Calendar Week view.** Uncommitted at time of writing (batched for review — no commit hash yet). New files `src/lib/promiseDayState.js`, `src/components/calendar/UndoToast.jsx`; touches `src/CalendarTab.jsx`, `src/components/calendar/CalendarWeek.jsx`, `src/components/calendar/CalendarBatchCard.jsx`, `src/lib/stonebooksData.js`. **Carries migration `20260527_work_batches_am_pm.sql`** — adds a nullable `am_pm` text column with CHECK `am_pm IS NULL OR am_pm IN ('am','pm')`. **Column verified present in prod via PostgREST on 2026-05-27** (`?select=am_pm` → 200); the CHECK constraint isn't introspectable with the anon key (RLS blocks row reads too), so the constraint is asserted from the migration, not independently re-verified. Native HTML5 drag throughout — **no new dependencies**.
+
+### Drag-to-calendar v1
+- **Unscheduled tray on Calendar Week** — a horizontal strip above the day grid lists every unscheduled batch (`scheduled_date IS NULL`, excludes cancelled). The Calendar Week is now the dispatcher's single screen: tray on top, calendar below.
+- **Batch cards + tray chips are draggable** — `CalendarBatchCard` gains `draggable` / `onDragStart` / `onDragEnd`; dataTransfer payload `{ batchId, fromDate, fromSlot }`. Click-to-drill preserved.
+- **AM / PM / all-day drop zones** — each day column splits into an all-day band + AM zone + PM zone; scheduled batches render in their zone by `am_pm`. Drop → `updateBatch(batchId, { scheduled_date, am_pm })` → existing `onReload`.
+- **Undo toast** — after a successful drop, an **8-second** toast with a **shrinking progress-bar countdown** offers Undo (restores the previous `{ scheduled_date, am_pm }`); only the most recent toast shows; red error variant for failed saves.
+- **Day-swap preserved** — the existing day-header drag-to-swap (`swapBatchDays`) and Day-view stop-reorder are untouched. Header drag (`dragSrcISO`, no dataTransfer) and batch drag (dataTransfer + `draggingBatch`) are disambiguated in the zone handlers so they never collide.
+
+### Promise color engine (`promiseDayState.js` — pure, unit-testable)
+`computePromiseDayState(day, promises, batches, batchJobs[, todayISO])` colors each Week day as a **historical performance record**, reading BOTH open and resolved promises on that day. Five states, worst-wins (`missed > red > amber > green`):
+- **red** — open, future, no scheduled batch (unprotected)
+- **amber** — open, a batch is scheduled (in progress)
+- **green** — `kept = true` (PERMANENT positive mark — does not disappear)
+- **missed-permanent** — `kept = false` (PERMANENT broken-promise mark)
+- **missed-transitional** — `kept IS NULL` and `promised_date < today` (will be auto-marked false later)
+
+"Protected" counts **scheduled batches only** (`scheduled_date NULL` / tray excluded) and **excludes `cancelled` batches**. The Calendar loads promises via `getAllOpenPromises({ includeResolved: true })` so settled promises still paint; the card-level 🤡 (`promisesByJob`) stays open-only. Missed-red days are **click-through** to Day view.
+
+### Auto-resolve (system-computed, not human-marked)
+- **`resolvePromisesForJob(jobId)`** — wired into `markBatchJobComplete` (fires only on an operator's dispatch-completion action). When all the job's **scheduled** stops are complete, sets `kept` (true if latest completion ≤ `promised_date`, else false) **and** `resolved_at`.
+- **`expirePastPromises(today)`** — defined but **intentionally uncalled** (no mount-time sweep). The dev server points at prod, so an auto-sweep would mutate the live demo; it gets a manual trigger (button / dev script) next sprint. Until then, past-due open promises render as missed-transitional via the date check.
+
+### am_pm data layer
+`20260527_work_batches_am_pm.sql` applied to prod (column verified present via PostgREST 2026-05-27, see the migration note above); `am_pm` wired into `createBatch` (insert payload) and `updateBatch` (patch whitelist). `getBatches` already `select('*')`, so reads include it with no change.
+
+### Reviewer-agent pre-commit pass (8 fixes)
+A multi-lens review (UX / code / operational) drove 8 fixes before commit: (1) monotonic request token on `loadAll` so overlapping reloads can't clobber state with stale rows; (2) `onDragEnd` on the day header clears `dragSrcISO` (abandoned-swap drag leak); (3) try/catch + error toast on `handleScheduleBatch` / `handleUndo` / `confirmSwap`; (4) cancelled batches no longer count as promise "protection"; (5) drop-zone feedback while dragging (`--drag-active` on all zones, `--drag-over` on the hovered zone via `onDragEnter`/`onDragLeave`); (6) "drop here" hint renders only mid-drag; (7) undo window 5s → 8s with a visible countdown bar; (8) missed-red day is tappable → drills to Day view.
+
+### Demo data
+4 demo jobs unbatched and parked at mapped, actionable milestones so the Scheduler workflow columns populate: **DEMO-018 + DEMO-023 → setting** (`ready_to_install`), **DEMO-021 → foundation_trip** (`foundation_poured`), **DEMO-013 → blasting** (`production_started`). Their `work_batch_jobs` links were removed from `demo_seed_scheduler.sql` (now ~36 links); milestone states set in `demo_seed_25_jobs.sql` STEP 6.5. Prod brought current via a delta block, not a full re-seed.
+
+## Parked for next sprint (CAL-DRAG follow-ups)
+
+- **Scheduler workflow-grid is structurally incomplete — the next operational sprint.** `getSchedulableJobs` maps only **4** milestone keys to columns: `stencil_cut` → inscription (inscription job_type only), `foundation_poured` → foundation_trip, `production_started` → blasting, `ready_to_install` → setting (or delivery for non-`new_stone`). **4 batch kinds have NO milestone mapping** and can never populate from job state today: `acid_wash`, `repair`, `rub_grab`, `door_trip`. The grid can't fully run the shop until every kind has a ready-signal.
+- **Deferred from the reviewer pass:**
+  - **Drag affordance on cards** — batch cards look identical to plain clickable buttons; add a grip glyph / hover cue (the gesture is currently undiscoverable).
+  - **Promise color-wash redesign** — full-column tint collides with card-level amber (running-late) / red (promise) backgrounds, and missed-vs-red read too similarly; needs a design call (likely a top accent bar + neutral body).
+  - **Per-crew lanes / per-person load** — dispatch is by truck (Lonnie / Mike); the day has no per-crew lane or load count.
+  - **Cemetery + section + tap-to-call on the card** — scheduling needs address/section/phone without drilling three screens deep.
+  - **Readiness blocking** — nothing stops scheduling a setting whose stone isn't carved or whose foundation isn't poured; flag or block by job stage.
+  - **`resolvePromisesForJob` TOCTOU** — simultaneous stop completions can read link state mid-commit and leave a promise unresolved or double-written; the manual `expirePastPromises` sweep is the backstop.
 
 ## Deferred / known issues
 

@@ -4179,6 +4179,7 @@ export async function createBatch(input) {
     kind,
     title:                   (input.title || '').trim() || null,
     scheduled_date:          input.scheduled_date || null,
+    am_pm:                   input.am_pm || null,
     destination_cemetery_id: input.destination_cemetery_id || null,
     assigned_to:             (input.assigned_to || '').trim() || null,
     notes:                   (input.notes || '').trim() || null,
@@ -4212,6 +4213,7 @@ export async function updateBatch(id, patch) {
   const row = { updated_at: new Date().toISOString() }
   if (patch.title !== undefined)                   row.title = patch.title || null
   if (patch.scheduled_date !== undefined)          row.scheduled_date = patch.scheduled_date || null
+  if (patch.am_pm !== undefined)                   row.am_pm = patch.am_pm || null
   if (patch.destination_cemetery_id !== undefined) row.destination_cemetery_id = patch.destination_cemetery_id || null
   if (patch.assigned_to !== undefined)             row.assigned_to = patch.assigned_to || null
   if (patch.notes !== undefined)                   row.notes = patch.notes || null
@@ -4312,14 +4314,27 @@ export async function markBatchCancelled(batchId) {
 // stop checkboxes + the carryover banner's "mark complete" action.
 export async function markBatchJobComplete(batchJobId, { actorName } = {}) {
   if (!batchJobId) return { ok: false, error: 'Missing batch_job id' }
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('work_batch_jobs')
     .update({
       completed_at: new Date().toISOString(),
       completed_by: actorName || null,
     })
     .eq('id', batchJobId)
+    .select('job_id')
+    .single()
   if (error) return { ok: false, error: error.message }
+  // Auto-resolve any promises for this job now that a stop completed. Safe to
+  // run here — it only fires on an explicit operator action (dispatch
+  // completion), never on a passive page load. Best-effort: a resolution
+  // failure must not fail the completion itself.
+  if (data?.job_id) {
+    try {
+      await resolvePromisesForJob(data.job_id)
+    } catch (e) {
+      console.warn('[promises] auto-resolve after completion failed:', e?.message)
+    }
+  }
   return { ok: true }
 }
 
@@ -4733,15 +4748,18 @@ export async function getPromiseCounts(promised_by, { rolling_days = 90 } = {}) 
 
 // Every open promise + the job it's attached to. Used by the Scheduler
 // promise banner + the Today badge derivation. Joins minimal job fields.
-export async function getAllOpenPromises({ since } = {}) {
+export async function getAllOpenPromises({ since, includeResolved = false } = {}) {
   let q = supabase
     .from('job_promises')
     .select(`
       *,
       job:jobs(id, order_id, order:orders(id, order_number, primary_lastname, customer:customers(*), cemetery:cemeteries(*)))
     `)
-    .is('resolved_at', null)
     .order('promised_date', { ascending: true })
+  // Default: open promises only. The Calendar passes includeResolved so its
+  // day-state engine can render PERMANENT green (kept=true) / missed (kept=false)
+  // marks — a settled promise has resolved_at set and would otherwise drop out.
+  if (!includeResolved) q = q.is('resolved_at', null)
   if (since) q = q.gte('promised_date', since)
   const { data, error } = await q
   if (error) {
@@ -4761,6 +4779,96 @@ export function indexPromisesByJob(promises) {
     map.get(p.job_id).push(p)
   }
   return map
+}
+
+// ── AUTO-RESOLVE PROMISES (system-computed, not human-marked) ────────────────
+// resolvePromisesForJob IS wired into markBatchJobComplete (fires only on an
+// operator's dispatch-completion action). expirePastPromises is defined but
+// intentionally NOT called anywhere — it mutates many rows and the dev server
+// points at prod, so it'll be triggered manually (button / dev script) later.
+//
+// Both stamp resolved_at alongside kept (proper closure: open-promise consumers
+// like getAllOpenPromises / PromiseBanner / Today key off resolved_at). The
+// Calendar still renders settled promises as PERMANENT green/missed because it
+// loads them via getAllOpenPromises({ includeResolved: true }).
+//
+// Completeness considers SCHEDULED-batch links only — a job sitting in an
+// unscheduled tray batch must not block resolution (matches the day-state engine).
+
+// Resolve every open promise for a job once all its SCHEDULED stops are
+// complete. kept = true when the latest completion ≤ promised_date, else false.
+export async function resolvePromisesForJob(jobId) {
+  if (!jobId) return { ok: false, error: 'Missing jobId' }
+  const { data: promises, error: pErr } = await supabase
+    .from('job_promises')
+    .select('id, promised_date, kept')
+    .eq('job_id', jobId)
+    .is('kept', null)
+  if (pErr) return { ok: false, error: pErr.message }
+  if (!promises || promises.length === 0) return { ok: true, resolved: 0 }
+
+  const { data: links, error: lErr } = await supabase
+    .from('work_batch_jobs')
+    .select('id, completed_at, batch:work_batches(scheduled_date)')
+    .eq('job_id', jobId)
+  if (lErr) return { ok: false, error: lErr.message }
+
+  // Only links on a scheduled batch count toward "delivered".
+  const scheduledLinks = (links || []).filter(l => l.batch && l.batch.scheduled_date)
+  const allComplete = scheduledLinks.length > 0 && scheduledLinks.every(l => !!l.completed_at)
+  if (!allComplete) return { ok: true, resolved: 0 }   // not deliverable yet
+
+  const latestISO = scheduledLinks
+    .map(l => String(l.completed_at).slice(0, 10))
+    .reduce((m, d) => (d > m ? d : m), '')
+
+  let resolved = 0
+  for (const p of promises) {
+    const kept = latestISO <= String(p.promised_date).slice(0, 10)
+    const { error } = await supabase
+      .from('job_promises')
+      .update({ kept, resolved_at: new Date().toISOString() })
+      .eq('id', p.id)
+    if (!error) resolved++
+  }
+  return { ok: true, resolved }
+}
+
+// Sweep past-due open promises and stamp their outcome. Catches retroactive
+// "kept" cases (all stops completed on/before the promised date) and records
+// genuine misses (kept = false). Intended to run once on Calendar mount.
+export async function expirePastPromises(today) {
+  const iso = (typeof today === 'string') ? String(today).slice(0, 10) : todayLocalISO()
+  const { data: promises, error: pErr } = await supabase
+    .from('job_promises')
+    .select('id, job_id, promised_date')
+    .is('kept', null)
+    .lt('promised_date', iso)
+  if (pErr) return { ok: false, error: pErr.message }
+  if (!promises || promises.length === 0) return { ok: true, expired: 0 }
+
+  let expired = 0
+  for (const p of promises) {
+    const { data: links, error: lErr } = await supabase
+      .from('work_batch_jobs')
+      .select('id, completed_at')
+      .eq('job_id', p.job_id)
+    if (lErr) continue
+    const allComplete = (links || []).length > 0 && links.every(l => !!l.completed_at)
+    let kept = false
+    if (allComplete) {
+      const latestISO = links
+        .map(l => String(l.completed_at).slice(0, 10))
+        .reduce((m, d) => (d > m ? d : m), '')
+      kept = latestISO <= String(p.promised_date).slice(0, 10)
+    }
+    const { error } = await supabase
+      .from('job_promises')
+      .update({ kept, resolved_at: new Date().toISOString() })
+      .eq('id', p.id)
+    if (!error) expired++
+  }
+  return { ok: true, expired }
 }
 
 // ── CARRYOVER MODEL ─────────────────────────────────────────────────────────
