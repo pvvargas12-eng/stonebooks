@@ -785,6 +785,7 @@ const SERVICE_TYPE_TO_JOB_TYPE = {
   NEW_STONE:       'new_stone',
   CIVIC_MEMORIAL:  'new_stone',
   MAUSOLEUM:       'new_stone',
+  MAUSOLEUM_DOOR:  'mausoleum_door',
   INSCRIPTION:     'inscription',
   ADD_PHOTO:       'inscription',
   BRONZE:          'bronze',
@@ -800,6 +801,138 @@ export function jobTypeForServiceTypes(serviceTypes) {
     if (t) return t
   }
   return 'new_stone' // unknown codes fall through to new_stone
+}
+
+// ── MAUSOLEUM DOOR PRICING ───────────────────────────────────────────────────
+// Hardcoded for now; migrate to a DB table when 3+ cemeteries are finalized.
+// Two pricing shapes:
+//   • 'indoor_outdoor_split' — operator picks indoor/outdoor per door; the
+//     priced item list is filtered by that selection (St James).
+//   • 'flat' — one item list regardless of location.
+// A door order whose cemetery matches none of these falls back to 'custom'
+// (operator enters free-form line items + prices per door).
+export const CEMETERY_DOOR_PRICING = {
+  ST_JAMES: {
+    label: 'St James',
+    type: 'indoor_outdoor_split',
+    indoor: {
+      name_and_dates_1:   { label: 'Name + dates (1 name)',  price: 225 },
+      name_and_dates_2:   { label: 'Names + dates (2 names)', price: 275 },
+      date_of_death_only: { label: 'Date of death only',     price: 100 },
+      veterans_verse:     { label: 'Veterans verse',         price: 98 },
+      head_of_christ:     { label: 'Head of Christ',         price: 150 },
+      madonna:            { label: 'Madonna',                price: 150 },
+      cross:              { label: 'Cross',                  price: 125 },
+    },
+    outdoor: {
+      name_and_dates_1:   { label: 'Name + dates (1 name)',  price: 295 },
+      name_and_dates_2:   { label: 'Names + dates (2 names)', price: 425 },
+      date_of_death_only: { label: 'Date of death only',     price: 195 },
+      veterans_verse:     { label: 'Veterans verse',         price: 75 },
+      outdoor_repaint:    { label: 'Repaint',                price: 125 },
+      head_of_christ:     { label: 'Head of Christ',         price: 150 },
+      madonna:            { label: 'Madonna',                price: 150 },
+      cross:              { label: 'Cross',                  price: 125 },
+    },
+  },
+  BETH_ISRAEL: {
+    label: 'Beth Israel',
+    type: 'flat',
+    items: {
+      inscription:    { label: 'Inscription',    price: 205.50 },
+      repaint:        { label: 'Repaint',        price: 47 },
+      white:          { label: 'White',          price: 41.40 },
+      hebrew_verse:   { label: 'Hebrew verse',   price: 47 },
+      painted_border: { label: 'Painted border', price: 154.75 },
+      double_crypt:   { label: 'Double crypt',   price: 217 },
+      bench:          { label: 'Bench',          price: 558 },
+    },
+  },
+  WOODBRIDGE_MEMORIAL_GARDENS: {
+    label: 'Woodbridge Memorial Gardens',
+    type: 'flat',
+    items: {
+      inscription:    { label: 'Inscription',    price: 170 },
+      repaint:        { label: 'Repaint',        price: 47 },
+      white:          { label: 'White',          price: 41.40 },
+      painted_border: { label: 'Painted border', price: 154.75 },
+      double_crypt:   { label: 'Double crypt',   price: 217 },
+      bench:          { label: 'Bench',          price: 558 },
+      chinese:        { label: 'Chinese',        price: 35 },
+      english_verse:  { label: 'English verse',  price: 47 },
+    },
+  },
+  // Clover Leaf shares Woodbridge's list — built by spread below to stay DRY.
+}
+// Clover Leaf = Woodbridge Memorial Gardens item list (same prices), distinct label.
+CEMETERY_DOOR_PRICING.CLOVER_LEAF = {
+  label: 'Clover Leaf',
+  type: 'flat',
+  items: { ...CEMETERY_DOOR_PRICING.WOODBRIDGE_MEMORIAL_GARDENS.items },
+}
+
+// Canonical-name matchers → pricing key. Case-insensitive substring on the
+// order's cemetery name (demo prefix stripped). No match → custom mode.
+const _CEMETERY_PRICING_MATCHERS = [
+  { key: 'ST_JAMES',                    needles: ['st james', 'st. james', 'saint james'] },
+  { key: 'BETH_ISRAEL',                 needles: ['beth israel'] },
+  { key: 'WOODBRIDGE_MEMORIAL_GARDENS', needles: ['woodbridge memorial'] },
+  { key: 'CLOVER_LEAF',                 needles: ['clover leaf', 'cloverleaf'] },
+]
+
+// Resolve a cemetery NAME to its door-pricing entry. Returns the pricing object
+// (with an added `key`), or a 'custom' shape when nothing matches.
+export function lookupCemeteryPricing(cemeteryName) {
+  const cleaned = String(cemeteryName || '').toLowerCase().replace('zz_demo_', '').trim()
+  if (cleaned) {
+    for (const m of _CEMETERY_PRICING_MATCHERS) {
+      if (m.needles.some(n => cleaned.includes(n))) {
+        return { key: m.key, ...CEMETERY_DOOR_PRICING[m.key] }
+      }
+    }
+  }
+  return { key: 'CUSTOM', label: 'Custom pricing', type: 'custom' }
+}
+
+// Total price for a single door given its cemetery pricing entry.
+//   indoor_outdoor_split → sum selectedItems from the door.location item list
+//   flat                 → sum selectedItems from cemeteryPricing.items
+//   custom               → sum operator-entered customLineItems[].price
+//
+// selectedItems entries may be a bare key string (legacy) or an object
+// { key, price_override? }. A finite price_override wins over the list price,
+// powering the Step-6 inline edits.
+export function getDoorPrice(door, cemeteryPricing) {
+  if (!door || !cemeteryPricing) return 0
+  if (cemeteryPricing.type === 'custom') {
+    return (door.customLineItems || []).reduce((sum, li) => sum + (Number(li.price) || 0), 0)
+  }
+  let itemMap = null
+  if (cemeteryPricing.type === 'indoor_outdoor_split') {
+    itemMap = cemeteryPricing[door.location] || {}
+  } else if (cemeteryPricing.type === 'flat') {
+    itemMap = cemeteryPricing.items || {}
+  } else {
+    return 0
+  }
+  return (door.selectedItems || []).reduce((sum, sel) => {
+    const key = typeof sel === 'string' ? sel : sel?.key
+    const override = (sel && typeof sel === 'object' && sel.price_override != null) ? Number(sel.price_override) : null
+    if (override != null && Number.isFinite(override)) return sum + override
+    const entry = itemMap[key]
+    return sum + (entry ? (Number(entry.price) || 0) : 0)
+  }, 0)
+}
+
+// Resolve the pricing entry for a cemetery ORDER. A custom (operator-added)
+// cemetery carries a frozen flat price list in cemetery_pricing_snapshot;
+// the 4 known cemeteries read live from CEMETERY_DOOR_PRICING by name.
+export function getCemeteryPricingForOrder(cemeteryOrder) {
+  if (!cemeteryOrder) return { key: 'CUSTOM', label: 'Custom pricing', type: 'custom' }
+  if (cemeteryOrder.cemetery_pricing_snapshot) {
+    return { key: 'CUSTOM_SNAPSHOT', ...cemeteryOrder.cemetery_pricing_snapshot }
+  }
+  return lookupCemeteryPricing(cemeteryOrder.cemetery_name)
 }
 
 // ── JOBS: template loading ───────────────────────────────────────────────────
@@ -896,11 +1029,24 @@ export async function createJobFromOrder(orderId, { source } = {}) {
   if (!primaryTemplate) return { ok: false, error: 'No active template matches this order\'s service types' }
 
   // 4. Insert the job.
+  // service_kind discriminates acid_wash vs repair for cleaning_repair jobs so
+  // the Scheduler workflow grid can split them into separate columns. Precedence
+  // rule: when BOTH ACID_WASH and REPAIR are on the order, 'repair' wins (a stone
+  // needing structural repair is dispatched as a repair, with the wash folded in).
+  // NULL for any non-cleaning_repair job.
+  let serviceKind = null
+  if (primaryTemplate.job_type === 'cleaning_repair') {
+    const st = order.service_types || []
+    serviceKind = st.includes('REPAIR') ? 'repair'
+      : st.includes('ACID_WASH') ? 'acid_wash'
+      : null
+  }
   const jobRow = {
     tenant_id: order.tenant_id,
     order_id: order.id,
     template_id: primaryTemplate.id,
     job_type: primaryTemplate.job_type,
+    service_kind: serviceKind,
     overall_status: 'active',
     last_update_at: new Date().toISOString(),
   }
@@ -960,6 +1106,196 @@ export async function createJobFromOrder(orderId, { source } = {}) {
   })
 
   return { ok: true, job, alreadyExisted: false }
+}
+
+// ── CEMETERY ORDERS ──────────────────────────────────────────────────────────
+// Door orders placed by a cemetery. Stored in cemetery_orders (separate from the
+// family-sales `orders` table). Draft is created on cemetery pick and saved as
+// the operator moves through the wizard; "Submit to production" spawns one
+// mausoleum_door job per door (jobs.cemetery_order_id set, order_id null).
+
+export async function createCemeteryOrderDraft({ cemeteryName, cemeteryPricingSnapshot } = {}) {
+  const row = { cemetery_name: cemeteryName || 'Untitled', doors: [], status: 'draft' }
+  // Custom (operator-added) cemeteries snapshot their price list onto the row;
+  // the 4 known cemeteries leave this null and resolve live by name.
+  if (cemeteryPricingSnapshot) row.cemetery_pricing_snapshot = cemeteryPricingSnapshot
+  const { data, error } = await supabase.from('cemetery_orders').insert(row).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, order: data }
+}
+
+export async function updateCemeteryOrder(id, patch) {
+  if (!id) return { ok: false, error: 'Missing cemetery order id' }
+  const { data, error } = await supabase
+    .from('cemetery_orders')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, order: data }
+}
+
+export async function getCemeteryOrder(id) {
+  if (!id) return null
+  const { data, error } = await supabase.from('cemetery_orders').select('*').eq('id', id).single()
+  if (error) { console.warn('[cemetery] getCemeteryOrder:', error.message); return null }
+  return data
+}
+
+export async function getCemeteryOrders({ status } = {}) {
+  let q = supabase.from('cemetery_orders').select('*').order('created_at', { ascending: false })
+  if (status) q = q.eq('status', status)
+  const { data, error } = await q
+  if (error) { console.warn('[cemetery] getCemeteryOrders:', error.message); return [] }
+  return data || []
+}
+
+// Best-effort cemetery-record lookup for contact auto-population. The order
+// stores the pricing LABEL ('St James'), while the cemeteries row is the full
+// name ('St. James Cemetery'), so this normalizes punctuation, drops generic
+// words (cemetery/memorial/park/gardens), and matches when every remaining
+// token is present in a row's normalized name. Returns the first match or null.
+export async function getCemeteryByName(name) {
+  if (!name) return null
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const target = norm(name).replace(/\b(cemetery|memorial|park|gardens|mausoleum|parish)\b/g, ' ').replace(/\s+/g, ' ').trim()
+  const tokens = target.split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return null
+  const { data, error } = await supabase
+    .from('cemeteries')
+    .select('name, address, city, state, contact_phone, contact_email')
+  if (error || !data) return null
+  return data.find(c => { const n = norm(c.name); return tokens.every(t => n.includes(t)) }) || null
+}
+
+// Upload a packet (PDF/image) to the cemetery_packets Storage bucket at
+// cemetery_orders/{orderId}/{filename}. upsert so a replacement overwrites.
+export async function uploadCemeteryPacket(orderId, file) {
+  if (!orderId || !file) return { ok: false, error: 'Missing orderId or file' }
+  const path = `cemetery_orders/${orderId}/${file.name}`
+  const { error } = await supabase.storage.from('cemetery_packets').upload(path, file, { upsert: true })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, path }
+}
+
+// Next order number in CO-{YYYY}-{NNN} form (per-year sequence, max+1).
+export async function generateCemeteryOrderNumber(year) {
+  const y = year || new Date().getFullYear()
+  const prefix = `CO-${y}-`
+  const { data, error } = await supabase
+    .from('cemetery_orders')
+    .select('order_number')
+    .like('order_number', `${prefix}%`)
+    .order('order_number', { ascending: false })
+    .limit(1)
+  let next = 1
+  if (!error && data && data.length && data[0].order_number) {
+    const m = String(data[0].order_number).match(/-(\d+)$/)
+    if (m) next = parseInt(m[1], 10) + 1
+  }
+  return `${prefix}${String(next).padStart(3, '0')}`
+}
+
+// Submit → spawn one mausoleum_door job per door. Idempotent per
+// (cemetery_order_id, door_index); only missing door-jobs are created. Stamps
+// the order in_production with submitted_at + a total_amount snapshot, and
+// assigns the order_number if not already set.
+export async function createJobsFromCemeteryOrder(cemeteryOrderId) {
+  if (!cemeteryOrderId) return { ok: false, error: 'No cemeteryOrderId' }
+  const { data: co, error } = await supabase.from('cemetery_orders').select('*').eq('id', cemeteryOrderId).single()
+  if (error || !co) return { ok: false, error: error?.message || 'Cemetery order not found' }
+
+  const doors = co.doors || []
+  if (doors.length === 0) return { ok: false, error: 'Cemetery order has no doors' }
+
+  const template = await fetchActiveTemplateByJobType('mausoleum_door')
+  if (!template) return { ok: false, error: 'No active mausoleum_door template' }
+  const milestones = template.template?.milestones || []
+
+  const { data: existing, error: exErr } = await supabase
+    .from('jobs')
+    .select('id, door_index')
+    .eq('cemetery_order_id', cemeteryOrderId)
+  if (exErr) return { ok: false, error: exErr.message }
+  const existingIdx = new Set((existing || []).map(j => j.door_index))
+
+  const created = []
+  for (let i = 0; i < doors.length; i++) {
+    if (existingIdx.has(i)) continue
+    const jobRow = {
+      tenant_id: co.tenant_id,
+      order_id: null,
+      cemetery_order_id: co.id,
+      template_id: template.id,
+      job_type: 'mausoleum_door',
+      door_index: i,
+      overall_status: 'active',
+      last_update_at: new Date().toISOString(),
+    }
+    const { data: job, error: jErr } = await supabase.from('jobs').insert(jobRow).select().single()
+    if (jErr) return { ok: false, error: jErr.message }
+
+    const msRows = milestones.map((m, idx) => ({
+      tenant_id: co.tenant_id,
+      job_id: job.id,
+      milestone_key: m.key,
+      label: m.label,
+      group: m.group,
+      team: m.team || null,
+      status: m.default_status || 'not_started',
+      sort_order: idx,
+      requires: m.requires || [],
+      is_decision: !!m.is_decision,
+      cascades_to: m.cascades_to || [],
+      is_customer_visible: !!m.is_customer_visible,
+      due_date: null,
+      updated_at: new Date().toISOString(),
+    }))
+    if (msRows.length > 0) {
+      const { error: msErr } = await supabase.from('job_milestones').insert(msRows)
+      if (msErr) {
+        await supabase.from('jobs').delete().eq('id', job.id)
+        return { ok: false, error: `Failed to seed milestones: ${msErr.message}` }
+      }
+    }
+    await supabase.from('job_events').insert({
+      tenant_id: co.tenant_id,
+      job_id: job.id,
+      event_type: 'job_created',
+      payload: {
+        source: 'cemetery_order',
+        cemetery_order_id: co.id,
+        door_index: i,
+        template_job_type: 'mausoleum_door',
+        template_version: template.version,
+        milestone_count: msRows.length,
+      },
+    })
+    created.push(job)
+  }
+
+  // Snapshot total (override-aware via getDoorPrice, plus the tax / CC-fee
+  // toggles) + flip status. order_number assigned on first submit.
+  const pricing = getCemeteryPricingForOrder(co)
+  const subtotal = doors.reduce((s, d) => s + getDoorPrice(d, pricing), 0)
+  let totalAmount = subtotal
+  if (co.tax_applied)    totalAmount += subtotal * 0.06625
+  if (co.cc_fee_applied) totalAmount += subtotal * 0.03
+  totalAmount = Math.round(totalAmount * 100) / 100
+  const patch = {
+    status: 'in_production',
+    submitted_at: co.submitted_at || new Date().toISOString(),
+    total_amount: totalAmount,
+    updated_at: new Date().toISOString(),
+  }
+  if (!co.order_number) {
+    patch.order_number = await generateCemeteryOrderNumber(new Date().getFullYear())
+  }
+  const { error: updErr } = await supabase.from('cemetery_orders').update(patch).eq('id', co.id)
+  if (updErr) return { ok: false, error: `Jobs created but order update failed: ${updErr.message}` }
+
+  return { ok: true, jobs: created, orderNumber: patch.order_number || co.order_number }
 }
 
 // ── JOBS: list view ──────────────────────────────────────────────────────────

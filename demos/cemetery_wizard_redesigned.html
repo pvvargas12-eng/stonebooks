@@ -1,0 +1,270 @@
+<!doctype html>
+<!-- MOCKUP — for design approval only. Not connected to anything. -->
+<!-- Redesigned 6-step CemeteryOrderWizard. All six steps shown stacked so the
+     whole flow can be reviewed in one scroll. Fake data: St. James, 3 doors,
+     $1,023 total. Self-contained: inline CSS, no external deps. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOCKUP — Cemetery Order Wizard (redesign)</title>
+<style>
+  :root{
+    --bg:#f4f2ee; --surface:#ffffff; --surface-muted:#faf8f5;
+    --text:#0F1419; --text-muted:#73777e; --text-soft:#9a9da3;
+    --border:#e4e0d8; --accent:#b8842a; --accent-soft:#f3e7cf;
+    --green:#2d7a4f; --red:#b54040; --r:10px; --r-sm:6px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .mono{font-family:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;}
+  .banner{background:#0F1419;color:#cdb27e;text-align:center;font-size:12px;
+    letter-spacing:.05em;padding:6px;font-family:'JetBrains Mono',monospace;}
+  .wrap{max-width:880px;margin:0 auto;padding:28px 24px 80px;}
+
+  /* app chrome */
+  .head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;}
+  .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-muted);}
+  .h1{font-size:25px;font-weight:600;margin:3px 0 0;letter-spacing:-.01em;}
+  .close-btn{border:.5px solid var(--border);background:var(--surface);border-radius:var(--r-sm);
+    padding:8px 14px;color:var(--text-muted);font-size:13px;cursor:pointer;}
+  .pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:26px;}
+  .pill{font-size:12px;padding:5px 12px;border-radius:999px;background:var(--surface);
+    border:.5px solid var(--border);color:var(--text-muted);}
+  .pill.on{background:var(--accent);color:#fff;border-color:transparent;font-weight:500;}
+  .pill.done{color:var(--text);border-color:var(--accent-soft);}
+
+  /* step framing for the mockup (not in the real app — labels each screen) */
+  .screen{margin-bottom:34px;}
+  .screen-tag{display:inline-block;font-size:11px;font-family:'JetBrains Mono',monospace;
+    color:var(--accent);background:var(--accent-soft);border-radius:4px;padding:3px 8px;margin-bottom:10px;}
+  .card{background:var(--surface);border:.5px solid var(--border);border-radius:var(--r);
+    padding:26px 28px;box-shadow:0 1px 3px rgba(15,20,25,.05);}
+  .h2{font-size:18px;font-weight:600;margin:0 0 4px;}
+  .lede{font-size:13px;color:var(--text-muted);margin:0 0 20px;}
+  .label{display:block;font-size:12px;font-weight:500;color:var(--text-muted);margin:0 0 5px;letter-spacing:.01em;}
+  .field{margin-bottom:16px;}
+  .input{width:100%;font:inherit;font-size:14px;padding:10px 12px;border:.5px solid var(--border);
+    border-radius:var(--r-sm);background:var(--surface);}
+  .input.num{width:110px;}
+  .hint{font-size:12px;color:var(--text-muted);margin-top:8px;}
+  .selectish{display:flex;align-items:center;justify-content:space-between;border:.5px solid var(--accent);
+    background:var(--accent-soft);border-radius:var(--r-sm);padding:11px 14px;font-size:14px;font-weight:500;}
+  .selectish .chev{color:var(--accent);}
+
+  /* door cards */
+  .door{border:.5px solid var(--border);border-radius:8px;background:var(--surface-muted);
+    padding:18px 20px;margin-bottom:14px;}
+  .door-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+  .door-num{font-weight:600;font-size:15px;}
+  .door-num .loc{font-size:11px;font-weight:500;color:#fff;background:var(--accent);border-radius:4px;
+    padding:2px 7px;margin-left:8px;text-transform:uppercase;letter-spacing:.05em;}
+  .seg{display:inline-flex;border:.5px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .seg button{border:none;background:var(--surface);padding:6px 14px;font:inherit;font-size:13px;cursor:pointer;color:var(--text-muted);}
+  .seg button.on{background:var(--accent);color:#fff;font-weight:500;}
+  .checkrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:.5px dashed var(--border);}
+  .checkrow:last-of-type{border-bottom:none;}
+  .checkrow input{accent-color:var(--accent);width:15px;height:15px;}
+  .checkrow .name{flex:1;font-size:14px;}
+  .checkrow .price{font-size:13px;color:var(--text-muted);}
+  .checkrow.sel .name{font-weight:500;}
+  .checkrow.sel .price{color:var(--text);}
+  .door-foot{text-align:right;font-size:14px;margin-top:12px;padding-top:10px;border-top:.5px solid var(--border);}
+  .door-foot strong{font-variant-numeric:tabular-nums;}
+  .ta{width:100%;font:inherit;font-size:13px;padding:9px 12px;border:.5px solid var(--border);border-radius:var(--r-sm);resize:vertical;}
+  .addrow{display:flex;justify-content:space-between;align-items:center;margin-top:6px;}
+  .ghost-btn{border:.5px solid var(--border);background:var(--surface);border-radius:var(--r-sm);padding:8px 14px;font-size:13px;cursor:pointer;}
+  .total{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;}
+
+  /* upload */
+  .drop{border:1.5px dashed var(--border);border-radius:var(--r);padding:28px;text-align:center;color:var(--text-muted);}
+  .file-chip{display:inline-flex;align-items:center;gap:8px;background:var(--surface-muted);border:.5px solid var(--border);
+    border-radius:var(--r-sm);padding:8px 12px;margin-top:14px;font-size:13px;}
+
+  /* review / PO mini */
+  .po-mini{border:.5px solid var(--border);border-radius:var(--r-sm);padding:20px;background:#fff;}
+  .po-mini table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .po-mini th,.po-mini td{border-bottom:.5px solid #eee;padding:7px 6px;text-align:left;vertical-align:top;}
+  .po-mini .amt{text-align:right;font-variant-numeric:tabular-nums;}
+  .po-mini tfoot td{font-weight:600;border-bottom:none;}
+  .actions{display:flex;gap:8px;margin-top:18px;}
+  .btn{border:.5px solid var(--border);background:var(--surface);border-radius:var(--r-sm);padding:9px 16px;font-size:13px;cursor:pointer;}
+  .btn-primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:600;}
+  .foot-nav{display:flex;justify-content:space-between;margin-top:14px;}
+</style>
+</head>
+<body>
+<div class="banner">MOCKUP — design approval only · not connected to anything</div>
+<div class="wrap">
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">Cemetery order</div>
+      <div class="h1">New cemetery door order</div>
+    </div>
+    <button class="close-btn">✕ Close</button>
+  </div>
+
+  <div class="pills">
+    <span class="pill done">1. Cemetery</span>
+    <span class="pill done">2. Count</span>
+    <span class="pill on">3. Doors</span>
+    <span class="pill">4. Packet</span>
+    <span class="pill">5. Contact</span>
+    <span class="pill">6. Review</span>
+  </div>
+
+  <!-- STEP 1 -->
+  <div class="screen">
+    <span class="screen-tag">STEP 1 — CEMETERY</span>
+    <div class="card">
+      <h2 class="h2">Which cemetery?</h2>
+      <p class="lede">The cemetery is the customer on a door order.</p>
+      <div class="field">
+        <span class="label">Cemetery</span>
+        <div class="selectish">St. James Cemetery <span class="chev">▾</span></div>
+      </div>
+      <div class="hint">Pricing list: <strong>St James</strong> (indoor / outdoor split). Amboy Ave · 732‑634‑0500.</div>
+    </div>
+  </div>
+
+  <!-- STEP 2 -->
+  <div class="screen">
+    <span class="screen-tag">STEP 2 — COUNT</span>
+    <div class="card">
+      <h2 class="h2">How many doors?</h2>
+      <p class="lede">Each door becomes its own job on submit.</p>
+      <div class="field">
+        <span class="label">Number of doors</span>
+        <input class="input num mono" value="3">
+      </div>
+      <div class="hint">You can add or remove doors on the next step (max 50).</div>
+    </div>
+  </div>
+
+  <!-- STEP 3 -->
+  <div class="screen">
+    <span class="screen-tag">STEP 3 — DOORS</span>
+    <div class="card">
+      <h2 class="h2">Doors at St. James Cemetery</h2>
+      <p class="lede">Pick the priced items per door; add the inscription content. Subtotals update live.</p>
+
+      <!-- Door 1 -->
+      <div class="door">
+        <div class="door-head">
+          <div class="door-num">Door 1 <span class="loc">Outdoor</span></div>
+          <div class="seg"><button>Indoor</button><button class="on">Outdoor</button></div>
+        </div>
+        <span class="label">Items</span>
+        <label class="checkrow sel"><input type="checkbox" checked><span class="name">Names + dates (2 names)</span><span class="price">$425.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Name + dates (1 name)</span><span class="price">$295.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Date of death only</span><span class="price">$195.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Repaint</span><span class="price">$125.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Cross</span><span class="price">$125.00</span></label>
+        <div class="field" style="margin-top:14px"><span class="label">Inscription content</span>
+          <textarea class="ta" rows="2">HENRYK &amp; ANYA KOWALSKI · 1938–2024 / 1941–</textarea></div>
+        <div class="door-foot">Door 1 subtotal: <strong>$425.00</strong></div>
+      </div>
+
+      <!-- Door 2 -->
+      <div class="door">
+        <div class="door-head">
+          <div class="door-num">Door 2 <span class="loc">Indoor</span></div>
+          <div class="seg"><button class="on">Indoor</button><button>Outdoor</button></div>
+        </div>
+        <span class="label">Items</span>
+        <label class="checkrow sel"><input type="checkbox" checked><span class="name">Names + dates (2 names)</span><span class="price">$275.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Name + dates (1 name)</span><span class="price">$225.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Veterans verse</span><span class="price">$98.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Head of Christ</span><span class="price">$150.00</span></label>
+        <div class="field" style="margin-top:14px"><span class="label">Inscription content</span>
+          <textarea class="ta" rows="2">GIUSEPPE &amp; MARIA DIMAGGIO</textarea></div>
+        <div class="door-foot">Door 2 subtotal: <strong>$275.00</strong></div>
+      </div>
+
+      <!-- Door 3 -->
+      <div class="door">
+        <div class="door-head">
+          <div class="door-num">Door 3 <span class="loc">Indoor</span></div>
+          <div class="seg"><button class="on">Indoor</button><button>Outdoor</button></div>
+        </div>
+        <span class="label">Items</span>
+        <label class="checkrow sel"><input type="checkbox" checked><span class="name">Name + dates (1 name)</span><span class="price">$225.00</span></label>
+        <label class="checkrow sel"><input type="checkbox" checked><span class="name">Veterans verse</span><span class="price">$98.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Names + dates (2 names)</span><span class="price">$275.00</span></label>
+        <label class="checkrow"><input type="checkbox"><span class="name">Cross</span><span class="price">$125.00</span></label>
+        <div class="field" style="margin-top:14px"><span class="label">Inscription content</span>
+          <textarea class="ta" rows="2">DAVID A. COHEN · US ARMY · 1945–2024</textarea></div>
+        <div class="door-foot">Door 3 subtotal: <strong>$323.00</strong></div>
+      </div>
+
+      <div class="addrow">
+        <button class="ghost-btn">+ Add door</button>
+        <div class="total">Order total: $1,023.00</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 4 -->
+  <div class="screen">
+    <span class="screen-tag">STEP 4 — PACKET</span>
+    <div class="card">
+      <h2 class="h2">Upload packet</h2>
+      <p class="lede">The cemetery's door paperwork — PDF or image. Optional.</p>
+      <div class="drop">Drop a file here, or click to browse<br><span style="font-size:12px">PDF / JPG / PNG</span></div>
+      <div class="file-chip">📎 st_james_door_packet.pdf · uploaded ✓</div>
+    </div>
+  </div>
+
+  <!-- STEP 5 -->
+  <div class="screen">
+    <span class="screen-tag">STEP 5 — CONTACT</span>
+    <div class="card">
+      <h2 class="h2">Cemetery contact <span style="font-weight:400;color:var(--text-muted);font-size:14px">(optional)</span></h2>
+      <p class="lede">Who to reach at the cemetery about this order.</p>
+      <div class="field"><span class="label">Contact name</span><input class="input" value="Maria Lopez (office)"></div>
+      <div class="field"><span class="label">Email</span><input class="input" value="office@stjamescemetery.org"></div>
+      <div class="field"><span class="label">Phone</span><input class="input" value="732-634-0500"></div>
+      <button class="ghost-btn">Skip</button>
+    </div>
+  </div>
+
+  <!-- STEP 6 -->
+  <div class="screen">
+    <span class="screen-tag">STEP 6 — REVIEW</span>
+    <div class="card">
+      <h2 class="h2">Review &amp; submit</h2>
+      <p class="lede">This is the purchase order. Print it, or submit to spawn one job per door.</p>
+      <div class="po-mini">
+        <div style="display:flex;justify-content:space-between;margin-bottom:14px">
+          <div><strong>St. James Cemetery</strong><br><span class="hint">Maria Lopez · 732-634-0500</span></div>
+          <div style="text-align:right;font-size:12px;color:var(--text-muted)">Order #: <em>assigned on submit</em><br>Date: May 27, 2026</div>
+        </div>
+        <table>
+          <thead><tr><th>Door</th><th>Items / inscription</th><th class="amt">Amount</th></tr></thead>
+          <tbody>
+            <tr><td>1 (outdoor)</td><td>Names + dates (2 names)<div class="hint" style="margin-top:3px">“Henryk &amp; Anya Kowalski”</div></td><td class="amt">$425.00</td></tr>
+            <tr><td>2 (indoor)</td><td>Names + dates (2 names)<div class="hint" style="margin-top:3px">“Giuseppe &amp; Maria DiMaggio”</div></td><td class="amt">$275.00</td></tr>
+            <tr><td>3 (indoor)</td><td>Name + dates (1 name), Veterans verse<div class="hint" style="margin-top:3px">“David A. Cohen · US Army”</div></td><td class="amt">$323.00</td></tr>
+          </tbody>
+          <tfoot><tr><td colspan="2" style="text-align:right">Total</td><td class="amt">$1,023.00</td></tr></tfoot>
+        </table>
+      </div>
+      <div class="actions">
+        <button class="btn">🖨 Print</button>
+        <button class="btn">Back to edit</button>
+        <button class="btn btn-primary">Submit to production →</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot-nav">
+    <button class="btn">Back</button>
+    <button class="btn btn-primary">Continue</button>
+  </div>
+
+</div>
+</body>
+</html>

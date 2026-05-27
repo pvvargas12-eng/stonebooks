@@ -95,6 +95,14 @@ const SERVICE_TYPES = [
     needsExistingStone: false,
   },
   {
+    code: 'MAUSOLEUM_DOOR',
+    label: 'Mausoleum Door',
+    blurb: 'Door or panel for a mausoleum — fabricate a new one or re-letter an existing door. Custom-quoted.',
+    icon: '🚪',
+    needsStoneConfig: false,
+    needsExistingStone: true,
+  },
+  {
     code: 'OTHER',
     label: 'Other',
     blurb: 'Anything else — describe the job below.',
@@ -242,6 +250,7 @@ const SERVICE_TIMELINES = {
   BRONZE:         { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Bronze' },
   CIVIC_MEMORIAL: { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Civic memorial' },
   MAUSOLEUM:      { standardTime: '6–9 months (large) / 3–6 months', rushTime: null, rushFee: null, label: 'Mausoleum', custom: true },
+  MAUSOLEUM_DOOR: { standardTime: '6–9 months (large) / 3–6 months', rushTime: null, rushFee: null, label: 'Mausoleum door', custom: true },
   INSCRIPTION:    { standardTime: '4–6 weeks',      rushTime: 'within 2 weeks', rushFee: 300, label: 'Inscription' },
   ACID_WASH:      { standardTime: '3 weeks',        rushTime: 'within 2 weeks', rushFee: 300, label: 'Acid wash' },
   REPAIR:         { standardTime: '4 weeks',        rushTime: 'within 2 weeks', rushFee: 300, label: 'Repair' },

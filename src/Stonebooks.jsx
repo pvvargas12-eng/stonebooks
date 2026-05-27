@@ -17,6 +17,7 @@ import {
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
 import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD } from './lib/stonebooksData'
 import SalesMode from './SalesMode'
+import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
 import OrdersTab from './OrdersTab'
 import JobsTab from './JobsTab'
@@ -206,12 +207,50 @@ const NAV_SECONDARY = [
   { key: 'settings', label: 'Settings' },
 ]
 
+// Full-screen order-type chooser shown on a fresh "+ New sale". Two big cards:
+// Family sale (existing SalesMode wizard) vs Cemetery order (CemeteryOrderWizard).
+const _chooserCard = {
+  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, width: 280,
+  padding: '32px 24px', background: 'var(--sb-surface)', border: '0.5px solid var(--sb-border)',
+  borderRadius: 12, cursor: 'pointer', font: 'inherit', textAlign: 'center',
+  boxShadow: '0 1px 3px rgba(15,20,25,0.06)',
+}
+function OrderTypeChooser({ onPickFamily, onPickCemetery, onClose }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'var(--sb-bg, #f5f4f1)', zIndex: 900,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
+      <button type="button" onClick={onClose}
+        style={{ position: 'absolute', top: 24, right: 24, background: 'transparent',
+          border: '0.5px solid var(--sb-border)', borderRadius: 6, padding: '8px 14px',
+          cursor: 'pointer', font: 'inherit', color: 'var(--sb-text-muted)' }}>✕ Close</button>
+      <h1 style={{ fontSize: 24, fontWeight: 500, color: 'var(--sb-text)', margin: 0 }}>What kind of order?</h1>
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <button type="button" onClick={onPickFamily} style={_chooserCard}>
+          <div style={{ fontSize: 40 }}>👪</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--sb-text)' }}>Family sale</div>
+          <div style={{ fontSize: 13, color: 'var(--sb-text-muted)', maxWidth: 240 }}>
+            A monument, bronze, inscription, or other memorial for a family.
+          </div>
+        </button>
+        <button type="button" onClick={onPickCemetery} style={_chooserCard}>
+          <div style={{ fontSize: 40 }}>⛪</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--sb-text)' }}>Cemetery order</div>
+          <div style={{ fontSize: 13, color: 'var(--sb-text-muted)', maxWidth: 240 }}>
+            Door / panel work ordered by a cemetery. One PO per order, N doors.
+          </div>
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function Stonebooks() {
   const [user, setUser] = useState(undefined)  // undefined = loading; null = signed out; object = signed in
   const [theme, setTheme] = useState(loadTheme())
   const [tab, setTab] = useState('today')
   const [salesOpen, setSalesOpen] = useState(false)
   const [salesOrderId, setSalesOrderId] = useState(null)   // when set, open Sales Mode with that order pre-loaded
+  const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
   const [profile, setProfile] = useState(null)  // user_settings row
   const [selectedCustomerId, setSelectedCustomerId] = useState(null)  // for customer drill-in across tabs
   // Sprint J1-P1 Today Commit B — for job drill-in from Today operational items.
@@ -243,11 +282,15 @@ export default function Stonebooks() {
   // Open Sales Mode — either fresh (no id) or with a specific order
   const openSales = (orderId = null) => {
     setSalesOrderId(orderId)
+    // Resuming an existing order goes straight into the family wizard; a fresh
+    // "+ New sale" leaves salesKind null so the order-type chooser shows first.
+    setSalesKind(orderId ? 'family' : null)
     setSalesOpen(true)
   }
   const closeSales = () => {
     setSalesOpen(false)
     setSalesOrderId(null)
+    setSalesKind(null)
   }
 
   const reloadProfile = async () => {
@@ -435,14 +478,27 @@ export default function Stonebooks() {
     )
   }
 
-  // Sales Mode opens as a full-screen overlay
+  // Sales Mode opens as a full-screen overlay. A fresh sale first shows the
+  // order-type chooser; resuming an order (salesKind preset to 'family') skips it.
   if (salesOpen) {
-    return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} />
+    if (salesKind === 'family') {
+      return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} />
+    }
+    if (salesKind === 'cemetery') {
+      return <CemeteryOrderWizard onClose={closeSales} onSubmitted={() => { closeSales(); setTab('jobs') }} />
+    }
+    return (
+      <OrderTypeChooser
+        onPickFamily={() => setSalesKind('family')}
+        onPickCemetery={() => setSalesKind('cemetery')}
+        onClose={closeSales}
+      />
+    )
   }
 
   const handleNav = (key) => {
     if (key === 'sales') {
-      setSalesOpen(true)
+      openSales()
       return
     }
     setTab(key)

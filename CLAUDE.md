@@ -7,7 +7,7 @@ React + Supabase. Internal use only.
 
 - Shevchenko tenant UUID: `a1b2c3d4-e5f6-7890-abcd-ef0123456789` (default for every new `tenant_id` column)
 - NJ sales tax: 6.625%
-- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE) → L2-P1 → L2-P2 → L2-P3 → L2-P4 (L2 COMPLETE) → OWNER-CARDS → SCHED → SCHED-UI → CAL-DRAG`
+- Sprint naming convention: `3o → 3p → 3q → 3r → 3r.2 → 3s → 3s.3 → 3u → 3v → 3w → 3x → S1 → M2-P1 → M2-P2 → M2-P2.1 → M2-P3 → M2-P4 (M2 COMPLETE) → L2-P1 → L2-P2 → L2-P3 → L2-P4 (L2 COMPLETE) → OWNER-CARDS → SCHED → SCHED-UI → CAL-DRAG → WORKFLOW-COMPLETE`
 - Design tokens: Inter + JetBrains Mono, bronze accent on near-black `#0F1419` sidebar
 - Staff never touch Supabase directly — all DB ops go through the app
 - Photo storage: Supabase Storage bucket `key photos` (URLs already live; slugify filenames before SaaS launch)
@@ -445,6 +445,37 @@ A multi-lens review (UX / code / operational) drove 8 fixes before commit: (1) m
 - **Concurrent drop within the 8s undo window** — two dispatchers (or one operator in two tabs) dropping the same batch on different days is last-write-wins with no conflict surface; the undo toast reflects only the local action.
 - **Cancelled job inside a scheduled batch** — undefined behavior when one of a batch's jobs is cancelled: the stop should disappear but the batch should survive. Needs a defined rule + UI.
 - **DST / timezone edge cases** — date math uses ISO date strings (`YYYY-MM-DD`) so it *should* be timezone-safe, but unverified at DST boundaries / month edges.
+
+## Sprint WORKFLOW-COMPLETE — Cemetery door orders end-to-end
+
+**Door work becomes a first-class order type — the original workflow-completeness goal.** New file `src/CemeteryOrderWizard.jsx`; touches `src/Stonebooks.jsx` (order-type chooser) and `src/lib/stonebooksData.js` (cemetery-order data layer + door pricing). Seven migrations (A, B, D, E, F, G, H — all ✅ applied to prod 2026-05-27).
+
+- **Separate order type.** "+ New sale" now opens a **Family sale vs Cemetery order** chooser (`OrderTypeChooser` in `Stonebooks.jsx`). Family routes into the **unchanged** `SalesMode` wizard; Cemetery routes into the new `CemeteryOrderWizard`. Resuming an existing family order skips the chooser.
+- **`cemetery_orders` table** (Migration F) — door orders live here, separate from family-sales `orders`; the cemetery is the customer. One PO per order; `doors` jsonb holds per-door spec. Jobs link via `jobs.cemetery_order_id` (mutually exclusive with `order_id`, enforced by `jobs_order_or_cemetery_order`); `order_id` made nullable and the old `UNIQUE(order_id)` dropped (Migration E) so one order spawns N jobs.
+- **6-step `CemeteryOrderWizard`** (desktop-optimized, bronze/near-black, Inter): (1) cemetery picker — 4 known cards + "Add another" custom seeded from the Clover Leaf list (snapshotted onto the row); (2) door count; (3) doors editor — **sticky left rail** (door list + running total) + right-pane editor; (4) packet upload (Supabase Storage `cemetery_packets`); (5) contact (auto-populated phone); (6) review — **inline per-line price overrides** + sticky **dark totals card** with **NJ sales-tax (6.625%)** and **credit-card-fee (3%)** toggles. Debounced autosave; printable PO via `window.print()`.
+- **Pricing** — `CEMETERY_DOOR_PRICING` (St James indoor/outdoor split; Beth Israel / Woodbridge Memorial Gardens / Clover Leaf flat) + `lookupCemeteryPricing` / `getDoorPrice` (override-aware) / `getCemeteryPricingForOrder` (snapshot-aware). Migration H adds `cemetery_pricing_snapshot`, `tax_applied`, `cc_fee_applied`.
+- **Submit → production** (`createJobsFromCemeteryOrder`) spawns **one `mausoleum_door` job per door** (each stamped `door_index`, idempotent per `(cemetery_order_id, door_index)`), seeds each job's **17-milestone** workflow, flips the order to `in_production`, snapshots `total_amount` (incl. tax/CC toggles), assigns `CO-{YYYY}-{NNN}`.
+- **`mausoleum_door` template** (Migration B) — 17 milestones (contract → deposit → cemetery_confirmed → door_pickup → proof → stencil → production → door_dropoff → install → closeout), using the **standard team vocabulary** `admin / installation / production / sales` (matches `job_milestones_team_check`).
+- **Contact auto-populate** — `getCemeteryByName` token-matches the order's cemetery label to a `cemeteries` row (suffix-aware: strips cemetery/memorial/park/gardens/mausoleum/parish), prefilling `contact_phone`; name + email are typed per order.
+- **`service_kind`** (Migration A) — discriminates acid_wash vs repair on cleaning_repair jobs (REPAIR-wins). `MAUSOLEUM_DOOR` service code retained in `SERVICE_TYPES`/`SERVICE_TIMELINES` (the door flow routes off the chooser, not that code).
+- **First real cemetery order created end-to-end during dev:** `CO-2026-001` — Beth Israel, 2 doors, $411 (2 × $205.50 inscription), 2 jobs × 17 milestones.
+
+### Migrations (all ✅ applied to prod 2026-05-27)
+- `20260527_cleaning_repair_service_kind.sql` (A) — `jobs.service_kind`
+- `20260527_mausoleum_door_job_type.sql` (B) — mausoleum_door template (17 milestones; corrected `admin/installation/production/sales` teams)
+- `20260527_jobs_door_index.sql` (D) — `jobs.door_index`
+- `20260527_drop_jobs_order_id_unique.sql` (E) — drop `UNIQUE(order_id)` for multi-job-per-order
+- `20260527_cemetery_orders.sql` (F) — `cemetery_orders` + `jobs.cemetery_order_id` + XOR check
+- `20260527_drop_orders_mausoleum_door_intake.sql` (G) — drop the orphaned `orders.mausoleum_door_intake`
+- `20260527_cemetery_orders_overrides_and_toggles.sql` (H) — `cemetery_pricing_snapshot`, `tax_applied`, `cc_fee_applied`
+- *(Migration C, `orders.mausoleum_door_intake`, was added mid-sprint for an earlier door model, then reverted — its column is dropped by G.)*
+
+## Parked for next sprint (WORKFLOW-COMPLETE follow-ups)
+
+- **`cemeteries.contact_email` is null on every row** — populate when known; the wizard's email field auto-fills once data exists.
+- **No "list cemetery orders / resume draft" surface** — the wizard creates `cemetery_orders` drafts but nothing lists or reopens them; a draft is only reachable while the wizard is open. Needs a list/resume view.
+- **Per-cemetery rate cards are a hardcoded JS constant** (`CEMETERY_DOOR_PRICING`) — migrate to a DB table once 3+ custom cemeteries exist.
+- **Scheduler workflow-grid still incomplete for non-batch job_types** (carried from CAL-DRAG) — only 4 milestone keys map to columns; `acid_wash` / `repair` / `rub_grab` / `door_trip` coverage pending.
 
 ## Deferred / known issues
 

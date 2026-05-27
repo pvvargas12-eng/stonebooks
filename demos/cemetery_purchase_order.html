@@ -1,0 +1,186 @@
+<!doctype html>
+<!-- MOCKUP — purchase order design. Not connected. -->
+<!-- Redesigned Purchase Order output for a cemetery door order. Full company
+     branding, CO-2026-001 placeholder, itemized per-door table, $1,023 total.
+     Print-styled to read like a real PDF. Self-contained: inline CSS, no deps. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOCKUP — Purchase Order CO-2026-001</title>
+<style>
+  :root{
+    --ink:#0F1419; --soft:#54585e; --faint:#8b8f95; --line:#dcd8d0;
+    --accent:#a8761f; --accent-soft:#f2e7d0; --bg:#edeae4;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:var(--ink);}
+  .mono{font-family:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;}
+  .banner{background:#0F1419;color:#cdb27e;text-align:center;font-size:12px;padding:6px;
+    font-family:'JetBrains Mono',monospace;letter-spacing:.05em;}
+  .toolbar{max-width:8.5in;margin:14px auto 0;display:flex;justify-content:flex-end;gap:8px;}
+  .btn{border:.5px solid var(--line);background:#fff;border-radius:6px;padding:9px 16px;font:inherit;font-size:13px;cursor:pointer;}
+  .btn-primary{background:var(--accent);color:#fff;border-color:transparent;font-weight:600;}
+
+  /* the page */
+  .page{max-width:8.5in;margin:18px auto 60px;background:#fff;padding:.7in .75in;
+    box-shadow:0 2px 12px rgba(15,20,25,.14);min-height:10in;}
+
+  /* letterhead */
+  .lh{display:flex;justify-content:space-between;align-items:flex-start;
+    border-bottom:2px solid var(--accent);padding-bottom:18px;}
+  .brand .wordmark{font-size:23px;font-weight:700;letter-spacing:.04em;}
+  .brand .wordmark .amp{color:var(--accent);}
+  .brand .estd{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-top:3px;font-weight:600;}
+  .brand .addr{font-size:12px;color:var(--soft);margin-top:10px;line-height:1.55;}
+  .po-block{text-align:right;}
+  .po-block .potitle{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);font-weight:600;}
+  .po-block .ponum{font-size:26px;font-weight:700;color:var(--ink);margin-top:2px;letter-spacing:.02em;}
+  .po-block .podate{font-size:12px;color:var(--soft);margin-top:8px;line-height:1.6;}
+
+  /* bill-to */
+  .billrow{display:flex;justify-content:space-between;margin:26px 0 22px;}
+  .billbox{font-size:12.5px;line-height:1.6;}
+  .billbox .cap{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:5px;}
+  .billbox .name{font-weight:600;font-size:14px;}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px;}
+  thead th{text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+    border-bottom:1.5px solid var(--ink);padding:0 8px 8px;font-weight:600;}
+  thead th.amt,tbody td.amt,tfoot td.amt{text-align:right;font-variant-numeric:tabular-nums;}
+  tbody td{padding:11px 8px;border-bottom:.5px solid var(--line);vertical-align:top;}
+  tbody td.dn{font-weight:600;width:46px;}
+  tbody td.loc{color:var(--soft);width:70px;text-transform:capitalize;}
+  .items{line-height:1.5;}
+  .inscr{font-style:italic;color:var(--soft);margin-top:4px;font-size:12px;}
+  tbody td.sub{font-weight:600;width:92px;}
+  tfoot td{padding:12px 8px;}
+  tfoot .totlabel{text-align:right;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--soft);font-weight:600;}
+  tfoot .totamt{text-align:right;font-size:18px;font-weight:700;border-top:2px solid var(--ink);}
+
+  /* terms / footer */
+  .terms{margin-top:30px;font-size:11px;color:var(--soft);line-height:1.6;border-top:.5px solid var(--line);padding-top:14px;}
+  .sigrow{display:flex;gap:40px;margin-top:42px;}
+  .sig{flex:1;}
+  .sig .ln{border-top:.5px solid var(--ink);padding-top:5px;font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;}
+  .pagefoot{margin-top:30px;text-align:center;font-size:10.5px;color:var(--faint);}
+
+  @media print{
+    @page{margin:.5in;}
+    html,body{background:#fff;}
+    .banner,.toolbar{display:none;}
+    .page{box-shadow:none;margin:0;padding:0;max-width:none;min-height:0;}
+  }
+</style>
+</head>
+<body>
+<div class="banner">MOCKUP — purchase order design · not connected</div>
+
+<div class="toolbar">
+  <button class="btn" onclick="window.print()">🖨 Print / Save PDF</button>
+</div>
+
+<div class="page">
+
+  <!-- letterhead -->
+  <div class="lh">
+    <div class="brand">
+      <div class="wordmark">SHEVCHENKO <span class="amp">·</span> MONUMENTS</div>
+      <div class="estd">Family-owned since 1919</div>
+      <div class="addr">
+        329 S Florida Grove Rd · Perth Amboy, NJ 08861<br>
+        732-442-1286 · shevcoteam@gmail.com
+      </div>
+    </div>
+    <div class="po-block">
+      <div class="potitle">Purchase Order</div>
+      <div class="ponum mono">CO-2026-001</div>
+      <div class="podate">
+        Issued: May 27, 2026<br>
+        Status: In production
+      </div>
+    </div>
+  </div>
+
+  <!-- bill to / ship -->
+  <div class="billrow">
+    <div class="billbox">
+      <div class="cap">Cemetery</div>
+      <div class="name">St. James Cemetery</div>
+      Amboy Ave, Woodbridge, NJ<br>
+      Attn: Maria Lopez (office)<br>
+      732-634-0500 · office@stjamescemetery.org
+    </div>
+    <div class="billbox" style="text-align:right">
+      <div class="cap">Order summary</div>
+      3 doors · St James price list<br>
+      Indoor / outdoor split pricing<br>
+      Packet on file: st_james_door_packet.pdf
+    </div>
+  </div>
+
+  <!-- line items -->
+  <table>
+    <thead>
+      <tr>
+        <th>Door</th>
+        <th>Location</th>
+        <th>Items &amp; inscription</th>
+        <th class="amt">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="dn">1</td>
+        <td class="loc">Outdoor</td>
+        <td>
+          <div class="items">Names + dates (2 names)</div>
+          <div class="inscr">“Henryk &amp; Anya Kowalski · 1938–2024 / 1941–”</div>
+        </td>
+        <td class="amt sub">$425.00</td>
+      </tr>
+      <tr>
+        <td class="dn">2</td>
+        <td class="loc">Indoor</td>
+        <td>
+          <div class="items">Names + dates (2 names)</div>
+          <div class="inscr">“Giuseppe &amp; Maria DiMaggio”</div>
+        </td>
+        <td class="amt sub">$275.00</td>
+      </tr>
+      <tr>
+        <td class="dn">3</td>
+        <td class="loc">Indoor</td>
+        <td>
+          <div class="items">Name + dates (1 name) · Veterans verse</div>
+          <div class="inscr">“David A. Cohen · US Army · 1945–2024”</div>
+        </td>
+        <td class="amt sub">$323.00</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="3" class="totlabel">Total due</td>
+        <td class="totamt mono">$1,023.00</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <!-- terms -->
+  <div class="terms">
+    Work proceeds per the attached packet. Inscription content as listed above; cemetery confirms spelling and
+    dates prior to carving. Prices per the St James door schedule. Net 30 on completion unless otherwise arranged.
+  </div>
+
+  <div class="sigrow">
+    <div class="sig"><div class="ln">Cemetery authorization</div></div>
+    <div class="sig"><div class="ln">Shevchenko Monuments — representative</div></div>
+  </div>
+
+  <div class="pagefoot">Shevchenko Monuments LLC · 329 S Florida Grove Rd, Perth Amboy, NJ 08861 · 732-442-1286</div>
+
+</div>
+</body>
+</html>
