@@ -22,8 +22,18 @@
 --   orders.id          ← orders.parent_quote_id    SET NULL  ← defensive check
 --   customers.id       ← orders.customer_id        SET NULL  ← defensive check
 --   cemeteries.id      ← orders.cemetery_id        SET NULL  ← defensive check
+--   jobs.id            ← work_batch_jobs.job_id     CASCADE   (scheduler layer)
+--   jobs.id            ← job_promises.job_id        CASCADE   (scheduler layer)
+--   work_batches.id    ← work_batch_jobs.batch_id   CASCADE   (scheduler layer)
+--   cemeteries.id      ← work_batches.destination_cemetery_id  RESTRICT
+--                          ← batches MUST be deleted before cemeteries
 --
 -- Cleanup order (reverse dependency, with safety):
+--   0. work_batch_jobs      (scheduler links — explicit DELETE for transparency;
+--                            CASCADE from jobs OR work_batches would also work)
+--   0b. job_promises        (scheduler — CASCADE from jobs would also work)
+--   0c. work_batches        (demo batches by ZZ_DEMO_ title; MUST precede the
+--                            cemeteries delete due to the RESTRICT FK above)
 --   1. job_events           (explicit DELETE for transparency, CASCADE would also work)
 --   2. job_milestones       (explicit DELETE for transparency, CASCADE would also work)
 --   3. jobs                 (required before orders due to RESTRICT)
@@ -32,7 +42,8 @@
 --                            handles order_attachments automatically)
 --   5. customers            (defensive NOT EXISTS — only delete if no remaining
 --                            orders reference them, prevents SET NULL on reals)
---   6. cemeteries           (defensive NOT EXISTS — same logic)
+--   6. cemeteries           (defensive NOT EXISTS — same logic, now also checks
+--                            no work_batch still references the cemetery)
 --
 -- Safety guarantees:
 --   • Real data is structurally untouchable: no real customer last_name starts
@@ -119,7 +130,58 @@ WHERE job_id IN (
   WHERE LEFT(o.order_number, 5) = 'DEMO-'
 );
 
+-- Scheduler layer (work_batches by ZZ_DEMO_ title; links/promises by FK).
+SELECT
+  'BEFORE — work_batches'  AS phase,
+  COUNT(*)                 AS demo_rows
+FROM work_batches
+WHERE LEFT(title, 8) = 'ZZ_DEMO_';
+
+SELECT
+  'BEFORE — work_batch_jobs' AS phase,
+  COUNT(*)                   AS demo_rows
+FROM work_batch_jobs
+WHERE batch_id IN (SELECT id FROM work_batches WHERE LEFT(title, 8) = 'ZZ_DEMO_')
+   OR job_id IN (
+     SELECT j.id FROM jobs j JOIN orders o ON o.id = j.order_id
+     WHERE LEFT(o.order_number, 5) = 'DEMO-'
+   );
+
+SELECT
+  'BEFORE — job_promises'  AS phase,
+  COUNT(*)                 AS demo_rows
+FROM job_promises
+WHERE job_id IN (
+  SELECT j.id FROM jobs j JOIN orders o ON o.id = j.order_id
+  WHERE LEFT(o.order_number, 5) = 'DEMO-'
+);
+
 -- ─── DELETE — reverse FK order with defensive checks ─────────────────────────
+
+-- 0. work_batch_jobs  (scheduler stop links. Children of BOTH work_batches and
+-- jobs via CASCADE; deleted explicitly first for transparent counts. Matched by
+-- demo batch OR demo job so a link is caught regardless of which side is demo.)
+DELETE FROM work_batch_jobs
+WHERE batch_id IN (SELECT id FROM work_batches WHERE LEFT(title, 8) = 'ZZ_DEMO_')
+   OR job_id IN (
+     SELECT j.id FROM jobs j JOIN orders o ON o.id = j.order_id
+     WHERE LEFT(o.order_number, 5) = 'DEMO-'
+   );
+
+-- 0b. job_promises  (CASCADE from jobs would also handle these; explicit for
+-- transparency. Identified by FK to demo jobs — promises carry no name prefix.)
+DELETE FROM job_promises
+WHERE job_id IN (
+  SELECT j.id FROM jobs j JOIN orders o ON o.id = j.order_id
+  WHERE LEFT(o.order_number, 5) = 'DEMO-'
+);
+
+-- 0c. work_batches  (demo batches, by literal ZZ_DEMO_ title prefix. MUST run
+-- before the cemeteries delete below: work_batches.destination_cemetery_id is
+-- RESTRICT, so a demo cemetery cannot be deleted while a demo batch references
+-- it. Any surviving work_batch_jobs would CASCADE here anyway.)
+DELETE FROM work_batches
+WHERE LEFT(title, 8) = 'ZZ_DEMO_';
 
 -- 1. job_events  (CASCADE would handle this, but explicit DELETE gives
 -- transparent before/after counts and makes the script self-documenting.)
@@ -169,11 +231,18 @@ WHERE LEFT(last_name, 8) = 'ZZ_DEMO_'
     SELECT 1 FROM orders WHERE orders.customer_id = customers.id
   );
 
--- 6. cemeteries  (defensive: same logic.)
+-- 6. cemeteries  (defensive: only delete if nothing still references them.)
+-- Two SET NULL / RESTRICT relationships to guard: orders.cemetery_id (SET NULL)
+-- and work_batches.destination_cemetery_id (RESTRICT). Step 0c already removed
+-- the demo batches, so the work_batches guard is normally satisfied; it stays
+-- here as defense in depth (e.g. a real batch pointing at a demo cemetery).
 DELETE FROM cemeteries
 WHERE LEFT(name, 8) = 'ZZ_DEMO_'
   AND NOT EXISTS (
     SELECT 1 FROM orders WHERE orders.cemetery_id = cemeteries.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM work_batches WHERE work_batches.destination_cemetery_id = cemeteries.id
   );
 
 -- ─── POST-DELETE counts — confirm zero remaining demo rows ───────────────────
@@ -229,6 +298,32 @@ FROM job_events
 WHERE job_id IN (
   SELECT j.id FROM jobs j
   JOIN orders o ON o.id = j.order_id
+  WHERE LEFT(o.order_number, 5) = 'DEMO-'
+);
+
+-- Scheduler layer — all should be zero.
+SELECT
+  'AFTER — work_batches'   AS phase,
+  COUNT(*)                 AS demo_rows_remaining
+FROM work_batches
+WHERE LEFT(title, 8) = 'ZZ_DEMO_';
+
+SELECT
+  'AFTER — work_batch_jobs' AS phase,
+  COUNT(*)                  AS demo_rows_remaining
+FROM work_batch_jobs
+WHERE batch_id IN (SELECT id FROM work_batches WHERE LEFT(title, 8) = 'ZZ_DEMO_')
+   OR job_id IN (
+     SELECT j.id FROM jobs j JOIN orders o ON o.id = j.order_id
+     WHERE LEFT(o.order_number, 5) = 'DEMO-'
+   );
+
+SELECT
+  'AFTER — job_promises'   AS phase,
+  COUNT(*)                 AS demo_rows_remaining
+FROM job_promises
+WHERE job_id IN (
+  SELECT j.id FROM jobs j JOIN orders o ON o.id = j.order_id
   WHERE LEFT(o.order_number, 5) = 'DEMO-'
 );
 
