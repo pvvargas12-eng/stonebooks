@@ -438,6 +438,14 @@ A multi-lens review (UX / code / operational) drove 8 fixes before commit: (1) m
   - **Readiness blocking** — nothing stops scheduling a setting whose stone isn't carved or whose foundation isn't poured; flag or block by job stage.
   - **`resolvePromisesForJob` TOCTOU** — simultaneous stop completions can read link state mid-commit and leave a promise unresolved or double-written; the manual `expirePastPromises` sweep is the backstop.
 
+## Lifecycle gaps to triage (CAL-DRAG follow-up)
+
+- **Stale tray batch lifecycle** — a batch sitting unscheduled (`scheduled_date NULL`) for weeks has no nag / decay / auto-archive behavior; the tray can accumulate forever.
+- **Cemetery deletion behavior** — `work_batches.destination_cemetery_id` is `RESTRICT`, so deleting a cemetery that's in use is correctly blocked, but the operator gets no clear explanation of *why* the delete failed.
+- **Concurrent drop within the 8s undo window** — two dispatchers (or one operator in two tabs) dropping the same batch on different days is last-write-wins with no conflict surface; the undo toast reflects only the local action.
+- **Cancelled job inside a scheduled batch** — undefined behavior when one of a batch's jobs is cancelled: the stop should disappear but the batch should survive. Needs a defined rule + UI.
+- **DST / timezone edge cases** — date math uses ISO date strings (`YYYY-MM-DD`) so it *should* be timezone-safe, but unverified at DST boundaries / month edges.
+
 ## Deferred / known issues
 
 - **Mausoleum range on calendar/customer-list/receipt** — those surfaces show only `targetCompletionDate` (the range start); the `targetCompletionEndDate` is not yet surfaced there. Future sprint if needed.
