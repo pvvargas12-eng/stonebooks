@@ -25,7 +25,7 @@ React + Supabase. Internal use only.
 
 - Frontend: React (Vite), single-page app
 - Backend: Supabase (Postgres + Auth + Storage)
-- Hosting: Vercel (old `shevchenko-catalog.vercel.app` is stale; new deploys not yet wired)
+- Hosting: Vercel — auto-deploy is wired and healthy; every push to `main` triggers a Production build (last verified deploy `b8f08bc`, 2026-05-27). The old `shevchenko-catalog.vercel.app` URL is stale; current deploys publish under the `stonebooks-*.vercel.app` project.
 - Key file: `src/SalesMode.jsx` is ~11k lines and holds the sales wizard
 
 ## What's shipped
@@ -397,7 +397,7 @@ Six commits + one follow-up. L2 inscription overhaul is now complete end-to-end.
 
 - **Mausoleum range on calendar/customer-list/receipt** — those surfaces show only `targetCompletionDate` (the range start); the `targetCompletionEndDate` is not yet surfaced there. Future sprint if needed.
 - **Two-color companion stones** — not supported; single `graniteColor` per order drives due-date math. Would need a data-model change.
-- **Sprint 3t (remote contract signing)** is parked pending the Vercel env-var fix — `VITE_APP_MODE`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` need to be set in the `stonebooks-beta` Vercel project for prod to render the staff wizard instead of the public catalog.
+- **Sprint 3t (remote contract signing)** — Vercel auto-deploy is now wired and healthy (every push to `main` builds a Production deploy; last verified `b8f08bc`, 2026-05-27), so the original "deploys not wired" blocker is cleared. The remaining open question is whether `VITE_APP_MODE`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` are set in the prod Vercel project — **unverified as of 2026-05-27** (build success doesn't confirm env vars). If unset, prod renders the public catalog instead of the staff wizard; confirm those vars before relying on 3t.
 
 ## Feature backlog after 3p
 
