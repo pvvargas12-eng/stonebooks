@@ -32,7 +32,8 @@ export default function UnscheduledColumn({
         <div className="sb-uncol-empty">Nothing waiting.</div>
       ) : (
         <ul className="sb-uncol-list">
-          {rows.map(({ job, milestone }) => {
+          {rows.map((row) => {
+            const { job, milestone } = row
             const surname = job.order?.primary_lastname
               || customerName(job.order?.customer)
               || '—'
@@ -46,7 +47,10 @@ export default function UnscheduledColumn({
                     type="checkbox"
                     className="sb-uncol-card-checkbox"
                     checked={checked}
-                    onChange={e => onToggle?.(job, e.target.checked)}
+                    // Pass the WHOLE row entry (job + milestone +
+                    // completion_milestone_key) so WeekWorkbench can persist
+                    // provenance through to createBatch (Phase 3).
+                    onChange={e => onToggle?.(row, e.target.checked)}
                   />
                   <div className="sb-uncol-card-body">
                     <div className="sb-uncol-card-primary">

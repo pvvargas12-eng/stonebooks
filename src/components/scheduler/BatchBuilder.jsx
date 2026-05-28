@@ -93,6 +93,17 @@ export default function BatchBuilder({
   const handleSave = async () => {
     setError(null)
     setSubmitting(true)
+    // Phase 3: pass stops with provenance instead of bare job_ids.
+    // source_milestone_key + completion_milestone_key come from the
+    // workbench selection (each ticked card carried its routing context
+    // forward); stops added later from the trip suggestions panel have
+    // no routing context and persist as NULL — same shape as ad-hoc
+    // batches, cascade is skipped on completion.
+    const stops = jobs.map(j => ({
+      job_id: j.job.id,
+      source_milestone_key:     j.milestone?.milestone_key      || null,
+      completion_milestone_key: j.completion_milestone_key      || null,
+    }))
     const res = await createBatch({
       kind,
       title: title || null,
@@ -100,7 +111,7 @@ export default function BatchBuilder({
       destination_cemetery_id: requiresDestination ? destinationId : null,
       assigned_to: assignedTo || null,
       notes: notes || null,
-      job_ids: jobs.map(j => j.job.id),
+      stops,
     })
     setSubmitting(false)
     if (!res.ok) {

@@ -5208,7 +5208,12 @@ export const BATCH_KINDS = [
   { code: 'repair',          label: 'Repair',           color: '#D85A30', isField: false, requiresDestination: false, requiresCompletionPhoto: true  },
   { code: 'rub_grab',        label: 'Rub-grab trip',    color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
   { code: 'foundation_trip', label: 'Foundation trip',  color: '#D85A30', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
-  { code: 'door_trip',       label: 'Door pickup/drop', color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
+  // door_trip — "pickup" leg fetches the door; "return" leg drops it back at
+  // the cemetery. Shevchenko does NOT install mausoleum doors; the template's
+  // door_installed milestone key is a MISNOMER (Phase 4 will rename it). Any
+  // future UI text tied to this kind must say "returned" / "dropped off",
+  // never "installed."
+  { code: 'door_trip',       label: 'Door pickup/return', color: '#5F5E5A', isField: true,  requiresDestination: true,  requiresCompletionPhoto: false },
   // Custom calendar events — zero-job batches that serve as ad-hoc entries.
   // site_visit: estimate visits, customer-home meetings, cemetery walks.
   // errand:     pick up parts, drop off paperwork, generic schedule item.
@@ -5229,23 +5234,67 @@ export function batchKindInfo(code) {
 // calculation. Set to Shevchenko Monuments' actual Perth Amboy address.
 export const SHOP_COORDINATES = { lat: 40.525008314072224, lng: -74.28993820409238 }
 
-// Map of milestone_key → which batch kind a job qualifies for when that
-// milestone is the next actionable step. Used by getSchedulableJobs to
-// drop a job into the right Scheduler column. A job can appear in
-// multiple columns across its lifetime as different milestones come
-// up the chain.
-const _MILESTONE_TO_BATCH_KIND = new Map([
-  // Inscription cycle — the post-approval cut stencil → field install
-  ['stencil_cut',          'inscription'],   // when on a job_type='inscription' job
-  // Sandblast — shop work
-  ['production_started',   'blasting'],
-  // Setting / delivery — field
-  ['ready_to_install',     'setting'],
-  ['installed',            'setting'],
-  // Rub grabs — pre-stencil cemetery trip
-  // (no canonical milestone today — handled via job filter below)
-  // Foundation pour — field trip
-  ['foundation_poured',    'foundation_trip'],
+// Routing table: source milestone_key → { kind, completion_milestone_key }.
+// Drives getSchedulableJobs (which surfaces jobs into Scheduler columns) AND
+// the Phase 2 markBatchJobComplete cascade (which uses completion key to flip
+// the right milestone done). The inline routing in getSchedulableJobs must
+// stay in lockstep with this map — if you add an entry here, mirror it there.
+//
+// Phase-3 updates (2026-05-28):
+//   • (P) Dropped the dead job_type='inscription' predicate on stencil_cut — no
+//     such job_type exists in prod data; the column was permanently empty.
+//   • (G) Foundation route DEFERRED to Phase 4. The proper fix is a template
+//     migration adding foundation_cured + gating downstream setting work on
+//     it (Monument Ops review: concrete needs a 7-day cure window before a
+//     stone can be set on it; the prior backwards foundation_poured route
+//     would cause crews to set on green concrete if downstream logic ever
+//     keys off foundation_poured). Until Phase 4, foundation work is NOT
+//     schedulable through this surface — that's intentional, not a gap.
+//   • Added door_trip routes for mausoleum_door jobs (8 jobs × 4 door
+//     milestones were silently invisible to the scheduler).
+//   • (A) getSchedulableJobs guards each push against the completion key
+//     already being done (the source-key re-surface fix; see comment below
+//     the inline router for the full pattern).
+//   • Delivery route (P) commented out — unfireable today (no non-new_stone
+//     template carries ready_to_install) and a latent foot-gun (would auto-
+//     enroll in silent cascade failure when a future template adds it).
+//     Reinstate explicitly when that template lands.
+//
+// IMPORTANT — door_installed is a MISNOMER. Shevchenko Monuments does NOT
+// install mausoleum doors. The 'dropoff' leg is the crew returning the door
+// to the cemetery; the milestone key is named door_installed only because
+// the template ships that way today. Phase 4 template migration will rename
+// to door_returned / door_dropped_off and any UI text in this codebase
+// must read "returned" / "dropped off" — NEVER "installed."
+//
+// NULL completion = source-as-completion fallback (K). markBatchJobComplete
+// cascades the SOURCE milestone to done when completion is null. This gives
+// inscription (and any future null-completion routes) date truth without
+// needing a Phase 4 template migration to add an inscription_completed key.
+// Phase 4 should still add the proper completion milestone — this is a
+// pragmatic bridge, not the final shape.
+const _MILESTONE_TO_BATCH_ROUTE = new Map([
+  // Inscription cycle — operator brings the stencil to the cemetery and
+  // sandblasts. NULL completion → source-as-completion fallback (K): the
+  // cascade flips stencil_cut to done on dispatch tick, stamping status_date.
+  ['stencil_cut',          { kind: 'inscription',     completion_milestone_key: null }],
+  // Sandblast — shop work. production_started → production_completed.
+  ['production_started',   { kind: 'blasting',        completion_milestone_key: 'production_completed' }],
+  // Setting (new_stone) — non-new_stone delivery is commented out (P).
+  ['ready_to_install',     { kind: 'setting',         completion_milestone_key: 'installed' }],
+  // Foundation — DEFERRED to Phase 4 (see header). No route entry today.
+  // Mausoleum door trips — pickup leg surfaces from door_pickup_needed and
+  // cascades door_picked_up. Dropoff leg surfaces from door_dropoff_needed
+  // and cascades door_installed (MISNOMER — means returned to cemetery,
+  // not installed; Shevchenko does no door installation). Template-chain
+  // requires force the legs to surface sequentially: dropoff is gated on
+  // production_completed → … → door_picked_up, so a job cannot show in
+  // both legs at once.
+  ['door_pickup_needed',   { kind: 'door_trip',       completion_milestone_key: 'door_picked_up' }],
+  ['door_dropoff_needed',  { kind: 'door_trip',       completion_milestone_key: 'door_installed' }],
+  // Acid wash / repair / rub_grab — templates don't carry the source
+  // milestone for these kinds yet. Columns will surface empty until the
+  // milestone_templates are extended (Phase 4 candidate).
 ])
 
 // ── BATCH CRUD ──────────────────────────────────────────────────────────────
@@ -5307,8 +5356,20 @@ export async function getBatch(id) {
 }
 
 // Create a batch + its linked stops in one go. stop_order is assigned in
-// the order job_ids arrives. For non-trip batches (blasting / acid_wash /
+// the order stops arrive. For non-trip batches (blasting / acid_wash /
 // repair) stop_order is left NULL — there's no driving order.
+//
+// Phase 3 (2026-05-28): accepts either input.stops (the routing-aware shape
+// from BatchBuilder) or the legacy input.job_ids (backward compat). When
+// stops are provided, each row's source_milestone_key + completion_milestone_key
+// are persisted onto the link row, giving Phase 2's markBatchJobComplete
+// cascade a deterministic milestone target. Legacy job_ids → both columns
+// NULL on the link rows (cascade skipped on completion — same shape as the
+// 40 pre-Migration-L demo rows).
+//
+// Stops shape: [{ job_id, source_milestone_key, completion_milestone_key }].
+// Both milestone keys are optional per stop; NULL is the explicit "no
+// provenance recorded" signal.
 export async function createBatch(input) {
   const kind = input.kind
   const kindInfo = batchKindInfo(kind)
@@ -5335,20 +5396,31 @@ export async function createBatch(input) {
     .single()
   if (insErr) return { ok: false, error: insErr.message }
 
-  const jobIds = (input.job_ids || []).filter(Boolean)
-  if (jobIds.length === 0) return { ok: true, batch, linkedCount: 0 }
+  // Normalize to the stops shape. Legacy job_ids → NULL provenance.
+  const stops = Array.isArray(input.stops) && input.stops.length > 0
+    ? input.stops.filter(s => s && s.job_id)
+    : (input.job_ids || []).filter(Boolean).map(jid => ({
+        job_id: jid,
+        source_milestone_key: null,
+        completion_milestone_key: null,
+      }))
+  if (stops.length === 0) return { ok: true, batch, linkedCount: 0 }
 
   const isTrip = kindInfo.isField
-  const links = jobIds.map((jid, idx) => ({
-    batch_id:   batch.id,
-    job_id:     jid,
-    stop_order: isTrip ? (idx + 1) : null,
+  const links = stops.map((s, idx) => ({
+    batch_id:                 batch.id,
+    job_id:                   s.job_id,
+    stop_order:               isTrip ? (idx + 1) : null,
+    // Length-checked by Migration L's work_batch_jobs_milestone_keys_len:
+    // empty string would trip the CHECK, so normalize falsy → NULL.
+    source_milestone_key:     s.source_milestone_key     || null,
+    completion_milestone_key: s.completion_milestone_key || null,
   }))
   const { error: linkErr } = await supabase.from('work_batch_jobs').insert(links)
   if (linkErr) {
     return { ok: false, error: `Batch created but linking failed: ${linkErr.message}`, batch }
   }
-  return { ok: true, batch, linkedCount: jobIds.length }
+  return { ok: true, batch, linkedCount: stops.length }
 }
 
 export async function updateBatch(id, patch) {
@@ -5455,7 +5527,56 @@ export async function markBatchCancelled(batchId) {
 
 // Mark a specific stop done (within a batch). Used by the Day view's per-
 // stop checkboxes + the carryover banner's "mark complete" action.
-export async function markBatchJobComplete(batchJobId, { actorName } = {}) {
+//
+// SCHEDULER-COMPLETE Phase 2 + 3 — milestone cascade.
+//
+//   When the link row carries a completion_milestone_key (set at batch
+//   creation by the Phase 3 routing logic, post-Migration L), we cascade
+//   the linked milestone to status='done' via updateMilestone, which
+//   writes status_date=today (local) at line 2271. This closes the
+//   structural date-truth gap the 2026-05-28 audit identified: previously
+//   the dispatch checkbox stamped completed_at on the LINK row only and
+//   the underlying milestone stayed at whatever status it had before the
+//   trip, leaving job_milestones with 145 of 175 'done' rows undated.
+//
+//   (K) SOURCE-AS-COMPLETION FALLBACK. When completion_milestone_key is
+//   NULL but source_milestone_key is non-null, we cascade the SOURCE
+//   milestone instead. This is the inscription pattern (no proper
+//   completion milestone in the templates today; Phase 4 should add
+//   inscription_completed) — without this fallback the job would zombie
+//   in the inscription column forever because stencil_cut stays
+//   actionable. The cascade flips stencil_cut itself to done; the (A)
+//   re-surface guard then takes over.
+//
+//   Cascade is BEST-EFFORT. It runs after the link-row write succeeds
+//   and is wrapped in try/catch: a cascade failure (milestone not found,
+//   readiness gate blocked because a `requires` isn't satisfied, RLS
+//   denial) MUST NOT roll back the operator's completion. The link-row
+//   completed_at is the ground truth of "the crew said this is done";
+//   the milestone cascade is a best-effort sync.
+//
+//   (M) CASCADE-FAILURE VISIBILITY. When the readiness gate blocks a
+//   cascade (the target milestone has unsatisfied `requires`), we
+//   surface a warning string in the return value so the dispatch surface
+//   can render an amber toast/banner. Silent skip would let the operator
+//   tick "complete," see a green check, and never learn the milestone
+//   stayed open — which is the exact silent-corruption pathway the
+//   Workflow Intelligence agent flagged.
+//
+//   NULL on BOTH source and completion = legacy / ad-hoc shape (zero-job
+//   site_visit/errand kinds, or the 40 pre-Migration-L rows surfaced
+//   2026-05-28). Cascade is silently skipped — no warning, no toast.
+//
+//   actorUserId is optional. When supplied, the milestone's updated_by
+//   carries the auth uuid; when omitted, updated_by ends up NULL.
+//
+// Return shape:
+//   { ok: true }                                    — completed, no cascade needed
+//   { ok: true, cascade: { target, status:'done' } } — completed + milestone advanced
+//   { ok: true, warning: '...' }                    — completed but cascade blocked
+//                                                      (operator should see a toast)
+//   { ok: false, error: '...' }                     — link-row write failed
+export async function markBatchJobComplete(batchJobId, { actorName, actorUserId } = {}) {
   if (!batchJobId) return { ok: false, error: 'Missing batch_job id' }
   const { data, error } = await supabase
     .from('work_batch_jobs')
@@ -5464,7 +5585,7 @@ export async function markBatchJobComplete(batchJobId, { actorName } = {}) {
       completed_by: actorName || null,
     })
     .eq('id', batchJobId)
-    .select('job_id')
+    .select('job_id, source_milestone_key, completion_milestone_key')
     .single()
   if (error) return { ok: false, error: error.message }
   // Auto-resolve any promises for this job now that a stop completed. Safe to
@@ -5476,6 +5597,39 @@ export async function markBatchJobComplete(batchJobId, { actorName } = {}) {
       await resolvePromisesForJob(data.job_id)
     } catch (e) {
       console.warn('[promises] auto-resolve after completion failed:', e?.message)
+    }
+  }
+  // Resolve the cascade target. Completion key wins when present; otherwise
+  // (K) falls back to source-as-completion (inscription pattern). NULL on
+  // both = silent skip (legacy / ad-hoc).
+  const cascadeKey = data?.completion_milestone_key || data?.source_milestone_key || null
+  if (data?.job_id && cascadeKey) {
+    try {
+      const r = await updateMilestone(
+        data.job_id,
+        cascadeKey,
+        { status: 'done' },
+        { actorUserId },
+      )
+      if (r.ok) {
+        return { ok: true, cascade: { target: cascadeKey, status: 'done' } }
+      }
+      // (M) Surface readiness-gate blocks as an operator-facing warning.
+      if (r.requiresOverride) {
+        const blocking = (r.blockingKeys || []).join(', ') || 'an upstream milestone'
+        const msg = `Stop marked complete, but the linked milestone (${cascadeKey}) needs a manual review — its prerequisite is not done yet (${blocking}).`
+        console.warn(`[scheduler] milestone cascade blocked: ${cascadeKey} — requires not satisfied (${blocking})`)
+        return { ok: true, warning: msg }
+      }
+      // Non-block failure (milestone not found, RLS denial, etc.) — keep
+      // the completion success, but still surface so the operator knows
+      // the date didn't stamp.
+      const detail = r.error || 'unknown'
+      console.warn(`[scheduler] milestone cascade skipped: ${cascadeKey} — ${detail}`)
+      return { ok: true, warning: `Stop marked complete, but the linked milestone (${cascadeKey}) could not be updated: ${detail}.` }
+    } catch (e) {
+      console.warn('[scheduler] milestone cascade failed:', e?.message)
+      return { ok: true, warning: `Stop marked complete, but the linked milestone (${cascadeKey}) could not be updated: ${e?.message || 'unknown error'}.` }
     }
   }
   return { ok: true }
@@ -5570,37 +5724,85 @@ export function getSchedulableJobs(jobs, batches) {
     // bucket assignment. A job in mid-design isn't a candidate for a
     // setting batch; it's a candidate for a layout-stage batch (which
     // we don't track yet — Layout work isn't a field/shop batch).
+    //
+    // Phase 3 (2026-05-28): each push now carries completion_milestone_key
+    // alongside the source milestone, so BatchBuilder can thread both into
+    // createBatch and the Phase 2 cascade has a deterministic target.
+    //
+    // (A) Source-key re-surface guard: each route checks `completionDone(...)`
+    // before pushing. The Phase 2 cascade flips ONLY the completion milestone;
+    // the source stays at whatever status it had (often still actionable).
+    // Without this guard, a job re-appears in its column the day after the
+    // batch closes because the source milestone is still un-done. The guard
+    // looks ahead to the completion milestone status — if the work has been
+    // recorded as completed via cascade, the job is suppressed regardless
+    // of the source status. NULL completion routes (inscription) don't need
+    // the guard because (K) source-as-completion makes them self-skipping:
+    // the source itself flips done.
+    const completionDone = (key) => {
+      if (!key) return false
+      const c = byKey.get(key)
+      return !!c && (c.status === 'done' || c.status === 'not_needed')
+    }
     for (const m of (job.milestones || [])) {
       if (m.status === 'done' || m.status === 'not_needed') continue
       if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
 
-      // Special case — inscription job_type uses stencil_cut → inscription
-      // batch. Non-inscription jobs with stencil_cut go to blasting prep
-      // via the inferred stick-stencil signal (not a batch kind today).
+      // Inscription — surface on stencil_cut regardless of job_type.
+      // The previous job_type='inscription' predicate was a dead-letter
+      // gate (no such job_type exists in prod). Completion is intentionally
+      // null — (K) source-as-completion fallback in markBatchJobComplete
+      // cascades stencil_cut itself to done at dispatch tick. Phase 4 should
+      // add a proper inscription_completed milestone.
       if (m.milestone_key === 'stencil_cut') {
-        if (job.job_type === 'inscription') {
-          buckets.get('inscription').push({ job, milestone: m })
-        }
+        buckets.get('inscription').push({ job, milestone: m, completion_milestone_key: null })
         continue
       }
-      // Foundation pour → foundation_trip
-      if (m.milestone_key === 'foundation_poured') {
-        buckets.get('foundation_trip').push({ job, milestone: m })
+      // Foundation — DEFERRED to Phase 4 (G). Setting work on green concrete
+      // is a real shop-floor hazard if downstream logic ever keys off
+      // foundation_poured before the 7-day cure window passes. Phase 4 will
+      // add foundation_cured + gate downstream setting on it. Foundation
+      // work is NOT schedulable through this surface today — intentional.
+
+      // Mausoleum door — pickup leg surfaces from door_pickup_needed
+      // (completion door_picked_up). Template-chain `requires` keep the
+      // dropoff leg gated until pickup completes; simultaneous double-
+      // surfacing on the same job is structurally prevented.
+      if (m.milestone_key === 'door_pickup_needed') {
+        if (completionDone('door_picked_up')) continue
+        buckets.get('door_trip').push({ job, milestone: m, completion_milestone_key: 'door_picked_up' })
         continue
       }
-      // Sandblast / production → blasting (shop)
+      // Mausoleum door — dropoff/return leg. door_installed is a MISNOMER
+      // (Shevchenko does no door installation — this is the return trip to
+      // the cemetery). Phase 4 will rename the template key; for now this
+      // is the in-template completion satisfier.
+      if (m.milestone_key === 'door_dropoff_needed') {
+        if (completionDone('door_installed')) continue
+        buckets.get('door_trip').push({ job, milestone: m, completion_milestone_key: 'door_installed' })
+        continue
+      }
+      // Sandblast / production → blasting (shop). Completion = production_completed.
       if (m.milestone_key === 'production_started') {
-        buckets.get('blasting').push({ job, milestone: m })
+        if (completionDone('production_completed')) continue
+        buckets.get('blasting').push({ job, milestone: m, completion_milestone_key: 'production_completed' })
         continue
       }
-      // Ready-to-install → setting (new_stone job type) or delivery (others)
+      // Ready-to-install → setting (new_stone job type only). The delivery
+      // branch for non-new_stone job_types is COMMENTED OUT (P): no current
+      // template carries ready_to_install on a non-new_stone job_type, and
+      // leaving the branch active primes a silent cascade failure the moment
+      // a future template adds it. Reinstate explicitly when that template
+      // lands AND the cascade target ('installed' or whatever) is verified
+      // present in that template.
       if (m.milestone_key === 'ready_to_install') {
-        const kind = job.job_type === 'new_stone' ? 'setting' : 'delivery'
-        buckets.get(kind).push({ job, milestone: m })
+        if (job.job_type !== 'new_stone') continue   // (P) delivery branch disabled
+        if (completionDone('installed')) continue
+        buckets.get('setting').push({ job, milestone: m, completion_milestone_key: 'installed' })
         continue
       }
-      // Acid wash / repair — gap milestones today, leave buckets empty
-      // until the templates carry these keys.
+      // Acid wash / repair / rub_grab — gap milestones today, leave buckets
+      // empty until the templates carry the source keys.
     }
   }
   // Sort each bucket by aging desc so the most-overdue card surfaces first.

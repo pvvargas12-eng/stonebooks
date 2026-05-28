@@ -61,6 +61,11 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
 
   const actorName = profile?.display_name || 'Operator'
+  // Auth uuid for the milestone cascade in markBatchJobComplete (Phase 2).
+  // Threaded through CalendarDay → {CalendarDayDispatch, CarryoverBanner}.
+  // Optional — cascade still runs without it; updated_by ends up NULL on
+  // the cascaded milestone row.
+  const actorUserId = user?.id || null
 
   // Monotonic request token — only the latest loadAll response writes state, so
   // overlapping reloads (rapid drops / undo) can't clobber with stale rows.
@@ -260,6 +265,7 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
             carryover={carryover}
             promisesByJob={promisesByJob}
             actorName={actorName}
+            actorUserId={actorUserId}
             onReload={loadAll}
           />
         </>

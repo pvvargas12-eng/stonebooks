@@ -22,10 +22,15 @@ import {
 } from '../../lib/stonebooksData'
 import PromiseBadge from '../scheduler/PromiseBadge'
 
-export default function CalendarDayDispatch({ batch, promisesByJob, actorName, onReload }) {
+export default function CalendarDayDispatch({ batch, promisesByJob, actorName, actorUserId, onReload }) {
   const [busyStopId, setBusyStopId] = useState(null)
   const [statusBusy, setStatusBusy] = useState(false)
   const [error, setError] = useState(null)
+  // (M) Cascade-failure visibility — amber notice rendered alongside error.
+  // The link-row write succeeded but the milestone cascade was blocked or
+  // failed; the operator needs to see this so they can manually flip the
+  // gated milestone instead of waiting for a mystery re-surface.
+  const [cascadeWarning, setCascadeWarning] = useState(null)
   const [dragSrcJobId, setDragSrcJobId] = useState(null)
 
   const kindInfo = batchKindInfo(batch.kind)
@@ -37,12 +42,14 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, o
     if (stop.completed_at) return    // already complete — no-op (commit 2 adds an unmark path)
     setBusyStopId(stop.id)
     setError(null)
-    const res = await markBatchJobComplete(stop.id, { actorName })
+    setCascadeWarning(null)
+    const res = await markBatchJobComplete(stop.id, { actorName, actorUserId })
     setBusyStopId(null)
     if (!res.ok) {
       setError(res.error || 'Failed to mark complete.')
       return
     }
+    if (res.warning) setCascadeWarning(res.warning)
     onReload?.()
   }
 
@@ -127,6 +134,20 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, o
 
       {error && (
         <div className="sb-dispatch-error">{error}</div>
+      )}
+      {cascadeWarning && !error && (
+        <div className="sb-dispatch-warning" role="status">
+          <span className="sb-dispatch-warning-label">Needs review</span>
+          <span className="sb-dispatch-warning-msg">{cascadeWarning}</span>
+          <button
+            type="button"
+            className="sb-dispatch-warning-dismiss"
+            onClick={() => setCascadeWarning(null)}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {/* Zero-stop batches are ad-hoc events (site_visit / errand) — their
@@ -332,6 +353,44 @@ const localStyles = `
     border-radius: var(--sb-r-sm, 6px);
     margin-bottom: 10px;
   }
+  /* (M) Cascade-failure visibility — amber notice. Distinct from .error
+     (red) so the operator can tell "the click succeeded but the milestone
+     needs your eyes" apart from "the click itself failed." */
+  .sb-dispatch-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: var(--sb-amber-fg, #6b4a1c);
+    background: var(--sb-amber-bg, #fbe5b8);
+    border: 0.5px solid var(--sb-amber, #b8842a);
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: var(--sb-r-sm, 6px);
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+  .sb-dispatch-warning-label {
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sb-amber, #b8842a);
+    white-space: nowrap;
+    padding-top: 1px;
+  }
+  .sb-dispatch-warning-msg { flex: 1; }
+  .sb-dispatch-warning-dismiss {
+    background: transparent;
+    border: 0.5px solid var(--sb-amber, #b8842a);
+    color: var(--sb-amber, #b8842a);
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-dispatch-warning-dismiss:hover { background: rgba(184, 132, 42, 0.12); }
 
   .sb-dispatch-stops {
     list-style: none;

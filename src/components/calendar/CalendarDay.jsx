@@ -27,6 +27,7 @@ export default function CalendarDay({
   carryover,
   promisesByJob,
   actorName,
+  actorUserId,
   onReload,
 }) {
   const view = useMemo(
@@ -52,13 +53,51 @@ export default function CalendarDay({
     if (b.assigned_to) workersOut.add(b.assigned_to)
   }
 
+  // (T3) Top-of-sheet review-needed count. Counts stops where the operator
+  // already ticked complete (completed_at set) but the cascade did not take —
+  // the underlying milestone is still not done. This is the persistent state
+  // version of the inline amber notice on CalendarDayDispatch (which is
+  // transient per-click feedback). The badge auto-clears the moment the
+  // operator manually flips the gated milestone from the Job detail surface
+  // or otherwise resolves the readiness gate. No dismiss button — it reflects
+  // reality, not an acknowledgment.
+  //
+  // Handles both pair-cascade routes (completion_milestone_key) and the (K)
+  // source-as-completion fallback (source_milestone_key when completion is
+  // null). Legacy / ad-hoc stops with NULL on both keys are skipped (no
+  // cascade was ever expected).
+  const reviewCount = useMemo(() => {
+    let n = 0
+    for (const b of [...view.field, ...view.shop]) {
+      for (const s of (b.stops || [])) {
+        if (!s.completed_at) continue
+        const cascadeKey = s.completion_milestone_key || s.source_milestone_key
+        if (!cascadeKey) continue
+        const m = (s.job?.milestones || []).find(x => x.milestone_key === cascadeKey)
+        if (!m) continue
+        if (m.status !== 'done' && m.status !== 'not_needed') n += 1
+      }
+    }
+    return n
+  }, [view])
+
   return (
     <div className="sb-cal-day">
       <CarryoverBanner
         rows={carryover}
         actorName={actorName}
+        actorUserId={actorUserId}
         onReload={onReload}
       />
+
+      {reviewCount > 0 && (
+        <div className="sb-cal-day-review-banner" role="status">
+          <span className="sb-cal-day-review-count">{reviewCount}</span>
+          <span className="sb-cal-day-review-msg">
+            {reviewCount === 1 ? 'stop needs' : 'stops need'} review before dispatch — the linked milestone didn't advance after completion was ticked. Open the job to resolve the gate.
+          </span>
+        </div>
+      )}
 
       <div className="sb-cal-day-grid">
         <section className="sb-cal-day-col">
@@ -74,6 +113,7 @@ export default function CalendarDay({
               batch={b}
               promisesByJob={promisesByJob}
               actorName={actorName}
+              actorUserId={actorUserId}
               onReload={onReload}
             />
           ))}
@@ -160,6 +200,45 @@ function ShopBatchBlock({ batch, promisesByJob }) {
 const localStyles = `
   .sb-cal-day {
     width: 100%;
+  }
+  /* (T3) Top-of-dispatch review banner — loud but not modal. Bright amber
+     fill + bold red count number make it impossible to miss in a fast-scan,
+     but it doesn't interrupt the operator's flow. The full acknowledgment +
+     override + audit-trail treatment defers to Phase 4 ("dispatch
+     acknowledgment + override" feature). */
+  .sb-cal-day-review-banner {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    background: linear-gradient(90deg, #fbe5b8 0%, #fbd996 100%);
+    border: 1px solid #b8842a;
+    border-left: 4px solid #b54040;
+    border-radius: var(--sb-r-sm, 6px);
+    box-shadow: 0 1px 3px rgba(181, 64, 64, 0.10);
+    font-size: 14px;
+    line-height: 1.45;
+    color: #5e3a0e;
+  }
+  .sb-cal-day-review-count {
+    flex: 0 0 auto;
+    font-size: 24px;
+    font-weight: 700;
+    color: #b54040;
+    font-variant-numeric: tabular-nums;
+    background: #fff;
+    border-radius: 50%;
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid #b54040;
+  }
+  .sb-cal-day-review-msg {
+    flex: 1;
+    font-weight: 500;
   }
   .sb-cal-day-grid {
     display: grid;

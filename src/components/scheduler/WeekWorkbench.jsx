@@ -31,6 +31,11 @@ export default function WeekWorkbench({
   trayBatches,
   onReload,
 }) {
+  // Selection bundle: jobId → { job, milestone, completion_milestone_key }.
+  // Phase 3: the milestone + completion provenance from getSchedulableJobs is
+  // carried with each tick so BatchBuilder can persist both keys onto the
+  // link row at createBatch time (Phase 2 then cascades the right milestone
+  // on dispatch completion).
   const [selectedByJobId, setSelectedByJobId] = useState(() => new Map())
   // Modal state — when null the modal is closed. When an object, contains
   // the initial seed { jobs, defaultKind }.
@@ -45,11 +50,14 @@ export default function WeekWorkbench({
     [promises],
   )
 
-  const handleToggle = useCallback((job, checked) => {
+  // Toggle preserves the routing context. The column passes its row entry
+  // ({ job, milestone, completion_milestone_key }) on tick; we store it as
+  // a stop bundle so the milestone keys travel down to createBatch.
+  const handleToggle = useCallback((row, checked) => {
     setSelectedByJobId(prev => {
       const next = new Map(prev)
-      if (checked) next.set(job.id, job)
-      else next.delete(job.id)
+      if (checked) next.set(row.job.id, row)
+      else next.delete(row.job.id)
       return next
     })
   }, [])
@@ -63,8 +71,8 @@ export default function WeekWorkbench({
   // Mixed selections default to the first kind with any selection — the
   // operator can change it inside the modal.
   const openBuilder = () => {
-    const selectedJobs = Array.from(selectedByJobId.values())
-    if (selectedJobs.length === 0) return
+    const selectedRows = Array.from(selectedByJobId.values())
+    if (selectedRows.length === 0) return
     let defaultKind = null
     const kindsHit = []
     for (const k of BATCH_KINDS) {
@@ -74,7 +82,10 @@ export default function WeekWorkbench({
     }
     defaultKind = kindsHit[0] || 'inscription'
     setBuilderInit({
-      jobs: selectedJobs.map(j => ({ job: j })),
+      // Carry milestone + completion through. BatchBuilder treats this as
+      // its initialJobs array; the stop list at save time is built from it
+      // and includes both source_milestone_key + completion_milestone_key.
+      jobs: selectedRows,
       defaultKind,
     })
   }

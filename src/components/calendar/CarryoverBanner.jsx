@@ -26,9 +26,13 @@ import {
   todayLocalISO,
 } from '../../lib/stonebooksData'
 
-export default function CarryoverBanner({ rows, actorName, onReload }) {
+export default function CarryoverBanner({ rows, actorName, actorUserId, onReload }) {
   const [busyId, setBusyId] = useState(null)
   const [error, setError] = useState(null)
+  // (M) Cascade-failure visibility — same pattern as CalendarDayDispatch.
+  // The link-row write succeeded but the milestone cascade was blocked or
+  // failed; surface so the operator can manually flip the gated milestone.
+  const [cascadeWarning, setCascadeWarning] = useState(null)
   const [rescheduleFor, setRescheduleFor] = useState(null)   // batch_job row
   const [rescheduleDate, setRescheduleDate] = useState(todayLocalISO())
 
@@ -42,12 +46,14 @@ export default function CarryoverBanner({ rows, actorName, onReload }) {
   const doMarkComplete = async (row) => {
     setBusyId(row.id)
     setError(null)
-    const res = await markBatchJobComplete(row.id, { actorName })
+    setCascadeWarning(null)
+    const res = await markBatchJobComplete(row.id, { actorName, actorUserId })
     setBusyId(null)
     if (!res.ok) {
       setError(res.error || 'Failed to mark complete.')
       return
     }
+    if (res.warning) setCascadeWarning(res.warning)
     onReload?.()
   }
   const doUnschedule = async (row) => {
@@ -91,6 +97,20 @@ export default function CarryoverBanner({ rows, actorName, onReload }) {
       </header>
       {error && (
         <div className="sb-carryover-error">{error}</div>
+      )}
+      {cascadeWarning && !error && (
+        <div className="sb-carryover-warning" role="status">
+          <span className="sb-carryover-warning-label">Needs review</span>
+          <span className="sb-carryover-warning-msg">{cascadeWarning}</span>
+          <button
+            type="button"
+            className="sb-carryover-warning-dismiss"
+            onClick={() => setCascadeWarning(null)}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
       <ul className="sb-carryover-list">
         {rows.map(row => {
@@ -254,6 +274,44 @@ const localStyles = `
     background: var(--sb-red-bg, #fbe5e5);
     border-radius: var(--sb-r-sm, 6px);
   }
+  /* (M) Cascade-failure visibility — amber notice, same pattern as
+     CalendarDayDispatch. Operator sees this when the link-row write
+     succeeded but the cascade was blocked / failed. */
+  .sb-carryover-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: var(--sb-amber-fg, #6b4a1c);
+    background: var(--sb-amber-bg, #fbe5b8);
+    border: 0.5px solid var(--sb-amber, #b8842a);
+    font-size: 13px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border-radius: var(--sb-r-sm, 6px);
+    line-height: 1.4;
+  }
+  .sb-carryover-warning-label {
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sb-amber, #b8842a);
+    white-space: nowrap;
+    padding-top: 1px;
+  }
+  .sb-carryover-warning-msg { flex: 1; }
+  .sb-carryover-warning-dismiss {
+    background: transparent;
+    border: 0.5px solid var(--sb-amber, #b8842a);
+    color: var(--sb-amber, #b8842a);
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-carryover-warning-dismiss:hover { background: rgba(184, 132, 42, 0.12); }
   .sb-carryover-list {
     list-style: none;
     padding: 0;

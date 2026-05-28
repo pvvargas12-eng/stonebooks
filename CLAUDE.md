@@ -31,6 +31,12 @@ React + Supabase. Internal use only.
 - **Confirm file receipts by name** when files are shared.
 - **Ship as zips with non-technical install steps** for the user (Paul) to apply.
 
+## Audit lessons (corrections from prior mistakes)
+
+- **RLS-protected tables are invisible to the anon key.** The publishable anon key (`sb_publishable_...`) reads tables as the `anon` Postgres role. Any table with a policy granted only to `authenticated` (e.g. `using (true) to authenticated`) returns **0 rows** to anon — even when rows exist. **This is silent: no error, no permission denied, just an empty result set.** Currently known authenticated-only tables: `work_batches`, `work_batch_jobs`, `job_promises` (all via `supabase/migrations/20260527_scheduler_rls.sql`). Other tables (e.g. `orders`, `job_milestones`) appear anon-readable in prod and audited correctly.
+- **Audit rule:** any prod data audit of an RLS-protected table must run in **Supabase Studio's SQL Editor** (authenticated session) or via a service-role key — NEVER via `curl`/PowerShell with the publishable anon key. The 2026-05-28 scheduler audit reported "0 work_batches / 0 work_batch_jobs / 0 job_promises" and concluded the scheduler had never been used. That was an **RLS false-negative**: 40 `work_batch_jobs` rows actually existed (surfaced 2026-05-28 when Migration L was applied). The SCHEDULER-COMPLETE sprint shape was reframed accordingly.
+- **Pre-audit checklist for any RLS table:** (1) read the table's RLS policy migration to see who's allowed, (2) if it's `authenticated`-only, ask the user to run the probe in Studio rather than running it yourself, (3) document the visibility limit in the report so downstream conclusions don't depend on the anon view.
+
 ## Stack
 
 - Frontend: React (Vite), single-page app
@@ -486,6 +492,21 @@ A multi-lens review (UX / code / operational) drove 8 fixes before commit: (1) m
 - **No "list cemetery orders / resume draft" surface** — the wizard creates `cemetery_orders` drafts but nothing lists or reopens them; a draft is only reachable while the wizard is open. Needs a list/resume view.
 - **Per-cemetery rate cards are a hardcoded JS constant** (`CEMETERY_DOOR_PRICING`) — migrate to a DB table once 3+ custom cemeteries exist.
 - **Scheduler workflow-grid still incomplete for non-batch job_types** (carried from CAL-DRAG) — only 4 milestone keys map to columns; `acid_wash` / `repair` / `rub_grab` / `door_trip` coverage pending.
+
+## Phase 4 backlog (SCHEDULER-COMPLETE follow-ups)
+
+Locked items for the next scheduler sprint. All are deferred from SCHEDULER-COMPLETE Phases 2+3 by explicit decision; the cascade infrastructure landed without these so the sprint could close clean.
+
+- **Foundation flow done right.** Template migration adding a `foundation_cured` milestone + downstream gating: setting/install work must not surface as schedulable until `foundation_cured` flips (7-day cure window after pour). Re-enable foundation_trip routing with source=`foundation_scheduled` (or whatever pre-pour key is correct), completion=`foundation_poured`, and a separate `foundation_cured` flip by timer or manual operator action. Until this lands, foundation work is NOT schedulable through the workbench — by design (Monument Ops review: setting on green concrete is a physical-product-damage hazard).
+- **Door milestone rename.** Template migration: `door_installed` → `door_returned` (or `door_dropped_off`). Shevchenko Monuments does NOT install mausoleum doors — the "dropoff" leg is the crew returning the door to the cemetery. The current `door_installed` key is a MISNOMER held in place by the template. UI text already says "returned" / "dropped off" everywhere user-facing this sprint; the raw key stays internal until this migration.
+- **inscription_completed proper milestone.** Replace the (K) source-as-completion fallback (which today cascades `stencil_cut` to done at dispatch tick) with a real `inscription_completed` template milestone. Phase 3 audit confirmed nothing currently keys off `inscription_completed` — once it exists, wire it up.
+- **Dispatch acknowledgment + override flow with audit trail.** The full T1 treatment of the cascade-failure notice that was deferred this sprint: red row tint on affected stops, modal/blocking banner at top of dispatch sheet ("3 stops need review — [Review now] / [Dispatch anyway]"), explicit override button with reason capture, and an audit log row per override. Phase 3 shipped the loud-but-not-modal version: top-of-sheet count badge + inline amber notice.
+- **Delivery route re-enable.** The non-new_stone `ready_to_install` branch is commented out (P) until a real non-new_stone template carries `ready_to_install`. Reinstate explicitly when that template lands AND the cascade target is verified present in that template.
+- **acid_wash / repair / rub_grab routing.** Template-content decisions: what milestone key triggers each? Monument Ops proposed `acid_wash_needed`/`acid_wash_completed`, `repair_needed`/`repair_completed`, `rub_grab_needed`/`rub_grab_completed` (the latter should gate `stencil_cut` for matching-inscription jobs).
+- **Export-layer milestone display-name mapping.** When/if any export (CSV, PDF, email to outside parties) surfaces raw milestone keys, add a humanizing display map so `door_installed` reads as "Door returned to cemetery," `production_completed` reads as "Production completed," etc. Phase 3 audit confirmed NO current customer-facing surface exposes raw milestone keys; this is forward-cover for any future export feature.
+- **(T8) Foundation-stage read-only awareness badge.** Stones waiting on foundation cure should remain visible on Job rows / Today / Profit surfaces with a "Waiting on foundation cure" badge even if not schedulable — operator's mental map must not lose them.
+- **(T9) Weather + cemetery-hours gating.** Surface a weather flag on the dispatch day; respect cemetery access hours and sexton-only windows when surfacing batchable work.
+- **(T10) Two-stone / one-cemetery batching sanity check.** Verify on a real day's data that the source-key re-surface guard works per-trip not per-job — same truck shouldn't get routed to the same cemetery twice in a week when it could have been one stop.
 
 ## Deferred / known issues
 
