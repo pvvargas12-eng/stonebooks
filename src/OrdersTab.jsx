@@ -95,7 +95,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer }) 
       <div className="sb-pill-row">
         <Pill on={filter === 'active'}   onClick={() => setFilter('active')}>Active</Pill>
         <Pill on={filter === 'all'}      onClick={() => setFilter('all')}>All</Pill>
-        <Pill on={filter === 'archived'} onClick={() => setFilter('archived')}>📦 Archive</Pill>
+        <Pill on={filter === 'archived'} onClick={() => setFilter('archived')}>Archived</Pill>
         <span className="sb-pill-divider" />
         {ORDER_STATUSES.filter(s => s.code !== 'archived').map(s => (
           <Pill

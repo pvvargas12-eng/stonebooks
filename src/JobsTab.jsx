@@ -23,6 +23,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
 import JobsDepartmentView from './JobsDepartmentView'
+import JobPnLPanel from './JobPnLPanel'
 import {
   getJob, getJobEvents,
   createJobFromOrder,
@@ -457,6 +458,12 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
       ) : (
         <EventLog events={events} milestones={job.milestones} />
       )}
+
+      {/* Per-job P&L: estimates, actuals, margin, variance signals */}
+      <JobPnLPanel
+        target={{ jobId }}
+        label={job?.order?.primary_lastname || customerName(job?.order?.customer) || (job?.door_index != null ? `door ${job.door_index + 1}` : 'this job')}
+      />
 
       {overrideReq && (
         <OverrideModal
@@ -1210,7 +1217,7 @@ function MilestoneRow({ milestone, allMilestones, jobId, projectionMap, onRefres
           )}
           {overdue && (
             <div className="sb-milestone-overdue-caption">
-              ⚠ {daysOver} day{daysOver === 1 ? '' : 's'} overdue
+              {daysOver} day{daysOver === 1 ? '' : 's'} overdue
             </div>
           )}
           {milestone.note && (
@@ -1581,7 +1588,6 @@ function WaitingHintBanner({ hint, onAccept, onDismiss }) {
       }}
     >
       <div style={{ fontSize: 13, flex: '1 1 auto', minWidth: 240 }}>
-        <span style={{ marginRight: 6 }}>💡</span>
         <strong>“{hint.sourceLabel}”</strong> usually means the job is now waiting on the {partyLabel}.{' '}
         Update overall status to <strong>{kindLabel}</strong>?
         {error && (

@@ -139,7 +139,7 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
 
       <div className="sb-pill-row">
         <button type="button" className={`sb-pill ${filter === 'active' ? 'on' : ''}`} onClick={() => setFilter('active')}>Active</button>
-        <button type="button" className={`sb-pill ${filter === 'archived' ? 'on' : ''}`} onClick={() => setFilter('archived')}>📦 Archive</button>
+        <button type="button" className={`sb-pill ${filter === 'archived' ? 'on' : ''}`} onClick={() => setFilter('archived')}>Archived</button>
       </div>
 
       <div className="sb-cust-meta">
@@ -242,7 +242,7 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
     .reduce((s, o) => s + Math.max(0, rowGrandTotal(o) - rowTotalPaid(o)), 0)
 
   const doArchive = async () => {
-    if (!confirm(`Archive ${customerName(customer)}? Their order history is preserved. They'll be hidden from the active customer list but accessible via the 📦 Archive filter.`)) return
+    if (!confirm(`Archive ${customerName(customer)}? Their order history is preserved. They'll be hidden from the active customer list but accessible via the Archived filter.`)) return
     setBusy('archive'); setErr(null)
     const r = await archiveCustomer(customer.id)
     setBusy(null)
@@ -285,20 +285,20 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
             {isArchived && <span className="sb-archived-tag">Archived</span>}
           </h1>
           <div className="sb-cust-detail-meta">
-            {customer.phone_primary && <span>📞 {fmtPhone(customer.phone_primary)}</span>}
-            {customer.email && <span>✉ {customer.email}</span>}
-            {(customer.city || customer.state) && <span>📍 {[customer.city, customer.state].filter(Boolean).join(', ')}</span>}
+            {customer.phone_primary && <span>{fmtPhone(customer.phone_primary)}</span>}
+            {customer.email && <span>{customer.email}</span>}
+            {(customer.city || customer.state) && <span>{[customer.city, customer.state].filter(Boolean).join(', ')}</span>}
           </div>
         </div>
         <div className="sb-cust-detail-actions">
           {!isArchived && (
             <button type="button" className="sb-btn-secondary" onClick={doArchive} disabled={busy !== null}>
-              {busy === 'archive' ? 'Archiving…' : '📦 Archive'}
+              {busy === 'archive' ? 'Archiving…' : 'Archive'}
             </button>
           )}
           {isArchived && (
             <button type="button" className="sb-btn-secondary" onClick={doRestore} disabled={busy !== null}>
-              {busy === 'restore' ? 'Restoring…' : '↩ Restore'}
+              {busy === 'restore' ? 'Restoring…' : 'Restore'}
             </button>
           )}
           <button
@@ -308,7 +308,7 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
             disabled={busy !== null}
             title={orders.length > 0 ? 'Customers with orders can only be archived.' : 'Permanently delete this customer'}
           >
-            {busy === 'delete' ? 'Deleting…' : '🗑 Delete'}
+            {busy === 'delete' ? 'Deleting…' : 'Delete'}
           </button>
         </div>
       </div>

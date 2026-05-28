@@ -24,6 +24,11 @@ import {
   updateCemeteryOrder,
   uploadCemeteryPacket,
   createJobsFromCemeteryOrder,
+  getCemeteryOrder,
+  getJobsForCemeteryOrder,
+  getJobCostEstimates,
+  setJobCostEstimate,
+  ESTIMATE_CATEGORIES,
 } from './lib/stonebooksData'
 
 // Static branding — mirrors COMPANY_INFO in SalesMode.jsx (kept local so the
@@ -55,8 +60,11 @@ function pricingHint(p) {
   return 'Custom pricing'
 }
 
-export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
+export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrderId = null, editMode = false }) {
   const [step, setStep] = useState(0)
+  const [resuming, setResuming] = useState(!!initialOrderId)
+  const [editMeta, setEditMeta] = useState({ orderNumber: null, jobCount: 0 })   // edit-mode context
+  const [estimates, setEstimates] = useState({})   // optional quote-time cost estimates (per ESTIMATE_CATEGORIES)
   const [co, setCo] = useState({
     id: null, cemetery_name: '', cemetery_pricing_snapshot: null,
     doors: [], packet_storage_path: null,
@@ -77,6 +85,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
   const [editing, setEditing] = useState(null)          // `${doorIdx}:${key}`
   const [editVal, setEditVal] = useState('')
   const [resetModal, setResetModal] = useState(false)
+  const [confirmClose, setConfirmClose] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -84,25 +93,67 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
   const isSplit = pricing.type === 'indoor_outdoor_split'
 
   // ── debounced autosave ────────────────────────────────────────────────────
+  // The save payload (current co → cemetery_orders columns). Shared by the
+  // debounced autosave and the flush-on-close path.
+  const savePatch = () => ({
+    cemetery_name: co.cemetery_name,
+    cemetery_pricing_snapshot: co.cemetery_pricing_snapshot,
+    doors: co.doors,
+    packet_storage_path: co.packet_storage_path,
+    cemetery_contact_name: co.cemetery_contact_name || null,
+    cemetery_contact_email: co.cemetery_contact_email || null,
+    cemetery_contact_phone: co.cemetery_contact_phone || null,
+    tax_applied: co.tax_applied,
+    cc_fee_applied: co.cc_fee_applied,
+    // In edit mode (submitted order), keep the total in sync as doors change.
+    ...(editMode ? { total_amount: total } : {}),
+  })
   const saveTimer = useRef(null)
+  const dirtyRef = useRef(false)   // true when edits are pending / in-flight
   useEffect(() => {
     if (!co.id) return
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
-      updateCemeteryOrder(co.id, {
-        cemetery_name: co.cemetery_name,
-        cemetery_pricing_snapshot: co.cemetery_pricing_snapshot,
-        doors: co.doors,
-        packet_storage_path: co.packet_storage_path,
-        cemetery_contact_name: co.cemetery_contact_name || null,
-        cemetery_contact_email: co.cemetery_contact_email || null,
-        cemetery_contact_phone: co.cemetery_contact_phone || null,
-        tax_applied: co.tax_applied,
-        cc_fee_applied: co.cc_fee_applied,
-      })
+    dirtyRef.current = true
+    saveTimer.current = setTimeout(async () => {
+      await updateCemeteryOrder(co.id, savePatch())
+      dirtyRef.current = false
     }, 800)
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [co])
+
+  // ── resume an existing draft ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!initialOrderId) return
+    let cancelled = false
+    getCemeteryOrder(initialOrderId).then(row => {
+      if (cancelled || !row) { setResuming(false); return }
+      setCo({
+        id: row.id,
+        cemetery_name: row.cemetery_name || '',
+        cemetery_pricing_snapshot: row.cemetery_pricing_snapshot || null,
+        doors: Array.isArray(row.doors) && row.doors.length ? row.doors : [blankDoor()],
+        packet_storage_path: row.packet_storage_path || null,
+        cemetery_contact_name: row.cemetery_contact_name || '',
+        cemetery_contact_email: row.cemetery_contact_email || '',
+        cemetery_contact_phone: row.cemetery_contact_phone || '',
+        tax_applied: !!row.tax_applied, cc_fee_applied: !!row.cc_fee_applied,
+      })
+      // derive step-1 selection from the saved cemetery name
+      const known = KNOWN_ORDER.find(k => CEMETERY_DOOR_PRICING[k].label === row.cemetery_name)
+      if (known) { setChoice(known) }
+      else if (row.cemetery_name) { setChoice('CUSTOM'); setShowCustom(true); setCustomName(row.cemetery_name) }
+      setDoorCount(Math.max(1, (row.doors || []).length || 1))
+      setResuming(false)
+      if (editMode) {
+        setEditMeta({ orderNumber: row.order_number || null, jobCount: 0 })
+        setStep(2)   // land on the doors editor
+        getJobsForCemeteryOrder(row.id).then(js => setEditMeta(m => ({ ...m, jobCount: (js || []).length })))
+      }
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOrderId])
 
   // ── pricing helpers ─────────────────────────────────────────────────────
   const itemMapFor = (d) => (isSplit ? (d.location ? (pricing[d.location] || {}) : null) : (pricing.items || {}))
@@ -220,6 +271,29 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
     setResetModal(false)
   }
 
+  // Prefill estimates when an order id exists (resume / edit).
+  useEffect(() => {
+    if (!co.id) return
+    let c = false
+    getJobCostEstimates({ cemeteryOrderId: co.id }).then(rows => {
+      if (c || !rows.length) return
+      const next = {}; for (const r of rows) next[r.category] = String(r.estimated_amount)
+      setEstimates(next)
+    })
+    return () => { c = true }
+  }, [co.id])
+
+  // Persist entered estimates (cemetery-order level). Non-fatal best-effort.
+  const writeEstimates = async () => {
+    if (!co.id) return
+    for (const { key } of ESTIMATE_CATEGORIES) {
+      const amt = Number(estimates[key])
+      if (Number.isFinite(amt) && amt > 0) {
+        try { await setJobCostEstimate({ cemeteryOrderId: co.id, category: key, estimatedAmount: amt }) } catch { /* non-fatal */ }
+      }
+    }
+  }
+
   const handleSubmit = async () => {
     if (!co.id) return
     setBusy(true); setError(null)
@@ -233,9 +307,35 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
       cc_fee_applied: co.cc_fee_applied,
     })
     const res = await createJobsFromCemeteryOrder(co.id)
+    if (!res.ok) { setBusy(false); setError(res.error); return }
+    await writeEstimates()
     setBusy(false)
-    if (!res.ok) { setError(res.error); return }
     onSubmitted?.()
+  }
+
+  // ── close / back ──────────────────────────────────────────────────────────
+  // The shell (closeSales) returns the operator to whichever tab they came from
+  // — the Cemetery Orders list when resuming, the home tab when launched from
+  // "+ New sale". We only intercept to guard pending (unsaved) edits.
+  const requestClose = () => {
+    if (saveTimer.current && dirtyRef.current) setConfirmClose(true)
+    else onClose?.()
+  }
+  const saveAndClose = async () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    if (co.id) { setBusy(true); await updateCemeteryOrder(co.id, savePatch()); dirtyRef.current = false; setBusy(false) }
+    setConfirmClose(false); onClose?.()
+  }
+  const discardClose = () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    setConfirmClose(false); onClose?.()
+  }
+  // Edit mode: flush the (door/total/contact) changes and return to the list.
+  // No job re-spawn — jobs already exist for a submitted order.
+  const saveChanges = async () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    if (co.id) { setBusy(true); await updateCemeteryOrder(co.id, { ...savePatch(), total_amount: total }); await writeEstimates(); dirtyRef.current = false; setBusy(false) }
+    onClose?.()
   }
 
   // ── nav gating ────────────────────────────────────────────────────────────
@@ -257,10 +357,16 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
     <div className="co-root">
       <header className="co-top">
         <div>
-          <div className="co-eyebrow">Cemetery order</div>
-          <h1 className="co-h1">New cemetery door order</h1>
+          <div className="co-eyebrow">
+            Cemetery order
+            {!editMode && (initialOrderId || co.id) && <span className="co-draft-badge">Draft</span>}
+          </div>
+          <h1 className="co-h1">
+            {editMode ? `Editing submitted order${editMeta.orderNumber ? ` ${editMeta.orderNumber}` : ''}`
+              : initialOrderId ? 'Resume cemetery door order' : 'New cemetery door order'}
+          </h1>
         </div>
-        <button className="co-close" onClick={onClose}>✕ Close</button>
+        <button className="co-close" onClick={requestClose}>Close</button>
       </header>
 
       <div className="co-stepper">
@@ -274,8 +380,17 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
       {error && <div className="co-err">{error}</div>}
 
       <div className="co-stage">
+        {resuming && <div className="co-narrow"><p className="co-lede">Loading {editMode ? 'order' : 'draft'}…</p></div>}
+
+        {editMode && editMeta.jobCount > 0 && !resuming && (
+          <div className="co-editwarn">
+            This order has {editMeta.jobCount} production job{editMeta.jobCount === 1 ? '' : 's'}.
+            Changing doors or line items may affect scheduled work — the order total recalculates on save.
+          </div>
+        )}
+
         {/* STEP 1 — CEMETERY */}
-        {step === 0 && (
+        {!resuming && step === 0 && (
           <div className="co-narrow">
             <h2 className="co-h2">Which cemetery?</h2>
             <p className="co-lede">The cemetery is the customer on a door order.</p>
@@ -393,12 +508,11 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
             {!co.packet_storage_path ? (
               <label className="co-drop">
                 <input type="file" accept="application/pdf,image/*" onChange={handleFile} hidden />
-                <div className="co-drop-icon">📄</div>
+                <div className="co-drop-title">Upload packet</div>
                 <div>Click to upload a PDF or image</div>
               </label>
             ) : (
               <div className="co-file">
-                <div className="co-file-icon">📎</div>
                 <div className="co-file-meta">
                   <div className="co-file-name">{co.packet_storage_path.split('/').pop()}</div>
                   {co._packetSize ? <div className="co-file-size">{(co._packetSize / 1024).toFixed(0)} KB</div> : null}
@@ -465,7 +579,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
                             <span className="co-rline-price" onClick={() => beginEdit(i, k)}>
                               {ov != null && <span className="co-strike">{money(def)}</span>}
                               <span className={ov != null ? 'co-ov' : ''}>{money(effPrice(d, k))}</span>
-                              <span className="co-pencil">✎</span>
+                              <span className="co-pencil" aria-hidden="true">edit</span>
                             </span>
                           )}
                         </div>
@@ -493,20 +607,40 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
             </aside>
           </div>
         )}
+
+        {step === 5 && (
+          <div className="co-est">
+            <div className="co-est-head">Cost estimates <span className="co-est-opt">optional</span></div>
+            <p className="co-est-sub">Quote-time cost assumptions for this order — drives the projected margin in the order's P&amp;L. Leave blank to skip; editable later on the order.</p>
+            <div className="co-est-grid">
+              {ESTIMATE_CATEGORIES.map(({ key, label }) => (
+                <label key={key} className="co-est-field">{label}
+                  <input type="number" step="0.01" min="0" value={estimates[key] ?? ''}
+                    onChange={e => setEstimates(s => ({ ...s, [key]: e.target.value }))} placeholder="0.00" />
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* footer nav */}
       {step < 5 ? (
         <footer className="co-foot">
           <button className="co-btn" onClick={goBack} disabled={step === 0}>Back</button>
-          <button className="co-btn-primary" onClick={goNext} disabled={!canContinue || busy}>Continue</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {editMode && <button className="co-btn-primary" disabled={busy} onClick={saveChanges}>{busy ? 'Saving…' : 'Save changes'}</button>}
+            <button className="co-btn-primary" onClick={goNext} disabled={!canContinue || busy}>Continue</button>
+          </div>
         </footer>
       ) : (
         <footer className="co-foot">
           <button className="co-btn" onClick={() => setStep(2)}>Back to edit</button>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="co-btn" onClick={() => window.print()}>Preview PO</button>
-            <button className="co-btn-primary" disabled={busy || !allDoorsValid} onClick={handleSubmit}>{busy ? 'Submitting…' : 'Submit to production →'}</button>
+            {editMode
+              ? <button className="co-btn-primary" disabled={busy} onClick={saveChanges}>{busy ? 'Saving…' : 'Save changes'}</button>
+              : <button className="co-btn-primary" disabled={busy || !allDoorsValid} onClick={handleSubmit}>{busy ? 'Submitting…' : 'Submit to production'}</button>}
           </div>
         </footer>
       )}
@@ -519,6 +653,20 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted }) {
             <div className="co-modal-actions">
               <button className="co-btn" onClick={() => setResetModal(false)}>Cancel</button>
               <button className="co-btn-primary" onClick={resetAll}>Reset to defaults</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmClose && (
+        <div className="co-modal-bg" onClick={() => setConfirmClose(false)}>
+          <div className="co-modal" onClick={e => e.stopPropagation()}>
+            <h3 className="co-modal-title">Unsaved changes</h3>
+            <p className="co-modal-body">Your latest edits haven't finished saving yet. Save them before closing?</p>
+            <div className="co-modal-actions">
+              <button className="co-btn" onClick={() => setConfirmClose(false)}>Keep editing</button>
+              <button className="co-btn" onClick={discardClose}>Discard</button>
+              <button className="co-btn-primary" disabled={busy} onClick={saveAndClose}>{busy ? 'Saving…' : 'Save & close'}</button>
             </div>
           </div>
         </div>
@@ -571,6 +719,16 @@ const styles = `
   .mono{ font-family:'JetBrains Mono',ui-monospace,Menlo,monospace; }
   .co-top{ display:flex; justify-content:space-between; align-items:flex-start; max-width:1100px; margin:0 auto 16px; }
   .co-eyebrow{ font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--sb-text-muted,#73777e); }
+  .co-draft-badge{ display:inline-block; margin-left:8px; font-size:10px; font-weight:600; letter-spacing:.06em; color:#fff; background:#8b8f95; border-radius:3px; padding:1px 7px; vertical-align:middle; }
+  .co-editwarn{ max-width:1100px; margin:0 auto 18px; background:#fbe9d6; color:#9a5b1a; border:.5px solid #efcfa3; padding:10px 14px; border-radius:8px; font-size:13px; }
+  .co-drop-title{ font-weight:600; font-size:15px; margin-bottom:4px; }
+  .co-est{ max-width:1100px; margin:18px auto 0; background:#fff; border:.5px solid var(--sb-border,#e4e0d8); border-radius:12px; padding:20px 22px; }
+  .co-est-head{ font-size:15px; font-weight:600; }
+  .co-est-opt{ font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#73777e; background:#f0eee9; border-radius:4px; padding:2px 8px; margin-left:8px; vertical-align:middle; }
+  .co-est-sub{ font-size:12.5px; color:var(--sb-text-muted,#73777e); margin:4px 0 14px; }
+  .co-est-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px 16px; }
+  .co-est-field{ display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--sb-text-muted,#73777e); }
+  .co-est-field input{ font:inherit; font-size:14px; padding:8px 10px; border:.5px solid var(--sb-border,#e4e0d8); border-radius:6px; background:#fff; }
   .co-h1{ font-size:25px; font-weight:600; margin:3px 0 0; letter-spacing:-.01em; }
   .co-close{ border:.5px solid var(--sb-border,#e4e0d8); background:#fff; border-radius:6px; padding:8px 14px; color:var(--sb-text-muted,#73777e); font:inherit; font-size:13px; cursor:pointer; }
   .co-stepper{ display:flex; gap:6px; flex-wrap:wrap; max-width:1100px; margin:0 auto 24px; }

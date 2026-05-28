@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES } from './lib/stonebooksData'
 
 // =============================================================================
 // STATIC DATA
@@ -9539,6 +9539,8 @@ const STEP_DEFS = {
     isComplete: () => true },     // never blocks
   'pricing':      { label: 'Pricing',  Component: PricingStep,
     isComplete: () => true },     // never blocks (but always shows up)
+  'estimates':    { label: 'Estimates', Component: EstimatesStep,
+    isComplete: () => true },     // optional — never blocks (set now or later in the job)
   'sign':         { label: 'Sign',     Component: SignStep,
     isComplete: () => true },     // never blocks
   'continue':     { label: 'Saved',    Component: ContinueLater,
@@ -9566,7 +9568,7 @@ function buildSteps(order) {
   if (hasOtherStone) keys.push('shape', 'color', 'design')
   if (needsInscr)  keys.push('inscription')
   // Add-ons + Pricing always appear once we have any service picked
-  if (services.length > 0) keys.push('addons', 'pricing', 'sign')
+  if (services.length > 0) keys.push('addons', 'pricing', 'estimates', 'sign')
   keys.push('continue')
 
   return keys.map(k => ({ key: k, ...STEP_DEFS[k] }))
@@ -11154,6 +11156,40 @@ function UnlockConfirmModal({ open, onConfirm, onCancel }) {
   )
 }
 
+// Optional cost-estimate capture (PROFIT-PERJOB-DEEP Phase 5). Coarse quote-time
+// cost buckets. Stored in-memory on order.costEstimates and written to
+// job_cost_estimates after the job is created post-sign (see handleSign). Fully
+// skippable — leave blank and Continue; estimates can also be set later in the
+// job's P&L panel (JobDetail is canonical). Not persisted on save-and-resume
+// (no orders column); re-enter or use the job panel if you exit before signing.
+function EstimatesStep({ order, update }) {
+  const est = order.costEstimates || {}
+  const setVal = (key, v) => update({ costEstimates: { ...est, [key]: v } })
+  const sum = ESTIMATE_CATEGORIES.reduce((s, c) => s + (Number(est[c.key]) || 0), 0)
+  return (
+    <div className="sm-step">
+      <div className="sm-step-head">
+        <div className="sm-step-eyebrow">Step · Estimates</div>
+        <h1 className="sm-step-title">Cost estimates <span className="sm-optional">Optional</span></h1>
+        <p className="sm-step-lede">
+          Rough cost assumptions for this job — these drive the projected margin you'll
+          see in the job's P&amp;L. Leave blank to skip; you can always set them later
+          in the job.
+        </p>
+      </div>
+      <div className="sm-est-grid">
+        {ESTIMATE_CATEGORIES.map(({ key, label }) => (
+          <label key={key} className="sm-est-field">{label}
+            <input type="number" step="0.01" min="0" inputMode="decimal"
+              value={est[key] ?? ''} onChange={e => setVal(key, e.target.value)} placeholder="0.00" />
+          </label>
+        ))}
+      </div>
+      <div className="sm-est-sum">Estimated cost total: <strong>${sum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></div>
+    </div>
+  )
+}
+
 // New wizard step — captures signatures and converts Estimate → Contract.
 // Shows lock-banner if order is already in CONTRACT state.
 function SignStep({ order, update }) {
@@ -11268,6 +11304,15 @@ function SignStep({ order, update }) {
         if (!jobRes.ok) {
           setJobWarn(jobRes.error || 'Unknown error')
           console.warn('createJobFromOrder failed:', jobRes.error)
+        } else if (jobRes.job?.id && order.costEstimates) {
+          // Persist optional quote-time estimates now that the job exists.
+          // Isolated — an estimate write failure must not affect signing.
+          for (const { key } of ESTIMATE_CATEGORIES) {
+            const amt = Number(order.costEstimates[key])
+            if (Number.isFinite(amt) && amt > 0) {
+              try { await setJobCostEstimate({ jobId: jobRes.job.id, category: key, estimatedAmount: amt }) } catch { /* non-fatal */ }
+            }
+          }
         }
       } catch (jobErr) {
         setJobWarn(jobErr?.message || 'Job creation failed')
@@ -11615,6 +11660,13 @@ const styles = `
   margin: 0; max-width: 620px;
 }
 .sm-step-lede em { font-style: italic; color: var(--sm-navy); }
+.sm-optional { font-size: 13px; font-family: var(--font-b, inherit); font-style: normal; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mid, #888); background: #f0eee9; border-radius: 4px; padding: 2px 9px; vertical-align: middle; margin-left: 10px; }
+.sm-est-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; max-width: 620px; margin-top: 8px; }
+.sm-est-field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--text-mid, #555); }
+.sm-est-field input { font: inherit; font-size: 16px; padding: 10px 12px; border: 1px solid var(--sm-border, #d8d4cc); border-radius: 8px; background: #fff; color: var(--sm-navy); }
+.sm-est-field input:focus { outline: none; border-color: var(--sm-navy); }
+.sm-est-sum { margin-top: 18px; font-size: 15px; color: var(--text-mid, #555); }
+.sm-est-sum strong { color: var(--sm-navy); font-variant-numeric: tabular-nums; }
 
 /* ---- SECTIONS -------------------------------------------------------------- */
 .sm-section {

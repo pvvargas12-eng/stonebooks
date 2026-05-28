@@ -20,10 +20,12 @@ import SalesMode from './SalesMode'
 import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
 import OrdersTab from './OrdersTab'
+import CemeteryOrdersTab from './CemeteryOrdersTab'
 import JobsTab from './JobsTab'
 import CalendarTab from './CalendarTab'
 import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
+import ProfitTab from './ProfitTab'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
 import TodayTab from './TodayTab'
@@ -195,9 +197,11 @@ const NAV_PRIMARY = [
   { key: 'today',     label: 'Today' },
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Orders' },
+  { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
   { key: 'scheduler', label: 'Scheduler' },
   { key: 'calendar',  label: 'Calendar' },
+  { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
 ]
 
@@ -222,18 +226,16 @@ function OrderTypeChooser({ onPickFamily, onPickCemetery, onClose }) {
       <button type="button" onClick={onClose}
         style={{ position: 'absolute', top: 24, right: 24, background: 'transparent',
           border: '0.5px solid var(--sb-border)', borderRadius: 6, padding: '8px 14px',
-          cursor: 'pointer', font: 'inherit', color: 'var(--sb-text-muted)' }}>✕ Close</button>
+          cursor: 'pointer', font: 'inherit', color: 'var(--sb-text-muted)' }}>Close</button>
       <h1 style={{ fontSize: 24, fontWeight: 500, color: 'var(--sb-text)', margin: 0 }}>What kind of order?</h1>
       <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', justifyContent: 'center' }}>
         <button type="button" onClick={onPickFamily} style={_chooserCard}>
-          <div style={{ fontSize: 40 }}>👪</div>
           <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--sb-text)' }}>Family sale</div>
           <div style={{ fontSize: 13, color: 'var(--sb-text-muted)', maxWidth: 240 }}>
             A monument, bronze, inscription, or other memorial for a family.
           </div>
         </button>
         <button type="button" onClick={onPickCemetery} style={_chooserCard}>
-          <div style={{ fontSize: 40 }}>⛪</div>
           <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--sb-text)' }}>Cemetery order</div>
           <div style={{ fontSize: 13, color: 'var(--sb-text-muted)', maxWidth: 240 }}>
             Door / panel work ordered by a cemetery. One PO per order, N doors.
@@ -250,6 +252,8 @@ export default function Stonebooks() {
   const [tab, setTab] = useState('today')
   const [salesOpen, setSalesOpen] = useState(false)
   const [salesOrderId, setSalesOrderId] = useState(null)   // when set, open Sales Mode with that order pre-loaded
+  const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
+  const [salesCemeteryEdit, setSalesCemeteryEdit] = useState(false)  // true → wizard opens in edit mode (submitted order)
   const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
   const [profile, setProfile] = useState(null)  // user_settings row
   const [selectedCustomerId, setSelectedCustomerId] = useState(null)  // for customer drill-in across tabs
@@ -287,9 +291,25 @@ export default function Stonebooks() {
     setSalesKind(orderId ? 'family' : null)
     setSalesOpen(true)
   }
+  // Resume an existing cemetery draft straight into the cemetery wizard.
+  const openCemeteryResume = (cemeteryOrderId) => {
+    setSalesCemeteryId(cemeteryOrderId)
+    setSalesCemeteryEdit(false)
+    setSalesKind('cemetery')
+    setSalesOpen(true)
+  }
+  // Edit a submitted cemetery order — wizard opens in edit mode (doors editor).
+  const openCemeteryEdit = (cemeteryOrderId) => {
+    setSalesCemeteryId(cemeteryOrderId)
+    setSalesCemeteryEdit(true)
+    setSalesKind('cemetery')
+    setSalesOpen(true)
+  }
   const closeSales = () => {
     setSalesOpen(false)
     setSalesOrderId(null)
+    setSalesCemeteryId(null)
+    setSalesCemeteryEdit(false)
     setSalesKind(null)
   }
 
@@ -485,7 +505,7 @@ export default function Stonebooks() {
       return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} />
     }
     if (salesKind === 'cemetery') {
-      return <CemeteryOrderWizard onClose={closeSales} onSubmitted={() => { closeSales(); setTab('jobs') }} />
+      return <CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} />
     }
     return (
       <OrderTypeChooser
@@ -569,10 +589,12 @@ export default function Stonebooks() {
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+{tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} />}
 {tab === 'scheduler' && <SchedulerTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onSwitchTab={setTab} />}
 {tab === 'calendar'  && <CalendarTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} />}
 {tab === 'reports'   && <ReportsTab />}
+{tab === 'profit'    && <ProfitTab />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
             'Coming next: design library management — upload new monuments, edit metadata, organize by category.',
             'For now, the catalog browses on the customer-facing site.',

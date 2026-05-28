@@ -1143,9 +1143,10 @@ export async function getCemeteryOrder(id) {
   return data
 }
 
-export async function getCemeteryOrders({ status } = {}) {
+export async function getCemeteryOrders({ status, cemetery } = {}) {
   let q = supabase.from('cemetery_orders').select('*').order('created_at', { ascending: false })
   if (status) q = q.eq('status', status)
+  if (cemetery) q = q.eq('cemetery_name', cemetery)
   const { data, error } = await q
   if (error) { console.warn('[cemetery] getCemeteryOrders:', error.message); return [] }
   return data || []
@@ -1169,6 +1170,27 @@ export async function getCemeteryByName(name) {
   return data.find(c => { const n = norm(c.name); return tokens.every(t => n.includes(t)) }) || null
 }
 
+// Jobs spawned from a cemetery order, each with its milestone rows (for X-of-N
+// progress + next-action derivation in the detail view). Ordered by door_index.
+export async function getJobsForCemeteryOrder(cemeteryOrderId) {
+  if (!cemeteryOrderId) return []
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('id, door_index, overall_status, last_update_at, next_action, next_action_due, milestones:job_milestones(milestone_key, label, status, sort_order, requires)')
+    .eq('cemetery_order_id', cemeteryOrderId)
+    .order('door_index', { ascending: true })
+  if (error) { console.warn('[cemetery] getJobsForCemeteryOrder:', error.message); return [] }
+  return data || []
+}
+
+// Distinct cemetery_name values across all cemetery orders — for the list-view
+// cemetery filter dropdown.
+export async function getDistinctCemeteryNames() {
+  const { data, error } = await supabase.from('cemetery_orders').select('cemetery_name')
+  if (error) { console.warn('[cemetery] getDistinctCemeteryNames:', error.message); return [] }
+  return [...new Set((data || []).map(r => r.cemetery_name).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+}
+
 // Upload a packet (PDF/image) to the cemetery_packets Storage bucket at
 // cemetery_orders/{orderId}/{filename}. upsert so a replacement overwrites.
 export async function uploadCemeteryPacket(orderId, file) {
@@ -1177,6 +1199,465 @@ export async function uploadCemeteryPacket(orderId, file) {
   const { error } = await supabase.storage.from('cemetery_packets').upload(path, file, { upsert: true })
   if (error) return { ok: false, error: error.message }
   return { ok: true, path }
+}
+
+// Signed download URL for a packet (the bucket is private). Short-lived.
+export async function getCemeteryPacketSignedUrl(path, expiresIn = 300) {
+  if (!path) return null
+  const { data, error } = await supabase.storage.from('cemetery_packets').createSignedUrl(path, expiresIn)
+  if (error) { console.warn('[cemetery] packet signed url:', error.message); return null }
+  return data?.signedUrl || null
+}
+
+// =============================================================================
+// FINANCIAL RECORDS — unified operational ledger (Migration J)
+// =============================================================================
+// Every dollar in (payment_received) or out (expense_incurred). Powers per-job
+// / per-cemetery-order profitability and the Profit tab. tenant_id is left to
+// the column DEFAULT. See 20260527_financial_records.sql.
+
+// Expense categories — domain-reviewed (Monument Operations Architect). Baked
+// into the financial_records CHECK constraint; keep these two in sync.
+export const EXPENSE_CATEGORIES = [
+  { key: 'material',      label: 'Material' },          // granite, bronze, stencil, abrasive
+  { key: 'labor',         label: 'Labor' },             // in-house crew hours
+  { key: 'subcontractor', label: 'Subcontractor' },     // hired foundation/crane crew
+  { key: 'cemetery_fee',  label: 'Cemetery fee' },      // setting/opening fee to cemetery
+  { key: 'equipment',     label: 'Equipment rental' },  // crane/lift/tool rental
+  { key: 'vehicle',       label: 'Vehicle / fuel' },    // truck fuel, repairs, registration
+  { key: 'overhead',      label: 'Overhead' },          // shop rent, utilities, insurance
+  { key: 'other',         label: 'Other' },
+]
+export const PAYMENT_METHODS = [
+  { key: 'check',         label: 'Check' },
+  { key: 'credit_card',   label: 'Credit card' },
+  { key: 'cash',          label: 'Cash' },
+  { key: 'zelle',         label: 'Zelle' },
+  { key: 'bank_transfer', label: 'Bank transfer' },
+  { key: 'other',         label: 'Other' },
+]
+export const expenseCategoryLabel = (k) => EXPENSE_CATEGORIES.find(c => c.key === k)?.label || k || 'Uncategorized'
+export const paymentMethodLabel = (k) => PAYMENT_METHODS.find(m => m.key === k)?.label || k || '—'
+
+const sumAmt = (rows) => (rows || []).reduce((s, r) => s + Number(r.amount || 0), 0)
+const groupByCategory = (rows) => {
+  const out = {}
+  for (const r of rows || []) {
+    const k = r.category || 'uncategorized'
+    out[k] = (out[k] || 0) + Number(r.amount || 0)
+  }
+  return out
+}
+// Shared margin math. revenue===null means "not attributable at this grain"
+// (e.g. a cemetery door-job — revenue lives on the order). marginPercent is
+// null both for that case and for no-activity; a loss with zero revenue keeps
+// a negative margin but a null percent (N/A).
+function buildProfit(revenue, expenses, byCategory) {
+  if (revenue === null) return { revenue: null, expenses, byCategory, margin: null, marginPercent: null, rolledUp: true }
+  const margin = revenue - expenses
+  const marginPercent = revenue > 0 ? (margin / revenue) * 100 : null
+  return { revenue, expenses, byCategory, margin, marginPercent, rolledUp: false }
+}
+
+export async function recordPayment({ amount, paymentMethod, paymentReference, occurredAt, jobId, orderId, cemeteryOrderId, notes, createdBy } = {}) {
+  const amt = Math.round(Number(amount) * 100) / 100
+  if (!Number.isFinite(amt) || amt === 0) return { ok: false, error: 'Payment amount must be a non-zero number' }
+  const row = {
+    record_type: 'payment_received', amount: amt,
+    payment_method: paymentMethod || null, payment_reference: paymentReference || null,
+    job_id: jobId || null, order_id: orderId || null, cemetery_order_id: cemeteryOrderId || null,
+    notes: notes || null, created_by: createdBy || null,
+  }
+  if (occurredAt) row.occurred_at = occurredAt
+  const { data, error } = await supabase.from('financial_records').insert(row).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, record: data }
+}
+
+export async function recordExpense({ amount, category, vendor, description, occurredAt, jobId, orderId, cemeteryOrderId, receiptStoragePath, notes, createdBy } = {}) {
+  const amt = Math.round(Number(amount) * 100) / 100
+  if (!Number.isFinite(amt) || amt === 0) return { ok: false, error: 'Expense amount must be a non-zero number' }
+  const row = {
+    record_type: 'expense_incurred', amount: amt,
+    category: category || null, vendor: vendor || null, description: description || null,
+    receipt_storage_path: receiptStoragePath || null,
+    job_id: jobId || null, order_id: orderId || null, cemetery_order_id: cemeteryOrderId || null,
+    notes: notes || null, created_by: createdBy || null,
+  }
+  if (occurredAt) row.occurred_at = occurredAt
+  const { data, error } = await supabase.from('financial_records').insert(row).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, record: data }
+}
+
+export async function getFinancialRecords({ recordType, jobId, orderId, cemeteryOrderId, dateRange, category } = {}) {
+  let q = supabase.from('financial_records').select('*').order('occurred_at', { ascending: false })
+  if (recordType) q = q.eq('record_type', recordType)
+  if (jobId) q = q.eq('job_id', jobId)
+  if (orderId) q = q.eq('order_id', orderId)
+  if (cemeteryOrderId) q = q.eq('cemetery_order_id', cemeteryOrderId)
+  if (category) q = q.eq('category', category)
+  if (dateRange?.start) q = q.gte('occurred_at', dateRange.start)
+  if (dateRange?.end) q = q.lt('occurred_at', dateRange.end)   // half-open [start, end)
+  const { data, error } = await q
+  if (error) { console.warn('[fin] getFinancialRecords:', error.message); return [] }
+  return data || []
+}
+
+// Per-job profitability. Revenue is attributed at exactly one grain:
+//  • cemetery door-jobs → revenue NULL (rolled up to the cemetery order).
+//  • family job → its own job-level payments, PLUS order-level payments only
+//    when the parent order has exactly one job (disjoint: job_id IS NULL).
+export async function getJobProfitability(jobId) {
+  if (!jobId) return null
+  const { data: job } = await supabase.from('jobs').select('id, order_id, cemetery_order_id').eq('id', jobId).single()
+  const expRows = await getFinancialRecords({ recordType: 'expense_incurred', jobId })
+  const expenses = sumAmt(expRows)
+  const byCategory = groupByCategory(expRows)
+
+  let revenue = null
+  if (job && !job.cemetery_order_id) {
+    revenue = sumAmt(await getFinancialRecords({ recordType: 'payment_received', jobId }))
+    if (job.order_id) {
+      const { count } = await supabase.from('jobs').select('id', { count: 'exact', head: true }).eq('order_id', job.order_id)
+      if (count === 1) {
+        const orderPays = (await getFinancialRecords({ recordType: 'payment_received', orderId: job.order_id })).filter(r => !r.job_id)
+        revenue += sumAmt(orderPays)
+      }
+    }
+  }
+  return buildProfit(revenue, expenses, byCategory)
+}
+
+// Per-cemetery-order profitability. Expenses = order-level + all its door-jobs'
+// (disjoint by the at-most-one-link invariant). Revenue = order-level payments.
+export async function getCemeteryOrderProfitability(cemeteryOrderId) {
+  if (!cemeteryOrderId) return null
+  const directExp = await getFinancialRecords({ recordType: 'expense_incurred', cemeteryOrderId })
+  const { data: jobRows } = await supabase.from('jobs').select('id').eq('cemetery_order_id', cemeteryOrderId)
+  const jobIds = (jobRows || []).map(j => j.id)
+  let jobExp = []
+  if (jobIds.length) {
+    const { data } = await supabase.from('financial_records').select('*').eq('record_type', 'expense_incurred').in('job_id', jobIds)
+    jobExp = data || []
+  }
+  const expRows = [...directExp, ...jobExp]
+  const revenue = sumAmt(await getFinancialRecords({ recordType: 'payment_received', cemeteryOrderId }))
+  return buildProfit(revenue, sumAmt(expRows), groupByCategory(expRows))
+}
+
+export async function getPaymentsTotal({ dateRange, method } = {}) {
+  let q = supabase.from('financial_records').select('amount').eq('record_type', 'payment_received')
+  if (method) q = q.eq('payment_method', method)
+  if (dateRange?.start) q = q.gte('occurred_at', dateRange.start)
+  if (dateRange?.end) q = q.lt('occurred_at', dateRange.end)
+  const { data, error } = await q
+  if (error) { console.warn('[fin] getPaymentsTotal:', error.message); return 0 }
+  return sumAmt(data)
+}
+
+export async function getExpensesTotal({ dateRange, category } = {}) {
+  let q = supabase.from('financial_records').select('amount').eq('record_type', 'expense_incurred')
+  if (category) q = q.eq('category', category)
+  if (dateRange?.start) q = q.gte('occurred_at', dateRange.start)
+  if (dateRange?.end) q = q.lt('occurred_at', dateRange.end)
+  const { data, error } = await q
+  if (error) { console.warn('[fin] getExpensesTotal:', error.message); return 0 }
+  return sumAmt(data)
+}
+
+// One query → { [cemeteryOrderId]: totalPaid }. Lets the list view compute
+// each row's payment state without N round-trips.
+export async function getPaidTotalsByCemeteryOrder() {
+  const { data, error } = await supabase
+    .from('financial_records')
+    .select('cemetery_order_id, amount')
+    .eq('record_type', 'payment_received')
+    .not('cemetery_order_id', 'is', null)
+  if (error) { console.warn('[fin] getPaidTotalsByCemeteryOrder:', error.message); return {} }
+  const map = {}
+  for (const r of data || []) map[r.cemetery_order_id] = (map[r.cemetery_order_id] || 0) + Number(r.amount || 0)
+  return map
+}
+
+// Total paid against a single cemetery order (live from the ledger).
+export async function getCemeteryOrderPaidTotal(cemeteryOrderId) {
+  if (!cemeteryOrderId) return 0
+  return sumAmt(await getFinancialRecords({ recordType: 'payment_received', cemeteryOrderId }))
+}
+
+// "Owed to you" — open A/R across cemetery orders (total_amount − paid) for
+// active, non-cancelled orders. Family-order A/R is a follow-up.
+export async function getOutstandingReceivable() {
+  const { data, error } = await supabase
+    .from('cemetery_orders')
+    .select('id, total_amount, status')
+    .in('status', ['submitted', 'in_production', 'completed', 'invoiced'])
+  if (error) { console.warn('[fin] getOutstandingReceivable:', error.message); return 0 }
+  const paid = await getPaidTotalsByCemeteryOrder()
+  let owed = 0
+  for (const o of data || []) {
+    const bal = Number(o.total_amount || 0) - Number(paid[o.id] || 0)
+    if (bal > 0) owed += bal
+  }
+  return owed
+}
+
+// Upload a receipt photo/PDF to the private `receipts` bucket. Returns the path.
+export async function uploadReceipt(file) {
+  if (!file) return { ok: false, error: 'Missing file' }
+  const safe = String(file.name || 'receipt').replace(/[^\w.-]+/g, '_')
+  const path = `receipts/${Date.now()}_${safe}`
+  const { error } = await supabase.storage.from('receipts').upload(path, file, { upsert: true })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, path }
+}
+
+export async function getReceiptSignedUrl(path, expiresIn = 300) {
+  if (!path) return null
+  const { data, error } = await supabase.storage.from('receipts').createSignedUrl(path, expiresIn)
+  if (error) { console.warn('[fin] receipt signed url:', error.message); return null }
+  return data?.signedUrl || null
+}
+
+// =============================================================================
+// PER-JOB P&L — estimates, profit-and-loss, variance signals (Migration K)
+// =============================================================================
+// Bottom-up operational P&L. Estimates are coarse (quote-time) buckets, kept
+// deliberately SIMPLER than the 8 expense categories. Projected margin comes
+// from estimates vs quoted_total; realized margin from actuals vs collected.
+
+// Locked estimate taxonomy (Paul Q3). Baked into the job_cost_estimates CHECK.
+export const ESTIMATE_CATEGORIES = [
+  { key: 'material',          label: 'Material' },              // granite/bronze stock + consumables
+  { key: 'labor',             label: 'Labor' },                 // shop engraving / fabrication hours
+  { key: 'subcontractor',     label: 'Subcontractor' },         // hired foundation / crane crew
+  { key: 'permits_cemetery',  label: 'Permits / cemetery fees' },// setting/opening + permits
+  { key: 'install',           label: 'Install' },               // cemetery trip, set & foundation
+  { key: 'other',             label: 'Other' },                 // misc / contingency
+]
+export const estimateCategoryLabel = (k) => ESTIMATE_CATEGORIES.find(c => c.key === k)?.label || k
+
+// Maps each estimate category → the expense categories (from the 8-category
+// ledger set) whose actuals roll up against it. Every expense category has a
+// home, so total_actual reconciles. (Workflow Intelligence review.) Note:
+// 'install'/'permits_cemetery' are approximate maps (no 1:1 expense category).
+const ESTIMATE_TO_EXPENSE = {
+  material:         ['material'],
+  labor:            ['labor'],
+  subcontractor:    ['subcontractor'],
+  permits_cemetery: ['cemetery_fee'],
+  install:          ['vehicle', 'equipment'],
+  other:            ['other', 'overhead'],
+}
+
+// Margin percentages are stored in numeric(6,2) (±9999.99). Clamp computed
+// values so a tiny-revenue / big-cost job can never overflow on write.
+const clampPct = (n) => {
+  if (n == null || !Number.isFinite(n)) return null
+  return Math.max(-9999, Math.min(9999, Math.round(n * 100) / 100))
+}
+
+function buildCostByCategory(estimateRows, actualRows) {
+  const estByCat = {}
+  for (const r of estimateRows || []) estByCat[r.category] = Number(r.estimated_amount || 0)
+  const actByExp = {}
+  for (const r of actualRows || []) actByExp[r.category] = (actByExp[r.category] || 0) + Number(r.amount || 0)
+  const byCategory = {}
+  let total_estimated = 0, total_actual = 0
+  for (const { key } of ESTIMATE_CATEGORIES) {
+    const estimated = estByCat[key] || 0
+    const actual = (ESTIMATE_TO_EXPENSE[key] || []).reduce((s, ec) => s + (actByExp[ec] || 0), 0)
+    byCategory[key] = { estimated, actual, variance: actual - estimated }   // variance > 0 = over budget
+    total_estimated += estimated; total_actual += actual
+  }
+  return { byCategory, estByCat, total_estimated, total_actual }
+}
+
+function buildMargin(contractTotal, collected, totalEstimated, totalActual) {
+  const projected_dollar = contractTotal != null ? contractTotal - totalEstimated : null
+  const projected_pct = contractTotal > 0 ? clampPct((projected_dollar / contractTotal) * 100) : null
+  const realized_dollar = collected - totalActual
+  const realized_pct = collected > 0 ? clampPct((realized_dollar / collected) * 100) : null
+  const lost_pct = (projected_pct != null && realized_pct != null) ? clampPct(projected_pct - realized_pct) : null
+  return { projected_pct, realized_pct, lost_pct, projected_dollar, realized_dollar }
+}
+
+// The three rule-based detectors, agent-corrected. Pure function over already
+// fetched data so getJobPnL / getCemeteryOrderPnL don't re-query.
+function computeSignals({ estByCat, actuals, payments, projectedPct, collected, totalActual, activeish }) {
+  const signals = []
+
+  // 1) material over budget — trip-wire +20% (granite volatility), red >40%.
+  const estMat = estByCat['material'] || 0
+  if (estMat > 0) {   // guard divide/false-fire when no estimate entered
+    const actMat = (actuals || []).filter(r => r.category === 'material').reduce((s, r) => s + Number(r.amount || 0), 0)
+    if (actMat > estMat * 1.20) {
+      const over = actMat / estMat - 1
+      signals.push({
+        type: 'material_over_budget',
+        severity: over > 0.40 ? 'red' : 'amber',
+        message: 'Material spend over budget',
+        evidence: `Actual ${fmtUSD(actMat)} vs estimate ${fmtUSD(estMat)} (+${Math.round(over * 100)}%, threshold +20%)`,
+      })
+    }
+  }
+
+  // 2) second install trip not billed — ≥2 distinct-date vehicle/equipment
+  //    expense rows + no trip-fee revenue line (text heuristic). Advisory.
+  const tripRows = (actuals || []).filter(r => r.category === 'vehicle' || r.category === 'equipment')
+  const tripDates = [...new Set(tripRows.map(r => String(r.occurred_at || '').slice(0, 10)).filter(Boolean))]
+  if (tripDates.length >= 2) {
+    const billed = (payments || []).some(p => /trip|re-?deliver|extra visit|2nd trip|second trip/i.test(`${p.notes || ''} ${p.payment_reference || ''}`))
+    if (!billed) {
+      signals.push({
+        type: 'second_install_trip_not_billed',
+        severity: 'amber',
+        message: 'Possible unbilled second trip',
+        evidence: `${tripDates.length} on-site trips (vehicle/equipment costs on ${tripDates.join(', ')}); no trip-fee revenue line found — verify billing (heuristic).`,
+      })
+    }
+  }
+
+  // 3) margin dropping in production — point-in-time (no trend data tonight),
+  //    guarded for collected>0 && actuals>0; handles projected≤0 inversion.
+  if (activeish && collected > 0 && totalActual > 0 && projectedPct != null) {
+    const realized = ((collected - totalActual) / collected) * 100
+    let fire = false, sev = 'amber'
+    if (projectedPct <= 0) {
+      if (realized < projectedPct) { fire = true; sev = 'red' }
+    } else if (realized < projectedPct * 0.7) {
+      fire = true
+      sev = (realized <= projectedPct * 0.5 || realized < 0) ? 'red' : 'amber'
+    }
+    if (fire) signals.push({
+      type: 'margin_dropping_in_production',
+      severity: sev,
+      message: 'Margin dropping while in production',
+      evidence: `Realized ${realized.toFixed(0)}% is below 70% of projected ${projectedPct.toFixed(0)}% (point-in-time). Collected ${fmtUSD(collected)}, spent ${fmtUSD(totalActual)}.`,
+    })
+  }
+  return signals
+}
+
+// Estimates for one target (pass exactly one of jobId / cemeteryOrderId).
+export async function getJobCostEstimates({ jobId, cemeteryOrderId } = {}) {
+  if (!jobId && !cemeteryOrderId) return []
+  let q = supabase.from('job_cost_estimates').select('*')
+  q = jobId ? q.eq('job_id', jobId) : q.eq('cemetery_order_id', cemeteryOrderId)
+  const { data, error } = await q
+  if (error) { console.warn('[pnl] getJobCostEstimates:', error.message); return [] }
+  return data || []
+}
+
+// Upsert one estimate by (job_id, cemetery_order_id, category). Relies on the
+// UNIQUE NULLS NOT DISTINCT constraint — on_conflict must list all three cols.
+export async function setJobCostEstimate({ jobId, cemeteryOrderId, category, estimatedAmount, notes, createdBy } = {}) {
+  if ((!jobId && !cemeteryOrderId) || (jobId && cemeteryOrderId)) return { ok: false, error: 'Provide exactly one of jobId / cemeteryOrderId' }
+  if (!category) return { ok: false, error: 'Missing category' }
+  const amt = Math.round(Number(estimatedAmount) * 100) / 100
+  if (!Number.isFinite(amt) || amt < 0) return { ok: false, error: 'Estimate must be a non-negative number' }
+  const row = {
+    job_id: jobId || null,
+    cemetery_order_id: cemeteryOrderId || null,
+    category,
+    estimated_amount: amt,
+    notes: notes || null,
+    created_by: createdBy || null,
+    updated_at: new Date().toISOString(),
+  }
+  const { data, error } = await supabase
+    .from('job_cost_estimates')
+    .upsert(row, { onConflict: 'job_id,cemetery_order_id,category' })
+    .select()
+    .single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, estimate: data }
+}
+
+export async function removeJobCostEstimate(estimateId) {
+  if (!estimateId) return { ok: false, error: 'Missing estimate id' }
+  const { error } = await supabase.from('job_cost_estimates').delete().eq('id', estimateId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Effective payments attributable to a job: job-level, plus order-level only
+// when the parent family order has exactly one job (disjoint: job_id IS NULL).
+async function effectiveJobPayments(job) {
+  const jobPays = await getFinancialRecords({ recordType: 'payment_received', jobId: job.id })
+  if (job.order_id) {
+    const { count } = await supabase.from('jobs').select('id', { count: 'exact', head: true }).eq('order_id', job.order_id)
+    if (count === 1) {
+      const orderPays = (await getFinancialRecords({ recordType: 'payment_received', orderId: job.order_id })).filter(r => !r.job_id)
+      return [...jobPays, ...orderPays]
+    }
+  }
+  return jobPays
+}
+
+export async function getJobPnL(jobId) {
+  if (!jobId) return null
+  const { data: job } = await supabase.from('jobs').select('id, quoted_total, order_id, cemetery_order_id, overall_status').eq('id', jobId).single()
+  if (!job) return null
+  const [estimates, actuals, payments] = await Promise.all([
+    getJobCostEstimates({ jobId }),
+    getFinancialRecords({ recordType: 'expense_incurred', jobId }),
+    effectiveJobPayments(job),
+  ])
+  const costs = buildCostByCategory(estimates, actuals)
+  const collected = payments.reduce((s, p) => s + Number(p.amount || 0), 0)
+  const sortedPays = payments.slice().sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
+  const deposit = sortedPays.length ? Number(sortedPays[0].amount || 0) : 0
+  const contract_total = job.quoted_total != null ? Number(job.quoted_total) : null
+  const margin = buildMargin(contract_total, collected, costs.total_estimated, costs.total_actual)
+  const activeish = !['completed', 'cancelled', 'closed', 'archived', 'paid'].includes(job.overall_status)
+  const signals = computeSignals({ estByCat: costs.estByCat, actuals, payments, projectedPct: margin.projected_pct, collected, totalActual: costs.total_actual, activeish })
+  return {
+    revenue: { contract_total, deposit, payments_collected: collected, balance_due: contract_total != null ? contract_total - collected : null },
+    costs: { byCategory: costs.byCategory, total_estimated: costs.total_estimated, total_actual: costs.total_actual },
+    margin,
+    signals,
+  }
+}
+
+export async function getCemeteryOrderPnL(cemeteryOrderId) {
+  if (!cemeteryOrderId) return null
+  const { data: order } = await supabase.from('cemetery_orders').select('id, total_amount, status').eq('id', cemeteryOrderId).single()
+  if (!order) return null
+  const [estimates, directExp, payments, jobRowsRes] = await Promise.all([
+    getJobCostEstimates({ cemeteryOrderId }),
+    getFinancialRecords({ recordType: 'expense_incurred', cemeteryOrderId }),
+    getFinancialRecords({ recordType: 'payment_received', cemeteryOrderId }),
+    supabase.from('jobs').select('id').eq('cemetery_order_id', cemeteryOrderId),
+  ])
+  const jobIds = (jobRowsRes.data || []).map(j => j.id)
+  let jobExp = []
+  if (jobIds.length) {
+    const { data } = await supabase.from('financial_records').select('*').eq('record_type', 'expense_incurred').in('job_id', jobIds)
+    jobExp = data || []
+  }
+  const actuals = [...directExp, ...jobExp]
+  const costs = buildCostByCategory(estimates, actuals)
+  const collected = payments.reduce((s, p) => s + Number(p.amount || 0), 0)
+  const sortedPays = payments.slice().sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
+  const deposit = sortedPays.length ? Number(sortedPays[0].amount || 0) : 0
+  const contract_total = order.total_amount != null ? Number(order.total_amount) : null
+  const margin = buildMargin(contract_total, collected, costs.total_estimated, costs.total_actual)
+  const activeish = !['completed', 'cancelled', 'paid'].includes(order.status)
+  const signals = computeSignals({ estByCat: costs.estByCat, actuals, payments, projectedPct: margin.projected_pct, collected, totalActual: costs.total_actual, activeish })
+  return {
+    revenue: { contract_total, deposit, payments_collected: collected, balance_due: contract_total != null ? contract_total - collected : null },
+    costs: { byCategory: costs.byCategory, total_estimated: costs.total_estimated, total_actual: costs.total_actual },
+    margin,
+    signals,
+  }
+}
+
+// Standalone signal run for a job (used where only signals are needed).
+export async function detectJobSignals(jobId) {
+  const pnl = await getJobPnL(jobId)
+  return pnl?.signals || []
 }
 
 // Next order number in CO-{YYYY}-{NNN} form (per-year sequence, max+1).
