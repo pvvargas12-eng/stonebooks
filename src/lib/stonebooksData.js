@@ -202,7 +202,10 @@ export function rowGrandTotal(order) {
 // migration or weren't fetched with the payments column. The `!p.voided`
 // filter is a no-op in Phase 2 (no void UI yet) but is written now so Phase 4
 // doesn't have to re-touch these.
-function rowNonVoidedPayments(order) {
+// Exported in TODAY-COMMAND-CENTER so TodayTab can walk payment lines (each
+// carries .receivedAt + .amount) for month-to-date and week-to-date money math.
+// financial_records is empty in prod; orders.payments[] is the live money truth.
+export function rowNonVoidedPayments(order) {
   // Sprint M2 Phase 2.1 — defensive `?? true`: stonebooksData reads rows
   // directly via select('*'), bypassing rowToOrder's read-time auto-lock. A
   // payment missing the `locked` field (Phase 2-era data) counts as locked
