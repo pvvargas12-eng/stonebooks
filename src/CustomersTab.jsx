@@ -1,97 +1,327 @@
 // =============================================================================
-// 📚 Stonebooks — Customers tab (Sprint 3n)
+// Stonebooks — Customers tab (CRM-RESKIN-PASS)
 // =============================================================================
-// - List, search, sort
-// - Click row → drill-in detail view with full order history
-// - Click an order in detail → opens Sales Mode for that order
-// - Archive (soft) / Restore / Permanently delete from detail page
-// - Archive filter pill at top
+// Family/stone-first operational control surface. The customer record is
+// secondary to the family identifier (monument shops think "the Walsh
+// upright," not "John Walsh CRM record").
+//
+// Visual language matches TodayTab: canvas #F7F6F3, white cards with soft
+// shadow, bronze accent on light. Shared primitives live in lib/crmTheme.jsx.
+// CustomerDetail + AddCustomerForm at the bottom of the file are preserved
+// from the previous design — only the list view is rebuilt.
 // =============================================================================
 
 import { useState, useEffect, useMemo } from 'react'
 import {
   listAllCustomers, listArchivedCustomers, listOrdersForCustomer,
   createCustomer, archiveCustomer, unarchiveCustomer, deleteCustomer,
+  getJobs,
   rowGrandTotal, rowTotalPaid, statusInfo,
   customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative,
+  computeOrderPressure,
   ACTIVE_STATUSES, SOLD_STATUSES,
 } from './lib/stonebooksData'
+import { CRM, paymentTone, paymentLabel } from './lib/crmTheme'
+import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
 import { supabase } from './lib/supabase'
+
+// ── Filter chip option shapes ────────────────────────────────────────────────
+
+const STATUS_FILTERS = [
+  { code: 'active',   label: 'Active' },
+  { code: 'archived', label: 'Archived' },
+]
+const JOB_TYPE_FILTERS = [
+  { code: 'new_stone',       label: 'New stone' },
+  { code: 'mausoleum_door',  label: 'Crypt door' },
+  { code: 'cleaning_repair', label: 'Cleaning-repair' },
+  { code: 'inscription',     label: 'Inscription' },
+]
+const PAYMENT_FILTERS = [
+  { code: 'paid_in_full', label: 'Paid in full' },
+  { code: 'partial',      label: 'Partial' },
+  { code: 'unpaid',       label: 'Unpaid' },
+  { code: 'overdue',      label: 'Overdue' },
+]
+const BLOCKER_FILTERS = [
+  { code: 'cemetery',     label: 'Cemetery',     match: k => k === 'cemetery_hold' },
+  { code: 'family',       label: 'Family',       match: k => k === 'waiting_on_family' || k === 'proof_waiting_customer' },
+  { code: 'production',   label: 'Production',   match: k => k === 'production_blocked' },
+  { code: 'install_ready',label: 'Install ready',match: k => k === 'stone_ready_schedule_trip' || k === 'install_scheduled' || k === 'needs_install_date' },
+]
+const SORT_OPTIONS = [
+  { code: 'actionPriority', label: 'Sort: Action priority' },
+  { code: 'lastActivity',   label: 'Sort: Recent activity' },
+  { code: 'familyName',     label: 'Sort: Family name A→Z' },
+  { code: 'balanceDesc',    label: 'Sort: Balance high→low' },
+  { code: 'ageDesc',        label: 'Sort: Age oldest first' },
+  { code: 'signedNewest',   label: 'Sort: Signed newest' },
+]
+
+// (Q4) Recency band for action-priority sort: cluster rows into freshness
+// windows so the eye still sees recent activity at the top, but within each
+// band severity bubbles up. days = days since lastActivity.
+const SEVERITY_RANK = { red: 0, amber: 1, blue: 2 }
+function recencyBand(lastActivity) {
+  if (!lastActivity) return 4
+  const days = Math.floor((Date.now() - lastActivity) / 86400000)
+  if (days <= 7)  return 0
+  if (days <= 30) return 1
+  if (days <= 90) return 2
+  return 3
+}
+function severityRank(blocker) {
+  if (!blocker) return 3
+  return SEVERITY_RANK[blocker.severity] ?? 3
+}
+
+// Grid template: FAMILY | ORDER# | CONTACT | PAYMENT | AGE | BLOCKER | UPDATED
+const ROW_GRID = '1.4fr 0.9fr 1.1fr 1.1fr 0.7fr 1.2fr 0.7fr'
+
+// ── Component ────────────────────────────────────────────────────────────────
 
 export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder }) {
   const [customers, setCustomers] = useState([])
-  const [allOrders, setAllOrders] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [sortKey, setSortKey] = useState('lastActivity')
-  const [filter, setFilter] = useState('active')  // 'active' | 'archived'
+  const [allOrders, setAllOrders]   = useState([])
+  const [allJobs, setAllJobs]       = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [loadErr, setLoadErr]       = useState(null)
+  const [search, setSearch]         = useState('')
+  const [sortKey, setSortKey]       = useState('actionPriority')
+  const [statusFilter, setStatusFilter] = useState('active')   // active | archived
+  const [needsCallOnly, setNeedsCallOnly] = useState(false)
+  const [jobTypeFilters, setJobTypeFilters] = useState(new Set())
+  const [paymentFilters, setPaymentFilters] = useState(new Set())
+  const [blockerFilters, setBlockerFilters] = useState(new Set())
   const [showAddForm, setShowAddForm] = useState(false)
 
+  // ── Load ────────────────────────────────────────────────────────────────
   const reload = async () => {
     setLoading(true)
-    const [cs, { data: os }] = await Promise.all([
-      filter === 'archived' ? listArchivedCustomers() : listAllCustomers(),
-      supabase.from('orders').select('id, customer_id, status, order_number, updated_at, created_at, deposit_amount, balance_amount, payments, pricing, add_ons, target_completion_date'),
-    ])
-    setCustomers(cs)
-    setAllOrders(os || [])
+    setLoadErr(null)
+    try {
+      const [cs, ordersRes, jobs] = await Promise.all([
+        statusFilter === 'archived' ? listArchivedCustomers() : listAllCustomers(),
+        supabase.from('orders').select(
+          'id, customer_id, status, order_number, updated_at, created_at, signed_at, pricing_locked_at, ' +
+          'deposit_amount, balance_amount, payments, pricing, add_ons, ' +
+          'target_completion_date, primary_lastname, deceased, service_types, cemetery_id, ' +
+          'cemetery:cemeteries(id, name)'
+        ),
+        getJobs({ includeClosed: true, limit: 1000 }),
+      ])
+      setCustomers(cs || [])
+      setAllOrders(ordersRes.data || [])
+      setAllJobs(jobs || [])
+    } catch (e) {
+      setLoadErr(e?.message || 'Failed to load customers')
+    }
     setLoading(false)
   }
+  useEffect(() => { reload() /* eslint-disable-next-line */ }, [statusFilter])
 
-  useEffect(() => { reload() /* eslint-disable-next-line */ }, [filter])
-
+  // ── Derive per-customer rollup ──────────────────────────────────────────
   const enriched = useMemo(() => {
-    const byId = {}
-    for (const c of customers) {
-      byId[c.id] = {
-        ...c,
-        _ordersCount: 0,
-        _activeCount: 0,
-        _soldCount: 0,
-        _lifetimeValue: 0,
-        _totalCollected: 0,
-        _lastActivity: null,
+    const jobByOrderId = new Map()
+    for (const j of allJobs) {
+      if (j.order_id) {
+        // Keep the most-relevant job per order (highest sort_order proxy: first
+        // is fine for now — multi-job orders are rare in current data).
+        if (!jobByOrderId.has(j.order_id)) jobByOrderId.set(j.order_id, j)
       }
     }
-    for (const o of allOrders) {
-      const r = byId[o.customer_id]
-      if (!r) continue
-      r._ordersCount++
-      if (ACTIVE_STATUSES.includes(o.status)) r._activeCount++
-      if (SOLD_STATUSES.includes(o.status)) {
-        r._soldCount++
-        r._lifetimeValue += rowGrandTotal(o)
-      }
-      r._totalCollected += rowTotalPaid(o)  // Sprint M2 Phase 3 — sums locked payments[] (helper), not raw legacy columns
-      const upd = new Date(o.updated_at).getTime()
-      if (!r._lastActivity || upd > r._lastActivity) r._lastActivity = upd
-    }
-    return Object.values(byId)
-  }, [customers, allOrders])
 
+    return customers.map(c => {
+      const myOrders = allOrders.filter(o => o.customer_id === c.id)
+
+      // (Q2 bug fix) Primary picker re-ranked to surface the squeakiest
+      // wheel. Before: most-recently-updated SOLD won — which meant a
+      // recently-paid_in_full hid an older active overdue. After:
+      //   1) most recent SOLD with a non-null blocker (real action)
+      //   2) most recent ACTIVE (in-flight regardless of blocker)
+      //   3) most recent SOLD (paid_in_full / closed)
+      //   4) most recent ANY (fallback for unsigned drafts)
+      const byRecent = (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
+      const ordersWithPressure = myOrders.map(o => {
+        const job = jobByOrderId.get(o.id) || null
+        return { o, job, p: computeOrderPressure(o, job, job?.milestones) }
+      })
+      const tier1 = ordersWithPressure
+        .filter(r => SOLD_STATUSES.includes(r.o.status) && r.p.blocker)
+        .sort((a, b) => byRecent(a.o, b.o))
+      const tier2 = ordersWithPressure
+        .filter(r => ACTIVE_STATUSES.includes(r.o.status))
+        .sort((a, b) => byRecent(a.o, b.o))
+      const tier3 = ordersWithPressure
+        .filter(r => SOLD_STATUSES.includes(r.o.status))
+        .sort((a, b) => byRecent(a.o, b.o))
+      const tier4 = ordersWithPressure
+        .slice()
+        .sort((a, b) => byRecent(a.o, b.o))
+      const winner = tier1[0] || tier2[0] || tier3[0] || tier4[0] || null
+      const primary = winner?.o || null
+      const primaryJob = winner?.job || null
+      const pressure = winner?.p || { blocker: null, needsCall: false, callReasons: [], paymentState: 'none', ageDays: 0 }
+
+      const total   = primary ? rowGrandTotal(primary) : 0
+      const paid    = primary ? rowTotalPaid(primary)  : 0
+      const balance = Math.max(0, total - paid)
+      const fillRatio = total > 0 ? paid / total : 0
+
+      // Lifetime sums for sorts that span all orders
+      let lifetimeBalance = 0
+      let lastActivity = null
+      const jobTypes = new Set()
+      const serviceTypes = new Set()
+      for (const o of myOrders) {
+        const t = rowGrandTotal(o); const p = rowTotalPaid(o)
+        if (SOLD_STATUSES.includes(o.status)) lifetimeBalance += Math.max(0, t - p)
+        const upd = new Date(o.updated_at).getTime()
+        if (!lastActivity || upd > lastActivity) lastActivity = upd
+        const j = jobByOrderId.get(o.id)
+        if (j?.job_type) jobTypes.add(j.job_type)
+        for (const st of (o.service_types || [])) serviceTypes.add(String(st).toUpperCase())
+      }
+
+      // Deceased name for the primary order's sub-line
+      let deceasedLabel = null
+      const dec = primary?.deceased
+      if (Array.isArray(dec) && dec.length > 0) {
+        if (dec.length === 1) {
+          const d = dec[0]
+          const first = d.firstName || d.first_name || ''
+          const last  = d.lastName  || d.last_name  || ''
+          deceasedLabel = [first, last].filter(Boolean).join(' ').trim() || null
+        } else {
+          deceasedLabel = 'Companion stone'
+        }
+      }
+
+      // Family name = primary order's primary_lastname (the stone's name),
+      // falling back to the customer's last name.
+      const familyName =
+        (primary?.primary_lastname && String(primary.primary_lastname).trim()) ||
+        (c.last_name && String(c.last_name).trim().toUpperCase()) ||
+        customerName(c) ||
+        '—'
+
+      return {
+        ...c,
+        _primary:        primary || null,
+        _primaryJob:     primaryJob,
+        _pressure:       pressure,
+        _primaryTotal:   total,
+        _primaryPaid:    paid,
+        _primaryBalance: balance,
+        _fillRatio:      fillRatio,
+        _lifetimeBalance: lifetimeBalance,
+        _lastActivity:   lastActivity,
+        _familyName:     familyName,
+        _deceasedLabel:  deceasedLabel,
+        _jobTypes:       jobTypes,
+        _serviceTypes:   serviceTypes,
+        _ordersCount:    myOrders.length,
+      }
+    })
+  }, [customers, allOrders, allJobs])
+
+  // ── Filter + sort ───────────────────────────────────────────────────────
   const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase()
     let list = enriched
+
+    // Needs-call toggle
+    if (needsCallOnly) list = list.filter(c => c._pressure.needsCall)
+
+    // Job-type filter — match if ANY of the customer's orders has the type.
+    // "inscription" matches by service_types since no job_type='inscription'
+    // exists in current prod data.
+    if (jobTypeFilters.size > 0) {
+      list = list.filter(c => {
+        for (const f of jobTypeFilters) {
+          if (f === 'inscription') {
+            if (c._serviceTypes.has('INSCRIPTION') || c._serviceTypes.has('INSCRIPTIONS')) return true
+          } else {
+            if (c._jobTypes.has(f)) return true
+          }
+        }
+        return false
+      })
+    }
+
+    // Payment filter — applies to PRIMARY order's paymentState
+    if (paymentFilters.size > 0) {
+      list = list.filter(c => paymentFilters.has(c._pressure.paymentState))
+    }
+
+    // Blocker filter — applies to PRIMARY order's blocker kind
+    if (blockerFilters.size > 0) {
+      list = list.filter(c => {
+        const k = c._pressure.blocker?.kind
+        if (!k) return false
+        for (const f of blockerFilters) {
+          const cfg = BLOCKER_FILTERS.find(x => x.code === f)
+          if (cfg?.match(k)) return true
+        }
+        return false
+      })
+    }
+
+    // Search across name, deceased, contact, order#
+    const needle = search.trim().toLowerCase()
     if (needle) {
       list = list.filter(c => {
         const hay = [
-          c.first_name, c.last_name, c.email, c.phone_primary, c.phone_secondary,
-          c.city, c.state, c.zip, c.notes,
+          c._familyName, c._deceasedLabel,
+          c.first_name, c.last_name, c.email,
+          c.phone_primary, c.phone_secondary,
+          c._primary?.order_number,
         ].filter(Boolean).join(' ').toLowerCase()
         return hay.includes(needle)
       })
     }
-    const sorters = {
-      lastName:     (a, b) => (a.last_name || '').localeCompare(b.last_name || ''),
-      firstName:    (a, b) => (a.first_name || '').localeCompare(b.first_name || ''),
-      lifetimeValue:(a, b) => b._lifetimeValue - a._lifetimeValue,
-      orders:       (a, b) => b._ordersCount - a._ordersCount,
-      lastActivity: (a, b) => (b._lastActivity || 0) - (a._lastActivity || 0),
-      city:         (a, b) => (a.city || '').localeCompare(b.city || ''),
-    }
-    return [...list].sort(sorters[sortKey] || sorters.lastActivity)
-  }, [enriched, search, sortKey])
 
+    const sorters = {
+      // (Q4) Action priority — recency band first (so recent activity still
+      // bubbles), then severity inside the band. Each band is sorted by
+      // (severity asc, recency desc) so reds-in-band 0 land at the very top.
+      actionPriority: (a, b) => {
+        const bandDiff = recencyBand(a._lastActivity) - recencyBand(b._lastActivity)
+        if (bandDiff !== 0) return bandDiff
+        const sevDiff = severityRank(a._pressure.blocker) - severityRank(b._pressure.blocker)
+        if (sevDiff !== 0) return sevDiff
+        return (b._lastActivity || 0) - (a._lastActivity || 0)
+      },
+      lastActivity: (a, b) => (b._lastActivity || 0) - (a._lastActivity || 0),
+      familyName:   (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
+      balanceDesc:  (a, b) => b._lifetimeBalance - a._lifetimeBalance,
+      ageDesc:      (a, b) => (b._pressure.ageDays || 0) - (a._pressure.ageDays || 0),
+      signedNewest: (a, b) => new Date(b._primary?.signed_at || 0) - new Date(a._primary?.signed_at || 0),
+    }
+    return [...list].sort(sorters[sortKey] || sorters.actionPriority)
+  }, [enriched, needsCallOnly, jobTypeFilters, paymentFilters, blockerFilters, search, sortKey])
+
+  const needsCallCount = useMemo(
+    () => enriched.filter(c => c._pressure.needsCall).length,
+    [enriched]
+  )
+
+  // (Q8) Echo active filter chip labels in the head-count line so the
+  // AND-between-groups logic is visible without a docs page.
+  const activeFilterLabels = useMemo(() => {
+    const labels = []
+    if (statusFilter !== 'active') {
+      const cfg = STATUS_FILTERS.find(f => f.code === statusFilter)
+      if (cfg) labels.push(cfg.label)
+    }
+    if (needsCallOnly) labels.push('Needs call')
+    for (const f of jobTypeFilters)  labels.push(JOB_TYPE_FILTERS.find(x => x.code === f)?.label || f)
+    for (const f of paymentFilters)  labels.push(PAYMENT_FILTERS.find(x => x.code === f)?.label || f)
+    for (const f of blockerFilters)  labels.push(BLOCKER_FILTERS.find(x => x.code === f)?.label || f)
+    if (search.trim()) labels.push(`"${search.trim()}"`)
+    return labels
+  }, [statusFilter, needsCallOnly, jobTypeFilters, paymentFilters, blockerFilters, search])
+
+  // ── Detail view delegated to existing component ─────────────────────────
   if (selectedId) {
     const customer = customers.find(c => c.id === selectedId)
     return (
@@ -105,111 +335,300 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
     )
   }
 
+  // ── Filter chip helpers ─────────────────────────────────────────────────
+  const toggle = (set, setter) => (code) => {
+    const next = new Set(set)
+    if (next.has(code)) next.delete(code); else next.add(code)
+    setter(next)
+  }
+  const resetAll = () => {
+    setSearch('')
+    setNeedsCallOnly(false)
+    setJobTypeFilters(new Set())
+    setPaymentFilters(new Set())
+    setBlockerFilters(new Set())
+    setStatusFilter('active')
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────────
   return (
-    <div className="sb-page sb-page-wide">
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">Workspace</div>
-        <h1 className="sb-page-title">Customers</h1>
-      </div>
+    <div className="sb-crm-page">
+      <div className="sb-crm-container">
 
-      <div className="sb-cust-toolbar">
-        <input
-          type="search"
-          className="sb-input sb-cust-search"
-          placeholder="Search by name, phone, email, city…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-        <select
-          className="sb-input sb-cust-sort"
-          value={sortKey}
-          onChange={e => setSortKey(e.target.value)}
-        >
-          <option value="lastActivity">Sort: Recent activity</option>
-          <option value="lifetimeValue">Sort: Lifetime value</option>
-          <option value="orders">Sort: Most orders</option>
-          <option value="lastName">Sort: Last name A→Z</option>
-          <option value="firstName">Sort: First name A→Z</option>
-          <option value="city">Sort: City</option>
-        </select>
-        <button type="button" className="sb-btn-primary" onClick={() => setShowAddForm(true)}>
-          + Add customer
-        </button>
-      </div>
-
-      <div className="sb-pill-row">
-        <button type="button" className={`sb-pill ${filter === 'active' ? 'on' : ''}`} onClick={() => setFilter('active')}>Active</button>
-        <button type="button" className={`sb-pill ${filter === 'archived' ? 'on' : ''}`} onClick={() => setFilter('archived')}>Archived</button>
-      </div>
-
-      <div className="sb-cust-meta">
-        {loading
-          ? 'Loading…'
-          : `${filtered.length} ${filter === 'archived' ? 'archived ' : ''}customer${filtered.length === 1 ? '' : 's'} ${search ? `matching "${search}"` : ''}`
-        }
-      </div>
-
-      {showAddForm && (
-        <AddCustomerForm
-          onCancel={() => setShowAddForm(false)}
-          onCreated={() => { setShowAddForm(false); reload() }}
-        />
-      )}
-
-      {loading ? (
-        <div className="sb-empty">Loading…</div>
-      ) : filtered.length === 0 ? (
-        <div className="sb-empty">
-          {search
-            ? `No ${filter === 'archived' ? 'archived ' : ''}customers match "${search}".`
-            : filter === 'archived'
-              ? `No archived customers.`
-              : `No customers yet. Click "+ Add customer" to add your first.`}
-        </div>
-      ) : (
-        <div className="sb-cust-table">
-          <div className="sb-cust-row sb-cust-row-head">
-            <div>Customer</div>
-            <div>Contact</div>
-            <div>Location</div>
-            <div className="sb-num">Orders</div>
-            <div className="sb-num">Lifetime value</div>
-            <div className="sb-num">Last activity</div>
+        <header className="sb-crm-head">
+          <div>
+            <h1 className="sb-crm-head-title">Customers</h1>
+            <div className="sb-crm-head-count">
+              <strong>{loading ? '—' : filtered.length}</strong>{' '}
+              {filtered.length === 1 ? 'customer' : 'customers'}
+              {!loading && needsCallCount > 0 && (
+                <> · <strong>{needsCallCount}</strong> need a call</>
+              )}
+              {!loading && activeFilterLabels.length > 0 && (
+                <> · {activeFilterLabels.join(' · ')}</>
+              )}
+            </div>
           </div>
-          {filtered.map(c => (
-            <button
-              key={c.id}
-              type="button"
-              className="sb-cust-row"
-              onClick={() => setSelectedId(c.id)}
+          <div className="sb-crm-head-actions">
+            <input
+              type="search"
+              className="sb-crm-search"
+              placeholder="Search name, deceased, phone, order #…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+            <select
+              className="sb-crm-sort"
+              value={sortKey}
+              onChange={e => setSortKey(e.target.value)}
             >
-              <div className="sb-cust-name-cell">
-                <div className="sb-cust-avatar">{customerInitials(c)}</div>
-                <div>
-                  <div className="sb-cust-name">{customerName(c)}</div>
-                  {c._activeCount > 0 && (
-                    <div className="sb-cust-active-tag">{c._activeCount} active</div>
-                  )}
-                </div>
-              </div>
-              <div className="sb-cust-contact">
-                {c.phone_primary && <div>{fmtPhone(c.phone_primary)}</div>}
-                {c.email && <div className="sb-muted">{c.email}</div>}
-                {!c.phone_primary && !c.email && <div className="sb-muted">—</div>}
-              </div>
-              <div className="sb-cust-location">
-                {c.city ? `${c.city}${c.state ? ', ' + c.state : ''}` : <span className="sb-muted">—</span>}
-              </div>
-              <div className="sb-num sb-mono">{c._ordersCount}</div>
-              <div className="sb-num sb-mono">{c._lifetimeValue > 0 ? fmtUSD(c._lifetimeValue) : <span className="sb-muted">—</span>}</div>
-              <div className="sb-num sb-muted">{c._lastActivity ? fmtRelative(new Date(c._lastActivity).toISOString()) : '—'}</div>
+              {SORT_OPTIONS.map(o => (
+                <option key={o.code} value={o.code}>{o.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="sb-crm-btn-primary"
+              onClick={() => setShowAddForm(true)}
+            >
+              + Add customer
             </button>
-          ))}
+          </div>
+        </header>
+
+        {loadErr && <div className="sb-crm-error">{loadErr}</div>}
+
+        {/* (Q7) Narrow-width advisory — table is dense; mobile gets a stack
+            but the operator is told this view is desktop-first until a
+            proper mobile card-list lands. */}
+        <div className="sb-crm-min-width-banner">
+          Best viewed on desktop — this list uses a dense table layout. Phone view falls back to a single-column stack.
         </div>
-      )}
+
+        {/* Filter chips */}
+        <div className="sb-crm-chip-row">
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Status</span>
+            {STATUS_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={statusFilter === f.code}
+                onClick={() => setStatusFilter(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <FilterChip
+              active={needsCallOnly}
+              onClick={() => setNeedsCallOnly(v => !v)}
+            >
+              Needs call
+            </FilterChip>
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Job type</span>
+            {JOB_TYPE_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={jobTypeFilters.has(f.code)}
+                onClick={() => toggle(jobTypeFilters, setJobTypeFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Payment</span>
+            {PAYMENT_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={paymentFilters.has(f.code)}
+                onClick={() => toggle(paymentFilters, setPaymentFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Blocker</span>
+            {BLOCKER_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={blockerFilters.has(f.code)}
+                onClick={() => toggle(blockerFilters, setBlockerFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+        </div>
+
+        {showAddForm && (
+          <AddCustomerForm
+            onCancel={() => setShowAddForm(false)}
+            onCreated={() => { setShowAddForm(false); reload() }}
+          />
+        )}
+
+        {/* Table card */}
+        <div className="sb-crm-card sb-crm-table">
+          <div className="sb-crm-row sb-crm-row-head" style={{ gridTemplateColumns: ROW_GRID }}>
+            <div>Family / Stone</div>
+            <div>Order</div>
+            <div>Contact</div>
+            <div>Payment</div>
+            <div className="num">Age</div>
+            <div>Blocker</div>
+            <div className="num">Updated</div>
+          </div>
+
+          {loading ? (
+            <div className="sb-crm-empty">Loading customers…</div>
+          ) : filtered.length === 0 ? (
+            <div className="sb-crm-empty">
+              {/* (Q8) Specific copy for the most-frequent zero-result cases:
+                  Needs-call alone = a "you're caught up" moment, not a bug.
+                  Active + nothing = "no customers yet" greeting. Anything
+                  else = generic filter-failure with reset. */}
+              {needsCallOnly && !jobTypeFilters.size && !paymentFilters.size && !blockerFilters.size && !search.trim()
+                ? 'No customers need a call right now.'
+                : statusFilter === 'active' && !needsCallOnly && !jobTypeFilters.size && !paymentFilters.size && !blockerFilters.size && !search.trim()
+                  ? 'No customers yet. Click "+ Add customer" to add your first.'
+                  : 'No customers match these filters.'}
+              {!needsCallOnly && (
+                <div>
+                  <button type="button" onClick={resetAll}>Reset filters</button>
+                </div>
+              )}
+            </div>
+          ) : (
+            filtered.map(c => <CustomerRow key={c.id} customer={c} onOpen={setSelectedId} />)
+          )}
+        </div>
+
+        {/* TODO: last_contact_at column — wire when a communications table lands.
+            TODO: lifetime revenue — sum payments across all of c's orders; surface
+                  behind an Owner settings toggle (column too noisy as default).
+            TODO: family-repeat indicator — small "repeat" pill near family name
+                  when c._ordersCount > 1 (deferred to next pass; data is here). */}
+
+      </div>
     </div>
   )
 }
+
+// =============================================================================
+// CustomerRow — the operational row
+// =============================================================================
+
+function CustomerRow({ customer: c, onOpen }) {
+  const p = c._pressure
+  const pTone = paymentTone(p.paymentState)
+  const pLabel = paymentLabel(p.paymentState)
+  const balance = c._primaryBalance
+  const blocker = p.blocker
+  const blockerSev = blocker?.severity || 'green'
+  const updatedAt = c._lastActivity ? new Date(c._lastActivity).toISOString() : null
+
+  return (
+    <button
+      type="button"
+      className="sb-crm-row"
+      style={{ gridTemplateColumns: ROW_GRID }}
+      onClick={() => onOpen?.(c.id)}
+    >
+      {/* FAMILY / STONE */}
+      <div>
+        <div className="sb-crm-primary">{c._familyName}</div>
+        <div className="sb-crm-secondary">
+          {c._deceasedLabel
+            ? c._deceasedLabel
+            : c._primary
+              ? 'Stone TBD'                       /* Q10: primary exists but deceased not filled */
+              : c._ordersCount > 1 ? `${c._ordersCount} orders on file` : 'No order yet'}
+        </div>
+      </div>
+
+      {/* ORDER + job type pill */}
+      <div>
+        <div className="sb-crm-mono">{c._primary?.order_number || '—'}</div>
+        {c._primary && (
+          <div style={{ marginTop: 4 }}>
+            <Pill severity="bronze">{jobTypeLabel(c._primaryJob?.job_type, c._primary?.service_types)}</Pill>
+          </div>
+        )}
+      </div>
+
+      {/* CONTACT — actual person you call */}
+      <div onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 13, color: CRM.ink }}>
+          {[c.first_name, c.last_name].filter(Boolean).join(' ').trim() || '—'}
+        </div>
+        {c.phone_primary && (
+          <a className="sb-crm-tel" href={`tel:${c.phone_primary}`}>
+            {fmtPhone(c.phone_primary)}
+          </a>
+        )}
+      </div>
+
+      {/* PAYMENT — pill + micro-bar */}
+      <div>
+        {pLabel ? (
+          <>
+            <Pill severity={pTone}>{pLabel}</Pill>
+            {c._primaryTotal > 0 && (
+              <ProgressMicroBar fillRatio={c._fillRatio} tone={pTone === 'red' ? 'red' : pTone === 'amber' ? 'amber' : 'green'} />
+            )}
+            {balance > 0 && (
+              <div className="sb-crm-secondary sb-crm-tabular">{fmtUSD(balance)} due</div>
+            )}
+          </>
+        ) : (
+          <span className="sb-crm-muted">—</span>
+        )}
+      </div>
+
+      {/* AGE — days since signed */}
+      <div className="num">
+        <span className="sb-crm-num">{p.ageDays || 0}d</span>
+        <div className="sb-crm-secondary" style={{ textAlign: 'right' }}>
+          {c._primary?.signed_at ? 'since signed' : 'unsigned'}
+        </div>
+      </div>
+
+      {/* BLOCKER — Q1: no "On track" pill; absence of a blocker is the signal */}
+      <div>
+        {blocker && (
+          <Pill severity={blockerSev}>
+            {p.needsCall && <span className="sb-crm-call-dot" />}
+            {blocker.label}
+          </Pill>
+        )}
+      </div>
+
+      {/* UPDATED */}
+      <div className="num">
+        <span className="sb-crm-muted sb-crm-tabular">{updatedAt ? fmtRelative(updatedAt) : '—'}</span>
+      </div>
+    </button>
+  )
+}
+
+function jobTypeLabel(jobType, serviceTypes) {
+  if (jobType === 'new_stone')       return 'New stone'
+  if (jobType === 'mausoleum_door')  return 'Crypt door'
+  if (jobType === 'cleaning_repair') return 'Cleaning/Repair'
+  const st = (serviceTypes || []).map(s => String(s).toUpperCase())
+  if (st.includes('INSCRIPTION') || st.includes('INSCRIPTIONS')) return 'Inscription'
+  if (st.includes('ACID_WASH')) return 'Acid wash'
+  return 'Order'
+}
+
+// =============================================================================
+// CustomerDetail — preserved from prior design (existing flow per sprint spec)
+// =============================================================================
 
 function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }) {
   const [orders, setOrders] = useState([])

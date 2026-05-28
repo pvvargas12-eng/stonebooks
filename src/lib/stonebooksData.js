@@ -1677,6 +1677,235 @@ export async function detectCemeteryOrderSignals(cemeteryOrderId) {
 }
 
 // =============================================================================
+// computeOrderPressure — single highest-severity blocker + call signal
+// =============================================================================
+// Shared substrate used by Customers + Orders tabs (and reusable elsewhere) to
+// derive an operator-readable "what's this order doing right now" read. ONE
+// blocker per order — the highest-severity match wins (avoids chip-soup).
+//
+// The function is intentionally defensive — it accepts (order, job?, milestones?)
+// and only fires the blockers it can ground in real data:
+//   • Milestone-state blockers fire only when the relevant milestone row exists
+//     and its status_date/requires/templates substrate is in place
+//   • Order-level blockers (overdue_balance) fire from columns we always have
+//   • Status-string blockers (waiting_on_*) fire from job.overall_status
+//
+// Severity ranking (highest first) — labels are operator-vocabulary per the
+// CRM-RESKIN-PASS Monument review:
+//   1. overdue_balance      (red)   "Overdue balance"            — balance > 0 + past target
+//   2. install_late         (red)   "Install late"               — installed.due_date past, not done
+//   3. production_blocked   (amber) "Stuck in production Nd"     — prod_started ≥14d, no prod_completed
+//   4. proof_waiting_customer (amber) "Awaiting proof approval"  — proof_created done, proof_approved actionable
+//   5. cemetery_hold        (amber) "Cemetery hold"              — job status OR permit gap
+//   6. waiting_on_family    (amber) "Waiting on family"          — job.overall_status='waiting_on_customer'
+//   7. needs_install_date   (blue)  "Needs install date"         — prod_completed done, ready_to_install actionable
+//   8a. install_scheduled   (blue)  "Install scheduled <date>"   — ready_to_install done + installed.due_date set
+//   8b. stone_ready_schedule_trip (blue) "Stone ready — schedule trip" — ready_to_install done, no due_date
+//   9. (null — no detectable blocker / no milestone signal)
+//
+// needsCall = true when blocker is overdue_balance, install_late,
+// proof_waiting_customer, waiting_on_family, OR stone_ready_schedule_trip
+// (>3 days). install_scheduled does NOT trigger a call (the date is set;
+// no operator action needed unless it slips). The >3 days rule on
+// stone_ready_schedule_trip prevents same-day readiness from screaming
+// "call now."
+const PRODUCTION_STALL_DAYS  = 14
+const READY_FOR_INSTALL_CALL_DAYS = 3
+
+export function computeOrderPressure(order, job = null, milestones = null) {
+  const empty = { blocker: null, needsCall: false, callReasons: [], paymentState: 'none', ageDays: 0 }
+  if (!order) return empty
+
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+  // Age — prefer signed_at, fall back to created_at for unsigned drafts.
+  const ageAnchor = order.signed_at || order.pricing_locked_at || order.created_at || null
+  const ageDays = ageAnchor
+    ? Math.max(0, Math.floor((now - new Date(ageAnchor)) / 86400000))
+    : 0
+
+  // Payment state — independent of blockers. rowGrandTotal/rowTotalPaid read
+  // from the canonical payments[] path the Customers tab already uses.
+  const total = rowGrandTotal(order)
+  const paid  = rowTotalPaid(order)
+  const balance = total - paid
+  let paymentState = 'none'
+  if (total > 0) {
+    if (balance <= 0) paymentState = 'paid_in_full'
+    else if (paid > 0) paymentState = 'partial'
+    else paymentState = 'unpaid'
+    if (balance > 0 && order.target_completion_date) {
+      const tgt = new Date(order.target_completion_date)
+      if (tgt < todayStart) paymentState = 'overdue'
+    }
+  }
+
+  // Milestone index — empty Map if neither milestones nor job.milestones provided.
+  const ms = milestones || job?.milestones || []
+  const byKey = new Map(ms.map(m => [m.milestone_key, m]))
+  const isActionable = (m) => m && m.status !== 'done' && m.status !== 'not_needed'
+  const isDone = (m) => m && m.status === 'done'
+
+  // Resolve in priority order — first match wins. Returning early keeps the
+  // ranking explicit (no post-hoc sort that could drift).
+
+  // 1. overdue_balance (red)
+  if (SOLD_STATUSES.includes(order.status) && balance > 0 && order.target_completion_date) {
+    const tgt = new Date(order.target_completion_date)
+    if (tgt < todayStart) {
+      return _packPressure({
+        blocker: { kind: 'overdue_balance', label: 'Overdue balance', severity: 'red' },
+        callReasons: ['Overdue balance'],
+        paymentState, ageDays,
+      })
+    }
+  }
+
+  // 2. install_late (red) — milestone-driven; requires due_date to have been set.
+  // NOTE (sparse data): installed.due_date is populated on ~0.6% of milestones
+  // in current prod (per 2026-05-28 audit), so this branch is forward-looking;
+  // it will essentially never fire on existing rows until milestone due_dates
+  // start landing. Adding install_late to callReasons because slipped installs
+  // are the most apologetic-call scenario and were silently excluded before.
+  const installed = byKey.get('installed') || byKey.get('door_installed') || byKey.get('work_completed')
+  if (installed && isActionable(installed) && installed.due_date) {
+    const due = new Date(installed.due_date)
+    if (due < todayStart) {
+      return _packPressure({
+        blocker: { kind: 'install_late', label: 'Install late', severity: 'red' },
+        callReasons: ['Install date slipped'],
+        paymentState, ageDays,
+      })
+    }
+  }
+
+  // 3. production_blocked (amber) — started ≥14d ago, not completed.
+  // NOTE (sparse data): production_started.status_date is populated on ~2.7%
+  // of milestones, so the stall computation falls back to the order's age
+  // when status_date is null — a defensible proxy ("if this order is 20+
+  // days old AND production_started but not completed, it's stuck"). When
+  // status_date later starts populating reliably, the fallback becomes
+  // irrelevant on its own.
+  const prodStarted   = byKey.get('production_started')
+  const prodCompleted = byKey.get('production_completed') || byKey.get('work_completed')
+  if (isDone(prodStarted) && isActionable(prodCompleted)) {
+    const stallAnchor = prodStarted.status_date
+      ? new Date(prodStarted.status_date)
+      : (order.signed_at ? new Date(order.signed_at) : null)  // signed_at fallback when status_date sparse
+    const stallDays = stallAnchor ? Math.floor((now - stallAnchor) / 86400000) : 0
+    if (stallDays >= PRODUCTION_STALL_DAYS) {
+      return _packPressure({
+        blocker: { kind: 'production_blocked', label: `Stuck in production ${stallDays}d`, severity: 'amber' },
+        callReasons: [],
+        paymentState, ageDays,
+      })
+    }
+  }
+
+  // 4. proof_waiting_customer (amber)
+  const proofCreated  = byKey.get('proof_created')
+  const proofApproved = byKey.get('proof_approved')
+  if (isDone(proofCreated) && isActionable(proofApproved)) {
+    return _packPressure({
+      blocker: { kind: 'proof_waiting_customer', label: 'Awaiting proof approval', severity: 'amber' },
+      callReasons: ['Awaiting proof approval'],
+      paymentState, ageDays,
+    })
+  }
+
+  // 5. cemetery_hold (amber) — was 'Waiting on cemetery'; Monument review
+  // flagged it as too vague for action (could be permit, plot info, or rules).
+  // Phase 2 will split into sub-kinds when template milestones disambiguate.
+  if (job?.overall_status === 'waiting_on_cemetery') {
+    return _packPressure({
+      blocker: { kind: 'cemetery_hold', label: 'Cemetery hold', severity: 'amber' },
+      callReasons: [],
+      paymentState, ageDays,
+    })
+  }
+  const permitFiled    = byKey.get('permit_filed')
+  const permitApproved = byKey.get('permit_approved')
+  if (isDone(permitFiled) && isActionable(permitApproved)) {
+    return _packPressure({
+      blocker: { kind: 'cemetery_hold', label: 'Cemetery hold', severity: 'amber' },
+      callReasons: [],
+      paymentState, ageDays,
+    })
+  }
+
+  // 6. waiting_on_family (amber) — was 'Waiting on customer'; "family" is
+  // the funeral/monument-industry universal noun.
+  if (job?.overall_status === 'waiting_on_customer') {
+    return _packPressure({
+      blocker: { kind: 'waiting_on_family', label: 'Waiting on family', severity: 'amber' },
+      callReasons: ['Waiting on family'],
+      paymentState, ageDays,
+    })
+  }
+
+  // 7. needs_install_date (blue) — production done, no install on calendar.
+  // Was 'Needs scheduling' — disambiguated to specifically mean install date.
+  const readyToInstall = byKey.get('ready_to_install')
+  if (isDone(prodCompleted) && isActionable(installed) && !isDone(readyToInstall)) {
+    return _packPressure({
+      blocker: { kind: 'needs_install_date', label: 'Needs install date', severity: 'blue' },
+      callReasons: [],
+      paymentState, ageDays,
+    })
+  }
+
+  // 8. ready_for_install (blue) — split into two states based on whether
+  // an install date is on the calendar (Monument: "Ready for install" was
+  // ambiguous between "stone done, no trip yet" and "trip scheduled").
+  //   • installed.due_date set + in future → "Install scheduled [date]"
+  //   • no installed.due_date                → "Stone ready — schedule trip"
+  if (isDone(readyToInstall) && isActionable(installed)) {
+    const dueDate = installed?.due_date
+    if (dueDate) {
+      const formatted = _shortDate(dueDate)
+      return _packPressure({
+        blocker: { kind: 'install_scheduled', label: `Install scheduled ${formatted}`, severity: 'blue' },
+        callReasons: [],     // scheduled — no call needed unless date slips
+        paymentState, ageDays,
+      })
+    }
+    const callReasons = []
+    if (readyToInstall.status_date) {
+      const readyAge = Math.floor((now - new Date(readyToInstall.status_date)) / 86400000)
+      if (readyAge > READY_FOR_INSTALL_CALL_DAYS) callReasons.push(`Stone ready ${readyAge}d — call to schedule`)
+    }
+    return _packPressure({
+      blocker: { kind: 'stone_ready_schedule_trip', label: 'Stone ready — schedule trip', severity: 'blue' },
+      callReasons,
+      paymentState, ageDays,
+    })
+  }
+
+  // 9. healthy / in flight
+  return _packPressure({ blocker: null, callReasons: [], paymentState, ageDays })
+}
+
+// Compact month-day formatter used in dynamic blocker labels.
+function _shortDate(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+// Internal — derives needsCall from callReasons, packs the return.
+function _packPressure({ blocker, callReasons, paymentState, ageDays }) {
+  return {
+    blocker,
+    needsCall: (callReasons || []).length > 0,
+    callReasons: callReasons || [],
+    paymentState,
+    ageDays,
+  }
+}
+
+// =============================================================================
 // PROFIT OVERVIEW — company nervous system + operational rollups (Layer 1/2)
 // =============================================================================
 // One bulk fetch → all Profit-tab aggregates, computed client-side so we make a

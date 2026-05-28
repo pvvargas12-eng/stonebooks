@@ -515,6 +515,21 @@ Locked items for the next scheduler sprint. All are deferred from SCHEDULER-COMP
   - Per-crew lane / per-person view on the workbench. Today the columns are kind-keyed; a real shop dispatcher needs to see Lonnie's truck day vs Mike's truck day side-by-side. (Already parked under CAL-DRAG follow-ups; re-flagged here.)
   - Readiness gate on Quick Batch save: when kind is operational (not site_visit/errand) and stops.length === 0, the disabled save button is the soft blocker. Production flagged that a louder forcing message would catch the "tried to use Quick Batch for setting" mistake earlier. Phase 6 candidate.
 
+## Operational-truth follow-ups (CRM-RESKIN-PASS backlog)
+
+Items deferred from the 2026-05-28 Customers + Orders rebuild. All flagged by agent reviews (CRM Practicality, UX Friction, Workflow Intelligence, Monument Ops) — kept here so the data + UX layer surfaces them when their dependencies land.
+
+- **Cemetery-order linking via `cemetery_order_id`** — crypt-door jobs that route through `cemetery_orders` (not `orders`) are joined to jobs via `j.cemetery_order_id`, not `j.order_id`. Today's CustomersTab + OrdersTab build their job lookup map by `order_id` only, so crypt-door jobs return null pressure (no milestone-based blocker, only overdue_balance fires). Extend the lookup once a cemetery_order surface needs the same blocker treatment.
+- **Companion stones edge case** — one order with two deceased vs. two orders for the same family. Today's primary-order picker assumes 1 customer → 1 primary stone; companion pairs (Mary & Robert Walsh on one stone, OR two side-by-side stones ordered together) need either a "pair" indicator on the row or a side-by-side rendering. Real shop need per Monument review.
+- **"Awaiting granite" / supplier-ETA blocker** — Paul cannot promise an install date without knowing when the raw stone arrives. Requires a supplier-order substrate (similar to bulk_orders but for blocks). Add as a 6th-priority amber blocker (between proof and cemetery_hold) once data lands.
+- **"Door in shop — Xd" indicator** for crypt-door jobs — Shevchenko holds the family's door during inscription/restoration. That's both a liability and a clock. Bolts onto the SCHEDULER-COMPLETE cascade (door_picked_up milestone has a status_date — read it). Render as a small bronze pill on the row.
+- **Forward-looking target-date age column** — replace "Xd since signed" with "Target: Aug 14 (in 18d)" once `target_completion_date` populates reliably. Monument: "forward-looking beats backward-looking on a working dashboard."
+- **Photo thumbnails on row** — proof image, in-progress shot, final install photo. Bolts onto a future photo-evidence sprint (storage + render pipeline). Real shop need: "monument shops live and die by visual records."
+- **Mobile card-view list pages** — today the ≤900px breakpoint falls back to a single-column stack with a "Best viewed on desktop" advisory banner. Phase 6 candidate: build a real 2-column label-value card layout for mobile.
+- **"Cemetery hold" → sub-kinds** — split into "Awaiting cemetery permit" / "Awaiting plot info" / "Awaiting cemetery rules check" when template milestones disambiguate. Each maps to a different phone call.
+- **Multi-blocker `+N` indicator** — small superscript count on the blocker chip when an order has additional blockers below the highest-severity one. CRM agent recommended; deferred until operators ask for it (single-chip principle holds for now).
+- **"Stuck in production" duration fallback** — when `production_started.status_date` is null (currently ~97% of milestones), the stall computation falls back to `order.signed_at` per the inline comment in `computeOrderPressure`. Note in code; once status_date populates reliably (post-cascade), the fallback becomes irrelevant. Don't remove the fallback prematurely.
+
 ## Deferred / known issues
 
 - **Mausoleum range on calendar/customer-list/receipt** — those surfaces show only `targetCompletionDate` (the range start); the `targetCompletionEndDate` is not yet surfaced there. Future sprint if needed.
