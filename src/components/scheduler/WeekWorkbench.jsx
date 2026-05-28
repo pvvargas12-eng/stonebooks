@@ -206,7 +206,17 @@ export default function WeekWorkbench({
 // schedule or discard. Future polish: tag-based per-kind thresholds.
 const TRAY_AGING_DAYS = 14
 
-function TrayStrip({ batches, onReload }) {
+function TrayStrip({ batches, onReload }) { // eslint-disable-line no-unused-vars
+  // `nowMs` lives in state so React 19's purity rules don't flag a bare
+  // Date.now() call during render. Lazy initializer fires once on mount; an
+  // interval tick keeps chip ages fresh on a long-open tab without forcing
+  // a parent re-render to refresh.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
+
   const tray = (batches || []).filter(b => !b.scheduled_date && b.status !== 'cancelled')
   if (tray.length === 0) {
     return (
@@ -215,7 +225,6 @@ function TrayStrip({ batches, onReload }) {
       </div>
     )
   }
-  const now = Date.now()
   return (
     <div className="sb-workbench-tray">
       <span className="sb-workbench-tray-label">In tray</span>
@@ -223,7 +232,7 @@ function TrayStrip({ batches, onReload }) {
         {tray.map(b => {
           const kindInfo = batchKindInfo(b.kind)
           const ageDays = b.created_at
-            ? Math.floor((now - new Date(b.created_at).getTime()) / 86400000)
+            ? Math.floor((nowMs - new Date(b.created_at).getTime()) / 86400000)
             : 0
           const isStale = ageDays >= TRAY_AGING_DAYS
           const className = `sb-workbench-tray-chip${isStale ? ' sb-workbench-tray-chip-stale' : ''}`
