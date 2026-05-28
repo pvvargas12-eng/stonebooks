@@ -53,6 +53,13 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
   const [toast, setToast] = useState(null)        // { id, text, error?, undo?: { batchId, scheduled_date, am_pm } }
   const toastTimer = useRef(null)
   const toastSeq = useRef(0)
+
+  // Cascade-warning banner — lifted from CalendarDayDispatch/CarryoverBanner
+  // because those components unmount when `loading` flips true (which onReload
+  // does immediately after a dispatch tick), destroying their local state. The
+  // banner now lives on CalendarTab so it survives the reload cycle. Dismiss
+  // is operator-driven; auto-clears only on a successful follow-up tick.
+  const [cascadeWarning, setCascadeWarning] = useState(null)
   const showToast = useCallback((t) => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setToast({ ...t, id: ++toastSeq.current })
@@ -238,6 +245,25 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
           {loadErr}
         </div>
       )}
+
+      {/* Cascade-warning banner — survives the reload-unmount cycle that
+          destroyed it when state lived on CalendarDay. Bug #1 from the
+          Phase 4 verify diagnosis. */}
+      {cascadeWarning && (
+        <div className="sb-calendar-cascade-warning" role="status">
+          <span className="sb-calendar-cascade-warning-label">Needs review</span>
+          <span className="sb-calendar-cascade-warning-msg">{cascadeWarning}</span>
+          <button
+            type="button"
+            className="sb-calendar-cascade-warning-dismiss"
+            onClick={() => setCascadeWarning(null)}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {loading && !loadErr && (
         <div className="sb-empty">Loading…</div>
       )}
@@ -266,6 +292,7 @@ export default function CalendarTab({ user, profile, onOpenJob, onOpenOrder }) {
             promisesByJob={promisesByJob}
             actorName={actorName}
             actorUserId={actorUserId}
+            onCascadeWarning={setCascadeWarning}
             onReload={loadAll}
           />
         </>
@@ -396,6 +423,44 @@ const localStyles = `
     color: var(--sb-text);
     background: var(--sb-surface-muted);
   }
+
+  /* Cascade-warning banner — lifted from CalendarDay subtree so it survives
+     the loading-unmount cycle. Matches the dispatch-sheet inline variant. */
+  .sb-calendar-cascade-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: #6b4a1c;
+    background: #fbe5b8;
+    border: 0.5px solid #b8842a;
+    font-size: 13px;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    border-radius: var(--sb-r-sm, 6px);
+    line-height: 1.4;
+  }
+  .sb-calendar-cascade-warning-label {
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #b8842a;
+    white-space: nowrap;
+    padding-top: 1px;
+  }
+  .sb-calendar-cascade-warning-msg { flex: 1; }
+  .sb-calendar-cascade-warning-dismiss {
+    background: transparent;
+    border: 0.5px solid #b8842a;
+    color: #b8842a;
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-calendar-cascade-warning-dismiss:hover { background: rgba(184, 132, 42, 0.12); }
 
   /* + Add event — the accent-tinted entry point for ad-hoc calendar
      entries. Sits at the right edge of the controls row so it never

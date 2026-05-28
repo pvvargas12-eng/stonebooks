@@ -28,6 +28,7 @@ export default function CalendarDay({
   promisesByJob,
   actorName,
   actorUserId,
+  onCascadeWarning,
   onReload,
 }) {
   const view = useMemo(
@@ -87,6 +88,7 @@ export default function CalendarDay({
         rows={carryover}
         actorName={actorName}
         actorUserId={actorUserId}
+        onCascadeWarning={onCascadeWarning}
         onReload={onReload}
       />
 
@@ -114,6 +116,7 @@ export default function CalendarDay({
               promisesByJob={promisesByJob}
               actorName={actorName}
               actorUserId={actorUserId}
+              onCascadeWarning={onCascadeWarning}
               onReload={onReload}
             />
           ))}
