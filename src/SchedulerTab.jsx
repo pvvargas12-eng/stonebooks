@@ -74,6 +74,18 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
     setZoom('week')
   }, [])
 
+  // Phase 5: empty-state CTA on Month → switch to Week + flag that the
+  // workbench should auto-open BatchBuilder on the next render. The flag
+  // is consumed by WeekWorkbench (via onQuickBatchConsumed) so subsequent
+  // re-renders don't keep re-opening the dialog.
+  const [quickBatchSeed, setQuickBatchSeed] = useState(false)
+  const handleQuickBatchFromMonth = useCallback(() => {
+    setAnchor(new Date())     // anchor to today's week — the obvious default
+    setZoom('week')
+    setQuickBatchSeed(true)
+  }, [])
+  const consumeQuickBatchSeed = useCallback(() => setQuickBatchSeed(false), [])
+
   const handleBatchClick = useCallback(() => {
     // Built batches route to the Calendar Day view for dispatch.
     onSwitchTab?.('calendar')
@@ -170,6 +182,7 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
           batches={batches}
           promises={promises}
           onDayClick={handleDayClick}
+          onQuickBatch={handleQuickBatchFromMonth}
         />
       )}
       {jobs !== null && !loadErr && zoom === 'twoweek' && (
@@ -188,6 +201,8 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
           cemeteries={cemeteries}
           promises={promises}
           trayBatches={batches.filter(b => !b.scheduled_date)}
+          autoOpenQuickBatch={quickBatchSeed}
+          onQuickBatchConsumed={consumeQuickBatchSeed}
           onReload={loadAll}
         />
       )}

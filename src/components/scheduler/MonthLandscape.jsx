@@ -13,7 +13,7 @@ import { getMonthLandscape, customerName } from '../../lib/stonebooksData'
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-export default function MonthLandscape({ year, month, batches, promises, onDayClick }) {
+export default function MonthLandscape({ year, month, batches, promises, onDayClick, onQuickBatch }) {
   const cells = useMemo(
     () => getMonthLandscape({ year, month, batches, promises }),
     [year, month, batches, promises],
@@ -23,11 +23,45 @@ export default function MonthLandscape({ year, month, batches, promises, onDayCl
     year:  'numeric',
   })
 
+  // Phase 5: "kill the void." Empty-state CTA fires when the operator has
+  // no scheduled work and no open promises ANYWHERE in the data set — not
+  // just this month.
+  //
+  // DELIBERATELY NOT firing when the current month is empty but other
+  // months have work: Paul scrolling forward to August to plan ahead
+  // shouldn't see a "no work" CTA in August — he already knows June and
+  // July are populated. A CTA there would be visual noise, not a teaching
+  // moment. The cold-start operator (week 1, no batches anywhere) sees
+  // the CTA in every month they navigate to until they create their first
+  // batch; once any batch exists, the CTA disappears everywhere. Don't
+  // "fix" this to fire on per-month emptiness — the dead-surface problem
+  // is global, not per-month.
+  const isFullyEmpty = (batches?.length || 0) === 0 && (promises?.length || 0) === 0
+
   return (
     <div className="sb-month-landscape">
       <div className="sb-month-head">
         <h2 className="sb-month-title">{monthLabel}</h2>
       </div>
+
+      {isFullyEmpty && (
+        <div className="sb-month-empty-cta">
+          <div className="sb-month-empty-cta-body">
+            <div className="sb-month-empty-cta-title">Schedule your first batch</div>
+            <div className="sb-month-empty-cta-msg">
+              Group jobs that are ready for the same trip, or start a blank one and add to it as the week comes together.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="sb-month-empty-cta-action"
+            onClick={() => onQuickBatch?.()}
+          >
+            Build a batch →
+          </button>
+        </div>
+      )}
+
       <div className="sb-month-weekday-row">
         {WEEKDAY_LABELS.map(w => (
           <div key={w} className="sb-month-weekday">{w}</div>
@@ -147,6 +181,49 @@ const localStyles = `
     margin: 0;
     letter-spacing: -0.01em;
   }
+
+  /* Empty-state CTA — sits between the title and the grid. Bronze accent
+     rail + clear primary action. Kept calm (not modal), so the operator
+     can still see the grid below for date context. */
+  .sb-month-empty-cta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding: 18px 22px;
+    background: var(--sb-surface);
+    border: 0.5px solid var(--sb-border);
+    border-left: 3px solid var(--sb-accent, #b8842a);
+    border-radius: var(--sb-r-sm, 6px);
+    flex-wrap: wrap;
+  }
+  .sb-month-empty-cta-body { flex: 1; min-width: 240px; }
+  .sb-month-empty-cta-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--sb-text);
+    margin-bottom: 6px;
+  }
+  .sb-month-empty-cta-msg {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--sb-text-muted);
+    max-width: 62ch;
+  }
+  .sb-month-empty-cta-action {
+    background: var(--sb-accent, #b8842a);
+    color: #fff;
+    border: 0.5px solid transparent;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 9px 16px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-month-empty-cta-action:hover { filter: brightness(0.95); }
 
   .sb-month-weekday-row {
     display: grid;

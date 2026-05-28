@@ -13,7 +13,7 @@
 // set rows AND a piggyback rub at the same cemetery → one trip).
 // =============================================================================
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BATCH_KINDS,
   batchKindInfo,
@@ -29,6 +29,8 @@ export default function WeekWorkbench({
   cemeteries,
   promises,
   trayBatches,
+  autoOpenQuickBatch,
+  onQuickBatchConsumed,
   onReload,
 }) {
   // Selection bundle: jobId → { job, milestone, completion_milestone_key }.
@@ -96,6 +98,28 @@ export default function WeekWorkbench({
     onReload?.()
   }, [onReload])
 
+  // Phase 5: "+ New batch" — opens BatchBuilder with an empty stop list so
+  // the operator can ad-hoc create a batch shell. Defaults to kind='setting'
+  // (highest-stakes operational kind in a stonemason shop) rather than an
+  // ad-hoc kind — Production review: defaulting to site_visit taught the
+  // wrong path and made stops-less ad-hoc the "easy save," dragging
+  // operational discipline. With kind='setting' the save button stays
+  // disabled until the operator either ticks cards from the workbench
+  // (closing this modal) or explicitly switches the kind dropdown to
+  // site_visit/errand for a real ad-hoc event.
+  const openQuickBatch = useCallback(() => {
+    setBuilderInit({ jobs: [], defaultKind: 'setting' })
+  }, [])
+
+  // Phase 5: auto-open the builder when the Month CTA seeded a quick-batch
+  // request. Consume the seed so navigating away + back doesn't re-open.
+  useEffect(() => {
+    if (autoOpenQuickBatch) {
+      openQuickBatch()
+      onQuickBatchConsumed?.()
+    }
+  }, [autoOpenQuickBatch, openQuickBatch, onQuickBatchConsumed])
+
   const selectedCount = selectedByJobId.size
 
   return (
@@ -108,7 +132,7 @@ export default function WeekWorkbench({
       <div className="sb-workbench-action-bar">
         <div className="sb-workbench-action-count">
           {selectedCount === 0
-            ? 'Tick cards across columns to build a batch.'
+            ? 'Tick cards across columns to build a batch, or start a blank one.'
             : `${selectedCount} selected`}
         </div>
         <div className="sb-workbench-action-buttons">
@@ -121,6 +145,17 @@ export default function WeekWorkbench({
               Clear selection
             </button>
           )}
+          {/* Phase 5: always-available entry. Opens BatchBuilder with no
+              preselected stops so the operator isn't gated by ticking first.
+              Label is "New batch" not "Quick batch" — "Quick" is dev jargon
+              that left owners wondering what the slow path was. */}
+          <button
+            type="button"
+            className="sb-workbench-action-secondary"
+            onClick={openQuickBatch}
+          >
+            + New batch
+          </button>
           <button
             type="button"
             className="sb-workbench-action-primary"
@@ -161,6 +196,16 @@ export default function WeekWorkbench({
 // Top tray — batches with scheduled_date IS NULL. Shown as a thin row of
 // chips. Empty state is just a one-line hint so the workbench reads as
 // quiet on a clean morning.
+//
+// Phase 5: chips older than 14 days get an amber outline so build-only
+// batches don't sit in the tray indefinitely without surfacing. 14d
+// chosen per Production Coordinator review: 7d false-positives every
+// legitimate cure-window wait (3-7d) and approval cycle (3-14d); 14d
+// is past those bands but conservatively short of supplier ETAs (~21d).
+// Tooltip reads the actual age so the operator can decide whether to
+// schedule or discard. Future polish: tag-based per-kind thresholds.
+const TRAY_AGING_DAYS = 14
+
 function TrayStrip({ batches, onReload }) {
   const tray = (batches || []).filter(b => !b.scheduled_date && b.status !== 'cancelled')
   if (tray.length === 0) {
@@ -170,18 +215,27 @@ function TrayStrip({ batches, onReload }) {
       </div>
     )
   }
+  const now = Date.now()
   return (
     <div className="sb-workbench-tray">
       <span className="sb-workbench-tray-label">In tray</span>
       <div className="sb-workbench-tray-chips">
         {tray.map(b => {
           const kindInfo = batchKindInfo(b.kind)
+          const ageDays = b.created_at
+            ? Math.floor((now - new Date(b.created_at).getTime()) / 86400000)
+            : 0
+          const isStale = ageDays >= TRAY_AGING_DAYS
+          const className = `sb-workbench-tray-chip${isStale ? ' sb-workbench-tray-chip-stale' : ''}`
+          const tooltip = isStale
+            ? `${b.notes || kindInfo.label} — sitting ${ageDays} days, schedule or discard`
+            : (b.notes || kindInfo.label)
           return (
             <div
               key={b.id}
-              className="sb-workbench-tray-chip"
+              className={className}
               style={{ borderLeftColor: kindInfo.color }}
-              title={b.notes || kindInfo.label}
+              title={tooltip}
             >
               <span className="sb-workbench-tray-chip-label">
                 {b.title || kindInfo.label}
@@ -189,6 +243,9 @@ function TrayStrip({ batches, onReload }) {
               <span className="sb-workbench-tray-chip-count">
                 {(b.batch_jobs || []).length}
               </span>
+              {isStale && (
+                <span className="sb-workbench-tray-chip-age" aria-hidden="true">{ageDays}d</span>
+              )}
             </div>
           )
         })}
@@ -243,6 +300,22 @@ const localStyles = `
     border-radius: var(--sb-r-sm, 6px);
     font-size: 12px;
   }
+  /* Stale chip — built-only batch sitting in tray ≥ 7 days. Amber border
+     + small age badge so the operator can scan for what's slipping. */
+  .sb-workbench-tray-chip-stale {
+    border-color: var(--sb-amber, #b8842a);
+    background: var(--sb-amber-bg, #fbe5b8);
+  }
+  .sb-workbench-tray-chip-age {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--sb-amber, #b8842a);
+    background: rgba(255, 255, 255, 0.6);
+    padding: 1px 5px;
+    border-radius: 999px;
+    margin-left: 2px;
+    font-variant-numeric: tabular-nums;
+  }
   .sb-workbench-tray-chip-label {
     font-weight: 500;
     color: var(--sb-text);
@@ -273,6 +346,7 @@ const localStyles = `
     gap: 8px;
   }
   .sb-workbench-action-clear,
+  .sb-workbench-action-secondary,
   .sb-workbench-action-primary {
     font: inherit;
     font-size: 13px;
@@ -291,6 +365,18 @@ const localStyles = `
     color: var(--sb-text);
     background: var(--sb-surface);
   }
+  /* "+ New batch" — always-available secondary action. Outlined accent
+     so it reads as a peer to "Group into batch" without competing.
+     Hover uses sb-surface-muted (not amber) so it doesn't visually
+     collide with stale-tray chips when both are on screen. */
+  .sb-workbench-action-secondary {
+    background: var(--sb-surface);
+    color: var(--sb-accent, #b8842a);
+    border-color: var(--sb-accent, #b8842a);
+  }
+  .sb-workbench-action-secondary:hover {
+    background: var(--sb-surface-muted);
+  }
   .sb-workbench-action-primary {
     background: var(--sb-accent, #b8842a);
     color: white;
@@ -298,8 +384,13 @@ const localStyles = `
   .sb-workbench-action-primary:hover:not(:disabled) {
     filter: brightness(0.95);
   }
+  /* Disabled state — muted text + lighter background instead of just
+     opacity, so the bronze fill doesn't read as the active state when
+     "+ New batch" (outlined accent) sits next to it. */
   .sb-workbench-action-primary:disabled {
-    opacity: 0.6;
+    background: var(--sb-surface-muted);
+    color: var(--sb-text-muted);
+    border-color: var(--sb-border);
     cursor: not-allowed;
   }
 

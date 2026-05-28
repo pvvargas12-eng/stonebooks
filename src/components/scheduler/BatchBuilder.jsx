@@ -78,7 +78,11 @@ export default function BatchBuilder({
   const kindInfo = batchKindInfo(kind)
   const destinationCem = (cemeteries || []).find(c => c.id === destinationId) || null
   const requiresDestination = !!kindInfo.requiresDestination
-  const canSave = jobs.length > 0
+  // Phase 5: zero-stop ad-hoc batches (site_visit, errand) save without
+  // any linked jobs — those kinds are explicit "calendar entry" surfaces.
+  // Operational kinds (setting, blasting, etc.) still require ≥1 stop.
+  const isAdHoc = kind === 'site_visit' || kind === 'errand'
+  const canSave = (jobs.length > 0 || isAdHoc)
     && (!requiresDestination || !!destinationId)
     && (buildOnly || !!scheduledDate)
 
@@ -134,7 +138,9 @@ export default function BatchBuilder({
         <header className="sb-batch-builder-head">
           <div className="sb-batch-builder-eyebrow">New batch</div>
           <h2 className="sb-batch-builder-title">
-            {jobs.length === 1 ? '1 stop' : `${jobs.length} stops`} into one batch
+            {jobs.length === 0
+              ? `New ${kindInfo.label.toLowerCase()} batch`
+              : (jobs.length === 1 ? '1 stop' : `${jobs.length} stops`) + ' into one batch'}
           </h2>
         </header>
 
@@ -236,6 +242,23 @@ export default function BatchBuilder({
 
             <div className="sb-batch-builder-stops">
               <div className="sb-batch-builder-label">Stops</div>
+              {jobs.length === 0 && (
+                <div className="sb-batch-builder-stops-empty">
+                  {/* Branched copy per kind/state: spatial pointer ("from the
+                      panel on the right →") rather than referring to the
+                      panel by its proper name (operator may not know what
+                      "Trip Suggestions" means out of context). For ad-hoc
+                      kinds we explicitly tell the operator no stops needed
+                      so they don't hunt for a way to add one. */}
+                  {isAdHoc
+                    ? `No stops needed — ${kindInfo.label.toLowerCase()} batches are calendar-only events.`
+                    : (requiresDestination && destinationId
+                        ? 'Pick stops from the panel on the right →'
+                        : (requiresDestination
+                            ? 'Set a destination cemetery to see jobs there, or close and tick cards in the workbench.'
+                            : 'Close this modal and tick the cards you want in the workbench.'))}
+                </div>
+              )}
               <ul className="sb-batch-builder-stop-list">
                 {jobs.map(({ job }, idx) => {
                   const surname = job.order?.primary_lastname
@@ -293,8 +316,8 @@ export default function BatchBuilder({
             {submitting
               ? 'Saving…'
               : buildOnly
-                ? `Save to tray · ${jobs.length}`
-                : `Schedule · ${jobs.length}`}
+                ? (jobs.length === 0 ? 'Save to tray' : `Save to tray · ${jobs.length}`)
+                : (jobs.length === 0 ? 'Schedule' : `Schedule · ${jobs.length}`)}
           </button>
         </footer>
       </div>
@@ -414,6 +437,21 @@ const localStyles = `
 
   .sb-batch-builder-stops {
     margin-top: 4px;
+  }
+  /* Phase 5: empty-stops hint — tells the operator what they can do next
+     when opening BatchBuilder with no preselected jobs (the "+ New batch"
+     path). Dashed border carries the "empty / waiting" semantic; no italic
+     (the dashed border + muted text already communicate the state — italic
+     was a third redundant signal that read as apologetic). */
+  .sb-batch-builder-stops-empty {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+    background: var(--sb-surface-muted);
+    border: 0.5px dashed var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    padding: 10px 12px;
+    margin-top: 6px;
+    line-height: 1.45;
   }
   .sb-batch-builder-stop-list {
     list-style: none;

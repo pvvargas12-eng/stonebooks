@@ -507,6 +507,12 @@ Locked items for the next scheduler sprint. All are deferred from SCHEDULER-COMP
 - **(T8) Foundation-stage read-only awareness badge.** Stones waiting on foundation cure should remain visible on Job rows / Today / Profit surfaces with a "Waiting on foundation cure" badge even if not schedulable — operator's mental map must not lose them.
 - **(T9) Weather + cemetery-hours gating.** Surface a weather flag on the dispatch day; respect cemetery access hours and sexton-only windows when surfacing batchable work.
 - **(T10) Two-stone / one-cemetery batching sanity check.** Verify on a real day's data that the source-key re-surface guard works per-trip not per-job — same truck shouldn't get routed to the same cemetery twice in a week when it could have been one stop.
+- **Phase 5 follow-ups (scheduler dead-surface UX):**
+  - Lift BatchBuilder mount from WeekWorkbench to SchedulerTab so Month CTA can open the modal directly without the Month→Week zoom-switch intermediate. CRM + Production reviews flagged the two-transition jump on Month CTA → "Build a batch" as adding "where am I now?" confusion. UX agent said current behavior is fine; defer to a structural refactor sprint.
+  - Kind-aware tray-aging thresholds: today the threshold is a flat 14 days. Production's "right fix" is per-kind thresholds derived from a "waiting on" tag captured at build time (cure / supplier ETA / approval / crew / other), each with its own age band — `cure` flags at 8d, `crew` at 3d, `supplier_eta` at 21d. Requires a small data-model addition (the tag itself).
+  - Customer-name search to add a stop to a Quick / ad-hoc batch. Today the Trip Suggestions panel is cemetery-keyed only; an ad-hoc batch with no destination has no way to add a stop other than via column-tick. Real shop need (Production review): "Mrs. K just called, find her order — add to today's batch."
+  - Per-crew lane / per-person view on the workbench. Today the columns are kind-keyed; a real shop dispatcher needs to see Lonnie's truck day vs Mike's truck day side-by-side. (Already parked under CAL-DRAG follow-ups; re-flagged here.)
+  - Readiness gate on Quick Batch save: when kind is operational (not site_visit/errand) and stops.length === 0, the disabled save button is the soft blocker. Production flagged that a louder forcing message would catch the "tried to use Quick Batch for setting" mistake earlier. Phase 6 candidate.
 
 ## Deferred / known issues
 
