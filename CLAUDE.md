@@ -1,5 +1,15 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## CURRENT STATE (as of d11d3c4)
+- HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
+- Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates
+- Live tables: jobs, orders, cemetery_orders, financial_records, job_cost_estimates, job_milestones, job_promises, job_events, milestone_templates, cemeteries
+- Storage buckets: cemetery_packets, receipts (both private)
+- Active sprint: TODAY-COMMAND-CENTER (redesign Today tab as operational briefing — 4 design directions under review, not yet built)
+- Parked: Profit visual demo-match, family-order payments→ledger, QBO bridge (columns dormant), scheduler workflow-grid completeness, test-data cleanup (ZZ_DEMO noise), SalesMode emoji purge (~20 icon cards incl 🚪)
+
+---
+
 Staff-facing CRM for Shevchenko Monuments (Perth Amboy, NJ, est. 1919).
 React + Supabase. Internal use only.
 
