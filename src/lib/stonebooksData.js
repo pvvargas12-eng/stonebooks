@@ -2353,7 +2353,7 @@ export async function getJobs({ teamFilter, statusFilter, includeClosed = false,
     .select(`
       *,
       milestones:job_milestones(*),
-      order:orders(id, order_number, service_types, target_completion_date, target_completion_end_date, primary_lastname, signed_at, customer_id, cemetery_id),
+      order:orders(*),
       customer:orders(customer:customers(*)),
       cemetery:orders(cemetery:cemeteries(*))
     `)

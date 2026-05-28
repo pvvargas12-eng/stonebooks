@@ -22,12 +22,12 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
-import JobsDepartmentView from './JobsDepartmentView'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
 import {
+  // JobDetail dependencies (preserved)
   getJob, getJobEvents,
-  createJobFromOrder,
+  createJobFromOrder, // eslint-disable-line no-unused-vars
   updateMilestone, updateMilestoneWithOverride,
   setJobOverallStatus, addJobNote,
   inferWaitingStatusFromMilestone,
@@ -37,17 +37,22 @@ import {
   customerName, fmtDate, fmtRelative, fmtUSD,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   getNextRequiredAction,
-  SOLD_STATUSES,
+  SOLD_STATUSES, // eslint-disable-line no-unused-vars
   BLOCK_REASON_CODES,
   listAllBulkOrders,
   projectJobDates,
   compareMilestoneDates,
   formatMilestoneDateDisplay,
   getActivePromisesForJob,
+  // JobsListView dependencies (new)
+  getJobs,
+  computeOrderPressure,
+  ACTIVE_STATUSES,
 } from './lib/stonebooksData'
+import { paymentTone, paymentLabel } from './lib/crmTheme'
+import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
 import PromiseBadge from './components/scheduler/PromiseBadge'
 import AddPromiseModal from './components/AddPromiseModal'
-import SearchBar from './components/SearchBar'
 
 // ── Milestone group ordering for the JobDetail per-group cards ───────────────
 const GROUP_ORDER = [
@@ -78,10 +83,11 @@ const GROUP_LABEL = {
 // =============================================================================
 // MAIN
 // =============================================================================
-// The page is a thin shell now: page heading, backfill banner, and either the
-// per-job drill-down (JobDetail, when a job is selected) or the department
-// dashboard (JobsDepartmentView). All filtering, queue selection, and
-// view-mode toggling has been retired in favor of the role-based lens.
+// Thin shell: per-job drill-down (JobDetail, when a job is selected) or the
+// JobsListView (when not). JOBS-RESKIN-PASS replaced the prior department-
+// lens dashboard (JobsDepartmentView, still in src/ as orphan) with a
+// family-first operational table matching Customers + Orders. computeOrderPressure
+// from CRM-RESKIN-PASS supplies the blocker chip.
 
 export default function JobsTab({
   selectedJobId = null,
@@ -90,25 +96,19 @@ export default function JobsTab({
   onConsumeInitialQueue,
   onOpenOrder,
   onOpenCustomer,
-  userId = null,
-  onSwitchTab,
+  userId = null,           // eslint-disable-line no-unused-vars
+  onSwitchTab,             // eslint-disable-line no-unused-vars
 }) {
-  const [reloadCount, setReloadCount] = useState(0)
-  const triggerReload = () => setReloadCount(c => c + 1)
-
   // The Command Surface used to set `initialQueue` (e.g. "stones", "layouts")
-  // to deep-link into the old QueuesView. The L2 followup retired QueuesView.
-  // For now we accept and discard the prop so the Command Surface doesn't
-  // re-open a now-deleted view on every prop reflow. A follow-up pass can
-  // wire those aliases to department/bucket scrolls in JobsDepartmentView.
+  // to deep-link into the old QueuesView. The L2 followup retired QueuesView;
+  // JOBS-RESKIN-PASS removes the department lens too. Accept + discard so the
+  // Command Surface doesn't re-open a now-deleted view on every prop reflow.
   useEffect(() => {
     if (!initialQueue) return
     setSelectedJobId(null)
     onConsumeInitialQueue?.()
   }, [initialQueue, onConsumeInitialQueue, setSelectedJobId])
 
-  // Detail view — unchanged from prior passes. Reached by clicking any queue
-  // row in the department view (JobsQueueRow → onOpenJob(jobId)).
   if (selectedJobId) {
     return (
       <JobDetail
@@ -120,134 +120,664 @@ export default function JobsTab({
     )
   }
 
+  return <JobsListView onOpenJob={setSelectedJobId} />
+}
+
+// =============================================================================
+// JOBS LIST VIEW — family-first operational table
+// =============================================================================
+// Matches Customers + Orders visual identity: warm off-white canvas, white
+// table card, semantic Pills, FilterChips, ProgressMicroBar, action-priority
+// sort, filter echo in the head-count line. Single blocker chip from
+// computeOrderPressure; no "On track" pill when null (absence is the signal).
+
+// Filter chip shapes
+const STATUS_FILTERS = [
+  { code: 'active', label: 'Active' },
+  { code: 'closed', label: 'Closed' },
+]
+const JOB_TYPE_FILTERS = [
+  { code: 'new_stone',       label: 'New stone' },
+  { code: 'mausoleum_door',  label: 'Crypt door' },
+  { code: 'cleaning_repair', label: 'Cleaning-repair' },
+  { code: 'inscription',     label: 'Inscription' },
+]
+// Coarse stage buckets — operator-vocabulary 4 stages that fold the
+// fine-grained milestone groups into something a shop owner reads at a glance.
+const STAGE_FILTERS = [
+  { code: 'intake',     label: 'Intake' },
+  { code: 'production', label: 'Production' },
+  { code: 'install',    label: 'Install' },
+  { code: 'closeout',   label: 'Closeout' },
+]
+const STAGE_BUCKETS = {
+  intake:     new Set(['intake', 'design', 'permit']),
+  production: new Set(['stone', 'photo', 'etching', 'production', 'foundation']),
+  install:    new Set(['install']),
+  closeout:   new Set(['closeout']),
+}
+// Q1: coarse bucket label shown on the STAGE Pill (with fine-grained group
+// label as eyebrow underneath). Q3: semantic tone ladder is
+//   intake = bronze (gray-ish, inert/paperwork)
+//   production = blue (in-flight, work happening in shop)
+//   install = amber (act now — truck out / cemetery visit)
+//   closeout = green (done)
+const STAGE_BUCKET_LABEL = {
+  intake:     'Intake',
+  production: 'Production',
+  install:    'Install',
+  closeout:   'Closeout',
+}
+function bucketForGroup(group) {
+  for (const code of ['intake', 'production', 'install', 'closeout']) {
+    if (STAGE_BUCKETS[code]?.has(group)) return code
+  }
+  return 'intake'
+}
+const PAYMENT_FILTERS = [
+  { code: 'paid_in_full', label: 'Paid in full' },
+  { code: 'partial',      label: 'Partial' },
+  { code: 'unpaid',       label: 'Unpaid' },
+  { code: 'overdue',      label: 'Overdue' },
+]
+const BLOCKER_FILTERS = [
+  { code: 'cemetery',     label: 'Cemetery hold', match: k => k === 'cemetery_hold' },
+  { code: 'family',       label: 'Family',        match: k => k === 'waiting_on_family' || k === 'proof_waiting_customer' },
+  { code: 'production',   label: 'Production',    match: k => k === 'production_blocked' },
+  { code: 'install_ready',label: 'Install ready', match: k => k === 'stone_ready_schedule_trip' || k === 'install_scheduled' || k === 'needs_install_date' },
+]
+const SORT_OPTIONS = [
+  { code: 'actionPriority', label: 'Sort: Action priority' },
+  { code: 'lastActivity',   label: 'Sort: Recent activity' },
+  { code: 'ageDesc',        label: 'Sort: Age oldest first' },
+  { code: 'familyName',     label: 'Sort: Family name A→Z' },
+]
+
+// Grid: FAMILY/STONE | JOB ID + ORDER# | CEMETERY+rep | STAGE | PAYMENT | BLOCKER | AGE | UPDATED
+// UX #2 rebalance: CEMETERY 1.0→1.1 (real names like "Mountainview Cemetery"
+// were tight); BLOCKER 1.2→1.1 (longest current label "Awaiting proof
+// approval" still fits at ~150px in 1.1fr).
+const ROW_GRID = '1.4fr 0.75fr 1.1fr 0.85fr 1.05fr 1.1fr 0.45fr 0.6fr'
+
+// Action-priority helpers (mirrors Customers + Orders).
+const SEVERITY_RANK = { red: 0, amber: 1, blue: 2 }
+function recencyBand(lastActivity) {
+  if (!lastActivity) return 4
+  const days = Math.floor((Date.now() - lastActivity) / 86400000)
+  if (days <= 7)  return 0
+  if (days <= 30) return 1
+  if (days <= 90) return 2
+  return 3
+}
+function severityRank(blocker) {
+  if (!blocker) return 3
+  return SEVERITY_RANK[blocker.severity] ?? 3
+}
+
+function JobsListView({ onOpenJob }) {
+  const [jobs, setJobs]         = useState([])
+  const [loading, setLoading]   = useState(true)
+  const [loadErr, setLoadErr]   = useState(null)
+  const [search, setSearch]     = useState('')
+  const [sortKey, setSortKey]   = useState('actionPriority')
+  const [statusFilter, setStatusFilter] = useState('active')
+  const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
+  const [jobTypeFilters, setJobTypeFilters] = useState(new Set())
+  const [stageFilters, setStageFilters]     = useState(new Set())
+  const [paymentFilters, setPaymentFilters] = useState(new Set())
+  const [blockerFilters, setBlockerFilters] = useState(new Set())
+
+  // Load — getJobs returns jobs with order/customer/cemetery joined and
+  // milestones embedded. One round-trip for the whole list. includeClosed
+  // toggles based on the Status chip.
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setLoadErr(null)
+    getJobs({ includeClosed: statusFilter === 'closed', limit: 1000 })
+      .then(rows => {
+        if (cancelled) return
+        // Workflow #3 fix: 'cancelled' jobs were leaking into Active because
+        // getJobs({includeClosed:false}) only excludes overall_status='closed'.
+        // For 'closed' chip explicitly narrow to {closed, cancelled} together
+        // — cancelled is operationally a dead state, not an active one.
+        const filtered = statusFilter === 'closed'
+          ? (rows || []).filter(j => j.overall_status === 'closed' || j.overall_status === 'cancelled')
+          : (rows || []).filter(j => j.overall_status !== 'cancelled')
+        setJobs(filtered)
+        setLoading(false)
+      })
+      .catch(e => {
+        if (cancelled) return
+        setLoadErr(e?.message || 'Failed to load jobs')
+        setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [statusFilter])
+
+  // Enrich each job with derived display fields + computeOrderPressure.
+  const enriched = useMemo(() => {
+    return jobs.map(j => {
+      const order = j.order || null
+      const pressure = order
+        ? computeOrderPressure(order, j, j.milestones)
+        : { blocker: null, needsCall: false, callReasons: [], paymentState: 'none', ageDays: 0 }
+
+      const stage = currentStage(j)
+      const familyName = familyNameForJob(j)
+      const deceasedLabel = deceasedLabelForJob(j)
+      const total   = order ? rowGrandTotal(order) : 0
+      const paid    = order ? rowTotalPaid(order)  : 0
+      const balance = Math.max(0, total - paid)
+      const fillRatio = total > 0 ? paid / total : 0
+      // Workflow #4 fix: fall back to created_at for jobs with no
+      // last_update_at (orphan rows, restored backups, schema-migration-born)
+      // so they don't sink to band 4 in action-priority sort and disappear.
+      // No Date.now() fallback — React 19's purity rule rejects it inside
+      // render; a job with neither timestamp is malformed enough that
+      // band-4 placement (the 0 fall-through) is honest.
+      const lastActivity = j.last_update_at
+        ? new Date(j.last_update_at).getTime()
+        : (j.created_at ? new Date(j.created_at).getTime() : 0)
+      const serviceTypesUp = new Set((order?.service_types || []).map(s => String(s).toUpperCase()))
+
+      return {
+        ...j,
+        _order:           order,
+        _pressure:        pressure,
+        _stage:           stage,
+        _familyName:      familyName,
+        _deceasedLabel:   deceasedLabel,
+        _total:           total,
+        _paid:            paid,
+        _balance:         balance,
+        _fillRatio:       fillRatio,
+        _lastActivity:    lastActivity,
+        _serviceTypesUp:  serviceTypesUp,
+        _hasOrder:        !!order,
+      }
+    })
+  }, [jobs])
+
+  // Filter + sort
+  const filtered = useMemo(() => {
+    let list = enriched
+
+    if (needsAttentionOnly) {
+      list = list.filter(j => {
+        const sev = j._pressure.blocker?.severity
+        return sev === 'red' || sev === 'amber'
+      })
+    }
+
+    if (jobTypeFilters.size > 0) {
+      list = list.filter(j => {
+        for (const f of jobTypeFilters) {
+          if (f === 'inscription') {
+            if (j._serviceTypesUp.has('INSCRIPTION') || j._serviceTypesUp.has('INSCRIPTIONS')) return true
+          } else {
+            if (j.job_type === f) return true
+          }
+        }
+        return false
+      })
+    }
+
+    if (stageFilters.size > 0) {
+      list = list.filter(j => {
+        for (const f of stageFilters) {
+          if (STAGE_BUCKETS[f]?.has(j._stage.group)) return true
+        }
+        return false
+      })
+    }
+
+    if (paymentFilters.size > 0) {
+      list = list.filter(j => paymentFilters.has(j._pressure.paymentState))
+    }
+
+    if (blockerFilters.size > 0) {
+      list = list.filter(j => {
+        const k = j._pressure.blocker?.kind
+        if (!k) return false
+        for (const f of blockerFilters) {
+          const cfg = BLOCKER_FILTERS.find(x => x.code === f)
+          if (cfg?.match(k)) return true
+        }
+        return false
+      })
+    }
+
+    const needle = search.trim().toLowerCase()
+    if (needle) {
+      list = list.filter(j => {
+        const hay = [
+          j._familyName, j._deceasedLabel,
+          j.id?.slice(0, 8),
+          j._order?.order_number,
+          j._order?.primary_lastname,
+          j._order?.customer?.first_name, j._order?.customer?.last_name,
+          j._order?.cemetery?.name,
+          j._order?.sales_rep,
+        ].filter(Boolean).join(' ').toLowerCase()
+        return hay.includes(needle)
+      })
+    }
+
+    const sorters = {
+      actionPriority: (a, b) => {
+        const bandDiff = recencyBand(a._lastActivity) - recencyBand(b._lastActivity)
+        if (bandDiff !== 0) return bandDiff
+        const sevDiff = severityRank(a._pressure.blocker) - severityRank(b._pressure.blocker)
+        if (sevDiff !== 0) return sevDiff
+        return (b._lastActivity || 0) - (a._lastActivity || 0)
+      },
+      lastActivity: (a, b) => (b._lastActivity || 0) - (a._lastActivity || 0),
+      ageDesc:      (a, b) => (b._pressure.ageDays || 0) - (a._pressure.ageDays || 0),
+      familyName:   (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
+    }
+    return [...list].sort(sorters[sortKey] || sorters.actionPriority)
+  }, [enriched, needsAttentionOnly, jobTypeFilters, stageFilters, paymentFilters, blockerFilters, search, sortKey])
+
+  const needsAttentionCount = useMemo(
+    () => enriched.filter(j => {
+      const sev = j._pressure.blocker?.severity
+      return sev === 'red' || sev === 'amber'
+    }).length,
+    [enriched]
+  )
+
+  // Filter echo for the count line — same pattern as Customers + Orders.
+  const activeFilterLabels = useMemo(() => {
+    const labels = []
+    if (statusFilter !== 'active') {
+      const cfg = STATUS_FILTERS.find(f => f.code === statusFilter)
+      if (cfg) labels.push(cfg.label)
+    }
+    if (needsAttentionOnly) labels.push('Needs attention')
+    for (const f of jobTypeFilters) labels.push(JOB_TYPE_FILTERS.find(x => x.code === f)?.label || f)
+    for (const f of stageFilters)   labels.push(STAGE_FILTERS.find(x => x.code === f)?.label || f)
+    for (const f of paymentFilters) labels.push(PAYMENT_FILTERS.find(x => x.code === f)?.label || f)
+    for (const f of blockerFilters) labels.push(BLOCKER_FILTERS.find(x => x.code === f)?.label || f)
+    if (search.trim()) labels.push(`"${search.trim()}"`)
+    return labels
+  }, [statusFilter, needsAttentionOnly, jobTypeFilters, stageFilters, paymentFilters, blockerFilters, search])
+
+  const toggle = (set, setter) => (code) => {
+    const next = new Set(set)
+    if (next.has(code)) next.delete(code); else next.add(code)
+    setter(next)
+  }
+  const resetAll = () => {
+    setStatusFilter('active')
+    setNeedsAttentionOnly(false)
+    setJobTypeFilters(new Set())
+    setStageFilters(new Set())
+    setPaymentFilters(new Set())
+    setBlockerFilters(new Set())
+    setSearch('')
+  }
+
   return (
-    <div className="sb-page sb-page-wide">
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">Operations</div>
-        <h1 className="sb-page-title">Jobs</h1>
+    <div className="sb-crm-page">
+      <div className="sb-crm-container">
+        <header className="sb-crm-head">
+          <div>
+            <h1 className="sb-crm-head-title">Jobs</h1>
+            <div className="sb-crm-head-count">
+              <strong>{loading ? '—' : filtered.length}</strong>{' '}
+              {filtered.length === 1 ? 'job' : 'jobs'}
+              {!loading && needsAttentionCount > 0 && (
+                <> · <strong>{needsAttentionCount}</strong> need attention</>
+              )}
+              {!loading && activeFilterLabels.length > 0 && (
+                <> · {activeFilterLabels.join(' · ')}</>
+              )}
+            </div>
+          </div>
+          <div className="sb-crm-head-actions">
+            <input
+              type="search"
+              className="sb-crm-search"
+              placeholder="Search family, deceased, job id, order #, cemetery…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+            <select
+              className="sb-crm-sort"
+              value={sortKey}
+              onChange={e => setSortKey(e.target.value)}
+            >
+              {SORT_OPTIONS.map(o => (
+                <option key={o.code} value={o.code}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        </header>
+
+        {loadErr && <div className="sb-crm-error">{loadErr}</div>}
+
+        <div className="sb-crm-min-width-banner">
+          Best viewed on desktop — this list uses a dense table layout. Phone view falls back to a single-column stack.
+        </div>
+
+        {/* Filter chips */}
+        <div className="sb-crm-chip-row">
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Status</span>
+            {STATUS_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={statusFilter === f.code}
+                onClick={() => setStatusFilter(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <FilterChip
+              active={needsAttentionOnly}
+              onClick={() => setNeedsAttentionOnly(v => !v)}
+            >
+              Needs attention
+            </FilterChip>
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Job type</span>
+            {JOB_TYPE_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={jobTypeFilters.has(f.code)}
+                onClick={() => toggle(jobTypeFilters, setJobTypeFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Stage</span>
+            {STAGE_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={stageFilters.has(f.code)}
+                onClick={() => toggle(stageFilters, setStageFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Payment</span>
+            {PAYMENT_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={paymentFilters.has(f.code)}
+                onClick={() => toggle(paymentFilters, setPaymentFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+          <div className="sb-crm-chip-group">
+            <span className="sb-crm-chip-group-label">Blocker</span>
+            {BLOCKER_FILTERS.map(f => (
+              <FilterChip
+                key={f.code}
+                active={blockerFilters.has(f.code)}
+                onClick={() => toggle(blockerFilters, setBlockerFilters)(f.code)}
+              >
+                {f.label}
+              </FilterChip>
+            ))}
+          </div>
+        </div>
+
+        {/* Table card */}
+        <div className="sb-crm-card sb-crm-table">
+          <div className="sb-crm-row sb-crm-row-head" style={{ gridTemplateColumns: ROW_GRID }}>
+            <div>Family / Stone</div>
+            <div>Order</div>
+            <div>Cemetery</div>
+            <div>Stage</div>
+            <div>Payment</div>
+            <div>Blocker</div>
+            <div className="num">Age</div>
+            <div className="num">Updated</div>
+          </div>
+
+          {loading ? (
+            <div className="sb-crm-empty">Loading jobs…</div>
+          ) : filtered.length === 0 ? (
+            <div className="sb-crm-empty">
+              {needsAttentionOnly && !jobTypeFilters.size && !stageFilters.size && !paymentFilters.size && !blockerFilters.size && !search.trim()
+                ? 'No jobs need attention right now.'
+                : 'No jobs match these filters.'}
+              {!needsAttentionOnly && (
+                <div>
+                  <button type="button" onClick={resetAll}>Reset filters</button>
+                </div>
+              )}
+            </div>
+          ) : (
+            filtered.map(j => <JobRow key={j.id} job={j} onOpen={onOpenJob} />)
+          )}
+        </div>
+
+        {/* TODO: assigned crew column once crew table populated.
+            TODO: scheduled install date column once scheduler usage produces real dated batches.
+            TODO: production readiness micro-indicator — bolts onto scheduler accountability sprint.
+            TODO: per-job margin column (from actual_realized_margin_pct), behind a settings toggle.
+            TODO: photo thumbnail column — bolts onto photo-evidence sprint. */}
+
       </div>
-
-      <div className="sb-jobs-search-row">
-        <SearchBar placeholder="Search customers, jobs, orders…" />
-      </div>
-
-      {/* Backfill banner — surfaces signed orders that don't yet have jobs.
-          Disappears automatically when count hits zero. */}
-      <BackfillBanner reloadCount={reloadCount} onComplete={triggerReload} />
-
-      <JobsDepartmentView userId={userId} onOpenJob={setSelectedJobId} onSwitchTab={onSwitchTab} onOpenOrder={onOpenOrder} />
     </div>
   )
 }
 
 // =============================================================================
-// BACKFILL BANNER — surfaces signed orders that don't yet have jobs
+// JobRow — operational row, matches Customers + Orders structure
 // =============================================================================
-// Commit 6 replaces the empty-state "Create test job from order" picker. New
-// signings auto-create their jobs via the SalesMode hook; this banner is the
-// discoverable recovery path for legacy signed orders that never had a job.
-//
-// Renders nothing when count is 0. Re-queries on every parent reload so the
-// banner disappears as soon as backfill completes. Tags each created job
-// with creation_source='backfill' in its job_created event.
 
-function BackfillBanner({ reloadCount, onComplete }) {
-  const [pending, setPending] = useState(null)   // null = loading, [] = empty
-  const [busy, setBusy] = useState(false)
-  const [progress, setProgress] = useState(null) // { done, total } during a run
-  const [error, setError] = useState(null)
-
-  const loadPending = useCallback(async () => {
-    setError(null)
-    const { data, error: e1 } = await supabase
-      .from('orders')
-      .select('id, order_number, primary_lastname, service_types, signed_at')
-      .not('signed_at', 'is', null)
-      .in('status', SOLD_STATUSES)
-      .order('signed_at', { ascending: false })
-      .limit(200)
-    if (e1) { setError(e1.message); setPending([]); return }
-    const orderIds = (data || []).map(o => o.id)
-    if (orderIds.length === 0) { setPending([]); return }
-    const { data: existingJobs, error: e2 } = await supabase
-      .from('jobs')
-      .select('order_id')
-      .in('order_id', orderIds)
-    if (e2) { setError(e2.message); setPending([]); return }
-    const taken = new Set((existingJobs || []).map(j => j.order_id))
-    setPending((data || []).filter(o => !taken.has(o.id)))
-  }, [])
-
-  useEffect(() => { loadPending() }, [loadPending, reloadCount])
-
-  const handleBackfillAll = async () => {
-    if (!pending || pending.length === 0) return
-    setBusy(true); setError(null)
-    setProgress({ done: 0, total: pending.length })
-    const failures = []
-    for (let i = 0; i < pending.length; i++) {
-      const o = pending[i]
-      const r = await createJobFromOrder(o.id, { source: 'backfill' })
-      if (!r.ok) failures.push({ order: o, error: r.error })
-      setProgress({ done: i + 1, total: pending.length })
-    }
-    setBusy(false)
-    setProgress(null)
-    if (failures.length > 0) {
-      setError(`${failures.length} order${failures.length === 1 ? '' : 's'} failed: ${failures.slice(0, 3).map(f => `${f.order.order_number || f.order.id.slice(0,8)} (${f.error})`).join(', ')}${failures.length > 3 ? ' …' : ''}`)
-    }
-    onComplete?.()
-    // loadPending will re-run via reloadCount dependency once parent calls triggerReload
-  }
-
-  if (pending === null) return null       // first-load silence
-  if (pending.length === 0 && !error) return null // nothing to do, no errors to surface
+function JobRow({ job: j, onOpen }) {
+  const p = j._pressure
+  const stageTone = mapStageToTone(j._stage.group)
+  const pTone = paymentTone(p.paymentState)
+  const pLabel = paymentLabel(p.paymentState)
+  const balance = j._balance
+  const blocker = p.blocker
+  const blockerSev = blocker?.severity || 'green'
 
   return (
-    <div className="sb-existing-banner" style={{
-      background: 'var(--sb-gold-pale, #f5ede0)',
-      border: '0.5px solid var(--sb-gold-light, #b8935a)',
-      borderRadius: 'var(--sb-r-sm)',
-      padding: '12px 16px',
-      marginBottom: 16,
-      display: 'flex',
-      alignItems: 'center',
-      gap: 12,
-      justifyContent: 'space-between',
-      flexWrap: 'wrap',
-    }}>
-      <div style={{ fontSize: 13 }}>
-        {pending.length > 0 ? (
-          <>
-            <strong>{pending.length} signed order{pending.length === 1 ? '' : 's'} without {pending.length === 1 ? 'a job' : 'jobs'}.</strong>{' '}
-            Backfill creates one job per order using the same template logic as automatic creation on signing.
-          </>
-        ) : (
-          <strong>Backfill check complete.</strong>
-        )}
-        {progress && (
-          <span style={{ marginLeft: 8, fontFamily: 'var(--sb-font-mono)', fontSize: 12, color: 'var(--sb-text-muted)' }}>
-            {progress.done} / {progress.total}
-          </span>
-        )}
-        {error && (
-          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--sb-red, #b54040)' }}>
-            {error}
-          </div>
+    <button
+      type="button"
+      className="sb-crm-row"
+      style={{ gridTemplateColumns: ROW_GRID }}
+      onClick={() => onOpen?.(j.id)}
+    >
+      {/* FAMILY / STONE — Q4: when no deceased on the order, fall back to
+          the job-type label ("Inscription" / "Cleaning/Repair" / "New stone"
+          / "Crypt door"). Drops the prior "Stone TBD" because most jobs
+          aren't stone-shaped — calling an inscription "Stone TBD" misreads
+          as missing data when the work is actually well-defined. */}
+      <div>
+        <div className="sb-crm-primary">{j._familyName}</div>
+        <div className="sb-crm-secondary">
+          {j._deceasedLabel || jobTypeLabel(j.job_type, j._order?.service_types)}
+        </div>
+      </div>
+
+      {/* ORDER + job type — Q2: dropped truncated UUID (developer-shaped,
+          not Paul-shaped). Order_number is the verbal reference Paul uses;
+          job_type rides underneath as context. The 8-char UUID slice
+          stays in the search haystack for internal debugging only. */}
+      <div>
+        <div className="sb-crm-mono sb-crm-tabular" style={{ fontSize: 13, color: 'inherit' }}>
+          {j._order?.order_number || <span className="sb-crm-muted">—</span>}
+        </div>
+        <div className="sb-crm-secondary">{jobTypeLabel(j.job_type, j._order?.service_types)}</div>
+      </div>
+
+      {/* CEMETERY + rep */}
+      <div>
+        <div style={{ fontSize: 13, color: 'inherit' }}>
+          {j._order?.cemetery?.name || <span className="sb-crm-muted">—</span>}
+        </div>
+        {j._order?.sales_rep && <div className="sb-crm-secondary">{j._order.sales_rep}</div>}
+      </div>
+
+      {/* STAGE — coarse bucket pill (color tone) + fine milestone-group
+          eyebrow underneath (Q1). The eyebrow shows the specific handoff
+          state Paul actually thinks about ("Permit" vs generic "Intake").
+          Hidden when fine and coarse labels match (e.g., Install/Install,
+          Closeout/Closeout, Done/Done). */}
+      <div>
+        <Pill severity={stageTone}>{j._stage.bucketLabel}</Pill>
+        {j._stage.fineLabel !== j._stage.bucketLabel && (
+          <div className="sb-crm-secondary">{j._stage.fineLabel}</div>
         )}
       </div>
-      {pending.length > 0 && (
-        <button
-          type="button"
-          className="sb-btn-secondary"
-          onClick={handleBackfillAll}
-          disabled={busy}
-        >
-          {busy ? 'Backfilling…' : `Backfill ${pending.length} order${pending.length === 1 ? '' : 's'}`}
-        </button>
-      )}
-    </div>
+
+      {/* PAYMENT — pill + micro-bar + balance due */}
+      <div>
+        {pLabel ? (
+          <>
+            <Pill severity={pTone}>{pLabel}</Pill>
+            {j._total > 0 && (
+              <ProgressMicroBar fillRatio={j._fillRatio} tone={pTone === 'red' ? 'red' : pTone === 'amber' ? 'amber' : 'green'} />
+            )}
+            {balance > 0 && (
+              <div className="sb-crm-secondary sb-crm-tabular">{fmtUSD(balance)} due</div>
+            )}
+          </>
+        ) : (
+          // No order — typically a crypt-door job linked via cemetery_order_id
+          // (computeOrderPressure currently doesn't cover that path; see CLAUDE.md
+          // backlog "Cemetery-order linking via cemetery_order_id"). Empty cell.
+          <span className="sb-crm-muted">—</span>
+        )}
+      </div>
+
+      {/* BLOCKER — no "On track" pill; absence is the signal everywhere or
+          nowhere. UX consistency fix: don't render an em-dash for no-order
+          jobs (was a third state — "absent because no data"). Customers and
+          Orders both render NOTHING when blocker is null; Jobs matches. The
+          row's CEMETERY + PAYMENT em-dashes already tell the operator this
+          job is less instrumented (CLAUDE.md backlog: cemetery_order_id
+          linking will eventually wire pressure for these). */}
+      <div>
+        {blocker && (
+          <Pill severity={blockerSev}>
+            {p.needsCall && <span className="sb-crm-call-dot" />}
+            {blocker.label}
+          </Pill>
+        )}
+      </div>
+
+      {/* AGE — "since signed / unsigned" eyebrow */}
+      <div className="num">
+        <span className="sb-crm-num">{p.ageDays || 0}d</span>
+        <div className="sb-crm-secondary" style={{ textAlign: 'right' }}>
+          {j._order?.signed_at ? 'since signed' : 'unsigned'}
+        </div>
+      </div>
+
+      {/* UPDATED */}
+      <div className="num">
+        <span className="sb-crm-muted sb-crm-tabular">{j.last_update_at ? fmtRelative(j.last_update_at) : '—'}</span>
+      </div>
+    </button>
   )
+}
+
+// ── Stage detection ─────────────────────────────────────────────────────────
+// Returns { group, label }. The "current stage" is the milestone group of the
+// first actionable (not_done, not_not_needed, requires-satisfied) milestone
+// in sort_order. Fully-done jobs go to closeout. Fully-blocked jobs surface
+// the group of their first blocked milestone.
+
+// Returns { group, fineLabel, bucketLabel } — see Q1. fineLabel is the
+// specific milestone group ('Permit', 'Stone', 'Etching'); bucketLabel is
+// the coarse bucket Paul reads at glance ('Intake', 'Production',
+// 'Install', 'Closeout', or 'Done' for fully-finished jobs).
+function currentStage(job) {
+  const milestones = job?.milestones || []
+  if (milestones.length === 0) {
+    return { group: 'intake', fineLabel: GROUP_LABEL.intake, bucketLabel: 'Intake' }
+  }
+  const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+  const ordered = milestones.slice().sort((a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999))
+  const actionable = ordered.find(m =>
+    m.status !== 'done' && m.status !== 'not_needed' && !hasUnsatisfiedRequires(m, byKey)
+  )
+  if (actionable) {
+    const group = actionable.group
+    return {
+      group,
+      fineLabel: GROUP_LABEL[group] || group,
+      bucketLabel: STAGE_BUCKET_LABEL[bucketForGroup(group)] || 'Intake',
+    }
+  }
+  const allDone = ordered.every(m => m.status === 'done' || m.status === 'not_needed')
+  if (allDone) return { group: 'closeout', fineLabel: 'Done', bucketLabel: 'Done' }
+  // Workflow #2 fallback — first-not-done (catches override-driven in_progress
+  // milestones with unsatisfied requires that aren't 'not_started').
+  const firstNotDone = ordered.find(m => m.status !== 'done' && m.status !== 'not_needed')
+  if (firstNotDone) {
+    const group = firstNotDone.group
+    return {
+      group,
+      fineLabel: GROUP_LABEL[group] || group,
+      bucketLabel: STAGE_BUCKET_LABEL[bucketForGroup(group)] || 'Intake',
+    }
+  }
+  return { group: 'intake', fineLabel: GROUP_LABEL.intake, bucketLabel: 'Intake' }
+}
+
+// Q3 semantic tone ladder (gray-ish → in-flight → urgent → done):
+//   intake bucket (intake / design / permit) → bronze (paperwork, inert)
+//   production bucket (stone / photo / etching / production / foundation) → blue (in-flight)
+//   install → amber (act now — truck out, scheduled trip)
+//   closeout → green (done / closing out)
+function mapStageToTone(group) {
+  if (group === 'install') return 'amber'
+  if (group === 'closeout') return 'green'
+  if (STAGE_BUCKETS.production.has(group)) return 'blue'
+  return 'bronze'
+}
+
+function familyNameForJob(j) {
+  const order = j.order || j._order
+  const fromOrder = order?.primary_lastname && String(order.primary_lastname).trim()
+  if (fromOrder) return fromOrder
+  const fromCustomer = order?.customer?.last_name && String(order.customer.last_name).trim().toUpperCase()
+  if (fromCustomer) return fromCustomer
+  // No order — typically cemetery_order-linked crypt door job
+  if (j.job_type === 'mausoleum_door') return 'Crypt door — TBD'
+  return '—'
+}
+
+function deceasedLabelForJob(j) {
+  const dec = (j.order || j._order)?.deceased
+  if (Array.isArray(dec) && dec.length > 0) {
+    if (dec.length === 1) {
+      const d = dec[0]
+      const name = [d.firstName || d.first_name, d.lastName || d.last_name].filter(Boolean).join(' ').trim()
+      return name || null
+    }
+    return 'Companion stone'
+  }
+  return null
+}
+
+function jobTypeLabel(jobType, serviceTypes) {
+  if (jobType === 'new_stone')       return 'New stone'
+  if (jobType === 'mausoleum_door')  return 'Crypt door'
+  if (jobType === 'cleaning_repair') return 'Cleaning/Repair'
+  const st = (serviceTypes || []).map(s => String(s).toUpperCase())
+  if (st.includes('INSCRIPTION') || st.includes('INSCRIPTIONS')) return 'Inscription'
+  if (st.includes('ACID_WASH')) return 'Acid wash'
+  return 'Order'
 }
 
 // =============================================================================

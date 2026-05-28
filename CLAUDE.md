@@ -8,6 +8,19 @@
 - Active sprint: TODAY-COMMAND-CENTER (redesign Today tab as operational briefing — 4 design directions under review, not yet built)
 - Parked: Profit visual demo-match, family-order payments→ledger, QBO bridge (columns dormant), scheduler workflow-grid completeness, test-data cleanup (ZZ_DEMO noise), SalesMode emoji purge (~20 icon cards incl 🚪)
 
+## Architecture — operational lenses (locked 2026-05-28)
+
+- **Customers** = relationship lens. People, family history, contact, repeat indicator, lifetime value. Office staff + sales primary surface.
+- **Orders** = money/contract lens. Pipeline, balances, payments, deposits. Office staff + owner primary surface.
+- **Jobs** = production lens. Milestones, blockers, stage, crews, readiness. Production staff + scheduler primary surface.
+- **Today** = aggregate owner briefing.
+- **Profit** = aggregate financial intelligence.
+- **Scheduler / Calendar** = production execution + dispatch.
+
+Same families appear in multiple tabs — different operational questions per surface. Tabs are NOT redundant; they are distinct lenses on the same business. Future work should sharpen each tab's primary question, NOT merge them.
+
+Multi-role design target: office (Orders + Customers), production (Jobs + Scheduler), owner (Today + Profit), installers (Calendar Day dispatch).
+
 ---
 
 Staff-facing CRM for Shevchenko Monuments (Perth Amboy, NJ, est. 1919).
@@ -529,6 +542,18 @@ Items deferred from the 2026-05-28 Customers + Orders rebuild. All flagged by ag
 - **"Cemetery hold" → sub-kinds** — split into "Awaiting cemetery permit" / "Awaiting plot info" / "Awaiting cemetery rules check" when template milestones disambiguate. Each maps to a different phone call.
 - **Multi-blocker `+N` indicator** — small superscript count on the blocker chip when an order has additional blockers below the highest-severity one. CRM agent recommended; deferred until operators ask for it (single-chip principle holds for now).
 - **"Stuck in production" duration fallback** — when `production_started.status_date` is null (currently ~97% of milestones), the stall computation falls back to `order.signed_at` per the inline comment in `computeOrderPressure`. Note in code; once status_date populates reliably (post-cascade), the fallback becomes irrelevant. Don't remove the fallback prematurely.
+
+### JOBS-RESKIN-PASS additions (2026-05-28)
+
+- **CRM-DETAIL-RESKIN-PASS sprint** — JobDetail / CustomerDetail / OrderDetail still on the legacy `.sb-page` / `.sb-page-head` design system. Clicking into a row from any reskinned list view drops the operator into the old visual identity (UX + Monument reviews both flagged the whiplash). Reskin the three detail surfaces in a dedicated sprint before the visual debt compounds further.
+- **Promise badge on Jobs row** — `getActivePromisesForJob` already exists; surface as a small inline pill on the Jobs row when an open promise exists for that job. Highest-stakes operational signal a shop can carry. No new schema; data is here.
+- **Last-update authorship eyebrow** — Jobs row's "Updated" column shows `last_update_at` (when) but not who. In a 5-person shop, "Mike updated, 3d ago" answers a different question than just "3d ago." Needs a `last_update_by` column on jobs OR a join through `job_events` to find the latest event author.
+- **"Signed orders without jobs" red blocker surface in OrdersTab** — replaces the dropped BackfillBanner (which lived on JobsTab and was retired in JOBS-RESKIN-PASS). The recovery path (createJobFromOrder) still exists in the data layer; just needs to land as a new blocker kind in `computeOrderPressure` so it surfaces as a red chip in Orders rows. CRM agent's #2 finding.
+- **Production foreman saved view / alt-sort** — surfaces stalled `production_started` jobs at the top so Paul can do the "shop floor walk" reading ("what's parked in the shop"). Default action-priority sort is right for the owner-inbox read; a saved view for the foreman read is the alternate.
+- **This-week's logistics view** — install schedule + pickup/delivery for the week. Monument review: "logistics is a real daily question for a 5-person shop with one truck." Lives outside the Jobs list as its own surface (probably a Calendar tab subview).
+- **Age column visual escalation for aged crypt-door rows** — crypt-door jobs show empty Blocker (no order = no pressure, by design until cemetery_order_id linking lands). To prevent Paul's eye from skimming past aged crypt-door rows that are silently stuck in the shop, escalate the Age column visually (e.g., amber tint at 30d+, red at 60d+) when blocker is empty AND age is high. Monument review #3.
+- **Backfill recovery surfacing from Orders** — JOBS-RESKIN-PASS dropped BackfillBanner because Jobs tab was being rebuilt; the recovery flow (signed orders without jobs) should re-emerge as a red blocker on the OrdersTab. Same backlog item as the "Signed orders without jobs red blocker" above — listed twice deliberately because they're two halves of the same fix.
+- **Orders vs Jobs merge (open architectural question)** — Paul is weighing whether to merge the standalone Orders tab INTO the Jobs tab as a unified work-item surface. The Orders DB stays; the standalone tab might collapse. If that merge proceeds, the Jobs row needs additional columns (contract total, balance, full payment progress at order grain) which the JOBS-RESKIN-PASS deliberately didn't add (those live on Orders today). Hold the Jobs commit until Paul resolves this question — re-touching the file next sprint vs adding the columns now is the tradeoff.
 
 ## Deferred / known issues
 
