@@ -24,6 +24,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
 import JobsDepartmentView from './JobsDepartmentView'
 import JobPnLPanel from './JobPnLPanel'
+import JobDimensionsPanel from './JobDimensionsPanel'
 import {
   getJob, getJobEvents,
   createJobFromOrder,
@@ -463,6 +464,14 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
       <JobPnLPanel
         target={{ jobId }}
         label={job?.order?.primary_lastname || customerName(job?.order?.customer) || (job?.door_index != null ? `door ${job.door_index + 1}` : 'this job')}
+      />
+
+      {/* Dimensional tags for future rollups (collapsed by default) */}
+      <JobDimensionsPanel
+        target={{ jobId }}
+        initial={{ sales_rep_id: job.sales_rep_id, referral_source: job.referral_source, quoted_total: job.quoted_total }}
+        contractTotal={job?.order?.contract_total ?? job?.order?.grand_total ?? null}
+        onSaved={loadJob}
       />
 
       {overrideReq && (

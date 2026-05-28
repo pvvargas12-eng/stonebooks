@@ -261,6 +261,8 @@ export default function Stonebooks() {
   // Mirrors the selectedCustomerId pattern. JobsTab uses this as initialJobId
   // to auto-open the job detail when the user clicks an operational item.
   const [selectedJobId, setSelectedJobId] = useState(null)
+  // PROFIT-DRILLDOWN — "View full job" routing from Profit tab → cemetery detail.
+  const [selectedCemeteryOrderId, setSelectedCemeteryOrderId] = useState(null)
 
   // v2 W-1 — Command Surface state. `useCommandSurface` registers the global
   // ⌘K / Ctrl+K / "/" key listeners and returns the open/close handle.
@@ -589,12 +591,12 @@ export default function Stonebooks() {
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
-{tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} staffName={profile?.display_name} />}
+{tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} />}
 {tab === 'scheduler' && <SchedulerTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onSwitchTab={setTab} />}
 {tab === 'calendar'  && <CalendarTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} />}
 {tab === 'reports'   && <ReportsTab />}
-{tab === 'profit'    && <ProfitTab />}
+{tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
             'Coming next: design library management — upload new monuments, edit metadata, organize by category.',
             'For now, the catalog browses on the customer-facing site.',

@@ -12,13 +12,12 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   getJobPnL,
   getCemeteryOrderPnL,
-  getJobCostEstimates,
-  setJobCostEstimate,
   ESTIMATE_CATEGORIES,
   estimateCategoryLabel,
   fmtUSD,
 } from './lib/stonebooksData'
 import ExpenseModal from './components/ExpenseModal'
+import EstimatesModal from './components/EstimatesModal'
 
 // Margin tone thresholds (Paul Q4): red if realized < projected×0.5 OR < 20 abs;
 // amber if realized < projected×0.7 OR < 30 abs; else green.
@@ -59,8 +58,8 @@ export default function JobPnLPanel({ target, label = 'this job' }) {
       <div className="pnl-head">
         <h3 className="pnl-title">Profit &amp; loss</h3>
         <div className="pnl-actions">
-          <button className="pnl-btn" onClick={() => setEstOpen(true)}>Edit estimates</button>
-          <button className="pnl-btn" onClick={() => setExpOpen(true)}>Add expense</button>
+          <button className="pnl-btn pnl-btn-ghost" onClick={() => setEstOpen(true)}>Edit estimates</button>
+          <button className="pnl-btn pnl-btn-primary" onClick={() => setExpOpen(true)}>+ Add expense</button>
         </div>
       </div>
 
@@ -141,67 +140,19 @@ function Row({ label, value, strong }) {
   return <div className={`pnl-rev-row ${strong ? 'pnl-rev-strong' : ''}`}><span>{label}</span><span className="sb-mono">{value}</span></div>
 }
 
-// 6 numeric inputs (one per estimate category), live sum, prefilled from
-// existing estimates, saves by upserting each category.
-function EstimatesModal({ estimateTarget, onClose, onSaved }) {
-  const [vals, setVals] = useState(() => Object.fromEntries(ESTIMATE_CATEGORIES.map(c => [c.key, ''])))
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    let c = false
-    getJobCostEstimates(estimateTarget).then(rows => {
-      if (c) return
-      const next = Object.fromEntries(ESTIMATE_CATEGORIES.map(cat => [cat.key, '']))
-      for (const r of rows) next[r.category] = String(r.estimated_amount)
-      setVals(next)
-    })
-    return () => { c = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [estimateTarget?.jobId, estimateTarget?.cemeteryOrderId])
-
-  const sum = ESTIMATE_CATEGORIES.reduce((s, c) => s + (Number(vals[c.key]) || 0), 0)
-
-  const save = async () => {
-    setBusy(true); setError(null)
-    for (const { key } of ESTIMATE_CATEGORIES) {
-      const amt = Number(vals[key]) || 0
-      const res = await setJobCostEstimate({ ...estimateTarget, category: key, estimatedAmount: amt })
-      if (!res.ok) { setError(res.error); setBusy(false); return }
-    }
-    onSaved?.()
-  }
-
-  return (
-    <div className="em-bg" onClick={() => !busy && onClose?.()}>
-      <div className="em-modal" onClick={e => e.stopPropagation()}>
-        <h3 className="em-title">Edit cost estimates</h3>
-        <p className="em-sub">Quote-time cost assumptions. Drives projected margin.</p>
-        {ESTIMATE_CATEGORIES.map(({ key, label }) => (
-          <label key={key} className="em-field">{label}
-            <input type="number" step="0.01" min="0" value={vals[key]}
-              onChange={e => setVals(v => ({ ...v, [key]: e.target.value }))} placeholder="0.00" />
-          </label>
-        ))}
-        <div className="pnl-estsum">Sum: <strong className="sb-mono">{fmtUSD(sum)}</strong></div>
-        {error && <div className="em-error">{error}</div>}
-        <div className="em-actions">
-          <button className="em-btn" disabled={busy} onClick={() => onClose?.()}>Cancel</button>
-          <button className="em-btn em-btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save estimates'}</button>
-        </div>
-      </div>
-    </div>
-  )
-}
+// EstimatesModal lives in src/components/EstimatesModal.jsx (shared with ProfitTab).
 
 const styles = `
   .pnl{ border:.5px solid var(--sb-border); border-radius:10px; padding:18px 20px; margin-top:18px; background:var(--sb-surface); }
   .pnl-empty{ font-size:13px; color:var(--sb-text-muted); }
   .pnl-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
   .pnl-title{ font-size:15px; font-weight:600; margin:0; }
-  .pnl-actions{ display:flex; gap:8px; }
-  .pnl-btn{ border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text); border-radius:6px; padding:6px 12px; font:inherit; font-size:12.5px; cursor:pointer; }
+  .pnl-actions{ display:flex; gap:8px; align-items:center; }
+  .pnl-btn{ border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text); border-radius:6px; padding:7px 14px; font:inherit; font-size:12.5px; cursor:pointer; }
   .pnl-btn:hover{ background:var(--sb-surface-muted); }
+  .pnl-btn-ghost{ background:transparent; }
+  .pnl-btn-primary{ background:var(--sb-text); color:var(--sb-bg); border-color:transparent; font-weight:500; }
+  .pnl-btn-primary:hover{ opacity:.88; background:var(--sb-text); }
   .pnl-tiles{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:14px; }
   .pnl-tile{ border:.5px solid var(--sb-border); border-radius:8px; padding:12px 14px; }
   .pnl-tile span{ font-size:11px; color:var(--sb-text-muted); text-transform:uppercase; letter-spacing:.04em; }

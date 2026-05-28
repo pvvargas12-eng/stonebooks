@@ -1510,11 +1510,14 @@ function computeSignals({ estByCat, actuals, payments, projectedPct, collected, 
   if (tripDates.length >= 2) {
     const billed = (payments || []).some(p => /trip|re-?deliver|extra visit|2nd trip|second trip/i.test(`${p.notes || ''} ${p.payment_reference || ''}`))
     if (!billed) {
+      // Real $ already in the ledger — no invented numbers.
+      const tripCost = tripRows.reduce((s, r) => s + Number(r.amount || 0), 0)
       signals.push({
         type: 'second_install_trip_not_billed',
         severity: 'amber',
         message: 'Possible unbilled second trip',
-        evidence: `${tripDates.length} on-site trips (vehicle/equipment costs on ${tripDates.join(', ')}); no trip-fee revenue line found — verify billing (heuristic).`,
+        evidence: `${tripDates.length} on-site trips (vehicle/equipment costs on ${tripDates.join(', ')}); ~${fmtUSD(tripCost)} in trip-date costs with no offsetting trip-fee revenue (heuristic).`,
+        impactDollar: tripCost,
       })
     }
   }
@@ -1530,12 +1533,16 @@ function computeSignals({ estByCat, actuals, payments, projectedPct, collected, 
       fire = true
       sev = (realized <= projectedPct * 0.5 || realized < 0) ? 'red' : 'amber'
     }
-    if (fire) signals.push({
-      type: 'margin_dropping_in_production',
-      severity: sev,
-      message: 'Margin dropping while in production',
-      evidence: `Realized ${realized.toFixed(0)}% is below 70% of projected ${projectedPct.toFixed(0)}% (point-in-time). Collected ${fmtUSD(collected)}, spent ${fmtUSD(totalActual)}.`,
-    })
+    if (fire) {
+      const gap = projectedPct > 0 ? ((projectedPct - realized) / 100) * collected : null
+      signals.push({
+        type: 'margin_dropping_in_production',
+        severity: sev,
+        message: 'Margin dropping while in production',
+        evidence: `Realized ${realized.toFixed(0)}% vs projected ${projectedPct.toFixed(0)}%${gap != null && gap > 0 ? ` — roughly ${fmtUSD(gap)} of expected margin not yet realized at this spend level` : ''}. Collected ${fmtUSD(collected)}, spent ${fmtUSD(totalActual)}.`,
+        impactDollar: gap,
+      })
+    }
   }
   return signals
 }
@@ -1658,6 +1665,322 @@ export async function getCemeteryOrderPnL(cemeteryOrderId) {
 export async function detectJobSignals(jobId) {
   const pnl = await getJobPnL(jobId)
   return pnl?.signals || []
+}
+
+// Mirror of detectJobSignals for a cemetery order.
+export async function detectCemeteryOrderSignals(cemeteryOrderId) {
+  const pnl = await getCemeteryOrderPnL(cemeteryOrderId)
+  return pnl?.signals || []
+}
+
+// =============================================================================
+// PROFIT OVERVIEW — company nervous system + operational rollups (Layer 1/2)
+// =============================================================================
+// One bulk fetch → all Profit-tab aggregates, computed client-side so we make a
+// handful of round-trips instead of N per-entity calls. NO fabricated numbers:
+// callers render honest empty states from the null/zero fields here.
+
+// Milestone group ordering (mirrors JobsTab GROUP_ORDER) for the stage pill.
+const PNL_STAGE_ORDER = ['intake', 'design', 'permit', 'stone', 'photo', 'etching', 'production', 'foundation', 'install', 'closeout']
+const PNL_STAGE_LABEL = { intake: 'Intake', design: 'Design', permit: 'Permit', stone: 'Stone', photo: 'Photo', etching: 'Etching', production: 'Production', foundation: 'Foundation', install: 'Install', closeout: 'Closeout' }
+const JOB_CLOSED = ['completed', 'cancelled', 'closed', 'archived', 'paid']
+const CEM_CLOSED = ['completed', 'cancelled', 'paid']
+
+// Full Q4 margin tone: red if realized < projected×0.5 OR < 20 abs; amber if
+// < projected×0.7 OR < 30 abs; null pct → neutral.
+export function marginToneOf(projectedPct, realizedPct) {
+  const v = realizedPct != null ? realizedPct : projectedPct
+  if (v == null) return 'neutral'
+  if ((projectedPct != null && v < projectedPct * 0.5) || v < 20) return 'red'
+  if ((projectedPct != null && v < projectedPct * 0.7) || v < 30) return 'amber'
+  return 'green'
+}
+
+const median = (arr) => {
+  const a = arr.filter(x => x != null).sort((x, y) => x - y)
+  if (!a.length) return null
+  const m = Math.floor(a.length / 2)
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2
+}
+
+// Staff list for dimension dropdowns (sales rep). From user_settings.
+export async function getStaffList() {
+  const { data, error } = await supabase.from('user_settings').select('user_id, display_name')
+  if (error) { console.warn('[profit] getStaffList:', error.message); return [] }
+  return (data || []).map(u => ({ id: u.user_id, name: u.display_name || 'Staff' }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+// Write dimensional tags straight to the jobs row.
+export async function updateJobDimensions(jobId, patch) {
+  if (!jobId) return { ok: false, error: 'Missing job id' }
+  const allowed = {}
+  for (const k of ['sales_rep_id', 'crew_id', 'referral_source', 'referral_entity_id', 'quoted_total']) {
+    if (k in patch) allowed[k] = patch[k]
+  }
+  const { error } = await supabase.from('jobs').update({ ...allowed, last_update_at: new Date().toISOString() }).eq('id', jobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Empty-overview shape — used when getProfitOverview fails, so the caller's
+// loading state always resolves cleanly and the page renders honest empty
+// states instead of hanging on "Loading…" forever.
+const _emptyProfitOverview = () => ({
+  metrics: {
+    revenueMonth: 0, revenuePrev: 0, revenueSpark: new Array(30).fill(0),
+    expensesMonth: 0, expensesPrev: 0, expensesSpark: new Array(30).fill(0),
+    netMonth: 0, arTotal: 0, aging: { current: 0, d30: 0, d60: 0 }, arOver30Count: 0,
+    cashFlow: 0, forecast14: null, overheadBurn: 0,
+    avgJobMargin: { weightedPct: null, medianPct: null, n: 0 },
+  },
+  cemeteryRollup: [], jobTypeRollup: [], activeRows: [], topSignals: [],
+  _error: null,
+})
+
+export async function getProfitOverview() {
+  try {
+    return await _getProfitOverviewInner()
+  } catch (e) {
+    // NEVER let this reject — the Profit tab's loading state depends on a
+    // resolved value. Surface the error in the return shape; the page renders
+    // honest empty states + can show the error message.
+    console.error('[profit] getProfitOverview failed:', e)
+    return { ..._emptyProfitOverview(), _error: e?.message || String(e) }
+  }
+}
+
+async function _getProfitOverviewInner() {
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  const thirtyAgo = new Date(now.getTime() - 30 * 864e5)
+
+  // Per-section guards — one failing query doesn't kill the whole overview.
+  // Each entry returns `{data: []|null}` shape so destructuring stays uniform.
+  const safe = async (p, label) => {
+    try { const r = await p; if (r?.error) console.warn(`[profit] ${label}:`, r.error.message); return r }
+    catch (e) { console.warn(`[profit] ${label} threw:`, e?.message || e); return { data: [], error: e } }
+  }
+
+  const [pays, exps, jobsRes, cemRes, estRes] = await Promise.all([
+    safe(getFinancialRecords({ recordType: 'payment_received' }), 'payments').then(r => Array.isArray(r) ? r : (r?.data || [])),
+    safe(getFinancialRecords({ recordType: 'expense_incurred' }), 'expenses').then(r => Array.isArray(r) ? r : (r?.data || [])),
+    safe(supabase.from('jobs').select('id, job_type, order_id, cemetery_order_id, quoted_total, overall_status'), 'jobs'),
+    safe(supabase.from('cemetery_orders').select('id, cemetery_name, total_amount, status, created_at, submitted_at'), 'cemetery_orders'),
+    safe(supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount'), 'estimates'),
+  ])
+  const jobs = jobsRes?.data || []
+  const cems = cemRes?.data || []
+  const estimates = estRes?.data || []
+
+  // active-job stage: fetch milestones only for non-closed jobs.
+  // FIX: `group` is a SQL reserved word — the prior alias `group_key:group`
+  // was fragile in PostgREST. Select * and read m.group in JS (matches how
+  // JobsTab already consumes milestone rows).
+  const activeJobIds = jobs.filter(j => !JOB_CLOSED.includes(j.overall_status)).map(j => j.id)
+  let milestones = []
+  if (activeJobIds.length) {
+    const mres = await safe(
+      supabase.from('job_milestones').select('*').in('job_id', activeJobIds),
+      'job_milestones',
+    )
+    milestones = mres?.data || []
+  }
+  const stageByJob = {}
+  {
+    const byJob = {}
+    for (const m of milestones) (byJob[m.job_id] ||= []).push(m)
+    for (const [jid, ms] of Object.entries(byJob)) {
+      const open = ms.filter(m => m.status !== 'done' && m.status !== 'not_needed')
+        .sort((a, b) => (PNL_STAGE_ORDER.indexOf(a.group) - PNL_STAGE_ORDER.indexOf(b.group)) || (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      stageByJob[jid] = open.length ? (PNL_STAGE_LABEL[open[0].group] || open[0].group || '—') : 'Closeout'
+    }
+  }
+
+  // group helpers
+  const sumBy = (rows, keyFn) => { const m = {}; for (const r of rows) { const k = keyFn(r); if (k != null) m[k] = (m[k] || 0) + Number(r.amount || 0) } return m }
+  const payByJob = sumBy(pays, r => r.job_id), payByCem = sumBy(pays, r => r.cemetery_order_id), payByOrder = sumBy(pays, r => (!r.job_id ? r.order_id : null))
+  const expByJob = sumBy(exps, r => r.job_id), expByCem = sumBy(exps, r => r.cemetery_order_id)
+  const jobsByOrderCount = {}; for (const j of jobs) if (j.order_id) jobsByOrderCount[j.order_id] = (jobsByOrderCount[j.order_id] || 0) + 1
+  const jobsByCem = {}; for (const j of jobs) if (j.cemetery_order_id) (jobsByCem[j.cemetery_order_id] ||= []).push(j.id)
+  // per-target estimate actuals (category → expense rows for that target)
+  const expRowsByJob = {}; for (const e of exps) if (e.job_id) (expRowsByJob[e.job_id] ||= []).push(e)
+  const expRowsByCem = {}; for (const e of exps) if (e.cemetery_order_id) (expRowsByCem[e.cemetery_order_id] ||= []).push(e)
+  const estRowsByJob = {}; for (const e of estimates) if (e.job_id) (estRowsByJob[e.job_id] ||= []).push(e)
+  const estRowsByCem = {}; for (const e of estimates) if (e.cemetery_order_id) (estRowsByCem[e.cemetery_order_id] ||= []).push(e)
+  const payRowsByJob = {}; for (const p of pays) if (p.job_id) (payRowsByJob[p.job_id] ||= []).push(p)
+  const payRowsByCem = {}; for (const p of pays) if (p.cemetery_order_id) (payRowsByCem[p.cemetery_order_id] ||= []).push(p)
+
+  // ── METRICS ────────────────────────────────────────────────────────────
+  const inMonth = (iso, start, end) => { const t = new Date(iso).getTime(); return t >= start.getTime() && (!end || t < end.getTime()) }
+  const revenueMonth = sumAmt(pays.filter(p => inMonth(p.occurred_at, monthStart)))
+  const revenuePrev = sumAmt(pays.filter(p => inMonth(p.occurred_at, prevStart, monthStart)))
+  const expensesMonth = sumAmt(exps.filter(e => inMonth(e.occurred_at, monthStart)))
+  const expensesPrev = sumAmt(exps.filter(e => inMonth(e.occurred_at, prevStart, monthStart)))
+  // 30-day daily sparklines (oldest → newest)
+  const spark = (rows) => {
+    const buckets = new Array(30).fill(0)
+    for (const r of rows) {
+      const days = Math.floor((now.getTime() - new Date(r.occurred_at).getTime()) / 864e5)
+      if (days >= 0 && days < 30) buckets[29 - days] += Number(r.amount || 0)
+    }
+    return buckets
+  }
+  const revenueSpark = spark(pays.filter(p => new Date(p.occurred_at) >= thirtyAgo))
+  const expensesSpark = spark(exps.filter(e => new Date(e.occurred_at) >= thirtyAgo))
+
+  // A/R aging across active cemetery orders (no due dates → age by submitted/created)
+  const paidByCemTotal = sumBy(pays, r => r.cemetery_order_id)
+  const aging = { current: 0, d30: 0, d60: 0 }
+  let arTotal = 0, arOver30Count = 0
+  for (const o of cems) {
+    if (CEM_CLOSED.includes(o.status) || o.status === 'draft') continue
+    const bal = Number(o.total_amount || 0) - Number(paidByCemTotal[o.id] || 0)
+    if (bal <= 0) continue
+    arTotal += bal
+    const ageDays = Math.floor((now.getTime() - new Date(o.submitted_at || o.created_at).getTime()) / 864e5)
+    if (ageDays >= 60) { aging.d60 += bal; arOver30Count++ }
+    else if (ageDays >= 30) { aging.d30 += bal; arOver30Count++ }
+    else aging.current += bal
+  }
+
+  const cashFlow = sumAmt(pays) - sumAmt(exps)   // all-time operational
+  const overheadBurn = sumAmt(exps.filter(e => !e.job_id && !e.order_id && !e.cemetery_order_id && new Date(e.occurred_at) >= thirtyAgo))
+
+  // ── per-entity P&L (in-memory, reuses buildCostByCategory/buildMargin) ───
+  const familyJobPnL = (j) => {
+    const actuals = expRowsByJob[j.id] || []
+    const costs = buildCostByCategory(estRowsByJob[j.id] || [], actuals)
+    let collected = (payByJob[j.id] || 0)
+    if (j.order_id && jobsByOrderCount[j.order_id] === 1) collected += (payByOrder[j.order_id] || 0)
+    const contract = j.quoted_total != null ? Number(j.quoted_total) : null
+    const margin = buildMargin(contract, collected, costs.total_estimated, costs.total_actual)
+    return { costs, collected, contract, margin, actuals }
+  }
+  const cemPnL = (o) => {
+    const jobIds = jobsByCem[o.id] || []
+    const actuals = [...(expRowsByCem[o.id] || []), ...jobIds.flatMap(id => expRowsByJob[id] || [])]
+    const costs = buildCostByCategory(estRowsByCem[o.id] || [], actuals)
+    const collected = (payByCem[o.id] || 0)
+    const contract = o.total_amount != null ? Number(o.total_amount) : null
+    const margin = buildMargin(contract, collected, costs.total_estimated, costs.total_actual)
+    return { costs, collected, contract, margin, actuals, jobCount: jobIds.length }
+  }
+
+  // ── ACTIVE ROWS (jobs + cemetery orders) + signals ──────────────────────
+  const activeRows = []
+  const allSignals = []
+  for (const j of jobs) {
+    if (j.cemetery_order_id) continue   // door-jobs roll up to the order
+    const p = familyJobPnL(j)
+    const activeish = !JOB_CLOSED.includes(j.overall_status)
+    const signals = computeSignals({ estByCat: p.costs.estByCat, actuals: p.actuals, payments: payRowsByJob[j.id] || [], projectedPct: p.margin.projected_pct, collected: p.collected, totalActual: p.costs.total_actual, activeish })
+    const row = {
+      key: `j:${j.id}`, kind: 'Job', jobType: j.job_type, status: j.overall_status,
+      stage: stageByJob[j.id] || (activeish ? '—' : 'Closeout'),
+      revenue: p.collected, cost: p.costs.total_actual,
+      projectedPct: p.margin.projected_pct, realizedPct: p.margin.realized_pct,
+      tone: marginToneOf(p.margin.projected_pct, p.margin.realized_pct),
+      active: activeish, signals,
+      byCategory: p.costs.byCategory, contract: p.contract,
+      actuals: p.actuals,
+    }
+    activeRows.push(row)
+    for (const s of signals) allSignals.push({ ...s, link: row.key, label: `Job ${String(j.id).slice(0, 8)}` })
+  }
+  for (const o of cems) {
+    if (o.status === 'draft') continue
+    const p = cemPnL(o)
+    const activeish = !CEM_CLOSED.includes(o.status)
+    const signals = computeSignals({ estByCat: p.costs.estByCat, actuals: p.actuals, payments: payRowsByCem[o.id] || [], projectedPct: p.margin.projected_pct, collected: p.collected, totalActual: p.costs.total_actual, activeish })
+    const row = {
+      key: `c:${o.id}`, kind: 'Cemetery order', status: o.status, stage: o.status,
+      label: o.cemetery_name, sub: o.cemetery_name,
+      revenue: p.collected, cost: p.costs.total_actual,
+      projectedPct: p.margin.projected_pct, realizedPct: p.margin.realized_pct,
+      tone: marginToneOf(p.margin.projected_pct, p.margin.realized_pct),
+      active: activeish, signals, jobCount: p.jobCount,
+      byCategory: p.costs.byCategory, contract: p.contract,
+      actuals: p.actuals,
+    }
+    activeRows.push(row)
+    for (const s of signals) allSignals.push({ ...s, link: row.key, label: o.cemetery_name })
+  }
+
+  // top 3 signals (red first)
+  const sevRank = { red: 0, amber: 1 }
+  const topSignals = allSignals.sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9)).slice(0, 3)
+
+  // ── CEMETERY ROLLUP (group by name) ──────────────────────────────────────
+  const cemByName = {}
+  for (const o of cems) {
+    if (o.status === 'draft') continue
+    const b = (cemByName[o.cemetery_name] ||= { name: o.cemetery_name, orderIds: [], rev: 0, exp: 0, jobCount: 0 })
+    b.orderIds.push(o.id)
+  }
+  for (const b of Object.values(cemByName)) {
+    const jobset = new Set(b.orderIds.flatMap(oid => jobsByCem[oid] || []))
+    b.jobCount = jobset.size
+    for (const oid of b.orderIds) { b.rev += (payByCem[oid] || 0); b.exp += (expByCem[oid] || 0) }
+    for (const jid of jobset) b.exp += (expByJob[jid] || 0)
+    b.marginPct = b.rev > 0 ? Math.round(((b.rev - b.exp) / b.rev) * 100) : null
+    b.tone = marginToneOf(null, b.marginPct)
+  }
+  const cemeteryRollup = Object.values(cemByName)
+    .sort((a, b) => (b.marginPct ?? -Infinity) - (a.marginPct ?? -Infinity))
+
+  // ── JOB-TYPE ROLLUP (family types only; mausoleum_door rolls to cemetery) ─
+  const FAMILY_TYPES = new Set(['new_stone', 'inscription', 'bronze', 'cleaning_repair'])
+  const byType = {}
+  for (const j of jobs) {
+    if (!FAMILY_TYPES.has(j.job_type)) continue
+    const b = (byType[j.job_type] ||= { jobType: j.job_type, rev: 0, exp: 0, jobCount: 0 })
+    b.jobCount++
+    b.exp += (expByJob[j.id] || 0)
+    b.rev += (payByJob[j.id] || 0)
+    if (j.order_id && jobsByOrderCount[j.order_id] === 1) b.rev += (payByOrder[j.order_id] || 0)
+  }
+  for (const b of Object.values(byType)) {
+    b.marginPct = b.rev > 0 ? Math.round(((b.rev - b.exp) / b.rev) * 100) : null
+    b.tone = marginToneOf(null, b.marginPct)
+  }
+  const jobTypeRollup = Object.values(byType).sort((a, b) => (b.marginPct ?? -Infinity) - (a.marginPct ?? -Infinity))
+
+  // ── AVG JOB MARGIN (revenue-weighted + median) ───────────────────────────
+  const incl = []
+  for (const j of jobs) {
+    if (j.cemetery_order_id || j.quoted_total == null) continue
+    const actual = expByJob[j.id] || 0
+    if (actual <= 0) continue
+    let collected = payByJob[j.id] || 0
+    if (j.order_id && jobsByOrderCount[j.order_id] === 1) collected += (payByOrder[j.order_id] || 0)
+    if (collected <= 0) continue
+    incl.push({ rev: collected, cost: actual, pct: ((collected - actual) / collected) * 100 })
+  }
+  const totalRev = incl.reduce((s, x) => s + x.rev, 0)
+  const avgJobMargin = incl.length ? {
+    weightedPct: totalRev > 0 ? Math.round(((totalRev - incl.reduce((s, x) => s + x.cost, 0)) / totalRev) * 100) : null,
+    medianPct: Math.round(median(incl.map(x => x.pct))),
+    n: incl.length,
+  } : { weightedPct: null, medianPct: null, n: 0 }
+
+  return {
+    metrics: {
+      revenueMonth, revenuePrev, revenueSpark,
+      expensesMonth, expensesPrev, expensesSpark,
+      netMonth: revenueMonth - expensesMonth,
+      arTotal, aging, arOver30Count,
+      cashFlow,
+      forecast14: null,          // honest: no payment-date estimates yet
+      overheadBurn,
+      avgJobMargin,
+    },
+    cemeteryRollup,
+    jobTypeRollup,
+    activeRows,
+    topSignals,
+  }
 }
 
 // Next order number in CO-{YYYY}-{NNN} form (per-year sequence, max+1).

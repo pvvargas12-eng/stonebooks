@@ -24,6 +24,7 @@ import {
   fmtRelative,
 } from './lib/stonebooksData'
 import JobPnLPanel from './JobPnLPanel'
+import JobDimensionsPanel from './JobDimensionsPanel'
 
 // Production lifecycle (NOT payment — payment is computed separately).
 const CO_STATUS = {
@@ -195,6 +196,13 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
 
       {/* Per-order P&L: estimates, actuals, margin, variance signals */}
       <JobPnLPanel target={{ cemeteryOrderId: order.id }} label={order.cemetery_name} />
+
+      {/* Dimensional tags (sales rep + referral source) */}
+      <JobDimensionsPanel
+        target={{ cemeteryOrderId: order.id }}
+        initial={{ sales_rep_id: order.sales_rep_id, referral_source: order.referral_source }}
+        onSaved={reload}
+      />
 
       {/* Payments */}
       <h2 className="cod-h2">Payments ({payments.length})</h2>

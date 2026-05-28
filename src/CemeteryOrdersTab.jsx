@@ -44,7 +44,7 @@ const rowTotal = (o) => {
 }
 const payStateOf = (total, paid) => (total > 0 && paid >= total ? 'paid' : (paid > 0 ? 'partial' : 'unpaid'))
 
-export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJob, staffName }) {
+export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJob, staffName, initialSelectedId = null, onConsumeInitialSelected }) {
   const [orders, setOrders] = useState([])
   const [paidTotals, setPaidTotals] = useState({})
   const [loading, setLoading] = useState(true)
@@ -54,6 +54,15 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
   const [selectedId, setSelectedId] = useState(null)   // non-draft → detail view
 
   useEffect(() => { getDistinctCemeteryNames().then(setCemeteryNames) }, [])
+
+  // Consume an externally-routed "open this order" (e.g. from Profit tab → View full job).
+  useEffect(() => {
+    if (initialSelectedId && initialSelectedId !== selectedId) {
+      setSelectedId(initialSelectedId)
+      onConsumeInitialSelected?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSelectedId])
 
   useEffect(() => {
     let cancelled = false
