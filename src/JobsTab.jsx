@@ -65,6 +65,10 @@ import {
 } from './lib/jobsRowHelpers'
 import JobsDepartmentView from './JobsDepartmentView'
 import { getJobsView, setJobsView } from './lib/workspaceState'
+// JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
+// view rendered as a tab inside JobDetail. Pure read-arrange of the joined
+// order row; no new data fetch.
+import DesignPacket from './DesignPacket'
 
 // =============================================================================
 // MAIN
@@ -99,6 +103,16 @@ export default function JobsTab({
     setJobsView(userId, next)
   }
 
+  // JOBS-OPERATIONAL-HUBS Phase 2A.2 — captured here so the "Open packet →"
+  // affordance in DesignHubHome can open JobDetail with the Design Packet
+  // tab pre-selected. Defaults to 'job'; callers that route from other
+  // surfaces leave the default in place.
+  const [defaultDetailTab, setDefaultDetailTab] = useState('job')
+  const handleOpenJob = (jobId, tab = 'job') => {
+    setDefaultDetailTab(tab)
+    setSelectedJobId(jobId)
+  }
+
   // The Command Surface used to set `initialQueue` (e.g. "stones", "layouts")
   // to deep-link into the old QueuesView. JOBS-RESKIN-PASS retired QueuesView;
   // accept + discard so the Command Surface doesn't re-open a now-deleted
@@ -112,11 +126,17 @@ export default function JobsTab({
 
   if (selectedJobId) {
     return (
+      // key={selectedJobId} forces JobDetail to remount on job switch so
+      // (a) the `defaultTab` prop takes effect on each open, and (b) per-job
+      // session state (dismissedKinds set, waitingHint) doesn't leak
+      // between jobs.
       <JobDetail
+        key={selectedJobId}
         jobId={selectedJobId}
         onBack={() => setSelectedJobId(null)}
         onOpenOrder={onOpenOrder}
         onOpenCustomer={onOpenCustomer}
+        defaultTab={defaultDetailTab}
       />
     )
   }
@@ -125,7 +145,7 @@ export default function JobsTab({
     return (
       <>
         <JobsViewToggle view={view} onChange={handleViewChange} />
-        <JobsListView onOpenJob={setSelectedJobId} />
+        <JobsListView onOpenJob={handleOpenJob} />
       </>
     )
   }
@@ -133,7 +153,7 @@ export default function JobsTab({
   return (
     <JobsDepartmentView
       userId={userId}
-      onOpenJob={setSelectedJobId}
+      onOpenJob={handleOpenJob}
       onSwitchTab={onSwitchTab}
       onOpenOrder={onOpenOrder}
       onOpenCustomer={onOpenCustomer}
@@ -553,9 +573,16 @@ function JobsListView({ onOpenJob }) {
 // DETAIL — read-only in this commit
 // =============================================================================
 
-function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
+function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer, defaultTab = 'job' }) {
   const [job, setJob] = useState(null)
   const [events, setEvents] = useState(null)
+  // JOBS-OPERATIONAL-HUBS Phase 2A — view-mode toggle between the operational
+  // job view (milestones / events / PnL / dimensions) and the consolidated
+  // design packet. defaultTab is a hook for future Design-Hub→JobDetail
+  // routing (Phase 2B will pass 'design' when the click came from Design Hub);
+  // Phase 2A always defaults to 'job' so the existing operational read is
+  // preserved for every other entry point.
+  const [detailTab, setDetailTab] = useState(defaultTab)
   // Bulk orders feed projectJobDates so stone milestones linked to a PO
   // project against the supplier's quoted ETA instead of the default 30d.
   // One fetch on mount; refreshes whenever the job reloads (post-cascade).
@@ -698,6 +725,53 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
     setWaitingHint(null)
   }
 
+  // JOBS-OPERATIONAL-HUBS Phase 2A.2 — when the Design Packet tab is
+  // active, the page-level chrome (BackBar / PromiseStrip / JobDetailHero /
+  // JobDetailTabs) is hidden and DesignPacket renders its own self-
+  // contained top bar + hero card. This lets the design surface own its
+  // full visual identity (cream canvas, premium cards, bronze accents)
+  // without the operational chrome competing for attention.
+  if (detailTab === 'design') {
+    return (
+      <div className="sb-page">
+        <DesignPacket
+          job={job}
+          onBack={onBack}
+          tab={detailTab}
+          onChangeTab={setDetailTab}
+        />
+        {/* Modals stay mounted across tabs so an in-flight override/promise
+            flow doesn't disappear if the operator flips tabs mid-action. */}
+        {overrideReq && (
+          <OverrideModal
+            jobId={jobId}
+            request={overrideReq}
+            onClose={() => setOverrideReq(null)}
+            onConfirmed={() => {
+              if (overrideReq.patch?.status === 'in_progress') {
+                const ms = (job.milestones || []).find(
+                  m => m.milestone_key === overrideReq.milestoneKey,
+                )
+                if (ms) considerWaitingHint(ms, 'in_progress')
+              }
+              setOverrideReq(null)
+              loadJob()
+            }}
+          />
+        )}
+        <AddPromiseModal
+          open={promiseModalOpen}
+          jobId={jobId}
+          jobLabel={
+            (job?.order?.primary_lastname || customerName(job?.order?.customer) || 'this job')
+          }
+          onClose={() => setPromiseModalOpen(false)}
+          onSaved={() => { setPromiseModalOpen(false); loadJob() }}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="sb-page sb-page-hero">
       <BackBar onBack={onBack} />
@@ -721,6 +795,15 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer }) {
         onOpenCustomer={onOpenCustomer}
         onRefresh={loadJob}
       />
+
+      {/* JOBS-OPERATIONAL-HUBS Phase 2A — tab switcher between the operational
+          job view (milestones / events / P&L) and the consolidated design
+          packet. The tab pair sits between the Hero and the body so both
+          views inherit the Hero as their identity anchor. (When the design
+          tab is active, this entire JobDetail render is bypassed in favor
+          of the DesignPacket's self-contained chrome — see the early
+          return above.) */}
+      <JobDetailTabs active={detailTab} onChange={setDetailTab} />
 
       {/* Waiting-state transition hint — soft suggestion only, never automation */}
       {waitingHint && (
@@ -844,11 +927,45 @@ function PromiseStrip({ promises, onAddClick }) {
   )
 }
 
+// ── Job / Design packet tab switcher ────────────────────────────────────────
+// Pill-pair segmented control, same vocabulary as the Hubs/All toggle at
+// the top of the Jobs tab (sb-jobs-view-toggle styles). Sits inside
+// JobDetail between the Hero and the body content. JOBS-OPERATIONAL-HUBS
+// Phase 2A.
+
+function JobDetailTabs({ active, onChange }) {
+  const OPTIONS = [
+    { code: 'job',    label: 'Job view',     desc: 'Milestones, events, P&L' },
+    { code: 'design', label: 'Design packet', desc: 'Consolidated stone-design facts' },
+  ]
+  return (
+    <div className="sb-jobs-view-toggle sb-job-detail-tabs" role="tablist" aria-label="Job detail view mode">
+      {OPTIONS.map(opt => {
+        const isActive = opt.code === active
+        return (
+          <button
+            key={opt.code}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            title={opt.desc}
+            className={`sb-jobs-view-chip ${isActive ? 'sb-jobs-view-chip-active' : ''}`}
+            onClick={() => onChange(opt.code)}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function BackBar({ onBack }) {
   return (
     <button
       type="button"
       onClick={onBack}
+      className="sb-print-hide"
       style={{
         background: 'transparent',
         border: 'none',
@@ -2036,6 +2153,18 @@ const localStyles = `
      touch of breathing room so it doesn't crowd the page header. */
   .sb-crm-page > .sb-jobs-view-toggle {
     margin: 16px 0 0 32px;
+  }
+  /* JOBS-OPERATIONAL-HUBS Phase 2A — the JobDetail in-page tab pair (Job view
+     / Design packet) lives between the Hero and the body. Same pill-pair
+     vocabulary as the Hubs/All toggle; just needs spacing tuned for the
+     in-detail context. */
+  .sb-job-detail-tabs {
+    margin: 8px 0 28px 0;
+  }
+  /* Print: hide the in-detail tab pair — printed packets don't carry
+     interactive chrome. */
+  @media print {
+    .sb-job-detail-tabs { display: none; }
   }
 
   /* ── JOB DETAIL — HERO ZONE ──────────────────────────────────────────── */

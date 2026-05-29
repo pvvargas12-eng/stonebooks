@@ -41,6 +41,10 @@ import {
 import { FilterChip } from './lib/crmComponents.jsx'
 import { JobRow } from './lib/jobsRow'
 import { enrichJob, ROW_GRID } from './lib/jobsRowHelpers'
+// JOBS-OPERATIONAL-HUBS Phase 2A.2 — Design hub branches to a dedicated
+// studio-style Surface 1 (Studio Queue + Selected Job Preview). Other hubs
+// keep their list-view body unchanged.
+import DesignHubHome from './DesignHubHome'
 
 // Hub render order — Admin → Design → Production → Installation. Mirrors the
 // workflow from office through shop to field. Owner aggregator + Sales sit
@@ -200,45 +204,63 @@ export default function JobsDepartmentView({
       ? `${visibleRows.length} of ${currentData.counts.total} in ${currentDef.label}`
       : `0 in ${currentDef.label}`
 
+  const isDesignHub = hub === 'design'
+
   return (
     <div className="sb-crm-page">
       <div className="sb-crm-container">
         <header className="sb-crm-head">
           <div>
             <h1 className="sb-crm-head-title">Jobs</h1>
-            <div className="sb-crm-head-count">
-              {headerCount}
-              {!loading && currentData?.counts?.urgent > 0 && (
-                <> · <strong>{currentData.counts.urgent}</strong> need{currentData.counts.urgent === 1 ? 's' : ''} attention</>
-              )}
-            </div>
+            {/* Design hub renders its own count + status prose in the
+                DESIGN HUB sub-line below, so we suppress the generic
+                "N of M in Design" line when the design hub is active. */}
+            {!isDesignHub && (
+              <div className="sb-crm-head-count">
+                {headerCount}
+                {!loading && currentData?.counts?.urgent > 0 && (
+                  <> · <strong>{currentData.counts.urgent}</strong> need{currentData.counts.urgent === 1 ? 's' : ''} attention</>
+                )}
+              </div>
+            )}
           </div>
           <div className="sb-crm-head-actions">
-            <input
-              type="search"
-              className="sb-crm-search"
-              placeholder="Search family, deceased, order #, cemetery…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-            <select
-              className="sb-crm-sort"
-              value={sortKey}
-              onChange={e => setSortKey(e.target.value)}
-            >
-              {SORT_OPTIONS.map(o => (
-                <option key={o.code} value={o.code}>{o.label}</option>
-              ))}
-            </select>
+            {/* Search + sort apply to the list views (Admin/Production/
+                Installation). Design hub uses its own filter chips inside
+                DesignHubHome — hide the generic search/sort here. */}
+            {!isDesignHub && (
+              <>
+                <input
+                  type="search"
+                  className="sb-crm-search"
+                  placeholder="Search family, deceased, order #, cemetery…"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+                <select
+                  className="sb-crm-sort"
+                  value={sortKey}
+                  onChange={e => setSortKey(e.target.value)}
+                >
+                  {SORT_OPTIONS.map(o => (
+                    <option key={o.code} value={o.code}>{o.label}</option>
+                  ))}
+                </select>
+              </>
+            )}
             {headerSlot}
           </div>
         </header>
 
         {loadErr && <div className="sb-crm-error">{loadErr}</div>}
 
-        <div className="sb-crm-min-width-banner">
-          Best viewed on desktop — the row layout is dense. Phone view falls back to a single-column stack.
-        </div>
+        {/* List-view-only banner — design hub is two-column and reads fine
+            at narrower widths. */}
+        {!isDesignHub && (
+          <div className="sb-crm-min-width-banner">
+            Best viewed on desktop — the row layout is dense. Phone view falls back to a single-column stack.
+          </div>
+        )}
 
         {/* Hub selector — 4 cards across the top. Always rendered (counts
             show 0 until data lands rather than the strip disappearing). */}
@@ -248,49 +270,66 @@ export default function JobsDepartmentView({
           onSelect={handleHubChange}
           loading={loading}
         />
-
-        {/* Hub-aware filter chips */}
-        <HubFilterChips
-          def={currentDef}
-          hubFilters={hubFilters}
-          setHubFilters={setHubFilters}
-          urgentOnly={urgentOnly}
-          setUrgentOnly={setUrgentOnly}
-          urgentCount={currentData?.counts?.urgent || 0}
-        />
-
-        {/* Body */}
-        <div className="sb-crm-card sb-crm-table">
-          <div className="sb-crm-row sb-crm-row-head" style={{ gridTemplateColumns: ROW_GRID }}>
-            <div>Family / Stone</div>
-            <div>Order</div>
-            <div>Cemetery</div>
-            <div>Stage</div>
-            <div>Payment</div>
-            <div>Blocker</div>
-            <div className="num">Age</div>
-            <div className="num">Updated</div>
-          </div>
-
-          {loading ? (
-            <div className="sb-crm-empty">Loading hub work…</div>
-          ) : !currentData || currentData.items.length === 0 ? (
-            <EmptyHub def={currentDef} />
-          ) : visibleRows.length === 0 ? (
-            <div className="sb-crm-empty">
-              No items match these filters in {currentDef.label}.
-              <div>
-                <button
-                  type="button"
-                  onClick={() => { setHubFilters(new Set()); setUrgentOnly(false); setSearch('') }}
-                >Reset filters</button>
-              </div>
-            </div>
-          ) : (
-            visibleRows.map(j => <JobRow key={j.id} job={j} onOpen={onOpenJob} />)
-          )}
-        </div>
       </div>
+
+      {/* BRANCH — Design hub gets the studio surface; other hubs keep the
+          existing list-view body. */}
+      {isDesignHub ? (
+        loading ? (
+          <div className="sb-crm-container">
+            <div className="sb-crm-empty">Loading hub work…</div>
+          </div>
+        ) : (
+          <DesignHubHome
+            hubData={currentData}
+            onOpenJob={onOpenJob}
+          />
+        )
+      ) : (
+        <div className="sb-crm-container">
+          {/* Hub-aware filter chips */}
+          <HubFilterChips
+            def={currentDef}
+            hubFilters={hubFilters}
+            setHubFilters={setHubFilters}
+            urgentOnly={urgentOnly}
+            setUrgentOnly={setUrgentOnly}
+            urgentCount={currentData?.counts?.urgent || 0}
+          />
+
+          {/* Body */}
+          <div className="sb-crm-card sb-crm-table">
+            <div className="sb-crm-row sb-crm-row-head" style={{ gridTemplateColumns: ROW_GRID }}>
+              <div>Family / Stone</div>
+              <div>Order</div>
+              <div>Cemetery</div>
+              <div>Stage</div>
+              <div>Payment</div>
+              <div>Blocker</div>
+              <div className="num">Age</div>
+              <div className="num">Updated</div>
+            </div>
+
+            {loading ? (
+              <div className="sb-crm-empty">Loading hub work…</div>
+            ) : !currentData || currentData.items.length === 0 ? (
+              <EmptyHub def={currentDef} />
+            ) : visibleRows.length === 0 ? (
+              <div className="sb-crm-empty">
+                No items match these filters in {currentDef.label}.
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => { setHubFilters(new Set()); setUrgentOnly(false); setSearch('') }}
+                  >Reset filters</button>
+                </div>
+              </div>
+            ) : (
+              visibleRows.map(j => <JobRow key={j.id} job={j} onOpen={onOpenJob} />)
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
