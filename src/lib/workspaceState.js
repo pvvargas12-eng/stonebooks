@@ -215,6 +215,48 @@ export function setOwnerViewMode(userId, mode) {
   writeRaw(userId, { ...state, ownerViewMode: mode })
 }
 
+// ─── JOBS HUB (Phase 1A) ────────────────────────────────────────────────────
+// Persists which of the 4 operational hubs the operator was last looking at
+// on the Jobs tab (admin / design / production / installation). Distinct
+// from `selectedRole` because the role enum also includes 'sales' + 'owner'
+// (used by the Today tab + legacy Owner aggregator); the hub set is the
+// Phase 1A subset. Default 'admin' — the broadest hub, what someone scans
+// first thing in the morning.
+
+const VALID_HUBS = ['admin', 'design', 'production', 'installation']
+
+export function getSelectedHub(userId) {
+  const raw = readRaw(userId)
+  const hub = raw?.selectedHub
+  return VALID_HUBS.includes(hub) ? hub : 'admin'
+}
+
+export function setSelectedHub(userId, hub) {
+  if (!VALID_HUBS.includes(hub)) return
+  const state = withDefaults(readRaw(userId))
+  writeRaw(userId, { ...state, selectedHub: hub })
+}
+
+// Jobs view mode — 'hubs' (default, the new 4-hub operational surface) vs
+// 'all' (the flat family-first JobsListView preserved from JOBS-RESKIN-PASS).
+// Operators can flip back to 'all' when they want to scan every job across
+// every hub at once. Persists per user so a preference for the flat view
+// survives reloads.
+
+const VALID_JOBS_VIEWS = ['hubs', 'all']
+
+export function getJobsView(userId) {
+  const raw = readRaw(userId)
+  const mode = raw?.jobsView
+  return VALID_JOBS_VIEWS.includes(mode) ? mode : 'hubs'
+}
+
+export function setJobsView(userId, mode) {
+  if (!VALID_JOBS_VIEWS.includes(mode)) return
+  const state = withDefaults(readRaw(userId))
+  writeRaw(userId, { ...state, jobsView: mode })
+}
+
 // ─── FUTURE-PHASE STUBS ─────────────────────────────────────────────────────
 
 export function getTimeLens(userId) {

@@ -4766,6 +4766,19 @@ export function getSalesSummary(orders, { now = new Date(), recentlyWonDays = 7,
 // Milestone.group → owning role. Inferred from the existing group vocabulary
 // used by the templates today. Adjust here if a template adds a new group
 // without updating the team field on each milestone.
+//
+// JOBS-OPERATIONAL-HUBS Phase 1A entries (added 2026-05-28):
+//   • `field` — real gap. mausoleum_door template uses group='field' for the
+//     four door pickup/install milestones. Today they route correctly only
+//     because every one carries team='installation' (which wins over the
+//     group fallback). Added here so a future field-grouped milestone that
+//     ships without an explicit team still routes home.
+//   • rub_grab / acid_wash / repair / door_trip — defensive entries. These
+//     are Scheduler `work_batches.kind` values today, NOT milestone groups
+//     anywhere in the template library. Phase 0 named them as orphan groups;
+//     audit shows they're not in milestone use yet. Added so a future
+//     workflow milestone using one of those names as `group` routes the way
+//     the Scheduler already organises that work.
 export const ROLE_GROUP_MAP = {
   intake:     'admin',
   permit:     'admin',
@@ -4777,6 +4790,11 @@ export const ROLE_GROUP_MAP = {
   production: 'production',
   foundation: 'production',
   install:    'installation',
+  field:      'installation',
+  rub_grab:   'installation',
+  acid_wash:  'production',
+  repair:     'production',
+  door_trip:  'installation',
 }
 
 // Resolve a milestone to its owning role.
@@ -4794,6 +4812,253 @@ export function roleForMilestone(milestone) {
   }
   const group = milestone.group || null
   return ROLE_GROUP_MAP[group] || null
+}
+
+// =============================================================================
+// JOBS-OPERATIONAL-HUBS Phase 1A — hub work-item filtering
+// =============================================================================
+// A "hub" is one of 4 operational departments (Admin / Design / Production /
+// Installation) that the Jobs tab organizes its work into. Owner aggregator
+// and Sales are Phase 1B.
+//
+// A job appears in a hub when EITHER:
+//   1. It has an actionable milestone whose group is owned by that hub
+//      (resolved via roleForMilestone — team field wins, ROLE_GROUP_MAP
+//      fallback when team is missing), OR
+//   2. Its computeOrderPressure blocker matches one of the hub's owned
+//      blocker kinds.
+//
+// A single job can appear in MULTIPLE hubs simultaneously — milestones run
+// in parallel (proof in design + foundation in production). That's correct
+// operationally; the same family has two threads of attention.
+//
+// HUB_DEFS is exported because the UI consumes its filterChips, label, and
+// emptyMessage. getActionItems integration (stalled_job, next_actionable_idle,
+// cemetery_deadline) is Phase 1B follow-up — Phase 1A leans on
+// computeOrderPressure + milestone-group ownership which already covers
+// ~70% of the spec'd hub→signal map without a second pass over the job list.
+//
+// Known Phase 1A → Phase 1B gaps (flagged by Workflow Intelligence review):
+//   • Admin misses `cemetery_deadline` — hard cemetery permit deadlines from
+//     `orders.cemetery_deadline`. Single-field read; should fast-track in 1B.
+//   • Production misses `stalled_job` — jobs silent ≥14d with no actionable
+//     milestone won't surface (no blocker triggers because the gate requires
+//     a specific milestone-state combo). Real "where did this go?" gap.
+//   • Admin misses `waiting_aged` — 7d+ waiting follow-up nag.
+// Each of these is a flat-array read in getActionItems and can be threaded
+// through HUB_DEFS.actionItemKinds + an extension to getHubWorkItems without
+// touching computeOrderPressure.
+
+const _hubGroupActive = (item, group) => item.actionableGroups?.has(group) === true
+const _hubBlockerIs = (item, kind) => item.pressure?.blocker?.kind === kind
+const _hubBlockerInSet = (item, set) => {
+  const k = item.pressure?.blocker?.kind
+  return !!k && set.has(k)
+}
+
+export const HUB_DEFS = {
+  admin: {
+    code: 'admin',
+    label: 'Admin',
+    description: 'Intake, permits, payments, customer follow-ups, cemetery holds',
+    // Milestone groups Admin owns — actionable milestones in any of these
+    // pull the job into the Admin hub.
+    //   • closeout — admin verifies the field crew handed off cleanly
+    //     (customer_notified / paid_in_full / closed). The mausoleum_door
+    //     template's `completion_photo_uploaded` also lives in the closeout
+    //     group, which technically required the field crew to take + upload
+    //     the photo — but admin owns confirming the upload landed and the
+    //     paperwork side closed. Monument Ops review (2026-05-28) flagged
+    //     this as a potential mis-routing; the decision is to keep admin
+    //     ownership because the close-out check is paperwork verification,
+    //     not field work. Phase 2 may split the group if the distinction
+    //     starts to bite operationally.
+    milestoneGroups: new Set(['intake', 'permit', 'closeout']),
+    // Blocker kinds Admin chases. Cemetery + payment are admin's classic
+    // "did you call them yet?" follow-up queues. waiting_on_family also
+    // surfaces here because the office calls the family back, not the shop
+    // (operational lock from earlier sprints).
+    blockerKinds: new Set(['cemetery_hold', 'overdue_balance', 'waiting_on_family']),
+    filterChips: [
+      { code: 'intake',        label: 'Intake gap',       match: (it) => _hubGroupActive(it, 'intake') },
+      { code: 'permit',        label: 'Permit work',      match: (it) => _hubGroupActive(it, 'permit') },
+      { code: 'cemetery_hold', label: 'Cemetery hold',    match: (it) => _hubBlockerIs(it, 'cemetery_hold') },
+      { code: 'payment',       label: 'Payment overdue',  match: (it) => _hubBlockerIs(it, 'overdue_balance') },
+      { code: 'family',        label: 'Family follow-up', match: (it) => _hubBlockerIs(it, 'waiting_on_family') || it.pressure?.needsCall === true },
+      { code: 'closeout',      label: 'Closeout',         match: (it) => _hubGroupActive(it, 'closeout') },
+    ],
+    emptyMessage: 'Admin hub clear — nothing waiting on you right now.',
+  },
+  design: {
+    code: 'design',
+    label: 'Design',
+    description: 'Layouts, proofs, inscriptions, bronze designs, photo & etching workflow',
+    milestoneGroups: new Set(['design', 'photo', 'etching']),
+    // Design owns the proof cycle. proof_waiting_customer here means the
+    // design team owes the next move — drafting / re-drafting / sending.
+    // Note: the office (admin) makes the actual phone call to the family
+    // for approval, but the WORK ITEM lives in design's queue because the
+    // design team needs the answer to keep moving — and the layout file
+    // is in design's possession. If a future operational tweak moves the
+    // chase-call into admin's chip set, swap this kind into Admin's
+    // blockerKinds. Phase 1A keeps it here because that's where the work
+    // physically stalls.
+    blockerKinds: new Set(['proof_waiting_customer']),
+    filterChips: [
+      { code: 'layout',         label: 'Layout',          match: (it) => _hubGroupActive(it, 'design') },
+      { code: 'photo',          label: 'Photo',           match: (it) => _hubGroupActive(it, 'photo') },
+      { code: 'etching',        label: 'Etching',         match: (it) => _hubGroupActive(it, 'etching') },
+      { code: 'awaiting_proof', label: 'Awaiting customer', match: (it) => _hubBlockerIs(it, 'proof_waiting_customer') },
+    ],
+    emptyMessage: 'Design hub clear — no layouts, proofs, or inscriptions waiting.',
+  },
+  production: {
+    code: 'production',
+    label: 'Production',
+    description: 'Stencil, cutting, sandblasting, washing, foundation pours, repairs',
+    // 'foundation' lives in production because the pour is shop-staged
+    // concrete work; the FIELD pour is a separate trip routed through
+    // installation. 'stone' covers cut/blast/wash stages of the stone.
+    milestoneGroups: new Set(['stone', 'production', 'foundation']),
+    blockerKinds: new Set(['production_blocked']),
+    filterChips: [
+      { code: 'stone',      label: 'Stone',      match: (it) => _hubGroupActive(it, 'stone') },
+      { code: 'production', label: 'Production', match: (it) => _hubGroupActive(it, 'production') },
+      { code: 'foundation', label: 'Foundation', match: (it) => _hubGroupActive(it, 'foundation') },
+      { code: 'stuck',      label: 'Stuck',      match: (it) => _hubBlockerIs(it, 'production_blocked') },
+    ],
+    emptyMessage: 'Production hub clear — nothing in flight or stuck.',
+  },
+  installation: {
+    code: 'installation',
+    label: 'Installation',
+    description: 'Foundations to set, stones ready to set, cemetery trips, doors, pickups',
+    // 'install' is the canonical install milestone group; 'field' is the
+    // mausoleum_door template's group for door pickup/dropoff/install trips
+    // (door milestones already carry team='installation' on the row, but
+    // the group fallback covers any future field-grouped milestone that
+    // ships without an explicit team).
+    milestoneGroups: new Set(['install', 'field']),
+    blockerKinds: new Set([
+      'install_late',
+      'needs_install_date',
+      'install_scheduled',
+      'stone_ready_schedule_trip',
+    ]),
+    filterChips: [
+      { code: 'install',   label: 'Install',      match: (it) => _hubGroupActive(it, 'install') || _hubGroupActive(it, 'field') },
+      { code: 'ready',     label: 'Ready to set', match: (it) => _hubBlockerInSet(it, new Set(['stone_ready_schedule_trip', 'needs_install_date'])) },
+      { code: 'scheduled', label: 'Scheduled',    match: (it) => _hubBlockerIs(it, 'install_scheduled') },
+      { code: 'late',      label: 'Install late', match: (it) => _hubBlockerIs(it, 'install_late') },
+    ],
+    emptyMessage: 'Installation hub clear — no stones ready, scheduled, or late.',
+  },
+}
+
+// Severity ranking — red urgency floats to top, then amber, then blue, then
+// in-flight (no blocker). Mirrors the SEVERITY_RANK used by JobsListView so
+// the two surfaces feel the same.
+function _hubSevRank(sev) {
+  if (sev === 'red')   return 0
+  if (sev === 'amber') return 1
+  if (sev === 'blue')  return 2
+  return 3
+}
+
+// Main hub work-item derivation. Pure function — no side effects, no async.
+// Callers pass already-loaded jobs (with order/customer/cemetery joined and
+// milestones embedded; same shape getJobs returns). Orders param is reserved
+// for Phase 1B Sales Hub which will pull from orders directly (no job yet).
+//
+// Returns:
+//   {
+//     items: [{ job, order, pressure, actionableGroups, hubActionableGroups,
+//               reasons, urgent, severity }],
+//     counts: { urgent, total },
+//     actionableSignals: [string]   // distinct signal kinds that pulled jobs in
+//   }
+//
+// Items are sorted urgent-first (red → amber → blue → in-flight), with
+// recency + family-name as tiebreakers.
+export function getHubWorkItems(hubCode, jobs, orders = null, opts = {}) { // eslint-disable-line no-unused-vars
+  const def = HUB_DEFS[hubCode]
+  if (!def) {
+    return { items: [], counts: { urgent: 0, total: 0 }, actionableSignals: [] }
+  }
+
+  const items = []
+  const signals = new Set()
+
+  for (const job of (jobs || [])) {
+    if (!job) continue
+    const order = job.order || null
+    const milestones = job.milestones || []
+    const pressure = order ? computeOrderPressure(order, job, milestones) : null
+
+    // Collect every actionable milestone group on the job (any hub). One job
+    // can have parallel actionable threads — e.g. proof_approved is actionable
+    // in design while foundation_poured is actionable in production. The
+    // Set is the item's own portable "what's open" snapshot; filter chips
+    // and multi-hub membership both read from it.
+    const actionableGroups = new Set()
+    for (const m of milestones) {
+      if (!m) continue
+      if (m.status === 'done' || m.status === 'not_needed') continue
+      if (m.group) actionableGroups.add(m.group)
+    }
+
+    // Hub membership reasons. A job qualifies for this hub via milestone
+    // group ownership OR via blocker ownership (or both). Tracking reasons
+    // lets the UI explain "why is this here?" if we ever surface that.
+    const reasons = []
+    const hubActionableGroups = []
+    for (const g of actionableGroups) {
+      if (def.milestoneGroups.has(g)) {
+        hubActionableGroups.push(g)
+        signals.add(`milestone_group:${g}`)
+      }
+    }
+    if (hubActionableGroups.length > 0) {
+      reasons.push({ kind: 'milestone_group', groups: hubActionableGroups })
+    }
+    if (pressure?.blocker && def.blockerKinds.has(pressure.blocker.kind)) {
+      reasons.push({ kind: 'blocker', blocker: pressure.blocker })
+      signals.add(`blocker:${pressure.blocker.kind}`)
+    }
+    if (reasons.length === 0) continue
+
+    const sev = pressure?.blocker?.severity || null
+    const urgent = sev === 'red' || sev === 'amber'
+
+    items.push({
+      job,
+      order,
+      pressure,
+      actionableGroups,
+      hubActionableGroups,
+      reasons,
+      urgent,
+      severity: sev,
+    })
+  }
+
+  items.sort((a, b) => {
+    const sevDiff = _hubSevRank(a.severity) - _hubSevRank(b.severity)
+    if (sevDiff !== 0) return sevDiff
+    const aTs = a.job.last_update_at ? new Date(a.job.last_update_at).getTime() : 0
+    const bTs = b.job.last_update_at ? new Date(b.job.last_update_at).getTime() : 0
+    if (aTs !== bTs) return bTs - aTs
+    const aN = a.order?.primary_lastname || ''
+    const bN = b.order?.primary_lastname || ''
+    return aN.localeCompare(bN)
+  })
+
+  const urgent = items.filter(i => i.urgent).length
+  return {
+    items,
+    counts: { urgent, total: items.length },
+    actionableSignals: Array.from(signals).sort(),
+  }
 }
 
 // Next-action verb-phrase map. Each entry is a pair of phrase-builders —

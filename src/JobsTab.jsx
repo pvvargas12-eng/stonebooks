@@ -1,23 +1,20 @@
 // =============================================================================
-// 📚 Stonebooks — Jobs tab (L2 followup: department-aware operational view)
+// 📚 Stonebooks — Jobs tab (JOBS-OPERATIONAL-HUBS Phase 1A shell)
 // =============================================================================
-// The Jobs page is now a department-aware operational dashboard:
-//   • Top: page heading + the workspace-strip-managed chrome
-//   • Top-right: role selector (Admin · Design · Sales · Production ·
-//                 Installation · Owner) — see JobsDepartmentView
-//   • Body: per-department bucket grid + queue sections. Production and
-//           Installation are fully fleshed out; Admin / Design / Sales are
-//           stubs; Owner stacks all five.
+// Two view modes share this tab; the operator picks via a small toggle next
+// to the page header. Choice persists per-user via workspaceState.jobsView.
 //
-// JobDetail (the per-job drill-down with the full milestone grid, the ETA &
-// supplier inline form, the override modal, the waiting-hint banner, etc.)
-// is unchanged — clicking any queue row routes here as before.
+//   • Hubs (default) — 4 operational hubs (Admin · Design · Production ·
+//     Installation), each rendered as an actionable family-first list
+//     scoped to work that hub owns. Lives in JobsDepartmentView. Sales +
+//     Owner are Phase 1B follow-up.
+//   • Jobs — All — the flat JOBS-RESKIN-PASS family-first list (every active
+//     job in one table). Preserved verbatim for the days an operator wants
+//     to scan everything at once or doesn't fit a hub. Lives in the
+//     JobsListView below.
 //
-// Deleted in this pass (replaced by the department lens):
-//   • The Jobs / Queues mode toggle
-//   • The per-job narrative-row table (JobsList / JobsListRow)
-//   • The Filter panel + search bar (department selection is the new filter)
-//   • src/QueuesView.jsx (its job is now done by JobsDepartmentView)
+// JobDetail (per-job drill-down) is unchanged — clicking any row routes here
+// as before, regardless of which view mode produced the click.
 // =============================================================================
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
@@ -44,50 +41,43 @@ import {
   compareMilestoneDates,
   formatMilestoneDateDisplay,
   getActivePromisesForJob,
-  // JobsListView dependencies (new)
+  // JobsListView dependencies (computeOrderPressure consumed inside
+  // enrichJob in ./lib/jobsRow, no longer imported here directly).
   getJobs,
-  computeOrderPressure,
-  ACTIVE_STATUSES,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
 import PromiseBadge from './components/scheduler/PromiseBadge'
 import AddPromiseModal from './components/AddPromiseModal'
-
-// ── Milestone group ordering for the JobDetail per-group cards ───────────────
-const GROUP_ORDER = [
-  'intake',
-  'design',
-  'permit',
-  'stone',
-  'photo',
-  'etching',
-  'production',
-  'foundation',
-  'install',
-  'closeout',
-]
-const GROUP_LABEL = {
-  intake:     'Intake',
-  design:     'Design',
-  permit:     'Permit',
-  stone:      'Stone',
-  photo:      'Photo',
-  etching:    'Etching',
-  production: 'Production',
-  foundation: 'Foundation',
-  install:    'Install',
-  closeout:   'Closeout',
-}
+// JOBS-OPERATIONAL-HUBS Phase 1A — JobRow + helpers moved to ./lib/jobsRow*
+// so the new 4-hub view (JobsDepartmentView) renders the same family-first
+// row vocabulary without duplicating logic. JobRow stays in jobsRow.jsx
+// (component-only, Fast Refresh clean); constants + enrichment helpers live
+// in jobsRowHelpers.js. JobDetail still uses GROUP_ORDER + GROUP_LABEL; the
+// flat list also pulls STAGE_BUCKETS + recencyBand/severityRank for sort.
+import { JobRow } from './lib/jobsRow'
+import {
+  enrichJob,
+  ROW_GRID,
+  GROUP_ORDER, GROUP_LABEL,
+  STAGE_BUCKETS,
+  recencyBand, severityRank,
+} from './lib/jobsRowHelpers'
+import JobsDepartmentView from './JobsDepartmentView'
+import { getJobsView, setJobsView } from './lib/workspaceState'
 
 // =============================================================================
 // MAIN
 // =============================================================================
-// Thin shell: per-job drill-down (JobDetail, when a job is selected) or the
-// JobsListView (when not). JOBS-RESKIN-PASS replaced the prior department-
-// lens dashboard (JobsDepartmentView, still in src/ as orphan) with a
-// family-first operational table matching Customers + Orders. computeOrderPressure
-// from CRM-RESKIN-PASS supplies the blocker chip.
+// Thin shell. Three states in priority order:
+//   1. A job is selected → JobDetail (drill-down, view mode irrelevant)
+//   2. View mode is 'hubs' → JobsDepartmentView (4-hub operational surface)
+//   3. View mode is 'all'  → JobsListView (flat family-first list)
+//
+// View mode persists via workspaceState.jobsView. Default 'hubs' — the
+// emotional transformation Phase 1A is aiming for. Operators can flip back
+// to the flat list (which itself was a JOBS-RESKIN-PASS-era transformation
+// from the legacy queues view) whenever they want a single sortable table.
 
 export default function JobsTab({
   selectedJobId = null,
@@ -96,13 +86,24 @@ export default function JobsTab({
   onConsumeInitialQueue,
   onOpenOrder,
   onOpenCustomer,
-  userId = null,           // eslint-disable-line no-unused-vars
-  onSwitchTab,             // eslint-disable-line no-unused-vars
+  userId = null,
+  onSwitchTab,
 }) {
+  // View-mode state — restored from workspaceState on mount. The toggle
+  // updates both local state + persisted state so a refresh re-opens the
+  // same view mode without a flash.
+  const [view, setView] = useState(() => getJobsView(userId))
+  const handleViewChange = (next) => {
+    if (next !== 'hubs' && next !== 'all') return
+    setView(next)
+    setJobsView(userId, next)
+  }
+
   // The Command Surface used to set `initialQueue` (e.g. "stones", "layouts")
-  // to deep-link into the old QueuesView. The L2 followup retired QueuesView;
-  // JOBS-RESKIN-PASS removes the department lens too. Accept + discard so the
-  // Command Surface doesn't re-open a now-deleted view on every prop reflow.
+  // to deep-link into the old QueuesView. JOBS-RESKIN-PASS retired QueuesView;
+  // accept + discard so the Command Surface doesn't re-open a now-deleted
+  // surface on every prop reflow. Phase 1B will route deep-links into the
+  // appropriate hub instead.
   useEffect(() => {
     if (!initialQueue) return
     setSelectedJobId(null)
@@ -120,7 +121,58 @@ export default function JobsTab({
     )
   }
 
-  return <JobsListView onOpenJob={setSelectedJobId} />
+  if (view === 'all') {
+    return (
+      <>
+        <JobsViewToggle view={view} onChange={handleViewChange} />
+        <JobsListView onOpenJob={setSelectedJobId} />
+      </>
+    )
+  }
+
+  return (
+    <JobsDepartmentView
+      userId={userId}
+      onOpenJob={setSelectedJobId}
+      onSwitchTab={onSwitchTab}
+      onOpenOrder={onOpenOrder}
+      onOpenCustomer={onOpenCustomer}
+      headerSlot={<JobsViewToggle view={view} onChange={handleViewChange} />}
+    />
+  )
+}
+
+// ── View-mode toggle ────────────────────────────────────────────────────────
+// Pill-pair segmented control. Lives in two places: top-right of the hub
+// view header (passed as headerSlot prop) and at the top of the flat list
+// (rendered above the existing JobsListView header). Same component, same
+// state — operator's eye sees one control in one place at a time.
+
+function JobsViewToggle({ view, onChange }) {
+  const OPTIONS = [
+    { code: 'hubs', label: 'Hubs',      desc: '4 operational departments' },
+    { code: 'all',  label: 'Jobs — All', desc: 'Every job, one flat list' },
+  ]
+  return (
+    <div className="sb-jobs-view-toggle" role="tablist" aria-label="Jobs view mode">
+      {OPTIONS.map(opt => {
+        const active = opt.code === view
+        return (
+          <button
+            key={opt.code}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={opt.desc}
+            className={`sb-jobs-view-chip ${active ? 'sb-jobs-view-chip-active' : ''}`}
+            onClick={() => onChange(opt.code)}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 // =============================================================================
@@ -144,36 +196,13 @@ const JOB_TYPE_FILTERS = [
 ]
 // Coarse stage buckets — operator-vocabulary 4 stages that fold the
 // fine-grained milestone groups into something a shop owner reads at a glance.
+// STAGE_BUCKETS / STAGE_BUCKET_LABEL / bucketForGroup live in ./lib/jobsRow.
 const STAGE_FILTERS = [
   { code: 'intake',     label: 'Intake' },
   { code: 'production', label: 'Production' },
   { code: 'install',    label: 'Install' },
   { code: 'closeout',   label: 'Closeout' },
 ]
-const STAGE_BUCKETS = {
-  intake:     new Set(['intake', 'design', 'permit']),
-  production: new Set(['stone', 'photo', 'etching', 'production', 'foundation']),
-  install:    new Set(['install']),
-  closeout:   new Set(['closeout']),
-}
-// Q1: coarse bucket label shown on the STAGE Pill (with fine-grained group
-// label as eyebrow underneath). Q3: semantic tone ladder is
-//   intake = bronze (gray-ish, inert/paperwork)
-//   production = blue (in-flight, work happening in shop)
-//   install = amber (act now — truck out / cemetery visit)
-//   closeout = green (done)
-const STAGE_BUCKET_LABEL = {
-  intake:     'Intake',
-  production: 'Production',
-  install:    'Install',
-  closeout:   'Closeout',
-}
-function bucketForGroup(group) {
-  for (const code of ['intake', 'production', 'install', 'closeout']) {
-    if (STAGE_BUCKETS[code]?.has(group)) return code
-  }
-  return 'intake'
-}
 const PAYMENT_FILTERS = [
   { code: 'paid_in_full', label: 'Paid in full' },
   { code: 'partial',      label: 'Partial' },
@@ -193,26 +222,8 @@ const SORT_OPTIONS = [
   { code: 'familyName',     label: 'Sort: Family name A→Z' },
 ]
 
-// Grid: FAMILY/STONE | JOB ID + ORDER# | CEMETERY+rep | STAGE | PAYMENT | BLOCKER | AGE | UPDATED
-// UX #2 rebalance: CEMETERY 1.0→1.1 (real names like "Mountainview Cemetery"
-// were tight); BLOCKER 1.2→1.1 (longest current label "Awaiting proof
-// approval" still fits at ~150px in 1.1fr).
-const ROW_GRID = '1.4fr 0.75fr 1.1fr 0.85fr 1.05fr 1.1fr 0.45fr 0.6fr'
-
-// Action-priority helpers (mirrors Customers + Orders).
-const SEVERITY_RANK = { red: 0, amber: 1, blue: 2 }
-function recencyBand(lastActivity) {
-  if (!lastActivity) return 4
-  const days = Math.floor((Date.now() - lastActivity) / 86400000)
-  if (days <= 7)  return 0
-  if (days <= 30) return 1
-  if (days <= 90) return 2
-  return 3
-}
-function severityRank(blocker) {
-  if (!blocker) return 3
-  return SEVERITY_RANK[blocker.severity] ?? 3
-}
+// ROW_GRID + action-priority helpers (recencyBand / severityRank /
+// SEVERITY_RANK) live in ./lib/jobsRow.
 
 function JobsListView({ onOpenJob }) {
   const [jobs, setJobs]         = useState([])
@@ -255,49 +266,9 @@ function JobsListView({ onOpenJob }) {
     return () => { cancelled = true }
   }, [statusFilter])
 
-  // Enrich each job with derived display fields + computeOrderPressure.
-  const enriched = useMemo(() => {
-    return jobs.map(j => {
-      const order = j.order || null
-      const pressure = order
-        ? computeOrderPressure(order, j, j.milestones)
-        : { blocker: null, needsCall: false, callReasons: [], paymentState: 'none', ageDays: 0 }
-
-      const stage = currentStage(j)
-      const familyName = familyNameForJob(j)
-      const deceasedLabel = deceasedLabelForJob(j)
-      const total   = order ? rowGrandTotal(order) : 0
-      const paid    = order ? rowTotalPaid(order)  : 0
-      const balance = Math.max(0, total - paid)
-      const fillRatio = total > 0 ? paid / total : 0
-      // Workflow #4 fix: fall back to created_at for jobs with no
-      // last_update_at (orphan rows, restored backups, schema-migration-born)
-      // so they don't sink to band 4 in action-priority sort and disappear.
-      // No Date.now() fallback — React 19's purity rule rejects it inside
-      // render; a job with neither timestamp is malformed enough that
-      // band-4 placement (the 0 fall-through) is honest.
-      const lastActivity = j.last_update_at
-        ? new Date(j.last_update_at).getTime()
-        : (j.created_at ? new Date(j.created_at).getTime() : 0)
-      const serviceTypesUp = new Set((order?.service_types || []).map(s => String(s).toUpperCase()))
-
-      return {
-        ...j,
-        _order:           order,
-        _pressure:        pressure,
-        _stage:           stage,
-        _familyName:      familyName,
-        _deceasedLabel:   deceasedLabel,
-        _total:           total,
-        _paid:            paid,
-        _balance:         balance,
-        _fillRatio:       fillRatio,
-        _lastActivity:    lastActivity,
-        _serviceTypesUp:  serviceTypesUp,
-        _hasOrder:        !!order,
-      }
-    })
-  }, [jobs])
+  // Enrich each job with derived display fields + computeOrderPressure via
+  // the shared enrichJob helper (extracted to ./lib/jobsRow in Phase 1A).
+  const enriched = useMemo(() => jobs.map(enrichJob), [jobs])
 
   // Filter + sort
   const filtered = useMemo(() => {
@@ -575,210 +546,8 @@ function JobsListView({ onOpenJob }) {
   )
 }
 
-// =============================================================================
-// JobRow — operational row, matches Customers + Orders structure
-// =============================================================================
-
-function JobRow({ job: j, onOpen }) {
-  const p = j._pressure
-  const stageTone = mapStageToTone(j._stage.group)
-  const pTone = paymentTone(p.paymentState)
-  const pLabel = paymentLabel(p.paymentState)
-  const balance = j._balance
-  const blocker = p.blocker
-  const blockerSev = blocker?.severity || 'green'
-
-  return (
-    <button
-      type="button"
-      className="sb-crm-row"
-      style={{ gridTemplateColumns: ROW_GRID }}
-      onClick={() => onOpen?.(j.id)}
-    >
-      {/* FAMILY / STONE — Q4: when no deceased on the order, fall back to
-          the job-type label ("Inscription" / "Cleaning/Repair" / "New stone"
-          / "Crypt door"). Drops the prior "Stone TBD" because most jobs
-          aren't stone-shaped — calling an inscription "Stone TBD" misreads
-          as missing data when the work is actually well-defined. */}
-      <div>
-        <div className="sb-crm-primary">{j._familyName}</div>
-        <div className="sb-crm-secondary">
-          {j._deceasedLabel || jobTypeLabel(j.job_type, j._order?.service_types)}
-        </div>
-      </div>
-
-      {/* ORDER + job type — Q2: dropped truncated UUID (developer-shaped,
-          not Paul-shaped). Order_number is the verbal reference Paul uses;
-          job_type rides underneath as context. The 8-char UUID slice
-          stays in the search haystack for internal debugging only. */}
-      <div>
-        <div className="sb-crm-mono sb-crm-tabular" style={{ fontSize: 13, color: 'inherit' }}>
-          {j._order?.order_number || <span className="sb-crm-muted">—</span>}
-        </div>
-        <div className="sb-crm-secondary">{jobTypeLabel(j.job_type, j._order?.service_types)}</div>
-      </div>
-
-      {/* CEMETERY + rep */}
-      <div>
-        <div style={{ fontSize: 13, color: 'inherit' }}>
-          {j._order?.cemetery?.name || <span className="sb-crm-muted">—</span>}
-        </div>
-        {j._order?.sales_rep && <div className="sb-crm-secondary">{j._order.sales_rep}</div>}
-      </div>
-
-      {/* STAGE — coarse bucket pill (color tone) + fine milestone-group
-          eyebrow underneath (Q1). The eyebrow shows the specific handoff
-          state Paul actually thinks about ("Permit" vs generic "Intake").
-          Hidden when fine and coarse labels match (e.g., Install/Install,
-          Closeout/Closeout, Done/Done). */}
-      <div>
-        <Pill severity={stageTone}>{j._stage.bucketLabel}</Pill>
-        {j._stage.fineLabel !== j._stage.bucketLabel && (
-          <div className="sb-crm-secondary">{j._stage.fineLabel}</div>
-        )}
-      </div>
-
-      {/* PAYMENT — pill + micro-bar + balance due */}
-      <div>
-        {pLabel ? (
-          <>
-            <Pill severity={pTone}>{pLabel}</Pill>
-            {j._total > 0 && (
-              <ProgressMicroBar fillRatio={j._fillRatio} tone={pTone === 'red' ? 'red' : pTone === 'amber' ? 'amber' : 'green'} />
-            )}
-            {balance > 0 && (
-              <div className="sb-crm-secondary sb-crm-tabular">{fmtUSD(balance)} due</div>
-            )}
-          </>
-        ) : (
-          // No order — typically a crypt-door job linked via cemetery_order_id
-          // (computeOrderPressure currently doesn't cover that path; see CLAUDE.md
-          // backlog "Cemetery-order linking via cemetery_order_id"). Empty cell.
-          <span className="sb-crm-muted">—</span>
-        )}
-      </div>
-
-      {/* BLOCKER — no "On track" pill; absence is the signal everywhere or
-          nowhere. UX consistency fix: don't render an em-dash for no-order
-          jobs (was a third state — "absent because no data"). Customers and
-          Orders both render NOTHING when blocker is null; Jobs matches. The
-          row's CEMETERY + PAYMENT em-dashes already tell the operator this
-          job is less instrumented (CLAUDE.md backlog: cemetery_order_id
-          linking will eventually wire pressure for these). */}
-      <div>
-        {blocker && (
-          <Pill severity={blockerSev}>
-            {p.needsCall && <span className="sb-crm-call-dot" />}
-            {blocker.label}
-          </Pill>
-        )}
-      </div>
-
-      {/* AGE — "since signed / unsigned" eyebrow */}
-      <div className="num">
-        <span className="sb-crm-num">{p.ageDays || 0}d</span>
-        <div className="sb-crm-secondary" style={{ textAlign: 'right' }}>
-          {j._order?.signed_at ? 'since signed' : 'unsigned'}
-        </div>
-      </div>
-
-      {/* UPDATED */}
-      <div className="num">
-        <span className="sb-crm-muted sb-crm-tabular">{j.last_update_at ? fmtRelative(j.last_update_at) : '—'}</span>
-      </div>
-    </button>
-  )
-}
-
-// ── Stage detection ─────────────────────────────────────────────────────────
-// Returns { group, label }. The "current stage" is the milestone group of the
-// first actionable (not_done, not_not_needed, requires-satisfied) milestone
-// in sort_order. Fully-done jobs go to closeout. Fully-blocked jobs surface
-// the group of their first blocked milestone.
-
-// Returns { group, fineLabel, bucketLabel } — see Q1. fineLabel is the
-// specific milestone group ('Permit', 'Stone', 'Etching'); bucketLabel is
-// the coarse bucket Paul reads at glance ('Intake', 'Production',
-// 'Install', 'Closeout', or 'Done' for fully-finished jobs).
-function currentStage(job) {
-  const milestones = job?.milestones || []
-  if (milestones.length === 0) {
-    return { group: 'intake', fineLabel: GROUP_LABEL.intake, bucketLabel: 'Intake' }
-  }
-  const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
-  const ordered = milestones.slice().sort((a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999))
-  const actionable = ordered.find(m =>
-    m.status !== 'done' && m.status !== 'not_needed' && !hasUnsatisfiedRequires(m, byKey)
-  )
-  if (actionable) {
-    const group = actionable.group
-    return {
-      group,
-      fineLabel: GROUP_LABEL[group] || group,
-      bucketLabel: STAGE_BUCKET_LABEL[bucketForGroup(group)] || 'Intake',
-    }
-  }
-  const allDone = ordered.every(m => m.status === 'done' || m.status === 'not_needed')
-  if (allDone) return { group: 'closeout', fineLabel: 'Done', bucketLabel: 'Done' }
-  // Workflow #2 fallback — first-not-done (catches override-driven in_progress
-  // milestones with unsatisfied requires that aren't 'not_started').
-  const firstNotDone = ordered.find(m => m.status !== 'done' && m.status !== 'not_needed')
-  if (firstNotDone) {
-    const group = firstNotDone.group
-    return {
-      group,
-      fineLabel: GROUP_LABEL[group] || group,
-      bucketLabel: STAGE_BUCKET_LABEL[bucketForGroup(group)] || 'Intake',
-    }
-  }
-  return { group: 'intake', fineLabel: GROUP_LABEL.intake, bucketLabel: 'Intake' }
-}
-
-// Q3 semantic tone ladder (gray-ish → in-flight → urgent → done):
-//   intake bucket (intake / design / permit) → bronze (paperwork, inert)
-//   production bucket (stone / photo / etching / production / foundation) → blue (in-flight)
-//   install → amber (act now — truck out, scheduled trip)
-//   closeout → green (done / closing out)
-function mapStageToTone(group) {
-  if (group === 'install') return 'amber'
-  if (group === 'closeout') return 'green'
-  if (STAGE_BUCKETS.production.has(group)) return 'blue'
-  return 'bronze'
-}
-
-function familyNameForJob(j) {
-  const order = j.order || j._order
-  const fromOrder = order?.primary_lastname && String(order.primary_lastname).trim()
-  if (fromOrder) return fromOrder
-  const fromCustomer = order?.customer?.last_name && String(order.customer.last_name).trim().toUpperCase()
-  if (fromCustomer) return fromCustomer
-  // No order — typically cemetery_order-linked crypt door job
-  if (j.job_type === 'mausoleum_door') return 'Crypt door — TBD'
-  return '—'
-}
-
-function deceasedLabelForJob(j) {
-  const dec = (j.order || j._order)?.deceased
-  if (Array.isArray(dec) && dec.length > 0) {
-    if (dec.length === 1) {
-      const d = dec[0]
-      const name = [d.firstName || d.first_name, d.lastName || d.last_name].filter(Boolean).join(' ').trim()
-      return name || null
-    }
-    return 'Companion stone'
-  }
-  return null
-}
-
-function jobTypeLabel(jobType, serviceTypes) {
-  if (jobType === 'new_stone')       return 'New stone'
-  if (jobType === 'mausoleum_door')  return 'Crypt door'
-  if (jobType === 'cleaning_repair') return 'Cleaning/Repair'
-  const st = (serviceTypes || []).map(s => String(s).toUpperCase())
-  if (st.includes('INSCRIPTION') || st.includes('INSCRIPTIONS')) return 'Inscription'
-  if (st.includes('ACID_WASH')) return 'Acid wash'
-  return 'Order'
-}
+// JobRow + stage/label helpers (currentStage, mapStageToTone,
+// familyNameForJob, deceasedLabelForJob, jobTypeLabel) live in ./lib/jobsRow.
 
 // =============================================================================
 // DETAIL — read-only in this commit
@@ -2228,6 +1997,47 @@ function OverrideModal({ jobId, request, onClose, onConfirmed }) {
 // =============================================================================
 
 const localStyles = `
+  /* ── Hubs / Jobs — All view toggle ─────────────────────────────────────
+     A small pill-pair segmented control that lives at the top of the Jobs
+     tab. Same vocabulary as the role chip + owner view toggle — surface-muted
+     track, surface-white active chip, subtle box-shadow on active. */
+  .sb-jobs-view-toggle {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px;
+    background: var(--sb-surface-muted);
+    border-radius: 999px;
+  }
+  .sb-jobs-view-chip {
+    background: transparent;
+    border: none;
+    color: var(--sb-text-muted);
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .sb-jobs-view-chip:hover {
+    color: var(--sb-text);
+  }
+  .sb-jobs-view-chip-active {
+    background: var(--sb-surface);
+    color: var(--sb-text);
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(15, 20, 25, 0.06);
+  }
+  .sb-jobs-view-chip:focus-visible {
+    outline: 0.5px solid var(--sb-accent);
+    outline-offset: 1px;
+  }
+  /* When the toggle renders above the JobsListView (flat mode), give it a
+     touch of breathing room so it doesn't crowd the page header. */
+  .sb-crm-page > .sb-jobs-view-toggle {
+    margin: 16px 0 0 32px;
+  }
+
   /* ── JOB DETAIL — HERO ZONE ──────────────────────────────────────────── */
   /* JobDetail Phase 1 redesign (2026-05-21). Replaces the previous
      page-head + metric grid + JobControls panel block. Crafted-document

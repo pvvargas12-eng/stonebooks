@@ -1,882 +1,583 @@
 // =============================================================================
-// 📚 Stonebooks — Jobs Department View
+// 📚 Stonebooks — Jobs operational hubs (JOBS-OPERATIONAL-HUBS Phase 1A)
 // =============================================================================
-// Orchestrates the department-aware Jobs surface:
-//   • Role selector at top-right (Admin · Design · Sales · Production ·
-//     Installation · Owner). Persisted per-user via workspaceState.
-//   • A row of bucket cards for the selected department
-//   • A column of queue sections below, each anchored to one bucket
-//   • Sales is the only stub left — its work lives in the Orders tab.
-//   • Owner has TWO modes (toggled at the top of the Owner content area):
-//      – Overview (default): a curated ten-card grid — the things that can
-//        hold up a job at this shop. Clicking a card switches role to the
-//        owning department and scroll-targets the matching queue. The
-//        Estimates card routes to the Orders tab instead.
-//      – All departments: the full stack of every department's buckets +
-//        queues, with a jump strip + per-department eyebrows. The legacy
-//        view kept one click away for the days the owner wants the long
-//        scroll.
+// Four operational hubs share the Jobs surface:
 //
-// Data layer: every bucket is built by stonebooksData helpers from a single
-// jobs-fetch on mount. Orders are also fetched on mount so the Estimates
-// overview card has its count without a second round-trip.
+//   • Admin Hub        — intake, permits, payments, cemetery + family follow-ups
+//   • Design Hub       — layouts, proofs, inscriptions, bronze, photo, etching
+//   • Production Hub   — stone, cutting, blasting, washing, foundation pours
+//   • Installation Hub — foundations to set, stones ready, scheduled trips, doors
+//
+// The page lays out four large HubCards across the top — each shows the hub's
+// in-flight count and an urgency dot. Click one to drill into its actionable
+// list. Below the strip lives a chip row of hub-aware filters (each hub
+// publishes its own set in HUB_DEFS.filterChips). Below that is the
+// family-first JobRow table — the same row vocabulary the flat "Jobs — All"
+// list uses, just scoped to whichever hub is selected.
+//
+// Sales Hub and Owner aggregator are Phase 1B follow-up. The pre-Phase-1A
+// orphan code that powered those surfaces (RoleSelector with 6 roles,
+// JobsBucketCard grid, JobsQueueSection stack, OwnerAttentionListView,
+// OwnerStack, OwnerOverview, SalesView) is intact as separate component
+// files under src/components/ — Phase 1B will rewrite this container to
+// import them again when Sales and Owner hubs land.
+//
+// This file replaces the pre-Phase-1A 882-line department aggregator. The
+// substrate it delegates to (DEPARTMENTS, bucketsForDepartment, ROLE_GROUP_MAP,
+// roleForMilestone) is still live in stonebooksData.js and used by Today /
+// Scheduler / Reports.
 // =============================================================================
 
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getJobs,
   listAllOrders,
-  listAllBulkOrders,
-  markBulkOrderReceived,
-  DEPARTMENTS,
-  bucketsForDepartment,
-  getOwnerOverviewBuckets,
-  getAllAmberTasks,
-  getAllOverdueTasks,
-  worstUrgency,
-  URGENCY,
+  HUB_DEFS,
+  getHubWorkItems,
 } from './lib/stonebooksData'
-import OwnerAttentionListView from './components/OwnerAttentionListView'
-import SalesView from './components/SalesView'
-import AddPromiseModal from './components/AddPromiseModal'
 import {
-  getSelectedRole,
-  setSelectedRole,
-  getOwnerViewMode,
-  setOwnerViewMode,
+  getSelectedHub, setSelectedHub,
 } from './lib/workspaceState'
-import JobsBucketCard from './components/JobsBucketCard'
-import JobsQueueSection from './components/JobsQueueSection'
-import RoleSelector from './components/RoleSelector'
+import { FilterChip } from './lib/crmComponents.jsx'
+import { JobRow } from './lib/jobsRow'
+import { enrichJob, ROW_GRID } from './lib/jobsRowHelpers'
 
-export default function JobsDepartmentView({ userId, onOpenJob, onSwitchTab, onOpenOrder }) {
-  const [role, setRole] = useState(() => getSelectedRole(userId))
-  const [ownerMode, setOwnerMode] = useState(() => getOwnerViewMode(userId))
+// Hub render order — Admin → Design → Production → Installation. Mirrors the
+// workflow from office through shop to field. Owner aggregator + Sales sit
+// in Phase 1B; their slots aren't shown here.
+const HUB_ORDER = ['admin', 'design', 'production', 'installation']
+
+// Sort options. Hub items arrive pre-sorted by getHubWorkItems
+// (urgent-first → recency → family name). The other sort options re-sort
+// the already-filtered list.
+const SORT_OPTIONS = [
+  { code: 'actionPriority', label: 'Sort: Action priority' },
+  { code: 'lastActivity',   label: 'Sort: Recent activity' },
+  { code: 'familyName',     label: 'Sort: Family name A→Z' },
+]
+
+// =============================================================================
+// MAIN
+// =============================================================================
+
+export default function JobsDepartmentView({
+  userId,
+  onOpenJob,
+  // Forwarded for forward compatibility — Phase 1B Owner Hub will need
+  // tab + order/customer drill-throughs.
+  onSwitchTab,      // eslint-disable-line no-unused-vars
+  onOpenOrder,      // eslint-disable-line no-unused-vars
+  onOpenCustomer,   // eslint-disable-line no-unused-vars
+  // Slot for the parent JobsTab's Hubs/All view toggle so it sits in the
+  // page header alongside the search box rather than floating elsewhere.
+  headerSlot = null,
+}) {
+  const [hub, setHub] = useState(() => getSelectedHub(userId))
   const [jobs, setJobs] = useState(null)
-  const [orders, setOrders] = useState(null)
-  const [bulkOrders, setBulkOrders] = useState(null)
+  const [orders, setOrders] = useState(null)             // eslint-disable-line no-unused-vars
   const [loadErr, setLoadErr] = useState(null)
+  const [loading, setLoading] = useState(true)
 
-  // When an Overview card click drives a role switch, this captures the
-  // bucket code the new role's DepartmentBuckets should scroll to once it
-  // mounts. The consumer clears it on consumption so subsequent re-renders
-  // don't fight the user's scroll.
-  const [pendingBucketScroll, setPendingBucketScroll] = useState(null)
+  // Hub-local filters. Cleared on hub switch — chips from one hub don't
+  // apply in another (each hub publishes its own filterChips set).
+  const [hubFilters, setHubFilters] = useState(new Set())
+  const [urgentOnly, setUrgentOnly] = useState(false)
+  const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState('actionPriority')
 
-  // Promise quick-add target — set when an operator clicks the 🤡 hover
-  // affordance on a queue row. AddPromiseModal opens pre-filled with that
-  // job. Reload after save so any new badge surfaces on next render.
-  const [promiseTarget, setPromiseTarget] = useState(null)
-  const handlePromiseClick = useCallback((row) => {
-    const jobId = row?.job?.id
-    if (!jobId) return
-    const label = row?.order?.primary_lastname
-      || row?.customer?.last_name
-      || row?.customer?.lastName
-      || 'this job'
-    setPromiseTarget({ jobId, label })
-  }, [])
-
-  // One parallel fetch on mount — jobs for every department's buckets,
-  // orders for the Estimates Overview card, bulk_orders for the Admin
-  // "Open bulk orders" bucket + the projection engine (stone milestones
-  // linked to a bulk_order use the supplier's quoted lead time instead of
-  // the generic 30-day default).
+  // Load. Pulls jobs + orders in parallel. Orders are forward-loaded for
+  // Phase 1B Sales Hub (which needs orders, not jobs, for its lead pipeline).
+  // Today they're only consumed if the operator opens the Phase 1B surface.
   const loadJobs = useCallback(async () => {
     setLoadErr(null)
+    setLoading(true)
     try {
-      const [jobData, orderData, bulkData] = await Promise.all([
-        getJobs({ includeClosed: false }),
+      const [jobData, orderData] = await Promise.all([
+        getJobs({ includeClosed: false, limit: 1000 }),
         listAllOrders({ limit: 500 }),
-        listAllBulkOrders(),
       ])
-      setJobs(jobData || [])
+      // Match JOBS-RESKIN-PASS guard: getJobs({includeClosed:false}) excludes
+      // only overall_status='closed'; 'cancelled' jobs leak in unless we
+      // filter them. Cancelled is operationally a dead state, not an active
+      // one — keep them out of the hub view too.
+      const filtered = (jobData || []).filter(j => j.overall_status !== 'cancelled')
+      setJobs(filtered)
       setOrders(orderData || [])
-      setBulkOrders(bulkData || [])
     } catch (e) {
-      setLoadErr(e?.message || 'Failed to load operations data')
+      setLoadErr(e?.message || 'Failed to load hub data')
       setJobs([])
       setOrders([])
-      setBulkOrders([])
+    } finally {
+      setLoading(false)
     }
   }, [])
   useEffect(() => { loadJobs() }, [loadJobs])
 
-  // Cascade-on-receive — the BulkOrderRow's "Mark received" button calls
-  // through here so we can reload after the cascade completes. Returns the
-  // helper's { ok, error } so the row can surface the error inline.
-  const handleMarkBulkReceived = useCallback(async (bulkOrderId) => {
-    const res = await markBulkOrderReceived(bulkOrderId, { actorUserId: userId })
-    if (res.ok) loadJobs()
-    return res
-  }, [userId, loadJobs])
-
-  const handleRoleChange = (next) => {
-    setRole(next)
-    setSelectedRole(userId, next)
-  }
-
-  const handleOwnerModeChange = (next) => {
-    setOwnerMode(next)
-    setOwnerViewMode(userId, next)
-  }
-
-  // Dispatch for an Overview card click. The Estimates card routes to the
-  // Orders tab (no role change); every other card switches role to the
-  // owning department and captures a pending bucket-scroll target.
-  const handleOverviewCardClick = (bucket) => {
-    if (!bucket?.route) return
-    if (bucket.route.type === 'tab' && bucket.route.tab && onSwitchTab) {
-      onSwitchTab(bucket.route.tab)
-      return
+  // All four hubs computed every render — counts drive the HubCards, items
+  // drive whichever hub is active. Each getHubWorkItems run is O(N jobs ×
+  // M milestones) due to the per-job pressure compute; ~50-100 jobs means
+  // a single-digit-ms recompute per load. useMemo gates re-runs to job changes.
+  const hubData = useMemo(() => {
+    if (!jobs) return null
+    return {
+      admin:        getHubWorkItems('admin',        jobs),
+      design:       getHubWorkItems('design',       jobs),
+      production:   getHubWorkItems('production',   jobs),
+      installation: getHubWorkItems('installation', jobs),
     }
-    if (bucket.route.type === 'role' && bucket.route.role) {
-      handleRoleChange(bucket.route.role)
-      setPendingBucketScroll(bucket.route.bucketCode || null)
-    }
+  }, [jobs])
+
+  const currentDef  = HUB_DEFS[hub]
+  const currentData = hubData?.[hub] || null
+
+  // Hub switching — persists selection so the operator's last hub re-opens
+  // on next visit. Also clears chip filters + urgent toggle so a stale
+  // Admin filter doesn't carry into Production.
+  const handleHubChange = (next) => {
+    if (!HUB_ORDER.includes(next)) return
+    setHub(next)
+    setSelectedHub(userId, next)
+    setHubFilters(new Set())
+    setUrgentOnly(false)
   }
 
-  const consumePendingScroll = useCallback(() => {
-    setPendingBucketScroll(null)
-  }, [])
+  // Apply hub-local filters → search → optional re-sort, then enrich for
+  // JobRow. enrichJob runs computeOrderPressure again on each visible job
+  // (cheap; the hub-level pressure that getHubWorkItems computed lives on
+  // the hub item, not the underlying job). Phase 1B optimisation: thread
+  // pressure through so this second pass is a no-op.
+  const visibleRows = useMemo(() => {
+    if (!currentData) return []
+    let list = currentData.items
+    if (urgentOnly) list = list.filter(it => it.urgent)
+    if (hubFilters.size > 0) {
+      list = list.filter(it => {
+        for (const code of hubFilters) {
+          const chip = currentDef.filterChips.find(c => c.code === code)
+          if (chip && chip.match(it)) return true
+        }
+        return false
+      })
+    }
+    if (search.trim()) {
+      const needle = search.trim().toLowerCase()
+      list = list.filter(it => {
+        const hay = [
+          it.order?.primary_lastname,
+          it.order?.customer?.first_name,
+          it.order?.customer?.last_name,
+          it.order?.order_number,
+          it.order?.cemetery?.name,
+          it.order?.sales_rep,
+          it.job?.id?.slice(0, 8),
+        ].filter(Boolean).join(' ').toLowerCase()
+        return hay.includes(needle)
+      })
+    }
+    // Default action-priority comes pre-sorted from getHubWorkItems. Only
+    // re-sort when the operator picks a different ordering.
+    if (sortKey === 'lastActivity') {
+      list = [...list].sort((a, b) => {
+        const aT = a.job.last_update_at ? new Date(a.job.last_update_at).getTime() : 0
+        const bT = b.job.last_update_at ? new Date(b.job.last_update_at).getTime() : 0
+        return bT - aT
+      })
+    } else if (sortKey === 'familyName') {
+      list = [...list].sort((a, b) => {
+        const aN = a.order?.primary_lastname || ''
+        const bN = b.order?.primary_lastname || ''
+        return aN.localeCompare(bN)
+      })
+    }
+    return list.map(it => enrichJob(it.job))
+  }, [currentData, currentDef, urgentOnly, hubFilters, search, sortKey])
+
+  // Hub-card count strip. Renders even while jobs are loading so the
+  // structure is visible (counts come in as 0 until data lands, then fill).
+  const headerCount = loading
+    ? '—'
+    : currentData
+      ? `${visibleRows.length} of ${currentData.counts.total} in ${currentDef.label}`
+      : `0 in ${currentDef.label}`
 
   return (
-    <div className="sb-jobs-dept">
-      <RoleSelector active={role} onChange={handleRoleChange} />
+    <div className="sb-crm-page">
+      <div className="sb-crm-container">
+        <header className="sb-crm-head">
+          <div>
+            <h1 className="sb-crm-head-title">Jobs</h1>
+            <div className="sb-crm-head-count">
+              {headerCount}
+              {!loading && currentData?.counts?.urgent > 0 && (
+                <> · <strong>{currentData.counts.urgent}</strong> need{currentData.counts.urgent === 1 ? 's' : ''} attention</>
+              )}
+            </div>
+          </div>
+          <div className="sb-crm-head-actions">
+            <input
+              type="search"
+              className="sb-crm-search"
+              placeholder="Search family, deceased, order #, cemetery…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+            <select
+              className="sb-crm-sort"
+              value={sortKey}
+              onChange={e => setSortKey(e.target.value)}
+            >
+              {SORT_OPTIONS.map(o => (
+                <option key={o.code} value={o.code}>{o.label}</option>
+              ))}
+            </select>
+            {headerSlot}
+          </div>
+        </header>
 
-      {loadErr && (
-        <div className="sb-empty" style={{ color: 'var(--sb-red, #b54040)' }}>
-          {loadErr}
+        {loadErr && <div className="sb-crm-error">{loadErr}</div>}
+
+        <div className="sb-crm-min-width-banner">
+          Best viewed on desktop — the row layout is dense. Phone view falls back to a single-column stack.
         </div>
-      )}
 
-      {jobs === null && !loadErr && (
-        <div className="sb-empty">Loading…</div>
-      )}
+        {/* Hub selector — 4 cards across the top. Always rendered (counts
+            show 0 until data lands rather than the strip disappearing). */}
+        <HubSelectorStrip
+          hubData={hubData}
+          selectedHub={hub}
+          onSelect={handleHubChange}
+          loading={loading}
+        />
 
-      {jobs !== null && !loadErr && (
-        role === 'owner'
-          ? (
-            <OwnerView
-              jobs={jobs}
-              orders={orders || []}
-              bulkOrders={bulkOrders || []}
-              mode={ownerMode}
-              onModeChange={handleOwnerModeChange}
-              onOpenJob={onOpenJob}
-              onOverviewCardClick={handleOverviewCardClick}
-              onReload={loadJobs}
-              onMarkBulkReceived={handleMarkBulkReceived}
-            />
-          )
-          : (
-            <DepartmentBody
-              role={role}
-              jobs={jobs}
-              orders={orders || []}
-              bulkOrders={bulkOrders || []}
-              onOpenJob={onOpenJob}
-              onOpenOrder={onOpenOrder}
-              onSwitchTab={onSwitchTab}
-              onReload={loadJobs}
-              onMarkBulkReceived={handleMarkBulkReceived}
-              initialScrollBucket={pendingBucketScroll}
-              onConsumeInitialScroll={consumePendingScroll}
-              onPromiseClick={handlePromiseClick}
-            />
-          )
-      )}
+        {/* Hub-aware filter chips */}
+        <HubFilterChips
+          def={currentDef}
+          hubFilters={hubFilters}
+          setHubFilters={setHubFilters}
+          urgentOnly={urgentOnly}
+          setUrgentOnly={setUrgentOnly}
+          urgentCount={currentData?.counts?.urgent || 0}
+        />
 
-      <AddPromiseModal
-        open={!!promiseTarget}
-        jobId={promiseTarget?.jobId || null}
-        jobLabel={promiseTarget?.label || null}
-        onClose={() => setPromiseTarget(null)}
-        onSaved={() => { setPromiseTarget(null); loadJobs() }}
-      />
-    </div>
-  )
-}
+        {/* Body */}
+        <div className="sb-crm-card sb-crm-table">
+          <div className="sb-crm-row sb-crm-row-head" style={{ gridTemplateColumns: ROW_GRID }}>
+            <div>Family / Stone</div>
+            <div>Order</div>
+            <div>Cemetery</div>
+            <div>Stage</div>
+            <div>Payment</div>
+            <div>Blocker</div>
+            <div className="num">Age</div>
+            <div className="num">Updated</div>
+          </div>
 
-// =============================================================================
-// DEPARTMENT BODY — non-Owner roles
-// =============================================================================
-
-function DepartmentBody({ role, jobs, orders, bulkOrders, onOpenJob, onOpenOrder, onSwitchTab, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll, onPromiseClick }) {
-  const dept = DEPARTMENTS.find(d => d.code === role)
-  if (!dept) return null
-
-  // Sales is metric-shaped, not queue-shaped — render the dedicated
-  // SalesView instead of the generic DepartmentBuckets. The stub fallback
-  // below remains for any future stub department (none today).
-  if (role === 'sales') {
-    return (
-      <SalesView
-        orders={orders}
-        onSwitchTab={onSwitchTab}
-        onOpenOrder={onOpenOrder}
-      />
-    )
-  }
-  if (dept.stub) {
-    return <DepartmentStub label={dept.label} />
-  }
-  return (
-    <DepartmentBuckets
-      dept={dept}
-      jobs={jobs}
-      bulkOrders={bulkOrders}
-      onOpenJob={onOpenJob}
-      onReload={onReload}
-      onMarkBulkReceived={onMarkBulkReceived}
-      initialScrollBucket={initialScrollBucket}
-      onConsumeInitialScroll={onConsumeInitialScroll}
-      onPromiseClick={onPromiseClick}
-    />
-  )
-}
-
-// Bucket codes that gain multi-select checkboxes on their rows. Limited to
-// Admin's two supplier-bound queues — stones and photos can group into one
-// PO each. Adding a new selectable queue means registering its code here AND
-// in SELECTABLE_BUCKET_KINDS inside JobsQueueSection.
-const SELECTABLE_BUCKET_CODES = new Set(['stones_to_order', 'photos_to_request'])
-
-// Render: bucket-card grid + queue sections. Each card focus-scrolls its
-// queue section into view (smooth scroll, scroll-margin-top on the section).
-// When `initialScrollBucket` is set (e.g. from an Owner Overview card click
-// that switched to this role), the matching section is scrolled into view on
-// mount and the pending target is cleared via onConsumeInitialScroll so
-// future re-renders don't fight the user's scroll.
-function DepartmentBuckets({ dept, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived, initialScrollBucket, onConsumeInitialScroll, onPromiseClick }) {
-  const buckets = useMemo(
-    () => bucketsForDepartment(dept.code, jobs, { bulkOrders }) || [],
-    [dept.code, jobs, bulkOrders],
-  )
-
-  // One ref per bucket section so the bucket card can focus-scroll its queue
-  // into view. Refs are stable per (dept, bucket.code) — re-render of buckets
-  // re-maps but the underlying Section component keeps its ref.
-  const sectionRefs = useRef({})
-  const scrollToBucket = (bucket) => {
-    const node = sectionRefs.current[bucket.code]
-    if (node && typeof node.scrollIntoView === 'function') {
-      node.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-  }
-
-  // Honour an externally-set scroll target once after buckets render. The
-  // 50ms timeout lets the Section refs populate before we ask the DOM to
-  // scroll. Bucket codes that don't exist in this dept are no-ops — we still
-  // consume the pending target so it doesn't linger.
-  useEffect(() => {
-    if (!initialScrollBucket) return
-    const t = setTimeout(() => {
-      const node = sectionRefs.current[initialScrollBucket]
-      if (node && typeof node.scrollIntoView === 'function') {
-        node.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
-      onConsumeInitialScroll?.()
-    }, 50)
-    return () => clearTimeout(t)
-  }, [initialScrollBucket, onConsumeInitialScroll])
-
-  return (
-    <div className="sb-dept-body">
-      <div className="sb-dept-bucket-grid">
-        {buckets.map(b => (
-          <JobsBucketCard key={b.code} bucket={b} onClick={scrollToBucket} />
-        ))}
-      </div>
-
-      <div className="sb-dept-queues">
-        {buckets.map(b => (
-          <JobsQueueSection
-            key={b.code}
-            ref={el => { sectionRefs.current[b.code] = el }}
-            bucket={b}
-            bulkOrders={bulkOrders}
-            selectable={SELECTABLE_BUCKET_CODES.has(b.code)}
-            onOpenRow={(row) => onOpenJob?.(row.job.id)}
-            onReload={onReload}
-            onMarkBulkReceived={onMarkBulkReceived}
-            onPromiseClick={onPromiseClick}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// Stub panel — Sales is the only remaining stub. Admin / Design / Production /
-// Installation are wired. The Sales copy is intentionally honest: most sales
-// work happens in the Orders tab before a job ever exists, so job-stage
-// buckets for Sales would feel forced. The role selector still shows Sales so
-// the surface is consistent across departments and so the gap is visible.
-function DepartmentStub({ label }) {
-  if (label === 'Sales') {
-    return (
-      <div className="sb-dept-stub">
-        <div className="sb-dept-stub-eyebrow">{label}</div>
-        <div className="sb-dept-stub-body">
-          Sales work lives in the Orders tab.
+          {loading ? (
+            <div className="sb-crm-empty">Loading hub work…</div>
+          ) : !currentData || currentData.items.length === 0 ? (
+            <EmptyHub def={currentDef} />
+          ) : visibleRows.length === 0 ? (
+            <div className="sb-crm-empty">
+              No items match these filters in {currentDef.label}.
+              <div>
+                <button
+                  type="button"
+                  onClick={() => { setHubFilters(new Set()); setUrgentOnly(false); setSearch('') }}
+                >Reset filters</button>
+              </div>
+            </div>
+          ) : (
+            visibleRows.map(j => <JobRow key={j.id} job={j} onOpen={onOpenJob} />)
+          )}
         </div>
       </div>
-    )
-  }
-  return (
-    <div className="sb-dept-stub">
-      <div className="sb-dept-stub-eyebrow">{label}</div>
-      <div className="sb-dept-stub-body">
-        Coming soon. The {label.toLowerCase()} department's bucket grid and
-        queues will land in a follow-up pass.
-      </div>
     </div>
   )
 }
 
 // =============================================================================
-// OWNER VIEW — Overview (default) vs All departments
+// HUB SELECTOR STRIP — 4 large hub cards across the top
 // =============================================================================
-// Two modes for the Owner role:
-//   • Overview — a curated ten-card grid built by getOwnerOverviewBuckets.
-//     The operator's morning scan. Click a card → switch role + scroll to
-//     that department's bucket (or, for Estimates, jump to the Orders tab).
-//   • All departments — the legacy stacked view. Jump strip on top, every
-//     department's bucket grid + queues below, eyebrows with urgency dots
-//     and "N in flight" counts so the long scroll stays surveyable.
-//
-// The mode toggle persists via workspaceState.ownerViewMode. The toggle is
-// only rendered when role === 'owner'.
 
-// Worst-urgency dot color used in the Owner jump strip and per-department
-// eyebrows. Mirrors the JobsBucketCard / JobsQueueSection palette so the
-// operator's eye learns one color vocabulary across the page.
-const URGENCY_DOT_COLOR = {
-  [URGENCY.NEUTRAL]: 'var(--sb-border)',
-  [URGENCY.AMBER]:   'var(--sb-amber, #b8842a)',
-  [URGENCY.RED]:     'var(--sb-red, #b54040)',
-}
-
-function OwnerView({ jobs, orders, bulkOrders, mode, onModeChange, onOpenJob, onOverviewCardClick, onReload, onMarkBulkReceived }) {
-  // Transient navigation — when the operator clicks one of the Overview
-  // summary cards, attentionMode flips to 'amber' or 'red' and the grid is
-  // replaced by OwnerAttentionListView. This is NOT persisted in
-  // workspaceState — it's an in-session drill, not a view preference.
-  const [attentionMode, setAttentionMode] = useState(null)
-
-  // Switching modes (Overview ↔ All departments) should clear any active
-  // attention drill. Otherwise the user could toggle to All-departments,
-  // back to Overview, and find themselves still inside an old list view.
-  const handleModeChange = useCallback((next) => {
-    setAttentionMode(null)
-    onModeChange?.(next)
-  }, [onModeChange])
-
+function HubSelectorStrip({ hubData, selectedHub, onSelect, loading }) {
   return (
-    <div className="sb-dept-owner-wrap">
-      <OwnerViewToggle mode={mode} onChange={handleModeChange} />
-      {mode === 'overview'
-        ? (
-          <OwnerOverview
-            jobs={jobs}
-            orders={orders}
-            bulkOrders={bulkOrders}
-            attentionMode={attentionMode}
-            onCardClick={onOverviewCardClick}
-            onAttentionOpen={setAttentionMode}
-            onAttentionBack={() => setAttentionMode(null)}
-            onOpenJob={onOpenJob}
-          />
-        )
-        : (
-          <OwnerStack
-            jobs={jobs}
-            bulkOrders={bulkOrders}
-            onOpenJob={onOpenJob}
-            onReload={onReload}
-            onMarkBulkReceived={onMarkBulkReceived}
-          />
-        )}
-    </div>
-  )
-}
-
-// Small segmented control above the Owner content. Two options; the active
-// option gets the same surface-muted treatment as the role chip selector so
-// both controls feel like they came out of the same toolbox.
-function OwnerViewToggle({ mode, onChange }) {
-  const OPTIONS = [
-    { code: 'overview',    label: 'Overview' },
-    { code: 'departments', label: 'All departments' },
-  ]
-  return (
-    <div className="sb-owner-toggle" role="tablist" aria-label="Owner view mode">
-      {OPTIONS.map(opt => {
-        const active = opt.code === mode
+    <div className="sb-hub-strip" role="tablist" aria-label="Operational hubs">
+      {HUB_ORDER.map(code => {
+        const def = HUB_DEFS[code]
+        const data = hubData?.[code] || null
         return (
-          <button
-            key={opt.code}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            className={`sb-owner-toggle-chip ${active ? 'sb-owner-toggle-chip-active' : ''}`}
-            onClick={() => onChange(opt.code)}
-          >
-            {opt.label}
-          </button>
+          <HubCard
+            key={code}
+            code={code}
+            def={def}
+            data={data}
+            active={code === selectedHub}
+            loading={loading}
+            onClick={() => onSelect(code)}
+          />
         )
       })}
     </div>
   )
 }
 
-// Curated ten-card Overview, prefixed by two headline summary cards when
-// the shop has work in amber or red urgency. The headline cards hide
-// entirely when their count is zero — quiet days look quiet. Clicking a
-// headline card opens an inline attention list (OwnerAttentionListView)
-// that replaces the grid until the operator clicks back.
-function OwnerOverview({
-  jobs,
-  orders,
-  bulkOrders,
-  attentionMode,
-  onCardClick,
-  onAttentionOpen,
-  onAttentionBack,
-  onOpenJob,
-}) {
-  const cards = useMemo(
-    () => getOwnerOverviewBuckets(jobs, orders) || [],
-    [jobs, orders],
-  )
-
-  // Walk the same per-department bucket derivers to count amber and red
-  // tasks across the whole shop. Cheap enough — same data we already have
-  // in memory. Deduped by milestone.id inside the helpers.
-  const amberTasks = useMemo(
-    () => getAllAmberTasks(jobs, bulkOrders),
-    [jobs, bulkOrders],
-  )
-  const overdueTasks = useMemo(
-    () => getAllOverdueTasks(jobs, bulkOrders),
-    [jobs, bulkOrders],
-  )
-
-  // Attention list mode — replaces the entire grid until the operator
-  // clicks back. Same Owner role, just a different body slot.
-  if (attentionMode === 'amber' || attentionMode === 'red') {
-    return (
-      <div className="sb-owner-overview">
-        <OwnerAttentionListView
-          mode={attentionMode}
-          rows={attentionMode === 'red' ? overdueTasks : amberTasks}
-          bulkOrders={bulkOrders}
-          onBack={onAttentionBack}
-          onOpenRow={(row) => row?.job?.id && onOpenJob?.(row.job.id)}
-        />
-      </div>
-    )
-  }
-
-  // Bucket shape for the two summary cards — same fields JobsBucketCard
-  // expects so we can reuse the component with summaryStyle=true.
-  const amberCard = amberTasks.length > 0 ? {
-    code:   'attention_amber',
-    label:  'Tasks needing attention',
-    count:  amberTasks.length,
-    urgency: URGENCY.AMBER,
-    subline: `${amberTasks.length} ${amberTasks.length === 1 ? 'task is' : 'tasks are'} aging past threshold`,
-  } : null
-  const redCard = overdueTasks.length > 0 ? {
-    code:   'attention_red',
-    label:  'Tasks overdue',
-    count:  overdueTasks.length,
-    urgency: URGENCY.RED,
-    subline: `${overdueTasks.length} past due — chase first`,
-  } : null
-
-  // The two summary cards live in their own grid above the curated ten so
-  // the visual hierarchy reads "headline → curated" cleanly. If we put them
-  // inline in the same auto-fit grid as the curated cards, the row count
-  // mismatches at typical desktop widths and the summary cards end up
-  // sharing a row with one or two curated cards — same row, different roles.
-  // The separate top grid avoids that.
-  const hasSummary = !!(amberCard || redCard)
-
+function HubCard({ code, def, data, active, loading, onClick }) {
+  const urgent = data?.counts?.urgent ?? 0
+  const total  = data?.counts?.total ?? 0
+  // Dot color earns urgency: red for any urgent, amber for in-flight without
+  // urgent items, neutral when the hub is empty.
+  const dotState =
+    loading ? 'loading' :
+    urgent > 0 ? 'urgent' :
+    total > 0  ? 'flight' :
+                 'quiet'
   return (
-    <div className="sb-owner-overview">
-      {hasSummary && (
-        <div className="sb-owner-summary-row">
-          {redCard && (
-            <JobsBucketCard
-              key={redCard.code}
-              bucket={redCard}
-              summaryStyle
-              onClick={() => onAttentionOpen?.('red')}
-            />
-          )}
-          {amberCard && (
-            <JobsBucketCard
-              key={amberCard.code}
-              bucket={amberCard}
-              summaryStyle
-              onClick={() => onAttentionOpen?.('amber')}
-            />
-          )}
-        </div>
-      )}
-      <div className="sb-dept-bucket-grid">
-        {cards.map(card => (
-          <JobsBucketCard
-            key={card.code}
-            bucket={card}
-            onClick={(b) => onCardClick?.(b)}
-          />
-        ))}
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className={`sb-hub-card ${active ? 'sb-hub-card-active' : ''}`}
+      onClick={onClick}
+    >
+      <div className="sb-hub-card-head">
+        <span className={`sb-hub-card-dot sb-hub-card-dot-${dotState}`} aria-hidden="true" />
+        <span className="sb-hub-card-label">{def.label}</span>
       </div>
-    </div>
+      <div className="sb-hub-card-count">
+        {loading ? '—' : total}
+      </div>
+      <div className="sb-hub-card-meta">
+        {/* "needs attention" is the consistent vocabulary across this surface
+            (matches the chip label + JOBS-RESKIN-PASS naming). The count
+            includes both red and amber severity items — anything where the
+            blocker says "act today." */}
+        {loading ? 'loading…'
+          : urgent > 0 ? `${urgent} need${urgent === 1 ? 's' : ''} attention`
+          : total === 0 ? 'all clear'
+          : 'in flight'}
+      </div>
+      <div className="sb-hub-card-desc">{def.description}</div>
+    </button>
   )
 }
 
-// Compute the per-department summary used by the jump strip and the eyebrows.
-// Returns [{ dept, anchorId, totalCount, urgency }] in DEPARTMENTS order so
-// stub departments slot into the strip at their natural position.
-function _ownerDeptSummaries(jobs, bulkOrders) {
-  return DEPARTMENTS.map(dept => {
-    const anchorId = `dept-${dept.code}`
-    if (dept.stub) {
-      return { dept, anchorId, totalCount: null, urgency: URGENCY.NEUTRAL }
-    }
-    const buckets = bucketsForDepartment(dept.code, jobs, { bulkOrders }) || []
-    const totalCount = buckets.reduce((sum, b) => sum + (b.count || 0), 0)
-    const allRows = buckets.flatMap(b => b.rows || [])
-    return { dept, anchorId, totalCount, urgency: worstUrgency(allRows) }
-  })
-}
+// =============================================================================
+// FILTER CHIPS
+// =============================================================================
 
-function OwnerStack({ jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived }) {
-  const summaries = useMemo(() => _ownerDeptSummaries(jobs, bulkOrders), [jobs, bulkOrders])
-
-  // Smooth-scroll the corresponding department block into view. scroll-margin-
-  // top on the block lets the dept eyebrow clear any sticky chrome above.
-  const scrollToDept = (anchorId) => {
-    const node = document.getElementById(anchorId)
-    if (node && typeof node.scrollIntoView === 'function') {
-      node.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
+function HubFilterChips({ def, hubFilters, setHubFilters, urgentOnly, setUrgentOnly, urgentCount }) {
+  const toggle = (code) => {
+    const next = new Set(hubFilters)
+    if (next.has(code)) next.delete(code); else next.add(code)
+    setHubFilters(next)
   }
-
+  // "Needs attention" matches the JOBS-RESKIN-PASS flat list's chip label —
+  // CRM Practicality review pointed out "Urgent only" reads as red-only,
+  // but the underlying severity test catches red AND amber. "Needs attention"
+  // is the established vocabulary for "act on this today."
   return (
-    <div className="sb-dept-owner">
-      <nav className="sb-dept-owner-jumps" aria-label="Jump to department">
-        {summaries.map(({ dept, anchorId, totalCount, urgency }) => (
-          <button
-            key={dept.code}
-            type="button"
-            className="sb-dept-owner-jump"
-            onClick={() => scrollToDept(anchorId)}
+    <div className="sb-crm-chip-row">
+      <div className="sb-crm-chip-group">
+        <FilterChip
+          active={urgentOnly}
+          onClick={() => setUrgentOnly(v => !v)}
+          count={urgentCount}
+        >
+          Needs attention
+        </FilterChip>
+      </div>
+      <div className="sb-crm-chip-group">
+        <span className="sb-crm-chip-group-label">In {def.label}</span>
+        {def.filterChips.map(chip => (
+          <FilterChip
+            key={chip.code}
+            active={hubFilters.has(chip.code)}
+            onClick={() => toggle(chip.code)}
           >
-            <span
-              className="sb-dept-owner-jump-dot"
-              style={{ background: URGENCY_DOT_COLOR[urgency] }}
-              aria-hidden="true"
-            />
-            <span className="sb-dept-owner-jump-label">{dept.label}</span>
-            {totalCount != null && (
-              <span className="sb-dept-owner-jump-count">{totalCount}</span>
-            )}
-          </button>
+            {chip.label}
+          </FilterChip>
         ))}
-      </nav>
-
-      {summaries.map(({ dept, anchorId, totalCount, urgency }) => (
-        <OwnerDepartmentBlock
-          key={dept.code}
-          dept={dept}
-          anchorId={anchorId}
-          totalCount={totalCount}
-          urgency={urgency}
-          jobs={jobs}
-          bulkOrders={bulkOrders}
-          onOpenJob={onOpenJob}
-          onReload={onReload}
-          onMarkBulkReceived={onMarkBulkReceived}
-        />
-      ))}
+      </div>
     </div>
   )
 }
 
-function OwnerDepartmentBlock({ dept, anchorId, totalCount, urgency, jobs, bulkOrders, onOpenJob, onReload, onMarkBulkReceived }) {
+// =============================================================================
+// EMPTY HUB STATE
+// =============================================================================
+
+function EmptyHub({ def }) {
   return (
-    <section className="sb-dept-owner-block" id={anchorId}>
-      <header className="sb-dept-owner-eyebrow">
-        <span
-          className="sb-dept-owner-eyebrow-dot"
-          style={{ background: URGENCY_DOT_COLOR[urgency] }}
-          aria-hidden="true"
-        />
-        <span className="sb-dept-owner-eyebrow-label">{dept.label}</span>
-        {totalCount != null && (
-          <span className="sb-dept-owner-eyebrow-count">
-            {totalCount === 0 ? 'nothing in flight' : `${totalCount} in flight`}
-          </span>
-        )}
-      </header>
-      {dept.stub ? (
-        <div className="sb-dept-owner-stub">
-          {dept.code === 'sales'
-            ? 'Sales work lives in the Orders tab.'
-            : `Coming soon — queues for ${dept.label.toLowerCase()} will land in a follow-up pass.`}
-        </div>
-      ) : (
-        <DepartmentBuckets
-          dept={dept}
-          jobs={jobs}
-          bulkOrders={bulkOrders}
-          onOpenJob={onOpenJob}
-          onReload={onReload}
-          onMarkBulkReceived={onMarkBulkReceived}
-        />
-      )}
-    </section>
+    <div className="sb-hub-empty">
+      <div className="sb-hub-empty-glyph" aria-hidden="true">✓</div>
+      <div className="sb-hub-empty-text">{def.emptyMessage}</div>
+    </div>
   )
 }
 
 // =============================================================================
-// STYLES
+// STYLES — injected once on first mount
 // =============================================================================
+// Hub strip + cards + empty state. The .sb-crm-* classes used by header,
+// table, and chips come from src/lib/crmTheme.js (shared with Customers /
+// Orders / flat Jobs). This block only adds the hub-specific primitives.
 
 const localStyles = `
-  /* The department view drops out of the standard sb-page max-width so the
-     bucket grid + queue table can breathe across the full screen. The hero
-     header + role selector are sized via their own internal layout. */
-  .sb-jobs-dept {
-    width: 100%;
-  }
-
-  /* ── BUCKET GRID ───────────────────────────────────────────────────────── */
-  /* Auto-fit so buckets reflow gracefully across widths; the min track keeps
-     a card readable without crowding the count. Six cards across at desktop
-     widths in a typical browser. */
-  .sb-dept-bucket-grid {
+  /* ── HUB STRIP ─────────────────────────────────────────────────────────
+     Four cards in an auto-fit grid. At desktop widths they sit side-by-side
+     (1fr each); at tablet they wrap 2×2; at phone they stack. */
+  .sb-hub-strip {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 12px;
-    margin-bottom: 40px;
+    margin: 0 32px 24px 32px;
+  }
+  @media (max-width: 980px) {
+    .sb-hub-strip {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  @media (max-width: 560px) {
+    .sb-hub-strip {
+      grid-template-columns: 1fr;
+    }
   }
 
-  /* ── QUEUE STACK ───────────────────────────────────────────────────────── */
-  .sb-dept-queues {
+  /* ── HUB CARD ──────────────────────────────────────────────────────────
+     Calm by default — surface card with hairline border. Active card gets
+     a stronger left rule + slightly darker surface so the operator's eye
+     locks onto which hub is open. No emoji, no icons; an urgency dot
+     does the chrome. */
+  .sb-hub-card {
     display: flex;
     flex-direction: column;
-  }
-  .sb-dept-body {
-    margin-bottom: 16px;
-  }
-
-  /* ── STUB BLOCKS (single-department view) ──────────────────────────────── */
-  .sb-dept-stub {
+    align-items: flex-start;
+    text-align: left;
+    width: 100%;
+    min-height: 132px;
+    padding: 18px 20px 16px 20px;
     background: var(--sb-surface);
     border: 0.5px solid var(--sb-border);
+    border-left: 3px solid transparent;
     border-radius: var(--sb-r-sm, 6px);
-    padding: 40px 32px;
-    max-width: 640px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition: background 0.12s, border-color 0.12s, transform 0.12s;
   }
-  .sb-dept-stub-eyebrow {
+  .sb-hub-card:hover {
+    background: var(--sb-surface-muted);
+  }
+  .sb-hub-card:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--sb-accent-bg, rgba(184, 132, 42, 0.18));
+  }
+  .sb-hub-card-active {
+    background: var(--sb-surface-muted);
+    border-left-color: var(--sb-accent, #b8842a);
+  }
+
+  /* Card head: dot + label, one baseline. The label is uppercase + tight
+     letter-spacing — same vocabulary the JobsBucketCard uses, so operators
+     who know the legacy view feel at home. */
+  .sb-hub-card-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .sb-hub-card-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--sb-border);
+  }
+  .sb-hub-card-dot-urgent { background: var(--sb-red, #b54040); }
+  .sb-hub-card-dot-flight { background: var(--sb-amber, #b8842a); }
+  .sb-hub-card-dot-quiet  { background: var(--sb-border); }
+  .sb-hub-card-dot-loading {
+    background: transparent;
+    border: 1px solid var(--sb-border);
+  }
+  .sb-hub-card-label {
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--sb-text-muted);
-    margin-bottom: 14px;
-  }
-  .sb-dept-stub-body {
-    font-size: 15px;
-    line-height: 1.55;
-    color: var(--sb-text-secondary);
-    max-width: 56ch;
+    line-height: 1.2;
   }
 
-  /* ── OWNER WRAP + MODE TOGGLE ──────────────────────────────────────────── */
-  /* The Owner wrap holds the mode toggle and whichever mode body is active
-     (Overview grid or the full department stack). The toggle sits above
-     both modes; consistent placement makes it discoverable. */
-  .sb-dept-owner-wrap {
-    width: 100%;
-  }
-  .sb-owner-toggle {
-    display: inline-flex;
-    gap: 4px;
-    margin-bottom: 28px;
-    padding: 4px;
-    background: var(--sb-surface-muted);
-    border-radius: 999px;
-  }
-  .sb-owner-toggle-chip {
-    background: transparent;
-    border: none;
-    color: var(--sb-text-muted);
-    font: inherit;
-    font-size: 13px;
-    padding: 6px 14px;
-    border-radius: 999px;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-  }
-  .sb-owner-toggle-chip:hover {
-    color: var(--sb-text);
-  }
-  .sb-owner-toggle-chip-active {
-    background: var(--sb-surface);
-    color: var(--sb-text);
+  /* Count — the load-bearing number. Tabular numerals + slight negative
+     letter-spacing so 8 vs 80 vs 800 all sit visually balanced. */
+  .sb-hub-card-count {
+    font-size: 34px;
     font-weight: 500;
-    box-shadow: 0 1px 2px rgba(15, 20, 25, 0.06);
-  }
-  .sb-owner-toggle-chip:focus-visible {
-    outline: 0.5px solid var(--sb-accent);
-    outline-offset: 1px;
-  }
-
-  /* Overview body — the two summary headline cards (when populated) sit
-     in their own row above the curated ten-card grid. Two equal columns at
-     desktop widths; a single column on phone. Cards keep their summaryStyle
-     treatment (5px left border, 44px count) regardless of which container
-     hosts them — the summary class doesn't depend on grid context. */
-  .sb-owner-overview {
-    margin-bottom: 16px;
-  }
-  .sb-owner-summary-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-bottom: 12px;
-  }
-  @media (max-width: 720px) {
-    .sb-owner-summary-row {
-      grid-template-columns: 1fr;
-    }
+    line-height: 1;
+    color: var(--sb-text);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
   }
 
-  /* ── OWNER STACK ───────────────────────────────────────────────────────── */
-  .sb-dept-owner {
+  /* Meta line — "N urgent" / "in flight" / "all clear". Subtle, but the
+     "urgent" variant gets the red ink so the eye catches it without a
+     second look at the dot. */
+  .sb-hub-card-meta {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--sb-text-muted);
+    margin-bottom: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sb-hub-card-dot-urgent + .sb-hub-card-label,
+  .sb-hub-card:has(.sb-hub-card-dot-urgent) .sb-hub-card-meta {
+    color: var(--sb-red, #b54040);
+  }
+
+  /* Description — one sentence telling Paul "what this hub holds." Hidden
+     on small screens where vertical real estate matters more. */
+  .sb-hub-card-desc {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+    line-height: 1.4;
+    margin-top: auto;
+  }
+  @media (max-width: 560px) {
+    .sb-hub-card-desc { display: none; }
+    .sb-hub-card { min-height: 102px; }
+  }
+
+  /* ── EMPTY HUB ────────────────────────────────────────────────────────
+     When a hub has zero items, the table card replaces its row stack with
+     a calm empty state. The "✓" glyph is intentionally quiet — empty hub
+     should feel like rest, not blank-canvas-with-something-missing. */
+  .sb-hub-empty {
     display: flex;
     flex-direction: column;
-    gap: 64px;
-  }
-
-  /* Department jump strip — small horizontal nav at the top of the Owner
-     view. Click a chip → smooth-scroll to that department block. Each chip
-     shows a dot (worst urgency across that dept's buckets), the dept label,
-     and the total count of work in flight. Stubs render without a count. */
-  .sb-dept-owner-jumps {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 0 18px;
-    margin-bottom: -8px;
-    border-bottom: 0.5px solid var(--sb-border);
-  }
-  .sb-dept-owner-jump {
-    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    background: transparent;
-    border: none;
-    padding: 6px 12px;
-    border-radius: 999px;
-    color: var(--sb-text);
-    font: inherit;
-    font-size: 13px;
-    letter-spacing: -0.005em;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
+    justify-content: center;
+    padding: 64px 24px;
+    text-align: center;
   }
-  .sb-dept-owner-jump:hover {
-    background: var(--sb-surface-muted);
-  }
-  .sb-dept-owner-jump:focus-visible {
-    outline: 0.5px solid var(--sb-accent);
-    outline-offset: 1px;
-  }
-  .sb-dept-owner-jump-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-  }
-  .sb-dept-owner-jump-label {
-    font-weight: 500;
-  }
-  .sb-dept-owner-jump-count {
-    font-size: 12px;
+  .sb-hub-empty-glyph {
+    font-size: 32px;
     color: var(--sb-text-muted);
-    font-variant-numeric: tabular-nums;
+    margin-bottom: 16px;
+    line-height: 1;
   }
-
-  .sb-dept-owner-block {
-    scroll-margin-top: 16px;
-  }
-  /* Eyebrow — strong enough to break up a long Owner stack. Inline flex so
-     the dot, label, and count sit on one baseline. Uppercase + letter-spacing
-     gives the section a section-header presence; the hairline below seals it. */
-  .sb-dept-owner-eyebrow {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--sb-text-muted);
-    margin-bottom: 18px;
-    padding-bottom: 8px;
-    border-bottom: 0.5px solid var(--sb-border);
-  }
-  .sb-dept-owner-eyebrow-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    align-self: center;
-  }
-  .sb-dept-owner-eyebrow-label {
-    color: var(--sb-text);
-  }
-  .sb-dept-owner-eyebrow-count {
-    color: var(--sb-text-muted);
-    text-transform: none;
-    letter-spacing: 0;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-  }
-  .sb-dept-owner-stub {
+  .sb-hub-empty-text {
     font-size: 14px;
-    color: var(--sb-text-muted);
+    color: var(--sb-text-secondary);
+    max-width: 360px;
     line-height: 1.55;
-    max-width: 56ch;
-    padding: 12px 0 0;
-  }
-
-  @media (max-width: 720px) {
-    .sb-dept-bucket-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-    .sb-dept-owner {
-      gap: 48px;
-    }
-  }
-  @media (max-width: 480px) {
-    .sb-dept-bucket-grid {
-      grid-template-columns: 1fr;
-    }
   }
 `
 
-if (typeof document !== 'undefined' && !document.getElementById('sb-jobs-dept-view-styles')) {
+if (typeof document !== 'undefined' && !document.getElementById('sb-jobs-hubs-styles')) {
   const tag = document.createElement('style')
-  tag.id = 'sb-jobs-dept-view-styles'
+  tag.id = 'sb-jobs-hubs-styles'
   tag.textContent = localStyles
   document.head.appendChild(tag)
 }
