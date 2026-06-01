@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useState, useEffect } from 'react'
-import { gmailListMessages, gmailGetThread, sendOrderEmail } from './lib/stonebooksData'
+import { gmailListMessages, gmailGetThread, sendOrderEmail, gmailSyncInbox, getEmailAssociations } from './lib/stonebooksData'
 
 const FOLDERS = [
   { key: 'INBOX', label: 'Inbox' },
@@ -44,22 +44,31 @@ function emailDate(str) {
 export default function EmailTab() {
   const [folder, setFolder] = useState('INBOX')  // 'INBOX' | 'SENT'
   const [messages, setMessages] = useState([])
+  const [assoc, setAssoc] = useState({})         // { gmailMessageId: { orderNumber } }
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState(null)
   const [reading, setReading] = useState(null)   // { threadId, subject, busy, messages, err } | null
   const [composer, setComposer] = useState(null) // { to, subject, body, busy, error, sent } | null
 
-  // Load the current folder. Used by mount, the folder switch, and Refresh.
+  // After messages load, look up which are associated to an order (for badges).
+  const loadAssoc = async (msgs) => {
+    const ids = (msgs || []).map(m => m.id).filter(Boolean)
+    setAssoc(await getEmailAssociations(ids))
+  }
+  // Load the current folder. Used by the folder switch, Refresh, and post-sync.
   const load = async (target = folder) => {
     setLoading(true); setErr(null)
     const res = await gmailListMessages(target)
     if (!res.ok) { setErr(res.error || 'Could not load mail'); setMessages([]); setLoading(false); return }
     setMessages(res.messages); setLoading(false)
+    loadAssoc(res.messages)
   }
   const switchFolder = (key) => {
     if (key === folder) return
     setFolder(key)
-    setMessages([])
+    setMessages([]); setAssoc({})
     load(key)
   }
   // loading inits true; fire once on mount (no synchronous setState before await).
@@ -68,11 +77,21 @@ export default function EmailTab() {
     gmailListMessages('INBOX').then(res => {
       if (cancelled) return
       if (!res.ok) { setErr(res.error || 'Could not load mail'); setMessages([]) }
-      else setMessages(res.messages)
+      else { setMessages(res.messages); loadAssoc(res.messages) }
       setLoading(false)
     })
     return () => { cancelled = true }
   }, [])
+
+  // "Sync inbox" — run auto-association over recent inbound, then refresh.
+  const sync = async () => {
+    setSyncing(true); setSyncMsg(null)
+    const res = await gmailSyncInbox()
+    setSyncing(false)
+    if (!res.ok) { setSyncMsg(`Sync failed — ${res.error || 'error'}`); return }
+    setSyncMsg(`Scanned ${res.scanned} · attached ${res.attached} (${res.byThread} by thread, ${res.byAddress} by address)`)
+    load(folder)
+  }
 
   const isSent = folder === 'SENT'
   const folderLabel = FOLDERS.find(f => f.key === folder)?.label || 'Inbox'
@@ -129,9 +148,14 @@ export default function EmailTab() {
               </div>
             </div>
             <div className="sb-email-head-actions">
+              <button type="button" className="sb-email-btn" onClick={sync} disabled={syncing || loading}>
+                {syncing ? 'Syncing…' : 'Sync inbox'}
+              </button>
               <button type="button" className="sb-email-btn" onClick={() => load()} disabled={loading}>Refresh</button>
             </div>
           </header>
+
+          {syncMsg && <div className="sb-email-syncmsg">{syncMsg}</div>}
 
           {err && (
             <div className="sb-email-error">
@@ -160,6 +184,11 @@ export default function EmailTab() {
                   </span>
                   <span className="sb-email-mid">
                     <span className="sb-email-subject">{m.subject || '(no subject)'}</span>
+                    {assoc[m.id] && (
+                      <span className="sb-email-assoc" title="Associated to an order">
+                        → {assoc[m.id].orderNumber || 'Order'}
+                      </span>
+                    )}
                     <span className="sb-email-snippet">{m.snippet}</span>
                   </span>
                   <span className="sb-email-date">{emailDate(m.date)}</span>
@@ -293,6 +322,14 @@ const EMAIL_CSS = `
     border: 0.5px solid rgba(179,38,30,0.3); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
   }
   .sb-email-error-hint { font-size: 12px; color: #8a8a85; margin-top: 4px; }
+  .sb-email-syncmsg {
+    font-size: 12.5px; color: #876307; background: rgba(154,114,9,0.07);
+    border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px;
+  }
+  .sb-email-assoc {
+    flex-shrink: 0; font-size: 11px; font-weight: 600; color: #1f7a3d;
+    background: rgba(31,122,61,0.1); border-radius: 4px; padding: 1px 7px; white-space: nowrap;
+  }
   .sb-email-empty { color: #8a8a85; font-size: 14px; padding: 40px 0; text-align: center; }
 
   .sb-email-list { background: #fff; border: 0.5px solid var(--sb-border, #e4e2dd); border-radius: 12px; overflow: hidden; max-height: 70vh; overflow-y: auto; }

@@ -185,6 +185,38 @@ export async function gmailListMessages(label = 'INBOX') {
   return { ok: true, messages: data?.messages || [] }
 }
 
+// Run inbound auto-association over recent INBOX mail (gmail-sync Edge
+// Function). Returns { ok, scanned?, attached?, byThread?, byAddress?, skipped?, error? }.
+export async function gmailSyncInbox() {
+  const { data, error } = await supabase.functions.invoke('gmail-sync', { body: {} })
+  if (error) {
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.error }
+  return { ok: true, ...data }
+}
+
+// For a set of Gmail message ids, return a map { messageId: { orderId,
+// orderNumber } } for any that are associated to an order (read-only — reads
+// the order_emails log written by gmail-sync / gmail-send). Drives the inbox
+// "→ order" badge.
+export async function getEmailAssociations(messageIds) {
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return {}
+  const { data, error } = await supabase
+    .from('order_emails')
+    .select('gmail_message_id, order_id, order:orders(order_number)')
+    .in('gmail_message_id', messageIds)
+    .not('order_id', 'is', null)
+  if (error) { console.warn('[email] getEmailAssociations:', error.message); return {} }
+  const map = {}
+  for (const r of data || []) {
+    if (r.gmail_message_id) map[r.gmail_message_id] = { orderId: r.order_id, orderNumber: r.order?.order_number || null }
+  }
+  return map
+}
+
 // Fetch a full thread for the reading pane via the gmail-thread Edge Function.
 export async function gmailGetThread(threadId) {
   if (!threadId) return { ok: false, error: 'Missing threadId' }
