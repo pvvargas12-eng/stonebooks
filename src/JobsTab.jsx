@@ -739,6 +739,7 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer, defaultTab = 'j
           onBack={onBack}
           tab={detailTab}
           onChangeTab={setDetailTab}
+          onReload={loadJob}
         />
         {/* Modals stay mounted across tabs so an in-flight override/promise
             flow doesn't disappear if the operator flips tabs mid-action. */}

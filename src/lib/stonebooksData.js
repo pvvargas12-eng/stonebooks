@@ -6849,6 +6849,32 @@ export async function getProofVersions(jobId) {
   return data || []
 }
 
+// Stage 2 Commit 2 — proof lifecycle stamps (sent / approved). Whitelisted
+// patch: only the lifecycle-timestamp + approver-name fields are writable here.
+// signature_method / signature_url are intentionally NOT writable — actual
+// signature capture is Phase 5A.3 (private bucket). Returns the updated row so
+// the caller can refresh local state without a re-fetch.
+export async function updateProofVersion(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing proof version id' }
+  // Each branch gates on `!== undefined`, so passing an explicit `null`
+  // (the undo path: { sent_at: null } / { approved_at: null }) IS permitted —
+  // it falls through and writes NULL, clearing the timestamp. Omitting a key
+  // leaves that column untouched.
+  const row = {}
+  if (patch.sent_at !== undefined)          row.sent_at = patch.sent_at || null
+  if (patch.approved_at !== undefined)      row.approved_at = patch.approved_at || null
+  if (patch.approved_by_name !== undefined) row.approved_by_name = (patch.approved_by_name || '').trim() || null
+  if (Object.keys(row).length === 0) return { ok: false, error: 'Nothing to update' }
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .update(row)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, data }
+}
+
 // Resolve the current staff member's display name for audit stamping
 // (uploaded_by, etc.). Mirrors the sidebar's display_name || email convention
 // (Stonebooks.jsx). Identity isn't prop-drilled to deep surfaces, so resolve it

@@ -50,8 +50,10 @@ import {
   fmtDate,
   uploadProofLayout,
   createProofVersion,
+  updateProofVersion,
   getProofVersions,
   getCurrentStaffName,
+  updateMilestone,
 } from './lib/stonebooksData'
 
 // ============================================================================
@@ -541,6 +543,45 @@ function addOnDisplay(item) {
 }
 
 // ============================================================================
+// PROOF LIFECYCLE ACTIONS (Stage 2 Commit 2 follow-up)
+// ============================================================================
+// Each forward action and each reversal is gated by an "Are you sure?" confirm
+// modal — mirrors the unlock-signed-contract / PaymentConfirmModal pattern
+// (parameterized config + reused modal shell, serious confirm button).
+// `needsName` folds the approver-name capture into the mark_approved confirm;
+// `danger` paints the reversal confirms red like the unlock modal.
+const LIFECYCLE_ACTIONS = {
+  mark_sent: {
+    title: 'Mark this layout as sent?',
+    body: 'Records the send date on this version and advances the proof in the job workflow.',
+    confirmLabel: 'Yes, mark sent',
+    needsName: false,
+    danger: false,
+  },
+  mark_approved: {
+    title: 'Mark this layout as approved?',
+    body: 'Who approved it? This records the approval on the version and advances the workflow. Signature capture comes later (Phase 5A.3).',
+    confirmLabel: 'Yes, mark approved',
+    needsName: true,
+    danger: false,
+  },
+  unmark_sent: {
+    title: 'Unmark sent?',
+    body: 'Clears the send date and reverts the proof_sent milestone back to not started. Do this only to correct a mistake.',
+    confirmLabel: 'Yes, unmark sent',
+    needsName: false,
+    danger: true,
+  },
+  unmark_approved: {
+    title: 'Unmark approved?',
+    body: 'Clears the approval (name + date) and reverts the proof_approved milestone back to not started. Do this only to correct a mistake.',
+    confirmLabel: 'Yes, unmark approved',
+    needsName: false,
+    danger: true,
+  },
+}
+
+// ============================================================================
 // CARD WRAPPER
 // ============================================================================
 // Generic white card with uppercase 11px eyebrow + body. The whole packet
@@ -568,7 +609,7 @@ function Card({ title, span = 1, children, className = '', titleRight = null }) 
 // MAIN
 // =============================================================================
 
-export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab, onPrint }) {
+export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab, onPrint, onReload }) {
   // ── Proof-version state (Stage 2 Commit 1 — upload-flow wiring) ───────────
   // Hooks run unconditionally before the !job early-return so render order is
   // stable. The version stack is loaded here (not part of getJob) and kept in
@@ -583,6 +624,12 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   const [versionsLoading, setVersionsLoading] = useState(!!jobId)
   // upload.status: 'idle' | 'uploading' | 'error' | 'success'
   const [upload, setUpload] = useState({ status: 'idle', error: null })
+  // Lifecycle action busy + error channel.
+  const [lifecycle, setLifecycle] = useState({ busy: false, error: null })
+  // Confirm modal — { action } where action keys into LIFECYCLE_ACTIONS, or
+  // null when closed. The app uses styled modals, not window.confirm/prompt.
+  const [confirm, setConfirm] = useState(null)
+  const [approverName, setApproverName] = useState('')
 
   useEffect(() => {
     if (!jobId) return
@@ -773,6 +820,34 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     }
   }
 
+  // ── Proof milestone wiring (Stage 2 Commit 2) ─────────────────────────────
+  // Resolve the proof milestone for a stage, honoring the bronze family. The
+  // proofSummary block above uses the same proof_X || bronze_proof_X pattern.
+  const proofMsForStage = (stage) => {
+    const byKey = new Map(milestones.map(m => [m.milestone_key, m]))
+    return byKey.get(`proof_${stage}`) || byKey.get(`bronze_proof_${stage}`) || null
+  }
+  // Best-effort advance to done via the existing updateMilestone convention
+  // (auto-stamps status_date). Skips if absent or already done. On the upload
+  // path a readiness gate (requiresOverride) is left un-forced — we don't push
+  // an override just because a layout landed. Returns true if it flipped.
+  const advanceProofMilestone = async (stage) => {
+    const ms = proofMsForStage(stage)
+    if (!ms || ms.status === 'done') return false
+    const res = await updateMilestone(jobId, ms.milestone_key, { status: 'done' })
+    return !!(res && res.ok)
+  }
+  // Reversal — done → not_started (the template resting status; no CHECK
+  // constraint on job_milestones.status, and 'not_started' is the default_status
+  // every proof milestone ships with). Same updateMilestone convention; this is
+  // not a forward-progress change so the readiness gate doesn't apply.
+  const revertProofMilestone = async (stage) => {
+    const ms = proofMsForStage(stage)
+    if (!ms || ms.status !== 'done') return false
+    const res = await updateMilestone(jobId, ms.milestone_key, { status: 'not_started' })
+    return !!(res && res.ok)
+  }
+
   const handleProofFile = async (file) => {
     if (!file || !jobId) return
     setUpload({ status: 'uploading', error: null })
@@ -790,6 +865,10 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     // mirror what create_proof_version did server-side.
     setVersions(prev => [data, ...prev.map(v => ({ ...v, is_current: false }))])
     setUpload({ status: 'success', error: null })
+    // Uploading a layout IS creating the proof — advance proof_created so the
+    // operational surface (proofSummary, Jobs queue) reflects it.
+    const flipped = await advanceProofMilestone('created')
+    if (flipped) onReload?.()
   }
 
   const onDropProof = (e) => {
@@ -804,6 +883,83 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     // Reset the input so re-selecting the same filename re-fires onChange.
     e.target.value = ''
     if (file) handleProofFile(file)
+  }
+
+  // Patch the current version's local state in place after a lifecycle change.
+  const patchCurrentVersion = (patch) => {
+    setVersions(prev => prev.map(v => (v.id === currentVersion?.id ? { ...v, ...patch } : v)))
+  }
+
+  // Open the confirm modal for an action (clears any stale name/error first).
+  const requestAction = (action) => {
+    setApproverName('')
+    setLifecycle(l => ({ ...l, error: null }))
+    setConfirm({ action })
+  }
+  const closeConfirm = () => {
+    if (lifecycle.busy) return
+    setConfirm(null)
+    setApproverName('')
+    setLifecycle(l => ({ ...l, error: null }))
+  }
+
+  // ── The four mutators (run only after confirmation) ──────────────────────
+  // Mark sent — stamp sent_at, flip proof_sent.
+  const doMarkSent = async () => {
+    if (!currentVersion) return
+    setLifecycle({ busy: true, error: null })
+    const res = await updateProofVersion(currentVersion.id, { sent_at: new Date().toISOString() })
+    if (!res.ok) { setLifecycle({ busy: false, error: res.error }); return }
+    patchCurrentVersion({ sent_at: res.data.sent_at })
+    await advanceProofMilestone('sent')
+    setLifecycle({ busy: false, error: null }); setConfirm(null); onReload?.()
+  }
+  // Mark approved — stamp approved_at + approved_by_name, flip proof_approved.
+  // signature_method / signature_url stay NULL (Phase 5A.3).
+  const doMarkApproved = async () => {
+    const name = approverName.trim()
+    if (!currentVersion || !name) return
+    setLifecycle({ busy: true, error: null })
+    const res = await updateProofVersion(currentVersion.id, {
+      approved_at: new Date().toISOString(),
+      approved_by_name: name,
+    })
+    if (!res.ok) { setLifecycle({ busy: false, error: res.error }); return }
+    patchCurrentVersion({ approved_at: res.data.approved_at, approved_by_name: res.data.approved_by_name })
+    await advanceProofMilestone('approved')
+    setLifecycle({ busy: false, error: null }); setConfirm(null); setApproverName(''); onReload?.()
+  }
+  // Unmark sent — clear sent_at, revert proof_sent. Order-guarded: can't unmark
+  // sent while approved is still set (UI hides the button, this is the backstop).
+  const doUnmarkSent = async () => {
+    if (!currentVersion) return
+    if (currentVersion.approved_at) {
+      setLifecycle({ busy: false, error: 'Unmark approved first.' }); return
+    }
+    setLifecycle({ busy: true, error: null })
+    const res = await updateProofVersion(currentVersion.id, { sent_at: null })
+    if (!res.ok) { setLifecycle({ busy: false, error: res.error }); return }
+    patchCurrentVersion({ sent_at: null })
+    await revertProofMilestone('sent')
+    setLifecycle({ busy: false, error: null }); setConfirm(null); onReload?.()
+  }
+  // Unmark approved — clear approved_at + approved_by_name, revert proof_approved.
+  const doUnmarkApproved = async () => {
+    if (!currentVersion) return
+    setLifecycle({ busy: true, error: null })
+    const res = await updateProofVersion(currentVersion.id, { approved_at: null, approved_by_name: null })
+    if (!res.ok) { setLifecycle({ busy: false, error: res.error }); return }
+    patchCurrentVersion({ approved_at: null, approved_by_name: null })
+    await revertProofMilestone('approved')
+    setLifecycle({ busy: false, error: null }); setConfirm(null); onReload?.()
+  }
+
+  const runConfirmedAction = () => {
+    if (!confirm || lifecycle.busy) return
+    if (confirm.action === 'mark_sent')       return doMarkSent()
+    if (confirm.action === 'mark_approved')   return doMarkApproved()
+    if (confirm.action === 'unmark_sent')     return doUnmarkSent()
+    if (confirm.action === 'unmark_approved') return doUnmarkApproved()
   }
 
   const uploading = upload.status === 'uploading'
@@ -1167,28 +1323,114 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
             </div>
           )}
 
-          {/* Current version — real image + version number. */}
+          {/* Current version — real image + number + lifecycle (Stage 2
+              Commit 2). Drafted → Sent → Approved is driven by the row's
+              uploaded_at / sent_at / approved_at timestamps. */}
           {versionsLoading ? (
             <div className="sb-design-no-upload">Loading versions…</div>
           ) : currentVersion ? (
-            <div className="sb-design-approved-row">
-              <div className="sb-design-approved-thumb">
-                <img
-                  src={currentVersion.layout_image_url}
-                  alt={`Layout v${currentVersion.version_number}`}
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-              <div className="sb-design-approved-info">
-                <div className="sb-design-approved-label">
-                  Current layout · v{currentVersion.version_number}
+            <div className="sb-design-current">
+              <div className="sb-design-approved-row">
+                <div className="sb-design-approved-thumb">
+                  <img
+                    src={currentVersion.layout_image_url}
+                    alt={`Layout v${currentVersion.version_number}`}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                  />
                 </div>
-                <div className="sb-design-approved-meta">
-                  {currentVersion.uploaded_by ? `Uploaded by ${currentVersion.uploaded_by}` : 'Uploaded'}
-                  {currentVersion.uploaded_at ? ` · ${fmtDate(currentVersion.uploaded_at)}` : ''}
+                <div className="sb-design-approved-info">
+                  <div className="sb-design-approved-label">
+                    Current layout · v{currentVersion.version_number}
+                  </div>
+                  <div className="sb-design-approved-meta">
+                    {currentVersion.uploaded_by ? `Uploaded by ${currentVersion.uploaded_by}` : 'Uploaded'}
+                    {currentVersion.uploaded_at ? ` · ${fmtDate(currentVersion.uploaded_at)}` : ''}
+                  </div>
                 </div>
               </div>
+
+              {/* Lifecycle stepper — state from timestamps. */}
+              <ol className="sb-design-lifecycle">
+                <li className="sb-design-life-step sb-design-life-done">
+                  <span className="sb-design-life-dot" aria-hidden="true">●</span>
+                  <span className="sb-design-life-label">Drafted</span>
+                  {currentVersion.uploaded_at && (
+                    <span className="sb-design-life-date">{fmtDate(currentVersion.uploaded_at)}</span>
+                  )}
+                </li>
+                <li className={`sb-design-life-step ${currentVersion.sent_at ? 'sb-design-life-done' : 'sb-design-life-todo'}`}>
+                  <span className="sb-design-life-dot" aria-hidden="true">{currentVersion.sent_at ? '●' : '○'}</span>
+                  <span className="sb-design-life-label">Sent</span>
+                  {currentVersion.sent_at && (
+                    <span className="sb-design-life-date">{fmtDate(currentVersion.sent_at)}</span>
+                  )}
+                </li>
+                <li className={`sb-design-life-step ${currentVersion.approved_at ? 'sb-design-life-done' : 'sb-design-life-todo'}`}>
+                  <span className="sb-design-life-dot" aria-hidden="true">{currentVersion.approved_at ? '●' : '○'}</span>
+                  <span className="sb-design-life-label">Approved</span>
+                  {currentVersion.approved_at && (
+                    <span className="sb-design-life-date">
+                      {currentVersion.approved_by_name ? `by ${currentVersion.approved_by_name} · ` : ''}
+                      {fmtDate(currentVersion.approved_at)}
+                    </span>
+                  )}
+                </li>
+              </ol>
+
+              {/* Actions — order-enforced both directions. Forward: Sent
+                  before Approved. Reversal: can only unmark sent once approval
+                  is cleared (Unmark sent only shows in the sent-not-approved
+                  state). Every action is confirmed before it fires. */}
+              <div className="sb-design-life-actions">
+                {!currentVersion.sent_at && (
+                  <button
+                    type="button"
+                    className="sb-design-action-btn"
+                    onClick={() => requestAction('mark_sent')}
+                    disabled={lifecycle.busy}
+                  >
+                    Mark sent
+                  </button>
+                )}
+                {currentVersion.sent_at && !currentVersion.approved_at && (
+                  <>
+                    <button
+                      type="button"
+                      className="sb-design-action-btn sb-design-action-btn-approve"
+                      onClick={() => requestAction('mark_approved')}
+                      disabled={lifecycle.busy}
+                    >
+                      Mark approved
+                    </button>
+                    <button
+                      type="button"
+                      className="sb-design-action-btn sb-design-action-btn-danger"
+                      onClick={() => requestAction('unmark_sent')}
+                      disabled={lifecycle.busy}
+                    >
+                      Unmark sent
+                    </button>
+                  </>
+                )}
+                {currentVersion.approved_at && (
+                  <button
+                    type="button"
+                    className="sb-design-action-btn sb-design-action-btn-danger"
+                    onClick={() => requestAction('unmark_approved')}
+                    disabled={lifecycle.busy}
+                  >
+                    Unmark approved
+                  </button>
+                )}
+              </div>
+              {/* Errors during a confirmed action render inside the modal;
+                  this is the fallback for any error left after it closes. */}
+              {!confirm && lifecycle.error && (
+                <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">
+                  {lifecycle.error}
+                </div>
+              )}
             </div>
           ) : (
             <div className="sb-design-no-upload">No layout uploaded yet</div>
@@ -1328,6 +1570,56 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
               version download link. */}
         </Card>
       </div>
+
+      {/* Confirm modal — one shell for all four lifecycle actions, mirroring
+          the unlock-signed-contract / PaymentConfirmModal pattern. mark_approved
+          folds the approver-name input in; reversals paint the confirm red. */}
+      {confirm && (() => {
+        const cfg = LIFECYCLE_ACTIONS[confirm.action]
+        const nameMissing = cfg.needsName && !approverName.trim()
+        return (
+          <div className="sb-design-modal-overlay sb-print-hide" onClick={closeConfirm}>
+            <div className="sb-design-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="sb-design-modal-title">{cfg.title}</div>
+              <div className="sb-design-modal-body">{cfg.body}</div>
+              {cfg.needsName && (
+                <input
+                  type="text"
+                  className="sb-design-modal-input"
+                  placeholder="Approver name"
+                  value={approverName}
+                  autoFocus
+                  onChange={(e) => setApproverName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !nameMissing) runConfirmedAction() }}
+                />
+              )}
+              {lifecycle.error && (
+                <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">
+                  {lifecycle.error}
+                </div>
+              )}
+              <div className="sb-design-modal-actions">
+                <button
+                  type="button"
+                  className="sb-design-modal-cancel"
+                  onClick={closeConfirm}
+                  disabled={lifecycle.busy}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={`sb-design-action-btn${cfg.danger ? ' sb-design-action-btn-danger' : (cfg.needsName ? ' sb-design-action-btn-approve' : '')}`}
+                  onClick={runConfirmedAction}
+                  disabled={lifecycle.busy || nameMissing}
+                >
+                  {lifecycle.busy ? 'Working…' : cfg.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -2033,6 +2325,114 @@ const localStyles = `
     color: var(--sb-text-muted);
     font-size: 12px;
   }
+  /* Stage 2 Commit 2 — lifecycle stepper + actions + approver modal. */
+  .sb-design-lifecycle {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 12px 0 0;
+    border-top: 0.5px solid var(--sb-border);
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .sb-design-life-step {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 13px;
+  }
+  .sb-design-life-dot { font-size: 10px; }
+  .sb-design-life-done .sb-design-life-dot { color: #1f7a3d; }
+  .sb-design-life-todo .sb-design-life-dot { color: var(--sb-border); }
+  .sb-design-life-done .sb-design-life-label { color: #111; font-weight: 600; }
+  .sb-design-life-todo .sb-design-life-label { color: var(--sb-text-muted); }
+  .sb-design-life-date { color: var(--sb-text-muted); font-size: 12px; }
+  .sb-design-life-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .sb-design-action-btn {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 0.5px solid #9A7209;
+    background: #9A7209;
+    color: #fff;
+    cursor: pointer;
+    transition: opacity 0.12s;
+  }
+  .sb-design-action-btn:hover { opacity: 0.9; }
+  .sb-design-action-btn:disabled { opacity: 0.5; cursor: default; }
+  .sb-design-action-btn-approve {
+    background: #1f7a3d;
+    border-color: #1f7a3d;
+  }
+  /* Reversal — solid filled red (danger token), same geometry as the green
+     Mark-approved button. Used by the in-row Unmark sent / Unmark approved
+     triggers and the reversal confirm button. Mirrors the unlock-signed-
+     contract red. */
+  .sb-design-action-btn-danger {
+    background: #b3261e;
+    border-color: #b3261e;
+  }
+  .sb-design-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15,20,25,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .sb-design-modal {
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px;
+    width: min(420px, 92vw);
+    box-shadow: 0 12px 48px rgba(0,0,0,0.2);
+  }
+  .sb-design-modal-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #111;
+    margin-bottom: 8px;
+  }
+  .sb-design-modal-body {
+    font-size: 13px;
+    color: var(--sb-text-muted);
+    margin-bottom: 14px;
+  }
+  .sb-design-modal-input {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 14px;
+    padding: 9px 12px;
+    border: 0.5px solid var(--sb-border);
+    border-radius: 8px;
+    margin-bottom: 14px;
+  }
+  .sb-design-modal-input:focus-visible {
+    outline: 2px solid #9A7209;
+    outline-offset: 1px;
+  }
+  .sb-design-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .sb-design-modal-cancel {
+    font-size: 13px;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 0.5px solid var(--sb-border);
+    background: #fff;
+    color: #111;
+    cursor: pointer;
+  }
+  .sb-design-modal-cancel:disabled { opacity: 0.5; cursor: default; }
   .sb-design-refs {
     margin-top: 16px;
     padding-top: 16px;
