@@ -86,3 +86,57 @@ export function base64UrlEncode(str: string): string {
   for (const b of bytes) bin += String.fromCharCode(b)
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
+
+// Decode a base64url string (Gmail message-part body data) → UTF-8 text.
+export function base64UrlDecode(data: string): string {
+  if (!data) return ''
+  const b64 = data.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+  const bin = atob(padded)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new TextDecoder().decode(bytes)
+}
+
+// Read a header value (case-insensitive) from a Gmail payload.headers array.
+export function getHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string {
+  if (!headers) return ''
+  const h = headers.find((x) => x.name?.toLowerCase() === name.toLowerCase())
+  return h?.value ?? ''
+}
+
+// Walk a Gmail message payload and extract the best body text. Prefers
+// text/plain; falls back to text/html (tags stripped). Recurses multipart.
+export function extractBody(payload: any): string {
+  if (!payload) return ''
+  const fromData = (part: any) => (part?.body?.data ? base64UrlDecode(part.body.data) : '')
+  // Single-part message.
+  if (payload.body?.data && (!payload.parts || payload.parts.length === 0)) {
+    const txt = fromData(payload)
+    return payload.mimeType === 'text/html' ? stripHtml(txt) : txt
+  }
+  // Multipart — search recursively for text/plain, then text/html.
+  const find = (parts: any[], mime: string): string => {
+    for (const p of parts || []) {
+      if (p.mimeType === mime && p.body?.data) return fromData(p)
+      if (p.parts) { const nested = find(p.parts, mime); if (nested) return nested }
+    }
+    return ''
+  }
+  const plain = find(payload.parts || [], 'text/plain')
+  if (plain) return plain
+  const html = find(payload.parts || [], 'text/html')
+  return html ? stripHtml(html) : ''
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}

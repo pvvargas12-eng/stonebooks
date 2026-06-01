@@ -26,6 +26,7 @@ import CalendarTab from './CalendarTab'
 import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
+import EmailTab from './EmailTab'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
 import TodayTab from './TodayTab'
@@ -201,6 +202,7 @@ const NAV_PRIMARY = [
   { key: 'jobs',      label: 'Jobs' },
   { key: 'scheduler', label: 'Scheduler' },
   { key: 'calendar',  label: 'Calendar' },
+  { key: 'email',     label: 'Email' },
   { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
 ]
@@ -611,6 +613,7 @@ export default function Stonebooks() {
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} />}
 {tab === 'scheduler' && <SchedulerTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onSwitchTab={setTab} />}
 {tab === 'calendar'  && <CalendarTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} />}
+{tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[

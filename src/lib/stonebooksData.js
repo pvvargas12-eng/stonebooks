@@ -170,6 +170,34 @@ export async function getOrderEmails(orderId) {
   return data || []
 }
 
+// List the connected mailbox's recent messages for a folder (read-only).
+// label: 'INBOX' | 'SENT' (default INBOX). Tokens stay server-side in the
+// gmail-list Edge Function. Returns { ok, messages?, error? }.
+export async function gmailListMessages(label = 'INBOX') {
+  const folder = label === 'SENT' ? 'SENT' : 'INBOX'
+  const { data, error } = await supabase.functions.invoke('gmail-list', { body: { label: folder } })
+  if (error) {
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.error }
+  return { ok: true, messages: data?.messages || [] }
+}
+
+// Fetch a full thread for the reading pane via the gmail-thread Edge Function.
+export async function gmailGetThread(threadId) {
+  if (!threadId) return { ok: false, error: 'Missing threadId' }
+  const { data, error } = await supabase.functions.invoke('gmail-thread', { body: { threadId } })
+  if (error) {
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.error }
+  return { ok: true, messages: data?.messages || [] }
+}
+
 // Send an order email via the gmail-send Edge Function. Tokens stay server-side;
 // the browser only passes the message fields. Returns { ok, data?, error? }.
 export async function sendOrderEmail({ orderId, to, subject, body }) {
