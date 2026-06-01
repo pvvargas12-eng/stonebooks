@@ -18,6 +18,7 @@ import {
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
+import OrderDetail from './OrderDetail.jsx'
 
 // ── Filter shapes ────────────────────────────────────────────────────────────
 
@@ -81,7 +82,11 @@ function severityRank(blocker) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer }) { // eslint-disable-line no-unused-vars
+export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer, onOpenJob }) {
+  // CORE FIX: clicking an order opens the read-only Order Detail View (internal
+  // state) — NOT the sales wizard. The wizard opens only from OrderDetail's
+  // "Edit in Sales Portal" action, which calls onOpenOrder(id) → openSales(id).
+  const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [orders, setOrders] = useState([])
   const [allJobs, setAllJobs] = useState([])
   const [loading, setLoading] = useState(true)
@@ -282,6 +287,19 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer }) 
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
+  // Order Detail View takes over the surface when a row is selected.
+  if (selectedOrderId) {
+    return (
+      <OrderDetail
+        orderId={selectedOrderId}
+        onBack={() => setSelectedOrderId(null)}
+        onEditInSales={(id) => onOpenOrder?.(id)}
+        onOpenJob={onOpenJob}
+        onOpenCustomer={onOpenCustomer}
+      />
+    )
+  }
+
   return (
     <div className="sb-crm-page">
       <div className="sb-crm-container">
@@ -446,7 +464,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer }) 
               )}
             </div>
           ) : (
-            filtered.map(o => <OrderRow key={o.id} order={o} onOpen={onOpenOrder} />)
+            filtered.map(o => <OrderRow key={o.id} order={o} onOpen={setSelectedOrderId} />)
           )}
         </div>
 
