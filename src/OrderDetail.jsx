@@ -12,12 +12,15 @@
 // Open approval packet, Add note, Upload attachment, Record payment.
 // =============================================================================
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   getOrderById, getJobByOrderId,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   fmtUSD, fmtDate, statusInfo, jobStatusInfo, customerName,
   computeOrderPressure, getNextRequiredAction,
+  getOrderNotes, addOrderNote, getCurrentStaffName,
+  uploadOrderAttachment, listOrderAttachments,
+  getProofVersions, getProofSignatureSignedUrl,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -98,6 +101,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [actionNote, setActionNote] = useState(null)
+  // Notes
+  const [notes, setNotes] = useState([])
+  const [noteBody, setNoteBody] = useState('')
+  const [noteBusy, setNoteBusy] = useState(false)
+  const noteRef = useRef(null)
+  // Attachments
+  const [proofVers, setProofVers] = useState([])
+  const [uploads, setUploads] = useState([])
+  const [uploadBusy, setUploadBusy] = useState(false)
+  const fileRef = useRef(null)
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -110,9 +123,49 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
       const j = await getJobByOrderId(orderId)
       if (cancelled) return
       setOrder(o); setJob(j); setLoading(false)
+      // Secondary loads (notes + attachment sources) — non-blocking.
+      const [nts, ups, pvs] = await Promise.all([
+        getOrderNotes(orderId),
+        listOrderAttachments(orderId),
+        j?.id ? getProofVersions(j.id) : Promise.resolve([]),
+      ])
+      if (cancelled) return
+      setNotes(nts); setUploads(ups); setProofVers(pvs)
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
+
+  const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
+  const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
+
+  const handleAddNote = async () => {
+    const body = noteBody.trim()
+    if (!body || noteBusy) return
+    setNoteBusy(true)
+    const author = await getCurrentStaffName()
+    const res = await addOrderNote({ orderId, body, author })
+    setNoteBusy(false)
+    if (!res.ok) { setActionNote(`Could not add note — ${res.error}.`); return }
+    setNoteBody('')
+    refreshNotes()
+  }
+  const focusNote = () => { setActionNote(null); noteRef.current?.focus() }
+
+  const onPickAttachment = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setUploadBusy(true); setActionNote(null)
+    const res = await uploadOrderAttachment(orderId, file)
+    setUploadBusy(false)
+    if (!res.ok) { setActionNote(`Upload failed — ${res.error}.`); return }
+    refreshUploads()
+  }
+  const openSignature = async (path) => {
+    const url = await getProofSignatureSignedUrl(path)
+    if (url) window.open(url, '_blank', 'noopener')
+    else setActionNote('Could not open signature (signed URL expired or blocked).')
+  }
 
   if (loading) {
     return (
@@ -194,6 +247,25 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   }
   const stub = (what) => () => setActionNote(`${what} is wired in a later commit.`)
 
+  // ── Aggregated attachments (existing buckets, no new bucket) ───────────────
+  // Layout proofs (orders-attachments-public) + signatures (proof-signatures,
+  // signed URL on open) + the generated contract PDF + general uploads.
+  const attachmentRows = [
+    ...proofVers.filter(v => v.layout_image_url).map(v => ({
+      key: `proof-${v.id}`, kind: 'Layout proof', label: `Layout v${v.version_number}`,
+      sub: v.uploaded_at ? fmtDate(v.uploaded_at) : null, href: v.layout_image_url,
+    })),
+    ...proofVers.filter(v => v.signature_url).map(v => ({
+      key: `sig-${v.id}`, kind: 'Signature', label: `Signature v${v.version_number}`,
+      sub: v.approved_by_name ? `by ${v.approved_by_name}` : null, onOpen: () => openSignature(v.signature_url),
+    })),
+    { key: 'contract', kind: 'Document', label: 'Contract PDF', sub: 'generated on open', onOpen: handleOpenContract },
+    ...uploads.map((u, i) => ({
+      key: `up-${i}`, kind: 'Upload', label: u.name,
+      sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
+    })),
+  ]
+
   return (
     <div className="sb-od-page">
       <style>{OD_CSS}</style>
@@ -233,9 +305,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
             Open related job
           </button>
           <span className="sb-od-actions-spacer" />
-          <button type="button" className="sb-od-btn sb-od-btn-stub" onClick={stub('Add note')}>Add note</button>
-          <button type="button" className="sb-od-btn sb-od-btn-stub" onClick={stub('Upload attachment')}>Upload attachment</button>
+          <button type="button" className="sb-od-btn" onClick={focusNote}>Add note</button>
+          <button type="button" className="sb-od-btn" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
+            {uploadBusy ? 'Uploading…' : 'Upload attachment'}
+          </button>
           <button type="button" className="sb-od-btn sb-od-btn-stub" onClick={stub('Record payment')}>Record payment</button>
+          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onPickAttachment} />
         </div>
         {actionNote && <div className="sb-od-actionnote">{actionNote}</div>}
 
@@ -318,8 +393,69 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
             )}
           </Section>
 
+          {/* 7 — Attachments (aggregated from existing buckets) */}
+          <Section title="Attachments" span={2}>
+            {attachmentRows.length === 0 ? (
+              <div className="sb-od-empty-inline">No attachments yet.</div>
+            ) : (
+              <div className="sb-od-attach-list">
+                {attachmentRows.map(a => (
+                  <div key={a.key} className="sb-od-attach-row">
+                    <span className="sb-od-attach-kind">{a.kind}</span>
+                    <span className="sb-od-attach-label">{a.label}</span>
+                    {a.sub && <span className="sb-od-attach-sub">{a.sub}</span>}
+                    {a.href ? (
+                      <a className="sb-od-link sb-od-attach-open" href={a.href} target="_blank" rel="noreferrer">Open ↗</a>
+                    ) : (
+                      <button type="button" className="sb-od-link sb-od-attach-open" onClick={a.onOpen}>Open ↗</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="sb-od-inline-actions">
+              <button type="button" className="sb-od-link" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
+                {uploadBusy ? 'Uploading…' : '+ Upload attachment'}
+              </button>
+            </div>
+          </Section>
+
+          {/* 8 — Notes */}
+          <Section title="Notes" span={2}>
+            <div className="sb-od-note-composer">
+              <textarea
+                ref={noteRef}
+                className="sb-od-note-input"
+                placeholder="Add a note about this order…"
+                value={noteBody}
+                onChange={e => setNoteBody(e.target.value)}
+                rows={2}
+              />
+              <button
+                type="button"
+                className="sb-od-btn sb-od-btn-primary sb-od-note-add"
+                onClick={handleAddNote}
+                disabled={noteBusy || !noteBody.trim()}
+              >
+                {noteBusy ? 'Saving…' : 'Add note'}
+              </button>
+            </div>
+            {notes.length === 0 ? (
+              <div className="sb-od-empty-inline">No notes yet.</div>
+            ) : (
+              <div className="sb-od-note-list">
+                {notes.map(n => (
+                  <div key={n.id} className="sb-od-note">
+                    <div className="sb-od-note-body">{n.body}</div>
+                    <div className="sb-od-note-meta">{n.author || 'Staff'} · {fmtDate(n.created_at)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+
           {/* 6 — Email traffic */}
-          <Section title="Email traffic">
+          <Section title="Email traffic" span={2}>
             <div className="sb-od-empty-inline">Email integration coming soon.</div>
           </Section>
         </div>
@@ -397,5 +533,32 @@ const OD_CSS = `
   .sb-od-hint { font-size: 11px; color: #b08a2e; font-style: italic; }
   .sb-od-link { background: none; border: none; color: #9A7209; font: inherit; font-size: 13.5px; cursor: pointer; padding: 0; text-decoration: underline; }
   .sb-od-link:hover { color: #876307; }
+  .sb-od-link:disabled { opacity: 0.5; cursor: default; }
   .sb-od-inline-actions { margin-top: 12px; padding-top: 10px; border-top: 0.5px solid #f1efeb; }
+
+  /* Attachments */
+  .sb-od-attach-list { display: flex; flex-direction: column; }
+  .sb-od-attach-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13.5px; }
+  .sb-od-attach-row + .sb-od-attach-row { border-top: 0.5px solid #f1efeb; }
+  .sb-od-attach-kind {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    color: #8a8a85; background: #f4f2ee; border-radius: 4px; padding: 2px 7px; flex-shrink: 0; min-width: 92px; text-align: center;
+  }
+  .sb-od-attach-label { color: #222; flex: 1 1 auto; word-break: break-word; }
+  .sb-od-attach-sub { color: #8a8a85; font-size: 12px; flex-shrink: 0; }
+  .sb-od-attach-open { flex-shrink: 0; }
+
+  /* Notes */
+  .sb-od-note-composer { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+  .sb-od-note-input {
+    flex: 1 1 auto; font: inherit; font-size: 13.5px; padding: 9px 12px; border-radius: 8px;
+    border: 0.5px solid var(--sb-border, #d8d6d1); resize: vertical; min-height: 38px;
+  }
+  .sb-od-note-input:focus-visible { outline: 2px solid #9A7209; outline-offset: 1px; }
+  .sb-od-note-add { flex-shrink: 0; }
+  .sb-od-note-list { display: flex; flex-direction: column; }
+  .sb-od-note { padding: 10px 0; }
+  .sb-od-note + .sb-od-note { border-top: 0.5px solid #f1efeb; }
+  .sb-od-note-body { font-size: 13.5px; color: #222; white-space: pre-wrap; word-break: break-word; }
+  .sb-od-note-meta { font-size: 11.5px; color: #8a8a85; margin-top: 4px; }
 `

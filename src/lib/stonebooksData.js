@@ -156,6 +156,64 @@ export async function getOrderById(id) {
   return data
 }
 
+// ── Order notes (20260601_order_notes.sql) ────────────────────────────────
+export async function getOrderNotes(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('order_notes')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[orders] getOrderNotes:', error.message); return [] }
+  return data || []
+}
+
+export async function addOrderNote({ orderId, body, author }) {
+  const text = (body || '').trim()
+  if (!orderId || !text) return { ok: false, error: 'Missing order or note text' }
+  const { data, error } = await supabase
+    .from('order_notes')
+    .insert({ order_id: orderId, body: text, author: author || null })
+    .select()
+    .single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, data }
+}
+
+// ── Order attachments — general uploads in the existing public bucket ──────
+// No new bucket: general attachments live in orders-attachments-public under
+// attachments/{orderId}/. (Layout proofs and signatures live in their own
+// existing buckets and are aggregated separately on the Order Detail View.)
+export async function uploadOrderAttachment(orderId, file) {
+  if (!orderId || !file) return { ok: false, error: 'Missing orderId or file' }
+  const safe = String(file.name || 'file').replace(/[^\w.-]+/g, '_')
+  const path = `attachments/${orderId}/${crypto.randomUUID()}_${safe}`
+  const { error } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (error) return { ok: false, error: error.message }
+  const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  return { ok: true, url: data.publicUrl, path, name: safe }
+}
+
+export async function listOrderAttachments(orderId) {
+  if (!orderId) return []
+  const dir = `attachments/${orderId}`
+  const { data, error } = await supabase.storage
+    .from('orders-attachments-public')
+    .list(dir, { sortBy: { column: 'created_at', order: 'desc' } })
+  if (error) { console.warn('[orders] listOrderAttachments:', error.message); return [] }
+  return (data || [])
+    .filter(f => f && f.name && f.id) // skip folder placeholders
+    .map(f => {
+      const path = `${dir}/${f.name}`
+      const { data: u } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+      // Stored name is `${uuid}_${original}` — strip the uuid prefix for display.
+      const display = f.name.replace(/^[0-9a-f-]{36}_/i, '')
+      return { name: display, url: u.publicUrl, path, createdAt: f.created_at || null }
+    })
+}
+
 // The job spawned from an order (read-only), with its milestones — drives the
 // Order Detail "Related job" card (stage / next task / blockers). Returns the
 // earliest job for the order (orders spawn one job today; mausoleum-door orders
