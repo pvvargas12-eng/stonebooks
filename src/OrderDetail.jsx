@@ -21,6 +21,7 @@ import {
   getOrderNotes, addOrderNote, getCurrentStaffName,
   uploadOrderAttachment, listOrderAttachments,
   getProofVersions, getProofSignatureSignedUrl,
+  getOrderEmails, sendOrderEmail,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -111,6 +112,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const [uploads, setUploads] = useState([])
   const [uploadBusy, setUploadBusy] = useState(false)
   const fileRef = useRef(null)
+  // Email
+  const [emails, setEmails] = useState([])
+  const [emailModal, setEmailModal] = useState(null) // { to, subject, body, busy, error, sent } | null
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -123,14 +127,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
       const j = await getJobByOrderId(orderId)
       if (cancelled) return
       setOrder(o); setJob(j); setLoading(false)
-      // Secondary loads (notes + attachment sources) — non-blocking.
-      const [nts, ups, pvs] = await Promise.all([
+      // Secondary loads (notes + attachment sources + emails) — non-blocking.
+      const [nts, ups, pvs, ems] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
+        getOrderEmails(orderId),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems)
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
@@ -165,6 +170,24 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
     const url = await getProofSignatureSignedUrl(path)
     if (url) window.open(url, '_blank', 'noopener')
     else setActionNote('Could not open signature (signed URL expired or blocked).')
+  }
+
+  // ── Email (Gmail Phase 2) ──────────────────────────────────────────────────
+  const openEmailComposer = () => {
+    setActionNote(null)
+    setEmailModal({ to: order?.customer?.email || '', subject: '', body: '', busy: false, error: null, sent: false })
+  }
+  const closeEmailComposer = () => setEmailModal(m => (m && m.busy ? m : null))
+  const handleSendEmail = async () => {
+    if (!emailModal) return
+    const to = (emailModal.to || '').trim()
+    const subject = (emailModal.subject || '').trim()
+    if (!to || !subject || emailModal.busy) return
+    setEmailModal(m => ({ ...m, busy: true, error: null }))
+    const res = await sendOrderEmail({ orderId, to, subject, body: emailModal.body })
+    if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
+    setEmailModal(m => ({ ...m, busy: false, sent: true }))
+    setEmails(await getOrderEmails(orderId))
   }
 
   if (loading) {
@@ -304,6 +327,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
             title={job ? '' : 'No production job yet'}>
             Open related job
           </button>
+          <button type="button" className="sb-od-btn" onClick={openEmailComposer}>Send email</button>
           <span className="sb-od-actions-spacer" />
           <button type="button" className="sb-od-btn" onClick={focusNote}>Add note</button>
           <button type="button" className="sb-od-btn" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
@@ -456,10 +480,80 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
 
           {/* 6 — Email traffic */}
           <Section title="Email traffic" span={2}>
-            <div className="sb-od-empty-inline">Email integration coming soon.</div>
+            <div className="sb-od-inline-actions" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none', marginBottom: 12 }}>
+              <button type="button" className="sb-od-link" onClick={openEmailComposer}>+ Send email</button>
+            </div>
+            {emails.length === 0 ? (
+              <div className="sb-od-empty-inline">No emails on this order yet. Inbound replies arrive in a later phase.</div>
+            ) : (
+              <div className="sb-od-email-list">
+                {emails.map(em => (
+                  <div key={em.id} className="sb-od-email-row">
+                    <span className={`sb-od-email-dir sb-od-email-dir-${em.direction || 'outbound'}`}>
+                      {em.direction === 'inbound' ? 'In' : 'Out'}
+                    </span>
+                    <div className="sb-od-email-main">
+                      <div className="sb-od-email-subject">{em.subject || '(no subject)'}</div>
+                      <div className="sb-od-email-sub">
+                        {em.direction === 'inbound' ? `from ${em.from_email || '—'}` : `to ${em.to_email || '—'}`}
+                        {em.sent_at ? ` · ${fmtDate(em.sent_at)}` : ''}
+                      </div>
+                      {em.snippet && <div className="sb-od-email-snippet">{em.snippet}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </Section>
         </div>
       </div>
+
+      {/* Send-email composer (Gmail Phase 2 — minimal). To prefilled from the
+          customer; calls gmail-send and confirms on success. Rich composer +
+          approval-sheet attachment come next commit. */}
+      {emailModal && (
+        <div className="sb-od-modal-overlay" onClick={closeEmailComposer}>
+          <div className="sb-od-modal" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Send email · {order.order_number || 'order'}</div>
+            {emailModal.sent ? (
+              <>
+                <div className="sb-msg sb-msg-ok" style={{ marginBottom: 14 }}>✓ Sent to {emailModal.to}</div>
+                <div className="sb-od-modal-actions">
+                  <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={() => setEmailModal(null)}>Done</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <label className="sb-od-modal-field">
+                  <span>To</span>
+                  <input type="email" className="sb-od-note-input" value={emailModal.to}
+                    onChange={e => setEmailModal(m => ({ ...m, to: e.target.value }))} placeholder="customer@example.com" />
+                </label>
+                <label className="sb-od-modal-field">
+                  <span>Subject</span>
+                  <input type="text" className="sb-od-note-input" value={emailModal.subject}
+                    onChange={e => setEmailModal(m => ({ ...m, subject: e.target.value }))} placeholder="Subject" />
+                </label>
+                <label className="sb-od-modal-field">
+                  <span>Message</span>
+                  <textarea className="sb-od-note-input" rows={6} value={emailModal.body}
+                    onChange={e => setEmailModal(m => ({ ...m, body: e.target.value }))} placeholder="Write your message…" />
+                </label>
+                {emailModal.error && (
+                  <div className="sb-msg sb-msg-err" style={{ marginBottom: 4 }}>{emailModal.error}</div>
+                )}
+                <div className="sb-od-modal-actions">
+                  <button type="button" className="sb-od-btn" onClick={closeEmailComposer} disabled={emailModal.busy}>Cancel</button>
+                  <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={handleSendEmail}
+                    disabled={emailModal.busy || !emailModal.to.trim() || !emailModal.subject.trim()}>
+                    {emailModal.busy ? 'Sending…' : 'Send'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -561,4 +655,36 @@ const OD_CSS = `
   .sb-od-note + .sb-od-note { border-top: 0.5px solid #f1efeb; }
   .sb-od-note-body { font-size: 13.5px; color: #222; white-space: pre-wrap; word-break: break-word; }
   .sb-od-note-meta { font-size: 11.5px; color: #8a8a85; margin-top: 4px; }
+
+  /* Email traffic */
+  .sb-od-email-list { display: flex; flex-direction: column; }
+  .sb-od-email-row { display: flex; gap: 12px; padding: 10px 0; align-items: flex-start; }
+  .sb-od-email-row + .sb-od-email-row { border-top: 0.5px solid #f1efeb; }
+  .sb-od-email-dir {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    border-radius: 4px; padding: 2px 7px; flex-shrink: 0; margin-top: 1px;
+  }
+  .sb-od-email-dir-outbound { color: #876307; background: rgba(154,114,9,0.1); }
+  .sb-od-email-dir-inbound { color: #1f7a3d; background: rgba(31,122,61,0.1); }
+  .sb-od-email-main { flex: 1 1 auto; min-width: 0; }
+  .sb-od-email-subject { font-size: 13.5px; font-weight: 600; color: #222; }
+  .sb-od-email-sub { font-size: 12px; color: #8a8a85; margin-top: 2px; }
+  .sb-od-email-snippet { font-size: 12.5px; color: #555; margin-top: 4px; word-break: break-word; }
+
+  /* Send-email composer modal */
+  .sb-od-modal-overlay {
+    position: fixed; inset: 0; background: rgba(15,20,25,0.5);
+    display: flex; align-items: center; justify-content: center; z-index: 1000;
+  }
+  .sb-od-modal {
+    background: #fff; border-radius: 12px; padding: 22px; width: min(520px, 94vw);
+    box-shadow: 0 12px 48px rgba(0,0,0,0.2);
+  }
+  .sb-od-modal-title { font-size: 16px; font-weight: 600; color: #111; margin-bottom: 14px; }
+  .sb-od-modal-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .sb-od-modal-field > span {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; font-weight: 600;
+  }
+  .sb-od-modal-field .sb-od-note-input { margin-bottom: 0; width: 100%; box-sizing: border-box; }
+  .sb-od-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 `

@@ -156,6 +156,36 @@ export async function getOrderById(id) {
   return data
 }
 
+// ── Order emails (Gmail Phase 2 — 20260601_order_emails.sql) ───────────────
+// Read the per-order email log (authenticated SELECT). Writes happen only via
+// the gmail-send Edge Function (service role).
+export async function getOrderEmails(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('order_emails')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('sent_at', { ascending: false, nullsFirst: false })
+  if (error) { console.warn('[email] getOrderEmails:', error.message); return [] }
+  return data || []
+}
+
+// Send an order email via the gmail-send Edge Function. Tokens stay server-side;
+// the browser only passes the message fields. Returns { ok, data?, error? }.
+export async function sendOrderEmail({ orderId, to, subject, body }) {
+  const { data, error } = await supabase.functions.invoke('gmail-send', {
+    body: { order_id: orderId || null, to, subject, body },
+  })
+  if (error) {
+    // FunctionsHttpError carries the non-2xx; surface the body's error if present.
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.error }
+  return { ok: true, data }
+}
+
 // ── Order notes (20260601_order_notes.sql) ────────────────────────────────
 export async function getOrderNotes(orderId) {
   if (!orderId) return []

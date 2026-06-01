@@ -951,7 +951,13 @@ function IntegrationsSettings({ user, profile }) {
       client_id: clientId,
       redirect_uri: redirectUri,
       response_type: 'code',
-      scope: 'openid email profile',   // Phase 1 — minimal. gmail.* added later.
+      // Phase 2 — basic profile + gmail.send + gmail.readonly. readonly is for
+      // the upcoming inbox so staff re-consent only once. Space-separated.
+      scope: [
+        'openid', 'email', 'profile',
+        'https://www.googleapis.com/auth/gmail.send',
+        'https://www.googleapis.com/auth/gmail.readonly',
+      ].join(' '),
       access_type: 'offline',          // needed for a refresh token
       prompt: 'consent',               // force a refresh token every consent
       include_granted_scopes: 'true',
@@ -971,7 +977,7 @@ function IntegrationsSettings({ user, profile }) {
   return (
     <SettingsRow
       label="Google account"
-      hint="Connect a @shevcomonuments.com mailbox. Phase 1 authorizes basic profile only (openid email profile) — no mailbox access. Sending/reading is added later via one-click re-consent."
+      hint="Connect a @shevcomonuments.com mailbox. Authorizes sending and reading mail (gmail.send + gmail.readonly) so Stonebooks can send order emails and, soon, show replies. If you connected before, click Connect once more to grant the new permissions."
     >
       {connectedEmail ? (
         <div className="sb-form-stack">
