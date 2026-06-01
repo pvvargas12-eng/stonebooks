@@ -21,7 +21,7 @@ import {
   getOrderNotes, addOrderNote, getCurrentStaffName,
   uploadOrderAttachment, listOrderAttachments,
   getProofVersions, getProofSignatureSignedUrl,
-  getOrderEmails, sendOrderEmail,
+  getOrderEmails, sendOrderEmail, aiDraftEmail,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -115,6 +115,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   // Email
   const [emails, setEmails] = useState([])
   const [emailModal, setEmailModal] = useState(null) // { to, subject, body, busy, error, sent } | null
+  const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -188,6 +189,22 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
     setEmails(await getOrderEmails(orderId))
+  }
+
+  // AI draft — generates via ai-draft, then opens the existing composer
+  // prefilled. Nothing auto-sends; staff edits and sends via gmail-send.
+  const draft = async (mode) => {
+    if (drafting) return
+    setDrafting(mode); setActionNote(null)
+    const res = await aiDraftEmail({ orderId, mode, balance, total })
+    setDrafting(null)
+    if (!res.ok) { setActionNote(`Could not draft — ${res.error || 'error'}.`); return }
+    setEmailModal({
+      to: order?.customer?.email || '',
+      subject: res.subject || '',
+      body: res.body || '',
+      busy: false, error: null, sent: false,
+    })
   }
 
   if (loading) {
@@ -288,6 +305,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
       sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
     })),
   ]
+
+  // ── AI draft modes — state-aware (only what the order warrants) ────────────
+  const hasInbound = emails.some(e => e.direction === 'inbound')
+  const hasProof = proofVers.length > 0
+  const proofApproved = proofVers.some(v => v.approved_at)
+  const installedDone = (job?.milestones || []).some(m => m.milestone_key === 'installed' && m.status === 'done')
+    || job?.overall_status === 'installed'
+  const draftModes = [
+    hasInbound && { mode: 'reply', label: 'Draft reply (AI)', primary: true },
+    hasProof && !proofApproved && { mode: 'request_approval', label: 'Request approval' },
+    balance > 0 && { mode: 'balance_reminder', label: 'Balance reminder' },
+    installedDone && { mode: 'install_complete', label: 'Install complete' },
+    !installedDone && { mode: 'request_photo', label: 'Request photo' },
+  ].filter(Boolean)
 
   return (
     <div className="sb-od-page">
@@ -480,11 +511,25 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
 
           {/* 6 — Email traffic */}
           <Section title="Email traffic" span={2}>
-            <div className="sb-od-inline-actions" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none', marginBottom: 12 }}>
+            {/* AI drafts — state-aware. Each generates via Claude Haiku then
+                opens the composer prefilled; the human always sends. */}
+            <div className="sb-od-draft-row">
+              {draftModes.map(d => (
+                <button
+                  key={d.mode}
+                  type="button"
+                  className={`sb-od-btn${d.primary ? ' sb-od-btn-primary' : ''}`}
+                  onClick={() => draft(d.mode)}
+                  disabled={!!drafting}
+                >
+                  {drafting === d.mode ? 'Drafting…' : d.label}
+                </button>
+              ))}
+              <span className="sb-od-actions-spacer" />
               <button type="button" className="sb-od-link" onClick={openEmailComposer}>+ Send email</button>
             </div>
             {emails.length === 0 ? (
-              <div className="sb-od-empty-inline">No emails on this order yet. Inbound replies arrive in a later phase.</div>
+              <div className="sb-od-empty-inline">No emails on this order yet.</div>
             ) : (
               <div className="sb-od-email-list">
                 {emails.map(em => (
@@ -657,6 +702,7 @@ const OD_CSS = `
   .sb-od-note-meta { font-size: 11.5px; color: #8a8a85; margin-top: 4px; }
 
   /* Email traffic */
+  .sb-od-draft-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
   .sb-od-email-list { display: flex; flex-direction: column; }
   .sb-od-email-row { display: flex; gap: 12px; padding: 10px 0; align-items: flex-start; }
   .sb-od-email-row + .sb-od-email-row { border-top: 0.5px solid #f1efeb; }

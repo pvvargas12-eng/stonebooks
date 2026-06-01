@@ -230,6 +230,23 @@ export async function gmailGetThread(threadId) {
   return { ok: true, messages: data?.messages || [] }
 }
 
+// Generate an AI draft email for an order via the ai-draft Edge Function
+// (Claude Haiku). mode ∈ reply | request_photo | request_approval |
+// balance_reminder | install_complete. The Anthropic key stays server-side; the
+// draft is never auto-sent. Returns { ok, subject?, body?, error? }.
+export async function aiDraftEmail({ orderId, mode, balance, total }) {
+  const { data, error } = await supabase.functions.invoke('ai-draft', {
+    body: { order_id: orderId, mode, balance, total },
+  })
+  if (error) {
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.detail || ctx.error } catch { /* ignore */ }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.detail || data.error }
+  return { ok: true, subject: data?.subject || '', body: data?.body || '' }
+}
+
 // Send an order email via the gmail-send Edge Function. Tokens stay server-side;
 // the browser only passes the message fields. Returns { ok, data?, error? }.
 export async function sendOrderEmail({ orderId, to, subject, body }) {
