@@ -234,9 +234,9 @@ export async function gmailGetThread(threadId) {
 // (Claude Haiku). mode ∈ reply | request_photo | request_approval |
 // balance_reminder | install_complete. The Anthropic key stays server-side; the
 // draft is never auto-sent. Returns { ok, subject?, body?, error? }.
-export async function aiDraftEmail({ orderId, mode, balance, total }) {
+export async function aiDraftEmail({ orderId, mode, balance, total, draftText }) {
   const { data, error } = await supabase.functions.invoke('ai-draft', {
-    body: { order_id: orderId, mode, balance, total },
+    body: { order_id: orderId, mode, balance, total, draft_text: draftText },
   })
   if (error) {
     let detail = error.message

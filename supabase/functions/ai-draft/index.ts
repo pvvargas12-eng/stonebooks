@@ -37,6 +37,10 @@ Length is the priority. Keep it SHORT: 2–4 short sentences, one brief paragrap
 
 Use the order context provided. Sign off simply as the business (e.g., 'Shevchenko Monuments'). Return the email body only — no subject line, no 'Subject:', no notes.`
 
+// 'polish' mode rewrites the user's OWN draft — preserve their intent + every
+// fact/number/name, just improve clarity/flow/tone. Never invent.
+const POLISH_SYSTEM = `You are polishing an email the user drafted for Shevchenko Monuments (family-owned monument company, est. 1919). Rewrite it to be clear, warm, and professional — fix grammar, flow, and tone. CRITICAL: preserve the writer's intent, meaning, and every fact, number, and name. Do not add information, invent details, or change what they're saying. Keep it concise — a few short sentences, no filler. Return only the polished email body: no preamble, no notes, no subject line.`
+
 const MODE_INSTRUCTION: Record<string, string> = {
   reply: 'Write a reply to the family\'s most recent message (the latest inbound message in the thread below). Address what they said.',
   request_photo: 'Write a short, kind email asking the family to send a photo — for example of the existing marker or the grave/plot — so we can proceed accurately.',
@@ -83,10 +87,13 @@ Deno.serve(async (req) => {
   const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') ?? ''
   if (!ANTHROPIC_API_KEY) return json({ error: 'server_not_configured' }, 500)
 
-  let payload: { order_id?: string; mode?: string; balance?: number; total?: number }
+  let payload: { order_id?: string; mode?: string; balance?: number; total?: number; draft_text?: string }
   try { payload = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
   const { order_id, mode } = payload
-  if (!order_id || !mode || !MODE_INSTRUCTION[mode]) return json({ error: 'missing_or_bad_input' }, 400)
+  const isPolish = mode === 'polish'
+  const draftText = (payload.draft_text || '').trim()
+  if (!order_id || !mode || (!isPolish && !MODE_INSTRUCTION[mode])) return json({ error: 'missing_or_bad_input' }, 400)
+  if (isPolish && !draftText) return json({ error: 'missing_draft_text' }, 400)
 
   const rest = (path: string) => `${SUPABASE_URL}/rest/v1/${path}`
   const restHeaders = { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` }
@@ -154,16 +161,22 @@ Deno.serve(async (req) => {
       }
     }
 
-    const userText = `${MODE_INSTRUCTION[mode]}\n\nORDER CONTEXT:\n${ctxLines.join('\n')}`
-
-    // 5. Generate.
-    const ai = await callClaude(ANTHROPIC_API_KEY, SYSTEM, userText)
+    // 5. Generate. Polish rewrites the user's own draft (context is tone-only,
+    //    not a source of new facts); other modes generate fresh from context.
+    const system = isPolish ? POLISH_SYSTEM : SYSTEM
+    const userText = isPolish
+      ? `Polish the email below. Preserve its meaning and every fact, number, and name. The order context is for TONE ONLY — do not pull new facts from it.\n\nORDER CONTEXT (tone reference only):\n${ctxLines.join('\n')}\n\nEMAIL TO POLISH:\n${draftText}`
+      : `${MODE_INSTRUCTION[mode]}\n\nORDER CONTEXT:\n${ctxLines.join('\n')}`
+    const ai = await callClaude(ANTHROPIC_API_KEY, system, userText)
     if (!ai.ok) {
       console.error('[ai-draft] claude failed:', ai.error)
       return json({ error: 'ai_failed', detail: ai.error }, 502)
     }
 
-    // 6. Subject — per mode; replies echo the inbound subject.
+    // 6. Polish returns the body only (never overwrites the caller's subject).
+    if (isPolish) return json({ ok: true, body: ai.text })
+
+    // Generate modes — subject per mode; replies echo the inbound subject.
     let subject = MODE_SUBJECT[mode] || 'Your monument order'
     if (mode === 'reply') {
       const s = (latestInbound?.subject || '').replace(/^\s*(re:\s*)+/i, '').trim()

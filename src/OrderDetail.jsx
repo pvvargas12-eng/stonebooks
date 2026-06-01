@@ -191,6 +191,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
     setEmails(await getOrderEmails(orderId))
   }
 
+  // Polish — rewrite the user's CURRENT composer body via ai-draft (mode
+  // 'polish'); preserves their meaning/facts, just cleans it up. Replaces the
+  // body in place; never touches the subject. Distinct from the generate-from-
+  // scratch draft buttons.
+  const polishDraft = async () => {
+    if (!emailModal || emailModal.polishing) return
+    const text = (emailModal.body || '').trim()
+    if (!text) return
+    setEmailModal(m => ({ ...m, polishing: true, error: null }))
+    const res = await aiDraftEmail({ orderId, mode: 'polish', draftText: text })
+    if (!res.ok) { setEmailModal(m => ({ ...m, polishing: false, error: res.error || 'Polish failed' })); return }
+    setEmailModal(m => ({ ...m, polishing: false, body: res.body || m.body }))
+  }
+
   // AI draft — generates via ai-draft, then opens the existing composer
   // prefilled. Nothing auto-sends; staff edits and sends via gmail-send.
   const draft = async (mode) => {
@@ -588,9 +602,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
                   <div className="sb-msg sb-msg-err" style={{ marginBottom: 4 }}>{emailModal.error}</div>
                 )}
                 <div className="sb-od-modal-actions">
-                  <button type="button" className="sb-od-btn" onClick={closeEmailComposer} disabled={emailModal.busy}>Cancel</button>
+                  <button type="button" className="sb-od-btn" onClick={closeEmailComposer} disabled={emailModal.busy || emailModal.polishing}>Cancel</button>
+                  {/* Polish rewrites what's typed (distinct from the generate-from-scratch buttons). */}
+                  <button type="button" className="sb-od-btn" onClick={polishDraft}
+                    disabled={emailModal.busy || emailModal.polishing || !emailModal.body.trim()}>
+                    {emailModal.polishing ? 'Polishing…' : 'Polish with AI'}
+                  </button>
                   <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={handleSendEmail}
-                    disabled={emailModal.busy || !emailModal.to.trim() || !emailModal.subject.trim()}>
+                    disabled={emailModal.busy || emailModal.polishing || !emailModal.to.trim() || !emailModal.subject.trim()}>
                     {emailModal.busy ? 'Sending…' : 'Send'}
                   </button>
                 </div>
