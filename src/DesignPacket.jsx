@@ -54,7 +54,11 @@ import {
   getProofVersions,
   getCurrentStaffName,
   updateMilestone,
+  rowBalanceDue,
+  uploadProofSignature,
+  getProofSignatureSignedUrl,
 } from './lib/stonebooksData'
+import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
 
 // ============================================================================
 // LABEL DICTIONARIES
@@ -152,6 +156,87 @@ const POLISH_LABELS = {
   P2: 'P2 — Polished front + back',
   P3: 'P3 — Polished front, back, top',
   P5: 'P5 — Polished all sides except bottom',
+}
+
+// Standard monument trade-format helpers for the FROZEN approval-sheet
+// snapshot (die_size / base_size). Dimensions render feet-inches "F-I" joined
+// by " X "; sides/shape codes render as uppercase trade abbreviations to match
+// the real proofs (e.g. "2-4 X 0-8 X 2-4 SERP, P5").
+
+// inches → "F-I" (14→1-2, 8→0-8, 48→4-0, 30→2-6). Rounds to the nearest inch
+// and carries 12 up to the next foot. Null/blank/non-finite → null (skip).
+function inchesToFI(inches) {
+  if (inches == null || inches === '') return null
+  const n = Number(inches)
+  if (!Number.isFinite(n)) return null
+  let total = Math.round(n)
+  const feet = Math.floor(total / 12)
+  const inch = total - feet * 12
+  return `${feet}-${inch}`
+}
+
+// Trade-uppercase top-shape abbreviations (DIE line).
+const TOP_SHAPE_TRADE = {
+  'classic-serp':   'SERP',
+  'flat-top':       'FLAT TOP',
+  'roof-top':       'ROOF TOP',
+  'oval-top':       'OVAL',
+  cathedral:        'CATHEDRAL',
+  gothic:           'GOTHIC',
+  'cathedral-serp': 'CATH SERP',
+}
+// Trade-uppercase sides abbreviations. Unknown codes fall back to UPPER(humanize).
+const DIE_SIDES_TRADE = {
+  brp:                   'BRP',
+  'brp-vertical':        'BRP VERT',
+  'all-polish-no-sides': 'ALL POL',
+  'saw-back':            'SB',
+  'rough-back':          'RB',
+}
+const BASE_SIDES_TRADE = {
+  'polish-top-brp': 'POL TOP, BRP',
+  'all-polish':     'ALL POL',
+  'brp-sawback':    'BRP, SB',
+}
+
+// Trade-format DIE/BASE strings from an order's STRUCTURED fields. Used both to
+// freeze into the snapshot at upload AND at approval-sheet render time — so a
+// version whose frozen snapshot predates trade-format capture still renders the
+// correct spec from the live order. Reads the raw snake_case order row.
+//   DIE  = "F-I X F-I X F-I SHAPE, P-level[, SIDES]"  e.g. "4-0 X 0-6 X 2-6 SERP, P5"
+//   BASE = "F-I X F-I X F-I FINISH[, 2\" POL]"        or "Not included"
+function computeDieBaseTrade(order) {
+  const o = order || {}
+  // All four dimension columns, nulls skipped — orders populate a varying 3 of
+  // the 4 (e.g. width/thickness/height with depth null) — F-I, joined " X ".
+  const dieDims = [o.width_inches, o.depth_inches, o.thickness_inches, o.height_inches]
+    .map(inchesToFI).filter(Boolean).join(' X ')
+  const dieShape = o.top_shape ? (TOP_SHAPE_TRADE[o.top_shape] || humanizeCode(o.top_shape).toUpperCase()) : null
+  const dieSides = o.sides ? (DIE_SIDES_TRADE[o.sides] || humanizeCode(o.sides).toUpperCase()) : null
+  const dieHead = [dieDims, dieShape].filter(Boolean).join(' ')
+  const dieTail = [o.polish_level || null, dieSides].filter(Boolean).join(', ')
+  const die = [dieHead, dieTail].filter(Boolean).join(', ') || null
+
+  const bc = o.base_config || {}
+  let base
+  if (!bc.include) {
+    base = 'Not included'
+  } else {
+    let bw = null, bd = null
+    if (bc.sizeCode === 'custom') {
+      bw = inchesToFI(bc.width); bd = inchesToFI(bc.depth)
+    } else if (bc.sizeCode) {
+      const m = String(bc.sizeCode).replace(/^base-/, '').split('x')
+      if (m.length === 2) { bw = m[0]; bd = m[1] }   // already F-I in the code
+    }
+    const bh = inchesToFI(bc.heightCode)
+    const baseDims = [bw, bd, bh].filter(Boolean).join(' X ')
+    const fin = []
+    if (bc.sides) fin.push(BASE_SIDES_TRADE[bc.sides] || humanizeCode(bc.sides).toUpperCase())
+    if (bc.polishMargin2in) fin.push('2" POL')
+    base = [baseDims, fin.join(', ') || null].filter(Boolean).join(' ') || 'Included'
+  }
+  return { die, base }
 }
 
 const LAYOUT_LABELS = {
@@ -558,13 +643,6 @@ const LIFECYCLE_ACTIONS = {
     needsName: false,
     danger: false,
   },
-  mark_approved: {
-    title: 'Mark this layout as approved?',
-    body: 'Who approved it? This records the approval on the version and advances the workflow. Signature capture comes later (Phase 5A.3).',
-    confirmLabel: 'Yes, mark approved',
-    needsName: true,
-    danger: false,
-  },
   unmark_sent: {
     title: 'Unmark sent?',
     body: 'Clears the send date and reverts the proof_sent milestone back to not started. Do this only to correct a mistake.',
@@ -629,7 +707,13 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   // Confirm modal — { action } where action keys into LIFECYCLE_ACTIONS, or
   // null when closed. The app uses styled modals, not window.confirm/prompt.
   const [confirm, setConfirm] = useState(null)
-  const [approverName, setApproverName] = useState('')
+  // Sign modal (Phase 5A.3) — { sig, name, date, busy, error } | null. Approval
+  // now requires a captured signature, so "Mark approved" opens this instead of
+  // the name-only confirm.
+  const [signModal, setSignModal] = useState(null)
+  // Approval-sheet preview modal (Stage 2 Commit 3) — mirrors the contract
+  // preview iframe: generate the doc, render a blob URL, offer download/print.
+  const [sheet, setSheet] = useState({ open: false, url: null, err: null, busy: false, doc: null, filename: '' })
 
   useEffect(() => {
     if (!jobId) return
@@ -798,6 +882,11 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
         birth: d.dateOfBirth || null,
         death: d.dateOfDeath || null,
       }))
+
+    // Trade-format DIE/BASE frozen at upload (also computed live at render —
+    // see computeDieBaseTrade / openApprovalSheet).
+    const { die: dieSpec, base: baseSpec } = computeDieBaseTrade(order)
+
     return {
       order_number:      order.order_number || null,
       family_name:       familyName,
@@ -809,8 +898,8 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
       stone_color_label: graniteLabel,
       stone_shape:       order.shape || null,
       stone_shape_label: shapeLabel,
-      die_size:          dimsLine || null,
-      base_size:         baseSummary || null,
+      die_size:          dieSpec,
+      base_size:         baseSpec,
       cemetery_name:     cemetery?.name || null,
       add_ons:           addOnsForWgots.map(a => {
         const { label, qty, notes } = addOnDisplay(a)
@@ -890,20 +979,18 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     setVersions(prev => prev.map(v => (v.id === currentVersion?.id ? { ...v, ...patch } : v)))
   }
 
-  // Open the confirm modal for an action (clears any stale name/error first).
+  // Open the confirm modal for an action (clears any stale error first).
   const requestAction = (action) => {
-    setApproverName('')
     setLifecycle(l => ({ ...l, error: null }))
     setConfirm({ action })
   }
   const closeConfirm = () => {
     if (lifecycle.busy) return
     setConfirm(null)
-    setApproverName('')
     setLifecycle(l => ({ ...l, error: null }))
   }
 
-  // ── The four mutators (run only after confirmation) ──────────────────────
+  // ── Confirmed mutators (run only after confirmation) ──────────────────────
   // Mark sent — stamp sent_at, flip proof_sent.
   const doMarkSent = async () => {
     if (!currentVersion) return
@@ -913,21 +1000,6 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     patchCurrentVersion({ sent_at: res.data.sent_at })
     await advanceProofMilestone('sent')
     setLifecycle({ busy: false, error: null }); setConfirm(null); onReload?.()
-  }
-  // Mark approved — stamp approved_at + approved_by_name, flip proof_approved.
-  // signature_method / signature_url stay NULL (Phase 5A.3).
-  const doMarkApproved = async () => {
-    const name = approverName.trim()
-    if (!currentVersion || !name) return
-    setLifecycle({ busy: true, error: null })
-    const res = await updateProofVersion(currentVersion.id, {
-      approved_at: new Date().toISOString(),
-      approved_by_name: name,
-    })
-    if (!res.ok) { setLifecycle({ busy: false, error: res.error }); return }
-    patchCurrentVersion({ approved_at: res.data.approved_at, approved_by_name: res.data.approved_by_name })
-    await advanceProofMilestone('approved')
-    setLifecycle({ busy: false, error: null }); setConfirm(null); setApproverName(''); onReload?.()
   }
   // Unmark sent — clear sent_at, revert proof_sent. Order-guarded: can't unmark
   // sent while approved is still set (UI hides the button, this is the backstop).
@@ -943,13 +1015,17 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     await revertProofMilestone('sent')
     setLifecycle({ busy: false, error: null }); setConfirm(null); onReload?.()
   }
-  // Unmark approved — clear approved_at + approved_by_name, revert proof_approved.
+  // Unmark approved — clear approval + SIGNATURE refs (signature object is left
+  // in the bucket, not hard-deleted), revert proof_approved.
   const doUnmarkApproved = async () => {
     if (!currentVersion) return
     setLifecycle({ busy: true, error: null })
-    const res = await updateProofVersion(currentVersion.id, { approved_at: null, approved_by_name: null })
+    const res = await updateProofVersion(currentVersion.id, {
+      approved_at: null, approved_by_name: null,
+      signature_url: null, signature_method: null,
+    })
     if (!res.ok) { setLifecycle({ busy: false, error: res.error }); return }
-    patchCurrentVersion({ approved_at: null, approved_by_name: null })
+    patchCurrentVersion({ approved_at: null, approved_by_name: null, signature_url: null, signature_method: null })
     await revertProofMilestone('approved')
     setLifecycle({ busy: false, error: null }); setConfirm(null); onReload?.()
   }
@@ -957,9 +1033,89 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   const runConfirmedAction = () => {
     if (!confirm || lifecycle.busy) return
     if (confirm.action === 'mark_sent')       return doMarkSent()
-    if (confirm.action === 'mark_approved')   return doMarkApproved()
     if (confirm.action === 'unmark_sent')     return doUnmarkSent()
     if (confirm.action === 'unmark_approved') return doUnmarkApproved()
+  }
+
+  // ── Sign-to-approve flow (Phase 5A.3) ─────────────────────────────────────
+  // "Mark approved" opens a modal: signature pad + name + date (default today).
+  // On confirm the signature uploads to the PRIVATE proof-signatures bucket and
+  // the version is stamped approved + signed, then proof_approved flips.
+  const openSignModal = () => {
+    const now = new Date()
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    setSignModal({ sig: null, name: '', date: today, busy: false, error: null })
+  }
+  const closeSignModal = () => { setSignModal(m => (m && m.busy ? m : null)) }
+  const doSignApprove = async () => {
+    const name = (signModal?.name || '').trim()
+    if (!currentVersion || !signModal?.sig || !name || signModal.busy) return
+    setSignModal(m => ({ ...m, busy: true, error: null }))
+    const up = await uploadProofSignature(jobId, currentVersion.id, signModal.sig)
+    if (!up.ok) { setSignModal(m => ({ ...m, busy: false, error: up.error })); return }
+    // Approval date is the chosen date at local noon (no day-shift on slice).
+    const approvedAt = new Date(`${signModal.date}T12:00:00`).toISOString()
+    const res = await updateProofVersion(currentVersion.id, {
+      signature_url: up.path,
+      signature_method: 'e_signature',
+      approved_at: approvedAt,
+      approved_by_name: name,
+    })
+    if (!res.ok) { setSignModal(m => ({ ...m, busy: false, error: res.error })); return }
+    patchCurrentVersion({
+      signature_url: res.data.signature_url,
+      signature_method: res.data.signature_method,
+      approved_at: res.data.approved_at,
+      approved_by_name: res.data.approved_by_name,
+    })
+    await advanceProofMilestone('approved')
+    const updated = {
+      ...currentVersion,
+      signature_url: res.data.signature_url,
+      signature_method: res.data.signature_method,
+      approved_at: res.data.approved_at,
+      approved_by_name: res.data.approved_by_name,
+    }
+    setSignModal(null); onReload?.()
+    // If the preview was open (signed from inside it), re-render immediately so
+    // the APPROVED block shows the signature.
+    if (sheet.open) await openApprovalSheet(updated)
+  }
+
+  // ── Approval sheet preview (Stage 2 Commit 3) ─────────────────────────────
+  // BALANCE is the only live value — read from the order at render time. Accepts
+  // an explicit version (used after signing, before state propagates).
+  const openApprovalSheet = async (versionArg) => {
+    const v = versionArg || currentVersion
+    if (!v) return
+    setSheet(s => { if (s.url) URL.revokeObjectURL(s.url); return { open: true, url: null, err: null, busy: true, doc: null, filename: '' } })
+    try {
+      const balance = order?.id ? rowBalanceDue(order) : null
+      // Private signature bucket — resolve a short-lived signed URL for the
+      // generator to fetch + re-encode (only when the version is signed).
+      const signatureImageUrl = v.signature_url
+        ? await getProofSignatureSignedUrl(v.signature_url)
+        : null
+      // Format DIE/BASE live from the order so it's correct even when the
+      // version's frozen snapshot predates trade-format capture.
+      const { die, base } = computeDieBaseTrade(order)
+      const { doc, filename } = await generateApprovalSheetPDF(v, { balance, die, base, signatureImageUrl, returnDoc: true })
+      const url = URL.createObjectURL(doc.output('blob'))
+      setSheet({ open: true, url, err: null, busy: false, doc, filename })
+    } catch (e) {
+      setSheet({ open: true, url: null, err: e.message || 'Failed to render approval sheet', busy: false, doc: null, filename: '' })
+    }
+  }
+  const closeSheet = () => {
+    setSheet(s => {
+      if (s.url) URL.revokeObjectURL(s.url)
+      return { open: false, url: null, err: null, busy: false, doc: null, filename: '' }
+    })
+  }
+  const downloadSheet = () => { if (sheet.doc) sheet.doc.save(sheet.filename) }
+  const printSheet = () => {
+    const frame = document.getElementById('sb-approval-sheet-frame')
+    if (frame?.contentWindow) { frame.contentWindow.focus(); frame.contentWindow.print() }
   }
 
   const uploading = upload.status === 'uploading'
@@ -1398,7 +1554,7 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                     <button
                       type="button"
                       className="sb-design-action-btn sb-design-action-btn-approve"
-                      onClick={() => requestAction('mark_approved')}
+                      onClick={openSignModal}
                       disabled={lifecycle.busy}
                     >
                       Mark approved
@@ -1431,6 +1587,17 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                   {lifecycle.error}
                 </div>
               )}
+
+              {/* Approval sheet — rendered PDF preview + download/print. */}
+              <div className="sb-design-sheet-row">
+                <button
+                  type="button"
+                  className="sb-design-action-btn"
+                  onClick={openApprovalSheet}
+                >
+                  Preview approval sheet
+                </button>
+              </div>
             </div>
           ) : (
             <div className="sb-design-no-upload">No layout uploaded yet</div>
@@ -1571,28 +1738,16 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
         </Card>
       </div>
 
-      {/* Confirm modal — one shell for all four lifecycle actions, mirroring
-          the unlock-signed-contract / PaymentConfirmModal pattern. mark_approved
-          folds the approver-name input in; reversals paint the confirm red. */}
+      {/* Confirm modal — one shell for mark-sent / unmark-sent / unmark-approved,
+          mirroring the unlock-signed-contract / PaymentConfirmModal pattern.
+          Reversals paint the confirm red. (Approval has its own sign modal.) */}
       {confirm && (() => {
         const cfg = LIFECYCLE_ACTIONS[confirm.action]
-        const nameMissing = cfg.needsName && !approverName.trim()
         return (
           <div className="sb-design-modal-overlay sb-print-hide" onClick={closeConfirm}>
             <div className="sb-design-modal" onClick={(e) => e.stopPropagation()}>
               <div className="sb-design-modal-title">{cfg.title}</div>
               <div className="sb-design-modal-body">{cfg.body}</div>
-              {cfg.needsName && (
-                <input
-                  type="text"
-                  className="sb-design-modal-input"
-                  placeholder="Approver name"
-                  value={approverName}
-                  autoFocus
-                  onChange={(e) => setApproverName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !nameMissing) runConfirmedAction() }}
-                />
-              )}
               {lifecycle.error && (
                 <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">
                   {lifecycle.error}
@@ -1609,9 +1764,9 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                 </button>
                 <button
                   type="button"
-                  className={`sb-design-action-btn${cfg.danger ? ' sb-design-action-btn-danger' : (cfg.needsName ? ' sb-design-action-btn-approve' : '')}`}
+                  className={`sb-design-action-btn${cfg.danger ? ' sb-design-action-btn-danger' : ''}`}
                   onClick={runConfirmedAction}
-                  disabled={lifecycle.busy || nameMissing}
+                  disabled={lifecycle.busy}
                 >
                   {lifecycle.busy ? 'Working…' : cfg.confirmLabel}
                 </button>
@@ -1620,6 +1775,129 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
           </div>
         )
       })()}
+
+      {/* Sign-to-approve modal (Phase 5A.3) — reuses the contract's tap-to-sign
+          pad (SignatureCanvas) + name + date. Confirm uploads the signature to
+          the private bucket and stamps the version approved + signed. */}
+      {signModal && (
+        <div className="sb-design-modal-overlay sb-design-overlay-top sb-print-hide" onClick={closeSignModal}>
+          <div className="sb-design-sign-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-design-modal-title">Approve layout · v{currentVersion?.version_number}</div>
+            <div className="sb-design-modal-body">
+              Capture the approver's signature, name, and the approval date.
+            </div>
+            <SignatureCanvas
+              value={null}
+              label="Sign below"
+              onChange={(d) => setSignModal(m => ({ ...m, sig: d }))}
+            />
+            <div className="sb-design-sign-fields">
+              <label className="sb-design-sign-field">
+                <span>Approved by</span>
+                <input
+                  type="text"
+                  className="sb-design-modal-input"
+                  placeholder="Approver name"
+                  value={signModal.name}
+                  onChange={(e) => setSignModal(m => ({ ...m, name: e.target.value }))}
+                />
+              </label>
+              <label className="sb-design-sign-field">
+                <span>Date</span>
+                <input
+                  type="date"
+                  className="sb-design-modal-input"
+                  value={signModal.date}
+                  onChange={(e) => setSignModal(m => ({ ...m, date: e.target.value }))}
+                />
+              </label>
+            </div>
+            {signModal.error && (
+              <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">
+                {signModal.error}
+              </div>
+            )}
+            <div className="sb-design-modal-actions">
+              <button
+                type="button"
+                className="sb-design-modal-cancel"
+                onClick={closeSignModal}
+                disabled={signModal.busy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sb-design-action-btn sb-design-action-btn-approve"
+                onClick={doSignApprove}
+                disabled={signModal.busy || !signModal.sig || !signModal.name.trim() || !signModal.date}
+              >
+                {signModal.busy ? 'Working…' : 'Sign & approve'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Approval sheet preview modal (Stage 2 Commit 3) — mirrors the contract
+          preview iframe: rendered PDF in an iframe + download / print. */}
+      {sheet.open && (
+        <div className="sb-design-modal-overlay sb-print-hide" onClick={closeSheet}>
+          <div className="sb-design-sheet-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-design-modal-title">
+              Approval sheet · v{currentVersion?.version_number}
+            </div>
+            {sheet.busy ? (
+              <div className="sb-design-no-upload">Rendering approval sheet…</div>
+            ) : sheet.err ? (
+              <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">
+                {sheet.err}
+              </div>
+            ) : sheet.url ? (
+              <iframe
+                id="sb-approval-sheet-frame"
+                src={sheet.url}
+                className="sb-design-sheet-frame"
+                title="Approval sheet preview"
+              />
+            ) : null}
+            <div className="sb-design-modal-actions">
+              <button type="button" className="sb-design-modal-cancel" onClick={closeSheet}>
+                Close
+              </button>
+              {/* Sign-this-sheet lives in the preview so staff sign exactly what
+                  they're looking at. Hidden once approved (the sheet shows the
+                  signature). Opens the sign modal on top; on confirm the preview
+                  re-renders with the signature. */}
+              {currentVersion && !currentVersion.approved_at && (
+                <button
+                  type="button"
+                  className="sb-design-action-btn sb-design-action-btn-sign"
+                  onClick={openSignModal}
+                >
+                  ✍ Sign this sheet
+                </button>
+              )}
+              <button
+                type="button"
+                className="sb-design-action-btn"
+                onClick={printSheet}
+                disabled={!sheet.url}
+              >
+                Print
+              </button>
+              <button
+                type="button"
+                className="sb-design-action-btn sb-design-action-btn-approve"
+                onClick={downloadSheet}
+                disabled={!sheet.doc}
+              >
+                Download PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2433,6 +2711,106 @@ const localStyles = `
     cursor: pointer;
   }
   .sb-design-modal-cancel:disabled { opacity: 0.5; cursor: default; }
+  /* Approval sheet — preview trigger row + wide preview modal with iframe. */
+  .sb-design-sheet-row {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 0.5px solid var(--sb-border);
+  }
+  .sb-design-sheet-modal {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    width: min(840px, 95vw);
+    max-height: 94vh;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.2);
+  }
+  .sb-design-sheet-frame {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 72vh;
+    border: 0.5px solid var(--sb-border);
+    border-radius: 6px;
+  }
+  /* Sign modal stacks above the preview modal when signed from inside it. */
+  .sb-design-overlay-top { z-index: 1100; }
+  /* Prominent "Sign this sheet" action in the preview modal. */
+  .sb-design-action-btn-sign {
+    background: #1e2d3d;
+    border-color: #1e2d3d;
+  }
+  /* Sign-to-approve modal (Phase 5A.3). */
+  .sb-design-sign-modal {
+    background: #fff;
+    border-radius: 12px;
+    padding: 22px;
+    width: min(460px, 94vw);
+    box-shadow: 0 12px 48px rgba(0,0,0,0.2);
+  }
+  .sb-design-sign-fields {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    margin: 14px 0 4px;
+  }
+  .sb-design-sign-field { display: flex; flex-direction: column; gap: 4px; }
+  .sb-design-sign-field > span {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--sb-text-muted);
+    font-weight: 600;
+  }
+  .sb-design-sign-field .sb-design-modal-input { margin-bottom: 0; }
+  /* Mirrored from SalesMode's .sm-signature* (its <style> isn't mounted on the
+     Jobs surface) — literal values, no --sm-* vars. Reuses SignatureCanvas. */
+  .sm-signature-label {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #9A7209;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .sm-signature-pad {
+    position: relative;
+    background: #fff;
+    border: 2px solid #c9c9c4;
+    border-radius: 8px;
+    height: 160px;
+    overflow: hidden;
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none;
+  }
+  .sm-signature-pad.disabled { cursor: not-allowed; opacity: 0.85; }
+  .sm-signature-canvas { width: 100%; height: 100%; display: block; }
+  .sm-signature-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    color: #b0b0ac;
+    font-style: italic;
+    font-size: 13px;
+  }
+  .sm-signature-actions { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+  .sm-signature-ok { font-size: 12px; letter-spacing: 0.06em; color: #1f7a3d; font-weight: 700; }
+  .sm-link-btn {
+    background: none;
+    border: none;
+    color: #9A7209;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+  }
   .sb-design-refs {
     margin-top: 16px;
     padding-top: 16px;

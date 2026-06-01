@@ -1999,7 +1999,11 @@ function synthesizePaymentsFromLegacy(row) {
   return synthesized
 }
 
-function rowToOrder(row, customerRow, cemeteryRow) {
+// Exported so the Order Detail View can map a saved order row → the wizard's
+// camelCase order shape for generateContractPDF, without opening the wizard.
+// Non-component export — Fast Refresh's component-only rule disabled here.
+// eslint-disable-next-line react-refresh/only-export-components
+export function rowToOrder(row, customerRow, cemeteryRow) {
   return {
     id: row.id,
     orderNumber: row.order_number,
@@ -7080,6 +7084,47 @@ async function urlToDataURL(url) {
   }
 }
 
+// Re-encode an image through a browser canvas so jsPDF gets baseline data it
+// decodes reliably. jsPDF 2.5.1's native PNG decoder rejects some valid PNG
+// filter/encoding variants ("Incomplete or corrupt PNG file"); drawing the
+// image to a canvas and exporting via toDataURL emits clean baseline data
+// regardless of the source encoding. mime 'image/png' preserves transparency
+// (logo); 'image/jpeg' flattens to a photo (layout hero). `src` may be a data
+// URL or a remote URL; `label` is logged on failure so we can see which source
+// threw. Returns a normalized data URL, or null on load/encode failure.
+function reencodeImageViaCanvas(src, { mime = 'image/png', quality, label } = {}) {
+  return new Promise((resolve) => {
+    if (!src) { resolve(null); return }
+    const img = new Image()
+    // crossOrigin lets a remote bucket URL draw to the canvas without tainting
+    // it (Supabase public objects send permissive CORS). Harmless for data URLs.
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width
+        const h = img.naturalHeight || img.height
+        if (!w || !h) {
+          console.error('[approval-sheet] image had zero dimensions:', label || src)
+          resolve(null); return
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        canvas.getContext('2d').drawImage(img, 0, 0)
+        resolve(canvas.toDataURL(mime, quality))
+      } catch (e) {
+        console.error('[approval-sheet] canvas re-encode failed for:', label || src, e)
+        resolve(null)
+      }
+    }
+    img.onerror = () => {
+      console.error('[approval-sheet] image failed to load:', label || src)
+      resolve(null)
+    }
+    img.src = src
+  })
+}
+
 // Generate the order PDF — works for both Estimate and Contract.
 // mode 'estimate' or 'contract'. Contract embeds signature images and
 // changes the badge/filename.
@@ -7865,9 +7910,292 @@ async function generateEstimatePDF(order, opts = {}) {
   return { doc, filename }
 }
 
-// Thin wrapper for contract PDFs
-async function generateContractPDF(order, opts = {}) {
+// Thin wrapper for contract PDFs. Exported so the Order Detail View can open
+// the contract without entering the wizard (non-component export — Fast
+// Refresh's component-only rule is disabled for this one line).
+// eslint-disable-next-line react-refresh/only-export-components
+export async function generateContractPDF(order, opts = {}) {
   return generateEstimatePDF(order, { ...opts, mode: 'contract' })
+}
+
+// =============================================================================
+// Stage 2 Commit 3 — Approval Sheet PDF (FRONT SIDE only).
+// Reuses the contract PDF infra: loadJsPDF, ensureBlock, urlToDataURL,
+// COMPANY_INFO, and the same Letter/mm geometry + cleanForPdf text guard.
+//
+// The uploaded layout image is the hero — it carries ALL engraving, so NO
+// inscription text is rendered separately. Spec/identity data comes from the
+// version's FROZEN metadata_snapshot, honoring the display rule
+//   value = metadata_overrides[field] ?? metadata_snapshot[field].
+// BALANCE is the only LIVE value — passed in via opts.balance (the order's
+// current outstanding balance), since the snapshot is point-in-time.
+//
+// The mountain logo loads from public/shevchenko-logo.png via urlToDataURL →
+// addImage, bottom-right, with the COMPANY_INFO contact line beneath; if the
+// file is absent it falls back to a text wordmark so the sheet always renders.
+// DIE/BASE read the FROZEN snapshot strings, which now carry finish codes
+// (polish level + sides for the die; base sides + polish margin for the base).
+// Older snapshots predating that capture render their dimensions-only strings.
+//
+// This is the one intentional non-component export from SalesMode.jsx — it must
+// live here to reuse the module-scoped PDF infra (loadJsPDF / ensureBlock /
+// urlToDataURL / COMPANY_INFO) without duplicating it. Fast Refresh's
+// component-only-export rule is disabled for this single line accordingly.
+// =============================================================================
+// eslint-disable-next-line react-refresh/only-export-components
+export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
+  let JsPDF
+  try {
+    JsPDF = await loadJsPDF()
+  } catch (err) {
+    alert(`Could not load PDF library: ${err.message}\n\nPlease check your internet connection and try again.`)
+    return
+  }
+  const doc = new JsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+
+  const cleanForPdf = (s) => {
+    if (s == null) return ''
+    return String(s)
+      .replace(/″/g, '"').replace(/′/g, "'")
+      .replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/…/g, '...')
+  }
+  const _origText = doc.text.bind(doc)
+  doc.text = (text, ...rest) => {
+    const cleaned = Array.isArray(text) ? text.map(cleanForPdf) : cleanForPdf(text)
+    return _origText(cleaned, ...rest)
+  }
+  const _origSplit = doc.splitTextToSize.bind(doc)
+  doc.splitTextToSize = (text, w) => _origSplit(cleanForPdf(text), w)
+
+  const W = 215.9, H = 279.4, M = 16
+  const NAVY = [30, 45, 61]
+  const GOLD = [140, 109, 63]
+  const GREY = [110, 110, 110]
+  const TEXT = [42, 42, 42]
+  const RED = [179, 38, 30]
+  const LIGHT_RULE = [220, 220, 220]
+  let y = M
+
+  // Display rule — overrides win over the frozen snapshot.
+  const snap = proofVersion?.metadata_snapshot || {}
+  const over = proofVersion?.metadata_overrides || {}
+  const meta = (k) => (over[k] != null ? over[k] : snap[k])
+
+  // YYYY-MM-DD(...T...) → M/D/YY (no new Date(); avoids TZ drift on the slice).
+  const fmtMDY = (iso) => {
+    if (!iso) return '—'
+    const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (!m) return '—'
+    return `${Number(m[2])}/${Number(m[3])}/${m[1].slice(2)}`
+  }
+  const money = (n) =>
+    n == null ? '' : `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  // ── Header (text title bar; the mountain logo sits bottom-right) ──────────
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(...NAVY)
+  doc.text(COMPANY_INFO.name, M, y + 5)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
+  doc.text('LAYOUT APPROVAL', W - M, y + 5, { align: 'right' })
+  y += 9
+  doc.setDrawColor(...GOLD); doc.setLineWidth(0.4); doc.line(M, y, W - M, y)
+  y += 6
+
+  // ── DETERMINISTIC ONE-PAGE BUDGET ─────────────────────────────────────────
+  // The legal paragraph + logo/contact footer are PINNED to the bottom of the
+  // page; the spec grid and approved/signature block have measured heights.
+  // The monument image gets ALL remaining vertical space (fit-scaled to fill it
+  // as large as possible). Every height is computed up front, so the sheet can
+  // never spill to a second page and there are no random gaps. No ensure()/no
+  // page breaks in this section by construction.
+  const contentW = W - 2 * M
+  const headerEnd = y
+
+  // Hero image bytes (re-encoded to baseline JPEG so jsPDF decodes it). Drawn
+  // later, once its box is sized.
+  const heroUrl = proofVersion?.layout_image_url || null
+  const heroRaw = heroUrl ? await urlToDataURL(heroUrl) : null
+  if (heroUrl && !heroRaw) console.error('[approval-sheet] could not fetch layout image:', heroUrl)
+  const heroData = heroRaw
+    ? await reencodeImageViaCanvas(heroRaw, { mime: 'image/jpeg', quality: 0.92, label: heroUrl })
+    : null
+
+  // Spec-grid data + pre-measured height.
+  const colW = (W - 2 * M) / 2
+  const leftX = M
+  const rightX = M + colW + 2
+  const labelW = 26
+  const leftRows = [
+    ['ORDER', String(meta('family_name') || '').toUpperCase() || '—'],
+    ['VERSION', proofVersion?.version_number != null ? String(proofVersion.version_number) : '—'],
+    ['DESIGN DATE', fmtMDY(meta('snapshot_at') || proofVersion?.uploaded_at)],
+    ['BALANCE', money(opts.balance)],
+  ]
+  // DIE/BASE formatted at RENDER time (opts.die / opts.base), snapshot fallback.
+  const rightRows = [
+    ['DIE', opts.die || meta('die_size') || '—'],
+    ['BASE', opts.base || meta('base_size') || '—'],
+    ['STONE COLOR', String(meta('stone_color_label') || meta('stone_color') || '').toUpperCase() || '—'],
+    ['CEMETERY', meta('cemetery_name') || '—'],
+  ]
+  doc.setFontSize(9)
+  const specRowLines = []
+  for (let i = 0; i < 4; i++) {
+    const lL = doc.splitTextToSize(String(leftRows[i][1] || '—'), colW - labelW - 2).length
+    const rL = doc.splitTextToSize(String(rightRows[i][1] || '—'), colW - labelW - 2).length
+    specRowLines.push(Math.max(lL, rL))
+  }
+  const specRowH = (ln) => 4.3 * ln + 2
+  const specGridH = 6 + specRowLines.reduce((s, ln) => s + specRowH(ln), 0)
+
+  // Legal paragraph — verbatim, inline bold. Pre-measure its wrapped line count.
+  const legalSegments = [
+    { text: 'I verify that the above pictured monument is ', bold: false },
+    { text: 'approved to be produced', bold: true },
+    { text: '. All ', bold: false },
+    { text: 'spelling, dates, designs', bold: true },
+    { text: ' are correct. I understand this proof is just a representation of the actual color, that the actual stone is a product of nature and will vary.', bold: false },
+  ]
+  const legalLineH = 4.4
+  const measureRichLines = () => {
+    doc.setFontSize(9)
+    let mx = M, lines = 1
+    for (const seg of legalSegments) {
+      doc.setFont('helvetica', seg.bold ? 'bold' : 'normal')
+      for (const tok of seg.text.split(/(\s+)/)) {
+        if (tok === '') continue
+        const tw = doc.getTextWidth(tok)
+        if (/^\s+$/.test(tok)) { if (mx > M) mx += tw; continue }
+        if (mx + tw > W - M) { mx = M; lines++ }
+        mx += tw
+      }
+    }
+    return lines
+  }
+  const legalH = measureRichLines() * legalLineH
+
+  // Fixed block heights + gaps.
+  const approvedH = 26
+  const footerH = 24
+  const gHeaderHero = 4, gHeroSpec = 4, gSpecApproved = 4, gApprovedLegal = 5, gLegalFooter = 4
+
+  // Pin bottom: footer at the very bottom, legal just above it.
+  const footerTop = H - M - footerH
+  const legalTop = footerTop - gLegalFooter - legalH
+  // Top flow: header → hero box → spec → approved must end at legalTop. The hero
+  // box absorbs all the slack, so the image is as large as the page allows.
+  const heroTop = headerEnd + gHeaderHero
+  const heroBoxH = Math.max(
+    40,
+    legalTop - gApprovedLegal - approvedH - gSpecApproved - specGridH - gHeroSpec - heroTop,
+  )
+
+  // ── 1. HERO — monument fills the reserved box, fit-scaled, centered ────────
+  if (heroData) {
+    let iw, ih
+    try {
+      const props = doc.getImageProperties(heroData)
+      const scale = Math.min(contentW / props.width, heroBoxH / props.height)
+      iw = props.width * scale; ih = props.height * scale
+    } catch { iw = contentW; ih = Math.min(heroBoxH, contentW * 0.66) }
+    doc.addImage(heroData, 'JPEG', M + (contentW - iw) / 2, heroTop + (heroBoxH - ih) / 2, iw, ih)
+  } else {
+    doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.3)
+    doc.rect(M, heroTop, contentW, heroBoxH)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+    doc.text('Layout image unavailable', W / 2, heroTop + heroBoxH / 2, { align: 'center' })
+  }
+
+  // ── 2. SPEC GRID ───────────────────────────────────────────────────────────
+  let sy = heroTop + heroBoxH + gHeroSpec
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...GOLD)
+  doc.text('SPECIFICATIONS', M, sy)
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2); doc.line(M, sy + 1.5, W - M, sy + 1.5)
+  sy += 6
+  const drawCell = (x, label, value, yy) => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...NAVY)
+    doc.text(label, x, yy)
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(...TEXT)
+    doc.text(doc.splitTextToSize(String(value || '—'), colW - labelW - 2), x + labelW, yy)
+  }
+  for (let i = 0; i < 4; i++) {
+    drawCell(leftX, leftRows[i][0], leftRows[i][1], sy)
+    drawCell(rightX, rightRows[i][0], rightRows[i][1], sy)
+    sy += specRowH(specRowLines[i])
+  }
+
+  // ── 3. APPROVED block (signed → signature image + caption; else blank line) ─
+  const aTop = heroTop + heroBoxH + gHeroSpec + specGridH + gSpecApproved
+  const isSigned = !!(proofVersion?.approved_at && opts.signatureImageUrl)
+  if (isSigned) {
+    const sigRaw = await urlToDataURL(opts.signatureImageUrl)
+    if (!sigRaw) console.error('[approval-sheet] could not fetch signature:', opts.signatureImageUrl)
+    const sigData = sigRaw ? await reencodeImageViaCanvas(sigRaw, { mime: 'image/png', label: 'signature' }) : null
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...RED)
+    doc.text('APPROVED', M, aTop + 5)
+    if (sigData) {
+      let sw = 55, sh = 15
+      try { const sp = doc.getImageProperties(sigData); sh = 15; sw = Math.min(70, sh * (sp.width / sp.height)) } catch { /* defaults */ }
+      doc.addImage(sigData, 'PNG', M + 34, aTop - 2, sw, sh)
+    }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+    doc.text(`Approved by ${proofVersion.approved_by_name || '—'} on ${fmtMDY(proofVersion.approved_at)}`, M, aTop + 22)
+  } else {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...RED)
+    doc.text('APPROVED:', M, aTop + 5)
+    doc.setDrawColor(...RED); doc.setLineWidth(0.4); doc.line(M + 32, aTop + 6, W - M, aTop + 6)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+    doc.text('Approved by', M, aTop + 18)
+    doc.setDrawColor(...GREY); doc.setLineWidth(0.3); doc.line(M + 22, aTop + 19, M + 100, aTop + 19)
+    doc.text('Date', M + 108, aTop + 18)
+    doc.line(M + 120, aTop + 19, W - M, aTop + 19)
+  }
+
+  // ── 4. LEGAL paragraph (pinned just above the footer) ──────────────────────
+  doc.setFontSize(9)
+  let cx = M, ly = legalTop + 3.6
+  for (const seg of legalSegments) {
+    doc.setFont('helvetica', seg.bold ? 'bold' : 'normal')
+    doc.setTextColor(...TEXT)
+    for (const tok of seg.text.split(/(\s+)/)) {
+      if (tok === '') continue
+      const tw = doc.getTextWidth(tok)
+      if (/^\s+$/.test(tok)) { if (cx > M) cx += tw; continue }
+      if (cx + tw > W - M) { cx = M; ly += legalLineH }
+      doc.text(tok, cx, ly)
+      cx += tw
+    }
+  }
+
+  // ── 5. LOGO + contact, pinned bottom-right ─────────────────────────────────
+  // Mountain logo from public/shevchenko-logo.png; text-wordmark fallback if
+  // the file is absent. Re-encoded via canvas to baseline PNG.
+  const rightEdge = W - M
+  const logoRaw = await urlToDataURL('/shevchenko-logo.png')
+  const logoData = logoRaw
+    ? await reencodeImageViaCanvas(logoRaw, { mime: 'image/png', label: '/shevchenko-logo.png' })
+    : null
+  const yC = footerTop + 12
+  if (logoData) {
+    let logoH = 14, logoW = 28
+    try { const lp = doc.getImageProperties(logoData); logoH = 14; logoW = logoH * (lp.width / lp.height) } catch { /* defaults */ }
+    doc.addImage(logoData, 'PNG', rightEdge - logoW, yC - logoH, logoW, logoH)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
+    doc.text(`${COMPANY_INFO.address}, ${COMPANY_INFO.city}`, rightEdge, yC + 4.5, { align: 'right' })
+    doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, rightEdge, yC + 9, { align: 'right' })
+  } else {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...NAVY)
+    doc.text(COMPANY_INFO.name, rightEdge, yC, { align: 'right' })
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
+    doc.text(`${COMPANY_INFO.address}, ${COMPANY_INFO.city}`, rightEdge, yC + 4.5, { align: 'right' })
+    doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, rightEdge, yC + 9, { align: 'right' })
+  }
+
+  const fam = String(meta('family_name') || 'Approval').replace(/[^a-z0-9]/gi, '_')
+  const vn = proofVersion?.version_number ?? 'v'
+  const filename = `Shevchenko-ApprovalSheet-v${vn}-${fam}.pdf`
+  if (opts.returnDoc) return { doc, filename }
+  doc.save(filename)
+  return { doc, filename }
 }
 
 // Sprint 3j — Receipt PDF. Sprint M2 Phase 2: takes a payment object from
@@ -10953,7 +11281,11 @@ function OrderStatusChanger({ order, update }) {
 
 // Drawing pad. Mouse + touch + pen-stylus all work via Pointer Events.
 // onChange fires with the latest data URL whenever the user lifts the pen.
-function SignatureCanvas({ value, onChange, label, disabled }) {
+// Exported for reuse on the Design Packet approval-sheet sign modal (Phase
+// 5A.3). It's a component, so this named export doesn't trip the Fast Refresh
+// only-export-components rule. The .sm-signature* CSS it relies on is mirrored
+// into DesignPacket's style block since this file's <style> isn't mounted there.
+export function SignatureCanvas({ value, onChange, label, disabled }) {
   const canvasRef = useRef(null)
   const drawingRef = useRef(false)
   const lastPosRef = useRef(null)

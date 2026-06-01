@@ -143,6 +143,39 @@ export async function listAllOrders({ statuses, limit = 500 } = {}) {
   return data || []
 }
 
+// Single order (read-only) for the Order Detail View — joins customer + cemetery
+// like listAllOrders so the detail surface has the same row shape.
+export async function getOrderById(id) {
+  if (!id) return null
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*, customer:customers(*), cemetery:cemeteries(*)')
+    .eq('id', id)
+    .maybeSingle()
+  if (error) { console.error('getOrderById:', error); return null }
+  return data
+}
+
+// The job spawned from an order (read-only), with its milestones — drives the
+// Order Detail "Related job" card (stage / next task / blockers). Returns the
+// earliest job for the order (orders spawn one job today; mausoleum-door orders
+// route via cemetery_order_id, not order_id, so they return null here).
+export async function getJobByOrderId(orderId) {
+  if (!orderId) return null
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('*, milestones:job_milestones(*)')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+  if (error) { console.error('getJobByOrderId:', error); return null }
+  const job = (data && data[0]) || null
+  if (job && Array.isArray(job.milestones)) {
+    job.milestones = [...job.milestones].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+  }
+  return job
+}
+
 // ── ORDER PRICE COMPUTATION ──────────────────────────────────────────────────
 // Mirrors SalesMode's buildLineItems → grand total math, but reads directly
 // from the saved row (add_ons jsonb + pricing jsonb).
@@ -6864,6 +6897,10 @@ export async function updateProofVersion(id, patch = {}) {
   if (patch.sent_at !== undefined)          row.sent_at = patch.sent_at || null
   if (patch.approved_at !== undefined)      row.approved_at = patch.approved_at || null
   if (patch.approved_by_name !== undefined) row.approved_by_name = (patch.approved_by_name || '').trim() || null
+  // Phase 5A.3 active — signature fields are writable (set on e-signature
+  // approval, nulled on unmark). Only the sign / unmark paths pass these.
+  if (patch.signature_method !== undefined) row.signature_method = patch.signature_method || null
+  if (patch.signature_url !== undefined)    row.signature_url = patch.signature_url || null
   if (Object.keys(row).length === 0) return { ok: false, error: 'Nothing to update' }
   const { data, error } = await supabase
     .from('proof_versions')
@@ -6873,6 +6910,33 @@ export async function updateProofVersion(id, patch = {}) {
     .single()
   if (error) return { ok: false, error: error.message }
   return { ok: true, data }
+}
+
+// Phase 5A.3 — upload an approval signature PNG to the PRIVATE proof-signatures
+// bucket (20260601_proof_signatures_bucket.sql). Path: signatures/{jobId}/
+// {versionId}.png — one per version, upsert overwrites on re-sign. Returns the
+// storage PATH (stored in proof_versions.signature_url); reads go through a
+// signed URL since the bucket is private.
+export async function uploadProofSignature(jobId, versionId, dataUrl) {
+  if (!jobId || !versionId || !dataUrl) return { ok: false, error: 'Missing jobId, versionId, or signature' }
+  const res = await fetch(dataUrl)
+  const blob = await res.blob()
+  const path = `signatures/${jobId}/${versionId}.png`
+  const { error } = await supabase.storage
+    .from('proof-signatures')
+    .upload(path, blob, { upsert: true, contentType: 'image/png' })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, path }
+}
+
+// Short-lived signed URL for a private proof signature (render-time only).
+export async function getProofSignatureSignedUrl(path, expiresIn = 300) {
+  if (!path) return null
+  const { data, error } = await supabase.storage
+    .from('proof-signatures')
+    .createSignedUrl(path, expiresIn)
+  if (error) { console.warn('[proof] signature signed url:', error.message); return null }
+  return data?.signedUrl || null
 }
 
 // Resolve the current staff member's display name for audit stamping
