@@ -6795,5 +6795,23 @@ export function computeTripMileage(batch) {
 }
 
 // =============================================================================
+// Proof versions (approval-packet version history)
+// =============================================================================
+
+// Stage 2 — create a new layout version for a job. Delegates the
+// demote-current → next-version-number → insert-current transaction to the
+// create_proof_version Postgres function (20260601_create_proof_version_fn.sql)
+// so the one-current-per-job invariant holds atomically. Returns the raw
+// supabase.rpc shape ({ data, error }); data is the inserted proof_versions row.
+export async function createProofVersion({ jobId, layoutImageUrl, metadataSnapshot, uploadedBy }) {
+  return await supabase.rpc('create_proof_version', {
+    p_job_id:            jobId,
+    p_layout_image_url:  layoutImageUrl,
+    p_metadata_snapshot: metadataSnapshot ?? {},
+    p_uploaded_by:       uploadedBy ?? null,
+  })
+}
+
+// =============================================================================
 // End of Jobs Operations data layer
 // =============================================================================
