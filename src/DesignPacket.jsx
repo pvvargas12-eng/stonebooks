@@ -45,7 +45,14 @@
 //   • Phase 5  — customer email composer modal
 // =============================================================================
 
-import { fmtDate } from './lib/stonebooksData'
+import { useState, useEffect, useRef } from 'react'
+import {
+  fmtDate,
+  uploadProofLayout,
+  createProofVersion,
+  getProofVersions,
+  getCurrentStaffName,
+} from './lib/stonebooksData'
 
 // ============================================================================
 // LABEL DICTIONARIES
@@ -562,6 +569,32 @@ function Card({ title, span = 1, children, className = '', titleRight = null }) 
 // =============================================================================
 
 export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab, onPrint }) {
+  // ── Proof-version state (Stage 2 Commit 1 — upload-flow wiring) ───────────
+  // Hooks run unconditionally before the !job early-return so render order is
+  // stable. The version stack is loaded here (not part of getJob) and kept in
+  // local state; a successful upload prepends the new current version.
+  const jobId = job?.id || null
+  const fileInputRef = useRef(null)
+  const [versions, setVersions] = useState([])
+  // Initialize loading from jobId presence so the effect never has to setState
+  // synchronously in its body (avoids the React 19 set-state-in-effect lint).
+  // JobDetail remounts per job (key={selectedJobId}), so the initializer runs
+  // once per job and the effect fires once.
+  const [versionsLoading, setVersionsLoading] = useState(!!jobId)
+  // upload.status: 'idle' | 'uploading' | 'error' | 'success'
+  const [upload, setUpload] = useState({ status: 'idle', error: null })
+
+  useEffect(() => {
+    if (!jobId) return
+    let cancelled = false
+    getProofVersions(jobId).then(rows => {
+      if (cancelled) return
+      setVersions(rows)
+      setVersionsLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [jobId])
+
   if (!job) return null
   const order      = job.order      || {}
   const cemetery   = job.cemetery   || null
@@ -699,6 +732,81 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     order.timeline_notes,
   ].filter(Boolean)
   const hasSpecialInstructions = specialInstructionParas.length > 0
+
+  // ── Proof upload (Stage 2 Commit 1) ───────────────────────────────────────
+  // The current version (is_current) renders inline; the rest are history.
+  const currentVersion = versions.find(v => v.is_current) || versions[0] || null
+
+  // Freeze the order's CURRENT design facts into a snapshot. Runs at upload
+  // time (event handler — new Date() is lint-safe here, not in render). Inner
+  // JSONB keys (deceased[].dateOfBirth, inscription.epitaph) are camelCase;
+  // top-level columns (granite_color, primary_lastname) are snake_case.
+  const buildMetadataSnapshot = () => {
+    const personName = (d) =>
+      [d.firstName, d.middleName, d.lastName].map(s => (s || '').trim()).filter(Boolean).join(' ')
+    const people = deceased
+      .filter(d => d && !d.isReserved && (d.firstName || d.lastName || d.inscriptionName))
+      .map(d => ({
+        name: d.inscriptionName || personName(d) || null,
+        birth: d.dateOfBirth || null,
+        death: d.dateOfDeath || null,
+      }))
+    return {
+      order_number:      order.order_number || null,
+      family_name:       familyName,
+      deceased_names:    people.map(p => p.name).filter(Boolean),
+      deceased:          people,
+      inscription_epitaph: (inscription.epitaph || '').trim() || null,
+      inscription_notes:   (inscription.customNotes || '').trim() || null,
+      stone_color:       order.granite_color || null,
+      stone_color_label: graniteLabel,
+      stone_shape:       order.shape || null,
+      stone_shape_label: shapeLabel,
+      die_size:          dimsLine || null,
+      base_size:         baseSummary || null,
+      cemetery_name:     cemetery?.name || null,
+      add_ons:           addOnsForWgots.map(a => {
+        const { label, qty, notes } = addOnDisplay(a)
+        return { label, qty, notes }
+      }),
+      snapshot_at:       new Date().toISOString(),
+    }
+  }
+
+  const handleProofFile = async (file) => {
+    if (!file || !jobId) return
+    setUpload({ status: 'uploading', error: null })
+    const up = await uploadProofLayout(jobId, file)
+    if (!up.ok) { setUpload({ status: 'error', error: up.error }); return }
+    const uploadedBy = await getCurrentStaffName()
+    const { data, error } = await createProofVersion({
+      jobId,
+      layoutImageUrl: up.url,
+      metadataSnapshot: buildMetadataSnapshot(),
+      uploadedBy,
+    })
+    if (error) { setUpload({ status: 'error', error: error.message }); return }
+    // Prepend the new current version; demote any prior current row locally to
+    // mirror what create_proof_version did server-side.
+    setVersions(prev => [data, ...prev.map(v => ({ ...v, is_current: false }))])
+    setUpload({ status: 'success', error: null })
+  }
+
+  const onDropProof = (e) => {
+    e.preventDefault()
+    if (upload.status === 'uploading') return
+    const file = e.dataTransfer?.files?.[0]
+    if (file) handleProofFile(file)
+  }
+
+  const onPickProof = (e) => {
+    const file = e.target.files?.[0]
+    // Reset the input so re-selecting the same filename re-fires onChange.
+    e.target.value = ''
+    if (file) handleProofFile(file)
+  }
+
+  const uploading = upload.status === 'uploading'
 
   return (
     <div className="sb-design-packet-page">
@@ -1014,41 +1122,71 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
               attribute + "Phase 2B" hint label make the deferred state
               honest so the operator never thinks an upload landed silently
               (UX Friction + CRM review 2026-05-29). */}
+          {/* Stage 2 Commit 1 — live upload. Click or drop a JPG/PNG layout;
+              it lands in orders-attachments-public and mints the next
+              proof_versions row via create_proof_version. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png"
+            style={{ display: 'none' }}
+            onChange={onPickProof}
+          />
           <div
-            className="sb-design-dropzone sb-design-dropzone-pending"
+            className={`sb-design-dropzone${uploading ? ' sb-design-dropzone-busy' : ''}`}
             role="button"
-            aria-label="Upload layout file (Phase 2B — coming soon)"
-            aria-disabled="true"
+            aria-label="Upload layout proof (JPG or PNG)"
+            aria-disabled={uploading ? 'true' : 'false'}
             tabIndex={0}
-            title="Layout upload lands in Phase 2B"
-            // TODO Phase 2B: file upload wiring — onClick triggers a hidden
-            // <input type="file"> and onDrop reads the FileList. Storage path:
-            // orders-attachments/<order_id>/layouts/<version_n>.<ext>. After
-            // upload, append a row to the (NEW) version_uploads table.
-            onClick={() => { /* TODO Phase 2B */ }}
+            title="Click or drop a JPG/PNG layout to upload"
+            onClick={() => { if (!uploading) fileInputRef.current?.click() }}
+            onKeyDown={(e) => {
+              if ((e.key === 'Enter' || e.key === ' ') && !uploading) {
+                e.preventDefault(); fileInputRef.current?.click()
+              }
+            }}
             onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => { e.preventDefault(); /* TODO Phase 2B */ }}
+            onDrop={onDropProof}
           >
-            <div className="sb-design-dropzone-icon" aria-hidden="true">⤓</div>
-            <div className="sb-design-dropzone-prompt">Drop layout here or click to upload</div>
-            <div className="sb-design-dropzone-types">PDF · PNG · JPG</div>
-            <div className="sb-design-dropzone-phase">Coming in Phase 2B</div>
+            <div className="sb-design-dropzone-icon" aria-hidden="true">{uploading ? '⏳' : '⤓'}</div>
+            <div className="sb-design-dropzone-prompt">
+              {uploading ? 'Uploading layout…' : 'Drop layout here or click to upload'}
+            </div>
+            <div className="sb-design-dropzone-types">JPG · PNG</div>
           </div>
 
-          {/* Approved design thumbnail slot — appears when proof_approved is
-              done. The thumbnail placeholder reserves the slot; Phase 2B/5
-              wires real images. */}
-          {proofSummary.tone === 'good' ? (
+          {/* Upload feedback — never leave the user guessing. */}
+          {upload.status === 'error' && (
+            <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">
+              Upload failed — {upload.error || 'unknown error'}. Try again.
+            </div>
+          )}
+          {upload.status === 'success' && (
+            <div className="sb-design-upload-msg sb-design-upload-msg-success">
+              Layout uploaded — now showing as v{currentVersion?.version_number}.
+            </div>
+          )}
+
+          {/* Current version — real image + version number. */}
+          {versionsLoading ? (
+            <div className="sb-design-no-upload">Loading versions…</div>
+          ) : currentVersion ? (
             <div className="sb-design-approved-row">
-              {/* TODO Phase 2B/5: render real thumbnail of the approved
-                  layout from the latest version in version_uploads. */}
-              <div className="sb-design-approved-thumb" aria-hidden="true">
-                <span className="sb-design-approved-thumb-glyph">📐</span>
+              <div className="sb-design-approved-thumb">
+                <img
+                  src={currentVersion.layout_image_url}
+                  alt={`Layout v${currentVersion.version_number}`}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
               </div>
               <div className="sb-design-approved-info">
-                <div className="sb-design-approved-label">Approved layout</div>
+                <div className="sb-design-approved-label">
+                  Current layout · v{currentVersion.version_number}
+                </div>
                 <div className="sb-design-approved-meta">
-                  {proofSummary.detail || 'Approval logged'}
+                  {currentVersion.uploaded_by ? `Uploaded by ${currentVersion.uploaded_by}` : 'Uploaded'}
+                  {currentVersion.uploaded_at ? ` · ${fmtDate(currentVersion.uploaded_at)}` : ''}
                 </div>
               </div>
             </div>
@@ -1056,14 +1194,34 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
             <div className="sb-design-no-upload">No layout uploaded yet</div>
           )}
 
-          {/* Version history — placeholder. Wires to version_uploads in Phase 5. */}
+          {/* Version history — real rows from proof_versions, newest first. */}
           <div className="sb-design-versions">
             <div className="sb-design-versions-eyebrow">Version history</div>
-            {/* TODO Phase 5: list real revisions from version_uploads, with
-                uploader, timestamp, and customer-approval state per version. */}
-            <div className="sb-design-versions-empty">
-              No versions yet — uploads will appear here.
-            </div>
+            {versions.length === 0 ? (
+              <div className="sb-design-versions-empty">
+                No versions yet — uploads will appear here.
+              </div>
+            ) : (
+              <ul className="sb-design-versions-list">
+                {versions.map(v => (
+                  <li key={v.id} className="sb-design-version-row">
+                    <a
+                      href={v.layout_image_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="sb-design-version-num"
+                    >
+                      v{v.version_number}
+                    </a>
+                    {v.is_current && <span className="sb-design-version-current">Current</span>}
+                    <span className="sb-design-version-meta">
+                      {v.uploaded_by || 'Staff'}
+                      {v.uploaded_at ? ` · ${fmtDate(v.uploaded_at)}` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* Reference photos — Phase 2A.3 Fix 4 wires REAL content from two
@@ -1812,6 +1970,68 @@ const localStyles = `
     font-size: 13px;
     color: var(--sb-text-muted);
     font-style: italic;
+  }
+  /* Stage 2 Commit 1 — live upload states + real version rendering. */
+  .sb-design-dropzone-busy {
+    cursor: progress;
+    opacity: 0.7;
+    background: rgba(154,114,9,0.06);
+  }
+  .sb-design-approved-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+  }
+  .sb-design-upload-msg {
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .sb-design-upload-msg-error {
+    color: #b3261e;
+    background: rgba(179,38,30,0.06);
+    border: 0.5px solid rgba(179,38,30,0.3);
+  }
+  .sb-design-upload-msg-success {
+    color: #1f7a3d;
+    background: rgba(31,122,61,0.06);
+    border: 0.5px solid rgba(31,122,61,0.3);
+  }
+  .sb-design-versions-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sb-design-version-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .sb-design-version-num {
+    font-weight: 600;
+    color: #9A7209;
+    text-decoration: none;
+  }
+  .sb-design-version-num:hover { text-decoration: underline; }
+  .sb-design-version-current {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: #1f7a3d;
+    background: rgba(31,122,61,0.08);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  .sb-design-version-meta {
+    color: var(--sb-text-muted);
+    font-size: 12px;
   }
   .sb-design-refs {
     margin-top: 16px;

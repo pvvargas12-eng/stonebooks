@@ -6812,6 +6812,58 @@ export async function createProofVersion({ jobId, layoutImageUrl, metadataSnapsh
   })
 }
 
+// Stage 2 Commit 1 — upload a layout proof image to the public bucket created
+// by 20260529_proof_versions.sql. UUID-based path keeps versions immutable
+// (no overwrite) and side-steps filename collisions. JPG/PNG only — the public
+// bucket exists so jsPDF's urlToDataURL() can fetch the image without signed-URL
+// gymnastics; restricting to web-image types keeps that path simple.
+export async function uploadProofLayout(jobId, file) {
+  if (!jobId || !file) return { ok: false, error: 'Missing jobId or file' }
+  const okTypes = ['image/jpeg', 'image/png']
+  if (!okTypes.includes(file.type)) {
+    return { ok: false, error: 'Layout image must be a JPG or PNG.' }
+  }
+  const ext = file.type === 'image/png' ? 'png' : 'jpg'
+  const path = `proofs/${jobId}/${crypto.randomUUID()}.${ext}`
+  const { error: upErr } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type })
+  if (upErr) return { ok: false, error: upErr.message }
+  const { data } = supabase.storage
+    .from('orders-attachments-public')
+    .getPublicUrl(path)
+  return { ok: true, url: data.publicUrl, path }
+}
+
+// Version stack for a job, newest first. Reads the whole row (snapshot +
+// overrides + approval state) so the Design Packet can render the current
+// version inline without a second fetch.
+export async function getProofVersions(jobId) {
+  if (!jobId) return []
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .select('*')
+    .eq('job_id', jobId)
+    .order('version_number', { ascending: false })
+  if (error) { console.warn('[proof] getProofVersions:', error.message); return [] }
+  return data || []
+}
+
+// Resolve the current staff member's display name for audit stamping
+// (uploaded_by, etc.). Mirrors the sidebar's display_name || email convention
+// (Stonebooks.jsx). Identity isn't prop-drilled to deep surfaces, so resolve it
+// at the data layer. Falls back to 'Staff' when there's no per-user identity.
+export async function getCurrentStaffName() {
+  try {
+    const { data: { user } = {} } = await supabase.auth.getUser()
+    if (!user) return 'Staff'
+    const settings = await getUserSettings(user.id)
+    return settings?.display_name || user.email || 'Staff'
+  } catch {
+    return 'Staff'
+  }
+}
+
 // =============================================================================
 // End of Jobs Operations data layer
 // =============================================================================
