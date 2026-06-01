@@ -329,6 +329,22 @@ export default function Stonebooks() {
     return () => { if (unsub) unsub() }
   }, [])
 
+  // Capture the Gmail OAuth return — the gmail-oauth-callback Edge Function
+  // redirects back here with ?gmail=connected&email=… on success. Persist the
+  // connected email locally (Settings → Integrations reads it) and strip the
+  // query so a refresh doesn't re-process or leak it. No setState here, so no
+  // set-state-in-effect concern.
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search)
+    if (!sp.get('gmail')) return
+    if (sp.get('gmail') === 'connected' && sp.get('email')) {
+      try { localStorage.setItem('sb_gmail_connected_email', sp.get('email')) } catch { /* ignore */ }
+    }
+    sp.delete('gmail'); sp.delete('email'); sp.delete('reason')
+    const qs = sp.toString()
+    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''))
+  }, [])
+
   // Load profile when user lands
   useEffect(() => {
     if (user?.id) reloadProfile()
@@ -632,12 +648,13 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
       <div className="sb-settings-grid">
         <nav className="sb-settings-nav">
           {[
-            { k: 'profile',    l: 'Profile' },
-            { k: 'appearance', l: 'Appearance' },
-            { k: 'account',    l: 'Account' },
-            { k: 'shop',       l: 'Shop info' },
-            { k: 'staff',      l: 'Staff' },
-            { k: 'about',      l: 'About' },
+            { k: 'profile',      l: 'Profile' },
+            { k: 'appearance',   l: 'Appearance' },
+            { k: 'integrations', l: 'Integrations' },
+            { k: 'account',      l: 'Account' },
+            { k: 'shop',         l: 'Shop info' },
+            { k: 'staff',        l: 'Staff' },
+            { k: 'about',        l: 'About' },
           ].map(s => (
             <button
               key={s.k}
@@ -649,8 +666,9 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
         </nav>
 
         <div className="sb-settings-body">
-          {section === 'profile'    && <ProfileSettings user={user} profile={profile} onProfileChange={onProfileChange} />}
-          {section === 'appearance' && <AppearanceSettings theme={theme} setTheme={setTheme} />}
+          {section === 'profile'      && <ProfileSettings user={user} profile={profile} onProfileChange={onProfileChange} />}
+          {section === 'appearance'   && <AppearanceSettings theme={theme} setTheme={setTheme} />}
+          {section === 'integrations' && <IntegrationsSettings user={user} profile={profile} />}
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
           {section === 'staff'      && <StaffSettings />}
@@ -903,6 +921,73 @@ function SettingsRow({ label, hint, children }) {
       </div>
       <div className="sb-settings-row-control">{children}</div>
     </div>
+  )
+}
+
+// Gmail integration Phase 1 — Connect only. Builds the Google consent URL
+// (minimal scopes: openid email profile) and redirects; the gmail-oauth-callback
+// Edge Function exchanges the code + stores the refresh token server-side, then
+// redirects back with ?gmail=connected&email=… (captured at the shell mount into
+// localStorage). Connected state here reads that localStorage flag — Phase 1
+// display only; server-verified status + disconnect land in a later phase.
+const GMAIL_LS_KEY = 'sb_gmail_connected_email'
+function IntegrationsSettings({ user, profile }) {
+  const [connectedEmail, setConnectedEmail] = useState(() => {
+    try { return localStorage.getItem(GMAIL_LS_KEY) || null } catch { return null }
+  })
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
+  const supaUrl = import.meta.env.VITE_SUPABASE_URL
+  const configured = Boolean(clientId && supaUrl)
+
+  const connect = () => {
+    if (!configured) return
+    const redirectUri = `${supaUrl}/functions/v1/gmail-oauth-callback`
+    const state = btoa(JSON.stringify({
+      uid: user.id,
+      by: profile?.display_name || user.email,
+      ret: window.location.origin,
+    }))
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'openid email profile',   // Phase 1 — minimal. gmail.* added later.
+      access_type: 'offline',          // needed for a refresh token
+      prompt: 'consent',               // force a refresh token every consent
+      include_granted_scopes: 'true',
+      hd: 'shevcomonuments.com',       // Workspace domain hint
+      state,
+    })
+    window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+  }
+
+  const disconnect = () => {
+    // Phase 1 clears the local display flag only. Server-side token revocation /
+    // row removal is a later phase (tokens are intentionally client-invisible).
+    try { localStorage.removeItem(GMAIL_LS_KEY) } catch { /* ignore */ }
+    setConnectedEmail(null)
+  }
+
+  return (
+    <SettingsRow
+      label="Google account"
+      hint="Connect a @shevcomonuments.com mailbox. Phase 1 authorizes basic profile only (openid email profile) — no mailbox access. Sending/reading is added later via one-click re-consent."
+    >
+      {connectedEmail ? (
+        <div className="sb-form-stack">
+          <div className="sb-msg sb-msg-ok">✓ Connected as {connectedEmail}</div>
+          <button type="button" className="sb-btn" onClick={disconnect}>Disconnect</button>
+        </div>
+      ) : configured ? (
+        <button type="button" className="sb-btn-primary" onClick={connect}>
+          Connect Google account
+        </button>
+      ) : (
+        <div className="sb-msg sb-msg-err">
+          Not configured — set VITE_GOOGLE_CLIENT_ID (and VITE_SUPABASE_URL) in the app environment.
+        </div>
+      )}
+    </SettingsRow>
   )
 }
 
