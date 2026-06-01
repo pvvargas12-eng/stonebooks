@@ -1603,7 +1603,9 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
             <div className="sb-design-no-upload">No layout uploaded yet</div>
           )}
 
-          {/* Version history — real rows from proof_versions, newest first. */}
+          {/* Version history — every proof_versions row, newest first. Click a
+              version to preview ITS approval sheet (frozen snapshot + that
+              version's signature). The current version is marked. */}
           <div className="sb-design-versions">
             <div className="sb-design-versions-eyebrow">Version history</div>
             {versions.length === 0 ? (
@@ -1614,19 +1616,29 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
               <ul className="sb-design-versions-list">
                 {versions.map(v => (
                   <li key={v.id} className="sb-design-version-row">
+                    <button
+                      type="button"
+                      className="sb-design-version-open"
+                      onClick={() => openApprovalSheet(v)}
+                      title="Preview this version's approval sheet"
+                    >
+                      <span className="sb-design-version-num">v{v.version_number}</span>
+                      {v.is_current && <span className="sb-design-version-current">Current</span>}
+                      {v.approved_at && <span className="sb-design-version-approved">Approved</span>}
+                      <span className="sb-design-version-meta">
+                        {v.uploaded_by || 'Staff'}
+                        {v.uploaded_at ? ` · ${fmtDate(v.uploaded_at)}` : ''}
+                      </span>
+                    </button>
                     <a
                       href={v.layout_image_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="sb-design-version-num"
+                      className="sb-design-version-img"
+                      title="Open the raw layout image"
                     >
-                      v{v.version_number}
+                      image ↗
                     </a>
-                    {v.is_current && <span className="sb-design-version-current">Current</span>}
-                    <span className="sb-design-version-meta">
-                      {v.uploaded_by || 'Staff'}
-                      {v.uploaded_at ? ` · ${fmtDate(v.uploaded_at)}` : ''}
-                    </span>
                   </li>
                 ))}
               </ul>
@@ -2579,16 +2591,45 @@ const localStyles = `
   }
   .sb-design-version-row {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
+    align-items: center;
+    gap: 10px;
     font-size: 13px;
   }
+  .sb-design-version-open {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 auto;
+    text-align: left;
+    background: none;
+    border: 0.5px solid transparent;
+    border-radius: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .sb-design-version-open:hover { background: rgba(154,114,9,0.06); border-color: rgba(154,114,9,0.25); }
   .sb-design-version-num {
     font-weight: 600;
     color: #9A7209;
-    text-decoration: none;
   }
-  .sb-design-version-num:hover { text-decoration: underline; }
+  .sb-design-version-img {
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    text-decoration: none;
+    flex-shrink: 0;
+  }
+  .sb-design-version-img:hover { color: #9A7209; text-decoration: underline; }
+  .sb-design-version-approved {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: #1f7a3d;
+    background: rgba(31,122,61,0.08);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
   .sb-design-version-current {
     font-size: 10px;
     text-transform: uppercase;

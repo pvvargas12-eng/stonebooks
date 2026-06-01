@@ -8010,14 +8010,22 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const contentW = W - 2 * M
   const headerEnd = y
 
-  // Hero image bytes (re-encoded to baseline JPEG so jsPDF decodes it). Drawn
-  // later, once its box is sized.
+  // Hero image — fully resolved (fetch + canvas re-encode) BEFORE the PDF draws,
+  // so it's present on the FIRST preview, signed or not. Load straight through
+  // the canvas re-encoder via an <img> element (reuses the browser image cache
+  // the version-list thumbnails already warmed, and avoids a cold fetch()
+  // CORS race); fall back to fetch()→dataURL only if the direct load is blocked.
   const heroUrl = proofVersion?.layout_image_url || null
-  const heroRaw = heroUrl ? await urlToDataURL(heroUrl) : null
-  if (heroUrl && !heroRaw) console.error('[approval-sheet] could not fetch layout image:', heroUrl)
-  const heroData = heroRaw
-    ? await reencodeImageViaCanvas(heroRaw, { mime: 'image/jpeg', quality: 0.92, label: heroUrl })
+  let heroData = heroUrl
+    ? await reencodeImageViaCanvas(heroUrl, { mime: 'image/jpeg', quality: 0.92, label: heroUrl })
     : null
+  if (heroUrl && !heroData) {
+    const heroRaw = await urlToDataURL(heroUrl)
+    heroData = heroRaw
+      ? await reencodeImageViaCanvas(heroRaw, { mime: 'image/jpeg', quality: 0.92, label: heroUrl })
+      : null
+  }
+  if (heroUrl && !heroData) console.error('[approval-sheet] could not load layout image:', heroUrl)
 
   // Spec-grid data + pre-measured height.
   const colW = (W - 2 * M) / 2
