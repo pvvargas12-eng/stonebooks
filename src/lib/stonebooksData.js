@@ -430,6 +430,87 @@ export function rowTotalPaid(order) {
 }
 export function rowBalanceDue(order)   { return Math.max(0, rowGrandTotal(order) - rowTotalPaid(order)) }
 
+// ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────
+// Append a payment to the order's payments[] JSONB. Money records are
+// APPEND-ONLY here: this never edits or deletes an existing payment (voiding /
+// adjusting is a separate, flagged action — NOT part of this path). Mirrors
+// orderToRow's legacy deposit_*/balance_* derivation (first two locked
+// non-voided) and statusPatchFor's paid-in-full flip so the order's status,
+// totals, and legacy columns all stay consistent with the wizard's own path.
+//   input: { amount, method, type, receivedAt, ref, note, createdBy }
+//     type ∈ deposit | progress | final (informational; labels still derive by
+//     position in the receipt PDF). method ∈ cash | check | card | other | zelle.
+export async function recordOrderPayment(orderId, input = {}) {
+  if (!orderId) return { ok: false, error: 'Missing order id' }
+  const amount = Number(input.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'Enter a payment amount greater than zero.' }
+
+  const { data: row, error: readErr } = await supabase.from('orders').select('*').eq('id', orderId).single()
+  if (readErr || !row) return { ok: false, error: readErr?.message || 'Order not found' }
+
+  const existing = Array.isArray(row.payments) ? row.payments : []
+  const nowIso = new Date().toISOString()
+  const payment = {
+    id: (crypto?.randomUUID?.() || `pay-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    amount,
+    method: input.method || 'check',
+    type: input.type || null,
+    ref: input.ref || null,
+    receivedAt: input.receivedAt || nowIso.slice(0, 10),
+    createdAt: nowIso,
+    createdBy: input.createdBy || null,
+    note: input.note || null,
+    locked: true,            // a recorded payment is a committed money record
+    voided: false, voidedReason: null, voidedAt: null, voidedBy: null,
+  }
+  const payments = [...existing, payment]
+
+  // Legacy mirror — first two locked non-voided (matches orderToRow).
+  const lockedNV = payments.filter(p => p.locked && !p.voided)
+  const p0 = lockedNV[0] || null, p1 = lockedNV[1] || null
+
+  // Status reconcile — flip to paid_in_full when the locked non-voided sum
+  // reaches the grand total (snapshotting the prior status), same as
+  // statusPatchFor. Advance-only here: we never auto-revert on an append.
+  const grand = rowGrandTotal(row)
+  const lockedSum = lockedNV.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  // Compare on whole dollars (grand is already rounded) so a penny of float
+  // drift can't leave a paid order one cent short of flipping.
+  const fullyPaid = grand > 0 && Math.round(lockedSum) >= grand
+  let status = row.status
+  let statusBefore = row.status_before_paid_in_full
+  if (fullyPaid && status !== 'paid_in_full' && status !== 'closed') {
+    statusBefore = status
+    status = 'paid_in_full'
+  }
+
+  const patch = {
+    payments,
+    deposit_amount: p0 ? p0.amount : null,
+    deposit_method: p0 ? p0.method : null,
+    deposit_ref: p0 ? p0.ref : null,
+    deposit_received_at: p0 ? p0.receivedAt : null,
+    balance_amount: p1 ? p1.amount : null,
+    balance_method: p1 ? p1.method : null,
+    balance_ref: p1 ? p1.ref : null,
+    balance_received_at: p1 ? p1.receivedAt : null,
+    status,
+    status_before_paid_in_full: statusBefore,
+    updated_at: nowIso,
+  }
+  // Optimistic-concurrency guard: only write if the row hasn't changed since we
+  // read it (else a simultaneous append from another tab/staff would be
+  // silently clobbered — a lost money record). Conflict → ask to retry.
+  let q = supabase.from('orders').update(patch).eq('id', orderId)
+  if (row.updated_at != null) q = q.eq('updated_at', row.updated_at)
+  const { data: updated, error: upErr } = await q.select('id')
+  if (upErr) return { ok: false, error: upErr.message }
+  if (!updated || updated.length === 0) {
+    return { ok: false, error: 'This order changed while you were recording the payment. Reopen the order and try again.' }
+  }
+  return { ok: true, payment, paid: lockedSum, balance: Math.max(0, grand - Math.round(lockedSum)) }
+}
+
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
 
 export function fmtUSD(n, opts = {}) {

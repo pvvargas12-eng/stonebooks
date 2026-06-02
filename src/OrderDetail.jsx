@@ -19,7 +19,7 @@ import {
   fmtUSD, fmtDate, statusInfo, jobStatusInfo, customerName,
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
-  uploadOrderAttachment, listOrderAttachments,
+  uploadOrderAttachment, listOrderAttachments, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
 } from './lib/stonebooksData'
@@ -30,6 +30,18 @@ import { generateContractPDF, rowToOrder } from './SalesMode'
 // ── Small helpers ────────────────────────────────────────────────────────────
 const humanize = (s) =>
   s == null || s === '' ? null : String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+const todayISO = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const PAY_METHODS = [
+  { code: 'cash', label: 'Cash' }, { code: 'check', label: 'Check' },
+  { code: 'card', label: 'Card' }, { code: 'zelle', label: 'Zelle' }, { code: 'other', label: 'Other' },
+]
+const PAY_TYPES = [
+  { code: 'deposit', label: 'Deposit' }, { code: 'progress', label: 'Progress payment' }, { code: 'final', label: 'Final payment' },
+]
 
 const stageTone = (status) => {
   switch (status) {
@@ -116,6 +128,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const [emails, setEmails] = useState([])
   const [emailModal, setEmailModal] = useState(null) // { to, subject, body, busy, error, sent } | null
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
+  // Record payment
+  const [payModal, setPayModal] = useState(null)      // open payment modal state | null
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -143,6 +157,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
 
   const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
+  const refreshOrder = async () => { const o = await getOrderById(orderId); if (o) setOrder(o) }
 
   const handleAddNote = async () => {
     const body = noteBody.trim()
@@ -219,6 +234,31 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
       body: res.body || '',
       busy: false, error: null, sent: false,
     })
+  }
+
+  // ── Record payment ─────────────────────────────────────────────────────────
+  const openPayment = () => {
+    setActionNote(null)
+    setPayModal({ amount: '', method: 'check', type: 'deposit', receivedAt: todayISO(), ref: '', note: '', busy: false, error: null, confirm: false })
+  }
+  const closePayment = () => setPayModal(m => (m && m.busy ? m : null))
+  const handleRecordPayment = async () => {
+    if (!payModal || payModal.busy) return
+    const amount = Number(payModal.amount)
+    if (!Number.isFinite(amount) || amount <= 0) { setPayModal(m => ({ ...m, error: 'Enter an amount greater than zero.' })); return }
+    // Money safety — explicit confirm step before the record is written.
+    if (!payModal.confirm) { setPayModal(m => ({ ...m, confirm: true, error: null })); return }
+    setPayModal(m => ({ ...m, busy: true, error: null }))
+    const createdBy = await getCurrentStaffName()
+    const res = await recordOrderPayment(orderId, {
+      amount, method: payModal.method, type: payModal.type,
+      receivedAt: payModal.receivedAt, ref: payModal.ref.trim() || null,
+      note: payModal.note.trim() || null, createdBy,
+    })
+    if (!res.ok) { setPayModal(m => ({ ...m, busy: false, confirm: false, error: res.error || 'Could not record the payment.' })); return }
+    setPayModal(null)
+    await refreshOrder()
+    setActionNote(`Payment of ${fmtUSD(amount)} recorded.`)
   }
 
   if (loading) {
@@ -378,7 +418,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
           <button type="button" className="sb-od-btn" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
             {uploadBusy ? 'Uploading…' : 'Upload attachment'}
           </button>
-          <button type="button" className="sb-od-btn sb-od-btn-stub" onClick={stub('Record payment')}>Record payment</button>
+          <button type="button" className="sb-od-btn" onClick={openPayment}>Record payment</button>
           <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onPickAttachment} />
         </div>
         {actionNote && <div className="sb-od-actionnote">{actionNote}</div>}
@@ -618,6 +658,74 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
           </div>
         </div>
       )}
+
+      {/* Record payment — append-only money record with a confirm step. */}
+      {payModal && (
+        <div className="sb-od-modal-overlay" onClick={closePayment}>
+          <div className="sb-od-modal" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Record payment · {order.order_number || 'order'}</div>
+            <div className="sb-od-pay-summary">
+              <span>Balance due</span>
+              <strong>{fmtUSD(balance)}</strong>
+            </div>
+            <div className="sb-od-modal-row">
+              <label className="sb-od-modal-field">
+                <span>Amount</span>
+                <span className="sb-od-pay-amt">
+                  <span className="sb-od-pay-amt-pre">$</span>
+                  <input type="number" className="sb-od-note-input" value={payModal.amount} disabled={payModal.confirm}
+                    onChange={e => setPayModal(m => ({ ...m, amount: e.target.value }))} placeholder="0.00" />
+                </span>
+              </label>
+              <label className="sb-od-modal-field">
+                <span>Date received</span>
+                <input type="date" className="sb-od-note-input" value={payModal.receivedAt} disabled={payModal.confirm}
+                  onChange={e => setPayModal(m => ({ ...m, receivedAt: e.target.value }))} />
+              </label>
+            </div>
+            <div className="sb-od-modal-row">
+              <label className="sb-od-modal-field">
+                <span>Method</span>
+                <select className="sb-od-note-input" value={payModal.method} disabled={payModal.confirm}
+                  onChange={e => setPayModal(m => ({ ...m, method: e.target.value }))}>
+                  {PAY_METHODS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+                </select>
+              </label>
+              <label className="sb-od-modal-field">
+                <span>Type</span>
+                <select className="sb-od-note-input" value={payModal.type} disabled={payModal.confirm}
+                  onChange={e => setPayModal(m => ({ ...m, type: e.target.value }))}>
+                  {PAY_TYPES.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="sb-od-modal-field">
+              <span>{payModal.method === 'zelle' ? 'Zelle confirmation #' : 'Reference / check #'} <em className="sb-od-opt">optional</em></span>
+              <input type="text" className="sb-od-note-input" value={payModal.ref} disabled={payModal.confirm}
+                onChange={e => setPayModal(m => ({ ...m, ref: e.target.value }))} placeholder="e.g. 1042" />
+            </label>
+            <label className="sb-od-modal-field">
+              <span>Note <em className="sb-od-opt">optional</em></span>
+              <input type="text" className="sb-od-note-input" value={payModal.note} disabled={payModal.confirm}
+                onChange={e => setPayModal(m => ({ ...m, note: e.target.value }))} placeholder="Anything to remember" />
+            </label>
+            {payModal.confirm && (
+              <div className="sb-od-pay-confirm">
+                Record <strong>{fmtUSD(Number(payModal.amount) || 0)}</strong> by {PAY_METHODS.find(x => x.code === payModal.method)?.label} as a {PAY_TYPES.find(x => x.code === payModal.type)?.label.toLowerCase()}? Payments are append-only — they can't be edited or deleted here.
+              </div>
+            )}
+            {payModal.error && <div className="sb-msg sb-msg-err" style={{ marginBottom: 4 }}>{payModal.error}</div>}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={payModal.confirm ? () => setPayModal(m => ({ ...m, confirm: false })) : closePayment} disabled={payModal.busy}>
+                {payModal.confirm ? 'Back' : 'Cancel'}
+              </button>
+              <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={handleRecordPayment} disabled={payModal.busy}>
+                {payModal.busy ? 'Recording…' : payModal.confirm ? 'Confirm & record' : 'Review'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -748,8 +856,18 @@ const OD_CSS = `
   .sb-od-modal-title { font-size: 16px; font-weight: 600; color: #111; margin-bottom: 14px; }
   .sb-od-modal-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
   .sb-od-modal-field > span {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; font-weight: 600;
+    font-size: 13px; color: #8a8a85; font-weight: 500;
   }
   .sb-od-modal-field .sb-od-note-input { margin-bottom: 0; width: 100%; box-sizing: border-box; }
+  .sb-od-modal-field .sb-od-opt { text-transform: none; letter-spacing: normal; font-weight: 400; color: #b0b0a8; font-style: italic; }
   .sb-od-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+  .sb-od-modal-row { display: flex; gap: 12px; }
+  .sb-od-modal-row .sb-od-modal-field { flex: 1 1 0; min-width: 0; }
+  .sb-od-pay-summary { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; background: #faf9f7; border: 0.5px solid #e4e2dd; border-radius: 8px; margin-bottom: 14px; }
+  .sb-od-pay-summary span { font-size: 12px; color: #8a8a85; }
+  .sb-od-pay-summary strong { font-size: 17px; color: #1e2d3d; font-variant-numeric: tabular-nums; }
+  .sb-od-pay-confirm { background: #fdf8ec; border: 0.5px solid #e8d9a8; border-radius: 8px; padding: 10px 12px; font-size: 13px; color: #6b5d2f; margin-bottom: 10px; line-height: 1.45; }
+  .sb-od-pay-amt { position: relative; display: block; }
+  .sb-od-pay-amt-pre { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 13px; color: #a0a09a; pointer-events: none; }
+  .sb-od-pay-amt .sb-od-note-input { padding-left: 22px; }
 `

@@ -163,6 +163,9 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const [markSigned, setMarkSigned] = useState(false)
   const [signedDate, setSignedDate] = useState(() => todayISODate())
 
+  // Deposit captured at entry — becomes the first payment in payments[].
+  const [deposit, setDeposit] = useState({ amount: '', method: 'check', date: todayISODate() })
+
   const update = (patch) => setOrder(o => ({ ...o, ...patch }))
   const updatePricing = (patch) => setOrder(o => ({ ...o, pricing: { ...o.pricing, ...patch } }))
   const updateInsc = (patch) => setOrder(o => ({ ...o, inscription: { ...o.inscription, ...patch } }))
@@ -223,10 +226,31 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     const signedAt = markSigned ? new Date(`${signedDate}T12:00:00`).toISOString() : null
     const stageKey = (stageIdx != null && stageIdx >= 0) ? templateMs[stageIdx]?.key : null
     const status = deriveStatus(order.status, markSigned, stageKey)
-    const toSave = { ...order, serviceTypes: cfg.serviceTypes, signedAt, status }
+
+    // Deposit captured at entry → append as the first locked payment, so the
+    // engine derives paid + balance from payments[] (mirrored to legacy cols on
+    // save). Only on a NEW order (avoid double-adding when editing).
+    let payments = Array.isArray(order.payments) ? order.payments : []
+    const depAmt = Number(deposit.amount)
+    // New order only, and only the first time (order.id is set after the first
+    // successful save) — so a retry-after-partial-failure won't double-add it.
+    if (!isEdit && !order.id && Number.isFinite(depAmt) && depAmt > 0) {
+      payments = [...payments, {
+        id: (crypto?.randomUUID?.() || `pay-${Date.now()}`),
+        amount: depAmt, method: deposit.method, type: 'deposit',
+        ref: null, receivedAt: deposit.date, createdAt: new Date().toISOString(),
+        createdBy: null, note: null, locked: true,
+        voided: false, voidedReason: null, voidedAt: null, voidedBy: null,
+      }]
+    }
+    const toSave = { ...order, serviceTypes: cfg.serviceTypes, signedAt, status, payments }
     const res = await saveOrder(toSave)
     if (!res?.ok) { setBusy(false); setErr(res?.error?.message || res?.reason || 'Could not save the order'); return }
     const savedId = res.order?.id || orderId
+    // Capture the new id + the deposit into local state so a retry after a
+    // downstream failure (job create / backfill) UPDATES this order instead of
+    // inserting a duplicate or re-appending the deposit.
+    if (!order.id && savedId) setOrder(o => ({ ...o, id: savedId, payments }))
 
     let jid = jobId
     if (!jid) {
@@ -300,7 +324,8 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
           {sections.includes('addons') && <AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={ADDON_SETS[type] || []} />}
           {sections.includes('finance') && (
             <FinanceCard order={order} lineItems={lineItems} totals={totals} displayedTotal={displayedTotal}
-              updatePricing={updatePricing} manualTotal={manualTotal}
+              updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}
+              deposit={deposit} setDeposit={setDeposit}
               markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate} />
           )}
 
@@ -1136,7 +1161,7 @@ function AcidWashCard({ order, update, updatePricing }) {
 // =============================================================================
 // FINANCIAL + signed date
 // =============================================================================
-function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, manualTotal, markSigned, setMarkSigned, signedDate, setSignedDate }) {
+function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate }) {
   const p = order.pricing || {}
   const hasManual = manualTotal != null && manualTotal !== ''
   const ownerQuoteItems = lineItems.filter(it => it.quotePending)
@@ -1186,6 +1211,27 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
         <div className="of-ownerquote">
           <span className="of-ownerquote-title">On the owner's quote list</span>
           {ownerQuoteItems.map((it, i) => <div key={i} className="of-ownerquote-item">{it.label}</div>)}
+        </div>
+      )}
+
+      {!isEdit && (
+        <div className="of-sub">
+          <span className="of-sub-title">Deposit taken at signing</span>
+          <Grid cols={3}>
+            <Field label="Amount">
+              <div className="of-num-wrap">
+                <span className="of-num-prefix">$</span>
+                <input className="of-input" type="number" value={deposit.amount}
+                  onChange={e => setDeposit(d => ({ ...d, amount: e.target.value }))} placeholder="0" />
+              </div>
+            </Field>
+            <SelectField label="Method" value={deposit.method} onChange={v => setDeposit(d => ({ ...d, method: v }))}
+              options={[{ value: 'cash', label: 'Cash' }, { value: 'check', label: 'Check' }, { value: 'card', label: 'Card' }, { value: 'zelle', label: 'Zelle' }, { value: 'other', label: 'Other' }]} />
+            <Field label="Date">
+              <input className="of-input" type="date" value={deposit.date} onChange={e => setDeposit(d => ({ ...d, date: e.target.value }))} />
+            </Field>
+          </Grid>
+          <p className="of-field-hint">Leave blank if no deposit was taken — you can record payments later from the order.</p>
         </div>
       )}
 

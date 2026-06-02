@@ -20,11 +20,12 @@ import {
   PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   buildLineItems,
 } from '../SalesMode'
+import { supabase } from './supabase'
 
 // Re-export the existing dropdown lists so the form imports everything from here.
 export {
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
-  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, ADD_ONS_CATALOG,
+  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, ADD_ONS_CATALOG, FOUNDATION_RATE,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   stoneFaceArea,
 }
@@ -61,6 +62,25 @@ export const ACID_WASH_BY_TYPE = [
 ]
 export const acidWashPriceForType = (typeCode) =>
   ACID_WASH_BY_TYPE.find(t => t.code === typeCode)?.price ?? 0
+
+// ── Live (owner-editable) scalar rates ──────────────────────────────────────
+// The scalar per-unit rates above are the constant DEFAULTS. The engine reads
+// the live values from here so Settings → Pricing edits take effect at runtime
+// without a rebuild. loadPricingConfig() (below) merges owner values over these
+// at startup; the small/large LOOKUP TABLES (die prices, base sizes, color
+// premiums, tiers, foundation, add-ons) are mutated in place by
+// applyPricingConfig so the wizard's buildLineItems — which reads those same
+// object references — honors owner values too. Constants stay as the fallback.
+export const liveRates = {
+  customDiePerSqIn: CUSTOM_DIE_RATE_PER_SQIN,
+  customDieDefaultThickness: CUSTOM_DIE_DEFAULT_THICKNESS,
+  polishSidePerFoot: { ...POLISH_SIDE_PER_FOOT },
+  sawBasePerFoot: SAW_BASE_PER_FOOT,
+  basePolishMarginPerFoot: BASE_POLISH_MARGIN_PER_FOOT,
+  customFontAddon: CUSTOM_FONT_ADDON,
+  njTax: NJ_TAX_RATE,
+  ccSurcharge: CC_SURCHARGE,
+}
 
 // Base finish options for the new form (spec attributes; only SB carries a charge).
 export const BASE_FINISHES = [
@@ -118,7 +138,7 @@ export function addonPrice(kind, opts = {}) {
       return s ? (opts.photoType === 'stainless' ? s.stainless : s.porcelain) : 0
     }
     case 'shape-carved': return (SHAPE_CARVED_DESIGNS.find(x => x.code === opts.design)?.price) || 0
-    case 'custom_font':  return CUSTOM_FONT_ADDON
+    case 'custom_font':  return liveRates.customFontAddon
     case 'acid_wash':    return acidWashPriceForType(opts.acidType)
     // title / verse / panel / other — operator-entered manual price.
     default: return 0
@@ -203,8 +223,9 @@ export function computeFormLineItems(order) {
     const H = Number(order.height) || 0
     const baseStone = items.find(it => it.code === 'base-stone')
     if (baseStone && L > 0 && H > 0) {
-      baseStone.amount = Math.round(L * H * CUSTOM_DIE_RATE_PER_SQIN * 100) / 100
-      baseStone.label = `${shape.label} (custom ${L}″ × ${H}″ face × $${CUSTOM_DIE_RATE_PER_SQIN}/sq in)`
+      const rate = liveRates.customDiePerSqIn
+      baseStone.amount = Math.round(L * H * rate * 100) / 100
+      baseStone.label = `${shape.label} (custom ${L}″ × ${H}″ face × $${rate}/sq in)`
     }
   }
 
@@ -224,9 +245,9 @@ export function computeFormLineItems(order) {
   // round-trips whole as JSONB). order.polishSides is accepted as a fallback.
   const wantPolishSides = order.pricing?.polishDieSides || order.polishSides
   if (shape && wantPolishSides) {
-    const thickness = Number(order.depth) || CUSTOM_DIE_DEFAULT_THICKNESS
+    const thickness = Number(order.depth) || liveRates.customDieDefaultThickness
     const heightIn = Number(order.height) || 0
-    const rate = POLISH_SIDE_PER_FOOT[thickness] ?? POLISH_SIDE_PER_FOOT[8]
+    const rate = liveRates.polishSidePerFoot[thickness] ?? liveRates.polishSidePerFoot[8]
     if (heightIn > 0) {
       items.push({ code: 'polish-sides', label: `Polish die sides (${heightIn}″ tall @ ${thickness}″ thick)`, amount: Math.round((heightIn / 12) * rate), editable: true })
     }
@@ -239,12 +260,14 @@ export function computeFormLineItems(order) {
   // (3) 2″ base polish margin — $70 PER FOOT of base PERIMETER (2×(w+d)).
   if (bc.include && bc.polishMargin2in && baseW > 0 && baseD > 0) {
     const perimeter = 2 * (baseW + baseD)
-    items.push({ code: 'base-margin', label: `2″ polished margin (perimeter ${perimeter}″ ÷ 12 × $${BASE_POLISH_MARGIN_PER_FOOT})`, amount: Math.round((perimeter / 12) * BASE_POLISH_MARGIN_PER_FOOT), editable: true })
+    const rate = liveRates.basePolishMarginPerFoot
+    items.push({ code: 'base-margin', label: `2″ polished margin (perimeter ${perimeter}″ ÷ 12 × $${rate})`, amount: Math.round((perimeter / 12) * rate), editable: true })
   }
 
   // (4) Saw base — (base length ÷ 12) × $45 when the base finish is SB (sawn).
   if (bc.include && bc.finish === 'SB' && baseW > 0) {
-    items.push({ code: 'saw-base', label: `Saw base (${baseW}″ ÷ 12 × $${SAW_BASE_PER_FOOT})`, amount: Math.round((baseW / 12) * SAW_BASE_PER_FOOT), editable: true })
+    const rate = liveRates.sawBasePerFoot
+    items.push({ code: 'saw-base', label: `Saw base (${baseW}″ ÷ 12 × $${rate})`, amount: Math.round((baseW / 12) * rate), editable: true })
   }
 
   // Owner-quote flag — custom line items the form flags for the owner to price
@@ -269,8 +292,8 @@ export function computeTotals(items, { applyTax = true, applyCCSurcharge = false
   }
   const discountAmt = subtotalDisc * (Number(discountPct) || 0) / 100
   const taxBase = (subtotalDisc - discountAmt) + subtotalPermit
-  const tax = applyTax ? taxBase * NJ_TAX_RATE : 0
-  const cc = applyCCSurcharge ? (taxBase + tax) * CC_SURCHARGE : 0
+  const tax = applyTax ? taxBase * liveRates.njTax : 0
+  const cc = applyCCSurcharge ? (taxBase + tax) * liveRates.ccSurcharge : 0
   return {
     subtotalDisc: Math.round(subtotalDisc * 100) / 100,
     subtotalPermit: Math.round(subtotalPermit * 100) / 100,
@@ -278,5 +301,155 @@ export function computeTotals(items, { applyTax = true, applyCCSurcharge = false
     tax: Math.round(tax * 100) / 100,
     cc: Math.round(cc * 100) / 100,
     grandTotal: Math.round(taxBase + tax + cc),
+  }
+}
+
+// =============================================================================
+// OWNER-EDITABLE PRICING CONFIG (Settings → Pricing)
+// =============================================================================
+// One tenant-scoped JSONB row in `pricing_config` holds owner overrides. The
+// config schema mirrors the editable rates; ANY field absent falls back to the
+// constant default (captured pristine in DEFAULT_PRICING_CONFIG at module load,
+// before any apply mutates the tables). loadPricingConfig() applies the stored
+// row at startup; savePricingConfig() persists + re-applies immediately so the
+// form reprices without a reload. Scalars live in `liveRates`; the lookup
+// tables (die/base/color/tier/foundation/add-on) are mutated IN PLACE so the
+// wizard's buildLineItems (same object references) honors them too.
+// =============================================================================
+
+export const PRICING_TENANT_ID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
+
+// Snapshot the current effective rates into the config schema shape.
+function snapshotPricingConfig() {
+  return {
+    version: 1,
+    perUnit: {
+      customDiePerSqIn: liveRates.customDiePerSqIn,
+      customDieDefaultThickness: liveRates.customDieDefaultThickness,
+      polishSidePerFoot: { ...liveRates.polishSidePerFoot },
+      sawBasePerFoot: liveRates.sawBasePerFoot,
+      basePolishMarginPerFoot: liveRates.basePolishMarginPerFoot,
+    },
+    taxes: { njTax: liveRates.njTax, ccSurcharge: liveRates.ccSurcharge },
+    fees: { customFontAddon: liveRates.customFontAddon },
+    baseHeights: Object.fromEntries(BASE_HEIGHTS.map(h => [h.code, h.upcharge])),
+    inscriptionTiers: Object.fromEntries(INSCRIPTION_TIERS.map(t => [t.code, t.price])),
+    acidWashByType: Object.fromEntries(ACID_WASH_BY_TYPE.map(t => [t.code, t.price])),
+    foundationRates: { ...FOUNDATION_RATE },
+    colorPremiums: Object.fromEntries(GRANITE_COLORS.map(c => [c.code, c.premium])),
+    diePrices: Object.fromEntries(SHAPES.flatMap(s => (s.standardSizes || []).map(sz => [sz.code, sz.price]))),
+    baseSizePrices: Object.fromEntries(BASE_SIZES.map(b => [b.code, b.price])),
+    addOnPrices: Object.fromEntries(ADD_ONS_CATALOG.filter(a => !a.custom).map(a => [a.code, a.price])),
+  }
+}
+
+// Pristine defaults — captured ONCE at module load, before any apply mutates
+// the shared tables. The editor merges stored overrides over this.
+export const DEFAULT_PRICING_CONFIG = snapshotPricingConfig()
+
+// Deep-merge a partial stored config over a base (one level into the nested
+// maps; all leaf values are scalars so a shallow-per-section merge suffices).
+function mergePricingConfig(base, over) {
+  const out = { ...base }
+  for (const key of Object.keys(over || {})) {
+    const b = base[key], o = over[key]
+    if (b && o && typeof b === 'object' && typeof o === 'object' && !Array.isArray(b)) {
+      out[key] = { ...b, ...o }
+    } else {
+      out[key] = o
+    }
+  }
+  return out
+}
+
+// Apply a stored config so the effective rates = pristine defaults with the
+// config's non-null values overlaid. We RESET to defaults first, then overlay
+// only non-null fields — so blanking a field in the editor (stored as null)
+// genuinely reverts that rate to the built-in default, in-session and on reload
+// (the documented "blank a field to fall back to the default" contract).
+export function applyPricingConfig(config) {
+  applyConfigValues(DEFAULT_PRICING_CONFIG, false)   // reset everything to pristine
+  if (config) applyConfigValues(config, true)        // overlay non-null overrides
+}
+
+// Write a config's values into liveRates + the shared tables. When skipNull is
+// true, null/absent fields are left untouched (used for the overlay pass).
+function applyConfigValues(config, skipNull) {
+  if (!config) return
+  const num = (v) => Number(v)
+  // null/undefined always means "leave it" — on the overlay pass that yields
+  // the default (already set by the reset pass); on the reset pass DEFAULT has
+  // no nulls so everything applies. (skipNull kept for call-site clarity.)
+  void skipNull
+  const ok = (v) => v != null
+  if (config.perUnit) {
+    const u = config.perUnit
+    if (ok(u.customDiePerSqIn)) liveRates.customDiePerSqIn = num(u.customDiePerSqIn)
+    if (ok(u.customDieDefaultThickness)) liveRates.customDieDefaultThickness = num(u.customDieDefaultThickness)
+    if (ok(u.sawBasePerFoot)) liveRates.sawBasePerFoot = num(u.sawBasePerFoot)
+    if (ok(u.basePolishMarginPerFoot)) liveRates.basePolishMarginPerFoot = num(u.basePolishMarginPerFoot)
+    if (u.polishSidePerFoot) for (const k of Object.keys(liveRates.polishSidePerFoot)) {
+      if (ok(u.polishSidePerFoot[k])) liveRates.polishSidePerFoot[k] = num(u.polishSidePerFoot[k])
+    }
+  }
+  if (config.taxes) {
+    if (ok(config.taxes.njTax)) liveRates.njTax = num(config.taxes.njTax)
+    if (ok(config.taxes.ccSurcharge)) liveRates.ccSurcharge = num(config.taxes.ccSurcharge)
+  }
+  if (config.fees && ok(config.fees.customFontAddon)) liveRates.customFontAddon = num(config.fees.customFontAddon)
+  if (config.baseHeights) BASE_HEIGHTS.forEach(h => { if (ok(config.baseHeights[h.code])) h.upcharge = num(config.baseHeights[h.code]) })
+  if (config.inscriptionTiers) INSCRIPTION_TIERS.forEach(t => { if (ok(config.inscriptionTiers[t.code])) t.price = num(config.inscriptionTiers[t.code]) })
+  if (config.acidWashByType) ACID_WASH_BY_TYPE.forEach(t => { if (ok(config.acidWashByType[t.code])) t.price = num(config.acidWashByType[t.code]) })
+  if (config.foundationRates) Object.keys(FOUNDATION_RATE).forEach(k => { if (ok(config.foundationRates[k])) FOUNDATION_RATE[k] = num(config.foundationRates[k]) })
+  if (config.colorPremiums) GRANITE_COLORS.forEach(c => { if (ok(config.colorPremiums[c.code])) c.premium = num(config.colorPremiums[c.code]) })
+  if (config.diePrices) SHAPES.forEach(s => (s.standardSizes || []).forEach(sz => { if (ok(config.diePrices[sz.code])) sz.price = num(config.diePrices[sz.code]) }))
+  if (config.baseSizePrices) BASE_SIZES.forEach(b => { if (ok(config.baseSizePrices[b.code])) b.price = num(config.baseSizePrices[b.code]) })
+  if (config.addOnPrices) ADD_ONS_CATALOG.forEach(a => { if (ok(config.addOnPrices[a.code])) a.price = num(config.addOnPrices[a.code]) })
+}
+
+// Fetch + apply the stored config at startup. Safe to call repeatedly; silent
+// on failure (engine keeps the constant defaults).
+let _pricingLoaded = false
+export async function loadPricingConfig() {
+  try {
+    const { data, error } = await supabase
+      .from('pricing_config').select('config').eq('tenant_id', PRICING_TENANT_ID).maybeSingle()
+    if (error) { console.error('loadPricingConfig:', error.message); return { ok: false, error: error.message } }
+    if (data?.config && Object.keys(data.config).length) applyPricingConfig(data.config)
+    _pricingLoaded = true
+    return { ok: true }
+  } catch (e) {
+    console.error('loadPricingConfig:', e)
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+export const isPricingLoaded = () => _pricingLoaded
+
+// Effective config for the editor: pristine defaults merged with the stored row.
+export async function getEffectivePricingConfig() {
+  try {
+    const { data, error } = await supabase
+      .from('pricing_config').select('config').eq('tenant_id', PRICING_TENANT_ID).maybeSingle()
+    if (error) { console.error('getEffectivePricingConfig:', error.message) }
+    return mergePricingConfig(DEFAULT_PRICING_CONFIG, data?.config || {})
+  } catch {
+    return { ...DEFAULT_PRICING_CONFIG }
+  }
+}
+
+// Persist the full edited config and re-apply immediately (form reprices live).
+export async function savePricingConfig(config, userId) {
+  try {
+    const { error } = await supabase.from('pricing_config').upsert({
+      tenant_id: PRICING_TENANT_ID,
+      config,
+      updated_at: new Date().toISOString(),
+      updated_by: userId || null,
+    }, { onConflict: 'tenant_id' })
+    if (error) return { ok: false, error: error.message }
+    applyPricingConfig(config)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
   }
 }

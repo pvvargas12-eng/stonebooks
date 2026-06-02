@@ -16,6 +16,8 @@ import {
 } from './lib/auth'
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
 import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD } from './lib/stonebooksData'
+import { loadPricingConfig } from './lib/orderRates'
+import PricingSettings from './components/PricingSettings'
 import SalesMode from './SalesMode'
 import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
@@ -338,6 +340,10 @@ export default function Stonebooks() {
     return () => { if (unsub) unsub() }
   }, [])
 
+  // Load owner-set pricing overrides once at startup so the New Order form
+  // prices at the configured values (falls back to constant defaults silently).
+  useEffect(() => { loadPricingConfig() }, [])
+
   // Capture the Gmail OAuth return — the gmail-oauth-callback Edge Function
   // redirects back here with ?gmail=connected&email=… on success. Persist the
   // connected email locally (Settings → Integrations reads it) and strip the
@@ -657,6 +663,12 @@ export default function Stonebooks() {
 // SETTINGS TAB
 // =============================================================================
 
+// Owner gate for owner-only settings (Pricing). No role column exists yet, so
+// this gates on the known owner email(s). NOTE: the DB RLS still allows any
+// authenticated write — harden both once a real role system lands.
+const OWNER_EMAILS = ['pv.vargas12@gmail.com']
+const isOwner = (user) => !!user?.email && OWNER_EMAILS.includes(String(user.email).toLowerCase())
+
 function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
   const [section, setSection] = useState('profile')
 
@@ -672,6 +684,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {[
             { k: 'profile',      l: 'Profile' },
             { k: 'appearance',   l: 'Appearance' },
+            { k: 'pricing',      l: 'Pricing' },
             { k: 'integrations', l: 'Integrations' },
             { k: 'account',      l: 'Account' },
             { k: 'shop',         l: 'Shop info' },
@@ -690,6 +703,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
         <div className="sb-settings-body">
           {section === 'profile'      && <ProfileSettings user={user} profile={profile} onProfileChange={onProfileChange} />}
           {section === 'appearance'   && <AppearanceSettings theme={theme} setTheme={setTheme} />}
+          {section === 'pricing'      && <PricingSettings user={user} canEdit={isOwner(user)} />}
           {section === 'integrations' && <IntegrationsSettings user={user} profile={profile} />}
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
