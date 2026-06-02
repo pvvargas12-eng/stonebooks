@@ -27,6 +27,7 @@ import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
 import EmailTab from './EmailTab'
+import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
 import TodayTab from './TodayTab'
@@ -257,6 +258,9 @@ export default function Stonebooks() {
   const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
   const [salesCemeteryEdit, setSalesCemeteryEdit] = useState(false)  // true → wizard opens in edit mode (submitted order)
   const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
+  // New Order form (single-screen, type-aware). orderFormId null = new, set = edit.
+  const [orderFormOpen, setOrderFormOpen] = useState(false)
+  const [orderFormId, setOrderFormId] = useState(null)
   const [profile, setProfile] = useState(null)  // user_settings row
   const [selectedCustomerId, setSelectedCustomerId] = useState(null)  // for customer drill-in across tabs
   // Sprint J1-P1 Today Commit B — for job drill-in from Today operational items.
@@ -316,6 +320,9 @@ export default function Stonebooks() {
     setSalesCemeteryEdit(false)
     setSalesKind(null)
   }
+  // New Order form — id null = new; an order id = edit (replaces "Edit in Sales Portal").
+  const openOrderForm = (id = null) => { setOrderFormId(id); setOrderFormOpen(true) }
+  const closeOrderForm = () => { setOrderFormOpen(false); setOrderFormId(null) }
 
   const reloadProfile = async () => {
     if (!user?.id) return
@@ -536,6 +543,18 @@ export default function Stonebooks() {
     )
   }
 
+  // New Order form — full-screen overlay (single-screen, type-aware). On save,
+  // close and land on Orders.
+  if (orderFormOpen) {
+    return (
+      <OrderForm
+        orderId={orderFormId}
+        onClose={closeOrderForm}
+        onSaved={() => { closeOrderForm(); setTab('orders') }}
+      />
+    )
+  }
+
   const handleNav = (key) => {
     if (key === 'sales') {
       openSales()
@@ -608,7 +627,7 @@ export default function Stonebooks() {
 
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
-{tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
+{tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} />}
 {tab === 'scheduler' && <SchedulerTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onSwitchTab={setTab} />}

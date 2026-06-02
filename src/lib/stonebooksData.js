@@ -1205,7 +1205,7 @@ async function buildMilestoneListForOrder(serviceTypes) {
 // for the audit trail: 'wizard' (auto from contract signing), 'backfill'
 // (batch from Jobs tab), or 'manual' (default for any ad-hoc caller).
 
-export async function createJobFromOrder(orderId, { source } = {}) {
+export async function createJobFromOrder(orderId, { source, allowUnsigned = false } = {}) {
   if (!orderId) return { ok: false, error: 'No orderId' }
 
   // 1. Existing job? Return it.
@@ -1223,7 +1223,10 @@ export async function createJobFromOrder(orderId, { source } = {}) {
     .eq('id', orderId)
     .single()
   if (orderErr || !order) return { ok: false, error: orderErr?.message || 'Order not found' }
-  if (!order.signed_at) return { ok: false, error: 'Order is not signed yet — no job created' }
+  // The wizard requires a signed contract; the New Order form enters active /
+  // backfilled orders directly, so it passes allowUnsigned to skip the guard
+  // (signed_at stays NULL unless staff explicitly mark it signed).
+  if (!allowUnsigned && !order.signed_at) return { ok: false, error: 'Order is not signed yet — no job created' }
 
   // 3. Resolve template + milestone list.
   const { primaryTemplate, allMilestones } = await buildMilestoneListForOrder(order.service_types)
@@ -1307,6 +1310,40 @@ export async function createJobFromOrder(orderId, { source } = {}) {
   })
 
   return { ok: true, job, alreadyExisted: false }
+}
+
+// New Order form — the ordered milestone list for a set of service types, so
+// the stage-backfill control can present "enter at which stage". Returns
+// [{ key, label, group, sortOrder }] in template order.
+export async function getOrderMilestoneTemplate(serviceTypes) {
+  const { allMilestones } = await buildMilestoneListForOrder(serviceTypes)
+  return (allMilestones || []).map((m, i) => ({ key: m.key, label: m.label, group: m.group, sortOrder: i }))
+}
+
+// New Order form — backfill a freshly-created job to its real current stage:
+// mark every milestone up to and including `throughKey` (by sort_order) as
+// 'done'. throughKey null/'fresh' = leave everything not_started. Returns
+// { ok, doneCount }.
+export async function backfillJobMilestones(jobId, throughKey) {
+  if (!jobId) return { ok: false, error: 'No jobId' }
+  if (!throughKey || throughKey === 'fresh') return { ok: true, doneCount: 0 }
+  const { data: ms, error } = await supabase
+    .from('job_milestones')
+    .select('id, milestone_key, sort_order')
+    .eq('job_id', jobId)
+    .order('sort_order', { ascending: true })
+  if (error) return { ok: false, error: error.message }
+  const cutoff = (ms || []).find(m => m.milestone_key === throughKey)
+  if (!cutoff) return { ok: false, error: 'Stage milestone not found on job' }
+  const toComplete = (ms || []).filter(m => (m.sort_order ?? 0) <= (cutoff.sort_order ?? 0)).map(m => m.id)
+  if (toComplete.length === 0) return { ok: true, doneCount: 0 }
+  const stamp = new Date().toISOString()
+  const { error: upErr } = await supabase
+    .from('job_milestones')
+    .update({ status: 'done', status_date: stamp.slice(0, 10), updated_at: stamp })
+    .in('id', toComplete)
+  if (upErr) return { ok: false, error: upErr.message }
+  return { ok: true, doneCount: toComplete.length }
 }
 
 // ── CEMETERY ORDERS ──────────────────────────────────────────────────────────

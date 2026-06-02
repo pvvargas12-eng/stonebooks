@@ -82,7 +82,7 @@ function severityRank(blocker) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer, onOpenJob }) {
+export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob }) {
   // CORE FIX: clicking an order opens the read-only Order Detail View (internal
   // state) — NOT the sales wizard. The wizard opens only from OrderDetail's
   // "Edit in Sales Portal" action, which calls onOpenOrder(id) → openSales(id).
@@ -293,7 +293,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer, on
       <OrderDetail
         orderId={selectedOrderId}
         onBack={() => setSelectedOrderId(null)}
-        onEditInSales={(id) => onOpenOrder?.(id)}
+        onEditInSales={(id) => onEditOrder?.(id)}
         onOpenJob={onOpenJob}
         onOpenCustomer={onOpenCustomer}
       />
@@ -335,8 +335,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onOpenCustomer, on
                 <option key={o.code} value={o.code}>{o.label}</option>
               ))}
             </select>
-            <button type="button" className="sb-crm-btn-primary" onClick={onOpenSales}>
-              + New sale
+            <button type="button" className="sb-crm-btn-primary" onClick={onNewOrder}>
+              + New Order
+            </button>
+            <button type="button" className="sb-crm-btn-secondary" onClick={onOpenSales}>
+              Sales wizard
             </button>
           </div>
         </header>

@@ -1273,7 +1273,8 @@ const CANCELLABLE_STATUSES = ['draft', 'scoping', 'quoted', 'contracted', 'in_pr
 // INITIAL STATE FACTORY
 // =============================================================================
 
-function makeBlankDeceased(position = 0, isReserved = false) {
+// eslint-disable-next-line react-refresh/only-export-components
+export function makeBlankDeceased(position = 0, isReserved = false) {
   return {
     firstName: '',
     middleName: '',
@@ -1312,7 +1313,8 @@ function makeBlankDeceased(position = 0, isReserved = false) {
   }
 }
 
-function makeBlankOrder() {
+// eslint-disable-next-line react-refresh/only-export-components
+export function makeBlankOrder() {
   return {
     // Identifiers
     id: null,
@@ -1618,7 +1620,8 @@ async function upsertCemetery(cem) {
 
 // Save the order (creates if no id, updates if has id). Saves customer
 // and cemetery records first to populate FKs.
-async function saveOrder(order) {
+// eslint-disable-next-line react-refresh/only-export-components
+export async function saveOrder(order) {
   // Sanity: must have at least a service type or a name to save
   const hasSubstance =
     order.serviceTypes.length > 0 ||
@@ -2509,7 +2512,8 @@ function ServiceTypeStep({ order, update, mode }) {
 // STEP 2 — CUSTOMER
 // =============================================================================
 
-function CustomerStep({ order, update }) {
+// Exported for reuse in the single-screen New Order form (src/OrderForm.jsx).
+export function CustomerStep({ order, update }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -2740,7 +2744,7 @@ function CustomerStep({ order, update }) {
 // STEP 3 — CEMETERY + PLOT + GOOGLE MAPS PIN
 // =============================================================================
 
-function CemeteryStep({ order, update }) {
+export function CemeteryStep({ order, update }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -3025,7 +3029,7 @@ function CemeteryStep({ order, update }) {
 // STEP 4 — DECEASED (one or more)
 // =============================================================================
 
-function DeceasedStep({ order, update }) {
+export function DeceasedStep({ order, update }) {
   const dec = order.deceased
 
   const updateOne = (idx, patch) => {
@@ -3210,7 +3214,7 @@ function DeceasedCard({ idx, d, onChange, onRemove, isOnly }) {
 // STEP 5 — SHAPE & SIZE
 // =============================================================================
 
-function ShapeStep({ order, update }) {
+export function ShapeStep({ order, update }) {
   // Filter shapes by service type — Mausoleum/Civic only show if user picked those
   const availableShapes = useMemo(() => {
     return SHAPES.filter(s => {
@@ -3572,7 +3576,7 @@ function ShapeStep({ order, update }) {
 // STEP 6 — COLOR
 // =============================================================================
 
-function ColorStep({ order, update }) {
+export function ColorStep({ order, update }) {
   const grouped = useMemo(() => {
     const out = {}
     for (const c of GRANITE_COLORS) {
@@ -4592,7 +4596,7 @@ function PersonOrderArrows({ order, update, idx }) {
   )
 }
 
-function InscriptionStep({ order, update }) {
+export function InscriptionStep({ order, update }) {
   const isInscriptionOnly = useMemo(() => {
     const inscrAndAddon = ['INSCRIPTION', 'ACID_WASH', 'REPAIR', 'ADD_PHOTO']
     return order.serviceTypes.length > 0
@@ -5170,7 +5174,7 @@ function EpitaphLibraryPicker({ onPick, current }) {
 // STEP 9 — ADD-ONS (Sprint 3)
 // =============================================================================
 
-function AddOnsStep({ order, update }) {
+export function AddOnsStep({ order, update }) {
   // Generic catalog grouping (carvings + photo handled separately below).
   // Lettering is hidden for new-stone work — only chargeable on existing-stone
   // inscription jobs.
@@ -8694,7 +8698,8 @@ function ProductionTimelineSection({ order, update, isLocked }) {
 }
 
 // Build the auto-calculated line items from the order state
-function buildLineItems(order) {
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildLineItems(order) {
   const items = []
 
   // Sprint 3i — Mausoleum custom price (when MAUSOLEUM is in services and a
@@ -8860,7 +8865,7 @@ function buildLineItems(order) {
   return items
 }
 
-function PricingStep({ order, update }) {
+export function PricingStep({ order, update }) {
   const lineItems = useMemo(() => buildLineItems(order), [order])
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
 
@@ -10097,7 +10102,7 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
   if (phase === 'loading') {
     return (
       <div className="sm-root">
-        <style>{styles}</style>
+        <style>{salesModeStyles}</style>
         <div className="sm-loading">Loading…</div>
       </div>
     )
@@ -10106,7 +10111,7 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
   if (phase === 'resume') {
     return (
       <div className="sm-root">
-        <style>{styles}</style>
+        <style>{salesModeStyles}</style>
         <OrdersDashboard
           onPick={pickDraft}
           onStartNew={startNew}
@@ -10120,7 +10125,7 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
   // Wizard view
   return (
     <div className={`sm-root sm-mode-${mode}`}>
-      <style>{styles}</style>
+      <style>{salesModeStyles}</style>
 
       {/* HEADER */}
       <div className="sm-header">
@@ -11820,7 +11825,9 @@ function SignStep({ order, update }) {
 // STYLES — design tokens match App.jsx (cream/navy/brass; Playfair + Lato)
 // =============================================================================
 
-const styles = `
+// Exported so the New Order form (src/OrderForm.jsx) can inject the same
+// stylesheet around the reused step components.
+export const salesModeStyles = `
 .sm-root {
   position: fixed; inset: 0;
   background: var(--cream, #faf8f4);

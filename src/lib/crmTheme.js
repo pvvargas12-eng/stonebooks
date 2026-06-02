@@ -172,6 +172,19 @@ const styles = `
   }
   .sb-crm-btn-primary:hover { filter: brightness(0.95); }
 
+  .sb-crm-btn-secondary {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 9px 16px;
+    border-radius: 8px;
+    background: ${CRM.card};
+    color: ${CRM.ink};
+    border: 0.5px solid ${CRM.cardBorder};
+    cursor: pointer;
+  }
+  .sb-crm-btn-secondary:hover { background: ${CRM.bronzeBg}; }
+
   .sb-crm-chip-row {
     display: flex;
     flex-wrap: wrap;

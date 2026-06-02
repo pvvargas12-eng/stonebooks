@@ -364,7 +364,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
         {/* ── QUICK ACTIONS ───────────────────────────────────────────────── */}
         <div className="sb-od-actions">
           <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={() => onEditInSales?.(order.id)}>
-            Edit in Sales Portal
+            Edit order
           </button>
           <button type="button" className="sb-od-btn" onClick={handleOpenContract}>Open contract</button>
           <button type="button" className="sb-od-btn" onClick={stub('Approval packet')}>Open approval packet</button>
