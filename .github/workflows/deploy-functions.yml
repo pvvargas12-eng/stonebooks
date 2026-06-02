@@ -1,0 +1,49 @@
+name: Deploy Edge Functions
+
+# Auto-deploy Supabase Edge Functions on push to main (scoped to function /
+# workflow changes so a frontend-only push doesn't redeploy), plus a manual
+# "Run workflow" button.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
+      - '.github/workflows/deploy-functions.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: ibekfollqnytxcuyekad
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # CRITICAL: gmail-oauth-callback must deploy with JWT verification OFF.
+      # Google redirects the browser to it with NO Supabase JWT — re-enabling
+      # JWT here would break live email-connect. Explicit --no-verify-jwt, every
+      # run, so it can never silently flip back on.
+      - name: Deploy gmail-oauth-callback (JWT verify OFF)
+        run: supabase functions deploy gmail-oauth-callback --project-ref "$PROJECT_REF" --no-verify-jwt
+
+      # All other functions keep DEFAULT JWT verification (called from the
+      # authenticated app, which supplies the Supabase key).
+      - name: Deploy gmail-send (default JWT verify)
+        run: supabase functions deploy gmail-send --project-ref "$PROJECT_REF"
+
+      - name: Deploy gmail-list (default JWT verify)
+        run: supabase functions deploy gmail-list --project-ref "$PROJECT_REF"
+
+      - name: Deploy gmail-sync (default JWT verify)
+        run: supabase functions deploy gmail-sync --project-ref "$PROJECT_REF"
+
+      - name: Deploy gmail-thread (default JWT verify)
+        run: supabase functions deploy gmail-thread --project-ref "$PROJECT_REF"
+
+      - name: Deploy ai-draft (default JWT verify)
+        run: supabase functions deploy ai-draft --project-ref "$PROJECT_REF"
