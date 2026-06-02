@@ -15609,4 +15609,28 @@ input[type="date"].sm-textinput {
 }
 `
 
+// ── Rate primitives re-exported for the centralized rate module ─────────────
+// src/lib/orderRates.js is the single import surface for the New Order form's
+// pricing (and the future Settings pricing editor). It SOURCES these existing
+// tables/functions from here rather than duplicating them, so the rates the
+// wizard's buildLineItems already uses can never drift from the form's.
+// One grouped export of non-component values; Fast Refresh rule disabled for
+// the whole statement (block disable — a single-line disable wouldn't cover the
+// continuation lines).
+/* eslint-disable react-refresh/only-export-components */
+export {
+  SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
+  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, FOUNDATION_RATE, ADD_ONS_CATALOG,
+  NJ_TAX_RATE, CC_SURCHARGE, CUSTOM_FONT_FEE,
+  LASER_SIZES, computeLaserPrice, stoneFaceArea,
+  BLING_SIZES, computeBlingPrice,
+  VASE_SIZES, computeVasePrice, dieRecommendedVaseSize,
+  PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
+  // New Order form (compact rebuild) — customer/cemetery autofill + status enum.
+  searchCustomers, searchCemeteries, rowToCustomer, rowToCemetery, ORDER_STATUSES,
+  // New Order form (expansion) — reuse the catalog search + attachment upload.
+  fetchMonuments, uploadAttachment,
+}
+/* eslint-enable react-refresh/only-export-components */
+
 
