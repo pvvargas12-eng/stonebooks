@@ -11,7 +11,7 @@
 // from the previous design — only the list view is rebuilt.
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   listAllCustomers, listArchivedCustomers, listOrdersForCustomer,
   createCustomer, archiveCustomer, unarchiveCustomer, deleteCustomer,
@@ -20,16 +20,21 @@ import {
   customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative,
   computeOrderPressure,
   ACTIVE_STATUSES, SOLD_STATUSES,
+  bulkArchiveCustomers, bulkRestoreCustomers,
 } from './lib/stonebooksData'
 import { CRM, paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
+import UndoToast from './components/calendar/UndoToast.jsx'
 import { supabase } from './lib/supabase'
+
+const CUST_PAGE_SIZE = 50
 
 // ── Filter chip option shapes ────────────────────────────────────────────────
 
 const STATUS_FILTERS = [
   { code: 'active',   label: 'Active' },
   { code: 'archived', label: 'Archived' },
+  { code: 'all',      label: 'All' },
 ]
 const JOB_TYPE_FILTERS = [
   { code: 'new_stone',       label: 'New stone' },
@@ -75,8 +80,8 @@ function severityRank(blocker) {
   return SEVERITY_RANK[blocker.severity] ?? 3
 }
 
-// Grid template: FAMILY | ORDER# | CONTACT | PAYMENT | AGE | BLOCKER | UPDATED
-const ROW_GRID = '1.4fr 0.9fr 1.1fr 1.1fr 0.7fr 1.2fr 0.7fr'
+// Grid template: SELECT | FAMILY | ORDER# | CONTACT | PAYMENT | AGE | BLOCKER | UPDATED
+const ROW_GRID = '34px 1.4fr 0.9fr 1.1fr 1.1fr 0.7fr 1.2fr 0.7fr'
 
 // ── Component ────────────────────────────────────────────────────────────────
 
@@ -95,13 +100,24 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
   const [blockerFilters, setBlockerFilters] = useState(new Set())
   const [showAddForm, setShowAddForm] = useState(false)
 
+  // Selection + bulk
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const lastIndexRef = useRef(null)
+  const toastSeqRef = useRef(0)
+  const [page, setPage] = useState(0)
+  const [confirm, setConfirm] = useState(null)
+  const [toast, setToast] = useState(null)
+  const [busyBulk, setBusyBulk] = useState(false)
+
   // ── Load ────────────────────────────────────────────────────────────────
   const reload = async () => {
     setLoading(true)
     setLoadErr(null)
     try {
       const [cs, ordersRes, jobs] = await Promise.all([
-        statusFilter === 'archived' ? listArchivedCustomers() : listAllCustomers(),
+        statusFilter === 'archived' ? listArchivedCustomers()
+          : statusFilter === 'all'  ? listAllCustomers({ includeArchived: true })
+          : listAllCustomers(),
         supabase.from('orders').select(
           'id, customer_id, status, order_number, updated_at, created_at, signed_at, pricing_locked_at, ' +
           'deposit_amount, balance_amount, payments, pricing, add_ons, ' +
@@ -321,6 +337,66 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
     return labels
   }, [statusFilter, needsCallOnly, jobTypeFilters, paymentFilters, blockerFilters, search])
 
+  // ── Selection + pagination + bulk ─────────────────────────────────────────
+  const filteredIds = useMemo(() => filtered.map(c => c.id), [filtered])
+  const pageCount = Math.max(1, Math.ceil(filtered.length / CUST_PAGE_SIZE))
+  const curPage = Math.min(page, pageCount - 1)
+  const pageRows = useMemo(() => filtered.slice(curPage * CUST_PAGE_SIZE, curPage * CUST_PAGE_SIZE + CUST_PAGE_SIZE), [filtered, curPage])
+  const allMatchingSelected = filtered.length > 0 && filtered.every(c => selectedIds.has(c.id))
+  const pageAllSelected = pageRows.length > 0 && pageRows.every(c => selectedIds.has(c.id))
+
+  const toggleOne = (id, idx, shiftKey) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (shiftKey && lastIndexRef.current != null) {
+        const [lo, hi] = [lastIndexRef.current, idx].sort((a, b) => a - b)
+        const sel = !next.has(id)
+        for (let i = lo; i <= hi; i++) { const cid = filteredIds[i]; if (cid) (sel ? next.add(cid) : next.delete(cid)) }
+      } else { next.has(id) ? next.delete(id) : next.add(id) }
+      return next
+    })
+    lastIndexRef.current = idx
+  }
+  const togglePage = () => setSelectedIds(prev => {
+    const next = new Set(prev)
+    if (pageAllSelected) pageRows.forEach(c => next.delete(c.id)); else pageRows.forEach(c => next.add(c.id))
+    return next
+  })
+  const clearSelection = () => { setSelectedIds(new Set()); lastIndexRef.current = null }
+
+  const showToast = (text, { error = false, onUndo = null } = {}) =>
+    setToast({ id: String(toastSeqRef.current++), text, error, canUndo: !!onUndo, onUndo })
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 8000)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  const runBulkCust = async (fn, successText, undoFn) => {
+    setBusyBulk(true)
+    const res = await fn()
+    setBusyBulk(false); setConfirm(null)
+    if (!res?.ok) { showToast(res?.error || 'Bulk action failed.', { error: true }); return }
+    clearSelection()
+    showToast(successText(res), undoFn ? {
+      onUndo: async () => { setToast(null); setBusyBulk(true); const u = await undoFn(); setBusyBulk(false); showToast(u?.ok ? 'Undone.' : (u?.error || 'Undo failed.'), { error: !u?.ok }); reload() },
+    } : {})
+    reload()
+  }
+  const custIds = () => [...selectedIds]
+  const askArchive = () => setConfirm({
+    title: `Archive ${selectedIds.size} customer${selectedIds.size === 1 ? '' : 's'}?`,
+    body: 'Order history is preserved; they leave the active list.',
+    run: () => runBulkCust(() => bulkArchiveCustomers(custIds()), r => `Archived ${r.count} customer${r.count === 1 ? '' : 's'}.`, () => bulkRestoreCustomers(custIds())),
+  })
+  const askRestore = () => setConfirm({
+    title: `Restore ${selectedIds.size} customer${selectedIds.size === 1 ? '' : 's'}?`,
+    body: 'Restored customers return to the active list.',
+    run: () => runBulkCust(() => bulkRestoreCustomers(custIds()), r => `Restored ${r.count} customer${r.count === 1 ? '' : 's'}.`, () => bulkArchiveCustomers(custIds())),
+  })
+  const canArchive = statusFilter !== 'archived'
+  const canRestore = statusFilter !== 'active'
+
   // ── Detail view delegated to existing component ─────────────────────────
   if (selectedId) {
     const customer = customers.find(c => c.id === selectedId)
@@ -413,7 +489,7 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
               <FilterChip
                 key={f.code}
                 active={statusFilter === f.code}
-                onClick={() => setStatusFilter(f.code)}
+                onClick={() => { setStatusFilter(f.code); clearSelection() }}
               >
                 {f.label}
               </FilterChip>
@@ -472,9 +548,29 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
           />
         )}
 
+        {/* Bulk action bar — sticky, shown when ≥1 selected */}
+        {selectedIds.size > 0 && (
+          <div className="sb-tw-bulkbar">
+            <div className="sb-tw-bulk-count">
+              <strong>{selectedIds.size}</strong> selected
+              {!allMatchingSelected && filtered.length > pageRows.length && (
+                <button type="button" className="sb-tw-link" onClick={() => setSelectedIds(new Set(filteredIds))}>Select all {filtered.length} matching</button>
+              )}
+              {allMatchingSelected && <span className="sb-tw-allnote">all matching</span>}
+            </div>
+            <div className="sb-tw-bulk-actions">
+              {canArchive && <button type="button" className="sb-tw-bbtn" disabled={busyBulk} onClick={askArchive}>Archive</button>}
+              {canRestore && <button type="button" className="sb-tw-bbtn" disabled={busyBulk} onClick={askRestore}>Restore</button>}
+              <button type="button" className="sb-tw-bbtn sb-tw-bbtn-ghost" onClick={clearSelection}>Clear</button>
+            </div>
+          </div>
+        )}
+
         {/* Table card */}
         <div className="sb-crm-card sb-crm-table">
-          <div className="sb-crm-row sb-crm-row-head" style={{ gridTemplateColumns: ROW_GRID }}>
+          <style>{CUST_TW_CSS}</style>
+          <div className="sb-crm-row sb-crm-row-head sb-tw-row" style={{ gridTemplateColumns: ROW_GRID }}>
+            <div><input type="checkbox" checked={pageAllSelected} onChange={togglePage} aria-label="Select page" /></div>
             <div>Family / Stone</div>
             <div>Order</div>
             <div>Contact</div>
@@ -504,9 +600,20 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
               )}
             </div>
           ) : (
-            filtered.map(c => <CustomerRow key={c.id} customer={c} onOpen={setSelectedId} />)
+            pageRows.map(c => (
+              <CustomerRow key={c.id} customer={c} indexInFiltered={filteredIds.indexOf(c.id)}
+                selected={selectedIds.has(c.id)} onToggle={toggleOne} onOpen={setSelectedId} />
+            ))
           )}
         </div>
+
+        {!loading && pageCount > 1 && (
+          <div className="sb-tw-pager">
+            <button type="button" disabled={curPage === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>← Prev</button>
+            <span>Page {curPage + 1} of {pageCount} · {filtered.length} customers</span>
+            <button type="button" disabled={curPage >= pageCount - 1} onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}>Next →</button>
+          </div>
+        )}
 
         {/* TODO: last_contact_at column — wire when a communications table lands.
             TODO: lifetime revenue — sum payments across all of c's orders; surface
@@ -515,15 +622,63 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
                   when c._ordersCount > 1 (deferred to next pass; data is here). */}
 
       </div>
+
+      {confirm && (
+        <div className="sb-tw-modal-overlay" onClick={() => !busyBulk && setConfirm(null)}>
+          <div className="sb-tw-modal" onClick={e => e.stopPropagation()}>
+            <div className="sb-tw-modal-title">{confirm.title}</div>
+            <div className="sb-tw-modal-body">{confirm.body}</div>
+            <div className="sb-tw-modal-actions">
+              <button type="button" className="sb-tw-bbtn sb-tw-bbtn-ghost" onClick={() => setConfirm(null)} disabled={busyBulk}>Cancel</button>
+              <button type="button" className="sb-tw-bbtn sb-tw-bbtn-primary" onClick={confirm.run} disabled={busyBulk}>{busyBulk ? 'Working…' : 'Confirm'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {toast && (
+        <UndoToast key={toast.id} text={toast.text} error={toast.error} canUndo={toast.canUndo}
+          durationMs={8000} onUndo={toast.onUndo} onClose={() => setToast(null)} />
+      )}
     </div>
   )
 }
+
+// Shared bulk-UI CSS for the Customers list (mirrors OrdersTab's sb-tw-* rules).
+const CUST_TW_CSS = `
+  .sb-tw-row input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #9A7209; }
+  .sb-tw-row-sel { background: #fdf8ec !important; }
+  .sb-tw-cust { text-align: left; background: none; border: none; font: inherit; cursor: pointer; padding: 0; min-width: 0; }
+  .sb-tw-cust:hover .sb-crm-primary { color: #9A7209; }
+  .sb-tw-bulkbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    background: #1e2d3d; color: #fff; border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; box-shadow: 0 6px 20px rgba(15,20,25,0.18); flex-wrap: wrap; }
+  .sb-tw-bulk-count { font-size: 13.5px; display: flex; align-items: center; gap: 10px; }
+  .sb-tw-bulk-count strong { font-size: 15px; }
+  .sb-tw-allnote { color: #d6a85a; font-size: 12px; }
+  .sb-tw-bulk-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sb-tw-link { background: none; border: 0.5px solid rgba(255,255,255,0.4); color: #d6a85a; font: inherit; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+  .sb-tw-link:hover { background: rgba(255,255,255,0.08); }
+  .sb-tw-bbtn { font: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 12px; border-radius: 8px; border: 0.5px solid #d8d6d1; background: #fff; color: #222; cursor: pointer; }
+  .sb-tw-bbtn:hover:not(:disabled) { border-color: #9A7209; color: #9A7209; }
+  .sb-tw-bbtn:disabled { opacity: 0.5; cursor: default; }
+  .sb-tw-bbtn-ghost { background: transparent; color: #fff; border-color: rgba(255,255,255,0.4); }
+  .sb-tw-bbtn-ghost:hover { background: rgba(255,255,255,0.1); color: #fff; }
+  .sb-tw-bbtn-primary { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .sb-tw-bbtn-primary:hover:not(:disabled) { background: #876307; color: #fff; }
+  .sb-tw-pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px; font-size: 13px; color: #6b6b66; }
+  .sb-tw-pager button { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 8px; border: 0.5px solid #d8d6d1; background: #fff; color: #222; cursor: pointer; }
+  .sb-tw-pager button:disabled { opacity: 0.4; cursor: default; }
+  .sb-tw-modal-overlay { position: fixed; inset: 0; z-index: 1050; background: rgba(15,20,25,0.4); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .sb-tw-modal { background: #fff; border-radius: 14px; padding: 22px 24px; max-width: 440px; width: 100%; box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
+  .sb-tw-modal-title { font-size: 16px; font-weight: 700; color: #111; margin-bottom: 8px; }
+  .sb-tw-modal-body { font-size: 13.5px; color: #555; line-height: 1.5; margin-bottom: 18px; }
+  .sb-tw-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+`
 
 // =============================================================================
 // CustomerRow — the operational row
 // =============================================================================
 
-function CustomerRow({ customer: c, onOpen }) {
+function CustomerRow({ customer: c, indexInFiltered, selected, onToggle, onOpen }) {
   const p = c._pressure
   const pTone = paymentTone(p.paymentState)
   const pLabel = paymentLabel(p.paymentState)
@@ -533,14 +688,18 @@ function CustomerRow({ customer: c, onOpen }) {
   const updatedAt = c._lastActivity ? new Date(c._lastActivity).toISOString() : null
 
   return (
-    <button
-      type="button"
-      className="sb-crm-row"
+    <div
+      className={`sb-crm-row sb-tw-row${selected ? ' sb-tw-row-sel' : ''}`}
       style={{ gridTemplateColumns: ROW_GRID }}
-      onClick={() => onOpen?.(c.id)}
     >
-      {/* FAMILY / STONE */}
-      <div>
+      <div onClick={e => e.stopPropagation()}>
+        <input type="checkbox" checked={selected}
+          onClick={e => { e.stopPropagation(); onToggle(c.id, indexInFiltered, e.shiftKey) }}
+          onChange={() => {}} aria-label="Select customer" />
+      </div>
+
+      {/* FAMILY / STONE — click → detail */}
+      <button type="button" className="sb-tw-cust" onClick={() => onOpen?.(c.id)}>
         <div className="sb-crm-primary">{c._familyName}</div>
         <div className="sb-crm-secondary">
           {c._deceasedLabel
@@ -549,7 +708,7 @@ function CustomerRow({ customer: c, onOpen }) {
               ? 'Stone TBD'                       /* Q10: primary exists but deceased not filled */
               : c._ordersCount > 1 ? `${c._ordersCount} orders on file` : 'No order yet'}
         </div>
-      </div>
+      </button>
 
       {/* ORDER + job type pill */}
       <div>
@@ -612,7 +771,7 @@ function CustomerRow({ customer: c, onOpen }) {
       <div className="num">
         <span className="sb-crm-muted sb-crm-tabular">{updatedAt ? fmtRelative(updatedAt) : '—'}</span>
       </div>
-    </button>
+    </div>
   )
 }
 

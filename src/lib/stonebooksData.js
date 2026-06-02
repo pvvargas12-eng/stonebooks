@@ -134,9 +134,15 @@ export async function updateCustomerNotes(customerId, notes) {
 
 // ── ORDERS ───────────────────────────────────────────────────────────────────
 
-export async function listAllOrders({ statuses, limit = 500 } = {}) {
+// `archived`: false → active only (archived is null/false), true → archived
+// only, 'all'/undefined → both. `statuses` still narrows by the lifecycle enum
+// when provided. The Triage Workbench loads by `archived` and filters status
+// client-side.
+export async function listAllOrders({ statuses, archived, limit = 500 } = {}) {
   let q = supabase.from('orders').select('*, customer:customers(*), cemetery:cemeteries(*)')
   if (statuses && statuses.length) q = q.in('status', statuses)
+  if (archived === false)     q = q.or('archived.is.null,archived.eq.false')
+  else if (archived === true) q = q.eq('archived', true)
   q = q.order('updated_at', { ascending: false }).limit(limit)
   const { data, error } = await q
   if (error) { console.error('listAllOrders:', error); return [] }
@@ -509,6 +515,116 @@ export async function recordOrderPayment(orderId, input = {}) {
     return { ok: false, error: 'This order changed while you were recording the payment. Reopen the order and try again.' }
   }
   return { ok: true, payment, paid: lockedSum, balance: Math.max(0, grand - Math.round(lockedSum)) }
+}
+
+// ── BULK OPERATIONS (Orders Triage Workbench) ───────────────────────────────
+// Every bulk write is ONE batched statement (.update().in('id', ids)) — never a
+// per-row loop. Tenant-scoped (belt-and-suspenders over RLS) + reversible. No
+// hard deletes anywhere. Each returns { ok, count } (rows actually written).
+
+export const TENANT_ID = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
+
+// Generic batched order patch. `patch` must be plain order columns.
+export async function bulkUpdateOrders(ids, patch) {
+  const list = [...new Set((ids || []).filter(Boolean))]
+  if (list.length === 0) return { ok: true, count: 0 }
+  const { data, error } = await supabase
+    .from('orders').update(patch).in('id', list).eq('tenant_id', TENANT_ID).select('id')
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, count: data?.length || 0 }
+}
+
+// Archive / restore — sets the archived boolean + timestamp ONLY. Never touches
+// payments, pricing, status, or milestones.
+export function bulkArchiveOrders(ids) {
+  return bulkUpdateOrders(ids, { archived: true, archived_at: new Date().toISOString() })
+}
+export function bulkRestoreOrders(ids) {
+  return bulkUpdateOrders(ids, { archived: false, archived_at: null })
+}
+
+// Set lifecycle status (plain enum set — no paid_in_full snapshot, no side
+// effects; "Set status from the status enum").
+export function bulkSetOrderStatus(ids, status) {
+  return bulkUpdateOrders(ids, { status })
+}
+
+// Set cemetery (FK).
+export function bulkSetOrderCemetery(ids, cemeteryId) {
+  return bulkUpdateOrders(ids, { cemetery_id: cemeteryId || null })
+}
+
+// Set job type / "move to queue" — job_type lives on jobs, keyed by order_id.
+// One batched update over jobs by order_id (not a per-row loop).
+export async function bulkSetJobType(orderIds, jobType) {
+  const list = [...new Set((orderIds || []).filter(Boolean))]
+  if (list.length === 0) return { ok: true, count: 0 }
+  const { data, error } = await supabase
+    .from('jobs').update({ job_type: jobType, last_update_at: new Date().toISOString() })
+    .in('order_id', list).eq('tenant_id', TENANT_ID).select('id')
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, count: data?.length || 0 }
+}
+
+// Set stage — mark each selected order's job milestones DONE through
+// `throughKey` (advance-only). ONE batched update over job_milestones: resolve
+// the jobs for the selected orders + the milestone keys up to the target from
+// the active new_stone template, then a single .in() write. Non-new_stone jobs
+// that lack those keys are simply unaffected. Returns the jobs touched + the
+// keys advanced so the caller can report.
+export async function bulkSetStage(orderIds, throughKey) {
+  const list = [...new Set((orderIds || []).filter(Boolean))]
+  if (list.length === 0) return { ok: true, count: 0, jobs: 0 }
+
+  // Jobs for the selected orders.
+  const { data: jobs, error: jErr } = await supabase
+    .from('jobs').select('id').in('order_id', list).eq('tenant_id', TENANT_ID)
+  if (jErr) return { ok: false, error: jErr.message }
+  const jobIds = (jobs || []).map(j => j.id)
+  if (jobIds.length === 0) return { ok: true, count: 0, jobs: 0 }
+
+  // Keys through the target, from the active new_stone template.
+  const { allMilestones } = await buildMilestoneListForOrder(['NEW_STONE'])
+  const order = (allMilestones || []).map(m => m.key)
+  const idx = order.indexOf(throughKey)
+  if (idx < 0) return { ok: false, error: `Stage "${throughKey}" not in the new_stone template` }
+  const keys = order.slice(0, idx + 1)
+
+  // How many selected jobs actually carry this stage key (vs. a different
+  // job_type that lacks it) — so the caller can report jobs skipped.
+  const { data: haveKey } = await supabase
+    .from('job_milestones').select('job_id').in('job_id', jobIds).eq('milestone_key', throughKey)
+  const applicable = new Set((haveKey || []).map(r => r.job_id)).size
+  const skipped = jobIds.length - applicable
+
+  const stamp = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('job_milestones')
+    .update({ status: 'done', status_date: stamp.slice(0, 10), updated_at: stamp })
+    .in('job_id', jobIds).in('milestone_key', keys).neq('status', 'done')
+    .select('id')
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, count: data?.length || 0, jobs: jobIds.length, applicable, skipped, keys }
+}
+
+// ── Customers bulk (uses the existing customers.archived column) ─────────────
+export async function bulkArchiveCustomers(ids) {
+  const list = [...new Set((ids || []).filter(Boolean))]
+  if (list.length === 0) return { ok: true, count: 0 }
+  const { data, error } = await supabase
+    .from('customers').update({ archived: true, archived_at: new Date().toISOString() })
+    .in('id', list).eq('tenant_id', TENANT_ID).select('id')
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, count: data?.length || 0 }
+}
+export async function bulkRestoreCustomers(ids) {
+  const list = [...new Set((ids || []).filter(Boolean))]
+  if (list.length === 0) return { ok: true, count: 0 }
+  const { data, error } = await supabase
+    .from('customers').update({ archived: false, archived_at: null })
+    .in('id', list).eq('tenant_id', TENANT_ID).select('id')
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, count: data?.length || 0 }
 }
 
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
