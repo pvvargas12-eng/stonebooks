@@ -666,7 +666,11 @@ export default function Stonebooks() {
 // Owner gate for owner-only settings (Pricing). No role column exists yet, so
 // this gates on the known owner email(s). NOTE: the DB RLS still allows any
 // authenticated write — harden both once a real role system lands.
-const OWNER_EMAILS = ['pv.vargas12@gmail.com']
+const OWNER_EMAILS = [
+  'pv.vargas12@gmail.com',
+  'paul@shevcomonuments.com',
+  'pauly_vargas@outlook.com',
+]
 const isOwner = (user) => !!user?.email && OWNER_EMAILS.includes(String(user.email).toLowerCase())
 
 function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
