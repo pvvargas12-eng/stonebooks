@@ -76,7 +76,7 @@ const styles = `
     box-sizing: border-box;
   }
   .sb-crm-container {
-    max-width: 1180px;
+    max-width: 1720px;
     margin: 0 auto;
     padding: 0 32px;
     display: flex;

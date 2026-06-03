@@ -23,7 +23,7 @@ import {
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
-  DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
+  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   paymentStatusLabel, designStatusLabel, stoneStatusLabel, fdnStatusLabel,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus,
@@ -104,7 +104,8 @@ const QUICK_VIEWS = [
 ]
 
 // checkbox | customer | job type | payment | design | stone | fdn | total | cemetery | contract | due
-const ROW_GRID = '34px 1.5fr 0.9fr 0.95fr 1.15fr 1.25fr 1fr 0.85fr 1.05fr 0.95fr 0.95fr'
+// Even distribution so the row reads edge-to-edge at the widened container width.
+const ROW_GRID = '32px 1.6fr 0.9fr 1fr 1.2fr 1.3fr 1fr 0.9fr 1.3fr 1fr 1fr'
 
 // +5 months for a new_stone due-date default (the contract+5mo rule). Pure
 // local date math (no UTC drift): returns 'YYYY-MM-DD' or null.
@@ -471,6 +472,12 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   }
 
   // ── Inline status dropdowns (flip milestones — one source of truth) ────────
+  // Payment is a manual override on orders.payment_status (imported orders have
+  // no reliable total). Needs the one-line migration; errors gracefully if not.
+  const inlinePayment = async (o, code) => {
+    setBusy(true); const r = await bulkUpdateOrders([o.id], { payment_status: code }); setBusy(false)
+    showToast(r.ok ? `${o._familyName}: payment → ${paymentStatusLabel(code)}` : (r.error || 'Failed (run the payment_status migration?)'), { error: !r.ok }); reload()
+  }
   const inlineDesign = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
     setBusy(true); const r = await setOrderDesignStatus(o._job.id, code); setBusy(false)
@@ -689,6 +696,7 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
             pageRows.map((o) => (
               <OrderRow key={o.id} order={o} indexInFiltered={filteredIds.indexOf(o.id)}
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
+                onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
                 onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={busy} />
             ))
@@ -750,8 +758,7 @@ function BulkSelect({ label, options, onPick, disabled }) {
 // Payment is a derived read-only chip (money truth). Design / Stone / FDN are
 // inline dropdowns that flip milestones (one source of truth). Total =
 // editable contract_total. Contract = signed_at, Due = target_completion_date.
-const PAY_TONE = { quoted: '#8a8a85', deposit: '#B8842A', paid_in_full: '#1D9E75' }
-function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
+function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
   const hasJob = !!o._job
 
   return (
@@ -762,24 +769,25 @@ function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInl
           onChange={() => {}} aria-label="Select order" />
       </div>
 
-      {/* Customer (click → detail) + set-gate blocked chip */}
+      {/* Customer (click → detail) — compact: name + order# on one line, set-gate
+          chip only when present. */}
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)}>
-        <div className="sb-crm-primary">
-          {o._familyName}
-          {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">Needs info</span>}
+        <div className="sb-ord-cust-line">
+          <span className="sb-crm-primary sb-ord-cust-name">{o._familyName}</span>
+          <span className="sb-crm-secondary sb-crm-mono sb-ord-cust-num">{o.order_number || 'DRAFT'}</span>
+          {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
-        <div className="sb-crm-secondary sb-crm-mono">{o.order_number || 'DRAFT'}</div>
         {o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
       </button>
 
       {/* Job Type */}
       <div><span className="sb-crm-secondary">{jobTypeLabel(o._jobType, o.service_types)}</span></div>
 
-      {/* Payment — derived read-only chip */}
-      <div>
-        <span className="sb-ord-paychip" style={{ color: PAY_TONE[o._payment] || '#555' }}>
-          {paymentStatusLabel(o._payment)}
-        </span>
+      {/* Payment — editable manual override (orders.payment_status) */}
+      <div onClick={e => e.stopPropagation()}>
+        <select className="sb-tw-inline" value={o._payment || 'quoted'} disabled={busy} onChange={e => onInlinePayment(o, e.target.value)}>
+          {PAYMENT_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+        </select>
       </div>
 
       {/* Design (inline → milestone) */}
@@ -860,17 +868,20 @@ const TW_CSS = `
   .sb-tw-cust { text-align: left; background: none; border: none; font: inherit; cursor: pointer; padding: 0; min-width: 0; }
   .sb-tw-cust:hover .sb-crm-primary { color: #9A7209; }
   .sb-tw-badge { margin-left: 8px; font-size: 10px; font-weight: 600; color: #B8842A; background: #fbf1da; border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
-  .sb-tw-inline { font: inherit; font-size: 12.5px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; max-width: 100%; cursor: pointer; }
-  .sb-tw-inline:hover { border-color: #9A7209; }
+  /* Status dropdowns fill their column so every column aligns edge-to-edge. */
+  .sb-tw-inline { font: inherit; font-size: 12.5px; padding: 5px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; width: 100%; box-sizing: border-box; cursor: pointer; }
+  .sb-tw-inline:hover:not(:disabled) { border-color: #9A7209; }
   .sb-tw-inline:disabled { opacity: 0.5; }
 
   /* Orders-redesign cells */
-  .sb-ord-paychip { font-size: 12px; font-weight: 600; }
-  .sb-ord-block { margin-top: 3px; font-size: 11px; font-weight: 600; color: #B54040; }
-  .sb-ord-total-input { font: inherit; font-size: 13px; width: 100%; max-width: 92px; text-align: right; padding: 4px 6px; border: 0.5px solid transparent; border-radius: 6px; background: transparent; color: #222; font-variant-numeric: tabular-nums; }
+  .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .sb-ord-cust-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-ord-cust-num { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+  .sb-ord-block { margin-top: 2px; font-size: 11px; font-weight: 600; color: #B54040; }
+  .sb-ord-total-input { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; text-align: right; padding: 5px 6px; border: 0.5px solid transparent; border-radius: 6px; background: transparent; color: #222; font-variant-numeric: tabular-nums; }
   .sb-ord-total-input:hover:not(:disabled) { border-color: #d8d6d1; }
   .sb-ord-total-input:focus { outline: none; border-color: #9A7209; background: #fff; }
-  .sb-ord-date-input { font: inherit; font-size: 12px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; max-width: 100%; cursor: pointer; }
+  .sb-ord-date-input { font: inherit; font-size: 12px; padding: 5px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; width: 100%; box-sizing: border-box; cursor: pointer; }
   .sb-ord-date-input:hover:not(:disabled) { border-color: #9A7209; }
   .sb-ord-date-input:disabled { opacity: 0.5; }
 

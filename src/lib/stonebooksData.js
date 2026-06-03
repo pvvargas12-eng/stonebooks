@@ -492,7 +492,12 @@ function _effectiveTotal(order) {
   return ct != null ? ct : rowGrandTotal(order)
 }
 
+// Manual override (orders.payment_status) wins — imported orders have no
+// reliable stored total, so the office sets payment by hand. Falls back to the
+// money derivation when no override is set (or before the column migration).
+const _PAY_CODES = new Set(['quoted', 'deposit', 'paid_in_full'])
 export function derivePaymentStatus(order) {
+  if (order?.payment_status && _PAY_CODES.has(order.payment_status)) return order.payment_status
   const total = _effectiveTotal(order)
   const paid = rowTotalPaid(order)
   if (total > 0 && (total - paid) <= 0) return 'paid_in_full'
@@ -591,10 +596,9 @@ export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(j
 // SET-READY = Paid in full ∧ Blasted ∧ (FDN In or N/A) ∧ permit-ok-where-required.
 // Returns the first failing reason, or null when ready.
 export function setBlockReason(order, job) {
-  const total = _effectiveTotal(order)
-  const paid = rowTotalPaid(order)
-  const paidInFull = total > 0 && (total - paid) <= 0
-  if (!paidInFull) return 'Not paid in full'
+  // Honor the manual Payment override (derivePaymentStatus) so the office's
+  // "Paid in full" clears the gate even on imported orders with no stored total.
+  if (derivePaymentStatus(order) !== 'paid_in_full') return 'Not paid in full'
   if (!_msDone(job, 'production_completed')) return 'Not blasted'
   const fdn = deriveFdnStatus(job)
   if (!(fdn === 'in' || fdn === 'na')) return 'FDN not in'

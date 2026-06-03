@@ -1142,13 +1142,14 @@ const shellStyles = `
     letter-spacing: 0.02em;
   }
 
-  /* MAIN */
+  /* MAIN — comfortable side padding (~32px); big-screen padding no longer
+     balloons (was 64/80px, which wasted the screen on wide monitors). */
   .sb-main {
     overflow-y: auto;
-    padding: 48px 48px;
+    padding: 32px 32px;
   }
-  @media (min-width: 1600px) { .sb-main { padding: 56px 64px; } }
-  @media (min-width: 1920px) { .sb-main { padding: 64px 80px; } }
+  @media (min-width: 1600px) { .sb-main { padding: 36px 40px; } }
+  @media (min-width: 1920px) { .sb-main { padding: 40px 48px; } }
 
   /* ── Working-surface tiers ────────────────────────────────────────
      .sb-page          → 1080px ceiling — default operational working
@@ -1161,7 +1162,9 @@ const shellStyles = `
      Pre-migration .sb-page-wide was max-width:none (panoramic);
      1440 anchors it without losing horizontal headroom.
   */
-  .sb-page      { max-width: 1080px; }
+  /* Widened to use the screen. margin:0 auto centers the surface so the side
+     gutters are symmetric instead of one big empty band on the right. */
+  .sb-page      { max-width: 1400px; margin: 0 auto; }
   .sb-page-hero { max-width: 820px; }
   .sb-page-head { margin-bottom: 48px; }
   .sb-page-eyebrow {
@@ -1473,7 +1476,7 @@ const shellStyles = `
   }
 
   /* ── WIDE PAGES — reference / tabular tier (defined above with .sb-page) ── */
-  .sb-page-wide { max-width: 1440px; }
+  .sb-page-wide { max-width: 1720px; }
 
   /* User row in sidebar */
   .sb-user-row { background: transparent; border: none; font: inherit; color: inherit; width: 100%; text-align: left; }
