@@ -23,6 +23,7 @@ import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
 import OrdersTab from './OrdersTab'
 import QueuesTab from './QueuesTab'
+import PermitHub from './PermitHub'
 import CemeteryOrdersTab from './CemeteryOrdersTab'
 import JobsTab from './JobsTab'
 import CalendarTab from './CalendarTab'
@@ -201,6 +202,7 @@ function LoginScreen() {
 const NAV_PRIMARY = [
   { key: 'today',     label: 'Today' },
   { key: 'queues',    label: 'Workflow Hubs' },
+  { key: 'permits',   label: 'Permit Hub' },
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Orders' },
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
@@ -637,6 +639,7 @@ export default function Stonebooks() {
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={openSales} />}
 {tab === 'queues'    && <QueuesTab onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} />}
+{tab === 'permits'   && <PermitHub onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} />}
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} />}

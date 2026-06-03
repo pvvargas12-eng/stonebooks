@@ -22,6 +22,7 @@ import {
   uploadOrderAttachment, listOrderAttachments, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
+  setOrderPermit, PERMIT_STATUSES,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -42,6 +43,13 @@ const PAY_METHODS = [
 const PAY_TYPES = [
   { code: 'deposit', label: 'Deposit' }, { code: 'progress', label: 'Progress payment' }, { code: 'final', label: 'Final payment' },
 ]
+const permitStatusLabel = (s) => (PERMIT_STATUSES.find(x => x.code === (s || 'unknown'))?.label || s)
+const permitTone = (s) => ({ approved: 'green', submitted: 'blue', required: 'amber', not_required: 'green', unknown: 'bronze' }[s || 'unknown'] || 'bronze')
+const odFeeRange = (lo, hi) => {
+  if (lo == null && hi == null) return null
+  if (lo != null && hi != null) return `$${Number(lo).toLocaleString()}–$${Number(hi).toLocaleString()}`
+  return `$${Number(lo != null ? lo : hi).toLocaleString()}`
+}
 
 const stageTone = (status) => {
   switch (status) {
@@ -130,6 +138,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
+  // Permit editor
+  const [permitDraft, setPermitDraft] = useState(null)
+  const [permitBusy, setPermitBusy] = useState(false)
+  const [permitMsg, setPermitMsg] = useState(null)
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -158,6 +170,38 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
   const refreshOrder = async () => { const o = await getOrderById(orderId); if (o) setOrder(o) }
+
+  // ── Permit status editor ───────────────────────────────────────────────────
+  const openPermitEdit = () => {
+    setPermitMsg(null)
+    setPermitDraft({
+      permit_status: order.permit_status || 'unknown',
+      permit_filed_at: order.permit_filed_at || '',
+      permit_approved_at: order.permit_approved_at || '',
+      permit_fee_paid: order.permit_fee_paid ?? '',
+    })
+  }
+  const savePermit = async () => {
+    if (!permitDraft || permitBusy) return
+    setPermitBusy(true); setPermitMsg(null)
+    const d = permitDraft
+    const patch = {
+      permit_status: d.permit_status,
+      permit_filed_at: d.permit_filed_at || null,
+      permit_approved_at: d.permit_approved_at || null,
+      permit_fee_paid: d.permit_fee_paid === '' ? null : Number(d.permit_fee_paid),
+    }
+    const today = todayISO()
+    if (patch.permit_status === 'submitted' && !patch.permit_filed_at) patch.permit_filed_at = today
+    if (patch.permit_status === 'approved') {
+      if (!patch.permit_filed_at) patch.permit_filed_at = today
+      if (!patch.permit_approved_at) patch.permit_approved_at = today
+    }
+    const r = await setOrderPermit(orderId, patch)
+    setPermitBusy(false)
+    if (!r.ok) { setPermitMsg({ type: 'err', text: r.error }); return }
+    setPermitDraft(null); await refreshOrder()
+  }
 
   const handleAddNote = async () => {
     const body = noteBody.trim()
@@ -284,6 +328,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const addOns = Array.isArray(order.add_ons) ? order.add_ons.filter(a => a && (a.code || a.label)) : []
 
   const pressure = computeOrderPressure(order, job, job?.milestones)
+  // Permit derived values
+  const permitFeeRange = odFeeRange(order.permit_fee_low ?? order.cemetery?.permit_fee_low, order.permit_fee_high ?? order.cemetery?.permit_fee_high)
+  const readyBlocked = (job?.milestones || []).some(m => m.milestone_key === 'ready_to_install' && m.status === 'done')
+    && order.permit_status !== 'approved' && order.permit_status !== 'not_required'
   const total = rowGrandTotal(order)
   const paid = rowTotalPaid(order)
   const balance = rowBalanceDue(order)
@@ -481,6 +529,48 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
             <div className="sb-od-inline-actions">
               <button type="button" className="sb-od-link" onClick={handleOpenContract}>Open contract PDF</button>
             </div>
+          </Section>
+
+          {/* 4b — Permit */}
+          <Section title="Permit">
+            {permitDraft ? (
+              <div className="sb-od-permit-edit">
+                <label className="sb-od-modal-field"><span>Permit status</span>
+                  <select className="sb-od-note-input" value={permitDraft.permit_status} onChange={e => setPermitDraft(d => ({ ...d, permit_status: e.target.value }))}>
+                    {PERMIT_STATUSES.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                  </select>
+                </label>
+                <div className="sb-od-modal-row">
+                  <label className="sb-od-modal-field"><span>Filed date</span>
+                    <input type="date" className="sb-od-note-input" value={permitDraft.permit_filed_at || ''} onChange={e => setPermitDraft(d => ({ ...d, permit_filed_at: e.target.value }))} /></label>
+                  <label className="sb-od-modal-field"><span>Approved date</span>
+                    <input type="date" className="sb-od-note-input" value={permitDraft.permit_approved_at || ''} onChange={e => setPermitDraft(d => ({ ...d, permit_approved_at: e.target.value }))} /></label>
+                </div>
+                <label className="sb-od-modal-field"><span>Fee paid <em className="sb-od-opt">optional</em></span>
+                  <input type="number" className="sb-od-note-input" value={permitDraft.permit_fee_paid} onChange={e => setPermitDraft(d => ({ ...d, permit_fee_paid: e.target.value }))} placeholder="0.00" /></label>
+                {permitMsg && <div className="sb-msg sb-msg-err" style={{ marginBottom: 4 }}>{permitMsg.text}</div>}
+                <div className="sb-od-modal-actions">
+                  <button type="button" className="sb-od-btn" onClick={() => setPermitDraft(null)} disabled={permitBusy}>Cancel</button>
+                  <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={savePermit} disabled={permitBusy}>{permitBusy ? 'Saving…' : 'Save permit'}</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <Field label="Cemetery requires permit" value={cem.permit_required == null ? null : (cem.permit_required ? 'Yes' : 'No')} hint={cem.permit_required == null ? (cem.id ? null : 'cemetery not linked') : null} />
+                <Field label="Expected fee" value={permitFeeRange} />
+                <Field label="Permit status" value={<Pill severity={permitTone(order.permit_status)}>{permitStatusLabel(order.permit_status)}</Pill>} />
+                {readyBlocked && <Field label="⚠ Blocking install" value="Stone is ready to set but the permit isn't approved." />}
+                <Field label="Filed / Approved" value={[order.permit_filed_at && `filed ${fmtDate(order.permit_filed_at)}`, order.permit_approved_at && `approved ${fmtDate(order.permit_approved_at)}`].filter(Boolean).join(' · ') || null} />
+                <Field label="Fee paid" value={order.permit_fee_paid != null ? fmtUSD(order.permit_fee_paid) : null} />
+                <Field label="Cemetery notes" value={cem.permit_notes} />
+                <Field label="Document requirements" value={cem.permit_document_requirements} />
+                <Field label="Cemetery instructions" value={cem.permit_instructions} />
+                <Field label="Permit contact" value={[cem.permit_contact_name, cem.permit_contact_phone, cem.permit_contact_email].filter(Boolean).join(' · ') || null} />
+                <div className="sb-od-inline-actions">
+                  <button type="button" className="sb-od-link" onClick={openPermitEdit}>Update permit status</button>
+                </div>
+              </>
+            )}
           </Section>
 
           {/* 5 — Related job */}

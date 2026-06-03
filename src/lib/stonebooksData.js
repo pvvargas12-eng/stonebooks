@@ -655,7 +655,23 @@ export const OVERLAY_QUEUES = [
 // which is its own Balances-due overlay, and NOT the blue scheduling states).
 const BLOCKED_BLOCKER_KINDS = new Set(['cemetery_hold', 'waiting_on_family', 'proof_waiting_customer', 'production_blocked'])
 
-const _QUEUE_LABELS = Object.fromEntries([...PRODUCTION_QUEUES, ...OVERLAY_QUEUES].map(q => [q.code, q.label]))
+// ── PERMITS (launch-critical permit command center) ─────────────────────────
+export const PERMIT_STATUSES = [
+  { code: 'unknown',      label: 'Unknown' },
+  { code: 'not_required', label: 'Not required' },
+  { code: 'required',     label: 'Required' },
+  { code: 'submitted',    label: 'Submitted' },
+  { code: 'approved',     label: 'Approved' },
+]
+export const PERMIT_QUEUES = [
+  { code: 'permit_required',  label: 'Permits required' },
+  { code: 'permit_submitted', label: 'Permits submitted' },
+  { code: 'permit_approved',  label: 'Permits approved' },
+  { code: 'permit_missing',   label: 'Permits missing' },
+  { code: 'permit_blocking',  label: 'Permits blocking install' },
+]
+
+const _QUEUE_LABELS = Object.fromEntries([...PRODUCTION_QUEUES, ...OVERLAY_QUEUES, ...PERMIT_QUEUES].map(q => [q.code, q.label]))
 export function queueLabel(code) { return _QUEUE_LABELS[code] || code }
 
 // Spec-less order — missing the monument basics the office fills in at triage.
@@ -691,6 +707,87 @@ export function classifyOrderQueues(order, job, pressure) {
     result.productionQueue = best
   }
   return result
+}
+
+// Which permit buckets (PERMIT_QUEUES codes) an order belongs to. An order can
+// be in several (e.g. 'permit_submitted' AND 'permit_blocking'). Blocking logic
+// is exactly the spec: ready_to_install done AND status NOT approved AND NOT
+// not_required (so 'unknown' on a ready stone IS flagged — conservative for a
+// launch safety system). Terminal orders never appear.
+export function permitBuckets(order, job) {
+  const out = []
+  if (!order) return out
+  const terminal = order.status === 'closed' || order.status === 'cancelled' || order.archived === true
+  if (terminal) return out
+  const st = order.permit_status || 'unknown'
+  if (st === 'required')  out.push('permit_required')
+  if (st === 'submitted') out.push('permit_submitted')
+  if (st === 'approved')  out.push('permit_approved')
+  // Missing — cemetery requires a permit but the order has no determination yet.
+  if (order.permit_required === true && st === 'unknown') out.push('permit_missing')
+  // Blocking install — a ready-to-set stone without an approved (or N/A) permit.
+  if (st !== 'approved' && st !== 'not_required') {
+    const readyDone = (job?.milestones || []).some(m => m.milestone_key === 'ready_to_install' && m.status === 'done')
+    if (readyDone) out.push('permit_blocking')
+  }
+  return out
+}
+
+// Auto-detect: derive the permit requirement/fee snapshot + status from a
+// cemetery, WITHOUT downgrading a real filing. cemetery may be null (order's
+// cemetery not linked yet) → requirement null, status stays 'unknown' (unless
+// already submitted/approved, which is preserved). Pure — no DB.
+export function derivePermitPatch(cemetery, currentStatus) {
+  const req = cemetery?.permit_required ?? null
+  const patch = {
+    permit_required: req,
+    permit_fee_low:  cemetery?.permit_fee_low ?? null,
+    permit_fee_high: cemetery?.permit_fee_high ?? null,
+  }
+  // Never overwrite a submitted/approved permit — correcting the cemetery fixes
+  // the requirement + fee but never wipes a real filing.
+  if (currentStatus === 'submitted' || currentStatus === 'approved') return patch
+  patch.permit_status = req === false ? 'not_required' : req === true ? 'required' : 'unknown'
+  return patch
+}
+
+// Apply auto-detect to one order (reads its cemetery, writes the snapshot+status).
+// Safe when cemetery_id is null. Call after an order's cemetery is set/changed.
+export async function autoDetectOrderPermit(orderId) {
+  if (!orderId) return { ok: false, error: 'No orderId' }
+  const { data: row, error } = await supabase
+    .from('orders')
+    .select('id, permit_status, cemetery:cemeteries(permit_required, permit_fee_low, permit_fee_high)')
+    .eq('id', orderId).single()
+  if (error || !row) return { ok: false, error: error?.message || 'Order not found' }
+  const patch = derivePermitPatch(row.cemetery, row.permit_status || 'unknown')
+  const { error: upErr } = await supabase.from('orders').update(patch).eq('id', orderId).eq('tenant_id', TENANT_ID)
+  if (upErr) return { ok: false, error: upErr.message }
+  return { ok: true, patch }
+}
+
+// Per-order permit edit (OrderDetail). Accepts permit_status + dates + fee paid +
+// a jsonb merge under `permit`. Auto-stamps filed/approved dates if not provided.
+export async function setOrderPermit(orderId, patch) {
+  if (!orderId) return { ok: false, error: 'No orderId' }
+  const { error } = await supabase.from('orders')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', orderId).eq('tenant_id', TENANT_ID)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Cemetery permit requirements (the "Cemetery requirements" editor).
+export async function listCemeteriesWithPermit() {
+  const { data, error } = await supabase.from('cemeteries').select('*').order('name', { ascending: true })
+  if (error) { console.error('listCemeteriesWithPermit:', error); return [] }
+  return data || []
+}
+export async function updateCemeteryPermit(id, patch) {
+  if (!id) return { ok: false, error: 'No cemetery id' }
+  const { error } = await supabase.from('cemeteries').update(patch).eq('id', id).eq('tenant_id', TENANT_ID)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
 }
 
 // ── FORMATTERS ───────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import {
   ORDER_STATUSES, ACTIVE_STATUSES,
   bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus,
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage,
-  classifyOrderQueues, queueLabel,
+  classifyOrderQueues, queueLabel, permitBuckets,
 } from './lib/stonebooksData'
 import { paymentLabel } from './lib/crmTheme'
 import { FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
@@ -229,8 +229,9 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   // ── Filter + sort ───────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = enriched
-    // Workflow queue (from the Queues dashboard) — uses the shared classifier.
+    // Workflow / permit queue (from a hub dashboard) — uses the shared classifiers.
     if (queueFilter) list = list.filter(o => {
+      if (queueFilter.startsWith('permit_')) return permitBuckets(o, o._job).includes(queueFilter)
       const c = classifyOrderQueues(o, o._job, o._pressure)
       return c.productionQueue === queueFilter || c.overlays.includes(queueFilter)
     })

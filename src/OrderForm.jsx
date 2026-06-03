@@ -25,6 +25,7 @@ import {
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
+  autoDetectOrderPermit,
 } from './lib/stonebooksData'
 import {
   SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
@@ -251,6 +252,11 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     // downstream failure (job create / backfill) UPDATES this order instead of
     // inserting a duplicate or re-appending the deposit.
     if (!order.id && savedId) setOrder(o => ({ ...o, id: savedId, payments }))
+
+    // Auto-detect the permit requirement/fee/status from the selected cemetery
+    // (never downgrades a submitted/approved filing; no-ops when cemetery_id is
+    // null). Non-fatal — a permit-detect hiccup must not block the save.
+    if (savedId) { try { await autoDetectOrderPermit(savedId) } catch { /* non-fatal */ } }
 
     let jid = jobId
     if (!jid) {
