@@ -45,6 +45,8 @@ import { enrichJob, ROW_GRID } from './lib/jobsRowHelpers'
 // studio-style Surface 1 (Studio Queue + Selected Job Preview). Other hubs
 // keep their list-view body unchanged.
 import DesignHubHome from './DesignHubHome'
+import HubHome from './HubHome'
+import { HUB_HOME_CONFIGS } from './lib/hubConfigs'
 // The Workflow queues + Permit hub used to be separate top-level tabs. They
 // now live INSIDE the Jobs hub strip as two "section" hubs, reusing the
 // existing components unchanged (no separate Operations / Permit / Workflow
@@ -221,6 +223,9 @@ export default function JobsDepartmentView({
   // structure is visible (counts come in as 0 until data lands, then fill).
   const isDesignHub = hub === 'design'
   const isSectionHub = SECTION_CODES.includes(hub)
+  // Studio hubs render their own two-column surface (title + chips + queue +
+  // preview) and suppress the generic Jobs header count / search / banner.
+  const isStudioHub = isDesignHub || hub === 'production' || hub === 'installation'
 
   const headerCount = (loading || !currentDef)
     ? '—'
@@ -237,7 +242,7 @@ export default function JobsDepartmentView({
             {/* Design hub renders its own count + status prose in the
                 DESIGN HUB sub-line below, so we suppress the generic
                 "N of M in Design" line when the design hub is active. */}
-            {!isDesignHub && !isSectionHub && (
+            {!isStudioHub && !isSectionHub && (
               <div className="sb-crm-head-count">
                 {headerCount}
                 {!loading && currentData?.counts?.urgent > 0 && (
@@ -255,7 +260,7 @@ export default function JobsDepartmentView({
             {/* Search + sort apply to the list views (Admin/Production/
                 Installation). Design hub uses its own filter chips inside
                 DesignHubHome — hide the generic search/sort here. */}
-            {!isDesignHub && !isSectionHub && (
+            {!isStudioHub && !isSectionHub && (
               <>
                 <input
                   type="search"
@@ -311,16 +316,15 @@ export default function JobsDepartmentView({
           onOpenJob={onOpenJob}
           onOpenCustomer={onOpenCustomer}
         />
-      ) : isDesignHub ? (
+      ) : isStudioHub ? (
         loading ? (
           <div className="sb-crm-container">
             <div className="sb-crm-empty">Loading hub work…</div>
           </div>
+        ) : isDesignHub ? (
+          <DesignHubHome hubData={currentData} onOpenJob={onOpenJob} />
         ) : (
-          <DesignHubHome
-            hubData={currentData}
-            onOpenJob={onOpenJob}
-          />
+          <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS[hub]} />
         )
       ) : (
         <div className="sb-crm-container">
