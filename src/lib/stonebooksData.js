@@ -6806,8 +6806,17 @@ export async function unscheduleBatchJob(batchJobId) {
 // where it lives at every stage. Already-batched jobs (jobs whose current
 // actionable milestone is already linked to an open batch) are excluded.
 
+// Returns { buckets, blocked }.
+//   buckets — Map(BATCH_KINDS code → [{ job, milestone, completion_milestone_key }])
+//             of jobs that are actionable AND ready for that kind of batch.
+//   blocked — [{ job, milestone, completion_milestone_key, reasons:[] }] of jobs
+//             that have reached ready_to_install but are NOT safe to schedule
+//             (permit not approved / foundation not poured / stone not received).
+//             Surfaced loudly instead of silently omitted so the scheduler can
+//             tell "nothing to install" from "installs blocked, go fix them".
 export function getSchedulableJobs(jobs, batches) {
   const buckets = new Map(BATCH_KINDS.map(k => [k.code, []]))
+  const blocked = []
   // Build a set of (job_id) that are already in an open (non-completed,
   // non-cancelled) batch. Those jobs disappear from the unscheduled pile
   // until the batch is closed or the link is removed.
@@ -6846,6 +6855,15 @@ export function getSchedulableJobs(jobs, batches) {
       if (!key) return false
       const c = byKey.get(key)
       return !!c && (c.status === 'done' || c.status === 'not_needed')
+    }
+    // Readiness gate for an install: a milestone the template DOESN'T carry is
+    // N/A (true) — don't false-block a job whose template never tracked it;
+    // a milestone it DOES carry must be done/not_needed. Distinct from
+    // completionDone, which treats an absent milestone as "not done".
+    const gateOk = (key) => {
+      const c = byKey.get(key)
+      if (!c) return true                 // not in template → not applicable
+      return c.status === 'done' || c.status === 'not_needed'
     }
     for (const m of (job.milestones || [])) {
       if (m.status === 'done' || m.status === 'not_needed') continue
@@ -6901,7 +6919,28 @@ export function getSchedulableJobs(jobs, batches) {
       if (m.milestone_key === 'ready_to_install') {
         if (job.job_type !== 'new_stone') continue   // (P) delivery branch disabled
         if (completionDone('installed')) continue
-        buckets.get('setting').push({ job, milestone: m, completion_milestone_key: 'installed' })
+        // Install-readiness composite — you do NOT put a crew on the road for a
+        // setting unless all three are clear:
+        //   • stone received  • foundation poured  • permit approved
+        // gateOk treats a milestone the template doesn't carry as N/A. Permit
+        // lives on the order (joined via getJobs); 'approved'/'not_required'
+        // pass, everything else (unknown/required/submitted) blocks. This is
+        // the Permit Hub tie-in: an unapproved permit makes the install BLOCKED,
+        // not schedulable. foundation_poured is the present signal; the 7-day
+        // cure window (foundation_cured) is a documented Phase 4 refinement.
+        const stoneOk = gateOk('stone_received')
+        const foundationOk = gateOk('foundation_poured')
+        const permit = job.order?.permit_status || 'unknown'
+        const permitOk = permit === 'approved' || permit === 'not_required'
+        if (stoneOk && foundationOk && permitOk) {
+          buckets.get('setting').push({ job, milestone: m, completion_milestone_key: 'installed' })
+        } else {
+          const reasons = []
+          if (!permitOk) reasons.push(permit === 'submitted' ? 'Permit awaiting approval' : permit === 'required' ? 'Permit required, not filed' : 'Permit not approved')
+          if (!foundationOk) reasons.push('Foundation not poured')
+          if (!stoneOk) reasons.push('Stone not received')
+          blocked.push({ job, milestone: m, completion_milestone_key: 'installed', reasons })
+        }
         continue
       }
       // Acid wash / repair / rub_grab — gap milestones today, leave buckets
@@ -6919,7 +6958,10 @@ export function getSchedulableJobs(jobs, batches) {
       return bAge - aAge
     })
   }
-  return buckets
+  // Blocked installs sort oldest-waiting first — the longer a ready stone sits
+  // unschedulable, the more it needs the operator's eye.
+  blocked.sort((a, b) => (daysSinceMs(b.milestone.updated_at) || 0) - (daysSinceMs(a.milestone.updated_at) || 0))
+  return { buckets, blocked }
 }
 
 // ── MONTH / WEEK / DAY VIEW DERIVERS ────────────────────────────────────────

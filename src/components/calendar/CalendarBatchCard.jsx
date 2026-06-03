@@ -54,6 +54,9 @@ export default function CalendarBatchCard({
         )}
       </div>
       <div className="sb-cal-card-title">{title}</div>
+      {batch.cemetery?.name && (
+        <div className="sb-cal-card-cem">{batch.cemetery.name}</div>
+      )}
       <div className="sb-cal-card-foot">
         {batch.assigned_to && (
           <span className="sb-cal-card-by">{batch.assigned_to}</span>
@@ -147,6 +150,16 @@ const localStyles = `
     font-size: 14px;
     font-weight: 500;
     color: var(--sb-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Cemetery — where the crew is going. A field batch without a destination
+     reads as incomplete; surfacing it on the card answers "where" without a
+     drill-down. Hidden when the batch carries no cemetery (shop blocks). */
+  .sb-cal-card-cem {
+    font-size: 11px;
+    color: var(--sb-text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

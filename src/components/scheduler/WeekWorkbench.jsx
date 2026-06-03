@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BATCH_KINDS,
   batchKindInfo,
+  customerName,
   getSchedulableJobs,
   indexPromisesByJob,
 } from '../../lib/stonebooksData'
@@ -43,7 +44,7 @@ export default function WeekWorkbench({
   // the initial seed { jobs, defaultKind }.
   const [builderInit, setBuilderInit] = useState(null)
 
-  const schedulableByKind = useMemo(
+  const { buckets: schedulableByKind, blocked: blockedInstalls } = useMemo(
     () => getSchedulableJobs(jobs, batches),
     [jobs, batches],
   )
@@ -167,6 +168,8 @@ export default function WeekWorkbench({
         </div>
       </div>
 
+      <BlockedInstalls rows={blockedInstalls} />
+
       <div className="sb-workbench-columns">
         {BATCH_KINDS.map(k => (
           <UnscheduledColumn
@@ -189,6 +192,45 @@ export default function WeekWorkbench({
         onClose={() => setBuilderInit(null)}
         onCreated={handleCreated}
       />
+    </div>
+  )
+}
+
+// Blocked installs — jobs that have reached ready_to_install but are NOT
+// safe to put a crew on the road for (permit not approved / foundation not
+// poured / stone not received). Surfaced loudly above the columns so the
+// scheduler can tell "no installs ready" from "installs ready but blocked —
+// go clear the permit." Read-only: the fix lives in the Permit Hub / job
+// milestones, not here. Hidden entirely when nothing is blocked.
+function BlockedInstalls({ rows }) {
+  if (!rows || rows.length === 0) return null
+  return (
+    <div className="sb-wb-blocked">
+      <div className="sb-wb-blocked-head">
+        <span className="sb-wb-blocked-title">Blocked — not ready to schedule</span>
+        <span className="sb-wb-blocked-count">{rows.length}</span>
+      </div>
+      <div className="sb-wb-blocked-rows">
+        {rows.map(({ job, reasons }) => {
+          const surname = job.order?.primary_lastname
+            || customerName(job.order?.customer)
+            || 'Unnamed'
+          const cemetery = job.order?.cemetery?.name || job.cemetery?.name || null
+          return (
+            <div key={job.id} className="sb-wb-blocked-row">
+              <div className="sb-wb-blocked-who">
+                <span className="sb-wb-blocked-surname">{surname}</span>
+                {cemetery && <span className="sb-wb-blocked-cem">{cemetery}</span>}
+              </div>
+              <div className="sb-wb-blocked-reasons">
+                {(reasons || []).map(r => (
+                  <span key={r} className="sb-wb-blocked-reason">{r}</span>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -410,6 +452,80 @@ const localStyles = `
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 12px;
+  }
+
+  /* Blocked installs — red-tinted band. Reads as a stop sign above the
+     schedulable columns; collapses to nothing when empty. */
+  .sb-wb-blocked {
+    border: 0.5px solid var(--sb-red, #b3261e);
+    border-left: 3px solid var(--sb-red, #b3261e);
+    background: var(--sb-red-bg, #fbe9e7);
+    border-radius: var(--sb-r-sm, 6px);
+    padding: 10px 14px;
+  }
+  .sb-wb-blocked-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .sb-wb-blocked-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--sb-red, #b3261e);
+  }
+  .sb-wb-blocked-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: white;
+    background: var(--sb-red, #b3261e);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sb-wb-blocked-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sb-wb-blocked-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    background: var(--sb-surface, #fff);
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+  }
+  .sb-wb-blocked-who {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .sb-wb-blocked-surname {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--sb-text);
+  }
+  .sb-wb-blocked-cem {
+    font-size: 12px;
+    color: var(--sb-text-muted);
+  }
+  .sb-wb-blocked-reasons {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .sb-wb-blocked-reason {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--sb-red, #b3261e);
+    background: var(--sb-red-bg, #fbe9e7);
+    border: 0.5px solid var(--sb-red, #b3261e);
+    border-radius: 999px;
+    padding: 2px 9px;
   }
 `
 
