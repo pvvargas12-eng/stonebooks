@@ -223,7 +223,10 @@ export function setOwnerViewMode(userId, mode) {
 // Phase 1A subset. Default 'admin' — the broadest hub, what someone scans
 // first thing in the morning.
 
-const VALID_HUBS = ['admin', 'design', 'production', 'installation']
+// admin/design/production/installation are work-item hubs; workflow/permits
+// are the section hubs that re-parent the Workflow queues + Permit command
+// center inside the Jobs hub strip.
+const VALID_HUBS = ['admin', 'design', 'production', 'installation', 'workflow', 'permits']
 
 export function getSelectedHub(userId) {
   const raw = readRaw(userId)

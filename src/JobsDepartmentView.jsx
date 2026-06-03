@@ -45,11 +45,28 @@ import { enrichJob, ROW_GRID } from './lib/jobsRowHelpers'
 // studio-style Surface 1 (Studio Queue + Selected Job Preview). Other hubs
 // keep their list-view body unchanged.
 import DesignHubHome from './DesignHubHome'
+// The Workflow queues + Permit hub used to be separate top-level tabs. They
+// now live INSIDE the Jobs hub strip as two "section" hubs, reusing the
+// existing components unchanged (no separate Operations / Permit / Workflow
+// tabs anywhere).
+import QueuesTab from './QueuesTab'
+import PermitHub from './PermitHub'
 
 // Hub render order — Admin → Design → Production → Installation. Mirrors the
 // workflow from office through shop to field. Owner aggregator + Sales sit
 // in Phase 1B; their slots aren't shown here.
 const HUB_ORDER = ['admin', 'design', 'production', 'installation']
+
+// Section hubs — not job-milestone work-item hubs. They re-parent a whole
+// existing surface (Workflow queues dashboard / Permit command center) as a
+// hub body. They carry no getHubWorkItems count; their cards show a label +
+// description and open the full section below the strip.
+const SECTION_HUBS = [
+  { code: 'workflow', label: 'Workflow', description: 'Production queues — designs, stones, foundations, installs' },
+  { code: 'permits',  label: 'Permits',  description: 'Permit filing + what’s blocking install' },
+]
+const SECTION_CODES = SECTION_HUBS.map(s => s.code)
+const ALL_HUB_CODES = [...HUB_ORDER, ...SECTION_CODES]
 
 // Sort options. Hub items arrive pre-sorted by getHubWorkItems
 // (urgent-first → recency → family name). The other sort options re-sort
@@ -71,7 +88,11 @@ export default function JobsDepartmentView({
   // tab + order/customer drill-throughs.
   onSwitchTab,      // eslint-disable-line no-unused-vars
   onOpenOrder,      // eslint-disable-line no-unused-vars
-  onOpenCustomer,   // eslint-disable-line no-unused-vars
+  onOpenCustomer,
+  // For the Workflow + Permits section hubs (reused QueuesTab / PermitHub):
+  // open the Orders list pre-filtered to a queue / open the order form.
+  onOpenQueue,
+  onEditOrder,
   // Slot for the parent JobsTab's Hubs/All view toggle so it sits in the
   // page header alongside the search box rather than floating elsewhere.
   headerSlot = null,
@@ -138,7 +159,7 @@ export default function JobsDepartmentView({
   // on next visit. Also clears chip filters + urgent toggle so a stale
   // Admin filter doesn't carry into Production.
   const handleHubChange = (next) => {
-    if (!HUB_ORDER.includes(next)) return
+    if (!ALL_HUB_CODES.includes(next)) return
     setHub(next)
     setSelectedHub(userId, next)
     setHubFilters(new Set())
@@ -198,13 +219,14 @@ export default function JobsDepartmentView({
 
   // Hub-card count strip. Renders even while jobs are loading so the
   // structure is visible (counts come in as 0 until data lands, then fill).
-  const headerCount = loading
+  const isDesignHub = hub === 'design'
+  const isSectionHub = SECTION_CODES.includes(hub)
+
+  const headerCount = (loading || !currentDef)
     ? '—'
     : currentData
       ? `${visibleRows.length} of ${currentData.counts.total} in ${currentDef.label}`
       : `0 in ${currentDef.label}`
-
-  const isDesignHub = hub === 'design'
 
   return (
     <div className="sb-crm-page">
@@ -215,7 +237,7 @@ export default function JobsDepartmentView({
             {/* Design hub renders its own count + status prose in the
                 DESIGN HUB sub-line below, so we suppress the generic
                 "N of M in Design" line when the design hub is active. */}
-            {!isDesignHub && (
+            {!isDesignHub && !isSectionHub && (
               <div className="sb-crm-head-count">
                 {headerCount}
                 {!loading && currentData?.counts?.urgent > 0 && (
@@ -223,12 +245,17 @@ export default function JobsDepartmentView({
                 )}
               </div>
             )}
+            {isSectionHub && (
+              <div className="sb-crm-head-count">
+                {SECTION_HUBS.find(s => s.code === hub)?.description}
+              </div>
+            )}
           </div>
           <div className="sb-crm-head-actions">
             {/* Search + sort apply to the list views (Admin/Production/
                 Installation). Design hub uses its own filter chips inside
                 DesignHubHome — hide the generic search/sort here. */}
-            {!isDesignHub && (
+            {!isDesignHub && !isSectionHub && (
               <>
                 <input
                   type="search"
@@ -256,7 +283,7 @@ export default function JobsDepartmentView({
 
         {/* List-view-only banner — design hub is two-column and reads fine
             at narrower widths. */}
-        {!isDesignHub && (
+        {!isDesignHub && !isSectionHub && (
           <div className="sb-crm-min-width-banner">
             Best viewed on desktop — the row layout is dense. Phone view falls back to a single-column stack.
           </div>
@@ -272,9 +299,19 @@ export default function JobsDepartmentView({
         />
       </div>
 
-      {/* BRANCH — Design hub gets the studio surface; other hubs keep the
-          existing list-view body. */}
-      {isDesignHub ? (
+      {/* BRANCH — Workflow + Permits section hubs re-parent a whole existing
+          surface; Design hub gets the studio surface; other hubs keep the
+          list-view body. */}
+      {hub === 'workflow' ? (
+        <QueuesTab onOpenQueue={onOpenQueue} />
+      ) : hub === 'permits' ? (
+        <PermitHub
+          onOpenQueue={onOpenQueue}
+          onEditOrder={onEditOrder}
+          onOpenJob={onOpenJob}
+          onOpenCustomer={onOpenCustomer}
+        />
+      ) : isDesignHub ? (
         loading ? (
           <div className="sb-crm-container">
             <div className="sb-crm-empty">Loading hub work…</div>
@@ -356,11 +393,42 @@ function HubSelectorStrip({ hubData, selectedHub, onSelect, loading }) {
           />
         )
       })}
+      {SECTION_HUBS.map(def => (
+        <HubCard
+          key={def.code}
+          code={def.code}
+          def={def}
+          isSection
+          active={def.code === selectedHub}
+          loading={loading}
+          onClick={() => onSelect(def.code)}
+        />
+      ))}
     </div>
   )
 }
 
-function HubCard({ code, def, data, active, loading, onClick }) {
+function HubCard({ code, def, data, active, loading, onClick, isSection = false }) {
+  // Section hubs (Workflow / Permits) re-parent a whole surface and carry no
+  // work-item count — render label + description + an "Open" affordance.
+  if (isSection) {
+    return (
+      <button
+        type="button"
+        role="tab"
+        aria-selected={active}
+        className={`sb-hub-card sb-hub-card-section ${active ? 'sb-hub-card-active' : ''}`}
+        onClick={onClick}
+      >
+        <div className="sb-hub-card-head">
+          <span className="sb-hub-card-dot sb-hub-card-dot-section" aria-hidden="true" />
+          <span className="sb-hub-card-label">{def.label}</span>
+        </div>
+        <div className="sb-hub-card-section-open">Open →</div>
+        <div className="sb-hub-card-desc">{def.description}</div>
+      </button>
+    )
+  }
   const urgent = data?.counts?.urgent ?? 0
   const total  = data?.counts?.total ?? 0
   // Dot color earns urgency: red for any urgent, amber for in-flight without
@@ -467,9 +535,14 @@ const localStyles = `
      (1fr each); at tablet they wrap 2×2; at phone they stack. */
   .sb-hub-strip {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap: 12px;
     margin: 0 32px 24px 32px;
+  }
+  @media (max-width: 1200px) {
+    .sb-hub-strip {
+      grid-template-columns: repeat(3, 1fr);
+    }
   }
   @media (max-width: 980px) {
     .sb-hub-strip {
@@ -538,6 +611,18 @@ const localStyles = `
   .sb-hub-card-dot-loading {
     background: transparent;
     border: 1px solid var(--sb-border);
+  }
+  /* Section hub (Workflow / Permits) — a hollow bronze dot marks it as a
+     "opens a surface" card rather than a counted work-item hub. */
+  .sb-hub-card-dot-section {
+    background: transparent;
+    border: 1.5px solid var(--sb-accent, #b8842a);
+  }
+  .sb-hub-card-section-open {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--sb-accent, #b8842a);
+    margin-bottom: 10px;
   }
   .sb-hub-card-label {
     font-size: 11px;
