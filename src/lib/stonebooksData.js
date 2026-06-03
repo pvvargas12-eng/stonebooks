@@ -627,6 +627,72 @@ export async function bulkRestoreCustomers(ids) {
   return { ok: true, count: data?.length || 0 }
 }
 
+// ── WORKFLOW QUEUES (read-only classifier) ───────────────────────────────────
+// A queue is a named view over orders. classifyOrderQueues buckets each order
+// into ONE production queue (the furthest-along it qualifies for, so it appears
+// once) + zero-or-more cross-cutting attention overlays. Production queues are
+// new_stone-only and template-driven: the gate/end keys are matched against the
+// job's OWN job_milestones, so a queue whose gate key doesn't exist on the job
+// stays empty (no fabricated stages). NOTHING here writes.
+
+export const PRODUCTION_QUEUES = [
+  { code: 'designs_needed',       label: 'Designs needed',           gate: 'deposit_received',     end: 'proof_sent' },
+  { code: 'proofs_awaiting',      label: 'Proofs awaiting approval', gate: 'proof_sent',           end: 'proof_approved' },
+  { code: 'stones_to_order',      label: 'Stones to order',          gate: 'proof_approved',       end: 'stone_ordered' },
+  { code: 'stones_ordered',       label: 'Stones ordered',           gate: 'stone_ordered',        end: 'stone_received' },
+  { code: 'stones_received',      label: 'Stones received',          gate: 'stone_received',       end: 'production_completed' },
+  { code: 'photos_needed',        label: 'Photos needed',            gate: 'photo_needed',         end: 'photo_received' },
+  { code: 'etchings_needed',      label: 'Etchings needed',          gate: 'etching_needed',       end: 'stencil_cut' },
+  { code: 'foundations_needed',   label: 'Foundations needed',       gate: 'foundation_needed',    end: 'foundation_scheduled' },
+  { code: 'foundations_scheduled',label: 'Foundations scheduled',    gate: 'foundation_scheduled', end: 'foundation_poured' },
+  { code: 'installs_ready',       label: 'Installs ready/scheduled', gate: 'ready_to_install',      end: 'installed' },
+]
+export const OVERLAY_QUEUES = [
+  { code: 'balances_due', label: 'Balances due' },
+  { code: 'blocked',      label: 'Blocked' },
+]
+// v1 "blocked" blocker kinds — waiting-on-someone / stuck (NOT pure financial,
+// which is its own Balances-due overlay, and NOT the blue scheduling states).
+const BLOCKED_BLOCKER_KINDS = new Set(['cemetery_hold', 'waiting_on_family', 'proof_waiting_customer', 'production_blocked'])
+
+const _QUEUE_LABELS = Object.fromEntries([...PRODUCTION_QUEUES, ...OVERLAY_QUEUES].map(q => [q.code, q.label]))
+export function queueLabel(code) { return _QUEUE_LABELS[code] || code }
+
+// Spec-less order — missing the monument basics the office fills in at triage.
+export function orderMissingInfo(order) {
+  return !order?.shape || !order?.granite_color || (!order?.width_inches && !order?.standard_size_code)
+}
+
+// Returns { productionQueue: code|null, overlays: code[] }. `pressure` is the
+// computeOrderPressure result for this order (callers already have it; passed
+// in to avoid recomputing). Closed/cancelled/archived orders never queue.
+export function classifyOrderQueues(order, job, pressure) {
+  const result = { productionQueue: null, overlays: [] }
+  if (!order) return result
+  const terminal = order.status === 'closed' || order.status === 'cancelled' || order.archived === true
+  if (terminal) return result
+
+  // Overlays (cross-cutting; any non-terminal order, any job type)
+  if (rowBalanceDue(order) > 0) result.overlays.push('balances_due')
+  const kind = pressure?.blocker?.kind
+  if (orderMissingInfo(order) || (kind && BLOCKED_BLOCKER_KINDS.has(kind))) result.overlays.push('blocked')
+
+  // Production pipeline — new_stone jobs only; furthest-along by gate sort_order.
+  if (job?.job_type === 'new_stone') {
+    const ms = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const done = k => ms.get(k)?.status === 'done'
+    let best = null, bestRank = -1
+    for (const q of PRODUCTION_QUEUES) {
+      if (ms.has(q.gate) && done(q.gate) && !done(q.end)) {
+        const rank = ms.get(q.gate)?.sort_order ?? -1
+        if (rank > bestRank) { bestRank = rank; best = q.code }
+      }
+    }
+    result.productionQueue = best
+  }
+  return result
+}
+
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
 
 export function fmtUSD(n, opts = {}) {

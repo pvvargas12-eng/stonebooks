@@ -21,6 +21,7 @@ import {
   ORDER_STATUSES, ACTIVE_STATUSES,
   bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus,
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage,
+  classifyOrderQueues, queueLabel,
 } from './lib/stonebooksData'
 import { paymentLabel } from './lib/crmTheme'
 import { FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
@@ -125,7 +126,7 @@ function furthestStage(job) {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob }) {
+export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [orders, setOrders] = useState([])
   const [allJobs, setAllJobs] = useState([])
@@ -144,6 +145,7 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
   const [cemeteryFilter, setCemeteryFilter] = useState('')
   const [quickView, setQuickView] = useState(null)
+  const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
   const [sortKey, setSortKey] = useState('actionPriority')
   const [search, setSearch] = useState('')
 
@@ -176,6 +178,19 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   }, [archiveView, reloadNonce])
 
   const reload = useCallback(() => setReloadNonce(n => n + 1), [])
+
+  // Consume an incoming queue selection from the Queues dashboard: clear other
+  // filters, force the active view, apply the queue, and tell the parent it's
+  // consumed (so re-entering Orders normally doesn't re-apply it).
+  useEffect(() => {
+    if (!initialQueue) return
+    setQueueFilter(initialQueue)
+    setArchiveView('active'); setQuickView(null)
+    setPipelineFilters(new Set()); setPaymentFilters(new Set()); setJobTypeFilters(new Set())
+    setServiceTypeFilters(new Set()); setCemeteryFilter(''); setHasDeposit(false); setOwesBalance(false)
+    setNeedsAttentionOnly(false); setSearch('')
+    onConsumeInitialQueue?.()
+  }, [initialQueue, onConsumeInitialQueue])
 
   // ── Enrich ──────────────────────────────────────────────────────────────
   const enriched = useMemo(() => {
@@ -214,6 +229,11 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   // ── Filter + sort ───────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = enriched
+    // Workflow queue (from the Queues dashboard) — uses the shared classifier.
+    if (queueFilter) list = list.filter(o => {
+      const c = classifyOrderQueues(o, o._job, o._pressure)
+      return c.productionQueue === queueFilter || c.overlays.includes(queueFilter)
+    })
     // Quick views layer over the granular filters.
     if (quickView === 'active_pipeline') list = list.filter(o => ACTIVE_STATUSES.includes(o.status))
     else if (quickView === 'owes_balance') list = list.filter(o => o._balance > 0)
@@ -260,11 +280,11 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
       familyName:  (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
     }
     return [...list].sort(sorters[sortKey] || sorters.actionPriority)
-  }, [enriched, quickView, pipelineFilters, paymentFilters, jobTypeFilters, serviceTypeFilters,
+  }, [enriched, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters, serviceTypeFilters,
       cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search, sortKey])
 
   // Reset page + clear stale selection when the filtered set changes shape.
-  useEffect(() => { setPage(0) }, [archiveView, quickView, pipelineFilters, paymentFilters, jobTypeFilters,
+  useEffect(() => { setPage(0) }, [archiveView, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters,
     serviceTypeFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -496,6 +516,13 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
         </header>
 
         {loadErr && <div className="sb-crm-error">{loadErr}</div>}
+
+        {queueFilter && (
+          <div className="sb-tw-queuebar">
+            <span>Queue: <strong>{queueLabel(queueFilter)}</strong> · {filtered.length} order{filtered.length === 1 ? '' : 's'}</span>
+            <button type="button" className="sb-tw-link" onClick={() => setQueueFilter(null)}>Clear queue</button>
+          </div>
+        )}
 
         {/* Quick views */}
         <div className="sb-crm-chip-row">
@@ -745,6 +772,9 @@ function jobTypeLabel(jobType, serviceTypes) {
 }
 
 const TW_CSS = `
+  .sb-tw-queuebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fdf8ec; border: 0.5px solid #e8d9a8; border-radius: 10px; padding: 9px 14px; margin-bottom: 12px; font-size: 13.5px; color: #6b5d2f; }
+  .sb-tw-queuebar strong { color: #1e2d3d; }
+  .sb-tw-queuebar .sb-tw-link { border-color: #c9b27a; color: #9A7209; }
   .sb-tw-row input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #9A7209; }
   .sb-tw-row-sel { background: #fdf8ec !important; }
   .sb-tw-cust { text-align: left; background: none; border: none; font: inherit; cursor: pointer; padding: 0; min-width: 0; }
