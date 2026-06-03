@@ -118,10 +118,13 @@ export async function createCustomer(customer) {
     phone_alt: customer.phoneSecondary || null,
     email: customer.email || null,
     address_line1: customer.addressLine1 || null,
+    address_line2: customer.addressLine2 || null,
+    email_alt: customer.emailAlt || null,
     city: customer.city || null,
     state: customer.state || null,
     zip: customer.zip || null,
-    referral_source: customer.referralSource || null,
+    // referral_source is a JOB column, not a customers column — never send it
+    // here (it caused "Could not find the 'referral_source' column of customers").
     notes: customer.notes || null,
   }
   const { data, error } = await supabase.from('customers').insert(row).select().single()

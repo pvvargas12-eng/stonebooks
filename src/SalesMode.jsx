@@ -1543,8 +1543,9 @@ async function searchCustomers(query) {
 
   const filters = []
   if (q.length >= 2) {
-    filters.push(`last_name.ilike.${q}%`)
-    filters.push(`first_name.ilike.${q}%`)
+    // CONTAINS (case-insensitive), not starts-with — "ger" finds "Gerber".
+    filters.push(`last_name.ilike.%${q}%`)
+    filters.push(`first_name.ilike.%${q}%`)
   }
   if (digits.length >= 3) {
     filters.push(`phone_primary.ilike.%${digits}%`)
@@ -1562,14 +1563,15 @@ async function searchCustomers(query) {
   return data || []
 }
 
-// Search cemeteries by name (starts-with, case-insensitive)
+// Search cemeteries by name — CONTAINS, case-insensitive, so "Ger" surfaces
+// "St. Gertrude Cemetery" (the name isn't a prefix match).
 async function searchCemeteries(query) {
   const q = query.trim()
   if (!q || q.length < 1) return []
   const { data, error } = await supabase
     .from('cemeteries')
     .select('*')
-    .ilike('name', `${q}%`)
+    .ilike('name', `%${q}%`)
     .order('name')
     .limit(8)
   if (error) { console.error('searchCemeteries error:', error); return [] }
@@ -1813,6 +1815,12 @@ async function uploadSignature(dataUrl, who, orderId) {
 
 // ---- Row conversion helpers (camelCase ↔ snake_case) ------------------------
 
+// IMPORTANT: emit ONLY real `customers` columns. referral_source /
+// referral_source_detail are JOB columns, not customer columns — sending them
+// here makes the insert fail with PostgREST "Could not find the 'referral_source'
+// column of 'customers'". Real customers columns: first_name, last_name, email,
+// email_alt, phone_primary, phone_alt, address_line1, address_line2, city,
+// state, zip, notes, qb_customer_id, tenant_id, archived, archived_at.
 function customerToRow(c) {
   return {
     first_name: c.firstName?.trim() || '',
@@ -1826,8 +1834,6 @@ function customerToRow(c) {
     city: c.city?.trim() || null,
     state: c.state?.trim() || 'NJ',
     zip: c.zip?.trim() || null,
-    referral_source: c.referralSource || null,
-    referral_source_detail: c.referralSourceDetail?.trim() || null,
     notes: c.notes?.trim() || null,
   }
 }

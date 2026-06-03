@@ -146,7 +146,7 @@ function furthestStage(job) {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue }) {
+export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [orders, setOrders] = useState([])
   const [allJobs, setAllJobs] = useState([])
@@ -179,6 +179,10 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   const [confirm, setConfirm] = useState(null)  // { title, body, run }
   const [toast, setToast] = useState(null)       // { id, text, error, canUndo, onUndo }
   const [busy, setBusy] = useState(false)
+  // Per-row inline-edit lock — scoped to the edited order so a single-field
+  // edit disables ONLY that row's controls (the global `busy` re-rendered the
+  // whole table, which read as a flash). `busy` stays for bulk ops + the modal.
+  const [busyId, setBusyId] = useState(null)
 
   // ── Load (by archive view) ────────────────────────────────────────────────
   useEffect(() => {
@@ -498,25 +502,25 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   // Payment is a manual override on orders.payment_status (imported orders have
   // no reliable total). Needs the one-line migration; errors gracefully if not.
   const inlinePayment = async (o, code) => {
-    setBusy(true); const r = await bulkUpdateOrders([o.id], { payment_status: code }); setBusy(false)
+    setBusyId(o.id); const r = await bulkUpdateOrders([o.id], { payment_status: code }); setBusyId(null)
     if (r.ok) patchOrderLocal(o.id, { payment_status: code })
     showToast(r.ok ? `${o._familyName}: payment → ${paymentStatusLabel(code)}` : (r.error || 'Failed (run the payment_status migration?)'), { error: !r.ok })
   }
   const inlineDesign = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
-    setBusy(true); const r = await setOrderDesignStatus(o._job.id, code); setBusy(false)
+    setBusyId(o.id); const r = await setOrderDesignStatus(o._job.id, code); setBusyId(null)
     if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code))
     showToast(r.ok ? `${o._familyName}: design → ${designStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
   }
   const inlineStone = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
-    setBusy(true); const r = await setOrderStoneStatus(o._job.id, code); setBusy(false)
+    setBusyId(o.id); const r = await setOrderStoneStatus(o._job.id, code); setBusyId(null)
     if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code))
     showToast(r.ok ? `${o._familyName}: stone → ${stoneStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
   }
   const inlineFdn = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
-    setBusy(true); const r = await setOrderFdnStatus(o._job.id, code); setBusy(false)
+    setBusyId(o.id); const r = await setOrderFdnStatus(o._job.id, code); setBusyId(null)
     if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code))
     showToast(r.ok ? `${o._familyName}: FDN → ${fdnStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
   }
@@ -533,7 +537,7 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
     } else {
       patch.target_completion_date = value || null
     }
-    setBusy(true); const r = await bulkUpdateOrders([o.id], patch); setBusy(false)
+    setBusyId(o.id); const r = await bulkUpdateOrders([o.id], patch); setBusyId(null)
     if (r.ok) patchOrderLocal(o.id, patch)
     showToast(r.ok ? `${o._familyName}: ${field === 'signed_at' ? 'contract' : 'due'} date saved` : (r.error || 'Failed'), { error: !r.ok })
   }
@@ -541,7 +545,7 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
     const trimmed = String(raw ?? '').trim()
     const val = trimmed === '' ? null : Number(trimmed)
     if (val != null && !Number.isFinite(val)) { showToast('Enter a number.', { error: true }); return }
-    setBusy(true); const r = await bulkUpdateOrders([o.id], { contract_total: val }); setBusy(false)
+    setBusyId(o.id); const r = await bulkUpdateOrders([o.id], { contract_total: val }); setBusyId(null)
     if (r.ok) patchOrderLocal(o.id, { contract_total: val })
     showToast(r.ok ? `${o._familyName}: total ${val == null ? 'cleared' : fmtUSD(val)}` : (r.error || 'Failed'), { error: !r.ok })
   }
@@ -729,7 +733,7 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
                 onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
-                onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={busy} />
+                onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={busyId === o.id} />
             ))
           )}
 
