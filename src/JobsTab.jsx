@@ -63,8 +63,6 @@ import {
   STAGE_BUCKETS,
   recencyBand, severityRank,
 } from './lib/jobsRowHelpers'
-import JobsDepartmentView from './JobsDepartmentView'
-import { getJobsView, setJobsView } from './lib/workspaceState'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
 // view rendered as a tab inside JobDetail. Pure read-arrange of the joined
 // order row; no new data fetch.
@@ -90,19 +88,7 @@ export default function JobsTab({
   onConsumeInitialQueue,
   onOpenOrder,
   onOpenCustomer,
-  userId = null,
-  onSwitchTab,
 }) {
-  // View-mode state — restored from workspaceState on mount. The toggle
-  // updates both local state + persisted state so a refresh re-opens the
-  // same view mode without a flash.
-  const [view, setView] = useState(() => getJobsView(userId))
-  const handleViewChange = (next) => {
-    if (next !== 'hubs' && next !== 'all') return
-    setView(next)
-    setJobsView(userId, next)
-  }
-
   // JOBS-OPERATIONAL-HUBS Phase 2A.2 — captured here so the "Open packet →"
   // affordance in DesignHubHome can open JobDetail with the Design Packet
   // tab pre-selected. Defaults to 'job'; callers that route from other
@@ -141,58 +127,11 @@ export default function JobsTab({
     )
   }
 
-  if (view === 'all') {
-    return (
-      <>
-        <JobsViewToggle view={view} onChange={handleViewChange} />
-        <JobsListView onOpenJob={handleOpenJob} />
-      </>
-    )
-  }
-
-  return (
-    <JobsDepartmentView
-      userId={userId}
-      onOpenJob={handleOpenJob}
-      onSwitchTab={onSwitchTab}
-      onOpenOrder={onOpenOrder}
-      onOpenCustomer={onOpenCustomer}
-      headerSlot={<JobsViewToggle view={view} onChange={handleViewChange} />}
-    />
-  )
-}
-
-// ── View-mode toggle ────────────────────────────────────────────────────────
-// Pill-pair segmented control. Lives in two places: top-right of the hub
-// view header (passed as headerSlot prop) and at the top of the flat list
-// (rendered above the existing JobsListView header). Same component, same
-// state — operator's eye sees one control in one place at a time.
-
-function JobsViewToggle({ view, onChange }) {
-  const OPTIONS = [
-    { code: 'hubs', label: 'Hubs',      desc: '4 operational departments' },
-    { code: 'all',  label: 'Jobs — All', desc: 'Every job, one flat list' },
-  ]
-  return (
-    <div className="sb-jobs-view-toggle" role="tablist" aria-label="Jobs view mode">
-      {OPTIONS.map(opt => {
-        const active = opt.code === view
-        return (
-          <button
-            key={opt.code}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            title={opt.desc}
-            className={`sb-jobs-view-chip ${active ? 'sb-jobs-view-chip-active' : ''}`}
-            onClick={() => onChange(opt.code)}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
-  )
+  // Jobs is jobs only — the flat family-first operational table. The
+  // operational-department hubs that used to live here moved into the
+  // dedicated Operations tab (Workflow section), so there's one home for
+  // queue/hub work instead of a duplicate inside Jobs.
+  return <JobsListView onOpenJob={handleOpenJob} />
 }
 
 // =============================================================================

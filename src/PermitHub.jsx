@@ -19,12 +19,64 @@ import {
 } from './lib/stonebooksData'
 import OrderDetail from './OrderDetail.jsx'
 
+// feeRange — cemetery-driven estimate. Used ONLY by the Cemetery requirements
+// editor (the config surface that feeds order-build). It is intentionally NOT
+// shown per-order in the worklist: the hub shows EXACT filed amounts from
+// orders.permit, not estimate ranges.
 const feeRange = (lo, hi) => {
   if (lo == null && hi == null) return null
   if (lo != null && hi != null) return `${fmtUSD(lo)}–${fmtUSD(hi)}`
   return fmtUSD(lo != null ? lo : hi)
 }
 const permitStatusLabel = (s) => PERMIT_STATUSES.find(x => x.code === (s || 'unknown'))?.label || s
+
+// orders.permit holds an array of filed-permit records:
+//   [{ type, amount, method, ck, date_filed, name }, …]
+// (Legacy rows may carry a bare object; only the array shape carries filings.)
+function permitRecords(order) {
+  return Array.isArray(order?.permit) ? order.permit : []
+}
+// Purity-safe absolute date (no new Date() in render): "Jun 1, 2026".
+const MONTHS_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function fmtFiledDate(iso) {
+  if (!iso) return null
+  const s = String(iso).slice(0, 10)
+  const [y, m, d] = s.split('-')
+  const mi = parseInt(m, 10) - 1
+  if (!y || isNaN(mi) || mi < 0 || mi > 11) return s
+  return `${MONTHS_ABBR[mi]} ${parseInt(d, 10)}, ${y}`
+}
+// Method + check number — "Check · ck# 2334" / "ck# 2334" / "Cash".
+function methodCk(pm) {
+  const method = pm.method ? String(pm.method).trim() : null
+  const ck = pm.ck != null && String(pm.ck).trim() !== '' ? String(pm.ck).trim() : null
+  if (method && ck) return `${method} · ck# ${ck}`
+  if (ck) return `ck# ${ck}`
+  return method
+}
+
+// One line per filed permit on an order: type · amount · method+ck# · date · name.
+function PermitLines({ order }) {
+  const recs = permitRecords(order)
+  if (!recs.length) return <span className="sb-crm-muted">No permits filed</span>
+  return (
+    <div className="sb-ph-permits">
+      {recs.map((pm, i) => {
+        const meta = methodCk(pm)
+        const date = fmtFiledDate(pm.date_filed)
+        return (
+          <div key={pm.id || i} className="sb-ph-permit-line">
+            {pm.type && <span className="sb-ph-permit-type">{pm.type}</span>}
+            {pm.amount != null && <span className="sb-ph-permit-amt">{fmtUSD(pm.amount)}</span>}
+            {meta && <span className="sb-ph-permit-meta">{meta}</span>}
+            {date && <span className="sb-ph-permit-meta">{date}</span>}
+            {pm.name && <span className="sb-ph-permit-meta">{pm.name}</span>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 function deceasedLabel(order) {
   const d = Array.isArray(order.deceased) ? order.deceased : []
   if (!d.length) return null
@@ -76,7 +128,6 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
         _familyName: (o.primary_lastname && String(o.primary_lastname).trim()) ||
           (o.customer?.last_name && String(o.customer.last_name).trim().toUpperCase()) || customerName(o.customer) || '—',
         _deceased: deceasedLabel(o), _foundation: foundation, _install: install,
-        _feeRange: feeRange(o.permit_fee_low ?? o.cemetery?.permit_fee_low, o.permit_fee_high ?? o.cemetery?.permit_fee_high),
         _priority: Math.min(...(buckets.length ? buckets.map(b => BUCKET_PRIORITY[b] ?? 9) : [9])),
       }
     })
@@ -159,7 +210,7 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
             <div className="sb-crm-card sb-crm-table">
               <div className="sb-crm-row sb-crm-row-head sb-ph-row">
                 <div>Order</div><div>Customer</div><div>Deceased</div><div>Cemetery</div>
-                <div>Permit</div><div className="num">Fee range</div><div>Notes</div>
+                <div>Permit</div><div>Filed permits</div><div>Notes</div>
                 <div>Foundation</div><div>Install</div><div>Assigned</div><div className="num">Updated</div>
               </div>
               {loading ? (
@@ -174,7 +225,7 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
                     <div className="sb-crm-secondary">{o._deceased || '—'}</div>
                     <div>{o.cemetery?.name || <span className="sb-crm-muted">— (unlinked)</span>}</div>
                     <div><span className={`sb-ph-pill sb-ph-${o.permit_status || 'unknown'}${o._buckets.includes('permit_blocking') ? ' sb-ph-blockmark' : ''}`}>{permitStatusLabel(o.permit_status)}{o._buckets.includes('permit_blocking') ? ' · BLOCKING' : ''}</span></div>
-                    <div className="num">{o._feeRange || <span className="sb-crm-muted">—</span>}</div>
+                    <div><PermitLines order={o} /></div>
                     <div className="sb-crm-secondary sb-ph-notes">{o.cemetery?.permit_notes || o.permit?.note || '—'}</div>
                     <div className="sb-crm-secondary">{o._foundation}</div>
                     <div className="sb-crm-secondary">{o._install}</div>
@@ -308,10 +359,19 @@ const PH_CSS = `
   .sb-ph-card-blocking .sb-ph-card-count { font-size: 34px; color: #B54040; margin: 0; }
   .sb-ph-card-blocking .sb-ph-card-sub { margin-left: auto; color: #8a5a5a; }
 
-  .sb-ph-row { grid-template-columns: 0.7fr 1.1fr 1fr 1.1fr 1.2fr 0.8fr 1.3fr 0.8fr 0.8fr 0.8fr 0.6fr; }
+  .sb-ph-row { grid-template-columns: 0.7fr 1.0fr 0.9fr 1.0fr 1.1fr 2.4fr 1.0fr 0.7fr 0.7fr 0.7fr 0.6fr; }
   .sb-ph-rowbtn { text-align: left; background: none; border: none; font: inherit; width: 100%; cursor: pointer; }
   .sb-ph-rowbtn:hover { background: #faf9f7; }
   .sb-ph-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Filed-permit lines — one line per permit on an order. Fields are dot-
+     separated; lines stack so multiple permits read as a short ledger. */
+  .sb-ph-permits { display: flex; flex-direction: column; gap: 4px; }
+  .sb-ph-permit-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.3; }
+  .sb-ph-permit-type { font-weight: 600; color: #1e2d3d; }
+  .sb-ph-permit-amt { font-weight: 600; color: #1D9E75; font-variant-numeric: tabular-nums; }
+  .sb-ph-permit-meta { color: #6b6b66; }
+  .sb-ph-permit-line > span + span::before { content: '·'; margin-right: 6px; color: #c4c2bc; }
   .sb-ph-pill { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 2px 8px; background: #eee; color: #555; }
   .sb-ph-required  { background: #fbf1da; color: #9A7209; }
   .sb-ph-submitted { background: #e7eefb; color: #1d4ed8; }
