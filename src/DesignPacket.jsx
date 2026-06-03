@@ -57,6 +57,7 @@ import {
   rowBalanceDue,
   uploadProofSignature,
   getProofSignatureSignedUrl,
+  addJobEvent,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
 
@@ -711,6 +712,9 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   // now requires a captured signature, so "Mark approved" opens this instead of
   // the name-only confirm.
   const [signModal, setSignModal] = useState(null)
+  // Request-changes modal — { notes, busy, error } | null. Records the customer's
+  // change request to the audit log + reverts the proof to "revision needed".
+  const [changeModal, setChangeModal] = useState(null)
   // Approval-sheet preview modal (Stage 2 Commit 3) — mirrors the contract
   // preview iframe: generate the doc, render a blob URL, offer download/print.
   const [sheet, setSheet] = useState({ open: false, url: null, err: null, busy: false, doc: null, filename: '' })
@@ -1035,6 +1039,32 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     if (confirm.action === 'mark_sent')       return doMarkSent()
     if (confirm.action === 'unmark_sent')     return doUnmarkSent()
     if (confirm.action === 'unmark_approved') return doUnmarkApproved()
+  }
+
+  // ── Request changes ───────────────────────────────────────────────────────
+  // The customer asked for changes: record it to the audit log (job_events,
+  // append-only) with a timestamp + who, revert the proof to "revision needed"
+  // (clears sent_at, reverts proof_sent), then staff uploads a revised version —
+  // history is preserved (the prior version is never overwritten).
+  const doRequestChanges = async () => {
+    const notes = (changeModal?.notes || '').trim()
+    if (!currentVersion || !notes || changeModal.busy) return
+    setChangeModal(m => ({ ...m, busy: true, error: null }))
+    const by = await getCurrentStaffName()
+    const ev = await addJobEvent(jobId, {
+      eventType: 'proof_changes_requested',
+      milestoneKey: 'proof_sent',
+      note: `Customer requested changes (v${currentVersion.version_number}): ${notes}`,
+      payload: { version_id: currentVersion.id, version_number: currentVersion.version_number, requested_by: by },
+    })
+    if (!ev.ok) { setChangeModal(m => ({ ...m, busy: false, error: ev.error })); return }
+    if (currentVersion.sent_at) {
+      const res = await updateProofVersion(currentVersion.id, { sent_at: null })
+      if (!res.ok) { setChangeModal(m => ({ ...m, busy: false, error: res.error })); return }
+      patchCurrentVersion({ sent_at: null })
+      await revertProofMilestone('sent')
+    }
+    setChangeModal(null); onReload?.()
   }
 
   // ── Sign-to-approve flow (Phase 5A.3) ─────────────────────────────────────
@@ -1561,6 +1591,14 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                     </button>
                     <button
                       type="button"
+                      className="sb-design-action-btn"
+                      onClick={() => setChangeModal({ notes: '', busy: false, error: null })}
+                      disabled={lifecycle.busy}
+                    >
+                      Request changes
+                    </button>
+                    <button
+                      type="button"
                       className="sb-design-action-btn sb-design-action-btn-danger"
                       onClick={() => requestAction('unmark_sent')}
                       disabled={lifecycle.busy}
@@ -1845,6 +1883,38 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                 disabled={signModal.busy || !signModal.sig || !signModal.name.trim() || !signModal.date}
               >
                 {signModal.busy ? 'Working…' : 'Sign & approve'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Request-changes modal — captures the customer's requested changes,
+          records them to the audit log, and reverts the proof to revision-needed. */}
+      {changeModal && (
+        <div className="sb-design-modal-overlay sb-design-overlay-top sb-print-hide" onClick={() => !changeModal.busy && setChangeModal(null)}>
+          <div className="sb-design-sign-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-design-modal-title">Request changes · v{currentVersion?.version_number}</div>
+            <div className="sb-design-modal-body">
+              Record what the customer asked to change. This is logged to the order's history with a timestamp, and the proof returns to “revision needed” so you can upload a revised version.
+            </div>
+            <label className="sb-design-sign-field">
+              <span>Requested changes</span>
+              <textarea
+                className="sb-design-modal-input"
+                rows={4}
+                placeholder="e.g. Change the epitaph to “Forever in our hearts”; enlarge the rose."
+                value={changeModal.notes}
+                onChange={(e) => setChangeModal(m => ({ ...m, notes: e.target.value }))}
+              />
+            </label>
+            {changeModal.error && (
+              <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">{changeModal.error}</div>
+            )}
+            <div className="sb-design-modal-actions">
+              <button type="button" className="sb-design-modal-cancel" onClick={() => setChangeModal(null)} disabled={changeModal.busy}>Cancel</button>
+              <button type="button" className="sb-design-action-btn" onClick={doRequestChanges} disabled={changeModal.busy || !changeModal.notes.trim()}>
+                {changeModal.busy ? 'Recording…' : 'Record change request'}
               </button>
             </div>
           </div>

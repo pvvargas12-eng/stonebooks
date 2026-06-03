@@ -26,7 +26,7 @@ import {
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
-import { generateContractPDF, rowToOrder } from './SalesMode'
+import { generateContractPDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 const humanize = (s) =>
@@ -138,6 +138,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
+  // Approval packet preview
+  const [approvalSheet, setApprovalSheet] = useState(null)  // { url, doc, filename, version } | null
   // Permit editor
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
@@ -387,7 +389,24 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
       setActionNote(`Could not open contract — ${e?.message || 'error'}.`)
     }
   }
-  const stub = (what) => () => setActionNote(`${what} is wired in a later commit.`)
+  // ── Approval packet — the customer-facing approval sheet for the current
+  // proof version. Reuses generateApprovalSheetPDF (frozen snapshot + live
+  // balance + signature when approved). Read-only here; send/approve/request-
+  // changes live in the Design Hub for the related job.
+  const openApprovalPacket = async () => {
+    setActionNote(null)
+    const v = proofVers.find(p => p.is_current) || proofVers[0]
+    if (!v) { setActionNote(job ? 'No proof yet — add a layout in the Design Hub for this job.' : 'No production job yet, so there is no proof to approve.'); return }
+    try {
+      const signatureImageUrl = (v.approved_at && v.signature_url) ? await getProofSignatureSignedUrl(v.signature_url) : null
+      const { doc, filename } = await generateApprovalSheetPDF(v, { balance: rowBalanceDue(order), signatureImageUrl, returnDoc: true })
+      const url = URL.createObjectURL(doc.output('blob'))
+      setApprovalSheet({ url, doc, filename, version: v })
+    } catch (e) {
+      setActionNote(`Could not open approval packet — ${e?.message || 'error'}.`)
+    }
+  }
+  const closeApprovalSheet = () => setApprovalSheet(s => { if (s?.url) URL.revokeObjectURL(s.url); return null })
 
   // ── Aggregated attachments (existing buckets, no new bucket) ───────────────
   // Layout proofs (orders-attachments-public) + signatures (proof-signatures,
@@ -455,7 +474,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
             Edit order
           </button>
           <button type="button" className="sb-od-btn" onClick={handleOpenContract}>Open contract</button>
-          <button type="button" className="sb-od-btn" onClick={stub('Approval packet')}>Open approval packet</button>
+          <button type="button" className="sb-od-btn" onClick={openApprovalPacket}>Open approval packet</button>
           <button type="button" className="sb-od-btn" onClick={() => job ? onOpenJob?.(job.id) : null} disabled={!job}
             title={job ? '' : 'No production job yet'}>
             Open related job
@@ -816,6 +835,27 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
           </div>
         </div>
       )}
+
+      {/* Approval packet — customer-facing approval sheet for the current proof. */}
+      {approvalSheet && (
+        <div className="sb-od-modal-overlay" onClick={closeApprovalSheet}>
+          <div className="sb-od-modal sb-od-sheet-modal" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">
+              Approval sheet · v{approvalSheet.version?.version_number}
+              {approvalSheet.version?.approved_at
+                ? <span className="sb-od-sheet-tag sb-od-sheet-tag-ok">Approved {fmtDate(approvalSheet.version.approved_at)}{approvalSheet.version.approved_by_name ? ` · ${approvalSheet.version.approved_by_name}` : ''}</span>
+                : <span className="sb-od-sheet-tag">{approvalSheet.version?.sent_at ? 'Awaiting customer approval' : 'Not yet sent'}</span>}
+            </div>
+            <iframe className="sb-od-sheet-frame" title="Approval sheet" src={approvalSheet.url} />
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={closeApprovalSheet}>Close</button>
+              <button type="button" className="sb-od-btn" onClick={() => window.open(approvalSheet.url, '_blank', 'noopener')}>Print / new tab</button>
+              <button type="button" className="sb-od-btn" onClick={() => approvalSheet.doc.save(approvalSheet.filename)}>Download PDF</button>
+              {job && <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={() => onOpenJob?.(job.id)}>Manage in Design Hub →</button>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -944,6 +984,10 @@ const OD_CSS = `
     box-shadow: 0 12px 48px rgba(0,0,0,0.2);
   }
   .sb-od-modal-title { font-size: 16px; font-weight: 600; color: #111; margin-bottom: 14px; }
+  .sb-od-sheet-modal { width: min(840px, 96vw); }
+  .sb-od-sheet-frame { width: 100%; height: min(72vh, 760px); border: 0.5px solid #e4e2dd; border-radius: 8px; background: #f4f3f0; margin-bottom: 14px; }
+  .sb-od-sheet-tag { font-size: 11px; font-weight: 600; color: #8a8a85; background: #f0eee9; border-radius: 4px; padding: 2px 8px; margin-left: 10px; vertical-align: middle; }
+  .sb-od-sheet-tag-ok { color: #1D9E75; background: #e3f4ec; }
   .sb-od-modal-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
   .sb-od-modal-field > span {
     font-size: 13px; color: #8a8a85; font-weight: 500;

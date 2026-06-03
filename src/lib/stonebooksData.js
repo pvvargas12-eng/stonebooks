@@ -3509,6 +3509,20 @@ export async function addJobNote(jobId, body, { relatedMilestoneKey, actorUserId
   return { ok: true }
 }
 
+// Generic audit-event writer (used by the proof "request changes" flow, etc.).
+// Append-only; never mutates prior events. tenant_id resolved from the job.
+export async function addJobEvent(jobId, { eventType, note = null, payload = {}, milestoneKey = null, createdBy = null } = {}) {
+  if (!jobId || !eventType) return { ok: false, error: 'jobId + eventType required' }
+  const { data: job, error: getErr } = await supabase.from('jobs').select('id, tenant_id').eq('id', jobId).single()
+  if (getErr || !job) return { ok: false, error: getErr?.message || 'Job not found' }
+  const { error } = await supabase.from('job_events').insert({
+    tenant_id: job.tenant_id, job_id: jobId, event_type: eventType,
+    milestone_key: milestoneKey, payload: payload || {}, note, created_by: createdBy || null,
+  })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ── JOBS: event reader ───────────────────────────────────────────────────────
 
 export async function getJobEvents(jobId, { limit = 200, includeVoided = false } = {}) {
