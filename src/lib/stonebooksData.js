@@ -1926,6 +1926,26 @@ export async function getCemeteryOrder(id) {
   return data
 }
 
+// Archive / restore — soft, sets the archived flag (needs the
+// cemetery_orders.archived column; the list filters client-side so it degrades
+// gracefully until the one-line migration runs).
+export async function setCemeteryOrderArchived(id, archived) {
+  if (!id) return { ok: false, error: 'Missing cemetery order id' }
+  const { error } = await supabase.from('cemetery_orders').update({ archived }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+// Hard delete — jobs / financial_records / job_cost_estimates reference
+// cemetery_order_id ON DELETE RESTRICT, so this FAILS LOUD (returns the FK
+// error) when the order has spawned jobs or carries financial rows; only an
+// order with nothing linked (e.g. an abandoned draft) can be removed.
+export async function deleteCemeteryOrder(id) {
+  if (!id) return { ok: false, error: 'Missing cemetery order id' }
+  const { error } = await supabase.from('cemetery_orders').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function getCemeteryOrders({ status, cemetery } = {}) {
   let q = supabase.from('cemetery_orders').select('*').order('created_at', { ascending: false })
   if (status) q = q.eq('status', status)

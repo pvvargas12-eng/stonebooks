@@ -14,6 +14,8 @@ import {
   getPaidTotalsByCemeteryOrder,
   getCemeteryPricingForOrder,
   getDoorPrice,
+  setCemeteryOrderArchived,
+  deleteCemeteryOrder,
   fmtUSD,
   fmtRelative,
 } from './lib/stonebooksData'
@@ -35,7 +37,7 @@ const PAY_PILL = {
   partial: { label: 'Partial',      color: '#b8842a' },
   paid:    { label: 'Paid in full', color: '#2d7a4f' },
 }
-const GRID = '108px minmax(160px,1fr) 56px 104px 118px 150px 96px'
+const GRID = '108px minmax(160px,1fr) 56px 104px 118px 150px 96px 132px'
 
 const rowTotal = (o) => {
   if (o.total_amount != null) return Number(o.total_amount)
@@ -52,6 +54,8 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
   const [cemeteryFilter, setCemeteryFilter] = useState('all')
   const [cemeteryNames, setCemeteryNames] = useState([])
   const [selectedId, setSelectedId] = useState(null)   // non-draft → detail view
+  const [archiveView, setArchiveView] = useState('active')   // active | archived | all
+  const [msg, setMsg] = useState(null)                       // { error, text }
 
   useEffect(() => { getDistinctCemeteryNames().then(setCemeteryNames) }, [])
 
@@ -80,13 +84,34 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
     return () => { cancelled = true }
   }, [statusFilter, cemeteryFilter, selectedId])  // reloads when returning from detail
 
-  const rows = useMemo(() => orders, [orders])
+  // Archive view filters client-side on the `archived` flag — keeps the list
+  // query from referencing the column (graceful before the one-line migration).
+  const rows = useMemo(() => orders.filter(o => {
+    if (archiveView === 'all') return true
+    if (archiveView === 'archived') return !!o.archived
+    return !o.archived
+  }), [orders, archiveView])
 
   if (selectedId) {
     return <CemeteryOrderDetail orderId={selectedId} onBack={() => setSelectedId(null)} onOpenJob={onOpenJob} onResumeDraft={onResumeDraft} onEditOrder={onEditOrder} staffName={staffName} />
   }
 
   const onRow = (o) => { if (o.status === 'draft') onResumeDraft?.(o.id); else setSelectedId(o.id) }
+
+  // Optimistic local updates (no full reload/flash, matching the Orders tab).
+  const handleArchive = async (o) => {
+    setMsg(null)
+    const r = await setCemeteryOrderArchived(o.id, !o.archived)
+    if (!r.ok) { setMsg({ error: true, text: `Could not ${o.archived ? 'restore' : 'archive'} — ${r.error}. (Run the cemetery_orders.archived migration?)` }); return }
+    setOrders(prev => prev.map(x => x.id === o.id ? { ...x, archived: !o.archived } : x))
+  }
+  const handleDelete = async (o) => {
+    setMsg(null)
+    if (!window.confirm(`Delete cemetery order ${o.order_number || 'draft'} permanently? This cannot be undone.`)) return
+    const r = await deleteCemeteryOrder(o.id)
+    if (!r.ok) { setMsg({ error: true, text: `Could not delete — ${r.error}. Orders with jobs or financial records can't be deleted; archive instead.` }); return }
+    setOrders(prev => prev.filter(x => x.id !== o.id))
+  }
 
   return (
     <div className="sb-page sb-page-wide col">
@@ -108,7 +133,16 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
             {cemeteryNames.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
+        <label className="col-filter">Show
+          <select value={archiveView} onChange={e => setArchiveView(e.target.value)}>
+            <option value="active">Active</option>
+            <option value="archived">Archived</option>
+            <option value="all">All</option>
+          </select>
+        </label>
       </div>
+
+      {msg && <div className="sb-empty" style={{ color: msg.error ? '#b54040' : '#1D9E75', marginBottom: 12 }}>{msg.text}</div>}
 
       {loading ? (
         <div className="sb-empty">Loading cemetery orders…</div>
@@ -120,6 +154,7 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
             <div>Order</div><div>Cemetery</div>
             <div className="col-r">Doors</div><div className="col-r">Total</div>
             <div>Status</div><div>Payment</div><div className="col-r">Updated</div>
+            <div className="col-r">Actions</div>
           </div>
           {rows.map(o => {
             const stt = CO_STATUS[o.status] || { label: o.status, color: '#8b8f95' }
@@ -130,7 +165,11 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
             const pay = PAY_PILL[ps]
             const closed = (o.status === 'completed' || o.status === 'paid') && ps === 'paid'
             return (
-              <button key={o.id} type="button" className={`col-row${closed ? ' col-row-muted' : ''}`} style={{ gridTemplateColumns: GRID }} onClick={() => onRow(o)}>
+              <div key={o.id} role="button" tabIndex={0}
+                className={`col-row${closed ? ' col-row-muted' : ''}${o.archived ? ' col-row-archived' : ''}`}
+                style={{ gridTemplateColumns: GRID }}
+                onClick={() => onRow(o)}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRow(o) } }}>
                 <div className="sb-mono col-ordnum">{o.order_number || <span className="col-muted">draft</span>}</div>
                 <div className="col-cem">{o.cemetery_name}</div>
                 <div className="col-r">{(o.doors || []).length}</div>
@@ -142,7 +181,11 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
                     : <span className="col-pill col-pill-pay" style={{ '--pill-color': pay.color }}>{pay.label}{ps === 'partial' ? ` · ${fmtUSD(Math.max(0, total - paid))} due` : ''}</span>}
                 </div>
                 <div className="col-r col-muted">{fmtRelative(o.updated_at)}</div>
-              </button>
+                <div className="col-actions" onClick={e => e.stopPropagation()}>
+                  <button type="button" className="col-act" onClick={() => handleArchive(o)}>{o.archived ? 'Restore' : 'Archive'}</button>
+                  <button type="button" className="col-act col-act-del" onClick={() => handleDelete(o)}>Delete</button>
+                </div>
+              </div>
             )
           })}
         </div>
@@ -162,6 +205,12 @@ const styles = `
   .col-head{ background:transparent; border:none; padding:0 16px; cursor:default; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--sb-text-muted); }
   .col-head:hover{ background:transparent; }
   .col-row-muted{ opacity:.6; }
+  .col-row-archived{ opacity:.55; background:#faf8f4; }
+  .col-actions{ display:flex; gap:6px; justify-content:flex-end; }
+  .col-act{ font:inherit; font-size:11.5px; padding:4px 10px; border-radius:6px; border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text-muted); cursor:pointer; }
+  .col-act:hover{ color:var(--sb-text); border-color:#9A7209; }
+  .col-act-del{ color:#b54040; }
+  .col-act-del:hover{ color:#fff; background:#b54040; border-color:#b54040; }
   .col-r{ text-align:right; font-variant-numeric:tabular-nums; }
   .col-ordnum{ font-size:12px; }
   .col-cem{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
