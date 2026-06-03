@@ -1658,12 +1658,18 @@ export async function saveOrder(order) {
     cemeteryId = saved.id
   }
 
-  // Step 3: order
+  // Step 3: order. FORCE the FK columns onto the payload explicitly — the
+  // confirmed bug was orders.customer_id persisting NULL even though the
+  // customer was created, so we don't rely on orderToRow's mapping picking up
+  // the spread id. customer_id/cemetery_id are set from the resolved ids on
+  // BOTH create and edit.
   const orderRow = orderToRow({
     ...order,
     customer: { ...order.customer, id: customerId },
     cemetery: { ...order.cemetery, id: cemeteryId },
   })
+  orderRow.customer_id = customerId || null
+  orderRow.cemetery_id = cemeteryId || null
 
   if (order.id) {
     const { data, error } = await supabase
@@ -1673,6 +1679,7 @@ export async function saveOrder(order) {
       .select()
       .single()
     if (error) { console.error('updateOrder error:', error); return { ok: false, error } }
+    await _ensureOrderCustomerLink(data, customerId)
     return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
   }
 
@@ -1684,7 +1691,18 @@ export async function saveOrder(order) {
     .select()
     .single()
   if (error) { console.error('insertOrder error:', error); return { ok: false, error } }
+  await _ensureOrderCustomerLink(data, customerId)
   return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
+}
+
+// Defensive: if the order somehow landed with a NULL customer_id but we have a
+// resolved customer id, link it with a follow-up UPDATE. Guarantees the FK is
+// persisted regardless of any upstream mapping quirk.
+async function _ensureOrderCustomerLink(data, customerId) {
+  if (!data?.id || !customerId || data.customer_id) return
+  const { error } = await supabase.from('orders').update({ customer_id: customerId }).eq('id', data.id)
+  if (error) console.error('ensureOrderCustomerLink error:', error)
+  else data.customer_id = customerId
 }
 
 // List recent draft orders for the resume screen (kept for back-compat)
