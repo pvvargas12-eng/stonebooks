@@ -11,13 +11,16 @@
 // cemetery editor.
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  listAllOrders, getJobs, fmtUSD, fmtRelative, customerName,
+  listAllOrders, getJobs, fmtUSD, customerName,
   permitBuckets, PERMIT_QUEUES, PERMIT_STATUSES,
   listCemeteriesWithPermit, updateCemeteryPermit,
+  bulkUpdateOrders,
 } from './lib/stonebooksData'
 import OrderDetail from './OrderDetail.jsx'
+// Reused from the Orders Triage Workbench — same undo toast, same 8s window.
+import UndoToast from './components/calendar/UndoToast.jsx'
 
 // feeRange — cemetery-driven estimate. Used ONLY by the Cemetery requirements
 // editor (the config surface that feeds order-build). It is intentionally NOT
@@ -55,27 +58,26 @@ function methodCk(pm) {
   return method
 }
 
-// One line per filed permit on an order: type · amount · method+ck# · date · name.
-function PermitLines({ order }) {
-  const recs = permitRecords(order)
-  if (!recs.length) return <span className="sb-crm-muted">No permits filed</span>
-  return (
-    <div className="sb-ph-permits">
-      {recs.map((pm, i) => {
-        const meta = methodCk(pm)
-        const date = fmtFiledDate(pm.date_filed)
-        return (
-          <div key={pm.id || i} className="sb-ph-permit-line">
-            {pm.type && <span className="sb-ph-permit-type">{pm.type}</span>}
-            {pm.amount != null && <span className="sb-ph-permit-amt">{fmtUSD(pm.amount)}</span>}
-            {meta && <span className="sb-ph-permit-meta">{meta}</span>}
-            {date && <span className="sb-ph-permit-meta">{date}</span>}
-            {pm.name && <span className="sb-ph-permit-meta">{pm.name}</span>}
-          </div>
-        )
-      })}
-    </div>
-  )
+// Flatten the worklist into permit-log rows — ONE ROW PER PERMIT, grouped
+// under its order. An order with no filed permits still gets a single row
+// (blank permit fields) so it stays selectable for a bulk status-set. The
+// checkbox / order identity / status pill render only on the first row of
+// each order group (isFirstOfOrder); continuation rows leave them blank.
+// orderIndex is the order's position in the worklist — the unit shift-range
+// select operates on (selection is per-order, not per-permit).
+function buildPermitLogRows(worklist) {
+  const rows = []
+  worklist.forEach((order, orderIndex) => {
+    const recs = permitRecords(order)
+    if (recs.length === 0) {
+      rows.push({ order, orderIndex, permit: null, isFirstOfOrder: true })
+    } else {
+      recs.forEach((pm, i) => {
+        rows.push({ order, orderIndex, permit: pm, isFirstOfOrder: i === 0 })
+      })
+    }
+  })
+  return rows
 }
 function deceasedLabel(order) {
   const d = Array.isArray(order.deceased) ? order.deceased : []
@@ -149,6 +151,97 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
     return [...list].sort((a, b) => a._priority - b._priority || (a._familyName || '').localeCompare(b._familyName || ''))
   }, [enriched, tableFilter])
 
+  const logRows = useMemo(() => buildPermitLogRows(worklist), [worklist])
+
+  // ── Bulk select (mirrors OrdersTab) — selection is per-ORDER ──────────────
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [confirm, setConfirm] = useState(null)   // { title, body, run }
+  const [toast, setToast] = useState(null)        // { id, text, error, canUndo, onUndo }
+  const [busy, setBusy] = useState(false)
+  const lastIndexRef = useRef(null)
+  const toastSeqRef = useRef(0)
+
+  const filteredOrderIds = useMemo(() => worklist.map(o => o.id), [worklist])
+  const allMatchingSelected = worklist.length > 0 && worklist.every(o => selectedIds.has(o.id))
+  const selectedOrders = useMemo(() => worklist.filter(o => selectedIds.has(o.id)), [worklist, selectedIds])
+
+  // Shift-range over the per-order index (filteredOrderIds), exactly as the
+  // Orders workbench does — clicking with shift fills the range to the anchor.
+  const toggleOne = (id, orderIndex, shiftKey) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (shiftKey && lastIndexRef.current != null) {
+        const [lo, hi] = [lastIndexRef.current, orderIndex].sort((a, b) => a - b)
+        const shouldSelect = !next.has(id)
+        for (let i = lo; i <= hi; i++) { const oid = filteredOrderIds[i]; if (oid) (shouldSelect ? next.add(oid) : next.delete(oid)) }
+      } else {
+        next.has(id) ? next.delete(id) : next.add(id)
+      }
+      return next
+    })
+    lastIndexRef.current = orderIndex
+  }
+  const toggleAll = () => setSelectedIds(allMatchingSelected ? new Set() : new Set(filteredOrderIds))
+  const selectAllMatching = () => setSelectedIds(new Set(filteredOrderIds))
+  const clearSelection = () => { setSelectedIds(new Set()); lastIndexRef.current = null }
+  const reload = () => setReloadNonce(n => n + 1)
+
+  const showToast = (text, { error = false, onUndo = null } = {}) =>
+    setToast({ id: String(toastSeqRef.current++), text, error, canUndo: !!onUndo, onUndo })
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 8000)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  // Confirm → batched write (bulkUpdateOrders) → toast(+undo) → reload.
+  const runBulk = async (fn, { successText, undoFn }) => {
+    setBusy(true)
+    const res = await fn()
+    setBusy(false); setConfirm(null)
+    if (!res?.ok) { showToast(res?.error || 'Bulk action failed.', { error: true }); return }
+    clearSelection()
+    showToast(successText(res), undoFn ? {
+      onUndo: async () => {
+        setToast(null); setBusy(true)
+        const u = await undoFn()
+        setBusy(false)
+        showToast(u?.ok ? 'Undone.' : (u?.error || 'Undo failed.'), { error: !u?.ok })
+        reload()
+      },
+    } : {})
+    reload()
+  }
+  // Undo a uniform set: group selected orders by their prior permit_status and
+  // issue one batched restore per distinct prior value (no per-row loop).
+  const undoByPriorValue = async (snapshot, setter) => {
+    const groups = new Map()
+    for (const [id, prior] of snapshot) {
+      const k = prior == null ? '__null__' : prior
+      if (!groups.has(k)) groups.set(k, { value: prior, ids: [] })
+      groups.get(k).ids.push(id)
+    }
+    for (const { value, ids: gids } of groups.values()) {
+      const r = await setter(gids, value)
+      if (r && r.ok === false) return r
+    }
+    return { ok: true }
+  }
+  const ids = () => [...selectedIds]
+  const askSetPermitStatus = (status) => {
+    const label = permitStatusLabel(status)
+    const n = selectedIds.size
+    const snapshot = new Map(selectedOrders.map(o => [o.id, o.permit_status || 'unknown']))
+    setConfirm({
+      title: `Set permit status to "${label}" on ${n} order${n === 1 ? '' : 's'}?`,
+      body: 'Updates orders.permit_status only — does not touch filed permit records, payments, or milestones.',
+      run: () => runBulk(() => bulkUpdateOrders(ids(), { permit_status: status }), {
+        successText: r => `Set permit status on ${r.count} order${r.count === 1 ? '' : 's'} to ${label}.`,
+        undoFn: () => undoByPriorValue(snapshot, (gids, v) => bulkUpdateOrders(gids, { permit_status: v })),
+      }),
+    })
+  }
+
   // Row drill-in → OrderDetail (with the permit section).
   if (selectedOrderId) {
     return (
@@ -206,43 +299,126 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
               </div>
             </div>
 
-            {/* Worklist table */}
+            {/* Bulk action bar — sticky, shown when ≥1 order selected. Mirrors
+                the Orders Triage Workbench. "Set permit status" is the action. */}
+            {selectedIds.size > 0 && (
+              <div className="sb-tw-bulkbar">
+                <div className="sb-tw-bulk-count">
+                  <strong>{selectedIds.size}</strong> selected
+                  {!allMatchingSelected && (
+                    <button type="button" className="sb-tw-link" onClick={selectAllMatching}>Select all {worklist.length} matching</button>
+                  )}
+                  {allMatchingSelected && <span className="sb-tw-allnote">all matching</span>}
+                </div>
+                <div className="sb-tw-bulk-actions">
+                  <BulkSelect label="Set permit status" disabled={busy}
+                    options={PERMIT_STATUSES.map(s => ({ value: s.code, label: s.label }))}
+                    onPick={askSetPermitStatus} />
+                  <button type="button" className="sb-tw-bbtn sb-tw-bbtn-ghost" onClick={clearSelection}>Clear</button>
+                </div>
+              </div>
+            )}
+
+            {/* Permit-log table — ONE ROW PER PERMIT, grouped under its order.
+                Columns: ☐ · Name · Job Type · Amount · Method/CK# · Date Filed
+                · Order · Status. Same .sb-crm-* / .sb-tw-* styling as Orders. */}
             <div className="sb-crm-card sb-crm-table">
-              <div className="sb-crm-row sb-crm-row-head sb-ph-row">
-                <div>Order</div><div>Customer</div><div>Deceased</div><div>Cemetery</div>
-                <div>Permit</div><div>Filed permits</div><div>Notes</div>
-                <div>Foundation</div><div>Install</div><div>Assigned</div><div className="num">Updated</div>
+              <div className="sb-crm-row sb-crm-row-head sb-ph-logrow">
+                <div><input type="checkbox" checked={allMatchingSelected} onChange={toggleAll} aria-label="Select all matching" /></div>
+                <div>Name</div>
+                <div>Job Type</div>
+                <div className="num">Amount</div>
+                <div>Method / CK#</div>
+                <div>Date Filed</div>
+                <div>Order</div>
+                <div>Permit status</div>
               </div>
               {loading ? (
                 <div className="sb-crm-empty">Loading permits…</div>
-              ) : worklist.length === 0 ? (
+              ) : logRows.length === 0 ? (
                 <div className="sb-crm-empty">Nothing here.</div>
               ) : (
-                worklist.map(o => (
-                  <button key={o.id} type="button" className="sb-crm-row sb-ph-row sb-ph-rowbtn" onClick={() => setSelectedOrderId(o.id)}>
-                    <div className="sb-crm-mono">{o.order_number || 'DRAFT'}</div>
-                    <div className="sb-crm-primary">{o._familyName}</div>
-                    <div className="sb-crm-secondary">{o._deceased || '—'}</div>
-                    <div>{o.cemetery?.name || <span className="sb-crm-muted">— (unlinked)</span>}</div>
-                    <div><span className={`sb-ph-pill sb-ph-${o.permit_status || 'unknown'}${o._buckets.includes('permit_blocking') ? ' sb-ph-blockmark' : ''}`}>{permitStatusLabel(o.permit_status)}{o._buckets.includes('permit_blocking') ? ' · BLOCKING' : ''}</span></div>
-                    <div><PermitLines order={o} /></div>
-                    <div className="sb-crm-secondary sb-ph-notes">{o.cemetery?.permit_notes || o.permit?.note || '—'}</div>
-                    <div className="sb-crm-secondary">{o._foundation}</div>
-                    <div className="sb-crm-secondary">{o._install}</div>
-                    <div className="sb-crm-secondary">{o.sales_rep || '—'}</div>
-                    <div className="num"><span className="sb-crm-muted sb-crm-tabular">{fmtRelative(o.updated_at)}</span></div>
-                  </button>
-                ))
+                logRows.map((row, i) => {
+                  const o = row.order
+                  const pm = row.permit
+                  const selected = selectedIds.has(o.id)
+                  const blocking = o._buckets.includes('permit_blocking')
+                  return (
+                    <div
+                      key={pm?.id ? `${o.id}:${pm.id}` : `${o.id}:${i}`}
+                      className={`sb-crm-row sb-ph-logrow${selected ? ' sb-tw-row-sel' : ''}${row.isFirstOfOrder ? '' : ' sb-ph-logrow-cont'}`}
+                    >
+                      <div onClick={e => e.stopPropagation()}>
+                        {row.isFirstOfOrder && (
+                          <input type="checkbox" checked={selected}
+                            onClick={e => { e.stopPropagation(); toggleOne(o.id, row.orderIndex, e.shiftKey) }}
+                            onChange={() => {}} aria-label={`Select ${o._familyName}`} />
+                        )}
+                      </div>
+                      <div className="sb-crm-primary">{pm?.name || (pm ? <span className="sb-crm-muted">—</span> : (row.isFirstOfOrder ? <span className="sb-crm-muted">No permits filed</span> : null))}</div>
+                      <div className="sb-crm-secondary">{pm?.type || <span className="sb-crm-muted">—</span>}</div>
+                      <div className="num">{pm && pm.amount != null ? <span className="sb-ph-log-amt">{fmtUSD(pm.amount)}</span> : <span className="sb-crm-muted">—</span>}</div>
+                      <div className="sb-crm-secondary">{(pm && methodCk(pm)) || <span className="sb-crm-muted">—</span>}</div>
+                      <div className="sb-crm-secondary sb-crm-tabular">{(pm && fmtFiledDate(pm.date_filed)) || <span className="sb-crm-muted">—</span>}</div>
+                      <div>
+                        {row.isFirstOfOrder && (
+                          <button type="button" className="sb-ph-log-order" onClick={() => setSelectedOrderId(o.id)}>
+                            <span className="sb-crm-primary">{o._familyName}</span>
+                            <span className="sb-crm-secondary sb-crm-mono">{o.order_number || 'DRAFT'}</span>
+                          </button>
+                        )}
+                      </div>
+                      <div>
+                        {row.isFirstOfOrder && (
+                          <span className={`sb-ph-pill sb-ph-${o.permit_status || 'unknown'}${blocking ? ' sb-ph-blockmark' : ''}`}>
+                            {permitStatusLabel(o.permit_status)}{blocking ? ' · BLOCKING' : ''}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
               )}
             </div>
             <p className="sb-ph-note">
-              Cards open the Orders list filtered to that permit set (with bulk tools). Rows open the order's permit detail.
-              Active orders only. “Blocking install” = ready-to-set stone whose permit isn’t approved — fix before scheduling a crew.
+              One row per filed permit, grouped by order. Tick orders to bulk-set permit status (one batched update, with undo).
+              Click a family name to open the order's permit detail. Active orders only.
+              “Blocking install” = ready-to-set stone whose permit isn’t approved — fix before scheduling a crew.
             </p>
+
+            {/* Confirm modal — same shell as Orders */}
+            {confirm && (
+              <div className="sb-tw-modal-overlay" onClick={() => !busy && setConfirm(null)}>
+                <div className="sb-tw-modal" onClick={e => e.stopPropagation()}>
+                  <div className="sb-tw-modal-title">{confirm.title}</div>
+                  <div className="sb-tw-modal-body">{confirm.body}</div>
+                  <div className="sb-tw-modal-actions">
+                    <button type="button" className="sb-tw-bbtn sb-tw-bbtn-ghost" onClick={() => setConfirm(null)} disabled={busy}>Cancel</button>
+                    <button type="button" className="sb-tw-bbtn sb-tw-bbtn-primary" onClick={confirm.run} disabled={busy}>{busy ? 'Working…' : 'Confirm'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {toast && (
+              <UndoToast key={toast.id} text={toast.text} error={toast.error} canUndo={toast.canUndo}
+                durationMs={8000} onUndo={toast.onUndo} onClose={() => setToast(null)} />
+            )}
           </>
         )}
       </div>
     </div>
+  )
+}
+
+// ── BulkSelect — a "label" select that fires onPick(value) and resets ─────────
+// Mirrors the Orders Triage Workbench control.
+function BulkSelect({ label, options, onPick, disabled }) {
+  return (
+    <select className="sb-tw-bbtn sb-tw-bselect" disabled={disabled} value=""
+      onChange={e => { const v = e.target.value; e.target.value = ''; if (v) onPick(v) }}>
+      <option value="">{label}…</option>
+      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
   )
 }
 
@@ -359,19 +535,16 @@ const PH_CSS = `
   .sb-ph-card-blocking .sb-ph-card-count { font-size: 34px; color: #B54040; margin: 0; }
   .sb-ph-card-blocking .sb-ph-card-sub { margin-left: auto; color: #8a5a5a; }
 
-  .sb-ph-row { grid-template-columns: 0.7fr 1.0fr 0.9fr 1.0fr 1.1fr 2.4fr 1.0fr 0.7fr 0.7fr 0.7fr 0.6fr; }
-  .sb-ph-rowbtn { text-align: left; background: none; border: none; font: inherit; width: 100%; cursor: pointer; }
-  .sb-ph-rowbtn:hover { background: #faf9f7; }
-  .sb-ph-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  /* Filed-permit lines — one line per permit on an order. Fields are dot-
-     separated; lines stack so multiple permits read as a short ledger. */
-  .sb-ph-permits { display: flex; flex-direction: column; gap: 4px; }
-  .sb-ph-permit-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.3; }
-  .sb-ph-permit-type { font-weight: 600; color: #1e2d3d; }
-  .sb-ph-permit-amt { font-weight: 600; color: #1D9E75; font-variant-numeric: tabular-nums; }
-  .sb-ph-permit-meta { color: #6b6b66; }
-  .sb-ph-permit-line > span + span::before { content: '·'; margin-right: 6px; color: #c4c2bc; }
+  /* Permit-log table — one row per permit, grouped by order.
+     ☐ · Name · Job Type · Amount · Method/CK# · Date Filed · Order · Status */
+  .sb-ph-logrow { grid-template-columns: 0.4fr 1.3fr 1.2fr 0.8fr 1.2fr 1.0fr 1.3fr 1.1fr; align-items: center; }
+  /* Continuation rows (same order, extra permits) — hairline-only top border
+     + faint inset so the permits read as grouped under the order above. */
+  .sb-ph-logrow-cont { border-top-color: #f0eee9; }
+  .sb-ph-logrow-cont > div:nth-child(2) { padding-left: 10px; }
+  .sb-ph-log-amt { font-weight: 600; color: #1D9E75; font-variant-numeric: tabular-nums; }
+  .sb-ph-log-order { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; text-align: left; background: none; border: none; font: inherit; padding: 0; cursor: pointer; }
+  .sb-ph-log-order:hover .sb-crm-primary { color: #9A7209; text-decoration: underline; }
   .sb-ph-pill { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 2px 8px; background: #eee; color: #555; }
   .sb-ph-required  { background: #fbf1da; color: #9A7209; }
   .sb-ph-submitted { background: #e7eefb; color: #1d4ed8; }
