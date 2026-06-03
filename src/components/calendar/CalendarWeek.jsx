@@ -34,6 +34,14 @@ import CalendarBatchCard from './CalendarBatchCard'
 import WeatherStrip from './WeatherStrip'
 
 const BATCH_MIME = 'application/x-sb-batch'
+// Ready-work cards in the merged-Scheduler rail (UnscheduledColumn) drag with
+// this MIME; dropping one on a day zone creates + schedules a 1-stop batch.
+// Parallel to the batch-reschedule drag, disambiguated by MIME in the handlers.
+const READYJOB_MIME = 'application/x-sb-readyjob'
+const _hasReadyJob = (e) => {
+  try { return Array.prototype.includes.call(e.dataTransfer.types || [], READYJOB_MIME) }
+  catch { return false }
+}
 
 export default function CalendarWeek({
   startDate,
@@ -43,6 +51,7 @@ export default function CalendarWeek({
   promisesByJob,
   onBatchClick,
   onScheduleBatch,
+  onScheduleReadyJob,
   onDayClick,
   onReload,
 }) {
@@ -128,10 +137,16 @@ export default function CalendarWeek({
   }
   const handleBatchDragEnd = () => { setDraggingBatch(null); setDragOverKey(null) }
 
-  const handleZoneDragOver = (cell) => (e) => {
-    // A header day-swap drag takes precedence; otherwise accept a batch drag.
+  const handleZoneDragOver = (cell, slot) => (e) => {
+    // A header day-swap drag takes precedence; otherwise accept a batch drag
+    // OR a ready-job drag from the rail (detected by MIME — its drag started
+    // in another component, so draggingBatch is null).
     if (dragSrcISO && dragSrcISO !== cell.iso) { e.preventDefault(); return }
-    if (draggingBatch) { e.preventDefault() }
+    if (draggingBatch) { e.preventDefault(); return }
+    if (_hasReadyJob(e)) {
+      e.preventDefault()
+      setDragOverKey(`${cell.iso}:${slot || 'allday'}`)
+    }
   }
   const handleZoneDragEnter = (cell, slot) => () => {
     if (draggingBatch) setDragOverKey(`${cell.iso}:${slot || 'allday'}`)
@@ -163,6 +178,15 @@ export default function CalendarWeek({
       return
     }
 
+    // Ready-job drop from the rail → create + schedule a 1-stop batch on this
+    // day/slot (handled by SchedulerTab via createBatch). MIME-disambiguated.
+    let readyPayload = null
+    try { readyPayload = JSON.parse(e.dataTransfer.getData(READYJOB_MIME)) } catch { /* not a ready-job drag */ }
+    if (readyPayload?.jobId) {
+      onScheduleReadyJob?.(readyPayload, { date: cell.iso, slot: slot || null })
+      return
+    }
+
     // Batch reschedule.
     let payload = null
     try { payload = JSON.parse(e.dataTransfer.getData(BATCH_MIME)) } catch { /* fall back to state */ }
@@ -190,7 +214,7 @@ export default function CalendarWeek({
     return (
       <div
         className={zcls}
-        onDragOver={handleZoneDragOver(cell)}
+        onDragOver={handleZoneDragOver(cell, slot)}
         onDragEnter={handleZoneDragEnter(cell, slot)}
         onDragLeave={handleZoneDragLeave(cell, slot)}
         onDrop={handleZoneDrop(cell, slot)}

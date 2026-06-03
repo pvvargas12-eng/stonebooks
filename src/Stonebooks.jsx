@@ -24,7 +24,6 @@ import CustomersTab from './CustomersTab'
 import OrdersTab from './OrdersTab'
 import CemeteryOrdersTab from './CemeteryOrdersTab'
 import JobsTab from './JobsTab'
-import CalendarTab from './CalendarTab'
 import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
@@ -204,7 +203,6 @@ const NAV_PRIMARY = [
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
   { key: 'scheduler', label: 'Scheduler' },
-  { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
   { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
@@ -411,7 +409,7 @@ export default function Stonebooks() {
           // The parsed `when` payload is preserved on a global for future
           // consumers that want to honor the date/range.
           window.__sb_pending_time_lens = cmdDetail.when || null
-          setTab('calendar')
+          setTab('scheduler')
           return
         default:
           return
@@ -637,8 +635,7 @@ export default function Stonebooks() {
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} />}
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} />}
-{tab === 'scheduler' && <SchedulerTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onSwitchTab={setTab} />}
-{tab === 'calendar'  && <CalendarTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} />}
+{tab === 'scheduler' && <SchedulerTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}

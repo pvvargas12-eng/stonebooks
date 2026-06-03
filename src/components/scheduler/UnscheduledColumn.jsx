@@ -66,8 +66,31 @@ export default function UnscheduledColumn({
             const checked = selectedIds.has(job.id)
             const pickerOpen = pickerJobId === job.id
             const busy = schedulingJobId === job.id
+            // Drag payload — drop onto a CalendarWeek day zone schedules a
+            // 1-stop batch (the rail→canvas drag the merged Week is built on).
+            const handleDragStart = (e) => {
+              const payload = {
+                type: 'ready-job',
+                jobId: job.id,
+                kind: kindInfo.code,
+                sourceKey: milestone?.milestone_key || null,
+                completionKey: row.completion_milestone_key || null,
+                cemeteryId: job.order?.cemetery?.id || job.cemetery?.id || null,
+                label: surname,
+              }
+              try {
+                e.dataTransfer.setData('application/x-sb-readyjob', JSON.stringify(payload))
+                e.dataTransfer.effectAllowed = 'copy'
+              } catch { /* older browsers — drop falls back gracefully */ }
+            }
             return (
-              <li key={job.id} className="sb-uncol-card">
+              <li
+                key={job.id}
+                className="sb-uncol-card"
+                draggable={!pickerOpen}
+                onDragStart={pickerOpen ? undefined : handleDragStart}
+                title="Drag onto a day to schedule"
+              >
                 <label className="sb-uncol-card-label">
                   <input
                     type="checkbox"
@@ -80,6 +103,7 @@ export default function UnscheduledColumn({
                   />
                   <div className="sb-uncol-card-body">
                     <div className="sb-uncol-card-primary">
+                      <span className="sb-uncol-card-grip" aria-hidden="true">⠿</span>
                       <span className="sb-uncol-card-surname">{surname}</span>
                       {promises.length > 0 && (
                         <PromiseBadge promise={promises[0]} size="sm" />
@@ -185,9 +209,23 @@ const localStyles = `
   }
   .sb-uncol-card {
     border-bottom: 0.5px solid var(--sb-border);
+    cursor: grab;
+  }
+  .sb-uncol-card:active {
+    cursor: grabbing;
   }
   .sb-uncol-card:last-child {
     border-bottom: none;
+  }
+  .sb-uncol-card-grip {
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    line-height: 1;
+    opacity: 0.4;
+    transition: opacity 0.12s;
+  }
+  .sb-uncol-card:hover .sb-uncol-card-grip {
+    opacity: 0.85;
   }
   .sb-uncol-card-label {
     display: flex;

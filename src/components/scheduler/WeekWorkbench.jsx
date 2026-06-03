@@ -13,27 +13,31 @@
 // set rows AND a piggyback rub at the same cemetery → one trip).
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BATCH_KINDS,
-  batchKindInfo,
-  createBatch,
   customerName,
   getSchedulableJobs,
   indexPromisesByJob,
 } from '../../lib/stonebooksData'
 import UnscheduledColumn from './UnscheduledColumn'
 import BatchBuilder from './BatchBuilder'
-import UndoToast from '../calendar/UndoToast'
 
+// The "Ready to schedule" rail of the merged Scheduler Week. Hub-fed stage
+// columns + the red Blocked group + the multi-stop batch builder. Single-job
+// scheduling is LIFTED to the parent (SchedulerTab) so the rail button and the
+// drag-onto-a-day path share one createBatch + one toast — passed in as
+// onScheduleJob / schedulingJobId. The unscheduled batch tray now lives on the
+// CalendarWeek canvas (one tray, not two), so this no longer renders its own.
 export default function WeekWorkbench({
   jobs,
   batches,
   cemeteries,
   promises,
-  trayBatches,
   autoOpenQuickBatch,
   onQuickBatchConsumed,
+  onScheduleJob,
+  schedulingJobId,
   onReload,
 }) {
   // Selection bundle: jobId → { job, milestone, completion_milestone_key }.
@@ -45,14 +49,6 @@ export default function WeekWorkbench({
   // Modal state — when null the modal is closed. When an object, contains
   // the initial seed { jobs, defaultKind }.
   const [builderInit, setBuilderInit] = useState(null)
-  // Single-job scheduling feedback (Part C) — reuses the Calendar UndoToast
-  // shell as a plain (no-undo) status toast.
-  const [toast, setToast] = useState(null)
-  const toastSeq = useRef(0)
-  const [schedulingJobId, setSchedulingJobId] = useState(null)
-  const showToast = useCallback((text, error = false) => {
-    setToast({ id: ++toastSeq.current, text, error })
-  }, [])
 
   const { buckets: schedulableByKind, blocked: blockedInstalls } = useMemo(
     () => getSchedulableJobs(jobs, batches),
@@ -78,44 +74,6 @@ export default function WeekWorkbench({
   const handleClearSelection = useCallback(() => {
     setSelectedByJobId(new Map())
   }, [])
-
-  // Part C — schedule a SINGLE job onto a day/slot without the BatchBuilder.
-  // Creates a 1-stop batch (reusing createBatch), carrying the same milestone
-  // provenance the multi-build path uses so the dispatch cascade still fires.
-  // Field kinds need a destination — use the job's order cemetery, else block
-  // with a clear toast (don't silently fail on createBatch's destination check).
-  const handleScheduleJob = useCallback(async (row, kindCode, { scheduled_date, am_pm }) => {
-    const job = row?.job
-    if (!job) return
-    const kindInfo = batchKindInfo(kindCode)
-    const cemId = job.order?.cemetery?.id || job.cemetery?.id || null
-    if (kindInfo?.requiresDestination && !cemId) {
-      showToast('Link a cemetery to this order before scheduling a trip.', true)
-      return
-    }
-    const surname = job.order?.primary_lastname || customerName(job.order?.customer) || 'job'
-    setSchedulingJobId(job.id)
-    try {
-      const res = await createBatch({
-        kind: kindCode,
-        scheduled_date,
-        am_pm: am_pm || null,
-        destination_cemetery_id: kindInfo?.requiresDestination ? cemId : null,
-        stops: [{
-          job_id: job.id,
-          source_milestone_key: row.milestone?.milestone_key || null,
-          completion_milestone_key: row.completion_milestone_key || null,
-        }],
-      })
-      setSchedulingJobId(null)
-      if (!res?.ok) { showToast(res?.error || 'Could not schedule — try again.', true); return }
-      showToast(`Scheduled ${surname} (${kindInfo?.label || kindCode}) for ${_schedDayLabel(scheduled_date)}${am_pm ? ` ${am_pm.toUpperCase()}` : ''}.`)
-      onReload?.()
-    } catch (e) {
-      setSchedulingJobId(null)
-      showToast(e?.message || 'Could not schedule — try again.', true)
-    }
-  }, [showToast, onReload])
 
   // When opening the builder, infer a default kind from the selection: if
   // every selected job came from the same column, use that column's kind.
@@ -173,11 +131,6 @@ export default function WeekWorkbench({
 
   return (
     <div className="sb-workbench">
-      <TrayStrip
-        batches={trayBatches}
-        onReload={onReload}
-      />
-
       <div className="sb-workbench-action-bar">
         <div className="sb-workbench-action-count">
           {selectedCount === 0
@@ -226,7 +179,7 @@ export default function WeekWorkbench({
             rows={schedulableByKind.get(k.code) || []}
             selectedIds={selectedByJobId}
             onToggle={handleToggle}
-            onScheduleJob={handleScheduleJob}
+            onScheduleJob={onScheduleJob}
             schedulingJobId={schedulingJobId}
             promisesByJob={promisesByJob}
           />
@@ -242,26 +195,8 @@ export default function WeekWorkbench({
         onClose={() => setBuilderInit(null)}
         onCreated={handleCreated}
       />
-
-      {toast && (
-        <UndoToast
-          key={toast.id}
-          text={toast.text}
-          error={!!toast.error}
-          canUndo={false}
-          durationMs={6000}
-          onClose={() => setToast(null)}
-        />
-      )}
     </div>
   )
-}
-
-// Toast date label, e.g. "Thu Jun 5" — ISO parsed at local midnight.
-function _schedDayLabel(iso) {
-  if (!iso) return 'the tray'
-  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`)
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
 // Blocked installs — jobs that have reached ready_to_install but are NOT
@@ -295,76 +230,6 @@ function BlockedInstalls({ rows }) {
                   <span key={r} className="sb-wb-blocked-reason">{r}</span>
                 ))}
               </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-// Top tray — batches with scheduled_date IS NULL. Shown as a thin row of
-// chips. Empty state is just a one-line hint so the workbench reads as
-// quiet on a clean morning.
-//
-// Phase 5: chips older than 14 days get an amber outline so build-only
-// batches don't sit in the tray indefinitely without surfacing. 14d
-// chosen per Production Coordinator review: 7d false-positives every
-// legitimate cure-window wait (3-7d) and approval cycle (3-14d); 14d
-// is past those bands but conservatively short of supplier ETAs (~21d).
-// Tooltip reads the actual age so the operator can decide whether to
-// schedule or discard. Future polish: tag-based per-kind thresholds.
-const TRAY_AGING_DAYS = 14
-
-function TrayStrip({ batches, onReload }) { // eslint-disable-line no-unused-vars
-  // `nowMs` lives in state so React 19's purity rules don't flag a bare
-  // Date.now() call during render. Lazy initializer fires once on mount; an
-  // interval tick keeps chip ages fresh on a long-open tab without forcing
-  // a parent re-render to refresh.
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 60_000)
-    return () => clearInterval(id)
-  }, [])
-
-  const tray = (batches || []).filter(b => !b.scheduled_date && b.status !== 'cancelled')
-  if (tray.length === 0) {
-    return (
-      <div className="sb-workbench-tray sb-workbench-tray-empty">
-        Tray empty — built batches without a date will land here.
-      </div>
-    )
-  }
-  return (
-    <div className="sb-workbench-tray">
-      <span className="sb-workbench-tray-label">In tray</span>
-      <div className="sb-workbench-tray-chips">
-        {tray.map(b => {
-          const kindInfo = batchKindInfo(b.kind)
-          const ageDays = b.created_at
-            ? Math.floor((nowMs - new Date(b.created_at).getTime()) / 86400000)
-            : 0
-          const isStale = ageDays >= TRAY_AGING_DAYS
-          const className = `sb-workbench-tray-chip${isStale ? ' sb-workbench-tray-chip-stale' : ''}`
-          const tooltip = isStale
-            ? `${b.notes || kindInfo.label} — sitting ${ageDays} days, schedule or discard`
-            : (b.notes || kindInfo.label)
-          return (
-            <div
-              key={b.id}
-              className={className}
-              style={{ borderLeftColor: kindInfo.color }}
-              title={tooltip}
-            >
-              <span className="sb-workbench-tray-chip-label">
-                {b.title || kindInfo.label}
-              </span>
-              <span className="sb-workbench-tray-chip-count">
-                {(b.batch_jobs || []).length}
-              </span>
-              {isStale && (
-                <span className="sb-workbench-tray-chip-age" aria-hidden="true">{ageDays}d</span>
-              )}
             </div>
           )
         })}

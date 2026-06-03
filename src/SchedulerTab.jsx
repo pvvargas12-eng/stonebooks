@@ -1,128 +1,272 @@
 // =============================================================================
-// 📚 Stonebooks — Scheduler tab
+// 📚 Stonebooks — Scheduler (merged command center)
 // =============================================================================
-// The surface where work batches get built. Three zooms:
-//   • Month     — operator-overview heat grid, promised days loud.
-//   • 2-Week    — strategic planning across the next 14 days.
-//   • Week      — the workbench (column-based unscheduled selector + tray).
+// ONE surface for building AND executing field/shop work. The old separate
+// "Calendar" tab is folded in here. Four zooms:
+//   • Day     — the dispatch sheet (mark-complete / running-late / reorder),
+//               weather, carryover, cascade warning. (was Calendar → Day)
+//   • Week    — the dispatcher's single screen: a hub-fed "Ready to schedule"
+//               rail on the LEFT (WeekWorkbench) + the week canvas on the RIGHT
+//               (CalendarWeek: Mon–Sat, weather, AM/PM/all-day drop zones, the
+//               one unscheduled tray). Drag a ready card onto a day to schedule.
+//   • 2-Week  — strategic planning strip. (preserved — not orphaned)
+//   • Month   — operator-overview heat grid.
 //
-// Loads jobs + batches + cemeteries + open promises on mount. Each subview
-// reads the same data — Month / 2-Week / Week are different visualizations
-// of the same operational state.
-//
-// Click-into-batch from Month or 2-Week routes to the Calendar tab's Day
-// view (the dispatch surface), not into a Scheduler drill. The Scheduler
-// is for *building*; the Calendar is for *executing*.
+// ONE data load (jobs + batches + cemeteries + promises + carryover) feeds every
+// zoom — no double-fetch, no two trays. Single-job scheduling lives here
+// (scheduleSingleJob → createBatch) so the rail button and the rail→day drag
+// share one path + one toast. Reuses MonthLandscape, TwoWeekView, WeekWorkbench,
+// CalendarWeek, CalendarDay, WeatherStrip, BatchBuilder, the trip optimizer,
+// the promise engine, drag-to-day + undo, and the install-readiness gate —
+// this is a layout recombination, not new scheduling logic.
 // =============================================================================
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   getJobs,
+  getBatch,
   getBatches,
   getAllOpenPromises,
+  getCarryoverForToday,
+  indexPromisesByJob,
+  updateBatch,
+  createBatch,
+  batchKindInfo,
+  customerName,
+  todayLocalISO,
+  fmtDate,
 } from './lib/stonebooksData'
 import { supabase } from './lib/supabase'
 import MonthLandscape from './components/scheduler/MonthLandscape'
 import TwoWeekView from './components/scheduler/TwoWeekView'
 import WeekWorkbench from './components/scheduler/WeekWorkbench'
+import CalendarWeek from './components/calendar/CalendarWeek'
+import CalendarDay from './components/calendar/CalendarDay'
+import WeatherStrip from './components/calendar/WeatherStrip'
+import AddEventModal from './components/AddEventModal'
+import AddPromiseModal from './components/AddPromiseModal'
+import UndoToast from './components/calendar/UndoToast'
 import PromiseBanner from './components/scheduler/PromiseBanner'
 import SearchBar from './components/SearchBar'
-import AddPromiseModal from './components/AddPromiseModal'
 
 const ZOOMS = [
-  { code: 'month',    label: 'Month'   },
-  { code: 'twoweek',  label: '2-Week'  },
-  { code: 'week',     label: 'Week'    },
+  { code: 'day',     label: 'Day'     },
+  { code: 'week',    label: 'Week'    },
+  { code: 'twoweek', label: '2-Week'  },
+  { code: 'month',   label: 'Month'   },
 ]
 
-export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
-  const [zoom, setZoom] = useState('month')
+// eslint-disable-next-line no-unused-vars
+export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, onSwitchTab }) {
+  const [zoom, setZoom] = useState('week')   // Week is the command screen
   const [anchor, setAnchor] = useState(() => new Date())
   const [jobs, setJobs] = useState(null)
   const [batches, setBatches] = useState([])
   const [cemeteries, setCemeteries] = useState([])
   const [promises, setPromises] = useState([])
+  const [carryover, setCarryover] = useState([])
   const [loadErr, setLoadErr] = useState(null)
+  const [addEventOpen, setAddEventOpen] = useState(false)
   const [addPromiseOpen, setAddPromiseOpen] = useState(false)
+  const [cascadeWarning, setCascadeWarning] = useState(null)
+  const [schedulingJobId, setSchedulingJobId] = useState(null)
+  const [quickBatchSeed, setQuickBatchSeed] = useState(false)
 
-  // Parallel load — every subview consumes some slice of (jobs, batches,
-  // cemeteries, promises). One round-trip on mount keeps the surface fast.
+  const actorName = profile?.display_name || 'Operator'
+  const actorUserId = user?.id || null
+
+  // ── Toast (drag-undo + single-job feedback) ───────────────────────────────
+  const TOAST_MS = 8000
+  const [toast, setToast] = useState(null)
+  const toastTimer = useRef(null)
+  const toastSeq = useRef(0)
+  const showToast = useCallback((t) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast({ ...t, id: ++toastSeq.current })
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS)
+  }, [])
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+
+  // ── One data load — every zoom reads slices of this ────────────────────────
+  const loadReqId = useRef(0)
   const loadAll = useCallback(async () => {
+    const reqId = ++loadReqId.current
     setLoadErr(null)
     try {
-      const [jobsData, batchesData, cems, ps] = await Promise.all([
+      const [jobsData, batchesData, cems, ps, co] = await Promise.all([
         getJobs({ includeClosed: false }),
         getBatches({}),
         _listCemeteries(),
-        getAllOpenPromises({}),
+        // includeResolved: the Week day-state engine paints settled promises
+        // as permanent green/missed marks (historical performance record).
+        getAllOpenPromises({ includeResolved: true }),
+        getCarryoverForToday(todayLocalISO()),
       ])
+      if (reqId !== loadReqId.current) return     // superseded by a newer load
       setJobs(jobsData || [])
       setBatches(batchesData || [])
       setCemeteries(cems || [])
       setPromises(ps || [])
+      setCarryover(co || [])
     } catch (e) {
+      if (reqId !== loadReqId.current) return
       setLoadErr(e?.message || 'Failed to load scheduler data')
       setJobs([])
     }
   }, [])
   useEffect(() => { loadAll() }, [loadAll])
 
-  const handleDayClick = useCallback((cell) => {
-    // Drill from Month/2-Week into the workbench Week view for the week
-    // containing the clicked day. The operator continues building from there.
-    setAnchor(cell.date)
-    setZoom('week')
-  }, [])
+  // Card-level 🤡 is OPEN promises only; the Week day-state engine gets the
+  // full list (incl. resolved) for its permanent marks.
+  const promisesByJob = useMemo(
+    () => indexPromisesByJob((promises || []).filter(p => p.kept == null && !p.resolved_at)),
+    [promises],
+  )
 
-  // Phase 5: empty-state CTA on Month → switch to Week + flag that the
-  // workbench should auto-open BatchBuilder on the next render. The flag
-  // is consumed by WeekWorkbench (via onQuickBatchConsumed) so subsequent
-  // re-renders don't keep re-opening the dialog.
-  const [quickBatchSeed, setQuickBatchSeed] = useState(false)
-  const handleQuickBatchFromMonth = useCallback(() => {
-    setAnchor(new Date())     // anchor to today's week — the obvious default
-    setZoom('week')
-    setQuickBatchSeed(true)
-  }, [])
-  const consumeQuickBatchSeed = useCallback(() => setQuickBatchSeed(false), [])
+  // ── Day view rich-batch fetch (joined stops + mileage for the dispatch sheet) ─
+  const [dayBatches, setDayBatches] = useState(null)
+  useEffect(() => {
+    if (zoom !== 'day') { setDayBatches(null); return }
+    let cancelled = false
+    ;(async () => {
+      const iso = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, '0')}-${String(anchor.getDate()).padStart(2, '0')}`
+      const r = await _fetchBatchesWithJoinsForDate(iso)
+      if (!cancelled) setDayBatches(r)
+    })()
+    return () => { cancelled = true }
+  }, [zoom, anchor, batches])
 
-  const handleBatchClick = useCallback(() => {
-    // Built batches route to the Calendar Day view for dispatch.
-    onSwitchTab?.('calendar')
-  }, [onSwitchTab])
-
-  // Anchor controls — month view uses the current month/year; 2-Week and
-  // Week use a Sunday-aligned start date computed from anchor.
+  // ── Anchors ────────────────────────────────────────────────────────────────
+  // Week canvas is Mon–Sat (6 cols) — Monday of the anchor's week.
+  const mondayOf = useMemo(() => {
+    const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+    return d
+  }, [anchor])
+  // 2-Week strip stays Sunday-aligned (its grid expects it).
   const sundayOf = useMemo(() => {
     const d = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())
     d.setDate(d.getDate() - d.getDay())
     return d
   }, [anchor])
-
-  const monthYear = useMemo(() => ({
-    year:  anchor.getFullYear(),
-    month: anchor.getMonth(),
-  }), [anchor])
+  const monthYear = useMemo(() => ({ year: anchor.getFullYear(), month: anchor.getMonth() }), [anchor])
 
   const goPrev = () => {
-    if (zoom === 'month') {
-      setAnchor(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
-    } else if (zoom === 'twoweek') {
-      setAnchor(prev => new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() - 14))
-    } else {
-      setAnchor(prev => new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() - 7))
-    }
+    if (zoom === 'month')        setAnchor(p => new Date(p.getFullYear(), p.getMonth() - 1, 1))
+    else if (zoom === 'twoweek') setAnchor(p => new Date(p.getFullYear(), p.getMonth(), p.getDate() - 14))
+    else if (zoom === 'day')     setAnchor(p => new Date(p.getFullYear(), p.getMonth(), p.getDate() - 1))
+    else                         setAnchor(p => new Date(p.getFullYear(), p.getMonth(), p.getDate() - 7))
   }
   const goNext = () => {
-    if (zoom === 'month') {
-      setAnchor(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
-    } else if (zoom === 'twoweek') {
-      setAnchor(prev => new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + 14))
-    } else {
-      setAnchor(prev => new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + 7))
-    }
+    if (zoom === 'month')        setAnchor(p => new Date(p.getFullYear(), p.getMonth() + 1, 1))
+    else if (zoom === 'twoweek') setAnchor(p => new Date(p.getFullYear(), p.getMonth(), p.getDate() + 14))
+    else if (zoom === 'day')     setAnchor(p => new Date(p.getFullYear(), p.getMonth(), p.getDate() + 1))
+    else                         setAnchor(p => new Date(p.getFullYear(), p.getMonth(), p.getDate() + 7))
   }
   const goToday = () => setAnchor(new Date())
+
+  // Month / 2-Week day click → drill into the Week command screen.
+  const handleDayToWeek = useCallback((cell) => { setAnchor(cell.date); setZoom('week') }, [])
+  // Batch / missed-day click → drill into the Day dispatch sheet.
+  const handleBatchClick = useCallback((batch) => {
+    if (batch?.scheduled_date) {
+      setAnchor(new Date(`${String(batch.scheduled_date).slice(0, 10)}T00:00:00`))
+      setZoom('day')
+    }
+  }, [])
+  const handleDayDrill = useCallback((iso) => {
+    if (!iso) return
+    setAnchor(new Date(`${String(iso).slice(0, 10)}T00:00:00`))
+    setZoom('day')
+  }, [])
+  const handleQuickBatchFromMonth = useCallback(() => {
+    setAnchor(new Date())
+    setZoom('week')
+    setQuickBatchSeed(true)
+  }, [])
+  const consumeQuickBatchSeed = useCallback(() => setQuickBatchSeed(false), [])
+
+  // ── Single-job scheduling (rail button + rail→day drag share this) ─────────
+  const scheduleSingleJob = useCallback(async ({ jobId, kind, sourceKey, completionKey, cemeteryId, label }, { date, slot }) => {
+    if (!jobId) return
+    const kindInfo = batchKindInfo(kind)
+    if (kindInfo?.requiresDestination && !cemeteryId) {
+      showToast({ text: 'Link a cemetery to this order before scheduling a trip.', error: true })
+      return
+    }
+    setSchedulingJobId(jobId)
+    try {
+      const res = await createBatch({
+        kind,
+        scheduled_date: date,
+        am_pm: slot || null,
+        destination_cemetery_id: kindInfo?.requiresDestination ? cemeteryId : null,
+        stops: [{ job_id: jobId, source_milestone_key: sourceKey || null, completion_milestone_key: completionKey || null }],
+      })
+      setSchedulingJobId(null)
+      if (!res?.ok) { showToast({ text: res?.error || 'Could not schedule — try again.', error: true }); return }
+      showToast({ text: `Scheduled ${label || 'job'} (${kindInfo?.label || kind}) for ${_dayLabel(date)}${slot ? ` ${slot.toUpperCase()}` : ''}.` })
+      loadAll()
+    } catch (e) {
+      setSchedulingJobId(null)
+      showToast({ text: e?.message || 'Could not schedule — try again.', error: true })
+    }
+  }, [showToast, loadAll])
+
+  // Rail "Schedule →" button (row carries job + milestone provenance).
+  const handleScheduleJob = useCallback((row, kindCode, { scheduled_date, am_pm }) => {
+    const job = row?.job
+    if (!job) return
+    scheduleSingleJob({
+      jobId: job.id,
+      kind: kindCode,
+      sourceKey: row.milestone?.milestone_key,
+      completionKey: row.completion_milestone_key,
+      cemeteryId: job.order?.cemetery?.id || job.cemetery?.id || null,
+      label: job.order?.primary_lastname || customerName(job.order?.customer) || 'job',
+    }, { date: scheduled_date, slot: am_pm })
+  }, [scheduleSingleJob])
+
+  // Rail card dragged onto a CalendarWeek day zone (payload serialized at drag).
+  const handleScheduleReadyJob = useCallback((payload, { date, slot }) => {
+    scheduleSingleJob({
+      jobId: payload?.jobId,
+      kind: payload?.kind,
+      sourceKey: payload?.sourceKey,
+      completionKey: payload?.completionKey,
+      cemeteryId: payload?.cemeteryId,
+      label: payload?.label,
+    }, { date, slot })
+  }, [scheduleSingleJob])
+
+  // ── Existing-batch drag reschedule + undo (preserved from Calendar) ────────
+  const handleScheduleBatch = useCallback(async ({ batchId, toDate, toSlot, fromDate, fromSlot, label }) => {
+    try {
+      const res = await updateBatch(batchId, { scheduled_date: toDate, am_pm: toSlot })
+      if (!res.ok) { showToast({ text: "Couldn't save — try again", error: true }); return }
+      showToast({
+        text: `Scheduled ${label} for ${_dayLabel(toDate)} ${_slotLabel(toSlot)}.`,
+        undo: { batchId, scheduled_date: fromDate, am_pm: fromSlot },
+      })
+      loadAll()
+    } catch {
+      showToast({ text: "Couldn't save — try again", error: true })
+    }
+  }, [showToast, loadAll])
+
+  const handleUndo = useCallback(async () => {
+    const u = toast?.undo
+    if (!u) return
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast(null)
+    try {
+      const res = await updateBatch(u.batchId, { scheduled_date: u.scheduled_date, am_pm: u.am_pm })
+      if (!res.ok) { showToast({ text: "Couldn't save — try again", error: true }); return }
+      loadAll()
+    } catch {
+      showToast({ text: "Couldn't save — try again", error: true })
+    }
+  }, [toast, showToast, loadAll])
 
   return (
     <div className="sb-page sb-page-wide sb-scheduler">
@@ -159,21 +303,51 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
             </button>
           ))}
         </div>
-        <div className="sb-scheduler-nav">
-          <button type="button" className="sb-scheduler-nav-btn" onClick={goPrev}>‹</button>
-          <button type="button" className="sb-scheduler-nav-btn" onClick={goToday}>Today</button>
-          <button type="button" className="sb-scheduler-nav-btn" onClick={goNext}>›</button>
+        <div className="sb-scheduler-anchor">
+          {zoom === 'day'
+            ? anchor.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+            : zoom === 'month'
+              ? anchor.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+              : `Week of ${fmtDate(zoom === 'twoweek' ? sundayOf : mondayOf)}`}
+        </div>
+        <div className="sb-scheduler-controls-right">
+          <div className="sb-scheduler-nav">
+            <button type="button" className="sb-scheduler-nav-btn" onClick={goPrev}>‹</button>
+            <button type="button" className="sb-scheduler-nav-btn" onClick={goToday}>Today</button>
+            <button type="button" className="sb-scheduler-nav-btn" onClick={goNext}>›</button>
+          </div>
+          <button
+            type="button"
+            className="sb-scheduler-add-event"
+            onClick={() => setAddEventOpen(true)}
+          >
+            + Add event
+          </button>
         </div>
       </div>
 
       {loadErr && (
-        <div className="sb-empty" style={{ color: 'var(--sb-red, #b54040)' }}>
-          {loadErr}
+        <div className="sb-empty" style={{ color: 'var(--sb-red, #b54040)' }}>{loadErr}</div>
+      )}
+
+      {/* Cascade-warning banner — lives here so it survives the Day reload-
+          unmount cycle (lifted from the dispatch subtree). */}
+      {cascadeWarning && (
+        <div className="sb-scheduler-cascade-warning" role="status">
+          <span className="sb-scheduler-cascade-warning-label">Needs review</span>
+          <span className="sb-scheduler-cascade-warning-msg">{cascadeWarning}</span>
+          <button
+            type="button"
+            className="sb-scheduler-cascade-warning-dismiss"
+            onClick={() => setCascadeWarning(null)}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
         </div>
       )}
-      {jobs === null && !loadErr && (
-        <div className="sb-empty">Loading…</div>
-      )}
+
+      {jobs === null && !loadErr && <div className="sb-empty">Loading…</div>}
 
       {jobs !== null && !loadErr && zoom === 'month' && (
         <MonthLandscape
@@ -181,60 +355,138 @@ export default function SchedulerTab({ onOpenJob, onSwitchTab }) {
           month={monthYear.month}
           batches={batches}
           promises={promises}
-          onDayClick={handleDayClick}
+          onDayClick={handleDayToWeek}
           onQuickBatch={handleQuickBatchFromMonth}
         />
       )}
+
       {jobs !== null && !loadErr && zoom === 'twoweek' && (
         <TwoWeekView
           startDate={sundayOf}
           batches={batches}
           promises={promises}
-          onDayClick={handleDayClick}
+          onDayClick={handleDayToWeek}
           onBatchClick={handleBatchClick}
         />
       )}
+
       {jobs !== null && !loadErr && zoom === 'week' && (
-        <WeekWorkbench
-          jobs={jobs}
-          batches={batches}
-          cemeteries={cemeteries}
-          promises={promises}
-          trayBatches={batches.filter(b => !b.scheduled_date)}
-          autoOpenQuickBatch={quickBatchSeed}
-          onQuickBatchConsumed={consumeQuickBatchSeed}
-          onReload={loadAll}
-        />
+        <div className="sb-sw-split">
+          <aside className="sb-sw-rail">
+            <div className="sb-sw-rail-head">Ready to schedule</div>
+            <WeekWorkbench
+              jobs={jobs}
+              batches={batches}
+              cemeteries={cemeteries}
+              promises={promises}
+              autoOpenQuickBatch={quickBatchSeed}
+              onQuickBatchConsumed={consumeQuickBatchSeed}
+              onScheduleJob={handleScheduleJob}
+              schedulingJobId={schedulingJobId}
+              onReload={loadAll}
+            />
+          </aside>
+          <section className="sb-sw-canvas">
+            <CalendarWeek
+              startDate={mondayOf}
+              spanDays={6}
+              batches={batches}
+              promises={promises}
+              promisesByJob={promisesByJob}
+              onBatchClick={handleBatchClick}
+              onScheduleBatch={handleScheduleBatch}
+              onScheduleReadyJob={handleScheduleReadyJob}
+              onDayClick={handleDayDrill}
+              onReload={loadAll}
+            />
+          </section>
+        </div>
       )}
+
+      {jobs !== null && !loadErr && zoom === 'day' && (
+        <>
+          <WeatherStrip date={anchor} variant="day" />
+          <CalendarDay
+            date={anchor}
+            batches={dayBatches || batches}
+            carryover={carryover}
+            promisesByJob={promisesByJob}
+            actorName={actorName}
+            actorUserId={actorUserId}
+            onCascadeWarning={setCascadeWarning}
+            onReload={loadAll}
+          />
+        </>
+      )}
+
+      <AddEventModal
+        open={addEventOpen}
+        cemeteries={cemeteries}
+        defaultDate={(() => {
+          const d = anchor
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        })()}
+        onClose={() => setAddEventOpen(false)}
+        onCreated={() => { setAddEventOpen(false); loadAll() }}
+      />
 
       <AddPromiseModal
         open={addPromiseOpen}
         onClose={() => setAddPromiseOpen(false)}
         onSaved={() => { setAddPromiseOpen(false); loadAll() }}
       />
+
+      {toast && (
+        <UndoToast
+          key={toast.id}
+          text={toast.text}
+          error={!!toast.error}
+          canUndo={!!toast.undo}
+          durationMs={TOAST_MS}
+          onUndo={handleUndo}
+          onClose={() => setToast(null)}
+        />
+      )}
     </div>
   )
 }
 
-// Cemetery list helper — lightweight selection used by the BatchBuilder.
-// Filtered to non-archived cemeteries; ordered by name so the dropdown is
-// scannable.
+// Cemetery list for the BatchBuilder optimizer + AddEvent picker.
 async function _listCemeteries() {
   const { data, error } = await supabase
     .from('cemeteries')
     .select('id, name, address, geocoded_lat, geocoded_lng, geocoded_at')
     .order('name', { ascending: true })
-  if (error) {
-    console.warn('[scheduler] _listCemeteries failed:', error.message)
-    return []
-  }
+  if (error) { console.warn('[scheduler] _listCemeteries failed:', error.message); return [] }
   return data || []
 }
 
+// Day-view rich fetch — getBatches gives the date-scoped list with shallow
+// batch_jobs; getBatch joins each stop's job + milestones + order + cemetery
+// for the dispatch spec line. Typical N < 10 batches/day.
+async function _fetchBatchesWithJoinsForDate(iso) {
+  const list = await getBatches({ from: iso, to: iso })
+  if (!list || list.length === 0) return []
+  const out = []
+  for (const b of list) {
+    const detail = await getBatch(b.id)
+    if (detail) out.push(detail)
+  }
+  return out
+}
+
+function _dayLabel(iso) {
+  if (!iso) return 'the tray'
+  const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`)
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+}
+function _slotLabel(slot) {
+  if (slot === 'am') return '(AM)'
+  if (slot === 'pm') return '(PM)'
+  return '(all-day)'
+}
+
 const localStyles = `
-  /* Search row — sits below the page head, hosts global search + the
-     loud "Add promise" button. The button is the discoverable entry
-     point for the most-important operational verb on this page. */
   .sb-scheduler-search-row {
     display: flex;
     align-items: center;
@@ -258,20 +510,15 @@ const localStyles = `
     white-space: nowrap;
     margin-left: auto;
   }
-  .sb-scheduler-add-promise:hover {
-    filter: brightness(0.95);
-  }
-  .sb-scheduler-add-promise:focus-visible {
-    outline: 0.5px solid var(--sb-accent);
-    outline-offset: 2px;
-  }
+  .sb-scheduler-add-promise:hover { filter: brightness(0.95); }
 
   .sb-scheduler-controls {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    margin-bottom: 24px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
   }
   .sb-scheduler-zoom {
     display: inline-flex;
@@ -291,19 +538,26 @@ const localStyles = `
     cursor: pointer;
     transition: background 0.12s, color 0.12s;
   }
-  .sb-scheduler-zoom-chip:hover {
-    color: var(--sb-text);
-  }
+  .sb-scheduler-zoom-chip:hover { color: var(--sb-text); }
   .sb-scheduler-zoom-chip-active {
     background: var(--sb-surface);
     color: var(--sb-text);
     font-weight: 500;
     box-shadow: 0 1px 2px rgba(15, 20, 25, 0.06);
   }
-  .sb-scheduler-nav {
-    display: inline-flex;
-    gap: 4px;
+  .sb-scheduler-anchor {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--sb-text);
+    letter-spacing: -0.005em;
+    font-family: var(--font-d, 'Playfair Display'), Georgia, serif;
   }
+  .sb-scheduler-controls-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .sb-scheduler-nav { display: inline-flex; gap: 4px; }
   .sb-scheduler-nav-btn {
     background: transparent;
     border: 0.5px solid var(--sb-border);
@@ -315,9 +569,92 @@ const localStyles = `
     cursor: pointer;
     font-variant-numeric: tabular-nums;
   }
-  .sb-scheduler-nav-btn:hover {
+  .sb-scheduler-nav-btn:hover { color: var(--sb-text); background: var(--sb-surface-muted); }
+  .sb-scheduler-add-event {
+    background: var(--sb-accent, #b8842a);
+    border: 0.5px solid transparent;
+    color: white;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 14px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-scheduler-add-event:hover { filter: brightness(0.95); }
+
+  /* Cascade-warning banner (lifted from the Day subtree). */
+  .sb-scheduler-cascade-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: #6b4a1c;
+    background: #fbe5b8;
+    border: 0.5px solid #b8842a;
+    font-size: 13px;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    border-radius: var(--sb-r-sm, 6px);
+    line-height: 1.4;
+  }
+  .sb-scheduler-cascade-warning-label {
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #b8842a;
+    white-space: nowrap;
+    padding-top: 1px;
+  }
+  .sb-scheduler-cascade-warning-msg { flex: 1; }
+  .sb-scheduler-cascade-warning-dismiss {
+    background: transparent;
+    border: 0.5px solid #b8842a;
+    color: #b8842a;
+    font: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sb-scheduler-cascade-warning-dismiss:hover { background: rgba(184, 132, 42, 0.12); }
+
+  /* ── Merged Week: rail + canvas ─────────────────────────────────────────── */
+  .sb-sw-split {
+    display: grid;
+    grid-template-columns: minmax(300px, 360px) 1fr;
+    gap: 18px;
+    align-items: start;
+  }
+  .sb-sw-rail {
+    position: sticky;
+    top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+  .sb-sw-rail-head {
+    font-family: var(--font-d, 'Playfair Display'), Georgia, serif;
+    font-size: 16px;
+    font-weight: 600;
     color: var(--sb-text);
-    background: var(--sb-surface-muted);
+    letter-spacing: -0.01em;
+  }
+  /* In the narrow rail the auto-fit workbench column grid collapses to a single
+     stacked column — i.e. the ready-work reads as stage groups top to bottom. */
+  .sb-sw-rail .sb-workbench-columns {
+    grid-template-columns: 1fr;
+  }
+  .sb-sw-canvas { min-width: 0; }
+
+  @media (max-width: 1024px) {
+    .sb-sw-split { grid-template-columns: 1fr; }
+    .sb-sw-rail { position: static; max-height: none; }
   }
 `
 
