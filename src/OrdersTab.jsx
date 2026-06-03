@@ -758,6 +758,43 @@ function BulkSelect({ label, options, onPick, disabled }) {
 // Payment is a derived read-only chip (money truth). Design / Stone / FDN are
 // inline dropdowns that flip milestones (one source of truth). Total =
 // editable contract_total. Contract = signed_at, Due = target_completion_date.
+// Inline date field that DOES NOT persist on each keystroke. A native date
+// input fires onChange per segment (so typing a year emits 0002 → 0020 → …);
+// we hold the typed value in local state and only commit on blur / Enter, and
+// only when the date is complete with a plausible 4-digit year. While the field
+// is focused the prop never resets the value (no mid-type re-render / refocus).
+function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
+  const [local, setLocal] = useState(value || '')
+  const focusedRef = useRef(false)
+  // Resync from the saved value only when NOT actively editing.
+  useEffect(() => { if (!focusedRef.current) setLocal(value || '') }, [value])
+
+  const commit = () => {
+    focusedRef.current = false
+    const v = local
+    if (v === '') { if (value) onCommit(''); return }   // cleared
+    // Native date value is 'YYYY-MM-DD'. Require a complete, plausible date —
+    // a partial year (e.g. 0002) reverts instead of saving.
+    const [y, m, d] = v.split('-').map(Number)
+    if (!y || !m || !d || y < 1900 || y > 2200) { setLocal(value || ''); return }
+    if (v !== (value || '')) onCommit(v)
+  }
+
+  return (
+    <input
+      type="date"
+      className="sb-ord-date-input"
+      value={local}
+      disabled={disabled}
+      onFocus={() => { focusedRef.current = true }}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      aria-label={ariaLabel}
+    />
+  )
+}
+
 function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
   const hasJob = !!o._job
 
@@ -832,16 +869,16 @@ function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInl
       {/* Cemetery */}
       <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>
 
-      {/* Contract date (signed_at, inline) */}
+      {/* Contract date (signed_at) — commits on blur/Enter only, never per keystroke */}
       <div onClick={e => e.stopPropagation()}>
-        <input type="date" className="sb-ord-date-input" value={toDateInput(o.signed_at)} disabled={busy}
-          onChange={e => onInlineDate(o, 'signed_at', e.target.value)} aria-label="Contract date" />
+        <InlineDateField value={toDateInput(o.signed_at)} disabled={busy}
+          onCommit={v => onInlineDate(o, 'signed_at', v)} ariaLabel="Contract date" />
       </div>
 
-      {/* Due date (target_completion_date, inline) */}
+      {/* Due date (target_completion_date) — commits on blur/Enter only */}
       <div onClick={e => e.stopPropagation()}>
-        <input type="date" className="sb-ord-date-input" value={toDateInput(o.target_completion_date)} disabled={busy}
-          onChange={e => onInlineDate(o, 'target', e.target.value)} aria-label="Due date" />
+        <InlineDateField value={toDateInput(o.target_completion_date)} disabled={busy}
+          onCommit={v => onInlineDate(o, 'target', v)} ariaLabel="Due date" />
       </div>
     </div>
   )
