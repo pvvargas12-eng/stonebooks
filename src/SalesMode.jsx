@@ -1577,6 +1577,8 @@ async function searchCemeteries(query) {
 }
 
 // Upsert a customer; returns the row including id
+// Returns { data, error } — callers MUST check error and never proceed with a
+// null id (that silently drops the customer link on the order; see saveOrder).
 async function upsertCustomer(customer) {
   if (customer.id) {
     const { data, error } = await supabase
@@ -1585,19 +1587,19 @@ async function upsertCustomer(customer) {
       .eq('id', customer.id)
       .select()
       .single()
-    if (error) { console.error('updateCustomer error:', error); return null }
-    return data
+    if (error) console.error('updateCustomer error:', error)
+    return { data, error }
   }
   const { data, error } = await supabase
     .from('customers')
     .insert(customerToRow(customer))
     .select()
     .single()
-  if (error) { console.error('insertCustomer error:', error); return null }
-  return data
+  if (error) console.error('insertCustomer error:', error)
+  return { data, error }
 }
 
-// Upsert a cemetery; returns the row including id
+// Upsert a cemetery; returns { data, error }.
 async function upsertCemetery(cem) {
   if (cem.id) {
     const { data, error } = await supabase
@@ -1606,16 +1608,16 @@ async function upsertCemetery(cem) {
       .eq('id', cem.id)
       .select()
       .single()
-    if (error) { console.error('updateCemetery error:', error); return null }
-    return data
+    if (error) console.error('updateCemetery error:', error)
+    return { data, error }
   }
   const { data, error } = await supabase
     .from('cemeteries')
     .insert(cemeteryToRow(cem))
     .select()
     .single()
-  if (error) { console.error('insertCemetery error:', error); return null }
-  return data
+  if (error) console.error('insertCemetery error:', error)
+  return { data, error }
 }
 
 // Save the order (creates if no id, updates if has id). Saves customer
@@ -1630,18 +1632,28 @@ export async function saveOrder(order) {
     order.deceased.some(d => d.firstName || d.lastName)
   if (!hasSubstance) return { ok: false, reason: 'empty' }
 
-  // Step 1: customer (only save if has any data)
-  let customerId = order.customer.id
+  // Step 1: customer (only save if has any data). FAIL LOUD — if the write
+  // fails we ABORT the whole save rather than proceed with a null customer_id,
+  // which would silently drop the customer (and, on edit, wipe an existing
+  // link). This was the E-26-0235 (Wermuth) data-loss root cause.
+  let customerId = order.customer.id || null
   if (order.customer.firstName || order.customer.lastName || order.customer.phonePrimary) {
-    const saved = await upsertCustomer(order.customer)
-    customerId = saved?.id || null
+    const { data: saved, error } = await upsertCustomer(order.customer)
+    if (error || !saved?.id) {
+      return { ok: false, error: { message: `Customer could not be saved (${error?.message || 'unknown error'}). Order NOT saved — fix the customer and retry so nothing is dropped.` } }
+    }
+    customerId = saved.id
   }
 
-  // Step 2: cemetery (only save if has a name)
-  let cemeteryId = order.cemetery.id
+  // Step 2: cemetery (only save if has a name). Same fail-loud guard — never
+  // null an existing cemetery link on a failed write.
+  let cemeteryId = order.cemetery.id || null
   if (order.cemetery.name) {
-    const saved = await upsertCemetery(order.cemetery)
-    cemeteryId = saved?.id || null
+    const { data: saved, error } = await upsertCemetery(order.cemetery)
+    if (error || !saved?.id) {
+      return { ok: false, error: { message: `Cemetery could not be saved (${error?.message || 'unknown error'}). Order NOT saved — fix the cemetery and retry.` } }
+    }
+    cemeteryId = saved.id
   }
 
   // Step 3: order

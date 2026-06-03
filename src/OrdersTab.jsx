@@ -26,7 +26,7 @@ import {
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   paymentStatusLabel, designStatusLabel, stoneStatusLabel, fdnStatusLabel,
-  setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus,
+  setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
@@ -472,26 +472,53 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   }
 
   // ── Inline status dropdowns (flip milestones — one source of truth) ────────
+  // OPTIMISTIC local patches — a single inline edit updates state in place
+  // instead of a full refetch (reload() flips loading=true → the table unmounts
+  // and flashes blank mid-edit). enriched recomputes from orders + allJobs.
+  const patchOrderLocal = useCallback((orderId, fields) => {
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, ...fields } : o))
+  }, [])
+  const patchJobMilestonesLocal = useCallback((orderId, plan) => {
+    if (!plan) return
+    const statusByKey = {}
+    for (const k of (plan.done || []))       statusByKey[k] = 'done'
+    for (const k of (plan.notStarted || [])) statusByKey[k] = 'not_started'
+    for (const k of (plan.notNeeded || []))  statusByKey[k] = 'not_needed'
+    const today = new Date().toISOString().slice(0, 10)
+    setAllJobs(prev => prev.map(j => {
+      if (j.order_id !== orderId) return j
+      const milestones = (j.milestones || []).map(m =>
+        statusByKey[m.milestone_key]
+          ? { ...m, status: statusByKey[m.milestone_key], status_date: statusByKey[m.milestone_key] === 'done' ? today : null }
+          : m)
+      return { ...j, milestones }
+    }))
+  }, [])
+
   // Payment is a manual override on orders.payment_status (imported orders have
   // no reliable total). Needs the one-line migration; errors gracefully if not.
   const inlinePayment = async (o, code) => {
     setBusy(true); const r = await bulkUpdateOrders([o.id], { payment_status: code }); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: payment → ${paymentStatusLabel(code)}` : (r.error || 'Failed (run the payment_status migration?)'), { error: !r.ok }); reload()
+    if (r.ok) patchOrderLocal(o.id, { payment_status: code })
+    showToast(r.ok ? `${o._familyName}: payment → ${paymentStatusLabel(code)}` : (r.error || 'Failed (run the payment_status migration?)'), { error: !r.ok })
   }
   const inlineDesign = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
     setBusy(true); const r = await setOrderDesignStatus(o._job.id, code); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: design → ${designStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+    if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code))
+    showToast(r.ok ? `${o._familyName}: design → ${designStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
   }
   const inlineStone = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
     setBusy(true); const r = await setOrderStoneStatus(o._job.id, code); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: stone → ${stoneStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+    if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code))
+    showToast(r.ok ? `${o._familyName}: stone → ${stoneStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
   }
   const inlineFdn = async (o, code) => {
     if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
     setBusy(true); const r = await setOrderFdnStatus(o._job.id, code); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: FDN → ${fdnStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+    if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code))
+    showToast(r.ok ? `${o._familyName}: FDN → ${fdnStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
   }
   // Inline date edits — contract = signed_at, due = target_completion_date.
   // Changing the contract date auto-fills an empty due date for new_stone (+5mo).
@@ -507,14 +534,16 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
       patch.target_completion_date = value || null
     }
     setBusy(true); const r = await bulkUpdateOrders([o.id], patch); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: ${field === 'signed_at' ? 'contract' : 'due'} date saved` : (r.error || 'Failed'), { error: !r.ok }); reload()
+    if (r.ok) patchOrderLocal(o.id, patch)
+    showToast(r.ok ? `${o._familyName}: ${field === 'signed_at' ? 'contract' : 'due'} date saved` : (r.error || 'Failed'), { error: !r.ok })
   }
   const inlineTotal = async (o, raw) => {
     const trimmed = String(raw ?? '').trim()
     const val = trimmed === '' ? null : Number(trimmed)
     if (val != null && !Number.isFinite(val)) { showToast('Enter a number.', { error: true }); return }
     setBusy(true); const r = await bulkUpdateOrders([o.id], { contract_total: val }); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: total ${val == null ? 'cleared' : fmtUSD(val)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+    if (r.ok) patchOrderLocal(o.id, { contract_total: val })
+    showToast(r.ok ? `${o._familyName}: total ${val == null ? 'cleared' : fmtUSD(val)}` : (r.error || 'Failed'), { error: !r.ok })
   }
 
   // ── CSV export (selected, or whole filtered set if none selected) ─────────

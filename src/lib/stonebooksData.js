@@ -595,6 +595,15 @@ export function setOrderDesignStatus(jobId, code) { return _applyMilestonePlan(j
 export function setOrderStoneStatus(jobId, code)  { return _applyMilestonePlan(jobId, _stonePlan(code)) }
 export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(jobId, _fdnPlan(code)) }
 
+// The write plan for a dimension+code — lets a caller mirror the milestone flip
+// in LOCAL state (optimistic update) instead of refetching after an inline edit.
+export function orderStatusWritePlan(dimension, code) {
+  if (dimension === 'design') return _designPlan(code)
+  if (dimension === 'stone')  return _stonePlan(code)
+  if (dimension === 'fdn')    return _fdnPlan(code)
+  return null
+}
+
 // ── THE SET GATE — one function, used by Orders chip + Jobs hubs + Scheduler ──
 // SET-READY = Paid in full ∧ Blasted ∧ (FDN In or N/A) ∧ permit-ok-where-required.
 // Returns the first failing reason, or null when ready.
