@@ -1,5 +1,5 @@
 // =============================================================================
-// 📚 Stonebooks — Sales View
+// Stonebooks — Sales View
 // =============================================================================
 // Sales role's hybrid summary surface. The work shape genuinely differs from
 // the other departments — sales lives in the Orders tab pre-contract — so

@@ -34,7 +34,7 @@ const SERVICE_TYPES = [
     code: 'NEW_STONE',
     label: 'New Stone',
     blurb: 'A new monument. Full design from shape and granite to inscription.',
-    icon: '🪨',
+    icon: '',
     needsStoneConfig: true,
     needsExistingStone: false,
   },
@@ -42,7 +42,7 @@ const SERVICE_TYPES = [
     code: 'BRONZE',
     label: 'Bronze',
     blurb: 'Bronze plaque. Often paired with a granite base or installed flush.',
-    icon: '🟫',
+    icon: '',
     needsStoneConfig: true,
     needsExistingStone: false,
   },
@@ -50,7 +50,7 @@ const SERVICE_TYPES = [
     code: 'INSCRIPTION',
     label: 'Inscription',
     blurb: 'Add an inscription to an existing stone — full, date, or year-only. Type confirmed later.',
-    icon: '✒️',
+    icon: '',
     needsStoneConfig: false,
     needsExistingStone: true,
   },
@@ -58,7 +58,7 @@ const SERVICE_TYPES = [
     code: 'ACID_WASH',
     label: 'Acid Wash',
     blurb: 'Clean and restore an existing stone. Stone type informs labor.',
-    icon: '🧴',
+    icon: '',
     needsStoneConfig: false,
     needsExistingStone: true,
   },
@@ -66,7 +66,7 @@ const SERVICE_TYPES = [
     code: 'REPAIR',
     label: 'Repair',
     blurb: 'Repair an existing stone. Custom-priced based on assessment.',
-    icon: '🔧',
+    icon: '',
     needsStoneConfig: false,
     needsExistingStone: true,
   },
@@ -74,7 +74,7 @@ const SERVICE_TYPES = [
     code: 'ADD_PHOTO',
     label: 'Add Photo',
     blurb: 'Add a porcelain or stainless photo to an existing stone.',
-    icon: '🖼',
+    icon: '',
     needsStoneConfig: false,
     needsExistingStone: true,
   },
@@ -82,7 +82,7 @@ const SERVICE_TYPES = [
     code: 'CIVIC_MEMORIAL',
     label: 'Civic Memorial',
     blurb: 'Municipality, veterans, or religious monument. Subtype confirmed later.',
-    icon: '🏛',
+    icon: '',
     needsStoneConfig: true,
     needsExistingStone: false,
   },
@@ -90,7 +90,7 @@ const SERVICE_TYPES = [
     code: 'MAUSOLEUM',
     label: 'Mausoleum',
     blurb: 'Mausoleum or large family memorial structure.',
-    icon: '⛪',
+    icon: '',
     needsStoneConfig: true,
     needsExistingStone: false,
   },
@@ -98,7 +98,7 @@ const SERVICE_TYPES = [
     code: 'MAUSOLEUM_DOOR',
     label: 'Mausoleum Door',
     blurb: 'Door or panel for a mausoleum — fabricate a new one or re-letter an existing door. Custom-quoted.',
-    icon: '🚪',
+    icon: '',
     needsStoneConfig: false,
     needsExistingStone: true,
   },
@@ -106,7 +106,7 @@ const SERVICE_TYPES = [
     code: 'OTHER',
     label: 'Other',
     blurb: 'Anything else — describe the job below.',
-    icon: '✦',
+    icon: '',
     needsStoneConfig: false,
     needsExistingStone: false,
     requiresDescription: true,
@@ -294,7 +294,7 @@ const SHAPES = [
     code: 'grass',
     label: 'Grass Marker',
     blurb: 'Flush marker installed at grass level.',
-    icon: '▬',
+    icon: '',
     standardSizes: [
       { code: '16x8x4',     w: 16, d: 8,  t: 4, label: '16″ × 8″ × 4″',         price: 799 },
       { code: '20x10x4',    w: 20, d: 10, t: 4, label: '20″ × 10″ × 4″',        price: 899 },
@@ -307,7 +307,7 @@ const SHAPES = [
     code: 'hickey',
     label: 'Hickey',
     blurb: 'Flat with beveled edge above grass level.',
-    icon: '▭',
+    icon: '',
     standardSizes: [
       { code: 'hickey-2-0x1-0x0-6',  w: 24, d: 12, t: 6,  label: '2-0 × 1-0 × 0-6 w/2″ bevel',  price: 1395 },
       { code: 'hickey-2-0x1-0x0-8',  w: 24, d: 12, t: 8,  label: '2-0 × 1-0 × 0-8 w/2″ bevel',  price: 1695 },
@@ -319,7 +319,7 @@ const SHAPES = [
     code: 'slant',
     label: 'Slant',
     blurb: 'Single slant marker.',
-    icon: '🪨',
+    icon: '',
     standardSizes: [
       { code: 'slant-2-0',  w: 24, d: 12, t: 18, label: '2-0 × 1-0 × 1-6', price: 2495 },
       { code: 'slant-2-6',  w: 30, d: 12, t: 18, label: '2-6 × 1-0 × 1-6', price: 2995 },
@@ -332,7 +332,7 @@ const SHAPES = [
     code: 'double-slant',
     label: 'Double Slant',
     blurb: 'Companion slant marker.',
-    icon: '🪨',
+    icon: '',
     standardSizes: [
       { code: 'dslant-4-0', w: 48, d: 12, t: 18, label: '4-0 × 1-0 × 1-6', price: 4995 },
       { code: 'dslant-4-6', w: 54, d: 12, t: 18, label: '4-6 × 1-0 × 1-6', price: 5495 },
@@ -345,7 +345,7 @@ const SHAPES = [
     code: 'die',
     label: 'Die (Single Upright)',
     blurb: 'Standing die — base required.',
-    icon: '🗿',
+    icon: '',
     standardSizes: [
       { code: 'die-1-8',    w: 20, d: 8, t: 28, label: '1-8 × 2-4',  price: 2495 },
       { code: 'die-1-10',   w: 22, d: 8, t: 28, label: '1-10 × 2-4', price: 2795 },
@@ -362,7 +362,7 @@ const SHAPES = [
     code: 'double-die',
     label: 'Double Die (Companion Upright)',
     blurb: 'Companion standing die — wider base required.',
-    icon: '⬛',
+    icon: '',
     standardSizes: [
       { code: 'ddie-3-6',   w: 42, d: 8, t: 28, label: '3-6 × 2-4', price: 5150 },
       { code: 'ddie-4-0',   w: 48, d: 8, t: 28, label: '4-0 × 2-4', price: 5750 },
@@ -377,7 +377,7 @@ const SHAPES = [
     code: 'bronze',
     label: 'Bronze Plaque',
     blurb: 'Bronze marker — flat or on a granite base.',
-    icon: '🟫',
+    icon: '',
     standardSizes: [
       { code: 'bronze-24x12',  w: 24, d: 12, t: 0, label: '24″ × 12″', price: 230 },
       { code: 'bronze-24x14',  w: 24, d: 14, t: 0, label: '24″ × 14″', price: 235 },
@@ -389,7 +389,7 @@ const SHAPES = [
     code: 'custom',
     label: 'Custom Shape',
     blurb: 'Heart, cross, teardrop, angel — describe below.',
-    icon: '💎',
+    icon: '',
     standardSizes: [],
     canHaveBase: true,
     customShapes: [
@@ -402,7 +402,7 @@ const SHAPES = [
     code: 'mausoleum',
     label: 'Mausoleum',
     blurb: 'Mausoleum or large structure — fully custom.',
-    icon: '⛪',
+    icon: '',
     standardSizes: [],
     canHaveBase: false,
     onlyForServices: ['MAUSOLEUM'],
@@ -411,7 +411,7 @@ const SHAPES = [
     code: 'civic',
     label: 'Civic / Memorial',
     blurb: 'Public, veterans, or religious monument.',
-    icon: '🏛',
+    icon: '',
     standardSizes: [],
     canHaveBase: true,
     onlyForServices: ['CIVIC_MEMORIAL'],
@@ -507,7 +507,7 @@ const POPULAR_EPITAPHS = [
 const EPITAPH_LIBRARY = {
   'most-popular': {
     label: 'Most Popular',
-    icon: '⭐',
+    icon: '',
     items: [
       'Rest in Peace',
       'Forever in Our Hearts',
@@ -531,7 +531,7 @@ const EPITAPH_LIBRARY = {
   },
   'scripture': {
     label: 'Scripture',
-    icon: '📖',
+    icon: '',
     items: [
       'The Lord is my Shepherd, I shall not want. Psalm 23',
       'Though I walk through the valley of the shadow of death, I will fear no evil. Psalm 23',
@@ -579,7 +579,7 @@ const EPITAPH_LIBRARY = {
   },
   'religious-catholic': {
     label: 'Religious — Catholic',
-    icon: '✝',
+    icon: '',
     items: [
       'May Eternal Light Shine Upon Them',
       'May the Souls of the Faithful Departed Rest in Peace',
@@ -596,7 +596,7 @@ const EPITAPH_LIBRARY = {
   },
   'religious-christian': {
     label: 'Religious — Christian',
-    icon: '✟',
+    icon: '',
     items: [
       'Asleep in Jesus',
       'Asleep in Christ Jesus',
@@ -616,7 +616,7 @@ const EPITAPH_LIBRARY = {
   },
   'jewish': {
     label: 'Jewish',
-    icon: '✡',
+    icon: '',
     items: [
       'May His Memory Be a Blessing',
       'May Her Memory Be a Blessing',
@@ -639,7 +639,7 @@ const EPITAPH_LIBRARY = {
   },
   'classic': {
     label: 'Classic / Literary',
-    icon: '📜',
+    icon: '',
     items: [
       'Death is the golden key that opens the palace of Eternity. — Milton',
       'Earth hath no sorrow that heaven cannot heal. — Moore',
@@ -665,7 +665,7 @@ const EPITAPH_LIBRARY = {
   },
   'for-her': {
     label: 'For Her — Mother/Wife/Sister',
-    icon: '👩',
+    icon: '',
     items: [
       'To know even one life breathed easier because she lived is to know she truly succeeded',
       'She did more than exist; she lived. She did more than listen; she understood',
@@ -690,7 +690,7 @@ const EPITAPH_LIBRARY = {
   },
   'for-him': {
     label: 'For Him — Father/Husband/Brother',
-    icon: '👨',
+    icon: '',
     items: [
       'If there is another world, he lives in bliss; if not another, he made the most of this',
       'He always stood for what was right and good and for this we shall forever cherish his memory',
@@ -708,7 +708,7 @@ const EPITAPH_LIBRARY = {
   },
   'children': {
     label: 'Children & Infants',
-    icon: '👼',
+    icon: '',
     items: [
       'A Little Angel Now in Heaven',
       'Heaven\'s Newest Angel',
@@ -737,7 +737,7 @@ const EPITAPH_LIBRARY = {
   },
   'spanish': {
     label: 'Spanish',
-    icon: '🌹',
+    icon: '',
     items: [
       'Descansa en Paz',
       'Siempre en Nuestros Corazones',
@@ -758,7 +758,7 @@ const EPITAPH_LIBRARY = {
   },
   'love-couple': {
     label: 'Love & Couple',
-    icon: '❤',
+    icon: '',
     items: [
       'Together Forever',
       'United in Love and Death',
@@ -776,7 +776,7 @@ const EPITAPH_LIBRARY = {
   },
   'veterans': {
     label: 'Veterans',
-    icon: '🎖',
+    icon: '',
     items: [
       'In Service to His Country',
       'Honored Veteran',
@@ -1228,24 +1228,24 @@ const COLOR_FAMILY_HEX = {
 // ---- Symbols / elements (multi-select for design filtering, Step 7) -------
 // Each entry has matchers — keywords we look for in monument cats/tags fields.
 const SYMBOLS = [
-  { code: 'cross',     label: 'Cross',          icon: '✝',  matchers: ['cross', 'christian', 'religious'] },
-  { code: 'jesus',     label: 'Jesus',          icon: '🙏', matchers: ['jesus', 'christ', 'savior'] },
-  { code: 'angel',     label: 'Angels',         icon: '👼', matchers: ['angel'] },
-  { code: 'praying',   label: 'Praying Hands',  icon: '🤲', matchers: ['praying hands', 'praying'] },
-  { code: 'mary',      label: 'Mary / Madonna', icon: '☧',  matchers: ['mary', 'madonna', 'virgin'] },
-  { code: 'jewish',    label: 'Star of David',  icon: '✡',  matchers: ['jewish', 'star of david'] },
-  { code: 'menorah',   label: 'Menorah',        icon: '🕎', matchers: ['menorah'] },
-  { code: 'rose',      label: 'Roses',          icon: '🌹', matchers: ['rose', 'roses'] },
-  { code: 'flower',    label: 'Flowers',        icon: '🌸', matchers: ['floral', 'flower', 'flowers', 'lily', 'lilies', 'tulip'] },
-  { code: 'heart',     label: 'Hearts',         icon: '❤',  matchers: ['heart', 'hearts'] },
-  { code: 'dove',      label: 'Doves',          icon: '🕊', matchers: ['dove'] },
-  { code: 'butterfly', label: 'Butterflies',    icon: '🦋', matchers: ['butterfly', 'butterflies'] },
-  { code: 'tree',      label: 'Tree of Life',   icon: '🌳', matchers: ['tree', 'tree of life', 'oak'] },
-  { code: 'scenic',    label: 'Scenic',         icon: '🌅', matchers: ['scenic', 'landscape', 'sunset', 'mountain'] },
-  { code: 'veteran',   label: 'Veteran',        icon: '🎖', matchers: ['veteran', 'military', 'flag', 'army', 'navy'] },
-  { code: 'pet',       label: 'Pet / Paw',      icon: '🐾', matchers: ['paw', 'pet', 'dog', 'cat'] },
-  { code: 'music',     label: 'Music',          icon: '🎵', matchers: ['music', 'musical', 'note'] },
-  { code: 'sport',     label: 'Sports',         icon: '⚽', matchers: ['sport', 'baseball', 'football', 'fishing', 'hunting'] },
+  { code: 'cross',     label: 'Cross',          icon: '',  matchers: ['cross', 'christian', 'religious'] },
+  { code: 'jesus',     label: 'Jesus',          icon: '', matchers: ['jesus', 'christ', 'savior'] },
+  { code: 'angel',     label: 'Angels',         icon: '', matchers: ['angel'] },
+  { code: 'praying',   label: 'Praying Hands',  icon: '', matchers: ['praying hands', 'praying'] },
+  { code: 'mary',      label: 'Mary / Madonna', icon: '',  matchers: ['mary', 'madonna', 'virgin'] },
+  { code: 'jewish',    label: 'Star of David',  icon: '',  matchers: ['jewish', 'star of david'] },
+  { code: 'menorah',   label: 'Menorah',        icon: '', matchers: ['menorah'] },
+  { code: 'rose',      label: 'Roses',          icon: '', matchers: ['rose', 'roses'] },
+  { code: 'flower',    label: 'Flowers',        icon: '', matchers: ['floral', 'flower', 'flowers', 'lily', 'lilies', 'tulip'] },
+  { code: 'heart',     label: 'Hearts',         icon: '',  matchers: ['heart', 'hearts'] },
+  { code: 'dove',      label: 'Doves',          icon: '', matchers: ['dove'] },
+  { code: 'butterfly', label: 'Butterflies',    icon: '', matchers: ['butterfly', 'butterflies'] },
+  { code: 'tree',      label: 'Tree of Life',   icon: '', matchers: ['tree', 'tree of life', 'oak'] },
+  { code: 'scenic',    label: 'Scenic',         icon: '', matchers: ['scenic', 'landscape', 'sunset', 'mountain'] },
+  { code: 'veteran',   label: 'Veteran',        icon: '', matchers: ['veteran', 'military', 'flag', 'army', 'navy'] },
+  { code: 'pet',       label: 'Pet / Paw',      icon: '', matchers: ['paw', 'pet', 'dog', 'cat'] },
+  { code: 'music',     label: 'Music',          icon: '', matchers: ['music', 'musical', 'note'] },
+  { code: 'sport',     label: 'Sports',         icon: '', matchers: ['sport', 'baseball', 'football', 'fishing', 'hunting'] },
 ]
 
 // ---- Order status workflow -------------------------------------------------
@@ -2335,11 +2335,12 @@ function ToggleChip({ on, onClick, children, disabled }) {
   )
 }
 
-function CardOption({ on, onClick, title, blurb, icon, badge }) {
+// `icon` (legacy emoji glyph) intentionally NOT rendered — the emoji icon cards
+// were retired in the production-polish pass; cards read on title + blurb.
+function CardOption({ on, onClick, title, blurb, badge }) {
   return (
     <button type="button" className={`sm-card ${on ? 'on' : ''}`} onClick={onClick}>
       {badge && <span className="sm-card-badge">{badge}</span>}
-      <div className="sm-card-icon">{icon}</div>
       <div className="sm-card-title">{title}</div>
       {blurb && <div className="sm-card-blurb">{blurb}</div>}
       {on && <div className="sm-card-check">✓</div>}
@@ -2396,7 +2397,6 @@ function SearchBox({
         onFocus={() => setOpen(true)}
         placeholder={placeholder}
       />
-      <span className="sm-search-icon">⌕</span>
       {open && query.trim().length >= 1 && (
         <div className="sm-search-pop">
           {loading && <div className="sm-search-row sm-search-loading">Searching…</div>}
@@ -3104,7 +3104,7 @@ function DeceasedCard({ idx, d, onChange, onRemove, isOnly }) {
       <div className="sm-deceased-card sm-deceased-card-reserved">
         <div className="sm-deceased-head">
           <div className="sm-deceased-num">
-            <span className="sm-reserved-icon">⌬</span> Reserved Space
+            Reserved Space
             <span className="sm-deceased-num-sub"> · for future inscription</span>
           </div>
           <div className="sm-deceased-actions">
@@ -3594,7 +3594,7 @@ export function ColorStep({ order, update }) {
         <div className="sm-step-eyebrow">Step · Granite color</div>
         <h1 className="sm-step-title">Granite Color</h1>
         <p className="sm-step-lede">
-          ⭐ marks our most popular options. Some colors carry a premium —
+          The most popular options are marked. Some colors carry a premium —
           we'll show that in pricing later.
         </p>
       </div>
@@ -3614,7 +3614,7 @@ export function ColorStep({ order, update }) {
                 >
                   <div className="sm-color-swatch">
                     <img src={`/granite/${c.file}`} alt={c.label} loading="lazy" />
-                    {c.popular && <span className="sm-color-popular">⭐</span>}
+                    {c.popular && <span className="sm-color-popular">Popular</span>}
                   </div>
                   <div className="sm-color-info">
                     <div className="sm-color-name">{c.label}</div>
@@ -3670,7 +3670,7 @@ function CustomDesignPanel({ on, onToggle }) {
             className={`sm-btn ${on ? 'sm-btn-ghost' : 'sm-btn-navy'} sm-custom-design-btn`}
             onClick={onToggle}
           >
-            {on ? '✓ Custom Design selected — click to remove' : '✏️ Pick Custom Design'}
+            {on ? '✓ Custom Design selected — click to remove' : 'Pick Custom Design'}
           </button>
           <div className="sm-custom-design-price">
             {on
@@ -3876,10 +3876,10 @@ function DesignStep({ order, update }) {
   // we collapse to one results section. Otherwise group by symbols if any are picked.
   const sections = useMemo(() => {
     if (searchText.trim()) {
-      return [{ code: 'search', label: `Search: "${searchText.trim()}"`, icon: '🔎', list: baseList }]
+      return [{ code: 'search', label: `Search: "${searchText.trim()}"`, icon: '', list: baseList }]
     }
     if (!order.elementFilters || order.elementFilters.length === 0) {
-      return [{ code: 'all', label: 'All matches', icon: '🪨', list: baseList }]
+      return [{ code: 'all', label: 'All matches', icon: '', list: baseList }]
     }
     return order.elementFilters.map(symCode => {
       const sym = SYMBOLS.find(s => s.code === symCode)
@@ -3957,7 +3957,7 @@ function DesignStep({ order, update }) {
         )}
         <div className="sm-design-thumb">
           {m.img ? <img src={thumb(m.img)} alt="" loading="lazy" referrerPolicy="no-referrer" />
-                 : <span className="sm-design-no-img">🪨</span>}
+                 : <span className="sm-design-no-img">No image</span>}
         </div>
         <div className="sm-design-info">
           <div className="sm-design-id">{cleanCatalogId(m.id)}</div>
@@ -4080,7 +4080,7 @@ function DesignStep({ order, update }) {
             className="sm-design-search-input"
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
-            placeholder="🔎 Search designs by element, lastname, or tag…"
+            placeholder="Search designs by element, lastname, or tag…"
           />
           {searchText && (
             <button
@@ -4144,7 +4144,6 @@ function DesignStep({ order, update }) {
               className={`sm-symbol-chip ${order.elementFilters.includes(s.code) ? 'on' : ''}`}
               onClick={() => toggleSymbol(s.code)}
             >
-              <span className="sm-symbol-icon">{s.icon}</span>
               <span className="sm-symbol-label">{s.label}</span>
             </button>
           ))}
@@ -4172,7 +4171,7 @@ function DesignStep({ order, update }) {
         return (
           <Section
             key={section.code}
-            title={`${section.icon} ${section.label}`}
+            title={section.label}
             eyebrow={section.list.length === 0 ? 'No matches' : `${section.list.length} design${section.list.length === 1 ? '' : 's'}`}
           >
             {section.list.length === 0 ? (
@@ -4719,7 +4718,6 @@ export function InscriptionStep({ order, update }) {
                 onClick={() => updateInsc({ type: t.code })}
                 title={t.label}
                 blurb={t.blurb}
-                icon={t.code === 'full' ? '✒️' : t.code === 'date' ? '📅' : '🗓'}
               />
             ))}
           </div>
@@ -4756,7 +4754,7 @@ export function InscriptionStep({ order, update }) {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
               >
-                {uploading ? 'Uploading…' : '📷 Upload photo from this device'}
+                {uploading ? 'Uploading…' : 'Upload photo from this device'}
               </button>
             </>
           )}
@@ -5095,7 +5093,7 @@ function EpitaphLibraryPicker({ onPick, current }) {
     const totalItems = Object.values(EPITAPH_LIBRARY).reduce((n, c) => n + c.items.length, 0)
     return (
       <button type="button" className="sm-add-btn sm-epi-open-btn" onClick={() => setOpen(true)}>
-        📖 Browse the full epitaph library ({totalItems} entries across {Object.keys(EPITAPH_LIBRARY).length} categories)
+        Browse the full epitaph library ({totalItems} entries across {Object.keys(EPITAPH_LIBRARY).length} categories)
       </button>
     )
   }
@@ -5144,7 +5142,7 @@ function EpitaphLibraryPicker({ onPick, current }) {
                 className={`sm-epi-cat ${activeCat === code ? 'on' : ''}`}
                 onClick={() => setActiveCat(code)}
               >
-                <span>{c.icon}</span> {c.label} <span className="sm-epi-cat-count">{c.items.length}</span>
+                {c.label} <span className="sm-epi-cat-count">{c.items.length}</span>
               </button>
             ))}
           </div>
@@ -5266,7 +5264,7 @@ export function AddOnsStep({ order, update }) {
               className="sm-add-btn sm-veteran-toggle"
               onClick={() => setShowVeteran(true)}
             >
-              🎖 Add veteran marker options <span className="sm-veteran-toggle-hint">(skip if not needed)</span>
+              Add veteran marker options <span className="sm-veteran-toggle-hint">(skip if not needed)</span>
             </button>
           )
         }
@@ -6750,7 +6748,7 @@ function CustomerPhotoUploader({ photo, orderId, onUpload, onClear }) {
         disabled={uploading}
         style={{ width: '100%' }}
       >
-        {uploading ? 'Uploading…' : '📎 Upload customer\'s photo for engraving'}
+        {uploading ? 'Uploading…' : 'Upload customer\'s photo for engraving'}
       </button>
     </div>
   )
@@ -8610,7 +8608,7 @@ function ProductionTimelineSection({ order, update, isLocked }) {
           <ToggleChip on={order.rushOrder} onClick={() => setRush(!order.rushOrder)}>
             {order.rushOrder
               ? `✓ Rush this order — +$${totalRushFee}${rushableServices.length > 1 ? ` total across ${rushableServices.length} services` : ''}`
-              : `⚡ Rush this order — +$${totalRushFee}${rushableServices.length > 1 ? ` (${rushableServices.length} services)` : ''}`}
+              : `Rush this order — +$${totalRushFee}${rushableServices.length > 1 ? ` (${rushableServices.length} services)` : ''}`}
           </ToggleChip>
           <div className="sm-helper" style={{ marginTop: 6 }}>
             Rush fees are added as separate line items per service. For monuments,
@@ -9015,7 +9013,7 @@ export function PricingStep({ order, update }) {
 
       {isLocked && (
         <div className="sm-locked-banner">
-          🔒 <strong>Pricing is locked</strong> — this order is a contract
+          <strong>Pricing is locked</strong> — this order is a contract
           {order.signedAt && <> (signed {new Date(order.signedAt).toLocaleDateString()})</>}.
           To make changes, this order would need to be re-opened by an admin.
         </div>
@@ -9345,7 +9343,7 @@ function PdfDownloadButton({ order, label }) {
           disabled={busy !== null}
           title="Open a preview before downloading"
         >
-          {busy === 'preview' ? 'Building…' : '👁  Preview'}
+          {busy === 'preview' ? 'Building…' : 'Preview'}
         </button>
         <button
           type="button"
@@ -9353,7 +9351,7 @@ function PdfDownloadButton({ order, label }) {
           onClick={handleDownload}
           disabled={busy !== null}
         >
-          {busy === 'download' ? 'Building…' : '📄 Download ' + finalLabel}
+          {busy === 'download' ? 'Building…' : 'Download ' + finalLabel}
         </button>
         <button
           type="button"
@@ -9362,7 +9360,7 @@ function PdfDownloadButton({ order, label }) {
           disabled={busy !== null}
           title="Download + open your email with the customer pre-filled"
         >
-          {busy === 'email' ? 'Building…' : '✉️  Email to customer'}
+          {busy === 'email' ? 'Building…' : 'Email to customer'}
         </button>
       </div>
       {err && <div className="sm-pdf-err">⚠ {err}</div>}
@@ -9379,7 +9377,7 @@ function PdfDownloadButton({ order, label }) {
               <div className="sm-pdf-preview-title">{previewFilename}</div>
               <div className="sm-pdf-preview-actions">
                 <button type="button" className="sm-link-btn" onClick={handleDownload}>
-                  📄 Download
+                  Download
                 </button>
                 <button type="button" className="sm-link-btn" onClick={closePreview}>
                   Close ×
@@ -9584,7 +9582,7 @@ function OrdersDashboard({ onPick, onStartNew, onNewQuote, onClose }) {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="🔎 Search by order #, customer name, email, or phone…"
+            placeholder="Search by order #, customer name, email, or phone…"
           />
           {search && (
             <button type="button" onClick={() => setSearch('')} aria-label="Clear">×</button>
@@ -9613,7 +9611,7 @@ function OrdersDashboard({ onPick, onStartNew, onNewQuote, onClose }) {
             onClick={() => setFilter('archived')}
             data-status="archived"
           >
-            📦 Archive
+            Archive
           </button>
           <span className="sm-dashboard-divider">|</span>
           {ORDER_STATUSES.filter(s => s.code !== 'archived').map(s => (
@@ -11038,16 +11036,16 @@ function ReceiptActions({ order, payment }) {
       </div>
       <div className="sm-pdf-actions">
         <button type="button" className="sm-btn sm-btn-ghost sm-pdf-btn" onClick={handlePreview} disabled={busy !== null}>
-          {busy === 'preview' ? 'Building…' : '👁 Preview'}
+          {busy === 'preview' ? 'Building…' : 'Preview'}
         </button>
         <button type="button" className="sm-btn sm-btn-navy sm-pdf-btn" onClick={handleDownload} disabled={busy !== null}>
-          {busy === 'download' ? 'Building…' : '📄 Download receipt'}
+          {busy === 'download' ? 'Building…' : 'Download receipt'}
         </button>
         <button type="button" className="sm-btn sm-btn-ghost sm-pdf-btn" onClick={handlePrint} disabled={busy !== null}>
-          {busy === 'print' ? 'Building…' : '🖨 Print'}
+          {busy === 'print' ? 'Building…' : 'Print'}
         </button>
         <button type="button" className="sm-btn sm-btn-ghost sm-pdf-btn" onClick={handleEmail} disabled={busy !== null}>
-          {busy === 'email' ? 'Building…' : '✉️ Email'}
+          {busy === 'email' ? 'Building…' : 'Email'}
         </button>
       </div>
       {err && <div className="sm-pdf-err">⚠ {err}</div>}
@@ -11058,7 +11056,7 @@ function ReceiptActions({ order, payment }) {
             <div className="sm-pdf-preview-head">
               <div className="sm-pdf-preview-title">{previewFilename}</div>
               <div className="sm-pdf-preview-actions">
-                <button type="button" className="sm-link-btn" onClick={handleDownload}>📄 Download</button>
+                <button type="button" className="sm-link-btn" onClick={handleDownload}>Download</button>
                 <button type="button" className="sm-link-btn" onClick={closePreview}>Close ×</button>
               </div>
             </div>
@@ -11172,10 +11170,10 @@ function CancelOrderSection({ order, update }) {
         </div>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 8 }}>
           <button type="button" className="sm-btn sm-btn-navy" onClick={doRestoreFromArchive} disabled={busy !== null}>
-            {busy === 'restore' ? 'Restoring…' : '↩ Restore from archive'}
+            {busy === 'restore' ? 'Restoring…' : 'Restore from archive'}
           </button>
           <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={doHardDelete} disabled={busy !== null}>
-            {busy === 'delete' ? 'Deleting…' : '🗑 Permanently delete'}
+            {busy === 'delete' ? 'Deleting…' : 'Permanently delete'}
           </button>
         </div>
         {err && <div className="sm-pdf-err" style={{ marginTop: 10 }}>⚠ {err}</div>}
@@ -11194,10 +11192,10 @@ function CancelOrderSection({ order, update }) {
         </div>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 8 }}>
           <button type="button" className="sm-link-btn" onClick={doRestore} disabled={busy !== null}>
-            {busy === 'restore' ? 'Restoring…' : '↩ Restore order'}
+            {busy === 'restore' ? 'Restoring…' : 'Restore order'}
           </button>
           <button type="button" className="sm-link-btn" onClick={doArchive} disabled={busy !== null}>
-            {busy === 'archive' ? 'Archiving…' : '📦 Archive'}
+            {busy === 'archive' ? 'Archiving…' : 'Archive'}
           </button>
         </div>
         {err && <div className="sm-pdf-err" style={{ marginTop: 10 }}>⚠ {err}</div>}
@@ -11211,7 +11209,7 @@ function CancelOrderSection({ order, update }) {
       <Section title="Archive or cancel" eyebrow="Soft actions — data is kept">
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <button type="button" className="sm-link-btn" onClick={doArchive} disabled={busy !== null}>
-            {busy === 'archive' ? 'Archiving…' : '📦 Archive this order'}
+            {busy === 'archive' ? 'Archiving…' : 'Archive this order'}
           </button>
           <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => setShowCancelForm(true)} disabled={busy !== null}>
             ✗ Cancel this order
@@ -11389,7 +11387,7 @@ export function SignatureCanvas({ value, onChange, label, disabled }) {
         />
         {!hasContent && (
           <div className="sm-signature-hint">
-            {disabled ? '🔒 Locked' : '✎  Sign with your mouse, finger, or stylus'}
+            {disabled ? 'Locked' : 'Sign with your mouse, finger, or stylus'}
           </div>
         )}
       </div>
@@ -11466,7 +11464,7 @@ function CustomerSignatureBox({ value, onChange, locked }) {
         className="sm-sigbox-empty"
         onClick={() => setModalOpen(true)}
       >
-        <span className="sm-sigbox-prompt">✎ Tap to sign</span>
+        <span className="sm-sigbox-prompt">Tap to sign</span>
       </button>
       <SignatureModal
         open={modalOpen}
@@ -11705,7 +11703,7 @@ function SignStep({ order, update }) {
 
       {isLocked && (
         <div className="sm-locked-banner">
-          🔒 <strong>This order is now a CONTRACT.</strong>{' '}
+          <strong>This order is now a CONTRACT.</strong>{' '}
           {order.signedAt && <>Signed {new Date(order.signedAt).toLocaleString()}.</>}{' '}
           Pricing is locked.
         </div>
@@ -11779,7 +11777,7 @@ function SignStep({ order, update }) {
             onClick={handleConvert}
             disabled={!ready || busy}
           >
-            {busy ? 'Converting…' : '🔒 Convert to Contract'}
+            {busy ? 'Converting…' : 'Convert to Contract'}
           </button>
           {!ready && !busy && (
             <div className="sm-helper" style={{ marginTop: 10 }}>
@@ -11803,7 +11801,7 @@ function SignStep({ order, update }) {
             className="sm-unlock-btn"
             onClick={() => setUnlockModalOpen(true)}
           >
-            🔓 Unlock &amp; Edit
+            Unlock &amp; Edit
           </button>
           <div className="sm-helper" style={{ marginTop: 10 }}>
             Unlocking voids the customer's signature and returns this order to
@@ -12999,9 +12997,10 @@ export const salesModeStyles = `
   position: absolute; top: 8px; right: 8px;
   background: rgba(255,255,255,0.95);
   border-radius: 999px;
-  width: 26px; height: 26px;
+  padding: 3px 9px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 14px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--sm-gold, #8c6d3f);
   box-shadow: 0 1px 4px rgba(0,0,0,0.15);
 }
 .sm-color-info {
@@ -13189,7 +13188,7 @@ export const salesModeStyles = `
 .sm-design-thumb img {
   width: 100%; height: 100%; object-fit: contain;
 }
-.sm-design-no-img { font-size: 30px; opacity: 0.2; }
+.sm-design-no-img { font-size: 12px; color: var(--text-mid, #999); }
 .sm-design-badge {
   position: absolute; top: 6px; right: 6px;
   background: var(--sm-navy); color: #fff;
