@@ -16,15 +16,20 @@ import {
   listAllOrders, getJobs,
   statusInfo, customerName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
-  fmtUSD, fmtRelative,
+  fmtUSD,
   computeOrderPressure,
   ORDER_STATUSES, ACTIVE_STATUSES,
   bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus,
-  bulkSetOrderCemetery, bulkSetJobType, bulkSetStage,
+  bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
+  // Orders-redesign status dimensions (one source of truth)
+  DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
+  derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
+  paymentStatusLabel, designStatusLabel, stoneStatusLabel, fdnStatusLabel,
+  setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus,
+  setBlockReason, milestoneDone, orderContractTotal,
 } from './lib/stonebooksData'
-import { paymentLabel } from './lib/crmTheme'
-import { FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
+import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
 import UndoToast from './components/calendar/UndoToast.jsx'
 import OrderDetail from './OrderDetail.jsx'
@@ -81,7 +86,6 @@ const NEW_STONE_STAGES = [
   'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut',
   'production_started', 'production_completed', 'foundation_poured', 'ready_to_install', 'installed',
 ]
-const STAGE_ORDER_INDEX = Object.fromEntries(NEW_STONE_STAGES.map((k, i) => [k, i]))
 const SORT_OPTIONS = [
   { code: 'actionPriority', label: 'Sort: Action priority' },
   { code: 'lastActivity',   label: 'Sort: Recent activity' },
@@ -99,8 +103,23 @@ const QUICK_VIEWS = [
   { code: 'archived',        label: 'Archived' },
 ]
 
-// checkbox | customer | status | job type | stage | deposit | balance | cemetery | updated
-const ROW_GRID = '34px 1.5fr 1.15fr 1fr 1.2fr 0.8fr 1.05fr 1.05fr 0.6fr'
+// checkbox | customer | job type | payment | design | stone | fdn | total | cemetery | contract | due
+const ROW_GRID = '34px 1.5fr 0.9fr 0.95fr 1.15fr 1.25fr 1fr 0.85fr 1.05fr 0.95fr 0.95fr'
+
+// +5 months for a new_stone due-date default (the contract+5mo rule). Pure
+// local date math (no UTC drift): returns 'YYYY-MM-DD' or null.
+function plusFiveMonthsISO(contractISO) {
+  if (!contractISO) return null
+  const s = String(contractISO).slice(0, 10)
+  const [y, m, d] = s.split('-').map(Number)
+  if (!y || !m || !d) return null
+  const mi = (m - 1) + 5
+  const yy = y + Math.floor(mi / 12)
+  const mm = (mi % 12) + 1
+  return `${yy}-${String(mm).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+// Timestamp/date column → 'YYYY-MM-DD' for the inline date input.
+function toDateInput(v) { return v ? String(v).slice(0, 10) : '' }
 
 const humanizeKey = (s) => s == null ? '' : String(s).replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
@@ -208,6 +227,13 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
         (o.customer?.last_name && String(o.customer.last_name).trim().toUpperCase()) ||
         customerName(o.customer) || '—'
       const missingInfo = !o.shape || !o.granite_color || (!o.width_inches && !o.standard_size_code)
+      const isNewStone = job?.job_type === 'new_stone'
+      // Set-gate chip surfaces only once the stone is blasted (physical work
+      // done) but not yet installed — i.e. "ready to set, blocked by X". Shares
+      // setBlockReason with the Jobs hubs + Scheduler blocked panel.
+      const setBlock = (isNewStone && milestoneDone(job, 'production_completed') && !milestoneDone(job, 'installed'))
+        ? setBlockReason(o, job)
+        : null
       return {
         ...o, _job: job, _pressure: pressure, _total: total, _paid: paid, _balance: balance,
         _fillRatio: total > 0 ? paid / total : 0,
@@ -215,6 +241,13 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
         _jobType: job?.job_type || null,
         _stageKey: stage?.key || null, _stageLabel: stage?.label || null,
         _missingInfo: missingInfo,
+        _isNewStone: isNewStone,
+        _payment: derivePaymentStatus(o),
+        _design: job ? deriveDesignStatus(job) : null,
+        _stone: job ? deriveStoneStatus(job) : null,
+        _fdn: job ? deriveFdnStatus(job) : null,
+        _contractTotal: orderContractTotal(o),
+        _setBlock: setBlock,
         _serviceTypesUp: new Set((o.service_types || []).map(s => String(s).toUpperCase())),
       }
     })
@@ -437,18 +470,44 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
     return { ok: true }
   }
 
-  // ── Inline single-order quick-edit ────────────────────────────────────────
-  const inlineStatus = async (o, status) => {
-    setBusy(true); const r = await bulkSetOrderStatus([o.id], status); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: status → ${statusInfo(status).label}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+  // ── Inline status dropdowns (flip milestones — one source of truth) ────────
+  const inlineDesign = async (o, code) => {
+    if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
+    setBusy(true); const r = await setOrderDesignStatus(o._job.id, code); setBusy(false)
+    showToast(r.ok ? `${o._familyName}: design → ${designStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
   }
-  const inlineJobType = async (o, jobType) => {
-    setBusy(true); const r = await bulkSetJobType([o.id], jobType); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: job type → ${JOB_TYPES.find(j => j.code === jobType)?.label || jobType}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+  const inlineStone = async (o, code) => {
+    if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
+    setBusy(true); const r = await setOrderStoneStatus(o._job.id, code); setBusy(false)
+    showToast(r.ok ? `${o._familyName}: stone → ${stoneStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
   }
-  const inlineStage = async (o, key) => {
-    setBusy(true); const r = await bulkSetStage([o.id], key); setBusy(false)
-    showToast(r.ok ? `${o._familyName}: advanced to ${humanizeKey(key)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+  const inlineFdn = async (o, code) => {
+    if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
+    setBusy(true); const r = await setOrderFdnStatus(o._job.id, code); setBusy(false)
+    showToast(r.ok ? `${o._familyName}: FDN → ${fdnStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
+  }
+  // Inline date edits — contract = signed_at, due = target_completion_date.
+  // Changing the contract date auto-fills an empty due date for new_stone (+5mo).
+  const inlineDate = async (o, field, value) => {
+    const patch = {}
+    if (field === 'signed_at') {
+      patch.signed_at = value ? `${value}T00:00:00` : null
+      if (value && o._isNewStone && !o.target_completion_date) {
+        const due = plusFiveMonthsISO(value)
+        if (due) patch.target_completion_date = due
+      }
+    } else {
+      patch.target_completion_date = value || null
+    }
+    setBusy(true); const r = await bulkUpdateOrders([o.id], patch); setBusy(false)
+    showToast(r.ok ? `${o._familyName}: ${field === 'signed_at' ? 'contract' : 'due'} date saved` : (r.error || 'Failed'), { error: !r.ok }); reload()
+  }
+  const inlineTotal = async (o, raw) => {
+    const trimmed = String(raw ?? '').trim()
+    const val = trimmed === '' ? null : Number(trimmed)
+    if (val != null && !Number.isFinite(val)) { showToast('Enter a number.', { error: true }); return }
+    setBusy(true); const r = await bulkUpdateOrders([o.id], { contract_total: val }); setBusy(false)
+    showToast(r.ok ? `${o._familyName}: total ${val == null ? 'cleared' : fmtUSD(val)}` : (r.error || 'Failed'), { error: !r.ok }); reload()
   }
 
   // ── CSV export (selected, or whole filtered set if none selected) ─────────
@@ -611,13 +670,15 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
           <div className="sb-crm-row sb-crm-row-head sb-tw-row" style={{ gridTemplateColumns: ROW_GRID }}>
             <div><input type="checkbox" checked={pageAllSelected} onChange={togglePage} aria-label="Select page" /></div>
             <div>Customer</div>
-            <div>Status</div>
-            <div>Job type</div>
-            <div>Stage</div>
-            <div className="num">Deposit</div>
-            <div className="num">Balance</div>
+            <div>Job Type</div>
+            <div>Payment</div>
+            <div>Design</div>
+            <div>Stone</div>
+            <div>FDN</div>
+            <div className="num">Total</div>
             <div>Cemetery</div>
-            <div className="num">Updated</div>
+            <div>Contract</div>
+            <div>Due date</div>
           </div>
 
           {loading ? (
@@ -628,7 +689,8 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
             pageRows.map((o) => (
               <OrderRow key={o.id} order={o} indexInFiltered={filteredIds.indexOf(o.id)}
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
-                onInlineStatus={inlineStatus} onInlineJobType={inlineJobType} onInlineStage={inlineStage} busy={busy} />
+                onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
+                onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={busy} />
             ))
           )}
 
@@ -685,11 +747,12 @@ function BulkSelect({ label, options, onPick, disabled }) {
 }
 
 // ── OrderRow ──────────────────────────────────────────────────────────────────
-function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInlineStatus, onInlineJobType, onInlineStage, busy }) {
-  const p = o._pressure
-  const pLabel = paymentLabel(p.paymentState)
-  const balanceTone = o._balance <= 0 ? 'green' : (p.paymentState === 'overdue' ? 'red' : 'amber')
-  const isNewStone = o._jobType === 'new_stone'
+// Payment is a derived read-only chip (money truth). Design / Stone / FDN are
+// inline dropdowns that flip milestones (one source of truth). Total =
+// editable contract_total. Contract = signed_at, Due = target_completion_date.
+const PAY_TONE = { quoted: '#8a8a85', deposit: '#B8842A', paid_in_full: '#1D9E75' }
+function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
+  const hasJob = !!o._job
 
   return (
     <div className={`sb-crm-row sb-tw-row${selected ? ' sb-tw-row-sel' : ''}`} style={{ gridTemplateColumns: ROW_GRID }}>
@@ -699,63 +762,79 @@ function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInl
           onChange={() => {}} aria-label="Select order" />
       </div>
 
-      {/* Customer (click → detail) + missing-info badge */}
+      {/* Customer (click → detail) + set-gate blocked chip */}
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)}>
         <div className="sb-crm-primary">
           {o._familyName}
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">Needs info</span>}
         </div>
         <div className="sb-crm-secondary sb-crm-mono">{o.order_number || 'DRAFT'}</div>
+        {o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
       </button>
 
-      {/* Status (inline) */}
-      <div onClick={e => e.stopPropagation()}>
-        <select className="sb-tw-inline" value={o.status} disabled={busy} onChange={e => onInlineStatus(o, e.target.value)}>
-          {ORDER_STATUSES.filter(s => s.code !== 'archived').map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
-        </select>
+      {/* Job Type */}
+      <div><span className="sb-crm-secondary">{jobTypeLabel(o._jobType, o.service_types)}</span></div>
+
+      {/* Payment — derived read-only chip */}
+      <div>
+        <span className="sb-ord-paychip" style={{ color: PAY_TONE[o._payment] || '#555' }}>
+          {paymentStatusLabel(o._payment)}
+        </span>
       </div>
 
-      {/* Job type (inline) */}
+      {/* Design (inline → milestone) */}
       <div onClick={e => e.stopPropagation()}>
-        {o._jobType ? (
-          <select className="sb-tw-inline" value={o._jobType} disabled={busy} onChange={e => onInlineJobType(o, e.target.value)}>
-            {JOB_TYPES.map(j => <option key={j.code} value={j.code}>{j.label}</option>)}
+        {hasJob ? (
+          <select className="sb-tw-inline" value={o._design || 'not_created'} disabled={busy} onChange={e => onInlineDesign(o, e.target.value)}>
+            {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
-        ) : <span className="sb-crm-muted">{jobTypeLabel(null, o.service_types)}</span>}
-      </div>
-
-      {/* Stage (inline for new_stone; else read-only label) */}
-      <div onClick={e => e.stopPropagation()}>
-        {isNewStone ? (
-          <select className="sb-tw-inline" value={o._stageKey && STAGE_ORDER_INDEX[o._stageKey] != null ? o._stageKey : ''} disabled={busy} onChange={e => e.target.value && onInlineStage(o, e.target.value)}>
-            <option value="">{o._stageLabel || '— not started —'}</option>
-            {NEW_STONE_STAGES.map(k => <option key={k} value={k}>{humanizeKey(k)}</option>)}
-          </select>
-        ) : (
-          <span className="sb-crm-secondary">{o._stageLabel || <span className="sb-crm-muted">—</span>}</span>
-        )}
-      </div>
-
-      {/* Deposit */}
-      <div className="num"><span className="sb-crm-num">{o._paid > 0 ? fmtUSD(o._paid) : '—'}</span></div>
-
-      {/* Balance + bar */}
-      <div className="num" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-        {pLabel ? (
-          <>
-            <span className="sb-crm-num" style={{ color: balanceTone === 'red' ? '#B54040' : balanceTone === 'amber' ? '#B8842A' : '#1D9E75' }}>
-              {o._balance > 0 ? fmtUSD(o._balance) : '$0'}
-            </span>
-            {o._total > 0 && <ProgressMicroBar fillRatio={o._fillRatio} tone={balanceTone} />}
-          </>
         ) : <span className="sb-crm-muted">—</span>}
+      </div>
+
+      {/* Stone (inline → milestone) */}
+      <div onClick={e => e.stopPropagation()}>
+        {hasJob ? (
+          <select className="sb-tw-inline" value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
+            {STONE_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+          </select>
+        ) : <span className="sb-crm-muted">—</span>}
+      </div>
+
+      {/* FDN (inline → milestone) */}
+      <div onClick={e => e.stopPropagation()}>
+        {hasJob ? (
+          <select className="sb-tw-inline" value={o._fdn || 'na'} disabled={busy} onChange={e => onInlineFdn(o, e.target.value)}>
+            {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+          </select>
+        ) : <span className="sb-crm-muted">—</span>}
+      </div>
+
+      {/* Total — editable contract_total; blank when null */}
+      <div className="num" onClick={e => e.stopPropagation()}>
+        <input
+          type="text" inputMode="decimal" className="sb-ord-total-input"
+          defaultValue={o._contractTotal != null ? String(o._contractTotal) : ''}
+          placeholder="—" disabled={busy}
+          onBlur={e => { const v = e.target.value.trim(); const cur = o._contractTotal != null ? String(o._contractTotal) : ''; if (v !== cur) onInlineTotal(o, v) }}
+          onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+          aria-label="Contract total"
+        />
       </div>
 
       {/* Cemetery */}
       <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>
 
-      {/* Updated */}
-      <div className="num"><span className="sb-crm-muted sb-crm-tabular">{fmtRelative(o.updated_at)}</span></div>
+      {/* Contract date (signed_at, inline) */}
+      <div onClick={e => e.stopPropagation()}>
+        <input type="date" className="sb-ord-date-input" value={toDateInput(o.signed_at)} disabled={busy}
+          onChange={e => onInlineDate(o, 'signed_at', e.target.value)} aria-label="Contract date" />
+      </div>
+
+      {/* Due date (target_completion_date, inline) */}
+      <div onClick={e => e.stopPropagation()}>
+        <input type="date" className="sb-ord-date-input" value={toDateInput(o.target_completion_date)} disabled={busy}
+          onChange={e => onInlineDate(o, 'target', e.target.value)} aria-label="Due date" />
+      </div>
     </div>
   )
 }
@@ -784,6 +863,16 @@ const TW_CSS = `
   .sb-tw-inline { font: inherit; font-size: 12.5px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; max-width: 100%; cursor: pointer; }
   .sb-tw-inline:hover { border-color: #9A7209; }
   .sb-tw-inline:disabled { opacity: 0.5; }
+
+  /* Orders-redesign cells */
+  .sb-ord-paychip { font-size: 12px; font-weight: 600; }
+  .sb-ord-block { margin-top: 3px; font-size: 11px; font-weight: 600; color: #B54040; }
+  .sb-ord-total-input { font: inherit; font-size: 13px; width: 100%; max-width: 92px; text-align: right; padding: 4px 6px; border: 0.5px solid transparent; border-radius: 6px; background: transparent; color: #222; font-variant-numeric: tabular-nums; }
+  .sb-ord-total-input:hover:not(:disabled) { border-color: #d8d6d1; }
+  .sb-ord-total-input:focus { outline: none; border-color: #9A7209; background: #fff; }
+  .sb-ord-date-input { font: inherit; font-size: 12px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; max-width: 100%; cursor: pointer; }
+  .sb-ord-date-input:hover:not(:disabled) { border-color: #9A7209; }
+  .sb-ord-date-input:disabled { opacity: 0.5; }
 
   .sb-tw-bulkbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 16px;
     background: #1e2d3d; color: #fff; border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; box-shadow: 0 6px 20px rgba(15,20,25,0.18); flex-wrap: wrap; }

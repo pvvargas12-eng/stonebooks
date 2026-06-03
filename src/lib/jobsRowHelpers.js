@@ -16,6 +16,8 @@ import {
   computeOrderPressure,
   rowGrandTotal, rowTotalPaid,
   hasUnsatisfiedRequires,
+  deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
+  setBlockReason, milestoneDone,
 } from './stonebooksData'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -207,6 +209,14 @@ export function enrichJob(j) {
     ? new Date(j.last_update_at).getTime()
     : (j.created_at ? new Date(j.created_at).getTime() : 0)
   const serviceTypesUp = new Set((order?.service_types || []).map(s => String(s).toUpperCase()))
+  // Shared status dimensions + set-gate — same source as the Orders table and
+  // the Scheduler blocked panel, so the three surfaces can't disagree.
+  const design = order ? deriveDesignStatus(j) : null
+  const stone  = order ? deriveStoneStatus(j) : null
+  const fdn    = order ? deriveFdnStatus(j) : null
+  const setBlock = (j.job_type === 'new_stone' && milestoneDone(j, 'production_completed') && !milestoneDone(j, 'installed'))
+    ? setBlockReason(order, j)
+    : null
   return {
     ...j,
     _order:           order,
@@ -221,5 +231,9 @@ export function enrichJob(j) {
     _lastActivity:    lastActivity,
     _serviceTypesUp:  serviceTypesUp,
     _hasOrder:        !!order,
+    _design:          design,
+    _stone:           stone,
+    _fdn:             fdn,
+    _setBlock:        setBlock,
   }
 }

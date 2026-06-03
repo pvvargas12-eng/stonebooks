@@ -436,6 +436,175 @@ export function rowTotalPaid(order) {
 }
 export function rowBalanceDue(order)   { return Math.max(0, rowGrandTotal(order) - rowTotalPaid(order)) }
 
+// =============================================================================
+// ORDER STATUS DIMENSIONS — ONE SOURCE OF TRUTH (Orders / Jobs / Scheduler)
+// =============================================================================
+// Four dimensions surfaced as dropdowns in the Orders table + chips in the Jobs
+// hubs. Payment is derived from money (read-only). Design / Stone / FDN are
+// derived from job_milestones and WRITTEN by flipping those same milestones, so
+// the three surfaces can never disagree. Editing a dropdown calls
+// setOrder{Design,Stone,Fdn}Status, which flips the milestone ladder directly.
+// =============================================================================
+
+export const PAYMENT_STATUS = [
+  { code: 'quoted',       label: 'Quoted' },
+  { code: 'deposit',      label: 'Deposit' },
+  { code: 'paid_in_full', label: 'Paid in full' },
+]
+export const DESIGN_STATUS = [
+  { code: 'not_created',       label: 'Not created' },
+  { code: 'layout_created',    label: 'Layout created' },
+  { code: 'needs_adjustments', label: 'Needs adjustments' },
+  { code: 'layout_approved',   label: 'Layout approved' },
+]
+export const STONE_STATUS = [
+  { code: 'not_ordered',       label: 'Not ordered' },
+  { code: 'in_stock',          label: 'In stock' },
+  { code: 'ordered',           label: 'Ordered' },
+  { code: 'needs_pickup',      label: 'Needs pickup' },
+  { code: 'needs_stencil_cut', label: 'Needs stencil cut' },
+  { code: 'needs_blasting',    label: 'Needs blasting' },
+  { code: 'blasted',           label: 'Blasted' },
+]
+export const FDN_STATUS = [
+  { code: 'na',       label: 'N/A' },
+  { code: 'need_map', label: 'Need map' },
+  { code: 'not_in',   label: 'FDN not in' },
+  { code: 'dug',      label: 'FDN dug' },
+  { code: 'poured',   label: 'FDN poured' },
+  { code: 'in',       label: 'FDN in' },
+]
+const FDN_KEYS = ['foundation_needed', 'foundation_need_map', 'foundation_scheduled', 'foundation_dug', 'foundation_poured', 'foundation_in']
+
+const _msList = (job) => (job?.milestones) || []
+const _msDone = (job, key) => { const m = _msList(job).find(x => x.milestone_key === key); return !!m && (m.status === 'done') }
+const _msHas  = (job, key) => _msList(job).some(x => x.milestone_key === key)
+export function milestoneDone(job, key) { return _msDone(job, key) }
+
+// Editable contract total (orders.contract_total). NULL = blank in the table.
+export function orderContractTotal(order) {
+  return order?.contract_total != null ? Number(order.contract_total) : null
+}
+// Total used for payment status + the set-gate: the typed contract_total when
+// set, else the pricing-derived grand total (legacy/QB rows have no scalar).
+function _effectiveTotal(order) {
+  const ct = orderContractTotal(order)
+  return ct != null ? ct : rowGrandTotal(order)
+}
+
+export function derivePaymentStatus(order) {
+  const total = _effectiveTotal(order)
+  const paid = rowTotalPaid(order)
+  if (total > 0 && (total - paid) <= 0) return 'paid_in_full'
+  if (paid > 0) return 'deposit'
+  return 'quoted'
+}
+export function deriveDesignStatus(job) {
+  if (_msDone(job, 'proof_approved')) return 'layout_approved'
+  if (_msDone(job, 'proof_changes_requested')) return 'needs_adjustments'
+  if (_msDone(job, 'proof_created')) return 'layout_created'
+  return 'not_created'
+}
+export function deriveStoneStatus(job) {
+  if (_msDone(job, 'production_completed')) return 'blasted'
+  if (_msDone(job, 'stencil_cut')) return 'needs_blasting'
+  if (_msDone(job, 'stone_received')) return 'needs_stencil_cut'
+  if (_msDone(job, 'stone_needs_pickup')) return 'needs_pickup'
+  if (_msDone(job, 'stone_in_stock')) return 'in_stock'
+  if (_msDone(job, 'stone_ordered')) return 'ordered'
+  return 'not_ordered'
+}
+export function deriveFdnStatus(job) {
+  const present = FDN_KEYS.filter(k => _msHas(job, k))
+  if (present.length === 0) return 'na'
+  const allNotNeeded = present.every(k => { const m = _msList(job).find(x => x.milestone_key === k); return m && m.status === 'not_needed' })
+  if (allNotNeeded) return 'na'
+  if (_msDone(job, 'foundation_in')) return 'in'
+  if (_msDone(job, 'foundation_poured')) return 'poured'
+  if (_msDone(job, 'foundation_dug')) return 'dug'
+  if (_msDone(job, 'foundation_need_map')) return 'need_map'
+  return 'not_in'
+}
+const _statusLabel = (dim, code) => (dim.find(s => s.code === code) || {}).label || code
+export const paymentStatusLabel = (c) => _statusLabel(PAYMENT_STATUS, c)
+export const designStatusLabel  = (c) => _statusLabel(DESIGN_STATUS, c)
+export const stoneStatusLabel   = (c) => _statusLabel(STONE_STATUS, c)
+export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
+
+// Write plans — flip the milestone ladder so the derived status is deterministic.
+function _designPlan(code) {
+  switch (code) {
+    case 'not_created':       return { done: [], notStarted: ['proof_created', 'proof_changes_requested', 'proof_approved'] }
+    case 'layout_created':    return { done: ['proof_created'], notStarted: ['proof_changes_requested', 'proof_approved'] }
+    case 'needs_adjustments': return { done: ['proof_created', 'proof_changes_requested'], notStarted: ['proof_approved'] }
+    case 'layout_approved':   return { done: ['proof_created', 'proof_approved'], notStarted: [] }
+    default: return null
+  }
+}
+function _stonePlan(code) {
+  const all = ['stone_in_stock', 'stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed']
+  const after = (...done) => ({ done, notStarted: all.filter(k => !done.includes(k)) })
+  switch (code) {
+    case 'not_ordered':       return { done: [], notStarted: all }
+    case 'in_stock':          return after('stone_in_stock')
+    case 'ordered':           return after('stone_ordered')
+    case 'needs_pickup':      return after('stone_ordered', 'stone_needs_pickup')
+    case 'needs_stencil_cut': return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received'], notStarted: ['stencil_cut', 'production_started', 'production_completed'] }
+    case 'needs_blasting':    return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut'], notStarted: ['production_started', 'production_completed'] }
+    case 'blasted':           return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed'], notStarted: [] }
+    default: return null
+  }
+}
+function _fdnPlan(code) {
+  switch (code) {
+    case 'na':       return { notNeeded: FDN_KEYS }
+    case 'not_in':   return { done: ['foundation_needed'], notStarted: ['foundation_need_map', 'foundation_scheduled', 'foundation_dug', 'foundation_poured', 'foundation_in'] }
+    case 'need_map': return { done: ['foundation_needed', 'foundation_need_map'], notStarted: ['foundation_scheduled', 'foundation_dug', 'foundation_poured', 'foundation_in'] }
+    case 'dug':      return { done: ['foundation_needed', 'foundation_need_map', 'foundation_scheduled', 'foundation_dug'], notStarted: ['foundation_poured', 'foundation_in'] }
+    case 'poured':   return { done: ['foundation_needed', 'foundation_need_map', 'foundation_scheduled', 'foundation_dug', 'foundation_poured'], notStarted: ['foundation_in'] }
+    case 'in':       return { done: FDN_KEYS, notStarted: [] }
+    default: return null
+  }
+}
+
+// Direct milestone-ladder write (explicit operator status declaration from a
+// dropdown). Bypasses updateMilestone's readiness gate + cascade on purpose —
+// the operator is declaring the dimension's state, and the ladder keeps the
+// derived value deterministic. Up to 3 batched updates, job-scoped.
+async function _applyMilestonePlan(jobId, plan) {
+  if (!jobId || !plan) return { ok: false, error: 'Invalid status change' }
+  const today = new Date().toISOString().slice(0, 10)
+  const nowIso = new Date().toISOString()
+  const steps = [
+    plan.done?.length      ? supabase.from('job_milestones').update({ status: 'done',        status_date: today, updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.done)      : null,
+    plan.notStarted?.length? supabase.from('job_milestones').update({ status: 'not_started', status_date: null,  updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.notStarted) : null,
+    plan.notNeeded?.length ? supabase.from('job_milestones').update({ status: 'not_needed',  status_date: null,  updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.notNeeded)  : null,
+  ].filter(Boolean)
+  for (const step of steps) { const { error } = await step; if (error) return { ok: false, error: error.message } }
+  return { ok: true }
+}
+export function setOrderDesignStatus(jobId, code) { return _applyMilestonePlan(jobId, _designPlan(code)) }
+export function setOrderStoneStatus(jobId, code)  { return _applyMilestonePlan(jobId, _stonePlan(code)) }
+export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(jobId, _fdnPlan(code)) }
+
+// ── THE SET GATE — one function, used by Orders chip + Jobs hubs + Scheduler ──
+// SET-READY = Paid in full ∧ Blasted ∧ (FDN In or N/A) ∧ permit-ok-where-required.
+// Returns the first failing reason, or null when ready.
+export function setBlockReason(order, job) {
+  const total = _effectiveTotal(order)
+  const paid = rowTotalPaid(order)
+  const paidInFull = total > 0 && (total - paid) <= 0
+  if (!paidInFull) return 'Not paid in full'
+  if (!_msDone(job, 'production_completed')) return 'Not blasted'
+  const fdn = deriveFdnStatus(job)
+  if (!(fdn === 'in' || fdn === 'na')) return 'FDN not in'
+  const permitRequired = order?.permit_required === true || order?.permit_status === 'required' || order?.permit_status === 'submitted'
+  const permitOk = !permitRequired || order?.permit_status === 'approved'
+  if (!permitOk) return 'Permit not approved'
+  return null
+}
+export function isReadyToSet(order, job) { return setBlockReason(order, job) === null }
+
 // ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────
 // Append a payment to the order's payments[] JSONB. Money records are
 // APPEND-ONLY here: this never edits or deletes an existing payment (voiding /
@@ -6895,14 +7064,6 @@ export function getSchedulableJobs(jobs, batches) {
       const c = byKey.get(key)
       return !!c && (c.status === 'done' || c.status === 'not_needed')
     }
-    // Readiness gate for an install: a milestone the template DOESN'T carry is
-    // N/A (true) — don't false-block a job whose template never tracked it;
-    // a milestone it DOES carry must be done/not_needed.
-    const gateOk = (key) => {
-      const c = byKey.get(key)
-      if (!c) return true                 // not in template → not applicable
-      return c.status === 'done' || c.status === 'not_needed'
-    }
     // One card per (job, kind) — a cleaning_repair job with several actionable
     // shop milestones shouldn't stack duplicate cards in one column.
     const seenKinds = new Set()
@@ -6923,25 +7084,14 @@ export function getSchedulableJobs(jobs, batches) {
       if (m.milestone_key === 'ready_to_install') {
         if (completionDone('installed')) continue
         if (job.job_type === 'new_stone') {
-          // You do NOT put a crew on the road for a setting unless all three
-          // are clear: stone received ∧ foundation poured ∧ permit approved.
-          // gateOk treats a milestone the template doesn't carry as N/A.
-          // Permit lives on the order (joined via getJobs). This is the Permit
-          // Hub tie-in: an unapproved permit makes the install BLOCKED, not
-          // schedulable. foundation_poured is the present signal; the 7-day
-          // cure window (foundation_cured) is a documented Phase 4 refinement.
-          const stoneOk = gateOk('stone_received')
-          const foundationOk = gateOk('foundation_poured')
-          const permit = job.order?.permit_status || 'unknown'
-          const permitOk = permit === 'approved' || permit === 'not_required'
-          if (stoneOk && foundationOk && permitOk) {
+          // Unified set-gate — ONE source shared with the Orders blocked chip
+          // and the Jobs hubs: Paid in full ∧ Blasted ∧ (FDN In or N/A) ∧
+          // permit-ok-where-required. setBlockReason returns the failing reason.
+          const reason = setBlockReason(job.order, job)
+          if (!reason) {
             pushCard('setting', m, 'installed')
           } else {
-            const reasons = []
-            if (!permitOk) reasons.push(permit === 'submitted' ? 'Permit awaiting approval' : permit === 'required' ? 'Permit required, not filed' : 'Permit not approved')
-            if (!foundationOk) reasons.push('Foundation not poured')
-            if (!stoneOk) reasons.push('Stone not received')
-            blocked.push({ job, milestone: m, completion_milestone_key: 'installed', reasons })
+            blocked.push({ job, milestone: m, completion_milestone_key: 'installed', reasons: [reason] })
           }
         } else {
           // Non-new_stone ready_to_install → delivery. The stone/foundation

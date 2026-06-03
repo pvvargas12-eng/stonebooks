@@ -10,7 +10,7 @@
 // defined globally by src/lib/crmTheme.js; no styles ship from this file.
 // =============================================================================
 
-import { fmtUSD, fmtRelative } from './stonebooksData'
+import { fmtUSD, fmtRelative, designStatusLabel, stoneStatusLabel, fdnStatusLabel } from './stonebooksData'
 import { paymentTone, paymentLabel } from './crmTheme'
 import { Pill, ProgressMicroBar } from './crmComponents.jsx'
 import { ROW_GRID, mapStageToTone, jobTypeLabel } from './jobsRowHelpers'
@@ -68,6 +68,13 @@ export function JobRow({ job: j, onOpen }) {
         {j._stage.fineLabel !== j._stage.bucketLabel && (
           <div className="sb-crm-secondary">{j._stage.fineLabel}</div>
         )}
+        {/* Shared status dimensions (same source as the Orders table). Only the
+            new-stone production trio is meaningful here; hidden otherwise. */}
+        {j.job_type === 'new_stone' && j._hasOrder && (
+          <div className="sb-crm-secondary" style={{ marginTop: 3, fontSize: 11 }}>
+            {designStatusLabel(j._design)} · {stoneStatusLabel(j._stone)} · {fdnStatusLabel(j._fdn)}
+          </div>
+        )}
       </div>
 
       {/* PAYMENT — pill + micro-bar + balance due */}
@@ -92,7 +99,11 @@ export function JobRow({ job: j, onOpen }) {
       {/* BLOCKER — no "On track" pill; absence is the signal. Render NOTHING
           when blocker is null so Customers / Orders / Jobs all match. */}
       <div>
-        {blocker && (
+        {/* Set-gate block (shared with Orders chip + Scheduler panel) takes
+            precedence — it's the most actionable "ready to set, blocked" signal. */}
+        {j._setBlock ? (
+          <Pill severity="red">{j._setBlock}</Pill>
+        ) : blocker && (
           <Pill severity={blockerSev}>
             {p.needsCall && <span className="sb-crm-call-dot" />}
             {blocker.label}
