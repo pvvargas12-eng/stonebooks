@@ -25,13 +25,11 @@ import {
   // Orders-redesign status dimensions (one source of truth)
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
-  paymentStatusLabel, designStatusLabel, stoneStatusLabel, fdnStatusLabel,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
-import UndoToast from './components/calendar/UndoToast.jsx'
 import OrderDetail from './OrderDetail.jsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -172,17 +170,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Selection + pagination
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const lastIndexRef = useRef(null)
-  const toastSeqRef = useRef(0)
   const [page, setPage] = useState(0)
 
-  // Bulk action confirm + toast + busy
+  // Bulk action confirm + busy (no toast)
   const [confirm, setConfirm] = useState(null)  // { title, body, run }
-  const [toast, setToast] = useState(null)       // { id, text, error, canUndo, onUndo }
-  const [busy, setBusy] = useState(false)
-  // Per-row inline-edit lock — scoped to the edited order so a single-field
-  // edit disables ONLY that row's controls (the global `busy` re-rendered the
-  // whole table, which read as a flash). `busy` stays for bulk ops + the modal.
-  const [busyId, setBusyId] = useState(null)
+  const [busy, setBusy] = useState(false)       // bulk ops + confirm modal only
 
   // ── Load (by archive view) ────────────────────────────────────────────────
   useEffect(() => {
@@ -366,31 +358,17 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
   const selectedOrders = useMemo(() => enriched.filter(o => selectedIds.has(o.id)), [enriched, selectedIds])
 
-  // ── Toast helper ──────────────────────────────────────────────────────────
-  const showToast = (text, { error = false, onUndo = null } = {}) =>
-    setToast({ id: String(toastSeqRef.current++), text, error, canUndo: !!onUndo, onUndo })
-  useEffect(() => {
-    if (!toast) return
-    const t = setTimeout(() => setToast(null), 8000)
-    return () => clearTimeout(t)
-  }, [toast])
+  // Toasts removed entirely (no undo toast on any action, single or bulk).
+  // Inline edits are optimistic and resync on failure; bulk ops reload. Kept as
+  // a no-op so the many call sites don't each need touching.
+  const showToast = () => {}
 
-  // ── Bulk runner — confirm → batched write → toast(+undo) → reload ─────────
-  const runBulk = async (fn, { successText, undoFn }) => {
+  // ── Bulk runner — confirm → batched write → reload (no undo toast) ─────────
+  const runBulk = async (fn) => {
     setBusy(true)
     const res = await fn()
     setBusy(false); setConfirm(null)
-    if (!res?.ok) { showToast(res?.error || 'Bulk action failed.', { error: true }); return }
-    clearSelection()
-    showToast(successText(res), undoFn ? {
-      onUndo: async () => {
-        setToast(null); setBusy(true)
-        const u = await undoFn()
-        setBusy(false)
-        showToast(u?.ok ? 'Undone.' : (u?.error || 'Undo failed.'), { error: !u?.ok })
-        reload()
-      },
-    } : {})
+    if (res?.ok) clearSelection()
     reload()
   }
 
@@ -499,30 +477,32 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     }))
   }, [])
 
-  // Payment is a manual override on orders.payment_status (imported orders have
-  // no reliable total). Needs the one-line migration; errors gracefully if not.
+  // OPTIMISTIC-FIRST inline edits — patch local state BEFORE the await so the
+  // UI updates instantly with ZERO flicker (no busy/disable opacity change, no
+  // toast, no refetch). On the rare write failure, reload() resyncs the true
+  // state. Payment is a manual override on orders.payment_status.
   const inlinePayment = async (o, code) => {
-    setBusyId(o.id); const r = await bulkUpdateOrders([o.id], { payment_status: code }); setBusyId(null)
-    if (r.ok) patchOrderLocal(o.id, { payment_status: code })
-    showToast(r.ok ? `${o._familyName}: payment → ${paymentStatusLabel(code)}` : (r.error || 'Failed (run the payment_status migration?)'), { error: !r.ok })
+    patchOrderLocal(o.id, { payment_status: code })
+    const r = await bulkUpdateOrders([o.id], { payment_status: code })
+    if (!r.ok) reload()
   }
   const inlineDesign = async (o, code) => {
-    if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
-    setBusyId(o.id); const r = await setOrderDesignStatus(o._job.id, code); setBusyId(null)
-    if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code))
-    showToast(r.ok ? `${o._familyName}: design → ${designStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
+    if (!o._job) return
+    patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code))
+    const r = await setOrderDesignStatus(o._job.id, code)
+    if (!r.ok) reload()
   }
   const inlineStone = async (o, code) => {
-    if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
-    setBusyId(o.id); const r = await setOrderStoneStatus(o._job.id, code); setBusyId(null)
-    if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code))
-    showToast(r.ok ? `${o._familyName}: stone → ${stoneStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
+    if (!o._job) return
+    patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code))
+    const r = await setOrderStoneStatus(o._job.id, code)
+    if (!r.ok) reload()
   }
   const inlineFdn = async (o, code) => {
-    if (!o._job) { showToast('No job for this order yet.', { error: true }); return }
-    setBusyId(o.id); const r = await setOrderFdnStatus(o._job.id, code); setBusyId(null)
-    if (r.ok) patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code))
-    showToast(r.ok ? `${o._familyName}: FDN → ${fdnStatusLabel(code)}` : (r.error || 'Failed'), { error: !r.ok })
+    if (!o._job) return
+    patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code))
+    const r = await setOrderFdnStatus(o._job.id, code)
+    if (!r.ok) reload()
   }
   // Inline date edits — contract = signed_at, due = target_completion_date.
   // Changing the contract date auto-fills an empty due date for new_stone (+5mo).
@@ -537,17 +517,17 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     } else {
       patch.target_completion_date = value || null
     }
-    setBusyId(o.id); const r = await bulkUpdateOrders([o.id], patch); setBusyId(null)
-    if (r.ok) patchOrderLocal(o.id, patch)
-    showToast(r.ok ? `${o._familyName}: ${field === 'signed_at' ? 'contract' : 'due'} date saved` : (r.error || 'Failed'), { error: !r.ok })
+    patchOrderLocal(o.id, patch)
+    const r = await bulkUpdateOrders([o.id], patch)
+    if (!r.ok) reload()
   }
   const inlineTotal = async (o, raw) => {
     const trimmed = String(raw ?? '').trim()
     const val = trimmed === '' ? null : Number(trimmed)
-    if (val != null && !Number.isFinite(val)) { showToast('Enter a number.', { error: true }); return }
-    setBusyId(o.id); const r = await bulkUpdateOrders([o.id], { contract_total: val }); setBusyId(null)
-    if (r.ok) patchOrderLocal(o.id, { contract_total: val })
-    showToast(r.ok ? `${o._familyName}: total ${val == null ? 'cleared' : fmtUSD(val)}` : (r.error || 'Failed'), { error: !r.ok })
+    if (val != null && !Number.isFinite(val)) return
+    patchOrderLocal(o.id, { contract_total: val })
+    const r = await bulkUpdateOrders([o.id], { contract_total: val })
+    if (!r.ok) reload()
   }
 
   // ── CSV export (selected, or whole filtered set if none selected) ─────────
@@ -733,7 +713,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
                 onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
-                onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={busyId === o.id} />
+                onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={false} />
             ))
           )}
 
@@ -770,10 +750,6 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         </div>
       )}
 
-      {toast && (
-        <UndoToast key={toast.id} text={toast.text} error={toast.error} canUndo={toast.canUndo}
-          durationMs={8000} onUndo={toast.onUndo} onClose={() => setToast(null)} />
-      )}
     </div>
   )
 }

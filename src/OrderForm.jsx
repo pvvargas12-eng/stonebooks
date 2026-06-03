@@ -251,7 +251,16 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     // Capture the new id + the deposit into local state so a retry after a
     // downstream failure (job create / backfill) UPDATES this order instead of
     // inserting a duplicate or re-appending the deposit.
-    if (!order.id && savedId) setOrder(o => ({ ...o, id: savedId, payments }))
+    // Capture the new id AND the new customer's id (saveOrder inserts the
+    // customer when there's a name/phone). Linking customer.id locally means a
+    // retry UPDATEs the same customer instead of re-inserting, and confirms the
+    // brand-new customer was created + linked to this order.
+    if (!order.id && savedId) setOrder(o => ({
+      ...o,
+      id: savedId,
+      customer: { ...o.customer, id: o.customer?.id || res.customerId || null },
+      payments,
+    }))
 
     // Auto-detect the permit requirement/fee/status from the selected cemetery
     // (never downgrades a submitted/approved filing; no-ops when cemetery_id is
@@ -798,9 +807,8 @@ function InscriptionCard({ order, updateInsc }) {
   // Custom font is handled as a $150 add-on (see ADDON_KINDS), so it's not a
   // checkbox here — avoids double-charging against buildLineItems' legacy fee.
   return (
-    <Card title="Inscription" sub="Shared epitaph and engraver notes.">
-      <TextAreaField label="Epitaph / scripture" value={insc.epitaph} onChange={v => updateInsc({ epitaph: v })}
-        placeholder="Rest in Peace · In Loving Memory · a verse…" rows={2} />
+    <Card title="Inscription" sub="Engraver notes.">
+      {/* Epitaph / scripture field removed per spec. */}
       <TextAreaField label="Notes for the engraver" value={insc.customNotes} onChange={v => updateInsc({ customNotes: v })}
         placeholder="Layout preferences, fonts, anything the carver needs." rows={2} />
     </Card>

@@ -8,37 +8,13 @@
 // `error` switches to a red treatment for failed saves. No toast library.
 // =============================================================================
 
-export default function UndoToast({
-  text,
-  error = false,
-  canUndo = false,
-  durationMs = 8000,
-  onUndo,
-  onClose,
-}) {
-  return (
-    <div className={`sb-toast ${error ? 'sb-toast-error' : ''}`} role="status" aria-live="polite">
-      <span className="sb-toast-text">{text}</span>
-      {canUndo && (
-        <button type="button" className="sb-toast-undo" onClick={onUndo}>
-          Undo
-        </button>
-      )}
-      <button
-        type="button"
-        className="sb-toast-close"
-        onClick={onClose}
-        aria-label="Dismiss"
-      >
-        ✕
-      </button>
-      <div
-        className="sb-toast-progress"
-        style={{ animationDuration: `${durationMs}ms` }}
-        aria-hidden="true"
-      />
-    </div>
-  )
+// DISABLED — the undo/countdown toast was removed product-wide (no undo toast on
+// any action, single or bulk). Rendering nothing here kills it for every
+// remaining consumer (Customers / Permits / Scheduler) without unwinding their
+// toast state. The OrdersTab path was removed at the source.
+// eslint-disable-next-line no-unused-vars
+export default function UndoToast({ text, error = false, canUndo = false, durationMs = 8000, onUndo, onClose }) {
+  return null
 }
 
 const localStyles = `
