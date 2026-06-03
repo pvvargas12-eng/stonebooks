@@ -580,7 +580,9 @@ export default function OrdersTab({ onOpenSales, onNewOrder, onEditOrder, onOpen
   if (selectedOrderId) {
     return (
       <OrderDetail orderId={selectedOrderId} onBack={() => { setSelectedOrderId(null); reload() }}
-        onEditInSales={(id) => onEditOrder?.(id)} onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer} />
+        onEditInSales={(id) => onEditOrder?.(id)}
+        onEditInSalesPortal={(id) => onOpenOrder?.(id)}
+        onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer} />
     )
   }
 

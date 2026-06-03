@@ -116,7 +116,7 @@ function Section({ title, span = 1, children }) {
 // =============================================================================
 // MAIN
 // =============================================================================
-export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob, onOpenCustomer }) {
+export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer }) {
   const [order, setOrder] = useState(null)
   const [job, setJob] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -473,6 +473,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onOpenJob,
           <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={() => onEditInSales?.(order.id)}>
             Edit order
           </button>
+          {onEditInSalesPortal && (
+            <button type="button" className="sb-od-btn" onClick={() => onEditInSalesPortal(order.id)}>
+              Edit in Sales Portal
+            </button>
+          )}
           <button type="button" className="sb-od-btn" onClick={handleOpenContract}>Open contract</button>
           <button type="button" className="sb-od-btn" onClick={openApprovalPacket}>Open approval packet</button>
           <button type="button" className="sb-od-btn" onClick={() => job ? onOpenJob?.(job.id) : null} disabled={!job}
