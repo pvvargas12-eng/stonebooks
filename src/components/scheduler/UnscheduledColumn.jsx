@@ -11,7 +11,8 @@
 // promise badges on jobs that have one.
 // =============================================================================
 
-import { customerName } from '../../lib/stonebooksData'
+import { useState } from 'react'
+import { customerName, todayLocalISO } from '../../lib/stonebooksData'
 import PromiseBadge from './PromiseBadge'
 
 export default function UnscheduledColumn({
@@ -19,8 +20,31 @@ export default function UnscheduledColumn({
   rows,
   selectedIds,
   onToggle,
+  onScheduleJob,
+  schedulingJobId,
   promisesByJob,
 }) {
+  // Which card's inline "schedule a single job" picker is open + its draft
+  // date/slot. Only one open at a time per column.
+  const [pickerJobId, setPickerJobId] = useState(null)
+  const [pickDate, setPickDate] = useState('')
+  const [pickSlot, setPickSlot] = useState('allday')
+
+  const openPicker = (jobId) => {
+    setPickerJobId(jobId)
+    setPickDate(todayLocalISO())
+    setPickSlot('allday')
+  }
+  const closePicker = () => setPickerJobId(null)
+  const confirmPicker = (row) => {
+    if (!pickDate) return
+    onScheduleJob?.(row, kindInfo.code, {
+      scheduled_date: pickDate,
+      am_pm: pickSlot === 'allday' ? null : pickSlot,
+    })
+    setPickerJobId(null)
+  }
+
   const total = rows.length
   return (
     <section className="sb-uncol" style={{ borderTopColor: kindInfo.color }}>
@@ -40,6 +64,8 @@ export default function UnscheduledColumn({
             const cemetery = job.order?.cemetery?.name || job.cemetery?.name || null
             const promises = promisesByJob?.get(job.id) || []
             const checked = selectedIds.has(job.id)
+            const pickerOpen = pickerJobId === job.id
+            const busy = schedulingJobId === job.id
             return (
               <li key={job.id} className="sb-uncol-card">
                 <label className="sb-uncol-card-label">
@@ -67,6 +93,44 @@ export default function UnscheduledColumn({
                     )}
                   </div>
                 </label>
+
+                {/* Single-job schedule — sits OUTSIDE the checkbox label so it
+                    doesn't toggle selection. Multi-stop building still uses the
+                    checkbox + "Group into batch". */}
+                {!pickerOpen ? (
+                  <button
+                    type="button"
+                    className="sb-uncol-card-sched"
+                    onClick={() => openPicker(job.id)}
+                    disabled={busy}
+                  >
+                    {busy ? 'Scheduling…' : 'Schedule →'}
+                  </button>
+                ) : (
+                  <div className="sb-uncol-sched-picker">
+                    <input
+                      type="date"
+                      className="sb-uncol-sched-date"
+                      value={pickDate}
+                      onChange={e => setPickDate(e.target.value)}
+                      aria-label="Schedule date"
+                    />
+                    <select
+                      className="sb-uncol-sched-slot"
+                      value={pickSlot}
+                      onChange={e => setPickSlot(e.target.value)}
+                      aria-label="Time slot"
+                    >
+                      <option value="allday">All day</option>
+                      <option value="am">AM</option>
+                      <option value="pm">PM</option>
+                    </select>
+                    <div className="sb-uncol-sched-actions">
+                      <button type="button" className="sb-uncol-sched-cancel" onClick={closePicker}>Cancel</button>
+                      <button type="button" className="sb-uncol-sched-go" onClick={() => confirmPicker(row)} disabled={!pickDate || busy}>Schedule</button>
+                    </div>
+                  </div>
+                )}
               </li>
             )
           })}
@@ -167,6 +231,70 @@ const localStyles = `
     margin-top: 2px;
     font-style: italic;
   }
+
+  /* Single-job schedule affordance — quiet bronze link until used; the inline
+     picker expands below the card body. */
+  .sb-uncol-card-sched {
+    display: block;
+    margin: 0 14px 10px 36px;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--sb-accent, #b8842a);
+    cursor: pointer;
+  }
+  .sb-uncol-card-sched:hover:not(:disabled) { text-decoration: underline; }
+  .sb-uncol-card-sched:disabled { color: var(--sb-text-muted); cursor: default; }
+  .sb-uncol-sched-picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 0 14px 10px 36px;
+    padding: 8px 10px;
+    background: var(--sb-surface-muted);
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+  }
+  .sb-uncol-sched-date,
+  .sb-uncol-sched-slot {
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    background: var(--sb-surface);
+    color: var(--sb-text);
+  }
+  .sb-uncol-sched-actions {
+    display: inline-flex;
+    gap: 6px;
+    margin-left: auto;
+  }
+  .sb-uncol-sched-cancel,
+  .sb-uncol-sched-go {
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    border: 0.5px solid transparent;
+  }
+  .sb-uncol-sched-cancel {
+    background: transparent;
+    border-color: var(--sb-border);
+    color: var(--sb-text-muted);
+  }
+  .sb-uncol-sched-cancel:hover { color: var(--sb-text); background: var(--sb-surface); }
+  .sb-uncol-sched-go {
+    background: var(--sb-accent, #b8842a);
+    color: white;
+  }
+  .sb-uncol-sched-go:hover:not(:disabled) { filter: brightness(0.95); }
+  .sb-uncol-sched-go:disabled { background: var(--sb-surface-muted); color: var(--sb-text-muted); cursor: not-allowed; }
 `
 
 if (typeof document !== 'undefined' && !document.getElementById('sb-uncol-styles')) {

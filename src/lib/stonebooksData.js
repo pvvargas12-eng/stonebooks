@@ -6814,6 +6814,43 @@ export async function unscheduleBatchJob(batchJobId) {
 //             (permit not approved / foundation not poured / stone not received).
 //             Surfaced loudly instead of silently omitted so the scheduler can
 //             tell "nothing to install" from "installs blocked, go fix them".
+// READY-WORK ROUTING — the SINGLE place an actionable milestone is mapped to a
+// scheduler column (batch kind) + the milestone the dispatch tick should flip.
+// Keyed by milestone_key. This replaces the old inline per-key `if` ladder; it
+// reads the same job_milestones + group taxonomy the Jobs hubs (HUB_DEFS /
+// getHubWorkItems) read, so "ready to X" cannot drift between the two surfaces.
+//   completion — the milestone markBatchJobComplete cascades to done. NULL =
+//                source-as-completion (the source milestone itself flips).
+//   guard      — a downstream completion key; if already done, suppress the
+//                card so a job doesn't re-surface after its dispatch cascade.
+//                NULL/source-as-completion routes self-skip (own milestone
+//                flips done → filtered at the top of the loop).
+// ready_to_install is handled inline below (it carries the install gate), not
+// here. foundation_poured being ACTIONABLE means the pour trip hasn't happened
+// yet → it routes to foundation_trip (the trip completes the pour); this is
+// the foundation column finally lighting up. The old "foundation deferred"
+// note was about gating SETTING on cure, which the install gate still enforces.
+const READY_WORK_ROUTES = [
+  { key: 'stencil_cut',         kind: 'inscription',     completion: null,                   guard: null },
+  { key: 'production_started',  kind: 'blasting',        completion: 'production_completed',  guard: 'production_completed' },
+  { key: 'door_pickup_needed',  kind: 'door_trip',       completion: 'door_picked_up',        guard: 'door_picked_up' },
+  { key: 'door_dropoff_needed', kind: 'door_trip',       completion: 'door_installed',        guard: 'door_installed' },
+  { key: 'foundation_poured',   kind: 'foundation_trip', completion: 'foundation_poured',     guard: null },
+]
+// cleaning_repair jobs carry no fixed source key, so they route by service_kind:
+// any actionable shop/field milestone surfaces the job into its service column
+// (source-as-completion). This is how the acid_wash + repair columns light up.
+const CLEANING_REPAIR_GROUPS = new Set(['production', 'field', 'stone', 'cleaning', 'repair'])
+function routeReadyWork(m, job) {
+  const direct = READY_WORK_ROUTES.find(r => r.key === m.milestone_key)
+  if (direct) return direct
+  if (job.job_type === 'cleaning_repair' && CLEANING_REPAIR_GROUPS.has(m.group)) {
+    if (job.service_kind === 'acid_wash') return { kind: 'acid_wash', completion: m.milestone_key, guard: null }
+    if (job.service_kind === 'repair')    return { kind: 'repair',    completion: m.milestone_key, guard: null }
+  }
+  return null
+}
+
 export function getSchedulableJobs(jobs, batches) {
   const buckets = new Map(BATCH_KINDS.map(k => [k.code, []]))
   const blocked = []
@@ -6828,29 +6865,31 @@ export function getSchedulableJobs(jobs, batches) {
     }
   }
 
-  for (const job of (jobs || [])) {
+  // Hub-fed candidate universe — the Production + Installation hubs ARE the
+  // shop/field ready-work the Jobs hubs surface. Re-basing on them (instead of
+  // a private job walk) means the Scheduler and the Jobs hubs read ONE source;
+  // a job is "ready to schedule" only if the same classifier puts it in an
+  // operational hub. getHubWorkItems is defined earlier in this module.
+  const hubItems = [
+    ...getHubWorkItems('production', jobs).items,
+    ...getHubWorkItems('installation', jobs).items,
+  ]
+  const candidates = []
+  const seenJob = new Set()
+  for (const it of hubItems) {
+    if (!it?.job || seenJob.has(it.job.id)) continue
+    seenJob.add(it.job.id)
+    candidates.push(it.job)
+  }
+
+  for (const job of candidates) {
     if (!job || job.overall_status === 'closed') continue
     if (linked.has(job.id)) continue
     const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
-    // Walk milestones; only milestones that are actionable now drive a
-    // bucket assignment. A job in mid-design isn't a candidate for a
-    // setting batch; it's a candidate for a layout-stage batch (which
-    // we don't track yet — Layout work isn't a field/shop batch).
-    //
-    // Phase 3 (2026-05-28): each push now carries completion_milestone_key
-    // alongside the source milestone, so BatchBuilder can thread both into
-    // createBatch and the Phase 2 cascade has a deterministic target.
-    //
-    // (A) Source-key re-surface guard: each route checks `completionDone(...)`
-    // before pushing. The Phase 2 cascade flips ONLY the completion milestone;
-    // the source stays at whatever status it had (often still actionable).
-    // Without this guard, a job re-appears in its column the day after the
-    // batch closes because the source milestone is still un-done. The guard
-    // looks ahead to the completion milestone status — if the work has been
-    // recorded as completed via cascade, the job is suppressed regardless
-    // of the source status. NULL completion routes (inscription) don't need
-    // the guard because (K) source-as-completion makes them self-skipping:
-    // the source itself flips done.
+    // Suppression guard (A): the dispatch cascade flips ONLY the completion
+    // milestone; the source often stays actionable, so without this a job
+    // re-appears in its column the day after the batch closes. completionDone
+    // looks ahead to the completion key — done there → suppress.
     const completionDone = (key) => {
       if (!key) return false
       const c = byKey.get(key)
@@ -6858,93 +6897,66 @@ export function getSchedulableJobs(jobs, batches) {
     }
     // Readiness gate for an install: a milestone the template DOESN'T carry is
     // N/A (true) — don't false-block a job whose template never tracked it;
-    // a milestone it DOES carry must be done/not_needed. Distinct from
-    // completionDone, which treats an absent milestone as "not done".
+    // a milestone it DOES carry must be done/not_needed.
     const gateOk = (key) => {
       const c = byKey.get(key)
       if (!c) return true                 // not in template → not applicable
       return c.status === 'done' || c.status === 'not_needed'
     }
+    // One card per (job, kind) — a cleaning_repair job with several actionable
+    // shop milestones shouldn't stack duplicate cards in one column.
+    const seenKinds = new Set()
+    const pushCard = (kind, m, completion) => {
+      if (seenKinds.has(kind)) return
+      const arr = buckets.get(kind)
+      if (!arr) return
+      seenKinds.add(kind)
+      arr.push({ job, milestone: m, completion_milestone_key: completion })
+    }
+
     for (const m of (job.milestones || [])) {
       if (m.status === 'done' || m.status === 'not_needed') continue
       if (m.status === 'not_started' && hasUnsatisfiedRequires(m, byKey)) continue
 
-      // Inscription — surface on stencil_cut regardless of job_type.
-      // The previous job_type='inscription' predicate was a dead-letter
-      // gate (no such job_type exists in prod). Completion is intentionally
-      // null — (K) source-as-completion fallback in markBatchJobComplete
-      // cascades stencil_cut itself to done at dispatch tick. Phase 4 should
-      // add a proper inscription_completed milestone.
-      if (m.milestone_key === 'stencil_cut') {
-        buckets.get('inscription').push({ job, milestone: m, completion_milestone_key: null })
-        continue
-      }
-      // Foundation — DEFERRED to Phase 4 (G). Setting work on green concrete
-      // is a real shop-floor hazard if downstream logic ever keys off
-      // foundation_poured before the 7-day cure window passes. Phase 4 will
-      // add foundation_cured + gate downstream setting on it. Foundation
-      // work is NOT schedulable through this surface today — intentional.
-
-      // Mausoleum door — pickup leg surfaces from door_pickup_needed
-      // (completion door_picked_up). Template-chain `requires` keep the
-      // dropoff leg gated until pickup completes; simultaneous double-
-      // surfacing on the same job is structurally prevented.
-      if (m.milestone_key === 'door_pickup_needed') {
-        if (completionDone('door_picked_up')) continue
-        buckets.get('door_trip').push({ job, milestone: m, completion_milestone_key: 'door_picked_up' })
-        continue
-      }
-      // Mausoleum door — dropoff/return leg. door_installed is a MISNOMER
-      // (Shevchenko does no door installation — this is the return trip to
-      // the cemetery). Phase 4 will rename the template key; for now this
-      // is the in-template completion satisfier.
-      if (m.milestone_key === 'door_dropoff_needed') {
-        if (completionDone('door_installed')) continue
-        buckets.get('door_trip').push({ job, milestone: m, completion_milestone_key: 'door_installed' })
-        continue
-      }
-      // Sandblast / production → blasting (shop). Completion = production_completed.
-      if (m.milestone_key === 'production_started') {
-        if (completionDone('production_completed')) continue
-        buckets.get('blasting').push({ job, milestone: m, completion_milestone_key: 'production_completed' })
-        continue
-      }
-      // Ready-to-install → setting (new_stone job type only). The delivery
-      // branch for non-new_stone job_types is COMMENTED OUT (P): no current
-      // template carries ready_to_install on a non-new_stone job_type, and
-      // leaving the branch active primes a silent cascade failure the moment
-      // a future template adds it. Reinstate explicitly when that template
-      // lands AND the cascade target ('installed' or whatever) is verified
-      // present in that template.
+      // Ready-to-install carries the install-readiness gate, so it's handled
+      // inline rather than in READY_WORK_ROUTES.
       if (m.milestone_key === 'ready_to_install') {
-        if (job.job_type !== 'new_stone') continue   // (P) delivery branch disabled
         if (completionDone('installed')) continue
-        // Install-readiness composite — you do NOT put a crew on the road for a
-        // setting unless all three are clear:
-        //   • stone received  • foundation poured  • permit approved
-        // gateOk treats a milestone the template doesn't carry as N/A. Permit
-        // lives on the order (joined via getJobs); 'approved'/'not_required'
-        // pass, everything else (unknown/required/submitted) blocks. This is
-        // the Permit Hub tie-in: an unapproved permit makes the install BLOCKED,
-        // not schedulable. foundation_poured is the present signal; the 7-day
-        // cure window (foundation_cured) is a documented Phase 4 refinement.
-        const stoneOk = gateOk('stone_received')
-        const foundationOk = gateOk('foundation_poured')
-        const permit = job.order?.permit_status || 'unknown'
-        const permitOk = permit === 'approved' || permit === 'not_required'
-        if (stoneOk && foundationOk && permitOk) {
-          buckets.get('setting').push({ job, milestone: m, completion_milestone_key: 'installed' })
+        if (job.job_type === 'new_stone') {
+          // You do NOT put a crew on the road for a setting unless all three
+          // are clear: stone received ∧ foundation poured ∧ permit approved.
+          // gateOk treats a milestone the template doesn't carry as N/A.
+          // Permit lives on the order (joined via getJobs). This is the Permit
+          // Hub tie-in: an unapproved permit makes the install BLOCKED, not
+          // schedulable. foundation_poured is the present signal; the 7-day
+          // cure window (foundation_cured) is a documented Phase 4 refinement.
+          const stoneOk = gateOk('stone_received')
+          const foundationOk = gateOk('foundation_poured')
+          const permit = job.order?.permit_status || 'unknown'
+          const permitOk = permit === 'approved' || permit === 'not_required'
+          if (stoneOk && foundationOk && permitOk) {
+            pushCard('setting', m, 'installed')
+          } else {
+            const reasons = []
+            if (!permitOk) reasons.push(permit === 'submitted' ? 'Permit awaiting approval' : permit === 'required' ? 'Permit required, not filed' : 'Permit not approved')
+            if (!foundationOk) reasons.push('Foundation not poured')
+            if (!stoneOk) reasons.push('Stone not received')
+            blocked.push({ job, milestone: m, completion_milestone_key: 'installed', reasons })
+          }
         } else {
-          const reasons = []
-          if (!permitOk) reasons.push(permit === 'submitted' ? 'Permit awaiting approval' : permit === 'required' ? 'Permit required, not filed' : 'Permit not approved')
-          if (!foundationOk) reasons.push('Foundation not poured')
-          if (!stoneOk) reasons.push('Stone not received')
-          blocked.push({ job, milestone: m, completion_milestone_key: 'installed', reasons })
+          // Non-new_stone ready_to_install → delivery. The stone/foundation
+          // gate is new_stone-specific (physical setting), so delivery routes
+          // ungated; completion stays 'installed'.
+          pushCard('delivery', m, 'installed')
         }
         continue
       }
-      // Acid wash / repair / rub_grab — gap milestones today, leave buckets
-      // empty until the templates carry the source keys.
+
+      const route = routeReadyWork(m, job)
+      if (route) {
+        if (route.guard && completionDone(route.guard)) continue
+        pushCard(route.kind, m, route.completion)
+      }
     }
   }
   // Sort each bucket by aging desc so the most-overdue card surfaces first.
