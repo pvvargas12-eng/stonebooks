@@ -103,6 +103,8 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
   const [err, setErr] = useState(null)
   const [view, setView] = useState('worklist')      // 'worklist' | 'cemeteries'
   const [tableFilter, setTableFilter] = useState(null)
+  const [paidOnly, setPaidOnly] = useState(false)        // show only orders with a paid (amount>0) filing
+  const [groupByCemetery, setGroupByCemetery] = useState(false)
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [reloadNonce, setReloadNonce] = useState(0)
 
@@ -125,8 +127,23 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
       const job = jobByOrderId.get(o.id) || null
       const buckets = permitBuckets(o, job)
       const { foundation, install } = jobStageLabels(job)
+      const recs = permitRecords(o)
+      const terminal = o.status === 'closed' || o.status === 'cancelled' || o.archived === true
+      // MISSING fix — permitBuckets only flags permit_missing when status is
+      // 'unknown', so a determined-'required' order with no filed permit (the
+      // "No permits filed" rows) never counted and the card read 0. Augment
+      // locally: a permit is needed (cemetery requires it OR status='required')
+      // and nothing has actually been filed yet. Not for submitted/approved/
+      // not_required (those aren't "missing"), not for terminal orders.
+      const st = o.permit_status || 'unknown'
+      const needsPermit = (o.permit_required === true || st === 'required') &&
+        st !== 'submitted' && st !== 'approved' && st !== 'not_required'
+      if (!terminal && needsPermit && recs.length === 0 && !buckets.includes('permit_missing')) {
+        buckets.push('permit_missing')
+      }
+      const paid = recs.some(pm => Number(pm.amount) > 0)
       return {
-        ...o, _job: job, _buckets: buckets,
+        ...o, _job: job, _buckets: buckets, _paid: paid,
         _familyName: (o.primary_lastname && String(o.primary_lastname).trim()) ||
           (o.customer?.last_name && String(o.customer.last_name).trim().toUpperCase()) || customerName(o.customer) || '—',
         _deceased: deceasedLabel(o), _foundation: foundation, _install: install,
@@ -148,10 +165,30 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
   const worklist = useMemo(() => {
     let list = enriched.filter(o => o._buckets.length > 0)
     if (tableFilter) list = list.filter(o => o._buckets.includes(tableFilter))
+    if (paidOnly) list = list.filter(o => o._paid)
     return [...list].sort((a, b) => a._priority - b._priority || (a._familyName || '').localeCompare(b._familyName || ''))
-  }, [enriched, tableFilter])
+  }, [enriched, tableFilter, paidOnly])
 
   const logRows = useMemo(() => buildPermitLogRows(worklist), [worklist])
+
+  // Group-by-cemetery — cluster the worklist by cemetery, preserving the
+  // worklist sort within each group. Each group carries its order ids (the
+  // selectable unit) + a filed-permit count. null when the toggle is off.
+  const cemeteryGroups = useMemo(() => {
+    if (!groupByCemetery) return null
+    const map = new Map()
+    for (const o of worklist) {
+      const key = o.cemetery?.id || '__none__'
+      if (!map.has(key)) map.set(key, { key, name: o.cemetery?.name || 'No cemetery linked', orders: [] })
+      map.get(key).orders.push(o)
+    }
+    return [...map.values()].map(g => ({
+      ...g,
+      rows: buildPermitLogRows(g.orders),
+      orderIds: g.orders.map(o => o.id),
+      filedCount: g.orders.reduce((n, o) => n + permitRecords(o).length, 0),
+    }))
+  }, [groupByCemetery, worklist])
 
   // ── Bulk select (mirrors OrdersTab) — selection is per-ORDER ──────────────
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -185,6 +222,17 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
   const selectAllMatching = () => setSelectedIds(new Set(filteredOrderIds))
   const clearSelection = () => { setSelectedIds(new Set()); lastIndexRef.current = null }
   const reload = () => setReloadNonce(n => n + 1)
+
+  // Select-all-in-this-cemetery — grab a whole cemetery's orders in one click
+  // (so a cemetery's permits can be bulk-filed together). Toggles off if the
+  // whole group is already selected.
+  const cemAllSelected = (orderIds) => orderIds.length > 0 && orderIds.every(id => selectedIds.has(id))
+  const toggleCemetery = (orderIds) => setSelectedIds(prev => {
+    const next = new Set(prev)
+    const all = orderIds.every(id => next.has(id))
+    orderIds.forEach(id => all ? next.delete(id) : next.add(id))
+    return next
+  })
 
   const showToast = (text, { error = false, onUndo = null } = {}) =>
     setToast({ id: String(toastSeqRef.current++), text, error, canUndo: !!onUndo, onUndo })
@@ -242,6 +290,52 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
     })
   }
 
+  // One permit-log row. Column order: ☐ · Order · Name · Job Type · Amount ·
+  // Method/CK# · Date Filed · Permit status. Checkbox / Order / status pill
+  // render on the order's first row only; continuation rows show just the
+  // permit fields. Cemetery shows under the order so it's visible either way.
+  const renderLogRow = (row, i) => {
+    const o = row.order
+    const pm = row.permit
+    const selected = selectedIds.has(o.id)
+    const blocking = o._buckets.includes('permit_blocking')
+    return (
+      <div
+        key={pm?.id ? `${o.id}:${pm.id}` : `${o.id}:${i}`}
+        className={`sb-crm-row sb-ph-logrow${selected ? ' sb-ph-rowsel' : ''}${row.isFirstOfOrder ? '' : ' sb-ph-logrow-cont'}`}
+      >
+        <div onClick={e => e.stopPropagation()}>
+          {row.isFirstOfOrder && (
+            <input type="checkbox" checked={selected}
+              onClick={e => { e.stopPropagation(); toggleOne(o.id, row.orderIndex, e.shiftKey) }}
+              onChange={() => {}} aria-label={`Select ${o._familyName}`} />
+          )}
+        </div>
+        <div>
+          {row.isFirstOfOrder && (
+            <button type="button" className="sb-ph-log-order" onClick={() => setSelectedOrderId(o.id)}>
+              <span className="sb-crm-primary">{o._familyName}</span>
+              <span className="sb-crm-secondary sb-crm-mono">{o.order_number || 'DRAFT'}</span>
+              <span className="sb-ph-log-cem">{o.cemetery?.name || 'No cemetery linked'}</span>
+            </button>
+          )}
+        </div>
+        <div className="sb-crm-primary">{pm?.name || (pm ? <span className="sb-crm-muted">—</span> : (row.isFirstOfOrder ? <span className="sb-crm-muted">No permits filed</span> : null))}</div>
+        <div className="sb-crm-secondary">{pm?.type || <span className="sb-crm-muted">—</span>}</div>
+        <div className="num">{pm && pm.amount != null ? <span className="sb-ph-log-amt">{fmtUSD(pm.amount)}</span> : <span className="sb-crm-muted">—</span>}</div>
+        <div className="sb-crm-secondary">{(pm && methodCk(pm)) || <span className="sb-crm-muted">—</span>}</div>
+        <div className="sb-crm-secondary sb-crm-tabular">{(pm && fmtFiledDate(pm.date_filed)) || <span className="sb-crm-muted">—</span>}</div>
+        <div>
+          {row.isFirstOfOrder && (
+            <span className={`sb-ph-pill sb-ph-${o.permit_status || 'unknown'}${blocking ? ' sb-ph-blockmark' : ''}`}>
+              {permitStatusLabel(o.permit_status)}{blocking ? ' · BLOCKING' : ''}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   // Row drill-in → OrderDetail (with the permit section).
   if (selectedOrderId) {
     return (
@@ -296,94 +390,78 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
                 {PERMIT_QUEUES.map(q => (
                   <button key={q.code} type="button" className={`sb-crm-chip${tableFilter === q.code ? ' sb-crm-chip-active' : ''}`} onClick={() => setTableFilter(q.code)}><span>{q.label}</span></button>
                 ))}
+                {/* Paid — independent overlay toggle: only orders with a filed permit amount > 0 */}
+                <button type="button" className={`sb-crm-chip${paidOnly ? ' sb-crm-chip-active' : ''}`} onClick={() => setPaidOnly(v => !v)}><span>Paid</span></button>
+              </div>
+              <div className="sb-crm-chip-group">
+                <span className="sb-crm-chip-group-label">View</span>
+                <button type="button" className={`sb-crm-chip${groupByCemetery ? ' sb-crm-chip-active' : ''}`} onClick={() => setGroupByCemetery(v => !v)}><span>Group by cemetery</span></button>
               </div>
             </div>
 
-            {/* Bulk action bar — sticky, shown when ≥1 order selected. Mirrors
-                the Orders Triage Workbench. "Set permit status" is the action. */}
+            {/* Bulk action bar — sticky, shown when ≥1 order selected. Same
+                handlers + bulkUpdateOrders as the Orders Triage Workbench;
+                CRM-clean styling (bronze-accented white bar). */}
             {selectedIds.size > 0 && (
-              <div className="sb-tw-bulkbar">
-                <div className="sb-tw-bulk-count">
+              <div className="sb-ph-bulkbar">
+                <div className="sb-ph-bulk-count">
                   <strong>{selectedIds.size}</strong> selected
-                  {!allMatchingSelected && (
-                    <button type="button" className="sb-tw-link" onClick={selectAllMatching}>Select all {worklist.length} matching</button>
-                  )}
-                  {allMatchingSelected && <span className="sb-tw-allnote">all matching</span>}
+                  {' · '}
+                  {allMatchingSelected
+                    ? <span className="sb-ph-bulk-note">all matching</span>
+                    : <button type="button" className="sb-ph-bulk-link" onClick={selectAllMatching}>Select all {worklist.length} matching</button>}
                 </div>
-                <div className="sb-tw-bulk-actions">
+                <div className="sb-ph-bulk-actions">
                   <BulkSelect label="Set permit status" disabled={busy}
                     options={PERMIT_STATUSES.map(s => ({ value: s.code, label: s.label }))}
                     onPick={askSetPermitStatus} />
-                  <button type="button" className="sb-tw-bbtn sb-tw-bbtn-ghost" onClick={clearSelection}>Clear</button>
+                  <button type="button" className="sb-ph-bulk-clear" onClick={clearSelection}>Clear</button>
                 </div>
               </div>
             )}
 
             {/* Permit-log table — ONE ROW PER PERMIT, grouped under its order.
-                Columns: ☐ · Name · Job Type · Amount · Method/CK# · Date Filed
-                · Order · Status. Same .sb-crm-* / .sb-tw-* styling as Orders. */}
+                Columns: ☐ · Order · Name · Job Type · Amount · Method/CK# ·
+                Date Filed · Permit status. */}
             <div className="sb-crm-card sb-crm-table">
               <div className="sb-crm-row sb-crm-row-head sb-ph-logrow">
                 <div><input type="checkbox" checked={allMatchingSelected} onChange={toggleAll} aria-label="Select all matching" /></div>
+                <div>Order</div>
                 <div>Name</div>
                 <div>Job Type</div>
                 <div className="num">Amount</div>
                 <div>Method / CK#</div>
                 <div>Date Filed</div>
-                <div>Order</div>
                 <div>Permit status</div>
               </div>
               {loading ? (
                 <div className="sb-crm-empty">Loading permits…</div>
-              ) : logRows.length === 0 ? (
+              ) : worklist.length === 0 ? (
                 <div className="sb-crm-empty">Nothing here.</div>
-              ) : (
-                logRows.map((row, i) => {
-                  const o = row.order
-                  const pm = row.permit
-                  const selected = selectedIds.has(o.id)
-                  const blocking = o._buckets.includes('permit_blocking')
+              ) : cemeteryGroups ? (
+                cemeteryGroups.map(g => {
+                  const allSel = cemAllSelected(g.orderIds)
                   return (
-                    <div
-                      key={pm?.id ? `${o.id}:${pm.id}` : `${o.id}:${i}`}
-                      className={`sb-crm-row sb-ph-logrow${selected ? ' sb-tw-row-sel' : ''}${row.isFirstOfOrder ? '' : ' sb-ph-logrow-cont'}`}
-                    >
-                      <div onClick={e => e.stopPropagation()}>
-                        {row.isFirstOfOrder && (
-                          <input type="checkbox" checked={selected}
-                            onClick={e => { e.stopPropagation(); toggleOne(o.id, row.orderIndex, e.shiftKey) }}
-                            onChange={() => {}} aria-label={`Select ${o._familyName}`} />
-                        )}
+                    <div key={g.key}>
+                      <div className="sb-ph-cemhdr">
+                        <input type="checkbox" checked={allSel}
+                          onChange={() => toggleCemetery(g.orderIds)}
+                          aria-label={`Select all permits in ${g.name}`} />
+                        <span className="sb-ph-cemhdr-name">{g.name}</span>
+                        <span className="sb-ph-cemhdr-count">{g.orders.length} order{g.orders.length === 1 ? '' : 's'} · {g.filedCount} permit{g.filedCount === 1 ? '' : 's'} filed</span>
                       </div>
-                      <div className="sb-crm-primary">{pm?.name || (pm ? <span className="sb-crm-muted">—</span> : (row.isFirstOfOrder ? <span className="sb-crm-muted">No permits filed</span> : null))}</div>
-                      <div className="sb-crm-secondary">{pm?.type || <span className="sb-crm-muted">—</span>}</div>
-                      <div className="num">{pm && pm.amount != null ? <span className="sb-ph-log-amt">{fmtUSD(pm.amount)}</span> : <span className="sb-crm-muted">—</span>}</div>
-                      <div className="sb-crm-secondary">{(pm && methodCk(pm)) || <span className="sb-crm-muted">—</span>}</div>
-                      <div className="sb-crm-secondary sb-crm-tabular">{(pm && fmtFiledDate(pm.date_filed)) || <span className="sb-crm-muted">—</span>}</div>
-                      <div>
-                        {row.isFirstOfOrder && (
-                          <button type="button" className="sb-ph-log-order" onClick={() => setSelectedOrderId(o.id)}>
-                            <span className="sb-crm-primary">{o._familyName}</span>
-                            <span className="sb-crm-secondary sb-crm-mono">{o.order_number || 'DRAFT'}</span>
-                          </button>
-                        )}
-                      </div>
-                      <div>
-                        {row.isFirstOfOrder && (
-                          <span className={`sb-ph-pill sb-ph-${o.permit_status || 'unknown'}${blocking ? ' sb-ph-blockmark' : ''}`}>
-                            {permitStatusLabel(o.permit_status)}{blocking ? ' · BLOCKING' : ''}
-                          </span>
-                        )}
-                      </div>
+                      {g.rows.map((row, i) => renderLogRow(row, i))}
                     </div>
                   )
                 })
+              ) : (
+                logRows.map((row, i) => renderLogRow(row, i))
               )}
             </div>
             <p className="sb-ph-note">
               One row per filed permit, grouped by order. Tick orders to bulk-set permit status (one batched update, with undo).
-              Click a family name to open the order's permit detail. Active orders only.
-              “Blocking install” = ready-to-set stone whose permit isn’t approved — fix before scheduling a crew.
+              Click a family name to open the order's permit detail. Group by cemetery to grab a whole cemetery's permits in one click.
+              Active orders only. “Blocking install” = ready-to-set stone whose permit isn’t approved — fix before scheduling a crew.
             </p>
 
             {/* Confirm modal — same shell as Orders */}
@@ -414,7 +492,7 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
 // Mirrors the Orders Triage Workbench control.
 function BulkSelect({ label, options, onPick, disabled }) {
   return (
-    <select className="sb-tw-bbtn sb-tw-bselect" disabled={disabled} value=""
+    <select className="sb-ph-bulk-select" disabled={disabled} value=""
       onChange={e => { const v = e.target.value; e.target.value = ''; if (v) onPick(v) }}>
       <option value="">{label}…</option>
       {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -535,17 +613,43 @@ const PH_CSS = `
   .sb-ph-card-blocking .sb-ph-card-count { font-size: 34px; color: #B54040; margin: 0; }
   .sb-ph-card-blocking .sb-ph-card-sub { margin-left: auto; color: #8a5a5a; }
 
-  /* Permit-log table — one row per permit, grouped by order.
-     ☐ · Name · Job Type · Amount · Method/CK# · Date Filed · Order · Status */
-  .sb-ph-logrow { grid-template-columns: 0.4fr 1.3fr 1.2fr 0.8fr 1.2fr 1.0fr 1.3fr 1.1fr; align-items: center; }
-  /* Continuation rows (same order, extra permits) — hairline-only top border
-     + faint inset so the permits read as grouped under the order above. */
-  .sb-ph-logrow-cont { border-top-color: #f0eee9; }
-  .sb-ph-logrow-cont > div:nth-child(2) { padding-left: 10px; }
+  /* Permit-log table — one row per permit, grouped by order. Order is the
+     anchor (far left after the checkbox).
+     ☐ · Order · Name · Job Type · Amount · Method/CK# · Date Filed · Status */
+  .sb-ph-logrow { grid-template-columns: 0.4fr 1.7fr 1.2fr 1.0fr 0.8fr 1.2fr 1.0fr 1.0fr; align-items: center; }
+  /* Bronze checkboxes — not the raw browser default. */
+  .sb-ph-logrow input[type="checkbox"],
+  .sb-ph-cemhdr input[type="checkbox"] { width: 15px; height: 15px; accent-color: #9A7209; cursor: pointer; margin: 0; }
+  /* Selected order group — subtle bronze-tint wash (not a harsh block), with a
+     thin bronze anchor rule on the order's first row. Whole group tints. */
+  .sb-ph-rowsel { background: rgba(154, 114, 9, 0.06); }
+  .sb-ph-rowsel:not(.sb-ph-logrow-cont) { box-shadow: inset 3px 0 0 0 #9A7209; }
+  /* Continuation rows (same order, extra permits) — hairline-only top border +
+     faint inset on the Name cell so the permits read as grouped under the order. */
+  .sb-ph-logrow-cont { border-top-color: #f3f1ec; }
+  .sb-ph-logrow-cont > div:nth-child(3) { padding-left: 12px; border-left: 2px solid #efe7d4; }
   .sb-ph-log-amt { font-weight: 600; color: #1D9E75; font-variant-numeric: tabular-nums; }
   .sb-ph-log-order { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; text-align: left; background: none; border: none; font: inherit; padding: 0; cursor: pointer; }
   .sb-ph-log-order:hover .sb-crm-primary { color: #9A7209; text-decoration: underline; }
+  .sb-ph-log-cem { font-size: 11px; color: #8a8a85; }
   .sb-ph-pill { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 2px 8px; background: #eee; color: #555; }
+
+  /* Cemetery group header (Group-by-cemetery on). */
+  .sb-ph-cemhdr { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #faf7f0; border-top: 0.5px solid #e4e2dd; border-bottom: 0.5px solid #e4e2dd; }
+  .sb-ph-cemhdr-name { font-family: var(--font-d, 'Playfair Display'), Georgia, serif; font-size: 14px; font-weight: 600; color: #1e2d3d; }
+  .sb-ph-cemhdr-count { font-size: 12px; color: #8a8a85; font-variant-numeric: tabular-nums; }
+
+  /* Bulk action bar — sticky, CRM-clean (white card + bronze left accent). */
+  .sb-ph-bulkbar { position: sticky; top: 8px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 14px 0 8px; padding: 10px 16px; background: #fff; border: 0.5px solid #e4e2dd; border-left: 3px solid #9A7209; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+  .sb-ph-bulk-count { font-size: 13px; color: #1e2d3d; }
+  .sb-ph-bulk-count strong { font-variant-numeric: tabular-nums; }
+  .sb-ph-bulk-note { color: #8a8a85; }
+  .sb-ph-bulk-link { background: none; border: none; padding: 0; font: inherit; color: #9A7209; cursor: pointer; text-decoration: underline; }
+  .sb-ph-bulk-actions { display: flex; align-items: center; gap: 8px; }
+  .sb-ph-bulk-select { font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 0.5px solid #d8d6d1; background: #fff; color: #1e2d3d; cursor: pointer; }
+  .sb-ph-bulk-select:hover:not(:disabled) { border-color: #9A7209; }
+  .sb-ph-bulk-clear { font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 0.5px solid #e4e2dd; background: transparent; color: #8a8a85; cursor: pointer; }
+  .sb-ph-bulk-clear:hover { color: #1e2d3d; border-color: #d8d6d1; }
   .sb-ph-required  { background: #fbf1da; color: #9A7209; }
   .sb-ph-submitted { background: #e7eefb; color: #1d4ed8; }
   .sb-ph-approved  { background: #e3f4ec; color: #1D9E75; }
