@@ -112,7 +112,10 @@ export async function createCustomer(customer) {
     first_name: customer.firstName || '',
     last_name:  customer.lastName || '',
     phone_primary: customer.phonePrimary || null,
-    phone_secondary: customer.phoneSecondary || null,
+    // Real column is phone_alt (matches customerToRow / the customers schema).
+    // Sending the non-existent phone_secondary made every insert fail with
+    // PostgREST PGRST204 "Could not find the 'phone_secondary' column".
+    phone_alt: customer.phoneSecondary || null,
     email: customer.email || null,
     address_line1: customer.addressLine1 || null,
     city: customer.city || null,
