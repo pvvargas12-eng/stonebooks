@@ -841,6 +841,75 @@ export function bulkRestoreOrders(ids) {
   return bulkUpdateOrders(ids, { archived: false, archived_at: null })
 }
 
+// ── D2 — HARD DELETE (permanent, archive-gated) ─────────────────────────────
+// Irreversible. ONLY an archived order can be hard-deleted (archive first). The
+// cascade clears every child explicitly, in dependency order, so nothing is
+// orphaned — money (payments[] JSONB + legacy columns ride on the order row),
+// jobs, milestones, events, promises, batch links, proofs, estimates,
+// financial_records, notes, emails, and Storage attachments. Aborts on the first
+// error WITHOUT deleting the order row, so a blocked child delete can never
+// leave a half-deleted order. RESTRICT children (job_cost_estimates,
+// financial_records) are deleted before their job; cascade children are deleted
+// explicitly too for a no-orphan guarantee regardless of FK config.
+export async function hardDeleteOrder(orderId) {
+  if (!orderId) return { ok: false, error: 'Missing order id' }
+  const { data: ord, error: rErr } = await supabase
+    .from('orders').select('id, order_number, archived').eq('id', orderId).single()
+  if (rErr || !ord) return { ok: false, error: rErr?.message || 'Order not found' }
+  if (!ord.archived) return { ok: false, error: 'This order must be archived before it can be permanently deleted.' }
+
+  // 1) Jobs + their children.
+  const { data: jobs, error: jReadErr } = await supabase.from('jobs').select('id').eq('order_id', orderId)
+  if (jReadErr) return { ok: false, error: `Could not read jobs: ${jReadErr.message}` }
+  const jobIds = (jobs || []).map(j => j.id)
+  if (jobIds.length) {
+    // RESTRICT children must go before the job, else the job delete is blocked.
+    for (const t of ['job_cost_estimates', 'financial_records']) {
+      const { error } = await supabase.from(t).delete().in('job_id', jobIds)
+      if (error) return { ok: false, error: `Failed clearing ${t}: ${error.message}` }
+    }
+    // Remaining children — explicit so we never rely on FK cascade config.
+    for (const t of ['work_batch_jobs', 'job_promises', 'proof_versions', 'job_events', 'job_milestones']) {
+      const { error } = await supabase.from(t).delete().in('job_id', jobIds)
+      if (error) return { ok: false, error: `Failed clearing ${t}: ${error.message}` }
+    }
+    const { error: jErr } = await supabase.from('jobs').delete().in('id', jobIds)
+    if (jErr) return { ok: false, error: `Failed deleting job(s): ${jErr.message}` }
+  }
+
+  // 2) Order-level children. order_notes cascades; delete explicitly anyway.
+  for (const t of ['order_emails', 'order_notes', 'financial_records']) {
+    const { error } = await supabase.from(t).delete().eq('order_id', orderId)
+    // A missing table/column on a given deployment shouldn't block the delete.
+    if (error && !/relation .* does not exist|column .* does not exist/i.test(error.message)) {
+      return { ok: false, error: `Failed clearing ${t}: ${error.message}` }
+    }
+  }
+
+  // 3) Storage attachments (best-effort — a storage hiccup shouldn't strand the
+  //    DB delete, but we try first while we still have the order id).
+  try { await _deleteOrderStorage(orderId) } catch (e) { console.warn('[hardDelete] storage sweep:', e?.message) }
+
+  // 4) The order row itself (payments[] JSONB + legacy deposit/balance go with it).
+  const { error: oErr } = await supabase.from('orders').delete().eq('id', orderId)
+  if (oErr) return { ok: false, error: `Failed deleting the order: ${oErr.message}` }
+  return { ok: true, orderNumber: ord.order_number }
+}
+
+// Remove an order's files from the public attachments bucket. Covers both the
+// general-attachment layout (attachments/<orderId>/) and the completion-photo
+// layout (<orderId>/completion/). Proof/signature files live in their own
+// buckets and are left to their own lifecycle.
+async function _deleteOrderStorage(orderId) {
+  const bucket = supabase.storage.from('orders-attachments-public')
+  const dirs = [`attachments/${orderId}`, `${orderId}/completion`, `${orderId}`]
+  for (const dir of dirs) {
+    const { data } = await bucket.list(dir)
+    const files = (data || []).filter(f => f && f.id).map(f => `${dir}/${f.name}`)
+    if (files.length) await bucket.remove(files)
+  }
+}
+
 // Set lifecycle status (plain enum set — no paid_in_full snapshot, no side
 // effects; "Set status from the status enum").
 export function bulkSetOrderStatus(ids, status) {

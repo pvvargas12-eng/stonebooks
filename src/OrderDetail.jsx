@@ -22,7 +22,7 @@ import {
   uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
-  setOrderPermit, PERMIT_STATUSES, needsSignedContract,
+  setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -139,6 +139,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
+  // D2 — permanent delete (archived only)
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteErr, setDeleteErr] = useState(null)
   // Approval packet preview
   const [approvalSheet, setApprovalSheet] = useState(null)  // { url, doc, filename, version } | null
   // Permit editor
@@ -282,6 +286,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       body: res.body || '',
       busy: false, error: null, sent: false,
     })
+  }
+
+  // ── D2 — permanent delete (archived only) ──────────────────────────────────
+  const handleHardDelete = async () => {
+    if (deleteBusy) return
+    setDeleteBusy(true); setDeleteErr(null)
+    const res = await hardDeleteOrder(order.id)
+    setDeleteBusy(false)
+    if (!res.ok) { setDeleteErr(res.error || 'Could not delete the order.'); return }
+    setDeleteModal(false)
+    onBack?.()   // OrderDetail's onBack clears selection + reloads the list
   }
 
   // ── Record payment ─────────────────────────────────────────────────────────
@@ -751,8 +766,45 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               </div>
             )}
           </Section>
+
+          {/* D2 — Danger zone: permanent delete, archived orders only. */}
+          {order.archived && (
+            <Section title="Danger zone" span={2}>
+              <div className="sb-od-danger">
+                <div className="sb-od-danger-text">
+                  <strong>Permanently delete this order.</strong> This erases the order and
+                  everything attached to it — payments, balance, jobs, milestones, history,
+                  and photos. It cannot be undone.
+                </div>
+                <button type="button" className="sb-od-danger-btn" onClick={() => { setDeleteErr(null); setDeleteModal(true) }}>
+                  Delete permanently
+                </button>
+              </div>
+            </Section>
+          )}
         </div>
       </div>
+
+      {deleteModal && (
+        <div className="sb-od-modal-backdrop" onClick={() => { if (!deleteBusy) setDeleteModal(false) }}>
+          <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Confirm permanent delete" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Permanently delete this order?</div>
+            <p className="sb-od-danger-summary">
+              Permanently delete order <strong>{order.order_number || 'this order'}</strong> and its{' '}
+              <strong>{(order.payments || []).filter(p => p && (p.locked ?? true) && !p.voided).length} payment(s)</strong>,
+              {' '}balance <strong>{fmtUSD(balance)}</strong>, <strong>{job ? '1 job' : 'no jobs'}</strong> and its
+              milestones, history, and photos? <strong>This cannot be undone.</strong>
+            </p>
+            {deleteErr && <div className="sb-msg sb-msg-err" style={{ marginBottom: 12 }}>{deleteErr}</div>}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setDeleteModal(false)} disabled={deleteBusy}>Cancel</button>
+              <button type="button" className="sb-od-danger-btn" onClick={handleHardDelete} disabled={deleteBusy}>
+                {deleteBusy ? 'Deleting…' : 'Yes, permanently delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Send-email composer (Gmail Phase 2 — minimal). To prefilled from the
           customer; calls gmail-send and confirms on success. Rich composer +
@@ -977,6 +1029,20 @@ const OD_CSS = `
     border-radius: 8px; padding: 12px 14px; margin: 0 0 18px;
     font-size: 13.5px; line-height: 1.45; color: #5e3a0e;
   }
+  /* D2 — danger zone */
+  .sb-od-danger {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    background: #fbe5e5; border: 1px solid #e3b3b3; border-radius: 8px; padding: 14px 16px; flex-wrap: wrap;
+  }
+  .sb-od-danger-text { font-size: 13px; line-height: 1.5; color: #6b2020; flex: 1; min-width: 220px; }
+  .sb-od-danger-btn {
+    font: inherit; font-size: 13px; font-weight: 600; padding: 9px 16px; border-radius: 8px;
+    border: 0.5px solid transparent; background: #b3261e; color: #fff; cursor: pointer; white-space: nowrap;
+  }
+  .sb-od-danger-btn:hover:not(:disabled) { background: #8f1d17; }
+  .sb-od-danger-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .sb-od-modal-danger { border-top: 4px solid #b3261e; }
+  .sb-od-danger-summary { font-size: 14px; line-height: 1.55; color: #2a2a28; margin: 0 0 16px; }
   .sb-od-completion-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px;
   }
