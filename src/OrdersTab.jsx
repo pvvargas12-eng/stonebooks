@@ -133,6 +133,21 @@ function recencyBand(updatedAt) {
 }
 function severityRank(blocker) { return blocker ? (SEVERITY_RANK[blocker.severity] ?? 3) : 3 }
 
+// ── C1 — clickable column sort helpers ──────────────────────────────────────
+const CLICK_SORT_KEYS = new Set(['dueDate', 'cemeteryName', 'paymentStatus'])
+// Date compare with nulls sorting last (ascending base).
+function cmpMaybeDate(a, b) {
+  const ta = a ? new Date(a).getTime() : Infinity
+  const tb = b ? new Date(b).getTime() : Infinity
+  return ta - tb
+}
+// Payment grouping rank: Paid (0) → Deposit (1) → Not paid (2).
+function payRank(o) {
+  if ((o._total || 0) > 0 && (o._balance || 0) <= 0) return 0   // paid in full
+  if ((o._paid || 0) > 0) return 1                              // deposit / partial
+  return 2                                                      // nothing paid
+}
+
 // Furthest-done milestone on a job → { key, label }.
 function furthestStage(job) {
   const ms = job?.milestones || []
@@ -165,6 +180,14 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const [quickView, setQuickView] = useState(null)
   const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
   const [sortKey, setSortKey] = useState('actionPriority')
+  const [sortDir, setSortDir] = useState('asc')   // C1 — direction for click-sortable columns
+  // C1 — click a column header: same column toggles asc/desc, a new column
+  // starts ascending.
+  const handleHeaderSort = (key) => {
+    if (sortKey === key) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(key); setSortDir('asc') }
+  }
+  const sortCaret = (key) => (sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓')
   const [search, setSearch] = useState('')
 
   // Selection + pagination
@@ -321,10 +344,18 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       totalDesc:   (a, b) => b._total - a._total,
       depositDesc: (a, b) => b._paid - a._paid,
       familyName:  (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
+      // C1 — clickable column sorts (ascending base; sortDir flips them).
+      dueDate:       (a, b) => cmpMaybeDate(a.target_completion_date, b.target_completion_date),
+      cemeteryName:  (a, b) => (a.cemetery?.name || '').localeCompare(b.cemetery?.name || ''),
+      paymentStatus: (a, b) => payRank(a) - payRank(b) || (a._familyName || '').localeCompare(b._familyName || ''),
     }
-    return [...list].sort(sorters[sortKey] || sorters.actionPriority)
+    const sorted = [...list].sort(sorters[sortKey] || sorters.actionPriority)
+    // Direction toggle only applies to the click-sortable columns; the dropdown
+    // sorters carry their own fixed direction.
+    if (CLICK_SORT_KEYS.has(sortKey) && sortDir === 'desc') sorted.reverse()
+    return sorted
   }, [enriched, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters, serviceTypeFilters,
-      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search, sortKey])
+      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search, sortKey, sortDir])
 
   // Reset page + clear stale selection when the filtered set changes shape.
   useEffect(() => { setPage(0) }, [archiveView, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters,
@@ -710,9 +741,9 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <div>Stone</div>
             <div>FDN</div>
             <div className="num">Total</div>
-            <div>Cemetery</div>
-            <div>Contract</div>
-            <div>Due date</div>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'dueDate' ? 'on' : ''}`} onClick={() => handleHeaderSort('dueDate')} title="Sort by due date">Due date{sortCaret('dueDate')}</button>
           </div>
 
           {loading ? (
@@ -920,6 +951,16 @@ function jobTypeLabel(jobType, serviceTypes) {
 }
 
 const TW_CSS = `
+  /* C1 — clickable sortable column headers. Match the .sb-crm-row-head > div
+     typography (those text styles don't reach a <button>), add hover + active. */
+  .sb-ord-sort-th {
+    font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+    font-weight: 600; color: #8a8a85;
+    background: none; border: none; padding: 0; margin: 0; text-align: left;
+    cursor: pointer; white-space: nowrap;
+  }
+  .sb-ord-sort-th:hover { color: #1e2d3d; }
+  .sb-ord-sort-th.on { color: #9A7209; }
   .sb-tw-queuebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fdf8ec; border: 0.5px solid #e8d9a8; border-radius: 10px; padding: 9px 14px; margin-bottom: 12px; font-size: 13.5px; color: #6b5d2f; }
   .sb-tw-queuebar strong { color: #1e2d3d; }
   .sb-tw-queuebar .sb-tw-link { border-color: #c9b27a; color: #9A7209; }
