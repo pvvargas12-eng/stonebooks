@@ -6882,6 +6882,50 @@ export async function markBatchCancelled(batchId) {
   return updateBatch(batchId, { status: 'cancelled' })
 }
 
+// ── Unschedule (ITEM 3) ─────────────────────────────────────────────────────
+// Pull a batch off the calendar back to the "Ready to schedule" tray. Clears
+// scheduled_date + am_pm ONLY — does NOT mark complete and does NOT delete.
+// The stops, status (planned/running_late), notes, and crew all survive so the
+// dispatcher can drag it onto a new day untouched.
+export async function unscheduleBatch(batchId) {
+  return updateBatch(batchId, { scheduled_date: null, am_pm: null })
+}
+
+// Reverse a stop completion (ITEM 3). Clears completed_at + completed_by so the
+// task goes active again. Intentionally does NOT revert the milestone cascade:
+// the link-row completion is the operator's ground-truth toggle, while the
+// milestone is a separate best-effort sync (see markBatchJobComplete). Reverting
+// milestone status on unmark would risk clobbering a manually-advanced stage, so
+// we leave the milestone where it is — the operator manages stage state from the
+// Job surface.
+export async function unmarkBatchJobComplete(batchJobId) {
+  if (!batchJobId) return { ok: false, error: 'Missing batch_job id' }
+  const { error } = await supabase
+    .from('work_batch_jobs')
+    .update({ completed_at: null, completed_by: null })
+    .eq('id', batchJobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Pure: is a scheduled batch past-due and still unfinished (ITEM 3)? Drives the
+// derived OVERDUE state in the Week tray — NO DB mutation on read (the project
+// deliberately avoids mount-time sweeps against the live prod demo; see
+// expirePastPromises). scheduled_date is preserved so the UI can show
+// "Was scheduled for <date>". A batch is overdue when its scheduled day is
+// strictly before today, it isn't cancelled/completed, and at least one stop is
+// still open (zero-stop ad-hoc events count as overdue once their day passes).
+// todayISO is the local YYYY-MM-DD (caller passes todayLocalISO()).
+export function isBatchOverdue(batch, todayISO) {
+  if (!batch || !batch.scheduled_date) return false
+  if (batch.status === 'cancelled' || batch.status === 'completed') return false
+  const day = String(batch.scheduled_date).slice(0, 10)
+  if (day >= todayISO) return false
+  const stops = batch.batch_jobs || batch.stops || []
+  if (stops.length === 0) return true
+  return !stops.every(s => s.completed_at)
+}
+
 // Mark a specific stop done (within a batch). Used by the Day view's per-
 // stop checkboxes + the carryover banner's "mark complete" action.
 //

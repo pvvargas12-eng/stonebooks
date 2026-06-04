@@ -11,11 +11,12 @@
 // A summary footer rolls up the day's totals (stones, promises, workers).
 // =============================================================================
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   batchKindInfo,
   customerName,
   getDayView,
+  unmarkBatchJobComplete,
 } from '../../lib/stonebooksData'
 import PromiseBadge from '../scheduler/PromiseBadge'
 import CarryoverBanner from './CarryoverBanner'
@@ -29,12 +30,29 @@ export default function CalendarDay({
   actorName,
   actorUserId,
   onCascadeWarning,
+  onUnschedule,
   onReload,
 }) {
   const view = useMemo(
     () => getDayView({ date, batches }),
     [date, batches],
   )
+
+  // ITEM 3 — unmark-complete confirm, lifted here so both the field dispatch
+  // sheet and the shop blocks share one modal + one data path.
+  const [confirmUnmark, setConfirmUnmark] = useState(null)   // the stop pending unmark
+  const [unmarkBusy, setUnmarkBusy] = useState(false)
+  const [unmarkError, setUnmarkError] = useState(null)
+  const handleConfirmUnmark = async () => {
+    if (!confirmUnmark) return
+    setUnmarkBusy(true)
+    setUnmarkError(null)
+    const res = await unmarkBatchJobComplete(confirmUnmark.id)
+    setUnmarkBusy(false)
+    if (!res.ok) { setUnmarkError(res.error || 'Failed to unmark.'); return }
+    setConfirmUnmark(null)
+    onReload?.()
+  }
 
   // Summary footer numbers.
   const totalStops =
@@ -117,6 +135,8 @@ export default function CalendarDay({
               actorName={actorName}
               actorUserId={actorUserId}
               onCascadeWarning={onCascadeWarning}
+              onRequestUnmark={setConfirmUnmark}
+              onUnschedule={onUnschedule}
               onReload={onReload}
             />
           ))}
@@ -134,6 +154,8 @@ export default function CalendarDay({
               key={b.id}
               batch={b}
               promisesByJob={promisesByJob}
+              onRequestUnmark={setConfirmUnmark}
+              onUnschedule={onUnschedule}
             />
           ))}
         </section>
@@ -150,6 +172,48 @@ export default function CalendarDay({
           <span>{workersOut.size} {workersOut.size === 1 ? 'worker out' : 'workers out'}: {Array.from(workersOut).join(', ')}</span>
         )}
       </footer>
+
+      {confirmUnmark && (
+        <div
+          className="sb-cal-unmark-backdrop"
+          onClick={() => { if (!unmarkBusy) { setConfirmUnmark(null); setUnmarkError(null) } }}
+        >
+          <div
+            className="sb-cal-unmark"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Unmark task complete"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="sb-cal-unmark-title">Are you sure you want to unmark this task as complete?</h3>
+            <p className="sb-cal-unmark-body">
+              {(confirmUnmark.job?.order?.primary_lastname
+                || customerName(confirmUnmark.job?.order?.customer)
+                || 'This task')} will go back to active. If its scheduled date has
+              already passed, it returns as overdue.
+            </p>
+            {unmarkError && <div className="sb-cal-unmark-error">{unmarkError}</div>}
+            <div className="sb-cal-unmark-actions">
+              <button
+                type="button"
+                className="sb-cal-unmark-cancel"
+                onClick={() => { setConfirmUnmark(null); setUnmarkError(null) }}
+                disabled={unmarkBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sb-cal-unmark-confirm"
+                onClick={handleConfirmUnmark}
+                disabled={unmarkBusy}
+              >
+                {unmarkBusy ? 'Working…' : 'Yes, unmark'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -157,7 +221,7 @@ export default function CalendarDay({
 // Shop-batch block — quieter than the field dispatch sheet. The crew isn't
 // driving anywhere, so mileage and stop ordering don't apply. Just the
 // title, the worker, the stones in the block, and any notes.
-function ShopBatchBlock({ batch, promisesByJob }) {
+function ShopBatchBlock({ batch, promisesByJob, onRequestUnmark, onUnschedule }) {
   const kindInfo = batchKindInfo(batch.kind)
   const stops = batch.stops || []
   return (
@@ -172,6 +236,16 @@ function ShopBatchBlock({ batch, promisesByJob }) {
         </span>
         {batch.assigned_to && (
           <span className="sb-cal-shop-by">{batch.assigned_to}</span>
+        )}
+        {onUnschedule && (
+          <button
+            type="button"
+            className="sb-cal-shop-unschedule"
+            onClick={() => onUnschedule(batch)}
+            title="Unschedule — back to Ready to schedule"
+          >
+            Unschedule
+          </button>
         )}
       </header>
       {batch.notes && (
@@ -190,7 +264,19 @@ function ShopBatchBlock({ batch, promisesByJob }) {
                 <PromiseBadge promise={promises[0]} size="sm" />
               )}
               {s.completed_at && (
-                <span className="sb-cal-shop-stop-done">complete</span>
+                <>
+                  <span className="sb-cal-shop-stop-done">complete</span>
+                  {onRequestUnmark && (
+                    <button
+                      type="button"
+                      className="sb-cal-shop-stop-unmark"
+                      onClick={() => onRequestUnmark(s)}
+                      title="Unmark complete"
+                    >
+                      unmark
+                    </button>
+                  )}
+                </>
               )}
             </li>
           )
@@ -362,6 +448,111 @@ const localStyles = `
     font-size: 11px;
     color: var(--sb-green, #2d7a4f);
     margin-left: auto;
+  }
+  .sb-cal-shop-stop-unmark {
+    font: inherit;
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    background: transparent;
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    padding: 1px 7px;
+    cursor: pointer;
+  }
+  .sb-cal-shop-stop-unmark:hover {
+    color: var(--sb-red, #b54040);
+    border-color: var(--sb-red, #b54040);
+  }
+  .sb-cal-shop-unschedule {
+    margin-left: 8px;
+    font: inherit;
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    background: transparent;
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .sb-cal-shop-unschedule:hover {
+    color: var(--sb-text);
+    background: var(--sb-surface-muted);
+  }
+
+  /* ── Unmark-complete confirm modal (ITEM 3) ─────────────────────────────── */
+  .sb-cal-unmark-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 25, 0.42);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .sb-cal-unmark {
+    background: var(--sb-surface);
+    border-radius: var(--sb-r-md, 10px);
+    box-shadow: 0 16px 48px rgba(15, 20, 25, 0.24);
+    max-width: 440px;
+    padding: 28px 32px 24px;
+  }
+  .sb-cal-unmark-title {
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--sb-text);
+    margin: 0 0 12px;
+    letter-spacing: -0.005em;
+  }
+  .sb-cal-unmark-body {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--sb-text-secondary);
+    margin: 0 0 20px;
+  }
+  .sb-cal-unmark-error {
+    color: var(--sb-red, #b54040);
+    font-size: 13px;
+    padding: 8px 10px;
+    margin-bottom: 16px;
+    background: var(--sb-red-bg, #fbe5e5);
+    border-radius: var(--sb-r-sm, 6px);
+  }
+  .sb-cal-unmark-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .sb-cal-unmark-cancel,
+  .sb-cal-unmark-confirm {
+    font: inherit;
+    font-size: 14px;
+    padding: 8px 18px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+    font-weight: 500;
+    border: 0.5px solid transparent;
+  }
+  .sb-cal-unmark-cancel {
+    background: transparent;
+    color: var(--sb-text-muted);
+    border-color: var(--sb-border);
+  }
+  .sb-cal-unmark-cancel:hover {
+    color: var(--sb-text);
+    background: var(--sb-surface-muted);
+  }
+  .sb-cal-unmark-confirm {
+    background: var(--sb-accent, #b8842a);
+    color: white;
+  }
+  .sb-cal-unmark-confirm:hover:not(:disabled) {
+    filter: brightness(0.95);
+  }
+  .sb-cal-unmark-cancel:disabled,
+  .sb-cal-unmark-confirm:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   @media (max-width: 900px) {

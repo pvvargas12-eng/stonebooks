@@ -31,6 +31,7 @@ import {
   indexPromisesByJob,
   updateBatch,
   createBatch,
+  unscheduleBatch,
   batchKindInfo,
   customerName,
   todayLocalISO,
@@ -254,6 +255,24 @@ export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, on
     }
   }, [showToast, loadAll])
 
+  // ── Unschedule (ITEM 3) — pull a batch off the calendar back to Ready ───────
+  const handleUnscheduleBatch = useCallback(async (batch) => {
+    if (!batch?.id) return
+    const prevDate = batch.scheduled_date ? String(batch.scheduled_date).slice(0, 10) : null
+    const prevSlot = batch.am_pm ?? null
+    try {
+      const res = await unscheduleBatch(batch.id)
+      if (!res.ok) { showToast({ text: res.error || "Couldn't unschedule — try again", error: true }); return }
+      showToast({
+        text: `Moved “${_batchLabel(batch)}” back to Ready to schedule.`,
+        undo: prevDate ? { batchId: batch.id, scheduled_date: prevDate, am_pm: prevSlot } : undefined,
+      })
+      loadAll()
+    } catch {
+      showToast({ text: "Couldn't unschedule — try again", error: true })
+    }
+  }, [showToast, loadAll])
+
   const handleUndo = useCallback(async () => {
     const u = toast?.undo
     if (!u) return
@@ -396,6 +415,7 @@ export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, on
               onBatchClick={handleBatchClick}
               onScheduleBatch={handleScheduleBatch}
               onScheduleReadyJob={handleScheduleReadyJob}
+              onUnscheduleBatch={handleUnscheduleBatch}
               onDayClick={handleDayDrill}
               onReload={loadAll}
             />
@@ -414,6 +434,7 @@ export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, on
             actorName={actorName}
             actorUserId={actorUserId}
             onCascadeWarning={setCascadeWarning}
+            onUnschedule={handleUnscheduleBatch}
             onReload={loadAll}
           />
         </>
@@ -473,6 +494,17 @@ async function _fetchBatchesWithJoinsForDate(iso) {
     if (detail) out.push(detail)
   }
   return out
+}
+
+function _batchLabel(b) {
+  if (b?.title) return b.title
+  const stops = b?.batch_jobs || []
+  const first = stops[0]?.job
+  const surname = first?.order?.primary_lastname
+    || customerName(first?.order?.customer)
+    || batchKindInfo(b?.kind)?.label
+    || 'batch'
+  return stops.length > 1 ? `${surname} +${stops.length - 1}` : surname
 }
 
 function _dayLabel(iso) {

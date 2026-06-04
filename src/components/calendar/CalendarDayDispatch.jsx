@@ -22,7 +22,7 @@ import {
 } from '../../lib/stonebooksData'
 import PromiseBadge from '../scheduler/PromiseBadge'
 
-export default function CalendarDayDispatch({ batch, promisesByJob, actorName, actorUserId, onCascadeWarning, onReload }) {
+export default function CalendarDayDispatch({ batch, promisesByJob, actorName, actorUserId, onCascadeWarning, onRequestUnmark, onUnschedule, onReload }) {
   const [busyStopId, setBusyStopId] = useState(null)
   const [statusBusy, setStatusBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -34,7 +34,9 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
   const isLate = batch.status === 'running_late'
 
   const handleToggleStop = async (stop) => {
-    if (stop.completed_at) return    // already complete — no-op (commit 2 adds an unmark path)
+    // ITEM 3 — a completed stop routes to the unmark-confirm flow (owned by
+    // CalendarDay) instead of being an inert no-op.
+    if (stop.completed_at) { onRequestUnmark?.(stop); return }
     setBusyStopId(stop.id)
     setError(null)
     // Bug #1 fix: cascadeWarning state now lives on CalendarTab (this
@@ -124,6 +126,16 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
           >
             {isLate ? 'Running late ✓' : 'Mark running late'}
           </button>
+          {onUnschedule && (
+            <button
+              type="button"
+              className="sb-dispatch-unschedule"
+              onClick={() => onUnschedule(batch)}
+              title="Unschedule — back to Ready to schedule"
+            >
+              Unschedule
+            </button>
+          )}
         </div>
       </header>
 
@@ -169,8 +181,8 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
                 className="sb-dispatch-stop-check"
                 checked={isDone}
                 onChange={() => handleToggleStop(stop)}
-                disabled={isBusy || isDone}
-                aria-label={`Mark ${surname} complete`}
+                disabled={isBusy}
+                aria-label={isDone ? `Unmark ${surname} complete` : `Mark ${surname} complete`}
               />
               <div className="sb-dispatch-stop-body">
                 <div className="sb-dispatch-stop-primary">
@@ -194,9 +206,19 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
                 {cem && idx === 0 && (
                   <div className="sb-dispatch-stop-cem">{cem}</div>
                 )}
-                {isDone && stop.completed_by && (
+                {isDone && (
                   <div className="sb-dispatch-stop-done-tag">
-                    Complete · {stop.completed_by} · {fmtDate(stop.completed_at)}
+                    {stop.completed_by
+                      ? `Complete · ${stop.completed_by} · ${fmtDate(stop.completed_at)}`
+                      : `Complete · ${fmtDate(stop.completed_at)}`}
+                    <button
+                      type="button"
+                      className="sb-dispatch-stop-unmark"
+                      onClick={() => onRequestUnmark?.(stop)}
+                      title="Unmark complete"
+                    >
+                      unmark
+                    </button>
                   </div>
                 )}
               </div>
@@ -323,6 +345,21 @@ const localStyles = `
     border-color: var(--sb-amber, #b8842a);
     color: white;
   }
+  .sb-dispatch-unschedule {
+    background: transparent;
+    border: 0.5px solid var(--sb-border);
+    color: var(--sb-text-muted);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+  }
+  .sb-dispatch-unschedule:hover {
+    color: var(--sb-red, #b54040);
+    border-color: var(--sb-red, #b54040);
+    background: var(--sb-red-bg, #fbe5e5);
+  }
 
   .sb-dispatch-notes {
     font-size: 12px;
@@ -426,9 +463,26 @@ const localStyles = `
     font-style: italic;
   }
   .sb-dispatch-stop-done-tag {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 11px;
     color: var(--sb-green, #2d7a4f);
     margin-top: 4px;
+  }
+  .sb-dispatch-stop-unmark {
+    font: inherit;
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    background: transparent;
+    border: 0.5px solid var(--sb-border);
+    border-radius: var(--sb-r-sm, 6px);
+    padding: 1px 7px;
+    cursor: pointer;
+  }
+  .sb-dispatch-stop-unmark:hover {
+    color: var(--sb-red, #b54040);
+    border-color: var(--sb-red, #b54040);
   }
 `
 

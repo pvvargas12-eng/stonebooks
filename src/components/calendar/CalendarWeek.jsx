@@ -28,6 +28,8 @@ import {
   swapBatchDays,
   batchKindInfo,
   customerName,
+  isBatchOverdue,
+  todayLocalISO,
 } from '../../lib/stonebooksData'
 import { computePromiseDayState } from '../../lib/promiseDayState'
 import CalendarBatchCard from './CalendarBatchCard'
@@ -52,6 +54,7 @@ export default function CalendarWeek({
   onBatchClick,
   onScheduleBatch,
   onScheduleReadyJob,
+  onUnscheduleBatch,
   onDayClick,
   onReload,
 }) {
@@ -60,12 +63,28 @@ export default function CalendarWeek({
     [startDate, spanDays, batches, promises],
   )
 
-  // Unscheduled batches (build tray). Excludes cancelled, matching the
-  // Scheduler tray's filter.
-  const tray = useMemo(
-    () => (batches || []).filter(b => !b.scheduled_date && b.status !== 'cancelled'),
-    [batches],
+  const todayISO = todayLocalISO()
+
+  // Overdue batches (ITEM 3): scheduled in the past + still unfinished. Derived
+  // — never mutated on read. They get pulled out of their (past) day cell and
+  // surfaced in the Ready-to-schedule tray flagged OVERDUE, so the dispatcher
+  // re-homes them instead of losing them off the bottom of last week.
+  const overdueBatches = useMemo(
+    () => (batches || []).filter(b => isBatchOverdue(b, todayISO)),
+    [batches, todayISO],
   )
+  const overdueIds = useMemo(() => new Set(overdueBatches.map(b => b.id)), [overdueBatches])
+
+  // Tray = overdue (worst-first feel: shown first) + genuinely unscheduled.
+  // Excludes cancelled, matching the Scheduler tray's filter. No overlap:
+  // overdue batches carry a scheduled_date, unscheduled ones don't.
+  const trayItems = useMemo(() => {
+    const unscheduled = (batches || []).filter(b => !b.scheduled_date && b.status !== 'cancelled')
+    return [
+      ...overdueBatches.map(b => ({ batch: b, overdue: true })),
+      ...unscheduled.map(b => ({ batch: b, overdue: false })),
+    ]
+  }, [batches, overdueBatches])
 
   // Day-swap state (header drag) — unchanged from the original.
   const [dragSrcISO, setDragSrcISO] = useState(null)
@@ -233,6 +252,7 @@ export default function CalendarWeek({
               draggable
               onDragStart={handleBatchDragStart(b)}
               onDragEnd={handleBatchDragEnd}
+              onUnschedule={onUnscheduleBatch}
             />
           ))
         )}
@@ -242,27 +262,41 @@ export default function CalendarWeek({
 
   return (
     <div className="sb-cal-week">
-      {/* Unscheduled tray — drag a chip down into any day zone. */}
+      {/* Ready-to-schedule tray — drag a chip down into any day zone. Overdue
+          batches (past + unfinished) surface here flagged, ahead of the
+          genuinely-unscheduled ones. */}
       <div className="sb-cal-tray">
-        <span className="sb-cal-tray-label">Tray</span>
-        {tray.length === 0 ? (
-          <span className="sb-cal-tray-empty">No unscheduled batches.</span>
+        <span className="sb-cal-tray-label">Ready to schedule</span>
+        {trayItems.length === 0 ? (
+          <span className="sb-cal-tray-empty">Nothing waiting — all scheduled work is on the calendar.</span>
         ) : (
           <div className="sb-cal-tray-chips">
-            {tray.map(b => {
+            {trayItems.map(({ batch: b, overdue }) => {
               const kindInfo = batchKindInfo(b.kind)
+              const whenLabel = overdue && b.scheduled_date
+                ? new Date(`${String(b.scheduled_date).slice(0, 10)}T00:00:00`)
+                    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                : null
               return (
                 <div
                   key={b.id}
-                  className="sb-cal-tray-chip"
+                  className={`sb-cal-tray-chip ${overdue ? 'sb-cal-tray-chip-overdue' : ''}`}
                   style={{ borderLeftColor: kindInfo.color }}
-                  title={b.notes || kindInfo.label}
+                  title={overdue
+                    ? `Overdue — was scheduled for ${whenLabel}`
+                    : (b.notes || kindInfo.label)}
                   draggable
                   onDragStart={handleBatchDragStart(b)}
                   onDragEnd={handleBatchDragEnd}
                 >
-                  <span className="sb-cal-tray-chip-label">{_batchLabel(b)}</span>
-                  <span className="sb-cal-tray-chip-count">{(b.batch_jobs || []).length}</span>
+                  <div className="sb-cal-tray-chip-row">
+                    {overdue && <span className="sb-cal-tray-chip-badge">Overdue</span>}
+                    <span className="sb-cal-tray-chip-label">{_batchLabel(b)}</span>
+                    <span className="sb-cal-tray-chip-count">{(b.batch_jobs || []).length}</span>
+                  </div>
+                  {overdue && whenLabel && (
+                    <span className="sb-cal-tray-chip-when">Was scheduled for {whenLabel}</span>
+                  )}
                 </div>
               )
             })}
@@ -284,9 +318,12 @@ export default function CalendarWeek({
           const dayName = cell.date.toLocaleDateString('en-US', { weekday: 'short' })
           const monthDay = cell.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 
-          const allDay = cell.batches.filter(b => b.am_pm == null)
-          const amBatches = cell.batches.filter(b => b.am_pm === 'am')
-          const pmBatches = cell.batches.filter(b => b.am_pm === 'pm')
+          // Overdue batches are pulled out of their past cell — they live in
+          // the Ready-to-schedule tray now (ITEM 3).
+          const cellBatches = cell.batches.filter(b => !overdueIds.has(b.id))
+          const allDay = cellBatches.filter(b => b.am_pm == null)
+          const amBatches = cellBatches.filter(b => b.am_pm === 'am')
+          const pmBatches = cellBatches.filter(b => b.am_pm === 'pm')
 
           return (
             <div key={cell.iso} className={cls}>
@@ -302,7 +339,7 @@ export default function CalendarWeek({
                 <span className="sb-cal-week-head-grip" aria-hidden="true">⠿</span>
                 <span className="sb-cal-week-head-day">{dayName}</span>
                 <span className="sb-cal-week-head-date">{monthDay}</span>
-                {cell.batches.length >= 5 && (
+                {cellBatches.length >= 5 && (
                   <span className="sb-cal-week-head-heavy">Heavy</span>
                 )}
                 <WeatherStrip date={cell.date} variant="week" />
@@ -447,8 +484,8 @@ const localStyles = `
   }
   .sb-cal-tray-chip {
     display: inline-flex;
-    align-items: baseline;
-    gap: 6px;
+    flex-direction: column;
+    gap: 2px;
     padding: 5px 10px;
     background: var(--sb-surface-muted);
     border: 0.5px solid var(--sb-border);
@@ -460,6 +497,11 @@ const localStyles = `
   .sb-cal-tray-chip:active {
     cursor: grabbing;
   }
+  .sb-cal-tray-chip-row {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+  }
   .sb-cal-tray-chip-label {
     font-weight: 500;
     color: var(--sb-text);
@@ -468,6 +510,27 @@ const localStyles = `
     font-size: 11px;
     color: var(--sb-text-muted);
     font-variant-numeric: tabular-nums;
+  }
+  /* Overdue tray chip — red edge + wash so it reads as a priority re-home. */
+  .sb-cal-tray-chip-overdue {
+    background: var(--sb-red-bg, #fbe5e5);
+    border-color: var(--sb-red, #b54040);
+  }
+  .sb-cal-tray-chip-badge {
+    font-size: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #fff;
+    background: var(--sb-red, #b54040);
+    padding: 1px 5px;
+    border-radius: 999px;
+    align-self: center;
+  }
+  .sb-cal-tray-chip-when {
+    font-size: 10px;
+    color: var(--sb-red, #b54040);
+    font-style: italic;
   }
 
   /* ── Week grid ──────────────────────────────────────────────────────────── */
