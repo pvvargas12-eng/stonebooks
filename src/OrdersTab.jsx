@@ -133,8 +133,12 @@ function recencyBand(updatedAt) {
 }
 function severityRank(blocker) { return blocker ? (SEVERITY_RANK[blocker.severity] ?? 3) : 3 }
 
-// ── C1 — clickable column sort helpers ──────────────────────────────────────
-const CLICK_SORT_KEYS = new Set(['dueDate', 'cemeteryName', 'paymentStatus'])
+// ── Clickable column sort helpers ───────────────────────────────────────────
+// Every meaningful Orders column is click-sortable (asc base; sortDir flips it).
+const CLICK_SORT_KEYS = new Set([
+  'customer', 'jobType', 'payment', 'design', 'stone', 'fdn',
+  'total', 'cemeteryName', 'paymentStatus', 'dueDate',
+])
 // Date compare with nulls sorting last (ascending base).
 function cmpMaybeDate(a, b) {
   const ta = a ? new Date(a).getTime() : Infinity
@@ -147,6 +151,13 @@ function payRank(o) {
   if ((o._paid || 0) > 0) return 1                              // deposit / partial
   return 2                                                      // nothing paid
 }
+// Status-dimension progress ranks (workflow order). Null/absent → -1 so
+// not-started/no-job rows group together at the top of an ascending sort.
+const _PAY_DIM_RANK    = { quoted: 0, deposit: 1, paid_in_full: 2 }
+const _DESIGN_DIM_RANK = { not_created: 0, layout_created: 1, needs_adjustments: 2, layout_approved: 3 }
+const _STONE_DIM_RANK  = { not_ordered: 0, ordered: 1, in_stock: 2, needs_pickup: 3, needs_stencil_cut: 4, needs_blasting: 5, blasted: 6 }
+const _FDN_DIM_RANK    = { na: 0, not_in: 1, need_map: 2, dug: 3, poured: 4, in: 5 }
+const dimRank = (map, v) => (v != null && map[v] != null ? map[v] : -1)
 
 // Furthest-done milestone on a job → { key, label }.
 function furthestStage(job) {
@@ -344,7 +355,15 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       totalDesc:   (a, b) => b._total - a._total,
       depositDesc: (a, b) => b._paid - a._paid,
       familyName:  (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
-      // C1 — clickable column sorts (ascending base; sortDir flips them).
+      // Clickable column sorts (ascending base; sortDir flips them). Each falls
+      // back to family name so ties have a stable, readable secondary order.
+      customer:      (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
+      jobType:       (a, b) => jobTypeLabel(a._jobType, a.service_types).localeCompare(jobTypeLabel(b._jobType, b.service_types)) || (a._familyName || '').localeCompare(b._familyName || ''),
+      payment:       (a, b) => dimRank(_PAY_DIM_RANK, a._payment) - dimRank(_PAY_DIM_RANK, b._payment) || (a._familyName || '').localeCompare(b._familyName || ''),
+      design:        (a, b) => dimRank(_DESIGN_DIM_RANK, a._design) - dimRank(_DESIGN_DIM_RANK, b._design) || (a._familyName || '').localeCompare(b._familyName || ''),
+      stone:         (a, b) => dimRank(_STONE_DIM_RANK, a._stone) - dimRank(_STONE_DIM_RANK, b._stone) || (a._familyName || '').localeCompare(b._familyName || ''),
+      fdn:           (a, b) => dimRank(_FDN_DIM_RANK, a._fdn) - dimRank(_FDN_DIM_RANK, b._fdn) || (a._familyName || '').localeCompare(b._familyName || ''),
+      total:         (a, b) => (a._total || 0) - (b._total || 0) || (a._familyName || '').localeCompare(b._familyName || ''),
       dueDate:       (a, b) => cmpMaybeDate(a.target_completion_date, b.target_completion_date),
       cemeteryName:  (a, b) => (a.cemetery?.name || '').localeCompare(b.cemetery?.name || ''),
       paymentStatus: (a, b) => payRank(a) - payRank(b) || (a._familyName || '').localeCompare(b._familyName || ''),
@@ -734,13 +753,13 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         <div className="sb-crm-card sb-crm-table">
           <div className="sb-crm-row sb-crm-row-head sb-tw-row" style={{ gridTemplateColumns: ROW_GRID }}>
             <div><input type="checkbox" checked={pageAllSelected} onChange={togglePage} aria-label="Select page" /></div>
-            <div>Customer</div>
-            <div>Job Type</div>
-            <div>Payment</div>
-            <div>Design</div>
-            <div>Stone</div>
-            <div>FDN</div>
-            <div className="num">Total</div>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'customer' ? 'on' : ''}`} onClick={() => handleHeaderSort('customer')} title="Sort by customer (last name)">Customer{sortCaret('customer')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'jobType' ? 'on' : ''}`} onClick={() => handleHeaderSort('jobType')} title="Sort by job type">Job Type{sortCaret('jobType')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'payment' ? 'on' : ''}`} onClick={() => handleHeaderSort('payment')} title="Sort by payment status">Payment{sortCaret('payment')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone stage">Stone{sortCaret('stone')}</button>
+            <button type="button" className={`sb-ord-sort-th ${sortKey === 'fdn' ? 'on' : ''}`} onClick={() => handleHeaderSort('fdn')} title="Sort by foundation stage">FDN{sortCaret('fdn')}</button>
+            <button type="button" className={`sb-ord-sort-th num ${sortKey === 'total' ? 'on' : ''}`} onClick={() => handleHeaderSort('total')} title="Sort by total">Total{sortCaret('total')}</button>
             <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
             <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
             <button type="button" className={`sb-ord-sort-th ${sortKey === 'dueDate' ? 'on' : ''}`} onClick={() => handleHeaderSort('dueDate')} title="Sort by due date">Due date{sortCaret('dueDate')}</button>
@@ -961,6 +980,7 @@ const TW_CSS = `
   }
   .sb-ord-sort-th:hover { color: #1e2d3d; }
   .sb-ord-sort-th.on { color: #9A7209; }
+  .sb-ord-sort-th.num { text-align: right; }
   .sb-tw-queuebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fdf8ec; border: 0.5px solid #e8d9a8; border-radius: 10px; padding: 9px 14px; margin-bottom: 12px; font-size: 13.5px; color: #6b5d2f; }
   .sb-tw-queuebar strong { color: #1e2d3d; }
   .sb-tw-queuebar .sb-tw-link { border-color: #c9b27a; color: #9A7209; }
