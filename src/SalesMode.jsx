@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract } from './lib/stonebooksData'
 
 // =============================================================================
 // STATIC DATA
@@ -10170,6 +10170,18 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
     setOrder(prev => ({ ...prev, ...patch }))
   }, [])
 
+  // A6 — when a deposit is logged in the wizard, persist immediately then
+  // auto-complete contract_signed + deposit_received on the job (if one exists).
+  // applyDepositMilestones is deposit-gated + idempotent, so this is safe to call
+  // on every submit. Best-effort — never blocks the payment.
+  const handleDepositLogged = useCallback(async () => {
+    await saveNow()
+    const id = orderForSaveRef.current?.id
+    if (id) {
+      try { await applyDepositMilestones(id) } catch (e) { console.warn('[A6] applyDepositMilestones:', e?.message) }
+    }
+  }, [saveNow])
+
   const addStaffNote = useCallback((note) => {
     setOrder(prev => ({ ...prev, staffNotes: [...prev.staffNotes, note] }))
   }, [])
@@ -10325,6 +10337,7 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
           order={order}
           update={update}
           mode={mode}
+          onDepositLogged={handleDepositLogged}
         />
 
         {mode === 'staff' && (
@@ -10399,7 +10412,7 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
     </div>
   )
 }
-function ContinueLater({ order, update }) {
+function ContinueLater({ order, update, onDepositLogged }) {
   const shape = SHAPES.find(s => s.code === order.shape)
   const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)
   const dims = [order.width, order.depth, order.thickness].filter(x => x != null).join(' × ')
@@ -10570,7 +10583,20 @@ function ContinueLater({ order, update }) {
         <OrderStatusChanger order={order} update={update} />
       </Section>
 
-      <PaymentTrackingSection order={order} update={update} />
+      {/* A6 — persistent reminder: a deposit auto-completed the contract step,
+          but a real signature still needs to be collected. Clears once signed. */}
+      {needsSignedContract(order) && (
+        <div className="sm-need-signature-flag">
+          <span className="sm-need-signature-flag-icon" aria-hidden="true">⚠</span>
+          <span>
+            <strong>Signed contract still needed.</strong> A deposit was logged, so the
+            contract &amp; deposit steps are checked off — but the customer hasn't signed yet.
+            Collect the signature on the Sign step to clear this.
+          </span>
+        </div>
+      )}
+
+      <PaymentTrackingSection order={order} update={update} onDepositLogged={onDepositLogged} />
 
       <CancelOrderSection order={order} update={update} />
     </div>
@@ -10734,7 +10760,7 @@ function PaymentConfirmModal({ open, type, onConfirm, onCancel }) {
 }
 
 // Sprint 3i — Track deposit + balance payments
-function PaymentTrackingSection({ order, update }) {
+function PaymentTrackingSection({ order, update, onDepositLogged }) {
   // Compute current grand total so we can show balance owed
   const lineItems = buildLineItems(order)
   const subtotalDisc = lineItems.reduce(
@@ -10896,6 +10922,10 @@ function PaymentTrackingSection({ order, update }) {
     setEditSnapshots(prev => {
       const next = new Map(prev); next.delete(id); return next
     })
+    // A6 — a submitted (locked) payment is a logged deposit; persist + auto-
+    // complete contract_signed/deposit_received on the job. Deposit-gated +
+    // idempotent upstream, so firing on every submit is safe.
+    onDepositLogged?.()
   }
 
   // Phase 2.1 — Cancel on a draft. Fresh drafts (from Add payment) are deleted
@@ -13131,6 +13161,23 @@ export const salesModeStyles = `
   max-width: 420px;
 }
 .sm-color-card-tbd .sm-color-info { padding: 14px 16px; }
+
+/* A6 — "signed contract still needed" reminder flag. */
+.sm-need-signature-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #fbe5b8;
+  border: 1px solid #b8842a;
+  border-left: 4px solid #b8842a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 16px 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #5e3a0e;
+}
+.sm-need-signature-flag-icon { font-size: 16px; line-height: 1.2; flex-shrink: 0; }
 .sm-color-swatch {
   width: 100%; aspect-ratio: 4/3;
   background: #f0ede6;

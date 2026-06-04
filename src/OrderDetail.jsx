@@ -22,7 +22,7 @@ import {
   uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
-  setOrderPermit, PERMIT_STATUSES,
+  setOrderPermit, PERMIT_STATUSES, needsSignedContract,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -476,6 +476,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <div className={`sb-od-balance-value${balance > 0 ? '' : ' sb-od-balance-clear'}`}>{fmtUSD(balance)}</div>
           </div>
         </header>
+
+        {/* A6 — "signed contract still needed": a deposit auto-completed the
+            contract step, but no real signature is on file yet. Persists until
+            the order is signed. */}
+        {needsSignedContract(order) && (
+          <div className="sb-od-need-signature">
+            <span aria-hidden="true">⚠</span>
+            <span><strong>Signed contract still needed.</strong> A deposit is logged (contract &amp; deposit steps are checked off), but the customer hasn't signed yet — collect the signature to clear this.</span>
+          </div>
+        )}
 
         {/* ── QUICK ACTIONS ───────────────────────────────────────────────── */}
         <div className="sb-od-actions">
@@ -961,6 +971,12 @@ const OD_CSS = `
   .sb-od-inline-actions { margin-top: 12px; padding-top: 10px; border-top: 0.5px solid #f1efeb; }
 
   /* Attachments */
+  .sb-od-need-signature {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: #fbe5b8; border: 1px solid #b8842a; border-left: 4px solid #b8842a;
+    border-radius: 8px; padding: 12px 14px; margin: 0 0 18px;
+    font-size: 13.5px; line-height: 1.45; color: #5e3a0e;
+  }
   .sb-od-completion-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px;
   }

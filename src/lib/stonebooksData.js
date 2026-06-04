@@ -758,7 +758,61 @@ export async function recordOrderPayment(orderId, input = {}) {
   if (!updated || updated.length === 0) {
     return { ok: false, error: 'This order changed while you were recording the payment. Reopen the order and try again.' }
   }
+  // A6 — a logged deposit auto-completes contract_signed + deposit_received on
+  // the job. Best-effort: never fail the payment over a milestone sync.
+  try { await applyDepositMilestones(orderId) } catch (e) { console.warn('[A6] applyDepositMilestones:', e?.message) }
   return { ok: true, payment, paid: lockedSum, balance: Math.max(0, grand - Math.round(lockedSum)) }
+}
+
+// ── A6 — deposit auto-completes the pre-deposit checklist ───────────────────
+// Logging a deposit means the contract + deposit steps are obviously done, so
+// auto-complete `contract_signed` + `deposit_received` on the order's job —
+// independent of whether a real signature has been recorded. Deposit-GATED
+// (only fires when the order actually has a logged deposit) so a signed order
+// with no money in doesn't get deposit_received ticked. Idempotent: already-done
+// milestones are left untouched (the .neq guard keeps their status_date stable).
+// Safe to call from the payment path AND from createJobFromOrder (deposit-before-
+// sign case): re-reads the order, finds the job, marks the two keys.
+export async function applyDepositMilestones(orderId) {
+  if (!orderId) return { ok: true, skipped: 'no_order' }
+  const { data: row } = await supabase
+    .from('orders').select('payments, deposit_amount').eq('id', orderId).single()
+  if (!_orderHasLoggedDeposit(row)) return { ok: true, skipped: 'no_deposit' }
+  const job = await getJobByOrderId(orderId)
+  if (!job?.id) return { ok: true, skipped: 'no_job' }
+  const { error } = await supabase
+    .from('job_milestones')
+    .update({ status: 'done', status_date: todayLocalISO(), updated_at: new Date().toISOString() })
+    .eq('job_id', job.id)
+    .in('milestone_key', ['contract_signed', 'deposit_received'])
+    .neq('status', 'done')
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, jobId: job.id }
+}
+
+// True when an order row carries a real, committed deposit — a locked,
+// non-voided payment with amount > 0 (or the legacy deposit_amount column when
+// payments[] is empty). Accepts a snake_case row.
+function _orderHasLoggedDeposit(row) {
+  if (!row) return false
+  const payments = Array.isArray(row.payments) ? row.payments : []
+  if (payments.some(p => p && (p.locked ?? true) && !p.voided && Number(p.amount) > 0)) return true
+  if (payments.length === 0 && Number(row.deposit_amount || 0) > 0) return true
+  return false
+}
+
+// A6 flag — "signed contract still needed": a deposit has been logged but no
+// real signature is on file. The deposit auto-completes contract_signed, so this
+// flag is the persistent reminder to still collect the actual signature. Clears
+// itself the moment a real signature is recorded (signed_at set). Derived — no
+// column, no migration. Accepts either a camelCase order or a snake_case row.
+export function needsSignedContract(o) {
+  if (!o) return false
+  if (o.signedAt || o.signed_at) return false
+  const payments = Array.isArray(o.payments) ? o.payments : []
+  if (payments.some(p => p && (p.locked ?? true) && !p.voided && Number(p.amount) > 0)) return true
+  if (payments.length === 0 && Number(o.depositAmount ?? o.deposit_amount ?? 0) > 0) return true
+  return false
 }
 
 // ── BULK OPERATIONS (Orders Triage Workbench) ───────────────────────────────
@@ -1912,6 +1966,11 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
       ? 'Job created from OTHER service type — staff review recommended.'
       : null,
   })
+
+  // A6 — if a deposit was logged before the job existed (deposit-before-sign),
+  // auto-complete contract_signed + deposit_received now. Deposit-gated inside
+  // applyDepositMilestones, so a no-deposit signing is unaffected. Best-effort.
+  try { await applyDepositMilestones(orderId) } catch (e) { console.warn('[A6] applyDepositMilestones (job create):', e?.message) }
 
   return { ok: true, job, alreadyExisted: false }
 }
