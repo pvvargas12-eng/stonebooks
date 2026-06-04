@@ -1,362 +1,271 @@
 // =============================================================================
-// 📚 Stonebooks — Reports tab
+// 📚 Stonebooks — Reports tab (framework)
 // =============================================================================
-// Sales analytics with Recharts:
-//   - Headline KPIs (this month, this year, win rate, avg order value)
-//   - Sales by month (line, year-to-date)
-//   - Sales by rep (bar)
-//   - Sales by service type (pie)
-//   - Sales by referral source (bar)
-//   - Order status pipeline (bar)
+// Two modes — Daily Command (pinned cards) and Library (all reports, grouped).
+// Reusable ReportCard chassis; global date range + compare-to-previous drive
+// every card; per-user layout (pinned / hidden / order) persists. Every value is
+// REAL — a report that can't be computed honestly shows a "not yet tracked"
+// note. READ-ONLY: no actions fire. Archived orders excluded (D1).
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { customerName, fmtUSD, statusInfo, rowGrandTotal } from './lib/stonebooksData'
 import {
-  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
-} from 'recharts'
-import {
-  listAllOrders, statusInfo, ORDER_STATUSES, SOLD_STATUSES, ACTIVE_STATUSES,
-  rowGrandTotal, fmtUSD, monthKey, monthLabel, monthsAgo,
-} from './lib/stonebooksData'
+  loadReportsData, reportDateRange, getReportsLayout, saveReportsLayout, downloadReportCSV,
+} from './lib/reportsData'
+import { REPORTS, REPORTS_BY_ID, REPORT_GROUPS } from './lib/reportDefs'
+import ReportCard, { REPORT_CSS } from './components/ReportCard'
 
-const PIE_COLORS = ['#1d4ed8', '#0d9488', '#7c3aed', '#b8842a', '#b54040', '#5d5d5a', '#2d7a4f', '#0f1419']
+const RANGES = [
+  { code: 'month',   label: 'This month' },
+  { code: 'quarter', label: 'Quarter' },
+  { code: 'year',    label: 'Year' },
+  { code: 'custom',  label: 'Custom' },
+]
 
-export default function ReportsTab() {
-  const [orders, setOrders] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [range, setRange] = useState('12mo')   // '3mo' | '12mo' | 'ytd' | 'all'
+function defaultLayout() {
+  return { pinned: REPORTS.filter(r => r.daily).map(r => r.id), hidden: [], order: REPORTS.map(r => r.id) }
+}
+function mergeLayout(loaded) {
+  const def = defaultLayout()
+  if (!loaded) return def
+  const known = new Set(REPORTS.map(r => r.id))
+  const order = (loaded.order || []).filter(id => known.has(id))
+  for (const id of def.order) if (!order.includes(id)) order.push(id)
+  return {
+    pinned: (loaded.pinned || def.pinned).filter(id => known.has(id)),
+    hidden: (loaded.hidden || []).filter(id => known.has(id)),
+    order,
+  }
+}
+
+function orderName(row) {
+  if (row?.primary_lastname && String(row.primary_lastname).trim()) return String(row.primary_lastname).trim()
+  const cn = customerName(row?.customer)
+  if (cn && cn !== '—') return cn
+  return row?.order_number || 'Unknown'
+}
+
+export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
+  const [now] = useState(() => new Date())
+  const [bundle, setBundle] = useState(null)
+  const [err, setErr] = useState(null)
+  const [rangeCode, setRangeCode] = useState('month')
+  const [custom, setCustom] = useState({ start: '', end: '' })
+  const [compare, setCompare] = useState(false)
+  const [mode, setMode] = useState('daily')
+  const [group, setGroup] = useState('money')
+  const [layout, setLayout] = useState(null)
+  const [drill, setDrill] = useState(null)
 
   useEffect(() => {
-    // Pull EVERYTHING once — we filter client-side for snappy report toggles.
-    listAllOrders({ limit: 1000 }).then(rows => {
-      setOrders(rows)
-      setLoading(false)
-    })
+    let c = false
+    loadReportsData().then(b => { if (!c) setBundle(b) }).catch(e => { if (!c) setErr(e?.message || 'Failed to load') })
+    return () => { c = true }
   }, [])
+  useEffect(() => {
+    let c = false
+    getReportsLayout(user?.id).then(l => { if (!c) setLayout(mergeLayout(l)) })
+    return () => { c = true }
+  }, [user?.id])
 
-  // ── Date filter ──
-  const cutoffDate = useMemo(() => {
-    if (range === '3mo')  return monthsAgo(3)
-    if (range === '12mo') return monthsAgo(12)
-    if (range === 'ytd')  return new Date(new Date().getFullYear(), 0, 1)
-    return new Date(0)
-  }, [range])
+  const range = useMemo(() => reportDateRange(rangeCode, custom, now), [rangeCode, custom, now])
+  const onDrill = useCallback((d) => setDrill(d), [])
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter(o => {
-      const d = new Date(o.created_at || o.updated_at)
-      return d >= cutoffDate
-    })
-  }, [orders, cutoffDate])
-
-  // ── KPIs ──
-  const kpis = useMemo(() => {
-    const sold = filteredOrders.filter(o => SOLD_STATUSES.includes(o.status))
-    const cancelled = filteredOrders.filter(o => o.status === 'cancelled')
-    const totalSold = sold.reduce((s, o) => s + rowGrandTotal(o), 0)
-    const totalAttempted = sold.length + cancelled.length
-    const winRate = totalAttempted > 0 ? Math.round((sold.length / totalAttempted) * 100) : null
-    const avgOrder = sold.length > 0 ? totalSold / sold.length : 0
-
-    // This month
-    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0)
-    const thisMonthOrders = sold.filter(o => new Date(o.created_at) >= monthStart)
-    const thisMonthSold = thisMonthOrders.reduce((s, o) => s + rowGrandTotal(o), 0)
-
-    // This year
-    const yearStart = new Date(new Date().getFullYear(), 0, 1)
-    const thisYearOrders = sold.filter(o => new Date(o.created_at) >= yearStart)
-    const thisYearSold = thisYearOrders.reduce((s, o) => s + rowGrandTotal(o), 0)
-
-    return {
-      thisMonth: thisMonthSold,
-      thisMonthCount: thisMonthOrders.length,
-      thisYear: thisYearSold,
-      thisYearCount: thisYearOrders.length,
-      winRate,
-      winRateBase: totalAttempted,
-      avgOrder,
-      avgOrderCount: sold.length,
-      totalSold,
-      activeCount: filteredOrders.filter(o => ACTIVE_STATUSES.includes(o.status)).length,
+  const results = useMemo(() => {
+    if (!bundle) return {}
+    const ctx = { range, compare, onDrill }
+    const out = {}
+    for (const r of REPORTS) {
+      try { out[r.id] = r.compute(bundle, ctx) }
+      catch (e) { out[r.id] = { health: 'neutral', note: `Couldn’t compute this report (${e?.message || 'error'}).` } }
     }
-  }, [filteredOrders])
+    return out
+  }, [bundle, range, compare, onDrill])
 
-  // ── By month series ──
-  const byMonth = useMemo(() => {
-    const buckets = {}
-    const sold = filteredOrders.filter(o => SOLD_STATUSES.includes(o.status))
-    for (const o of sold) {
-      const d = new Date(o.created_at)
-      const key = monthKey(d)
-      if (!buckets[key]) buckets[key] = { key, label: monthLabel(d), date: d, total: 0, count: 0 }
-      buckets[key].total += rowGrandTotal(o)
-      buckets[key].count++
-    }
-    return Object.values(buckets).sort((a, b) => a.date - b.date)
-  }, [filteredOrders])
+  // ── Layout mutations ───────────────────────────────────────────────────────
+  const persist = (next) => { setLayout(next); saveReportsLayout(user?.id, next) }
+  const togglePin = (id) => { if (!layout) return; const has = layout.pinned.includes(id); persist({ ...layout, pinned: has ? layout.pinned.filter(x => x !== id) : [...layout.pinned, id] }) }
+  const toggleHide = (id) => { if (!layout) return; const has = layout.hidden.includes(id); persist({ ...layout, hidden: has ? layout.hidden.filter(x => x !== id) : [...layout.hidden, id] }) }
 
-  // ── By rep ──
-  const byRep = useMemo(() => {
-    const buckets = {}
-    const sold = filteredOrders.filter(o => SOLD_STATUSES.includes(o.status))
-    for (const o of sold) {
-      const rep = o.sales_rep || 'Unassigned'
-      if (!buckets[rep]) buckets[rep] = { rep, total: 0, count: 0 }
-      buckets[rep].total += rowGrandTotal(o)
-      buckets[rep].count++
-    }
-    return Object.values(buckets).sort((a, b) => b.total - a.total)
-  }, [filteredOrders])
+  const visibleIds = useMemo(() => {
+    if (!layout) return []
+    const ordered = layout.order.filter(id => REPORTS_BY_ID[id])
+    if (mode === 'daily') return ordered.filter(id => layout.pinned.includes(id) && !layout.hidden.includes(id))
+    return ordered.filter(id => REPORTS_BY_ID[id].group === group)   // library: hidden shown dimmed
+  }, [layout, mode, group])
 
-  // ── By service type ──
-  const byService = useMemo(() => {
-    const buckets = {}
-    for (const o of filteredOrders) {
-      if (!SOLD_STATUSES.includes(o.status)) continue
-      const services = o.service_types || []
-      const total = rowGrandTotal(o)
-      // Distribute order value across all selected services
-      const each = services.length > 0 ? total / services.length : 0
-      const labels = services.length > 0 ? services : ['Unknown']
-      for (const s of labels) {
-        const label = serviceLabel(s)
-        if (!buckets[label]) buckets[label] = { name: label, total: 0, count: 0 }
-        buckets[label].total += each
-        buckets[label].count++
-      }
-    }
-    return Object.values(buckets)
-      .map(b => ({ ...b, total: Math.round(b.total) }))
-      .sort((a, b) => b.total - a.total)
-  }, [filteredOrders])
-
-  // ── By referral source ──
-  const byReferral = useMemo(() => {
-    const buckets = {}
-    const sold = filteredOrders.filter(o => SOLD_STATUSES.includes(o.status))
-    for (const o of sold) {
-      const src = o.referral_source || o.customer?.referral_source || 'Unknown'
-      const label = referralLabel(src)
-      if (!buckets[label]) buckets[label] = { name: label, total: 0, count: 0 }
-      buckets[label].total += rowGrandTotal(o)
-      buckets[label].count++
-    }
-    return Object.values(buckets).sort((a, b) => b.total - a.total)
-  }, [filteredOrders])
-
-  // ── Status pipeline ──
-  const byStatus = useMemo(() => {
-    const buckets = {}
-    for (const o of filteredOrders) {
-      const s = statusInfo(o.status)
-      if (!buckets[s.code]) buckets[s.code] = { name: s.label, code: s.code, color: s.color, count: 0, total: 0 }
-      buckets[s.code].count++
-      buckets[s.code].total += rowGrandTotal(o)
-    }
-    // Stable order
-    return ORDER_STATUSES
-      .map(s => buckets[s.code])
-      .filter(Boolean)
-      .filter(b => b.count > 0)
-  }, [filteredOrders])
-
-  if (loading) return <div className="sb-page sb-page-wide"><div className="sb-empty">Loading reports…</div></div>
-
-  const empty = orders.length === 0
-  if (empty) {
-    return (
-      <div className="sb-page sb-page-wide">
-        <div className="sb-page-head">
-          <div className="sb-page-eyebrow">Workspace</div>
-          <h1 className="sb-page-title">Reports</h1>
-        </div>
-        <div className="sb-empty">
-          No orders yet. Reports populate as you write quotes and contracts.
-          You can also seed test data to see how reports look — ask Claude to
-          generate fake data when you're ready.
-        </div>
-      </div>
-    )
+  const move = (id, dir) => {
+    if (!layout) return
+    const vis = visibleIds
+    const i = vis.indexOf(id); if (i < 0) return
+    const j = dir < 0 ? i - 1 : i + 1; if (j < 0 || j >= vis.length) return
+    const order = [...layout.order]
+    const ai = order.indexOf(id), bi = order.indexOf(vis[j])
+    ;[order[ai], order[bi]] = [order[bi], order[ai]]
+    persist({ ...layout, order })
   }
+
+  const exportCsv = (id) => {
+    const r = results[id]; if (!r?.csv) return
+    downloadReportCSV(`${r.csv.filename}.csv`, r.csv.headers, r.csv.rows)
+  }
+
+  const deltaTextFor = (res) => {
+    if (!compare || res?.value == null || res?.prevValue == null) return null
+    const d = res.value - res.prevValue
+    if (res.prevValue === 0) return d === 0 ? '±0' : '▲ new'
+    const pct = Math.round((d / Math.abs(res.prevValue)) * 100)
+    return `${d >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs prev`
+  }
+
+  const groupHasHidden = mode === 'library' && layout && visibleIds.some(id => layout.hidden.includes(id))
 
   return (
     <div className="sb-page sb-page-wide">
-      <div className="sb-page-head sb-cal-head">
-        <div>
-          <div className="sb-page-eyebrow">Workspace</div>
-          <h1 className="sb-page-title">Reports</h1>
+      <style>{REPORT_CSS}{RT_CSS}</style>
+      <div className="sb-page-head">
+        <div className="sb-page-eyebrow">Intelligence</div>
+        <h1 className="sb-page-title">Reports</h1>
+      </div>
+
+      {/* Global controls */}
+      <div className="rt-controls">
+        <div className="rt-modes" role="tablist">
+          <button type="button" className={`rt-mode ${mode === 'daily' ? 'on' : ''}`} onClick={() => setMode('daily')}>Daily Command</button>
+          <button type="button" className={`rt-mode ${mode === 'library' ? 'on' : ''}`} onClick={() => setMode('library')}>Library</button>
         </div>
-        <div className="sb-segmented">
-          <button className={`sb-seg ${range === '3mo' ? 'on' : ''}`}  onClick={() => setRange('3mo')}>3 mo</button>
-          <button className={`sb-seg ${range === '12mo' ? 'on' : ''}`} onClick={() => setRange('12mo')}>12 mo</button>
-          <button className={`sb-seg ${range === 'ytd' ? 'on' : ''}`}  onClick={() => setRange('ytd')}>YTD</button>
-          <button className={`sb-seg ${range === 'all' ? 'on' : ''}`}  onClick={() => setRange('all')}>All time</button>
+        <div className="rt-ctrl-right">
+          <div className="rt-ranges">
+            {RANGES.map(r => (
+              <button key={r.code} type="button" className={`rt-range ${rangeCode === r.code ? 'on' : ''}`} onClick={() => setRangeCode(r.code)}>{r.label}</button>
+            ))}
+          </div>
+          {rangeCode === 'custom' && (
+            <div className="rt-custom">
+              <input type="date" value={custom.start} onChange={e => setCustom(c => ({ ...c, start: e.target.value }))} />
+              <span>–</span>
+              <input type="date" value={custom.end} onChange={e => setCustom(c => ({ ...c, end: e.target.value }))} />
+            </div>
+          )}
+          <label className="rt-compare">
+            <input type="checkbox" checked={compare} onChange={e => setCompare(e.target.checked)} /> Compare to prev
+          </label>
         </div>
       </div>
 
-      <div className="sb-metric-grid">
-        <Metric label="This month" value={fmtUSD(kpis.thisMonth)} sub={`${kpis.thisMonthCount} sold`} />
-        <Metric label="This year" value={fmtUSD(kpis.thisYear)} sub={`${kpis.thisYearCount} sold`} />
-        <Metric label="In selected range" value={fmtUSD(kpis.totalSold)} sub={`${kpis.avgOrderCount} sold · ${kpis.activeCount} active`} />
-        <Metric label="Average order" value={kpis.avgOrder > 0 ? fmtUSD(kpis.avgOrder) : '—'} sub={`across ${kpis.avgOrderCount} sales`} />
-        <Metric label="Win rate" value={kpis.winRate != null ? `${kpis.winRate}%` : '—'} sub={`${kpis.winRateBase} attempts`} />
-      </div>
+      {/* Library group sub-tabs */}
+      {mode === 'library' && (
+        <div className="rt-groups">
+          {REPORT_GROUPS.map(g => {
+            const n = REPORTS.filter(r => r.group === g.code).length
+            return (
+              <button key={g.code} type="button" className={`rt-group ${group === g.code ? 'on' : ''}`} onClick={() => setGroup(g.code)} disabled={n === 0}>
+                {g.label}{n > 0 && <span className="rt-group-n">{n}</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
-      {/* Sales by month line chart */}
-      <ChartCard title="Revenue by month" sub="Sum of contracted+ orders, grouped by month created">
-        {byMonth.length > 1 ? (
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={byMonth} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--sb-border)" />
-              <XAxis dataKey="label" stroke="var(--sb-text-muted)" fontSize={11} />
-              <YAxis stroke="var(--sb-text-muted)" fontSize={11} tickFormatter={v => fmtUSD(v, { short: true })} />
-              <Tooltip
-                contentStyle={{ background: 'var(--sb-surface)', border: '0.5px solid var(--sb-border)', borderRadius: 6, fontSize: 12 }}
-                formatter={(v) => fmtUSD(v)}
-              />
-              <Line type="monotone" dataKey="total" stroke="#1d4ed8" strokeWidth={2} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : <ChartEmpty>Not enough history yet.</ChartEmpty>}
-      </ChartCard>
+      {err && <div className="sb-empty" style={{ color: '#b54040' }}>{err}</div>}
 
-      <div className="sb-chart-row">
-        {/* Sales by rep */}
-        <ChartCard title="Revenue by rep" sub="Top performers in selected range">
-          {byRep.length > 0 ? (
-            <ResponsiveContainer width="100%" height={Math.max(180, byRep.length * 36)}>
-              <BarChart data={byRep} layout="vertical" margin={{ top: 0, right: 20, left: 60, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--sb-border)" horizontal={false} />
-                <XAxis type="number" stroke="var(--sb-text-muted)" fontSize={11} tickFormatter={v => fmtUSD(v, { short: true })} />
-                <YAxis dataKey="rep" type="category" stroke="var(--sb-text-muted)" fontSize={11} width={70} />
-                <Tooltip
-                  contentStyle={{ background: 'var(--sb-surface)', border: '0.5px solid var(--sb-border)', borderRadius: 6, fontSize: 12 }}
-                  formatter={(v) => fmtUSD(v)}
-                />
-                <Bar dataKey="total" fill="#1d4ed8" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <ChartEmpty>No sales by rep yet.</ChartEmpty>}
-        </ChartCard>
+      {!bundle || !layout ? (
+        <div className="sb-empty">Loading reports…</div>
+      ) : visibleIds.length === 0 ? (
+        <div className="sb-empty">
+          {mode === 'daily'
+            ? 'No cards pinned to Daily Command yet. Open the Library and pin the reports you check each morning.'
+            : 'No reports in this group yet.'}
+        </div>
+      ) : (
+        <div className="rt-grid">
+          {visibleIds.map(id => {
+            const def = REPORTS_BY_ID[id]
+            const res = results[id]
+            const isHidden = layout.hidden.includes(id)
+            return (
+              <ReportCard
+                key={id} def={def} result={res}
+                pinned={layout.pinned.includes(id)} hidden={isHidden}
+                deltaText={deltaTextFor(res)}
+                onTogglePin={() => togglePin(id)} onToggleHide={() => toggleHide(id)}
+                onMoveUp={() => move(id, -1)} onMoveDown={() => move(id, 1)}
+                onExport={() => exportCsv(id)}
+              >
+                {res?.body}
+              </ReportCard>
+            )
+          })}
+        </div>
+      )}
 
-        {/* Service type pie */}
-        <ChartCard title="Revenue by service type" sub="Where sales are concentrated">
-          {byService.length > 0 ? (
-            <ResponsiveContainer width="100%" height={260}>
-              <PieChart>
-                <Pie data={byService} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={90} paddingAngle={2}>
-                  {byService.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ background: 'var(--sb-surface)', border: '0.5px solid var(--sb-border)', borderRadius: 6, fontSize: 12 }}
-                  formatter={(v) => fmtUSD(v)}
-                />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <ChartEmpty>No service type data yet.</ChartEmpty>}
-        </ChartCard>
-      </div>
+      {groupHasHidden && <div className="rt-hidden-note">Dimmed cards are hidden — use the ⋯ menu to show them.</div>}
 
-      <div className="sb-chart-row">
-        {/* Referral sources */}
-        <ChartCard title="Where leads come from" sub="Revenue by referral source">
-          {byReferral.length > 0 ? (
-            <ResponsiveContainer width="100%" height={Math.max(180, byReferral.length * 32)}>
-              <BarChart data={byReferral} layout="vertical" margin={{ top: 0, right: 20, left: 80, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--sb-border)" horizontal={false} />
-                <XAxis type="number" stroke="var(--sb-text-muted)" fontSize={11} tickFormatter={v => fmtUSD(v, { short: true })} />
-                <YAxis dataKey="name" type="category" stroke="var(--sb-text-muted)" fontSize={11} width={90} />
-                <Tooltip
-                  contentStyle={{ background: 'var(--sb-surface)', border: '0.5px solid var(--sb-border)', borderRadius: 6, fontSize: 12 }}
-                  formatter={(v) => fmtUSD(v)}
-                />
-                <Bar dataKey="total" fill="#0d9488" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <ChartEmpty>No referral data yet. Make sure to capture "How did you hear about us?" on every sale.</ChartEmpty>}
-        </ChartCard>
-
-        {/* Pipeline by status */}
-        <ChartCard title="Pipeline by status" sub="Order count + total value at each stage">
-          {byStatus.length > 0 ? (
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={byStatus} margin={{ top: 10, right: 10, left: 10, bottom: 50 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--sb-border)" />
-                <XAxis dataKey="name" stroke="var(--sb-text-muted)" fontSize={11} angle={-30} textAnchor="end" height={60} />
-                <YAxis stroke="var(--sb-text-muted)" fontSize={11} />
-                <Tooltip
-                  contentStyle={{ background: 'var(--sb-surface)', border: '0.5px solid var(--sb-border)', borderRadius: 6, fontSize: 12 }}
-                  formatter={(v, n, p) => n === 'count' ? v : fmtUSD(v)}
-                />
-                <Bar dataKey="count">
-                  {byStatus.map((b, i) => <Cell key={i} fill={b.color} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <ChartEmpty>Pipeline empty.</ChartEmpty>}
-        </ChartCard>
-      </div>
+      {drill && (
+        <DrillModal drill={drill} bundle={bundle} onClose={() => setDrill(null)} onOpenOrder={onOpenOrder} onOpenJob={onOpenJob} />
+      )}
     </div>
   )
 }
 
-function Metric({ label, value, sub }) {
+// ── Drill-through modal — the underlying orders/jobs for a clicked segment ────
+function DrillModal({ drill, bundle, onClose, onOpenOrder, onOpenJob }) {
+  const items = useMemo(() => {
+    const ids = new Set(drill.ids || [])
+    if (drill.kind === 'jobs') {
+      return (bundle.jobs || []).filter(j => ids.has(j.id)).map(j => ({
+        id: j.id, kind: 'job', name: orderName(j.order), num: j.order?.order_number || String(j.id).slice(0, 8),
+        amount: j.order ? fmtUSD(rowGrandTotal(j.order)) : '—', sub: j.job_type || j.overall_status || '',
+      }))
+    }
+    return (bundle.orders || []).filter(o => ids.has(o.id)).map(o => ({
+      id: o.id, kind: 'order', name: orderName(o), num: o.order_number || String(o.id).slice(0, 8),
+      amount: fmtUSD(rowGrandTotal(o)), sub: statusInfo(o.status).label,
+    }))
+  }, [drill, bundle])
+
   return (
-    <div className="sb-metric">
-      <div className="sb-metric-label">{label}</div>
-      <div className="sb-metric-value">{value}</div>
-      {sub && <div className="sb-metric-sub">{sub}</div>}
-    </div>
-  )
-}
-
-function ChartCard({ title, sub, children }) {
-  return (
-    <div className="sb-chart-card">
-      <div className="sb-chart-head">
-        <div className="sb-chart-title">{title}</div>
-        {sub && <div className="sb-chart-sub">{sub}</div>}
+    <div className="rb-drill-backdrop" onClick={onClose}>
+      <div className="rb-drill" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
+        <div className="rb-drill-head">
+          <div className="rb-drill-title">{drill.title} · {items.length}</div>
+          <button type="button" className="rb-drill-close" onClick={onClose}>Close ×</button>
+        </div>
+        <div className="rb-drill-list">
+          {items.length === 0 ? <div className="rb-drill-empty">Nothing in this subset.</div>
+            : items.map(it => (
+              <button type="button" key={it.id} className="rb-drill-row"
+                onClick={() => { it.kind === 'job' ? onOpenJob?.(it.id) : onOpenOrder?.(it.id); onClose() }}>
+                <span className="rb-drill-name">{it.name}</span>
+                <span className="rb-drill-mono">{it.num}</span>
+                <span className="rb-drill-amt">{it.amount}</span>
+                <span className="rb-drill-sub">{it.sub}</span>
+              </button>
+            ))}
+        </div>
       </div>
-      <div className="sb-chart-body">{children}</div>
     </div>
   )
 }
 
-function ChartEmpty({ children }) {
-  return <div className="sb-empty" style={{ minHeight: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{children}</div>
-}
-
-// ── Service type label normalization ──
-function serviceLabel(code) {
-  const map = {
-    'new-stone':    'New Stone',
-    'inscription':  'Inscription',
-    'acid-wash':    'Acid Wash',
-    'repair':       'Repair',
-    'mausoleum':    'Mausoleum',
-    'cleaning':     'Cleaning',
-    'reset':        'Reset',
-    'restoration':  'Restoration',
-  }
-  return map[code] || code
-}
-
-function referralLabel(code) {
-  const map = {
-    'walkin':       'Walk-in',
-    'word-of-mouth':'Word of mouth',
-    'returning':    'Returning customer',
-    'family':       'Family member referral',
-    'cemetery':     'Cemetery referral',
-    'funeral-home': 'Funeral home',
-    'google':       'Google search',
-    'social':       'Social media',
-    'website':      'Website',
-    'sign':         'Yard sign / location',
-    'other':        'Other',
-  }
-  return map[code] || code
-}
+const RT_CSS = `
+  .rt-controls { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+  .rt-modes { display: inline-flex; gap: 4px; padding: 4px; background: #f0eeea; border-radius: 999px; }
+  .rt-mode { font: inherit; font-size: 13px; padding: 7px 18px; border: none; background: transparent; color: #6b6b66; border-radius: 999px; cursor: pointer; }
+  .rt-mode.on { background: #fff; color: #1e2d3d; font-weight: 600; box-shadow: 0 1px 2px rgba(15,20,25,0.08); }
+  .rt-ctrl-right { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .rt-ranges { display: inline-flex; gap: 4px; }
+  .rt-range { font: inherit; font-size: 12px; padding: 6px 12px; border: 0.5px solid #e6e3dd; background: #fff; color: #6b6b66; border-radius: 7px; cursor: pointer; }
+  .rt-range.on { border-color: #9A7209; color: #9A7209; font-weight: 600; }
+  .rt-custom { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #6b6b66; }
+  .rt-custom input { font: inherit; font-size: 12px; padding: 5px 8px; border: 0.5px solid #e6e3dd; border-radius: 6px; }
+  .rt-compare { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #6b6b66; cursor: pointer; }
+  .rt-groups { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; border-bottom: 0.5px solid #e6e3dd; padding-bottom: 12px; }
+  .rt-group { font: inherit; font-size: 13px; padding: 6px 14px; border: 0.5px solid #e6e3dd; background: #fff; color: #6b6b66; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+  .rt-group.on { background: #1e2d3d; color: #fff; border-color: #1e2d3d; }
+  .rt-group:disabled { opacity: 0.45; cursor: not-allowed; }
+  .rt-group-n { font-size: 11px; opacity: 0.7; }
+  .rt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; align-items: start; }
+  .rt-hidden-note { font-size: 12px; color: #a0a09a; margin-top: 12px; }
+`

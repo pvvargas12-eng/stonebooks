@@ -647,7 +647,7 @@ export default function Stonebooks() {
     Scheduler exactly (ITEM 2). */}
 {tab === 'calendar'  && <SchedulerTab variant="calendar" user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {tab === 'email'     && <EmailTab />}
-{tab === 'reports'   && <ReportsTab />}
+{tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
