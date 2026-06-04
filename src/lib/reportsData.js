@@ -10,7 +10,7 @@
 import { supabase } from './supabase'
 import {
   fetchAllPaged, getJobs, listOutgoingPayments, getAllOpenPromises,
-  getUserSettings, upsertUserSettings,
+  getBatches, getUserSettings, upsertUserSettings,
 } from './stonebooksData'
 
 const REPORT_ORDER_SELECT =
@@ -22,14 +22,15 @@ const REPORT_ORDER_SELECT =
 // One bundle for every report. Best-effort per source so one failure doesn't
 // blank the whole tab.
 export async function loadReportsData() {
-  const [orders, jobs, outgoing, promises] = await Promise.all([
+  const [orders, jobs, outgoing, promises, batches] = await Promise.all([
     fetchAllPaged(() => supabase.from('orders').select(REPORT_ORDER_SELECT)
       .or('archived.is.null,archived.eq.false').order('created_at', { ascending: false })).catch(() => []),
     getJobs({ includeClosed: true, limit: 1000 }).catch(() => []),
     listOutgoingPayments().catch(() => []),
     getAllOpenPromises({ includeResolved: true }).catch(() => []),
+    getBatches({}).catch(() => []),
   ])
-  return { orders: orders || [], jobs: jobs || [], outgoing: outgoing || [], promises: promises || [] }
+  return { orders: orders || [], jobs: jobs || [], outgoing: outgoing || [], promises: promises || [], batches: batches || [] }
 }
 
 // ── Date range ───────────────────────────────────────────────────────────────

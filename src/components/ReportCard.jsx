@@ -130,6 +130,14 @@ export const REPORT_CSS = `
   .rb-split { font-size: 12px; color: #6b6b66; margin-top: 12px; }
   .rb-split strong { color: #1e2d3d; }
 
+  /* Stat grid */
+  .rb-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .rb-stat { font: inherit; text-align: left; background: #faf8f3; border: 0.5px solid #eee7d8; border-radius: 8px; padding: 12px 14px; cursor: pointer; }
+  .rb-stat:disabled { cursor: default; }
+  .rb-stat:not(:disabled):hover { background: #f5f0e4; }
+  .rb-stat-val { font-size: 22px; font-weight: 700; color: #1e2d3d; font-variant-numeric: tabular-nums; }
+  .rb-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; margin-top: 2px; }
+
   /* Drill modal */
   .rb-drill-backdrop { position: fixed; inset: 0; background: rgba(15,20,25,0.42); z-index: 1100; display: flex; align-items: center; justify-content: center; padding: 24px; }
   .rb-drill { background: #fff; border-radius: 12px; box-shadow: 0 16px 48px rgba(15,20,25,0.24); max-width: 640px; width: 100%; max-height: 86vh; display: flex; flex-direction: column; }

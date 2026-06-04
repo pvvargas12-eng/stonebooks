@@ -164,6 +164,19 @@ function SortableTable({ columns, rows, grid, initialSort, onDrill, maxRows = 20
   )
 }
 
+function StatGrid({ stats, onClick }) {
+  return (
+    <div className="rb-stats">
+      {stats.map(s => (
+        <button key={s.label} type="button" className="rb-stat" disabled={!onClick} onClick={onClick}>
+          <div className="rb-stat-val">{s.fmt ? s.fmt(s.value) : s.value}</div>
+          <div className="rb-stat-label">{s.label}</div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ── Reports ──────────────────────────────────────────────────────────────────
 const RECEIVABLES_AGING = {
   id: 'receivables_aging', group: 'money', daily: true,
@@ -597,6 +610,48 @@ const CYCLE_TIME_STAGE = {
   },
 }
 
+const INSTALL_EFFICIENCY = {
+  id: 'install_efficiency', group: 'operations', daily: false,
+  title: 'Install Efficiency',
+  why: 'What each field trip delivers — installs, revenue, and profit per run.',
+  compute(bundle, ctx) {
+    const jobById = {}; for (const j of bundle.jobs) jobById[j.id] = j
+    const { byOrder } = outgoingByOrder(bundle.outgoing)
+    const INSTALL_KINDS = new Set(['setting', 'delivery'])
+    const trips = (bundle.batches || []).filter(b => b.scheduled_date && b.status !== 'cancelled' && INSTALL_KINDS.has(b.kind))
+    if (!trips.length) return { health: 'neutral', note: 'No scheduled install/delivery trips yet — once setting or delivery batches are scheduled, this fills in. (Mileage / route-waste is deferred — no distance data captured yet.)' }
+    let totalInstalls = 0, totalRev = 0, totalCost = 0
+    const jobIds = []
+    for (const b of trips) {
+      const stops = b.batch_jobs || []
+      totalInstalls += stops.length
+      for (const s of stops) {
+        const o = jobById[s.job_id]?.order
+        if (o) { totalRev += rowGrandTotal(o); totalCost += (byOrder[o.id] || 0); jobIds.push(s.job_id) }
+      }
+    }
+    const n = trips.length
+    const profit = totalRev - totalCost
+    const installsPerTrip = totalInstalls / n
+    const stats = [
+      { label: 'Trips', value: n, fmt: v => String(v) },
+      { label: 'Installs / trip', value: installsPerTrip, fmt: v => v.toFixed(1) },
+      { label: 'Revenue / trip', value: totalRev / n, fmt: v => fmtUSD(v) },
+      { label: 'Profit / trip', value: profit / n, fmt: v => fmtUSD(v) },
+    ]
+    return {
+      health: healthFrom(installsPerTrip, { red: 1, yellow: 1.5 }), value: installsPerTrip,
+      csv: { filename: 'install-efficiency', headers: ['Trips', 'Total installs', 'Installs/trip', 'Total revenue', 'Revenue/trip', 'Total profit', 'Profit/trip'], rows: [[n, totalInstalls, installsPerTrip.toFixed(2), Math.round(totalRev), Math.round(totalRev / n), Math.round(profit), Math.round(profit / n)]] },
+      body: (
+        <>
+          <StatGrid stats={stats} onClick={() => ctx.onDrill({ title: 'Jobs on install/delivery trips', ids: jobIds, kind: 'jobs' })} />
+          <div className="rb-split">Profit/trip uses order-linked costs only (labor + mileage not captured). Multiple installs per trip = a more efficient run.</div>
+        </>
+      ),
+    }
+  },
+}
+
 // Registry. (Daily Command = those with daily:true; Library = all, grouped.)
 export const REPORTS = [
   MONEY_AT_RISK,
@@ -611,6 +666,7 @@ export const REPORTS = [
   CEMETERY_PROFIT,
   STUCK_JOBS,
   CYCLE_TIME_STAGE,
+  INSTALL_EFFICIENCY,
 ]
 
 export const REPORTS_BY_ID = Object.fromEntries(REPORTS.map(r => [r.id, r]))
