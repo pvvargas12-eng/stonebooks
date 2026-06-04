@@ -2803,16 +2803,40 @@ async function _getProfitOverviewInner() {
     catch (e) { console.warn(`[profit] ${label} threw:`, e?.message || e); return { data: [], error: e } }
   }
 
-  const [pays, exps, jobsRes, cemRes, estRes] = await Promise.all([
+  const [finPays, exps, jobsRes, cemRes, estRes, ordersRes] = await Promise.all([
     safe(getFinancialRecords({ recordType: 'payment_received' }), 'payments').then(r => Array.isArray(r) ? r : (r?.data || [])),
     safe(getFinancialRecords({ recordType: 'expense_incurred' }), 'expenses').then(r => Array.isArray(r) ? r : (r?.data || [])),
     safe(supabase.from('jobs').select('id, job_type, order_id, cemetery_order_id, quoted_total, overall_status'), 'jobs'),
     safe(supabase.from('cemetery_orders').select('id, cemetery_name, total_amount, status, created_at, submitted_at'), 'cemetery_orders'),
     safe(supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount'), 'estimates'),
+    safe(supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at').limit(10000), 'orders'),
   ])
   const jobs = jobsRes?.data || []
   const cems = cemRes?.data || []
   const estimates = estRes?.data || []
+  const orders = ordersRes?.data || []
+
+  // REAL MONEY: financial_records is empty in prod — the live payment ledger is
+  // orders.payments[]. Flatten non-voided LOCKED entries into the same row shape
+  // the overview already sums ({ amount, occurred_at, order_id, job_id }), so
+  // every downstream calc (monthly revenue, sparklines, per-order collected,
+  // cash flow) picks up real dollars instead of $0. (Item 1 root cause.)
+  const orderPays = []
+  const contractByOrder = {}
+  for (const o of orders) {
+    contractByOrder[o.id] = (o.contract_total != null ? Number(o.contract_total) : rowGrandTotal(o)) || 0
+    const ps = Array.isArray(o.payments) ? o.payments.filter(p => p && !p.voided && (p.locked ?? true)) : []
+    for (const p of ps) {
+      const amt = Number(p.amount) || 0
+      if (amt === 0) continue
+      orderPays.push({ amount: amt, occurred_at: p.receivedAt || p.createdAt || o.created_at, order_id: o.id, job_id: null })
+    }
+    // Read-fallback for legacy rows with no payments[] but a legacy deposit.
+    if (ps.length === 0 && Number(o.deposit_amount) > 0) {
+      orderPays.push({ amount: Number(o.deposit_amount), occurred_at: o.deposit_received_at || o.created_at, order_id: o.id, job_id: null })
+    }
+  }
+  const pays = [...finPays, ...orderPays]
 
   // active-job stage: fetch milestones only for non-closed jobs.
   // FIX: `group` is a SQL reserved word — the prior alias `group_key:group`
@@ -2894,7 +2918,11 @@ async function _getProfitOverviewInner() {
     const costs = buildCostByCategory(estRowsByJob[j.id] || [], actuals)
     let collected = (payByJob[j.id] || 0)
     if (j.order_id && jobsByOrderCount[j.order_id] === 1) collected += (payByOrder[j.order_id] || 0)
-    const contract = j.quoted_total != null ? Number(j.quoted_total) : null
+    // Contract revenue: job.quoted_total when set, else the order's real total
+    // (contract_total ?? pricing-derived) — quoted_total is null on most orders.
+    const contract = j.quoted_total != null
+      ? Number(j.quoted_total)
+      : (j.order_id && contractByOrder[j.order_id] ? contractByOrder[j.order_id] : null)
     const margin = buildMargin(contract, collected, costs.total_estimated, costs.total_actual)
     return { costs, collected, contract, margin, actuals }
   }
