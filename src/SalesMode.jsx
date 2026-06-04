@@ -1634,13 +1634,22 @@ export async function saveOrder(order) {
     order.deceased.some(d => d.firstName || d.lastName)
   if (!hasSubstance) return { ok: false, reason: 'empty' }
 
-  // Step 1: customer (only save if has any data). FAIL LOUD — if the write
-  // fails we ABORT the whole save rather than proceed with a null customer_id,
-  // which would silently drop the customer (and, on edit, wipe an existing
-  // link). This was the E-26-0235 (Wermuth) data-loss root cause.
-  let customerId = order.customer.id || null
-  if (order.customer.firstName || order.customer.lastName || order.customer.phonePrimary) {
-    const { data: saved, error } = await upsertCustomer(order.customer)
+  // Step 1: customer. Resolve the customer to write — prefer the entered
+  // Customer card; if it's empty (a deceased-only order, which still "has
+  // substance" and saves), FALL BACK to the primary deceased's name so the
+  // order ALWAYS creates + links a customers row. Without this, deceased-only
+  // orders persisted inline primary_lastname/deceased with customer_id = NULL
+  // and were invisible in the Customers tab (Item 0 root cause). FAIL LOUD on a
+  // write error — never proceed with a null link.
+  let customerInput = order.customer
+  const hasCardIdentity = order.customer.firstName || order.customer.lastName || order.customer.phonePrimary
+  if (!hasCardIdentity && !order.customer.id) {
+    const d = (Array.isArray(order.deceased) ? order.deceased : []).find(x => x && (x.firstName || x.lastName))
+    if (d) customerInput = { ...order.customer, firstName: d.firstName || '', lastName: d.lastName || '' }
+  }
+  let customerId = customerInput.id || null
+  if (customerInput.firstName || customerInput.lastName || customerInput.phonePrimary) {
+    const { data: saved, error } = await upsertCustomer(customerInput)
     if (error || !saved?.id) {
       return { ok: false, error: { message: `Customer could not be saved (${error?.message || 'unknown error'}). Order NOT saved — fix the customer and retry so nothing is dropped.` } }
     }
