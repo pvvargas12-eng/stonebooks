@@ -1450,6 +1450,11 @@ export function makeBlankOrder() {
       // default (shared surname or first person's lastName). Preview-only;
       // PDF unchanged.
       familyName: null,
+      // INSCRIPTION-AUTOTEXT — the carve text shown to the engraver. Auto-
+      // generated from the deceased data + type; regenerates on input/type
+      // change until staff edit it (carveTextEdited flips the auto-fill off).
+      carveText: '',
+      carveTextEdited: false,
     },
 
     // Add-ons (Sprint 3) — array of { code, qty, price, notes }
@@ -2153,6 +2158,9 @@ export function rowToOrder(row, customerRow, cemeteryRow) {
         styleTreatmentCustom: '',
         // Sprint L2 Phase 4 Commit 4 — preview-only Family Name verification.
         familyName: null,
+        // INSCRIPTION-AUTOTEXT — engraver carve text + manual-edit flag.
+        carveText: '',
+        carveTextEdited: false,
         ...(row.inscription || {}),
       }
       // Sprint L2 Phase 4 Commit 3 — legacy code migration. Orders saved with
@@ -4280,6 +4288,56 @@ const INSCRIPTION_TYPES = [
   { code: 'year',  label: 'Year Only',        blurb: 'Add the year of death.' },
 ]
 
+// ── INSCRIPTION AUTO-TEXT — generate the carve text from deceased data ───────
+// Exact shop formats (matched precisely, do not "improve"):
+//   Month  → 3-letter abbrev + period; May has NO period.
+//   Date   → "Mon. D, YYYY" (no leading zero on day) e.g. "Oct. 1, 2020"
+//   Range  → "{birth} - {death}" (space-hyphen-space); one date alone if only one.
+//   Name   → "First M. Last" title-cased; middle initial omitted if no middle.
+//   Years  → "{birthYear} - {deathYear}".
+// Output by inscription type:
+//   full → name line + date-range line   date → date-range line only   year → year range
+const CARVE_MONTHS = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May', 'Jun.', 'Jul.', 'Aug.', 'Sept.', 'Oct.', 'Nov.', 'Dec.']
+function carveTitleCase(s) {
+  return String(s || '').trim().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+}
+function carveName(d) {
+  const first = carveTitleCase(d.firstName)
+  const last  = carveTitleCase(d.lastName)
+  const mid   = (d.middleName || '').trim()
+  const midInit = mid ? `${mid.charAt(0).toUpperCase()}.` : ''
+  return [first, midInit, last].filter(Boolean).join(' ')
+}
+// ISO-ish "YYYY-MM-DD" → "Oct. 1, 2020" (parsed by component, no Date() → no TZ shift)
+function carveFullDate(iso) {
+  if (!iso) return ''
+  const [y, m, d] = String(iso).slice(0, 10).split('-')
+  const yi = parseInt(y, 10), mi = parseInt(m, 10), di = parseInt(d, 10)
+  if (!yi || !mi || !di || mi < 1 || mi > 12) return ''
+  return `${CARVE_MONTHS[mi - 1]} ${di}, ${yi}`
+}
+function carveYear(iso) {
+  const y = String(iso || '').slice(0, 4)
+  return /^\d{4}$/.test(y) ? y : ''
+}
+function carveRange(a, b) {
+  if (a && b) return `${a} - ${b}`
+  return a || b || ''
+}
+function carveDateRange(d) { return carveRange(carveFullDate(d.dateOfBirth), carveFullDate(d.dateOfDeath)) }
+function carveYearRange(d) { return carveRange(carveYear(d.dateOfBirth), carveYear(d.dateOfDeath)) }
+
+function generateCarveText(order) {
+  const type = order?.inscription?.type
+  const d = (order?.deceased || []).find(x =>
+    x && !x.isReserved && (x.firstName || x.lastName || x.dateOfBirth || x.dateOfDeath))
+  if (!d) return ''
+  if (type === 'year') return carveYearRange(d)
+  if (type === 'date') return carveDateRange(d)
+  // 'full' (and the null default) → name line + date-range line
+  return [carveName(d), carveDateRange(d)].filter(Boolean).join('\n')
+}
+
 // Sprint L2 Phase 2 Commit 2 — per-person Title builder, relocated here from
 // DeceasedCard (Tab 4). Logic (joinRelations / setPrefix / toggleRelation) is
 // identical to the old DeceasedCard implementation; d.title stays free-text-
@@ -4678,6 +4736,25 @@ export function InscriptionStep({ order, update }) {
     deceased: (order.deceased || []).map((d, i) => i === idx ? { ...d, ...patch } : d)
   })
 
+  // INSCRIPTION AUTO-TEXT — regenerate the carve text whenever the inputs (the
+  // primary person's name/dates) or the inscription type change, UNLESS staff
+  // have manually edited it (carveTextEdited). The memo only recomputes when a
+  // real input changes, so updating carveText doesn't re-trigger the effect.
+  const carveInputsKey = JSON.stringify((order.deceased || []).map(d =>
+    [d.firstName, d.middleName, d.lastName, d.dateOfBirth, d.dateOfDeath, d.isReserved]))
+  const autoCarveText = useMemo(
+    () => generateCarveText(order),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [order.inscription?.type, carveInputsKey],
+  )
+  useEffect(() => {
+    if (order.inscription?.carveTextEdited) return
+    if ((order.inscription?.carveText || '') !== autoCarveText) {
+      updateInsc({ carveText: autoCarveText })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCarveText, order.inscription?.carveTextEdited])
+
   // Photo upload for pre-existing marker
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef(null)
@@ -4789,6 +4866,37 @@ export function InscriptionStep({ order, update }) {
                 blurb={t.blurb}
               />
             ))}
+          </div>
+        </Section>
+      )}
+
+      {/* INSCRIPTION AUTO-TEXT — the exact text the engraver carves, generated
+          from the name + dates above. Editable; edits stick. */}
+      {isInscriptionOnly && order.inscription.type && (
+        <Section title="Carve text" eyebrow="Exactly what gets carved — auto-filled, editable">
+          <textarea
+            className="sm-textinput sm-carve-text"
+            value={order.inscription.carveText || ''}
+            onChange={e => updateInsc({ carveText: e.target.value, carveTextEdited: true })}
+            rows={order.inscription.type === 'full' ? 3 : 2}
+            placeholder="Auto-fills from the name and dates above"
+            spellCheck={false}
+          />
+          <div className="sm-carve-text-foot">
+            {order.inscription.carveTextEdited ? (
+              <>
+                <span className="sm-carve-text-edited">Manually edited</span>
+                <button
+                  type="button"
+                  className="sm-link-btn"
+                  onClick={() => updateInsc({ carveText: autoCarveText, carveTextEdited: false })}
+                >
+                  ↻ Reset to auto
+                </button>
+              </>
+            ) : (
+              <span className="sm-helper">Auto-generated from the name &amp; dates. Type to override.</span>
+            )}
           </div>
         </Section>
       )}
@@ -8768,6 +8876,26 @@ function ProductionTimelineSection({ order, update, isLocked }) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildLineItems(order) {
   const items = []
+
+  // INSCRIPTION base price — sourced from the LIVE lettering rate in
+  // ADD_ONS_CATALOG (which loadPricingConfig keeps in sync with the Settings
+  // "Inscription tiers" value), never a hardcoded constant. Auto-prices an
+  // inscription order from its type (full / date=M-D-Y / year). Skipped if staff
+  // already added the matching Lettering add-on, so there's no double line.
+  if (order.serviceTypes?.includes('INSCRIPTION') && order.inscription?.type) {
+    const TYPE_TO_LETT = { full: 'lett-full', date: 'lett-mdy', year: 'lett-year' }
+    const lettCode = TYPE_TO_LETT[order.inscription.type]
+    const alreadyAdded = (order.addOns || []).some(a => a.code === lettCode)
+    const lett = ADD_ONS_CATALOG.find(a => a.code === lettCode)
+    if (lett && !alreadyAdded) {
+      items.push({
+        code: 'inscription-base',
+        label: `Inscription — ${String(lett.label).replace(/^Lettering:\s*/, '')}`,
+        amount: lett.price,
+        editable: true,
+      })
+    }
+  }
 
   // Sprint 3i — Mausoleum custom price (when MAUSOLEUM is in services and a
   // quoted price is set). This is the only "stone" line for mausoleum-only
@@ -13161,6 +13289,29 @@ export const salesModeStyles = `
   max-width: 420px;
 }
 .sm-color-card-tbd .sm-color-info { padding: 14px 16px; }
+
+/* INSCRIPTION AUTO-TEXT — carve text field. */
+.sm-carve-text {
+  width: 100%;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  line-height: 1.6;
+  resize: vertical;
+  white-space: pre;
+}
+.sm-carve-text-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+.sm-carve-text-edited {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9A7209;
+}
 
 /* A6 — "signed contract still needed" reminder flag. */
 .sm-need-signature-flag {

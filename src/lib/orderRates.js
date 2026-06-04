@@ -405,6 +405,20 @@ function applyConfigValues(config, skipNull) {
   if (config.diePrices) SHAPES.forEach(s => (s.standardSizes || []).forEach(sz => { if (ok(config.diePrices[sz.code])) sz.price = num(config.diePrices[sz.code]) }))
   if (config.baseSizePrices) BASE_SIZES.forEach(b => { if (ok(config.baseSizePrices[b.code])) b.price = num(config.baseSizePrices[b.code]) })
   if (config.addOnPrices) ADD_ONS_CATALOG.forEach(a => { if (ok(config.addOnPrices[a.code])) a.price = num(config.addOnPrices[a.code]) })
+  // INSCRIPTION-PRICING-SYNC — the owner edits inscription prices under
+  // "Inscription tiers" (INSCRIPTION_TIERS: full/mdy/year), but the wizard
+  // prices inscriptions via the duplicate lett-* Lettering add-ons. Mirror the
+  // tier values onto the matching add-ons so a Settings change actually flows to
+  // new wizard orders. Applied LAST so the Inscription-tiers field stays
+  // authoritative even when the saved config also carries the (default) lett-*
+  // addOnPrices value.
+  if (config.inscriptionTiers) {
+    const TIER_TO_LETT = { full: 'lett-full', mdy: 'lett-mdy', year: 'lett-year' }
+    ADD_ONS_CATALOG.forEach(a => {
+      const tier = Object.keys(TIER_TO_LETT).find(k => TIER_TO_LETT[k] === a.code)
+      if (tier && ok(config.inscriptionTiers[tier])) a.price = num(config.inscriptionTiers[tier])
+    })
+  }
 }
 
 // Fetch + apply the stored config at startup. Safe to call repeatedly; silent
