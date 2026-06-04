@@ -76,7 +76,8 @@ async function loadCommandCenter() {
     supabase
       .from('orders')
       .select('*, customer:customers(*)')
-      .neq('status', 'draft'),
+      .neq('status', 'draft')
+      .or('archived.is.null,archived.eq.false'),   // D1 — archived never counts
     getJobs({ includeClosed: false }),
   ])
   if (oRes.error) throw new Error(oRes.error.message)

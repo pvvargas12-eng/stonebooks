@@ -122,7 +122,7 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
         // (.limit can't override it), which truncated late orders / rollups.
         fetchAllPaged(() => supabase.from('orders').select(
           'id, customer_id, status, order_number, updated_at, created_at, signed_at, pricing_locked_at, ' +
-          'deposit_amount, balance_amount, payments, pricing, add_ons, ' +
+          'deposit_amount, balance_amount, payments, pricing, add_ons, archived, ' +
           'target_completion_date, primary_lastname, deceased, service_types, cemetery_id, ' +
           'cemetery:cemeteries(id, name)'
         )),
@@ -160,7 +160,9 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
       //   3) most recent SOLD (paid_in_full / closed)
       //   4) most recent ANY (fallback for unsigned drafts)
       const byRecent = (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
-      const ordersWithPressure = myOrders.map(o => {
+      // D1 — archived orders never drive the displayed balance/primary or any
+      // money figure. They stay out of the primary picker entirely.
+      const ordersWithPressure = myOrders.filter(o => !o.archived).map(o => {
         const job = jobByOrderId.get(o.id) || null
         return { o, job, p: computeOrderPressure(o, job, job?.milestones) }
       })
@@ -192,8 +194,10 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
       const jobTypes = new Set()
       const serviceTypes = new Set()
       for (const o of myOrders) {
-        const t = rowGrandTotal(o); const p = rowTotalPaid(o)
-        if (SOLD_STATUSES.includes(o.status)) lifetimeBalance += Math.max(0, t - p)
+        // D1 — archived orders excluded from the lifetime money sum.
+        if (!o.archived && SOLD_STATUSES.includes(o.status)) {
+          lifetimeBalance += Math.max(0, rowGrandTotal(o) - rowTotalPaid(o))
+        }
         const upd = new Date(o.updated_at).getTime()
         if (!lastActivity || upd > lastActivity) lastActivity = upd
         const j = jobByOrderId.get(o.id)
@@ -813,11 +817,13 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
   )
 
   const isArchived = !!customer.archived
-  const lifetimeValue = orders
+  // D1 — archived orders never count toward this customer's money figures.
+  const liveOrders = orders.filter(o => !o.archived)
+  const lifetimeValue = liveOrders
     .filter(o => SOLD_STATUSES.includes(o.status))
     .reduce((s, o) => s + rowGrandTotal(o), 0)
-  const totalCollected = orders.reduce((s, o) => s + rowTotalPaid(o), 0)
-  const balanceDue = orders
+  const totalCollected = liveOrders.reduce((s, o) => s + rowTotalPaid(o), 0)
+  const balanceDue = liveOrders
     .filter(o => SOLD_STATUSES.includes(o.status))
     .reduce((s, o) => s + Math.max(0, rowGrandTotal(o) - rowTotalPaid(o)), 0)
 

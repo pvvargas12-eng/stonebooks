@@ -2951,7 +2951,8 @@ async function _getProfitOverviewInner() {
     safe(supabase.from('jobs').select('id, job_type, order_id, cemetery_order_id, quoted_total, overall_status'), 'jobs'),
     safe(supabase.from('cemetery_orders').select('id, cemetery_name, total_amount, status, created_at, submitted_at'), 'cemetery_orders'),
     safe(supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount'), 'estimates'),
-    safe(supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at').limit(10000), 'orders'),
+    // D1 — archived orders never count toward any financial rollup.
+    safe(supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at, archived').or('archived.is.null,archived.eq.false').limit(10000), 'orders'),
   ])
   const jobs = jobsRes?.data || []
   const cems = cemRes?.data || []

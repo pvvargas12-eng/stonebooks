@@ -79,17 +79,18 @@ export default function PaymentsTab({ onOpenOrder }) {
   const [search, setSearch] = useState('')
   const [logOpen, setLogOpen] = useState(false)
 
+  // D1 — archived orders never count toward the money ledger.
+  const ordersQuery = () => supabase.from('orders').select(ORDER_SELECT)
+    .or('archived.is.null,archived.eq.false').order('updated_at', { ascending: false })
   const load = useCallback(async () => {
-    const rows = await fetchAllPaged(() =>
-      supabase.from('orders').select(ORDER_SELECT).order('updated_at', { ascending: false }))
+    const rows = await fetchAllPaged(ordersQuery)
     setOrders(rows || [])
   }, [])
   // Initial load — set state from the async .then (not synchronously in the
   // effect body) with a cancelled guard, matching the OrderDetail pattern.
   useEffect(() => {
     let cancelled = false
-    fetchAllPaged(() => supabase.from('orders').select(ORDER_SELECT).order('updated_at', { ascending: false }))
-      .then(rows => { if (!cancelled) setOrders(rows || []) })
+    fetchAllPaged(ordersQuery).then(rows => { if (!cancelled) setOrders(rows || []) })
     return () => { cancelled = true }
   }, [])
 
