@@ -26,6 +26,7 @@ import {
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
+import CustomerProfileSheet from './components/CustomerProfileSheet'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -139,6 +140,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
+  // Customer Profile sheet
+  const [profileOpen, setProfileOpen] = useState(false)
   // D2 — permanent delete (archived only)
   const [deleteModal, setDeleteModal] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -513,6 +516,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </button>
           )}
           <button type="button" className="sb-od-btn" onClick={handleOpenContract}>Open contract</button>
+          <button type="button" className="sb-od-btn" onClick={() => setProfileOpen(true)}>View / print customer profile</button>
           <button type="button" className="sb-od-btn" onClick={openApprovalPacket}>Open approval packet</button>
           <button type="button" className="sb-od-btn" onClick={() => job ? onOpenJob?.(job.id) : null} disabled={!job}
             title={job ? '' : 'No production job yet'}>
@@ -784,6 +788,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           )}
         </div>
       </div>
+
+      {profileOpen && <CustomerProfileSheet order={order} onClose={() => setProfileOpen(false)} />}
 
       {deleteModal && (
         <div className="sb-od-modal-backdrop" onClick={() => { if (!deleteBusy) setDeleteModal(false) }}>

@@ -25,6 +25,7 @@ import {
 import { CRM, paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
 import UndoToast from './components/calendar/UndoToast.jsx'
+import CustomerProfileSheet from './components/CustomerProfileSheet'
 import { supabase } from './lib/supabase'
 
 const CUST_PAGE_SIZE = 50
@@ -800,6 +801,16 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
+  const [profileOpen, setProfileOpen] = useState(false)
+
+  // Customer Profile sheet — most-recent live order (else any order, else none)
+  // with the customer attached so order-derived fields pre-fill; blanks when
+  // there's no order yet.
+  const profileOrder = useMemo(() => {
+    const byRecent = (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+    const pick = [...orders].filter(o => !o.archived).sort(byRecent)[0] || [...orders].sort(byRecent)[0] || null
+    return pick ? { ...pick, customer } : { customer }
+  }, [orders, customer])
 
   useEffect(() => {
     if (!customer?.id) return
@@ -877,6 +888,9 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
           </div>
         </div>
         <div className="sb-cust-detail-actions">
+          <button type="button" className="sb-btn-secondary" onClick={() => setProfileOpen(true)}>
+            View / print customer profile
+          </button>
           {!isArchived && (
             <button type="button" className="sb-btn-secondary" onClick={doArchive} disabled={busy !== null}>
               {busy === 'archive' ? 'Archiving…' : 'Archive'}
@@ -982,6 +996,8 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
           })}
         </div>
       )}
+
+      {profileOpen && <CustomerProfileSheet order={profileOrder} onClose={() => setProfileOpen(false)} />}
     </div>
   )
 }
