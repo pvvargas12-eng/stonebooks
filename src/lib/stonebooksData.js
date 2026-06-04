@@ -262,11 +262,13 @@ export async function gmailGetThread(threadId) {
 
 // Generate an AI draft email for an order via the ai-draft Edge Function
 // (Claude Haiku). mode ∈ reply | request_photo | request_approval |
-// balance_reminder | install_complete. The Anthropic key stays server-side; the
-// draft is never auto-sent. Returns { ok, subject?, body?, error? }.
-export async function aiDraftEmail({ orderId, mode, balance, total, draftText }) {
+// balance_reminder | install_complete | closeout. The Anthropic key stays
+// server-side; the draft is never auto-sent. photoCount (closeout mode) lets the
+// draft reference the completion photos being shared. Returns { ok, subject?,
+// body?, error? }.
+export async function aiDraftEmail({ orderId, mode, balance, total, draftText, photoCount }) {
   const { data, error } = await supabase.functions.invoke('ai-draft', {
-    body: { order_id: orderId, mode, balance, total, draft_text: draftText },
+    body: { order_id: orderId, mode, balance, total, draft_text: draftText, photo_count: photoCount },
   })
   if (error) {
     let detail = error.message
@@ -2739,7 +2741,25 @@ export function computeOrderPressure(order, job = null, milestones = null) {
     })
   }
 
-  // 9. healthy / in flight
+  // 9. closeout_pending (blue) — the work is installed/done but the order
+  // hasn't been closed out with the family yet. Fires when `installed` is done
+  // AND a closeout-group milestone is still actionable AND the order isn't a
+  // terminal closed/cancelled state. This is the "Close out order with customer"
+  // task (ITEM 5) — it routes to the order's closeout surface (completion photos
+  // + the AI closeout draft). Milestone-driven, no storage scan; the photos the
+  // crew uploads at completion are the operator's cue, the install milestone is
+  // the system trigger.
+  const CLOSEOUT_TERMINAL = ['closed', 'cancelled', 'archived']
+  const closeoutActionable = ms.some(m => m.group === 'closeout' && isActionable(m))
+  if (isDone(installed) && closeoutActionable && !CLOSEOUT_TERMINAL.includes(order.status)) {
+    return _packPressure({
+      blocker: { kind: 'closeout_pending', label: 'Close out with customer', severity: 'blue' },
+      callReasons: [],
+      paymentState, ageDays,
+    })
+  }
+
+  // 10. healthy / in flight
   return _packPressure({ blocker: null, callReasons: [], paymentState, ageDays })
 }
 
@@ -5777,14 +5797,14 @@ export const HUB_DEFS = {
     // "did you call them yet?" follow-up queues. waiting_on_family also
     // surfaces here because the office calls the family back, not the shop
     // (operational lock from earlier sprints).
-    blockerKinds: new Set(['cemetery_hold', 'overdue_balance', 'waiting_on_family']),
+    blockerKinds: new Set(['cemetery_hold', 'overdue_balance', 'waiting_on_family', 'closeout_pending']),
     filterChips: [
       { code: 'intake',        label: 'Intake gap',       match: (it) => _hubGroupActive(it, 'intake') },
       { code: 'permit',        label: 'Permit work',      match: (it) => _hubGroupActive(it, 'permit') },
       { code: 'cemetery_hold', label: 'Cemetery hold',    match: (it) => _hubBlockerIs(it, 'cemetery_hold') },
       { code: 'payment',       label: 'Payment overdue',  match: (it) => _hubBlockerIs(it, 'overdue_balance') },
       { code: 'family',        label: 'Family follow-up', match: (it) => _hubBlockerIs(it, 'waiting_on_family') || it.pressure?.needsCall === true },
-      { code: 'closeout',      label: 'Closeout',         match: (it) => _hubGroupActive(it, 'closeout') },
+      { code: 'closeout',      label: 'Closeout',         match: (it) => _hubGroupActive(it, 'closeout') || _hubBlockerIs(it, 'closeout_pending') },
     ],
     emptyMessage: 'Admin hub clear — nothing waiting on you right now.',
   },

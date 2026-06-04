@@ -90,6 +90,7 @@ export default function JobsDepartmentView({
   // tab + order/customer drill-throughs.
   onSwitchTab,      // eslint-disable-line no-unused-vars
   onOpenOrder,      // eslint-disable-line no-unused-vars
+  onOpenOrderDetail, // ITEM 5 — closeout tasks open OrderDetail (photos + AI draft)
   onOpenCustomer,
   // For the Workflow + Permits section hubs (reused QueuesTab / PermitHub):
   // open the Orders list pre-filtered to a queue / open the order form.
@@ -366,7 +367,22 @@ export default function JobsDepartmentView({
                 </div>
               </div>
             ) : (
-              visibleRows.map(j => <JobRow key={j.id} job={j} onOpen={onOpenJob} />)
+              visibleRows.map(j => (
+                <JobRow
+                  key={j.id}
+                  job={j}
+                  onOpen={(id) => {
+                    // ITEM 5 — a closeout task lands on the order's closeout
+                    // surface (OrderDetail: completion photos + AI closeout
+                    // draft), not the job detail. Everything else opens the job.
+                    if (j._pressure?.blocker?.kind === 'closeout_pending' && j.order?.id && onOpenOrderDetail) {
+                      onOpenOrderDetail(j.order.id)
+                    } else {
+                      onOpenJob(id)
+                    }
+                  }}
+                />
+              ))
             )}
           </div>
         </div>

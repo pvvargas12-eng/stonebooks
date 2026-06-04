@@ -89,6 +89,7 @@ export default function JobsTab({
   initialQueue = null,
   onConsumeInitialQueue,
   onOpenOrder,
+  onOpenOrderDetail,
   onOpenCustomer,
   userId = null,
   onSwitchTab,
@@ -161,6 +162,7 @@ export default function JobsTab({
       onOpenJob={handleOpenJob}
       onSwitchTab={onSwitchTab}
       onOpenOrder={onOpenOrder}
+      onOpenOrderDetail={onOpenOrderDetail}
       onOpenCustomer={onOpenCustomer}
       onOpenQueue={onOpenQueue}
       onEditOrder={onEditOrder}

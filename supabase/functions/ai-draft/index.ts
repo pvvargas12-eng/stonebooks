@@ -1,9 +1,9 @@
 // =============================================================================
 // ai-draft — Supabase Edge Function (Gmail AI draft replies)
 // =============================================================================
-// Input (JSON): { order_id, mode, balance?, total? }
+// Input (JSON): { order_id, mode, balance?, total?, photo_count? }
 //   mode ∈ 'reply' | 'request_photo' | 'request_approval' | 'balance_reminder'
-//          | 'install_complete'
+//          | 'install_complete' | 'closeout'
 // Pulls order context server-side (order + customer + cemetery, the job's proof
 // milestones, and the recent order_emails thread), asks Claude Haiku to write a
 // warm, professional email body, and returns { subject, body }. The subject is
@@ -47,12 +47,14 @@ const MODE_INSTRUCTION: Record<string, string> = {
   request_approval: 'Write a short email inviting the family to review and approve the monument proof/layout we have prepared, so we can begin production. Reassure them we will not start until they approve.',
   balance_reminder: 'Write a gentle, low-pressure note that there is a remaining balance on their order (include the amount), with a simple line on how to take care of it whenever they are ready.',
   install_complete: 'Write a warm email letting the family know their monument has been installed at the cemetery, inviting them to visit and to reach out with any questions or concerns.',
+  closeout: 'Write a warm closing email for a now-completed order: thank the family for trusting Shevchenko Monuments, confirm the work is finished, let them know we are sharing photos of the completed work (mention they are attached/enclosed if photos exist), and invite them to reach out with any questions or concerns. Warm and gracious, not salesy.',
 }
 const MODE_SUBJECT: Record<string, string> = {
   request_photo: 'A quick photo request for your monument order',
   request_approval: 'Your monument proof — ready for your approval',
   balance_reminder: 'A note about your monument order',
   install_complete: 'Your monument has been installed',
+  closeout: 'Your monument is complete — thank you',
 }
 
 async function callClaude(apiKey: string, system: string, userText: string) {
@@ -87,7 +89,7 @@ Deno.serve(async (req) => {
   const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') ?? ''
   if (!ANTHROPIC_API_KEY) return json({ error: 'server_not_configured' }, 500)
 
-  let payload: { order_id?: string; mode?: string; balance?: number; total?: number; draft_text?: string }
+  let payload: { order_id?: string; mode?: string; balance?: number; total?: number; draft_text?: string; photo_count?: number }
   try { payload = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
   const { order_id, mode } = payload
   const isPolish = mode === 'polish'
@@ -153,6 +155,11 @@ Deno.serve(async (req) => {
       `Proof / approval status: ${proofStatus}`,
       `Order total: ${fmtUSD(payload.total) || 'unknown'} · Balance due: ${fmtUSD(payload.balance) ?? 'unknown'}`,
     ]
+    // Completion photos (closeout mode) — count comes from the client, which
+    // already listed orders-attachments-public/<order_id>/completion/.
+    if (typeof payload.photo_count === 'number' && payload.photo_count > 0) {
+      ctxLines.push(`Completion photos available to share: ${payload.photo_count}`)
+    }
     if (Array.isArray(thread) && thread.length) {
       ctxLines.push('', 'Recent email thread (newest first):')
       for (const e of thread.slice(0, 6)) {

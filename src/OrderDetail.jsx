@@ -273,7 +273,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const draft = async (mode) => {
     if (drafting) return
     setDrafting(mode); setActionNote(null)
-    const res = await aiDraftEmail({ orderId, mode, balance, total })
+    const res = await aiDraftEmail({ orderId, mode, balance, total, photoCount: completionPhotos.length })
     setDrafting(null)
     if (!res.ok) { setActionNote(`Could not draft — ${res.error || 'error'}.`); return }
     setEmailModal({
@@ -435,11 +435,18 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const proofApproved = proofVers.some(v => v.approved_at)
   const installedDone = (job?.milestones || []).some(m => m.milestone_key === 'installed' && m.status === 'done')
     || job?.overall_status === 'installed'
+  // Closeout draft (ITEM 5) — the "close out with customer" email. Surfaces
+  // once the work is done AND completion photos exist (the photos are the cue
+  // that the job is ready to wrap with the family). Made primary so it's the
+  // obvious next move on a completed order.
+  const hasCompletionPhotos = completionPhotos.length > 0
+  const closeoutReady = installedDone && hasCompletionPhotos
   const draftModes = [
     hasInbound && { mode: 'reply', label: 'Draft reply (AI)', primary: true },
+    closeoutReady && { mode: 'closeout', label: 'Close out with customer (AI)', primary: !hasInbound },
     hasProof && !proofApproved && { mode: 'request_approval', label: 'Request approval' },
     balance > 0 && { mode: 'balance_reminder', label: 'Balance reminder' },
-    installedDone && { mode: 'install_complete', label: 'Install complete' },
+    installedDone && !closeoutReady && { mode: 'install_complete', label: 'Install complete' },
     !installedDone && { mode: 'request_photo', label: 'Request photo' },
   ].filter(Boolean)
 

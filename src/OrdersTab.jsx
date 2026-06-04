@@ -144,7 +144,7 @@ function furthestStage(job) {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue }) {
+export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [orders, setOrders] = useState([])
   const [allJobs, setAllJobs] = useState([])
@@ -198,6 +198,18 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Consume an incoming queue selection from the Queues dashboard: clear other
   // filters, force the active view, apply the queue, and tell the parent it's
   // consumed (so re-entering Orders normally doesn't re-apply it).
+  // Deep-link to a specific order's detail (ITEM 5 — closeout task from the
+  // Jobs Admin Hub lands directly on OrderDetail). Mirrors the cemetery
+  // initialSelectedId pattern (guarded setState).
+  useEffect(() => {
+    if (initialSelectedId && initialSelectedId !== selectedOrderId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedOrderId(initialSelectedId)
+      onConsumeInitialSelected?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSelectedId])
+
   useEffect(() => {
     if (!initialQueue) return
     setQueueFilter(initialQueue)
