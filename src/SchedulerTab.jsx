@@ -58,8 +58,12 @@ const ZOOMS = [
 ]
 
 // eslint-disable-next-line no-unused-vars
-export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, onSwitchTab }) {
-  const [zoom, setZoom] = useState('week')   // Week is the command screen
+export default function SchedulerTab({ variant = 'scheduler', user, profile, onOpenJob, onOpenOrder, onSwitchTab }) {
+  // ITEM 2 — the restored Calendar tab is this same component in a view-focused
+  // variant: Month-default, no build rail in Week (just the canvas), no
+  // promise-making affordance. Same data load, same source of truth.
+  const isCalendar = variant === 'calendar'
+  const [zoom, setZoom] = useState(isCalendar ? 'month' : 'week')
   const [anchor, setAnchor] = useState(() => new Date())
   const [jobs, setJobs] = useState(null)
   const [batches, setBatches] = useState([])
@@ -291,18 +295,20 @@ export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, on
     <div className="sb-page sb-page-wide sb-scheduler">
       <div className="sb-page-head">
         <div className="sb-page-eyebrow">Operations</div>
-        <h1 className="sb-page-title">Scheduler</h1>
+        <h1 className="sb-page-title">{isCalendar ? 'Calendar' : 'Scheduler'}</h1>
       </div>
 
       <div className="sb-scheduler-search-row">
         <SearchBar placeholder="Search customers, jobs, orders…" />
-        <button
-          type="button"
-          className="sb-scheduler-add-promise"
-          onClick={() => setAddPromiseOpen(true)}
-        >
-          <span aria-hidden="true">🤡</span> Add promise
-        </button>
+        {!isCalendar && (
+          <button
+            type="button"
+            className="sb-scheduler-add-promise"
+            onClick={() => setAddPromiseOpen(true)}
+          >
+            <span aria-hidden="true">🤡</span> Add promise
+          </button>
+        )}
       </div>
 
       <PromiseBanner promises={promises} onOpenJob={onOpenJob} />
@@ -390,37 +396,56 @@ export default function SchedulerTab({ user, profile, onOpenJob, onOpenOrder, on
       )}
 
       {jobs !== null && !loadErr && zoom === 'week' && (
-        <div className="sb-sw-split">
-          <aside className="sb-sw-rail">
-            <div className="sb-sw-rail-head">Ready to schedule</div>
-            <WeekWorkbench
-              jobs={jobs}
-              batches={batches}
-              cemeteries={cemeteries}
-              promises={promises}
-              autoOpenQuickBatch={quickBatchSeed}
-              onQuickBatchConsumed={consumeQuickBatchSeed}
-              onScheduleJob={handleScheduleJob}
-              schedulingJobId={schedulingJobId}
-              onReload={loadAll}
-            />
-          </aside>
-          <section className="sb-sw-canvas">
-            <CalendarWeek
-              startDate={mondayOf}
-              spanDays={6}
-              batches={batches}
-              promises={promises}
-              promisesByJob={promisesByJob}
-              onBatchClick={handleBatchClick}
-              onScheduleBatch={handleScheduleBatch}
-              onScheduleReadyJob={handleScheduleReadyJob}
-              onUnscheduleBatch={handleUnscheduleBatch}
-              onDayClick={handleDayDrill}
-              onReload={loadAll}
-            />
-          </section>
-        </div>
+        isCalendar ? (
+          // Calendar variant: the week canvas only — no build rail. Still the
+          // same CalendarWeek (drag-to-reschedule, unschedule, overdue tray)
+          // over the same data.
+          <CalendarWeek
+            startDate={mondayOf}
+            spanDays={6}
+            batches={batches}
+            promises={promises}
+            promisesByJob={promisesByJob}
+            onBatchClick={handleBatchClick}
+            onScheduleBatch={handleScheduleBatch}
+            onScheduleReadyJob={handleScheduleReadyJob}
+            onUnscheduleBatch={handleUnscheduleBatch}
+            onDayClick={handleDayDrill}
+            onReload={loadAll}
+          />
+        ) : (
+          <div className="sb-sw-split">
+            <aside className="sb-sw-rail">
+              <div className="sb-sw-rail-head">Ready to schedule</div>
+              <WeekWorkbench
+                jobs={jobs}
+                batches={batches}
+                cemeteries={cemeteries}
+                promises={promises}
+                autoOpenQuickBatch={quickBatchSeed}
+                onQuickBatchConsumed={consumeQuickBatchSeed}
+                onScheduleJob={handleScheduleJob}
+                schedulingJobId={schedulingJobId}
+                onReload={loadAll}
+              />
+            </aside>
+            <section className="sb-sw-canvas">
+              <CalendarWeek
+                startDate={mondayOf}
+                spanDays={6}
+                batches={batches}
+                promises={promises}
+                promisesByJob={promisesByJob}
+                onBatchClick={handleBatchClick}
+                onScheduleBatch={handleScheduleBatch}
+                onScheduleReadyJob={handleScheduleReadyJob}
+                onUnscheduleBatch={handleUnscheduleBatch}
+                onDayClick={handleDayDrill}
+                onReload={loadAll}
+              />
+            </section>
+          </div>
+        )
       )}
 
       {jobs !== null && !loadErr && zoom === 'day' && (

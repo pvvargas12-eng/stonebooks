@@ -203,6 +203,7 @@ const NAV_PRIMARY = [
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
   { key: 'scheduler', label: 'Scheduler' },
+  { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
   { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
@@ -636,6 +637,11 @@ export default function Stonebooks() {
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} />}
 {tab === 'scheduler' && <SchedulerTab user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} onSwitchTab={setTab} />}
+{/* Calendar = the same SchedulerTab component in a Month-default, view-focused
+    variant. It reads the SAME work_batches data through the same data layer —
+    no parallel store — so anything scheduled/completed/overdue here matches the
+    Scheduler exactly (ITEM 2). */}
+{tab === 'calendar'  && <SchedulerTab variant="calendar" user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
