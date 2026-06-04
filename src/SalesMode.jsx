@@ -3621,6 +3621,14 @@ export function ShapeStep({ order, update }) {
 // STEP 6 — COLOR
 // =============================================================================
 
+// A2 — "Undecided / TBD" sentinel for granite color. A valid saved state (not
+// an error): the color step's isComplete is `!!graniteColor`, so this satisfies
+// it and lets the order advance + save with no color chosen yet. Downstream
+// lookups (GRANITE_COLORS.find(...)?.premium ?? 0, the color-premium line, the
+// PDF stone-spec color row) all degrade gracefully to "no color" since the
+// sentinel isn't in GRANITE_COLORS.
+const UNDECIDED_COLOR = 'undecided'
+
 export function ColorStep({ order, update }) {
   const grouped = useMemo(() => {
     const out = {}
@@ -3643,6 +3651,22 @@ export function ColorStep({ order, update }) {
           we'll show that in pricing later.
         </p>
       </div>
+
+      <Section title="Not sure yet?" eyebrow="You can decide later">
+        <button
+          type="button"
+          className={`sm-color-card sm-color-card-tbd ${order.graniteColor === UNDECIDED_COLOR ? 'on' : ''}`}
+          onClick={() => update({ graniteColor: UNDECIDED_COLOR })}
+        >
+          <div className="sm-color-info">
+            <div className="sm-color-name">Undecided — decide later</div>
+            <div className="sm-color-meta">
+              <span>No color chosen yet. You can still save and move on.</span>
+            </div>
+          </div>
+          {order.graniteColor === UNDECIDED_COLOR && <div className="sm-color-check">✓</div>}
+        </button>
+      </Section>
 
       {families.map(fam => {
         const list = grouped[fam] || []
@@ -4167,14 +4191,14 @@ function DesignStep({ order, update }) {
             )
           })}
         </div>
-        {order.graniteColor && (
+        {order.graniteColor && order.graniteColor !== UNDECIDED_COLOR && (
           <label className="sm-design-match-color">
             <input
               type="checkbox"
               checked={matchColor}
               onChange={e => setMatchColor(e.target.checked)}
             />
-            <span>Also match my granite color ({order.graniteColor})</span>
+            <span>Also match my granite color ({GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || order.graniteColor})</span>
           </label>
         )}
       </Section>
@@ -9372,6 +9396,23 @@ function PdfDownloadButton({ order, label }) {
     }
   }
 
+  // A5 — Print the contract/order. Builds the same doc and opens it in a new
+  // tab with the browser print dialog (jsPDF autoPrint adds the OpenAction).
+  const handlePrint = async () => {
+    setBusy('print'); setErr(null)
+    try {
+      const { doc } = await buildDoc()
+      doc.autoPrint()
+      const url = doc.output('bloburl')
+      const w = window.open(url, '_blank')
+      if (!w) setErr('Allow pop-ups to print, or use Download then print the PDF.')
+    } catch (e) {
+      setErr(e.message || 'Print failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const closePreview = () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
     setPreviewUrl(null)
@@ -9389,6 +9430,15 @@ function PdfDownloadButton({ order, label }) {
           title="Open a preview before downloading"
         >
           {busy === 'preview' ? 'Building…' : 'Preview'}
+        </button>
+        <button
+          type="button"
+          className="sm-btn sm-btn-ghost sm-pdf-btn"
+          onClick={handlePrint}
+          disabled={busy !== null}
+          title="Open the print dialog for this document"
+        >
+          {busy === 'print' ? 'Building…' : 'Print'}
         </button>
         <button
           type="button"
@@ -9503,6 +9553,21 @@ function StaffNotes({ notes, onAddNote, salesRep }) {
 // ORDERS DASHBOARD — entry screen with status filters + search
 // =============================================================================
 
+// A4 — when an order has no customer record, fall back to the name on the stone
+// (the deceased). Prefers the generated primary_lastname column, then the first
+// named person in the deceased JSONB. Returns '' when genuinely empty so the
+// caller can show "No customer yet".
+function deceasedNameFromRow(row) {
+  if (row?.primary_lastname && String(row.primary_lastname).trim()) {
+    return String(row.primary_lastname).trim()
+  }
+  const d = Array.isArray(row?.deceased)
+    ? row.deceased.find(x => x && !x.isReserved && (x.firstName || x.lastName))
+    : null
+  if (!d) return ''
+  return [d.lastName?.toUpperCase(), d.firstName].filter(Boolean).join(', ')
+}
+
 // Renders a single order row in the dashboard list
 function DashboardOrderRow({ row, onPick, onNewQuote }) {
   const customer = row.customer
@@ -9519,9 +9584,9 @@ function DashboardOrderRow({ row, onPick, onNewQuote }) {
         <div className="sm-resume-row-main">
           <div className="sm-resume-row-num">{row.order_number}</div>
           <div className="sm-resume-row-name">
-            {customer
+            {customer && (customer.last_name || customer.first_name)
               ? `${customer.last_name?.toUpperCase() || ''}${customer.last_name && customer.first_name ? ', ' : ''}${customer.first_name || ''}`
-              : 'No customer yet'}
+              : (deceasedNameFromRow(row) || 'No customer yet')}
           </div>
           <div className="sm-resume-row-meta">
             {row.cemetery?.name && <span>{row.cemetery.name}</span>}
@@ -10019,55 +10084,80 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
   const lastSavedJsonRef = useRef('')
   const saveTimerRef = useRef(null)
 
+  // Shared save body — used by both the debounced autosave and the explicit
+  // "Save draft" button (A1). Returns the saveOrder result (with
+  // { unchanged: true } when nothing changed since the last save).
+  const markSaved = useCallback(() => {
+    setSaveStatus('saved')
+    setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000)
+  }, [])
+
+  const performSave = useCallback(async () => {
+    const o = orderForSaveRef.current
+    const snapshot = JSON.stringify(o)
+    if (snapshot === lastSavedJsonRef.current) return { ok: true, unchanged: true }
+    // eslint-disable-next-line react-hooks/immutability
+    lastSavedJsonRef.current = snapshot
+
+    // Snapshot what was new BEFORE the save so we can detect first-time inserts
+    const wasNewCustomer  = !o.customer.id  && (o.customer.firstName || o.customer.lastName)
+    const wasNewCemetery  = !o.cemetery.id  && o.cemetery.name?.trim()
+
+    setSaveStatus('saving')
+    const result = await saveOrder(o)
+    if (result.ok) {
+      // If this was the first save (no id before), update state with id + number
+      if (!o.id && result.order?.id) {
+        setOrder(prev => ({
+          ...prev,
+          id: result.order.id,
+          orderNumber: result.order.orderNumber,
+          customer: result.customerId  ? { ...prev.customer,  id: result.customerId }  : prev.customer,
+          cemetery: result.cemeteryId  ? { ...prev.cemetery,  id: result.cemeteryId }  : prev.cemetery,
+        }))
+      } else {
+        // Subsequent saves — make sure customer/cemetery IDs are reflected
+        if (result.customerId && !o.customer.id) {
+          setOrder(prev => ({ ...prev, customer: { ...prev.customer, id: result.customerId } }))
+        }
+        if (result.cemeteryId && !o.cemetery.id) {
+          setOrder(prev => ({ ...prev, cemetery: { ...prev.cemetery, id: result.cemeteryId } }))
+        }
+      }
+
+      // Toasts for newly-created library entries
+      if (wasNewCemetery && result.cemeteryId) {
+        showToast(`✓ ${o.cemetery.name} saved to your cemetery library`, 'cemetery')
+      }
+      if (wasNewCustomer && result.customerId) {
+        showToast(`✓ ${o.customer.lastName?.toUpperCase() || ''}, ${o.customer.firstName} saved to customer list`, 'customer')
+      }
+
+      markSaved()
+    } else {
+      setSaveStatus(result.reason === 'empty' ? 'idle' : 'error')
+    }
+    return result
+  }, [showToast, markSaved])
+
   const triggerAutoSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(async () => {
-      const o = orderForSaveRef.current
-      const snapshot = JSON.stringify(o)
-      if (snapshot === lastSavedJsonRef.current) return
-      lastSavedJsonRef.current = snapshot
+    saveTimerRef.current = setTimeout(() => { performSave() }, 1200)
+  }, [performSave])
 
-      // Snapshot what was new BEFORE the save so we can detect first-time inserts
-      const wasNewCustomer  = !o.customer.id  && (o.customer.firstName || o.customer.lastName)
-      const wasNewCemetery  = !o.cemetery.id  && o.cemetery.name?.trim()
-
-      setSaveStatus('saving')
-      const result = await saveOrder(o)
-      if (result.ok) {
-        // If this was the first save (no id before), update state with id + number
-        if (!o.id && result.order?.id) {
-          setOrder(prev => ({
-            ...prev,
-            id: result.order.id,
-            orderNumber: result.order.orderNumber,
-            customer: result.customerId  ? { ...prev.customer,  id: result.customerId }  : prev.customer,
-            cemetery: result.cemeteryId  ? { ...prev.cemetery,  id: result.cemeteryId }  : prev.cemetery,
-          }))
-        } else {
-          // Subsequent saves — make sure customer/cemetery IDs are reflected
-          if (result.customerId && !o.customer.id) {
-            setOrder(prev => ({ ...prev, customer: { ...prev.customer, id: result.customerId } }))
-          }
-          if (result.cemeteryId && !o.cemetery.id) {
-            setOrder(prev => ({ ...prev, cemetery: { ...prev.cemetery, id: result.cemeteryId } }))
-          }
-        }
-
-        // Toasts for newly-created library entries
-        if (wasNewCemetery && result.cemeteryId) {
-          showToast(`✓ ${o.cemetery.name} saved to your cemetery library`, 'cemetery')
-        }
-        if (wasNewCustomer && result.customerId) {
-          showToast(`✓ ${o.customer.lastName?.toUpperCase() || ''}, ${o.customer.firstName} saved to customer list`, 'customer')
-        }
-
-        setSaveStatus('saved')
-        setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000)
-      } else {
-        setSaveStatus(result.reason === 'empty' ? 'idle' : 'error')
-      }
-    }, 1200)
-  }, [showToast])
+  // A1 — explicit "Save draft" available on every wizard step. Flushes any
+  // pending autosave and persists immediately, staying on the current step.
+  // An unchanged order still flashes "Saved" so the click feels acknowledged;
+  // a truly empty order nudges the operator instead of erroring.
+  const saveNow = useCallback(async () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    const res = await performSave()
+    if (res?.unchanged) {
+      markSaved()
+    } else if (res && !res.ok && res.reason === 'empty') {
+      showToast('Add a customer, service, or name first — nothing to save yet', 'info')
+    }
+  }, [performSave, markSaved, showToast])
 
   // When order changes during the wizard phase, schedule autosave
   useEffect(() => {
@@ -10263,6 +10353,10 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
         <button className="sm-btn sm-btn-ghost" onClick={back} disabled={stepIdx === 0}>
           ← Back
         </button>
+        {/* A1 — Save draft, available on every step. */}
+        <button className="sm-btn sm-btn-ghost" onClick={saveNow} disabled={saveStatus === 'saving'}>
+          {saveStatus === 'saving' ? 'Saving…' : 'Save draft'}
+        </button>
 
         <div className="sm-footer-summary">
           {order.salesRep && mode === 'staff' && (
@@ -10287,8 +10381,11 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
             Continue →
           </button>
         ) : (
-          <button className="sm-btn sm-btn-navy" onClick={onClose}>
-            Close
+          // A5 — finishing a sale stays inside the Sales section (back to the
+          // Sales dashboard) instead of exiting the tab. The header × is still
+          // the deliberate exit.
+          <button className="sm-btn sm-btn-navy" onClick={() => { saveNow(); setPhase('resume') }}>
+            Done — back to Sales
           </button>
         )}
       </div>
@@ -13028,6 +13125,12 @@ export const salesModeStyles = `
   border-color: var(--sm-navy);
   box-shadow: 0 4px 12px rgba(30,45,61,0.18);
 }
+/* A2 — Undecided/TBD card has no swatch; render as a simple full-width option. */
+.sm-color-card-tbd {
+  border-style: dashed;
+  max-width: 420px;
+}
+.sm-color-card-tbd .sm-color-info { padding: 14px 16px; }
 .sm-color-swatch {
   width: 100%; aspect-ratio: 4/3;
   background: #f0ede6;
