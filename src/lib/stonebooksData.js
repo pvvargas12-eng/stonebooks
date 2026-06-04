@@ -843,6 +843,11 @@ export async function recordOutgoingPayment(input = {}) {
     direction:  'out',
     notes:      input.notes?.trim() || null,
     created_by: input.createdBy || null,
+    // v2.1 links — a bill template this payment satisfies, and/or an order it's
+    // a cost for. order_id set = order cost (feeds that order's margin); null =
+    // overhead (business net only).
+    recurring_bill_id: input.recurringBillId || null,
+    order_id:          input.orderId || null,
   }
   const { data, error } = await supabase.from('outgoing_payments').insert(row).select().single()
   if (error) {
@@ -857,6 +862,65 @@ export async function recordOutgoingPayment(input = {}) {
 export async function deleteOutgoingPayment(id) {
   if (!id) return { ok: false, error: 'Missing id' }
   const { error } = await supabase.from('outgoing_payments').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Shared outgoing category taxonomy (also the Profit spend-by-category buckets).
+export const OUTGOING_CATEGORIES = [
+  'Utilities', 'Payroll', 'Debt/loan', 'Subscription',
+  'Supplier/materials', 'Permits', 'Taxes', 'Other',
+]
+
+// ── Recurring bills (templates) ─────────────────────────────────────────────
+// Templates only — we never materialize unpaid instances. The monthly view
+// derives "due" from active templates; "Update & pay" writes a real
+// outgoing_payments row linked back via recurring_bill_id. Returns [] gracefully
+// if the table isn't created yet (migration pending).
+export async function listRecurringBills({ includeInactive = false } = {}) {
+  let q = supabase.from('recurring_bills').select('*').order('name', { ascending: true })
+  if (!includeInactive) q = q.eq('active', true)
+  const { data, error } = await q
+  if (error) { console.warn('[payments] listRecurringBills:', error.message); return [] }
+  return data || []
+}
+
+export async function createRecurringBill(input = {}) {
+  if (!input.name || !String(input.name).trim()) return { ok: false, error: 'Enter a bill name.' }
+  const freq = ['monthly', 'yearly', 'fixed_term'].includes(input.frequency) ? input.frequency : 'monthly'
+  const row = {
+    name:           String(input.name).trim(),
+    category:       input.category?.trim() || null,
+    frequency:      freq,
+    term_count:     freq === 'fixed_term' ? (Number(input.termCount) || null) : null,
+    amount_default: input.amountDefault != null && input.amountDefault !== '' ? Number(input.amountDefault) : null,
+    amount_varies:  !!input.amountVaries,
+    active:         input.active === false ? false : true,
+    notes:          input.notes?.trim() || null,
+    created_by:     input.createdBy || null,
+  }
+  const { data, error } = await supabase.from('recurring_bills').insert(row).select().single()
+  if (error) {
+    if (/relation .*recurring_bills.* does not exist|could not find the table/i.test(error.message)) {
+      return { ok: false, error: 'Recurring bills aren’t set up yet — apply the 20260606_recurring_bills migration in Supabase Studio, then try again.' }
+    }
+    return { ok: false, error: error.message }
+  }
+  return { ok: true, bill: data }
+}
+
+export async function updateRecurringBill(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing id' }
+  const row = {}
+  if (patch.name !== undefined)          row.name = String(patch.name).trim()
+  if (patch.category !== undefined)      row.category = patch.category?.trim() || null
+  if (patch.frequency !== undefined)     row.frequency = patch.frequency
+  if (patch.termCount !== undefined)     row.term_count = patch.termCount === '' ? null : Number(patch.termCount)
+  if (patch.amountDefault !== undefined) row.amount_default = patch.amountDefault === '' ? null : Number(patch.amountDefault)
+  if (patch.amountVaries !== undefined)  row.amount_varies = !!patch.amountVaries
+  if (patch.active !== undefined)        row.active = !!patch.active
+  if (patch.notes !== undefined)         row.notes = patch.notes?.trim() || null
+  const { error } = await supabase.from('recurring_bills').update(row).eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
 }
@@ -3060,7 +3124,7 @@ async function _getProfitOverviewInner() {
     catch (e) { console.warn(`[profit] ${label} threw:`, e?.message || e); return { data: [], error: e } }
   }
 
-  const [finPays, exps, jobsRes, cemRes, estRes, ordersRes] = await Promise.all([
+  const [finPays, finExps, jobsRes, cemRes, estRes, ordersRes, outRes] = await Promise.all([
     safe(getFinancialRecords({ recordType: 'payment_received' }), 'payments').then(r => Array.isArray(r) ? r : (r?.data || [])),
     safe(getFinancialRecords({ recordType: 'expense_incurred' }), 'expenses').then(r => Array.isArray(r) ? r : (r?.data || [])),
     safe(supabase.from('jobs').select('id, job_type, order_id, cemetery_order_id, quoted_total, overall_status'), 'jobs'),
@@ -3068,11 +3132,33 @@ async function _getProfitOverviewInner() {
     safe(supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount'), 'estimates'),
     // D1 — archived orders never count toward any financial rollup.
     safe(supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at, archived').or('archived.is.null,archived.eq.false').limit(10000), 'orders'),
+    safe(supabase.from('outgoing_payments').select('id, amount, category, paid_date, order_id, recurring_bill_id'), 'outgoing'),
   ])
   const jobs = jobsRes?.data || []
   const cems = cemRes?.data || []
   const estimates = estRes?.data || []
   const orders = ordersRes?.data || []
+  const outgoing = outRes?.data || []
+
+  // Outgoing payments are real money OUT. Normalize into the same expense-row
+  // shape the overview already sums ({ amount, occurred_at, order_id, job_id }).
+  //   • order-tagged → that order's REALIZED cost (single source of truth;
+  //     financial_records is empty in prod, so no double-count; estimates feed
+  //     PROJECTED, a separate bucket).
+  //   • no order → overhead → business net / overheadBurn only.
+  // job_id stays null so per-job actuals (keyed by job_id) don't pick them up
+  // twice — the per-order add-in below routes order-tagged spend to the job.
+  const outExps = outgoing.map(o => ({
+    amount: Number(o.amount) || 0,
+    occurred_at: o.paid_date || null,
+    order_id: o.order_id || null,
+    job_id: null, cemetery_order_id: null,
+    category: o.category || null,
+  }))
+  const exps = [...finExps, ...outExps]
+  // Order-tagged outgoing spend, summed per order, for the per-order cost add-in.
+  const outByOrder = {}
+  for (const o of outgoing) if (o.order_id) outByOrder[o.order_id] = (outByOrder[o.order_id] || 0) + (Number(o.amount) || 0)
 
   // REAL MONEY: financial_records is empty in prod — the live payment ledger is
   // orders.payments[]. Flatten non-voided LOCKED entries into the same row shape
@@ -3174,6 +3260,12 @@ async function _getProfitOverviewInner() {
   const familyJobPnL = (j) => {
     const actuals = expRowsByJob[j.id] || []
     const costs = buildCostByCategory(estRowsByJob[j.id] || [], actuals)
+    // Order-tagged outgoing payments are realized order costs. Attribute only
+    // when the order maps to exactly one job (same guard `collected` uses) so a
+    // multi-job order never double-counts the spend across jobs.
+    if (j.order_id && jobsByOrderCount[j.order_id] === 1) {
+      costs.total_actual += (outByOrder[j.order_id] || 0)
+    }
     let collected = (payByJob[j.id] || 0)
     if (j.order_id && jobsByOrderCount[j.order_id] === 1) collected += (payByOrder[j.order_id] || 0)
     // Contract revenue: job.quoted_total when set, else the order's real total

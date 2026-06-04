@@ -20,6 +20,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
 import {
   fetchAllPaged, recordOrderPayment, recordOutgoingPayment, listOutgoingPayments,
+  listRecurringBills, createRecurringBill, OUTGOING_CATEGORIES,
   fmtUSD, fmtDate, customerName, getCurrentStaffName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
 } from './lib/stonebooksData'
@@ -48,7 +49,6 @@ const OUT_METHODS = [
   { code: 'other', label: 'Other' },
 ]
 const outMethodLabel = (m) => OUT_METHODS.find(x => x.code === m)?.label || (m ? m[0].toUpperCase() + m.slice(1) : '—')
-const OUT_CATEGORIES = ['Materials / supplier', 'Subcontractor', 'Overhead', 'Equipment', 'Rent', 'Utilities', 'Payroll', 'Other']
 
 // Open quotes "on the table" — pre-close estimate statuses.
 const ESTIMATE_STATUSES = ['scoping', 'quoted']
@@ -110,9 +110,12 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [view, setView] = useState('incoming')
   const [orders, setOrders] = useState(null)
   const [outgoing, setOutgoing] = useState(null)
+  const [bills, setBills] = useState(null)
   const [search, setSearch] = useState('')
   const [logIn, setLogIn] = useState(null)    // null | {} | { prefill: orderRow }
-  const [logOut, setLogOut] = useState(false)
+  const [addOutgoing, setAddOutgoing] = useState(false)
+  const [addBill, setAddBill] = useState(false)
+  const [payBill, setPayBill] = useState(null)   // a bill instance pending "Update & pay"
 
   // Stable "now" anchors (lazy init — no Date()/Date.now() in the render body).
   const [monthPrefix] = useState(() => {
@@ -127,11 +130,13 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
 
   const loadOrders = useCallback(async () => setOrders(await fetchAllPaged(ordersQuery) || []), [])
   const loadOutgoing = useCallback(async () => setOutgoing(await listOutgoingPayments() || []), [])
+  const loadBills = useCallback(async () => setBills(await listRecurringBills() || []), [])
 
   useEffect(() => {
     let cancelled = false
     fetchAllPaged(ordersQuery).then(r => { if (!cancelled) setOrders(r || []) })
     listOutgoingPayments().then(r => { if (!cancelled) setOutgoing(r || []) })
+    listRecurringBills().then(r => { if (!cancelled) setBills(r || []) })
     return () => { cancelled = true }
   }, [])
 
@@ -222,7 +227,12 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
         />
       )}
       {view === 'outgoing' && (
-        <OutgoingView loading={outgoing === null} rows={outgoing || []} onLog={() => setLogOut(true)} />
+        <OutgoingView
+          loading={outgoing === null || bills === null}
+          payments={outgoing || []} bills={bills || []} monthPrefix={monthPrefix}
+          onAddBill={() => setAddBill(true)} onAddOutgoing={() => setAddOutgoing(true)}
+          onPayBill={(instance) => setPayBill(instance)}
+        />
       )}
       {view === 'estimates' && (
         <EstimatesView loading={loading} rows={estimates} onOpenOrder={onOpenOrder} onContact={onContactOrder} />
@@ -235,10 +245,24 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
           onLogged={() => { setLogIn(null); loadOrders() }}
         />
       )}
-      {logOut && (
+      {addOutgoing && (
         <LogOutgoingModal
-          onClose={() => setLogOut(false)}
-          onLogged={() => { setLogOut(false); loadOutgoing() }}
+          orders={orders || []}
+          onClose={() => setAddOutgoing(false)}
+          onLogged={() => { setAddOutgoing(false); loadOutgoing() }}
+        />
+      )}
+      {addBill && (
+        <AddBillModal
+          onClose={() => setAddBill(false)}
+          onSaved={() => { setAddBill(false); loadBills() }}
+        />
+      )}
+      {payBill && (
+        <PayBillModal
+          instance={payBill}
+          onClose={() => setPayBill(null)}
+          onPaid={() => { setPayBill(null); loadOutgoing() }}
         />
       )}
     </div>
@@ -310,29 +334,99 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
   )
 }
 
+// Derive this month's bill instances from active templates (NO materialized
+// rows — Due/Paid is computed from real payments linked to each template).
+function billInstancesForMonth(bills, payments, monthPrefix) {
+  const yearPrefix = monthPrefix.slice(0, 4)
+  const curMM = monthPrefix.slice(5, 7)
+  const out = []
+  for (const bill of bills) {
+    if (!bill.active) continue
+    const linked = payments.filter(p => p.recurring_bill_id === bill.id)
+    const paidCount = linked.length
+    // Fixed-term: stop generating once the term is fully paid.
+    if (bill.frequency === 'fixed_term' && bill.term_count && paidCount >= bill.term_count) continue
+    let dueThisMonth = false, paidThisCycle = false
+    if (bill.frequency === 'monthly' || bill.frequency === 'fixed_term') {
+      dueThisMonth = true
+      paidThisCycle = linked.some(p => (p.paid_date || '').startsWith(monthPrefix))
+    } else if (bill.frequency === 'yearly') {
+      const annivMM = (bill.created_at || '').slice(5, 7) || curMM
+      dueThisMonth = annivMM === curMM
+      paidThisCycle = linked.some(p => (p.paid_date || '').startsWith(yearPrefix))
+    }
+    if (!dueThisMonth) continue
+    out.push({
+      bill, status: paidThisCycle ? 'paid' : 'due',
+      expected: bill.amount_default != null ? Number(bill.amount_default) : null,
+      varies: bill.amount_varies, paidCount, term: bill.term_count,
+    })
+  }
+  out.sort((a, b) => (a.status === b.status ? a.bill.name.localeCompare(b.bill.name) : (a.status === 'due' ? -1 : 1)))
+  return out
+}
+
 // ── Outgoing view ────────────────────────────────────────────────────────────
-function OutgoingView({ loading, rows, onLog }) {
-  const total = rows.reduce((s, o) => s + (Number(o.amount) || 0), 0)
+function OutgoingView({ loading, payments, bills, monthPrefix, onAddBill, onAddOutgoing, onPayBill }) {
+  const instances = useMemo(() => billInstancesForMonth(bills, payments, monthPrefix), [bills, payments, monthPrefix])
+  const dueThisMonth = useMemo(
+    () => instances.filter(i => i.status === 'due').reduce((s, i) => s + (i.expected || 0), 0),
+    [instances])
+  const paidThisMonth = useMemo(
+    () => payments.filter(p => (p.paid_date || '').startsWith(monthPrefix)).reduce((s, p) => s + (Number(p.amount) || 0), 0),
+    [payments, monthPrefix])
+
   return (
     <>
-      <div className="sb-pay-controls">
-        <div className="sb-pay-summary" style={{ margin: 0, flex: 1 }}>
-          <span><strong>{rows.length}</strong> payment{rows.length === 1 ? '' : 's'}</span>
-          <span>Total: <strong>{fmtUSD(total)}</strong></span>
-        </div>
-        <button type="button" className="sb-pay-log-btn" onClick={onLog}>+ Log outgoing payment</button>
+      <div className="sb-pay-cards sb-pay-cards-2">
+        <SummaryCard label="Due this month" value={dueThisMonth} sub={`${instances.filter(i => i.status === 'due').length} bill${instances.filter(i => i.status === 'due').length === 1 ? '' : 's'} outstanding`} tone="amber" />
+        <SummaryCard label="Paid this month" value={paidThisMonth} sub="Bills + one-offs" tone="red" />
       </div>
+
+      <div className="sb-pay-controls">
+        <div style={{ flex: 1 }} />
+        <button type="button" className="sb-pay-log-btn sb-pay-log-ghost" onClick={onAddBill}>+ Add bill</button>
+        <button type="button" className="sb-pay-log-btn" onClick={onAddOutgoing}>+ Add outgoing payment</button>
+      </div>
+
+      {/* Bills this month */}
+      <div className="sb-pay-subhead">Bills this month <span className="sb-pay-subhead-note">(from recurring templates)</span></div>
       <div className="sb-pay-table">
-        <div className="sb-pay-row sb-pay-out-row sb-pay-row-head">
-          <div>Date</div><div>Payee</div><div>Category</div><div>Method</div>
-          <div className="num">Amount</div><div>Reference</div>
+        <div className="sb-pay-row sb-pay-bill-row sb-pay-row-head">
+          <div>Bill</div><div>Category</div><div>Cadence</div><div className="num">Amount</div><div>Status</div><div />
         </div>
         {loading ? <div className="sb-pay-empty">Loading…</div>
-          : rows.length === 0 ? <div className="sb-pay-empty">No outgoing payments yet. (If this stays empty after logging one, the outgoing_payments table migration may still need to be applied.)</div>
-          : rows.map(o => (
+          : instances.length === 0 ? <div className="sb-pay-empty">No bills due this month. Use “+ Add bill” to set up recurring overhead.</div>
+          : instances.map(i => (
+            <div key={i.bill.id} className="sb-pay-row sb-pay-bill-row">
+              <div className="sb-pay-name">{i.bill.name}</div>
+              <div>{i.bill.category || '—'}</div>
+              <div className="sb-pay-cadence">
+                {i.bill.frequency === 'fixed_term'
+                  ? `Fixed term · ${Math.min(i.paidCount + (i.status === 'due' ? 1 : 0), i.term || 0)} of ${i.term || '?'}`
+                  : i.bill.frequency === 'yearly' ? 'Yearly' : 'Monthly'}
+              </div>
+              <div className="num sb-pay-amt">{i.expected != null ? fmtUSD(i.expected) : '—'}{i.varies && <span className="sb-pay-varies">varies</span>}</div>
+              <div>{i.status === 'paid'
+                ? <span className="sb-pay-pill sb-pay-pill-paid">Paid</span>
+                : <span className="sb-pay-pill sb-pay-pill-due">Due</span>}</div>
+              <div>{i.status === 'due' && <button type="button" className="sb-pay-contact" onClick={() => onPayBill(i)}>Update &amp; pay</button>}</div>
+            </div>
+          ))}
+      </div>
+
+      {/* Outgoing payments ledger */}
+      <div className="sb-pay-subhead">Outgoing payments</div>
+      <div className="sb-pay-table">
+        <div className="sb-pay-row sb-pay-out-row sb-pay-row-head">
+          <div>Date</div><div>Payee</div><div>Category</div><div>Method</div><div className="num">Amount</div><div>Reference</div>
+        </div>
+        {loading ? <div className="sb-pay-empty">Loading…</div>
+          : payments.length === 0 ? <div className="sb-pay-empty">No outgoing payments yet. (If this stays empty after logging one, the outgoing_payments / recurring_bills migrations may still need to be applied.)</div>
+          : payments.map(o => (
             <div key={o.id} className="sb-pay-row sb-pay-out-row">
               <div>{o.paid_date ? fmtDate(o.paid_date) : '—'}</div>
-              <div className="sb-pay-name">{o.payee}</div>
+              <div className="sb-pay-name">{o.payee}{o.order_id && <span className="sb-pay-tag">order cost</span>}{o.recurring_bill_id && <span className="sb-pay-tag sb-pay-tag-bill">bill</span>}</div>
               <div>{o.category || '—'}</div>
               <div>{outMethodLabel(o.method)}</div>
               <div className="num sb-pay-amt">{fmtUSD(Number(o.amount) || 0)}</div>
@@ -476,17 +570,34 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
   )
 }
 
-// ── Log outgoing modal ───────────────────────────────────────────────────────
-function LogOutgoingModal({ onClose, onLogged }) {
+// Outgoing reference label by method (check # vs confirmation #; none for cash).
+function outRefLabel(method) {
+  if (method === 'check') return 'Check number'
+  if (method === 'cash')  return null
+  return 'Confirmation / reference #'
+}
+
+// ── Log outgoing modal (one-off expense, optional order link) ────────────────
+function LogOutgoingModal({ orders, onClose, onLogged }) {
   const [payee, setPayee] = useState('')
-  const [category, setCategory] = useState('')
+  const [category, setCategory] = useState('Supplier/materials')
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState('check')
   const [date, setDate] = useState(todayISO)
   const [ref, setRef] = useState('')
+  const [orderLink, setOrderLink] = useState(null)
+  const [orderSearch, setOrderSearch] = useState('')
+  const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [confirm, setConfirm] = useState(false)
+  const refLabel = outRefLabel(method)
+
+  const matches = useMemo(() => {
+    const needle = orderSearch.trim().toLowerCase()
+    if (!needle) return []
+    return orders.filter(o => [orderName(o), o.order_number].filter(Boolean).join(' ').toLowerCase().includes(needle)).slice(0, 8)
+  }, [orders, orderSearch])
 
   const submit = async () => {
     if (!payee.trim()) { setError('Enter a payee.'); return }
@@ -495,7 +606,7 @@ function LogOutgoingModal({ onClose, onLogged }) {
     if (!confirm) { setConfirm(true); setError(null); return }
     setBusy(true); setError(null)
     const createdBy = await getCurrentStaffName()
-    const res = await recordOutgoingPayment({ payee, category, method, reference: ref, amount: amt, paidDate: date, createdBy })
+    const res = await recordOutgoingPayment({ payee, category, method, reference: ref, amount: amt, paidDate: date, notes, orderId: orderLink?.id || null, createdBy })
     setBusy(false)
     if (!res.ok) { setError(res.error || 'Could not record the payment.'); setConfirm(false); return }
     onLogged()
@@ -512,8 +623,9 @@ function LogOutgoingModal({ onClose, onLogged }) {
         <div className="sb-pay-grid2">
           <div className="sb-pay-field">
             <label>Category</label>
-            <input className="sb-pay-input" list="sb-pay-out-cats" value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. Materials / supplier" />
-            <datalist id="sb-pay-out-cats">{OUT_CATEGORIES.map(c => <option key={c} value={c} />)}</datalist>
+            <select className="sb-pay-input" value={category} onChange={e => setCategory(e.target.value)}>
+              {OUTGOING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </div>
           <div className="sb-pay-field">
             <label>Amount</label>
@@ -529,21 +641,189 @@ function LogOutgoingModal({ onClose, onLogged }) {
             <label>Date paid</label>
             <input className="sb-pay-input" type="date" value={date} onChange={e => setDate(e.target.value)} />
           </div>
-          <div className="sb-pay-field" style={{ gridColumn: '1 / -1' }}>
-            <label>Reference (check # / confirmation / memo)</label>
-            <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
-          </div>
+          {refLabel && (
+            <div className="sb-pay-field" style={{ gridColumn: '1 / -1' }}>
+              <label>{refLabel}</label>
+              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
+            </div>
+          )}
+        </div>
+
+        {/* Optional order link */}
+        <div className="sb-pay-field">
+          <label>Link to a job / order <span className="sb-pay-optional">optional — makes it a cost on that order</span></label>
+          {orderLink ? (
+            <div className="sb-pay-picked">
+              <div><div className="sb-pay-name">{orderName(orderLink)}</div><div className="sb-pay-mono sb-pay-picked-num">{orderLink.order_number}</div></div>
+              <button type="button" className="sb-pay-change" onClick={() => setOrderLink(null)}>Remove</button>
+            </div>
+          ) : (
+            <>
+              <input className="sb-pay-input" placeholder="Search by family name or order #…" value={orderSearch} onChange={e => setOrderSearch(e.target.value)} />
+              {matches.length > 0 && (
+                <div className="sb-pay-order-results">
+                  {matches.map(o => (
+                    <button type="button" key={o.id} className="sb-pay-order-result" onClick={() => { setOrderLink(o); setOrderSearch('') }}>
+                      <span className="sb-pay-name">{orderName(o)}</span><span className="sb-pay-mono">{o.order_number || '—'}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="sb-pay-field">
+          <label>Notes</label>
+          <input className="sb-pay-input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="optional" />
         </div>
 
         {error && <div className="sb-pay-error">{error}</div>}
         {confirm && !error && (
-          <div className="sb-pay-confirm-note">Record {fmtUSD(Number(amount) || 0)} ({outMethodLabel(method)}) to {payee || 'this payee'}?</div>
+          <div className="sb-pay-confirm-note">Record {fmtUSD(Number(amount) || 0)} ({outMethodLabel(method)}) to {payee || 'this payee'}{orderLink ? ` — cost on ${orderLink.order_number}` : ' (overhead)'}?</div>
         )}
         <div className="sb-pay-modal-actions">
           <button type="button" className="sb-pay-cancel" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="button" className="sb-pay-confirm" onClick={submit} disabled={busy}>
             {busy ? 'Recording…' : confirm ? 'Confirm — record payment' : 'Log payment'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Add recurring bill modal (template only — no payment) ────────────────────
+function AddBillModal({ onClose, onSaved }) {
+  const [name, setName] = useState('')
+  const [category, setCategory] = useState('Utilities')
+  const [frequency, setFrequency] = useState('monthly')
+  const [termCount, setTermCount] = useState('')
+  const [amountDefault, setAmountDefault] = useState('')
+  const [amountVaries, setAmountVaries] = useState(false)
+  const [notes, setNotes] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const submit = async () => {
+    if (!name.trim()) { setError('Enter a bill name.'); return }
+    setBusy(true); setError(null)
+    const createdBy = await getCurrentStaffName()
+    const res = await createRecurringBill({ name, category, frequency, termCount, amountDefault, amountVaries, notes, createdBy })
+    setBusy(false)
+    if (!res.ok) { setError(res.error || 'Could not save the bill.'); return }
+    onSaved()
+  }
+
+  return (
+    <div className="sb-pay-backdrop" onClick={() => { if (!busy) onClose() }}>
+      <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Add recurring bill" onClick={e => e.stopPropagation()}>
+        <h3 className="sb-pay-modal-title">Add a recurring bill</h3>
+        <p className="sb-pay-modal-sub">A template for overhead that repeats. No payment is created — it shows as “Due” each cycle until you pay it.</p>
+        <div className="sb-pay-field">
+          <label>Name</label>
+          <input className="sb-pay-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Electric" autoFocus />
+        </div>
+        <div className="sb-pay-grid2">
+          <div className="sb-pay-field">
+            <label>Category</label>
+            <select className="sb-pay-input" value={category} onChange={e => setCategory(e.target.value)}>
+              {OUTGOING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="sb-pay-field">
+            <label>Frequency</label>
+            <select className="sb-pay-input" value={frequency} onChange={e => setFrequency(e.target.value)}>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
+              <option value="fixed_term">Fixed term</option>
+            </select>
+          </div>
+          {frequency === 'fixed_term' && (
+            <div className="sb-pay-field">
+              <label>Term (number of payments)</label>
+              <input className="sb-pay-input" type="number" min="1" step="1" value={termCount} onChange={e => setTermCount(e.target.value)} placeholder="e.g. 15" />
+            </div>
+          )}
+          <div className="sb-pay-field">
+            <label>Default amount</label>
+            <input className="sb-pay-input" type="number" min="0" step="0.01" value={amountDefault} onChange={e => setAmountDefault(e.target.value)} placeholder="0.00" />
+          </div>
+        </div>
+        <label className="sb-pay-check">
+          <input type="checkbox" checked={amountVaries} onChange={e => setAmountVaries(e.target.checked)} />
+          <span>Amount varies each cycle (correct the number when you pay)</span>
+        </label>
+        <div className="sb-pay-field">
+          <label>Notes</label>
+          <input className="sb-pay-input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="optional" />
+        </div>
+
+        {error && <div className="sb-pay-error">{error}</div>}
+        <div className="sb-pay-modal-actions">
+          <button type="button" className="sb-pay-cancel" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="sb-pay-confirm" onClick={submit} disabled={busy}>{busy ? 'Saving…' : 'Add bill'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Update & pay a bill (writes a real outgoing_payments row) ────────────────
+function PayBillModal({ instance, onClose, onPaid }) {
+  const bill = instance.bill
+  const [amount, setAmount] = useState(instance.expected != null ? String(instance.expected) : '')
+  const [method, setMethod] = useState('ach')
+  const [ref, setRef] = useState('')
+  const [date, setDate] = useState(todayISO)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const refLabel = outRefLabel(method)
+
+  const submit = async () => {
+    const amt = Number(amount)
+    if (!Number.isFinite(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
+    setBusy(true); setError(null)
+    const createdBy = await getCurrentStaffName()
+    const res = await recordOutgoingPayment({
+      payee: bill.name, category: bill.category, method, reference: ref,
+      amount: amt, paidDate: date, recurringBillId: bill.id, createdBy,
+    })
+    setBusy(false)
+    if (!res.ok) { setError(res.error || 'Could not record the payment.'); return }
+    onPaid()
+  }
+
+  return (
+    <div className="sb-pay-backdrop" onClick={() => { if (!busy) onClose() }}>
+      <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Pay bill" onClick={e => e.stopPropagation()}>
+        <h3 className="sb-pay-modal-title">Pay “{bill.name}”</h3>
+        <p className="sb-pay-modal-sub">{bill.category || 'Uncategorized'}{instance.varies ? ' · amount varies — enter the actual' : ''}. This creates a paid record linked to the bill.</p>
+        <div className="sb-pay-grid2">
+          <div className="sb-pay-field">
+            <label>Actual amount</label>
+            <input className="sb-pay-input" type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" autoFocus />
+          </div>
+          <div className="sb-pay-field">
+            <label>Method</label>
+            <select className="sb-pay-input" value={method} onChange={e => setMethod(e.target.value)}>
+              {OUT_METHODS.map(m => <option key={m.code} value={m.code}>{m.label}</option>)}
+            </select>
+          </div>
+          <div className="sb-pay-field">
+            <label>Date paid</label>
+            <input className="sb-pay-input" type="date" value={date} onChange={e => setDate(e.target.value)} />
+          </div>
+          {refLabel && (
+            <div className="sb-pay-field">
+              <label>{refLabel}</label>
+              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
+            </div>
+          )}
+        </div>
+        {error && <div className="sb-pay-error">{error}</div>}
+        <div className="sb-pay-modal-actions">
+          <button type="button" className="sb-pay-cancel" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="sb-pay-confirm" onClick={submit} disabled={busy}>{busy ? 'Recording…' : 'Record payment'}</button>
         </div>
       </div>
     </div>
@@ -561,6 +841,7 @@ const PAY_CSS = `
   .sb-pay-qb-soon { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: #a0a09a; background: #f4f2ee; padding: 1px 5px; border-radius: 999px; }
 
   .sb-pay-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
+  .sb-pay-cards-2 { grid-template-columns: repeat(2, 1fr); max-width: 520px; }
   .sb-pay-card { background: #fff; border: 0.5px solid #e6e3dd; border-left: 3px solid #ccc; border-radius: 10px; padding: 14px 16px; }
   .sb-pay-card-amber { border-left-color: #b8842a; }
   .sb-pay-card-blue  { border-left-color: #1d4ed8; }
@@ -579,6 +860,17 @@ const PAY_CSS = `
   .sb-pay-search { flex: 1; min-width: 220px; font: inherit; font-size: 14px; padding: 9px 13px; border: 0.5px solid #e6e3dd; border-radius: 8px; background: #fff; }
   .sb-pay-log-btn { font: inherit; font-size: 13px; font-weight: 600; padding: 9px 16px; border: 0.5px solid transparent; border-radius: 8px; background: #9A7209; color: #fff; cursor: pointer; white-space: nowrap; }
   .sb-pay-log-btn:hover { filter: brightness(0.95); }
+  .sb-pay-log-ghost { background: #fff; color: #9A7209; border-color: #d8c89a; }
+  .sb-pay-cadence { font-size: 12px; color: #6b6b66; }
+  .sb-pay-varies { font-size: 10px; color: #b8842a; margin-left: 6px; }
+  .sb-pay-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; }
+  .sb-pay-pill-due { color: #5e3a0e; background: #fbe5b8; }
+  .sb-pay-pill-paid { color: #2d7a4f; background: #e6f4ec; }
+  .sb-pay-tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #6b6b66; background: #f0eeea; padding: 1px 6px; border-radius: 999px; margin-left: 8px; }
+  .sb-pay-tag-bill { color: #4a3a8a; background: #ece9f7; }
+  .sb-pay-optional { font-weight: 400; text-transform: none; letter-spacing: 0; color: #a0a09a; margin-left: 6px; }
+  .sb-pay-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #333; margin-bottom: 12px; }
+  .sb-pay-modal-sub { font-size: 13px; color: #6b6b66; margin: -8px 0 16px; line-height: 1.45; }
   .sb-pay-summary { display: flex; gap: 22px; font-size: 13px; color: #6b6b66; margin-bottom: 10px; }
   .sb-pay-summary strong { color: #1e2d3d; }
   .sb-pay-subhead { font-size: 13px; font-weight: 700; color: #1e2d3d; margin: 22px 0 8px; }
@@ -589,6 +881,7 @@ const PAY_CSS = `
   .sb-pay-out-row { grid-template-columns: 110px 1.4fr 1fr 110px 110px 1fr; }
   .sb-pay-bal-row { grid-template-columns: 1.6fr 120px 130px 120px; }
   .sb-pay-est-row { grid-template-columns: 1.6fr 120px 130px 90px 110px; }
+  .sb-pay-bill-row { grid-template-columns: 1.6fr 1fr 150px 130px 80px 120px; }
   .sb-pay-row-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; color: #8a8a85; border-bottom: 0.5px solid #e6e3dd; }
   .sb-pay-row-data { width: 100%; text-align: left; font: inherit; background: none; border: none; border-bottom: 0.5px solid #f1efeb; cursor: pointer; color: inherit; }
   .sb-pay-row-data:hover { background: #faf8f3; }
