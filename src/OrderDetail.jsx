@@ -16,7 +16,7 @@ import { useState, useEffect, useRef } from 'react'
 import {
   getOrderById, getJobByOrderId,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
-  fmtUSD, fmtDate, statusInfo, jobStatusInfo, customerName,
+  fmtUSD, fmtDate, fmtPhone, statusInfo, jobStatusInfo, customerName,
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
@@ -523,7 +523,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 ? <button type="button" className="sb-od-link" onClick={() => cust.id && onOpenCustomer?.(cust.id)}>{customerName(cust)}</button>
                 : null
             } />
-            <Field label="Phone" value={cust.phone_primary} />
+            <Field label="Phone" value={fmtPhone(cust.phone_primary)} />
             <Field label="Email" value={cust.email} />
             <Field label="Address" value={custAddr.length ? custAddr.map((l, i) => <div key={i}>{l}</div>) : null} />
             <Field label="Secondary contact" value={[cust.phone_alt, cust.email_alt].filter(Boolean).join(' · ')} />

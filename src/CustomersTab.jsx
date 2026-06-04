@@ -17,7 +17,7 @@ import {
   createCustomer, archiveCustomer, unarchiveCustomer, deleteCustomer,
   getJobs,
   rowGrandTotal, rowTotalPaid, statusInfo,
-  customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative,
+  customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative, maskPhoneInput, phoneDigits,
   computeOrderPressure,
   ACTIVE_STATUSES, SOLD_STATUSES,
   bulkArchiveCustomers, bulkRestoreCustomers,
@@ -1016,7 +1016,7 @@ function AddCustomerForm({ onCancel, onCreated }) {
       <div className="sb-form-grid">
         <Field label="First name"><input className="sb-input" value={form.firstName} onChange={e => set('firstName', e.target.value)} autoFocus /></Field>
         <Field label="Last name"><input className="sb-input" value={form.lastName} onChange={e => set('lastName', e.target.value)} /></Field>
-        <Field label="Phone"><input className="sb-input" value={form.phonePrimary} onChange={e => set('phonePrimary', e.target.value)} placeholder="(732) 555-0123" /></Field>
+        <Field label="Phone"><input className="sb-input" value={maskPhoneInput(form.phonePrimary)} onChange={e => set('phonePrimary', phoneDigits(e.target.value))} placeholder="(732) 555-0123" /></Field>
         <Field label="Email"><input type="email" className="sb-input" value={form.email} onChange={e => set('email', e.target.value)} /></Field>
         <Field label="Address" wide><input className="sb-input" value={form.addressLine1} onChange={e => set('addressLine1', e.target.value)} /></Field>
         <Field label="City"><input className="sb-input" value={form.city} onChange={e => set('city', e.target.value)} /></Field>

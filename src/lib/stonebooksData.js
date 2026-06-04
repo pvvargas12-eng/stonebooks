@@ -1108,6 +1108,20 @@ export function fmtPhone(s) {
   return s
 }
 
+// E1 — phone INPUT helpers. phoneDigits() is the stored, normalized value
+// (digits only, max 10). maskPhoneInput() is the live, as-you-type display
+// `(XXX) XXX - XXXX`, partial-friendly so the mask builds up while typing.
+export function phoneDigits(v) {
+  return String(v ?? '').replace(/\D/g, '').slice(0, 10)
+}
+export function maskPhoneInput(v) {
+  const d = phoneDigits(v)
+  if (!d) return ''
+  if (d.length <= 3) return `(${d}`
+  if (d.length <= 6) return `(${d.slice(0, 3)}) ${d.slice(3)}`
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)} - ${d.slice(6)}`
+}
+
 export function fmtDate(iso, opts = {}) {
   if (!iso) return '—'
   const d = new Date(iso)

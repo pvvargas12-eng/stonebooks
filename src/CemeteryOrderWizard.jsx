@@ -29,6 +29,7 @@ import {
   getJobCostEstimates,
   setJobCostEstimate,
   ESTIMATE_CATEGORIES,
+  maskPhoneInput, phoneDigits,
 } from './lib/stonebooksData'
 
 // Static branding — mirrors COMPANY_INFO in SalesMode.jsx (kept local so the
@@ -533,7 +534,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
               <input className="co-input" value={co.cemetery_contact_name || ''} onChange={e => setCo(c => ({ ...c, cemetery_contact_name: e.target.value }))} /></div>
             <div className="co-grid2">
               <div className="co-field"><span className="co-label">Contact phone</span>
-                <input className="co-input" value={co.cemetery_contact_phone || ''} onChange={e => setCo(c => ({ ...c, cemetery_contact_phone: e.target.value }))} /></div>
+                <input className="co-input" value={maskPhoneInput(co.cemetery_contact_phone)} onChange={e => setCo(c => ({ ...c, cemetery_contact_phone: phoneDigits(e.target.value) }))} /></div>
               <div className="co-field"><span className="co-label">Contact email</span>
                 <input className="co-input" type="email" value={co.cemetery_contact_email || ''} onChange={e => setCo(c => ({ ...c, cemetery_contact_email: e.target.value }))} /></div>
             </div>

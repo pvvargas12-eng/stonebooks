@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits } from './lib/stonebooksData'
 
 // =============================================================================
 // STATIC DATA
@@ -2660,15 +2660,15 @@ export function CustomerStep({ order, update }) {
         <div className="sm-grid-2">
           <Field label="Primary phone">
             <TextInput
-              value={customer.phonePrimary}
-              onChange={v => updateCustomer({ phonePrimary: v })}
+              value={maskPhoneInput(customer.phonePrimary)}
+              onChange={v => updateCustomer({ phonePrimary: phoneDigits(v) })}
               placeholder="(732) 555-1234"
             />
           </Field>
           <Field label="Alternate phone" hint="Optional">
             <TextInput
-              value={customer.phoneAlt}
-              onChange={v => updateCustomer({ phoneAlt: v })}
+              value={maskPhoneInput(customer.phoneAlt)}
+              onChange={v => updateCustomer({ phoneAlt: phoneDigits(v) })}
               placeholder="(732) 555-5678"
             />
           </Field>
@@ -2912,8 +2912,8 @@ export function CemeteryStep({ order, update }) {
           </Field>
           <Field label="Cemetery office phone">
             <TextInput
-              value={cem.contactPhone}
-              onChange={v => updateCem({ contactPhone: v })}
+              value={maskPhoneInput(cem.contactPhone)}
+              onChange={v => updateCem({ contactPhone: phoneDigits(v) })}
               placeholder="(732) 555-1234"
             />
           </Field>
@@ -8419,7 +8419,7 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     doc.setFontSize(9)
     doc.text([c.city, c.state, c.zip].filter(Boolean).join(', '), M, y); y += 4
   }
-  if (c.phonePrimary) { doc.setFontSize(9); doc.setTextColor(...GREY); doc.text(c.phonePrimary, M, y); y += 4 }
+  if (c.phonePrimary) { doc.setFontSize(9); doc.setTextColor(...GREY); doc.text(maskPhoneInput(c.phonePrimary) || c.phonePrimary, M, y); y += 4 }
   y += 4
 
   // ============================ PAYMENT BLOCK ===========================

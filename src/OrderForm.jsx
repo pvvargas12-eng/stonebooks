@@ -25,7 +25,7 @@ import {
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
-  autoDetectOrderPermit,
+  autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone,
 } from './lib/stonebooksData'
 import {
   SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
@@ -490,7 +490,7 @@ function CustomerCard({ order, update, updatePricing }) {
           placeholder="Search customers…"
           renderRow={(r) => (
             <span><strong>{r.last_name}, {r.first_name}</strong>
-              {r.phone_primary ? <span className="of-ac-meta"> · {r.phone_primary}</span> : null}
+              {r.phone_primary ? <span className="of-ac-meta"> · {fmtPhone(r.phone_primary)}</span> : null}
               {r.city ? <span className="of-ac-meta"> · {r.city}</span> : null}</span>
           )}
         />
@@ -498,8 +498,8 @@ function CustomerCard({ order, update, updatePricing }) {
       <Grid cols={2}>
         <TextField label="First name" value={c.firstName} onChange={v => setC({ firstName: v })} />
         <TextField label="Last name" value={c.lastName} onChange={v => setC({ lastName: v })} />
-        <TextField label="Primary phone" value={c.phonePrimary} onChange={v => setC({ phonePrimary: v })} />
-        <TextField label="Alternate phone" value={c.phoneAlt} onChange={v => setC({ phoneAlt: v })} />
+        <TextField label="Primary phone" value={maskPhoneInput(c.phonePrimary)} onChange={v => setC({ phonePrimary: phoneDigits(v) })} />
+        <TextField label="Alternate phone" value={maskPhoneInput(c.phoneAlt)} onChange={v => setC({ phoneAlt: phoneDigits(v) })} />
         <TextField label="Email" type="email" value={c.email} onChange={v => setC({ email: v })} />
         <TextField label="Alternate email" type="email" value={c.emailAlt} onChange={v => setC({ emailAlt: v })} />
         <TextField label="Address" value={c.addressLine1} onChange={v => setC({ addressLine1: v })} full />
@@ -564,7 +564,7 @@ function CemeteryCard({ order, update }) {
         <TextField label="Address" value={cem.address} onChange={v => setCem({ address: v })} full />
         <TextField label="City" value={cem.city} onChange={v => setCem({ city: v })} />
         <TextField label="State" value={cem.state} onChange={v => setCem({ state: v })} />
-        <TextField label="Cemetery phone" value={cem.contactPhone} onChange={v => setCem({ contactPhone: v })} />
+        <TextField label="Cemetery phone" value={maskPhoneInput(cem.contactPhone)} onChange={v => setCem({ contactPhone: phoneDigits(v) })} />
       </Grid>
 
       <div className="of-sub">

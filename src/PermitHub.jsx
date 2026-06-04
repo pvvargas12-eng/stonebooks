@@ -16,7 +16,7 @@ import {
   listAllOrders, getJobs, fmtUSD, customerName,
   permitBuckets, PERMIT_QUEUES, PERMIT_STATUSES,
   listCemeteriesWithPermit, updateCemeteryPermit,
-  bulkUpdateOrders,
+  bulkUpdateOrders, maskPhoneInput, phoneDigits,
 } from './lib/stonebooksData'
 import OrderDetail from './OrderDetail.jsx'
 // Reused from the Orders Triage Workbench — same undo toast, same 8s window.
@@ -573,7 +573,7 @@ function CemeteryRequirements({ onChanged }) {
             <label className="sb-ph-field sb-ph-field-wide"><span>Document requirements</span><input type="text" value={draft.permit_document_requirements} onChange={e => setDraft(d => ({ ...d, permit_document_requirements: e.target.value }))} /></label>
             <label className="sb-ph-field sb-ph-field-wide"><span>Cemetery instructions</span><input type="text" value={draft.permit_instructions} onChange={e => setDraft(d => ({ ...d, permit_instructions: e.target.value }))} /></label>
             <label className="sb-ph-field"><span>Contact name</span><input type="text" value={draft.permit_contact_name} onChange={e => setDraft(d => ({ ...d, permit_contact_name: e.target.value }))} /></label>
-            <label className="sb-ph-field"><span>Contact phone</span><input type="text" value={draft.permit_contact_phone} onChange={e => setDraft(d => ({ ...d, permit_contact_phone: e.target.value }))} /></label>
+            <label className="sb-ph-field"><span>Contact phone</span><input type="text" value={maskPhoneInput(draft.permit_contact_phone)} onChange={e => setDraft(d => ({ ...d, permit_contact_phone: phoneDigits(e.target.value) }))} /></label>
             <label className="sb-ph-field"><span>Contact email</span><input type="text" value={draft.permit_contact_email} onChange={e => setDraft(d => ({ ...d, permit_contact_email: e.target.value }))} /></label>
           </div>
           {msg && <div className={`sb-msg sb-msg-${msg.type}`}>{msg.text}</div>}
