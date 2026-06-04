@@ -112,6 +112,24 @@ export const REPORT_CSS = `
   .rb-stage-name { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: #1e2d3d; }
   .rb-stage-dot { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
 
+  /* Sortable table */
+  .rb-tbl-wrap { max-height: 340px; overflow-y: auto; margin: -2px -4px; }
+  .rb-tbl { display: flex; flex-direction: column; }
+  .rb-tbl-row { display: grid; gap: 8px; align-items: center; padding: 7px 4px; }
+  .rb-tbl-head { position: sticky; top: 0; background: #fff; border-bottom: 0.5px solid #e6e3dd; z-index: 1; }
+  .rb-tbl-h { font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: #a0a09a; background: none; border: none; cursor: pointer; text-align: left; padding: 0; white-space: nowrap; }
+  .rb-tbl-h.num { text-align: right; }
+  .rb-tbl-h:hover { color: #1e2d3d; }
+  .rb-tbl-h.on { color: #9A7209; }
+  .rb-tbl-data { font: inherit; background: none; border: none; border-bottom: 0.5px solid #f1efeb; cursor: pointer; text-align: left; font-size: 13px; color: #1e2d3d; }
+  .rb-tbl-data:hover { background: #faf8f3; }
+  .rb-tbl-data span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-tbl-data .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .rb-tbl-data span:first-child { font-weight: 600; }
+  .rb-tbl-more { font-size: 11px; color: #a0a09a; padding: 8px 4px 2px; }
+  .rb-split { font-size: 12px; color: #6b6b66; margin-top: 12px; }
+  .rb-split strong { color: #1e2d3d; }
+
   /* Drill modal */
   .rb-drill-backdrop { position: fixed; inset: 0; background: rgba(15,20,25,0.42); z-index: 1100; display: flex; align-items: center; justify-content: center; padding: 24px; }
   .rb-drill { background: #fff; border-radius: 12px; box-shadow: 0 16px 48px rgba(15,20,25,0.24); max-width: 640px; width: 100%; max-height: 86vh; display: flex; flex-direction: column; }

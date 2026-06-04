@@ -11,8 +11,9 @@
 // `note` ("not yet tracked") instead of fabricating numbers.
 // =============================================================================
 
+import { useState } from 'react'
 import {
-  rowGrandTotal, rowBalanceDue, rowTotalPaid, fmtUSD, SOLD_STATUSES,
+  rowGrandTotal, rowBalanceDue, rowTotalPaid, fmtUSD, customerName, SOLD_STATUSES,
 } from './stonebooksData'
 import { healthFrom } from './reportsData'
 
@@ -44,6 +45,25 @@ function currentStage(job) {
   return open.length ? (open[0].group || 'intake') : 'closeout'
 }
 const ageColor = (d) => d >= 30 ? '#b54040' : d >= 14 ? '#d2691e' : d >= 7 ? '#b8842a' : '#2d7a4f'
+const msDate = (j, key) => { const m = (j?.milestones || []).find(x => x.milestone_key === key && x.status === 'done'); return m?.status_date || null }
+function jobName(j) {
+  const o = j?.order
+  if (o?.primary_lastname && String(o.primary_lastname).trim()) return String(o.primary_lastname).trim()
+  const cn = customerName(o?.customer)
+  return (cn && cn !== '—') ? cn : (o?.order_number || String(j?.id || '').slice(0, 8))
+}
+// Order-tagged outgoing spend → { byOrder: {id: total}, catByOrder: {id: {cat: $}} }
+function outgoingByOrder(outgoing) {
+  const byOrder = {}, catByOrder = {}
+  for (const o of outgoing || []) {
+    if (!o.order_id) continue
+    byOrder[o.order_id] = (byOrder[o.order_id] || 0) + (Number(o.amount) || 0)
+    ;(catByOrder[o.order_id] ||= {})
+    const c = o.category || 'Other'
+    catByOrder[o.order_id][c] = (catByOrder[o.order_id][c] || 0) + (Number(o.amount) || 0)
+  }
+  return { byOrder, catByOrder }
+}
 
 // ── Shared report bodies ─────────────────────────────────────────────────────
 function BucketBars({ buckets, total, onDrill }) {
@@ -106,6 +126,40 @@ function StageTable({ rows, onDrill }) {
           <div className="num" style={{ color: ageColor(r.oldest) }}>{r.oldest}d</div>
         </button>
       ))}
+    </div>
+  )
+}
+
+// Sortable table body. columns: [{ key, label, num?, fmt? }]; rows carry the
+// raw values + _id/_kind for drill. Click a header to sort.
+function SortableTable({ columns, rows, grid, initialSort, onDrill, maxRows = 200 }) {
+  const [sort, setSort] = useState(initialSort || { key: columns[0].key, dir: 'desc' })
+  const sorted = [...rows].sort((a, b) => {
+    const va = a[sort.key], vb = b[sort.key]
+    let cmp
+    if (typeof va === 'number' || typeof vb === 'number') cmp = (Number(va) || 0) - (Number(vb) || 0)
+    else cmp = String(va ?? '').localeCompare(String(vb ?? ''))
+    return sort.dir === 'asc' ? cmp : -cmp
+  }).slice(0, maxRows)
+  const click = (k) => setSort(s => s.key === k ? { key: k, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: 'desc' })
+  return (
+    <div className="rb-tbl-wrap">
+      <div className="rb-tbl">
+        <div className="rb-tbl-row rb-tbl-head" style={{ gridTemplateColumns: grid }}>
+          {columns.map(c => (
+            <button key={c.key} type="button" className={`rb-tbl-h ${c.num ? 'num' : ''} ${sort.key === c.key ? 'on' : ''}`} onClick={() => click(c.key)}>
+              {c.label}{sort.key === c.key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+            </button>
+          ))}
+        </div>
+        {sorted.map(r => (
+          <button key={r._id} type="button" className="rb-tbl-row rb-tbl-data" style={{ gridTemplateColumns: grid }}
+            onClick={() => r._id && onDrill?.({ title: r._drillTitle || 'Detail', ids: r._ids || [r._id], kind: r._kind || 'jobs' })}>
+            {columns.map(c => <span key={c.key} className={c.num ? 'num' : ''}>{c.fmt ? c.fmt(r[c.key], r) : r[c.key]}</span>)}
+          </button>
+        ))}
+      </div>
+      {rows.length > maxRows && <div className="rb-tbl-more">Showing top {maxRows} of {rows.length}.</div>}
     </div>
   )
 }
@@ -338,6 +392,211 @@ const OVERDUE_HEATMAP = {
   },
 }
 
+const JOB_TYPE_LABEL = { new_stone: 'New stone', inscription: 'Inscription', cleaning_repair: 'Cleaning / repair', mausoleum_door: 'Mausoleum door', bronze: 'Bronze', civic_memorial: 'Civic memorial' }
+const jobTypeLabel = (t) => JOB_TYPE_LABEL[t] || (t ? t.replace(/_/g, ' ') : 'Other')
+
+// Job start→finish window in days (signed/created → installed status_date, else
+// now for active jobs). status_date is sparsely populated, so finish often falls
+// back to last activity — disclosed where it affects a headline number.
+function jobDays(j, nowMs) {
+  const startMs = new Date(j?.order?.signed_at || j?.order?.created_at || j?.created_at || 0).getTime()
+  const finIso = msDate(j, 'installed')
+  const finMs = finIso ? new Date(finIso).getTime() : (isActiveJob(j) ? nowMs : new Date(j?.last_update_at || j?.created_at || 0).getTime())
+  return Math.max(0, Math.floor((finMs - startMs) / 86400000))
+}
+
+const TRUE_PROFIT_JOB = {
+  id: 'true_profit_job', group: 'money', daily: false,
+  title: 'True Profit by Job',
+  why: 'Sale minus real logged costs, per job — plus profit earned per day in process.',
+  compute(bundle, ctx) {
+    const nowMs = ctx.range.end.getTime()
+    const { byOrder } = outgoingByOrder(bundle.outgoing)
+    const rows = []
+    let anyCost = false
+    for (const j of bundle.jobs) {
+      const o = j.order; if (!o) continue
+      const sale = rowGrandTotal(o)
+      const cost = byOrder[o.id] || 0
+      if (sale <= 0 && cost <= 0) continue
+      if (cost > 0) anyCost = true
+      const gross = sale - cost
+      const margin = sale > 0 ? Math.round((gross / sale) * 100) : null
+      const days = Math.max(1, jobDays(j, nowMs))
+      rows.push({ _id: j.id, _kind: 'jobs', _drillTitle: jobName(j), name: jobName(j), sale, cost, gross, margin: margin == null ? -1 : margin, perDay: Math.round(gross / days), days })
+    }
+    if (!rows.length) return { health: 'neutral', note: 'No jobs with a sale price or logged cost yet.' }
+    const margins = rows.map(r => r.margin).filter(m => m >= 0).sort((a, b) => a - b)
+    const med = margins.length ? margins[Math.floor(margins.length / 2)] : null
+    const columns = [
+      { key: 'name', label: 'Job' },
+      { key: 'sale', label: 'Sale', num: true, fmt: v => fmtUSD(v) },
+      { key: 'cost', label: 'Cost', num: true, fmt: v => fmtUSD(v) },
+      { key: 'gross', label: 'Gross', num: true, fmt: v => fmtUSD(v) },
+      { key: 'margin', label: 'Margin', num: true, fmt: v => v < 0 ? '—' : `${v}%` },
+      { key: 'perDay', label: '$/day', num: true, fmt: v => fmtUSD(v) },
+    ]
+    return {
+      health: med == null ? 'neutral' : healthFrom(med, { red: 20, yellow: 35 }), value: med,
+      csv: { filename: 'true-profit-by-job', headers: ['Job', 'Sale', 'Cost', 'Gross', 'Margin%', '$/day', 'Days'], rows: rows.map(r => [r.name, Math.round(r.sale), Math.round(r.cost), Math.round(r.gross), r.margin < 0 ? '' : r.margin, r.perDay, r.days]) },
+      body: (
+        <>
+          <SortableTable columns={columns} rows={rows} grid="1.4fr 86px 78px 86px 66px 78px" initialSort={{ key: 'perDay', dir: 'desc' }} onDrill={ctx.onDrill} />
+          {!anyCost && <div className="rb-flag">No order-linked costs logged yet, so Cost is $0 and margin reads 100% everywhere. Log supplier / permit / vendor spend against orders (Payments → Outgoing, “link to order”) and this fills in. Labor cost isn’t captured, so it’s intentionally omitted.</div>}
+        </>
+      ),
+    }
+  },
+}
+
+const PROFIT_JOB_TYPE = {
+  id: 'profit_job_type', group: 'money', daily: false,
+  title: 'Profit by Job Type',
+  why: 'Which kinds of work actually pay — revenue, avg profit, margin, and cycle time by type.',
+  compute(bundle, ctx) {
+    const nowMs = ctx.range.end.getTime()
+    const { byOrder } = outgoingByOrder(bundle.outgoing)
+    const acc = {}
+    for (const j of bundle.jobs) {
+      const o = j.order; if (!o) continue
+      const t = j.job_type || 'other'
+      ;(acc[t] ||= { ids: [], rev: 0, cost: 0, cycles: [], n: 0 })
+      acc[t].rev += rowGrandTotal(o); acc[t].cost += (byOrder[o.id] || 0); acc[t].n++
+      acc[t].ids.push(j.id); acc[t].cycles.push(jobDays(j, nowMs))
+    }
+    const rows = Object.entries(acc).map(([t, a]) => {
+      const profit = a.rev - a.cost
+      return {
+        _id: t, _ids: a.ids, _kind: 'jobs', _drillTitle: jobTypeLabel(t),
+        type: jobTypeLabel(t), revenue: a.rev, avgProfit: Math.round(profit / a.n),
+        margin: a.rev > 0 ? Math.round((profit / a.rev) * 100) : -1,
+        avgCycle: a.cycles.length ? Math.round(a.cycles.reduce((x, y) => x + y, 0) / a.cycles.length) : 0, n: a.n,
+      }
+    })
+    if (!rows.length) return { health: 'neutral', note: 'No jobs to summarize yet.' }
+    const columns = [
+      { key: 'type', label: 'Type' }, { key: 'n', label: 'Jobs', num: true },
+      { key: 'revenue', label: 'Revenue', num: true, fmt: v => fmtUSD(v) },
+      { key: 'avgProfit', label: 'Avg profit', num: true, fmt: v => fmtUSD(v) },
+      { key: 'margin', label: 'Margin', num: true, fmt: v => v < 0 ? '—' : `${v}%` },
+      { key: 'avgCycle', label: 'Avg days', num: true, fmt: v => `${v}d` },
+    ]
+    return {
+      health: 'neutral', value: rows.reduce((s, r) => s + r.revenue, 0),
+      csv: { filename: 'profit-by-job-type', headers: ['Type', 'Jobs', 'Revenue', 'Avg profit', 'Margin%', 'Avg cycle days'], rows: rows.map(r => [r.type, r.n, Math.round(r.revenue), r.avgProfit, r.margin < 0 ? '' : r.margin, r.avgCycle]) },
+      body: <SortableTable columns={columns} rows={rows} grid="1.2fr 56px 96px 96px 70px 72px" initialSort={{ key: 'revenue', dir: 'desc' }} onDrill={ctx.onDrill} />,
+    }
+  },
+}
+
+const CEMETERY_PROFIT = {
+  id: 'cemetery_profit', group: 'cemeteries', daily: false,
+  title: 'Cemetery Profitability',
+  why: 'Which cemeteries are worth the trip — jobs, revenue, profit, and timelines.',
+  compute(bundle, ctx) {
+    const { byOrder } = outgoingByOrder(bundle.outgoing)
+    const acc = {}
+    let anyPermit = false, anyInstall = false
+    for (const j of bundle.jobs) {
+      const o = j.order; if (!o) continue
+      const cem = o.cemetery?.name || '—'
+      ;(acc[cem] ||= { ids: [], rev: 0, cost: 0, n: 0, permit: [], o2i: [] })
+      acc[cem].rev += rowGrandTotal(o); acc[cem].cost += (byOrder[o.id] || 0); acc[cem].n++; acc[cem].ids.push(j.id)
+      const pf = msDate(j, 'permit_filed'), pa = msDate(j, 'permit_approved')
+      if (pf && pa) { acc[cem].permit.push(Math.max(0, Math.floor((new Date(pa) - new Date(pf)) / 86400000))); anyPermit = true }
+      const inst = msDate(j, 'installed')
+      if (inst && o.signed_at) { acc[cem].o2i.push(Math.max(0, Math.floor((new Date(inst) - new Date(o.signed_at)) / 86400000))); anyInstall = true }
+    }
+    const avg = (a) => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null
+    const rows = Object.entries(acc).map(([cem, a]) => {
+      const profit = a.rev - a.cost
+      return {
+        _id: cem, _ids: a.ids, _kind: 'jobs', _drillTitle: cem,
+        cemetery: cem, n: a.n, revenue: a.rev, profit, margin: a.rev > 0 ? Math.round((profit / a.rev) * 100) : -1,
+        permitDays: avg(a.permit), installDays: avg(a.o2i),
+      }
+    })
+    if (!rows.length) return { health: 'neutral', note: 'No jobs tied to a cemetery yet.' }
+    const columns = [
+      { key: 'cemetery', label: 'Cemetery' }, { key: 'n', label: 'Jobs', num: true },
+      { key: 'revenue', label: 'Revenue', num: true, fmt: v => fmtUSD(v) },
+      { key: 'profit', label: 'Profit', num: true, fmt: v => fmtUSD(v) },
+      { key: 'margin', label: 'Margin', num: true, fmt: v => v < 0 ? '—' : `${v}%` },
+      { key: 'permitDays', label: 'Permit d', num: true, fmt: v => v == null ? '—' : `${v}d` },
+      { key: 'installDays', label: 'Order→install', num: true, fmt: v => v == null ? '—' : `${v}d` },
+    ]
+    return {
+      health: 'neutral', value: rows.reduce((s, r) => s + r.profit, 0),
+      csv: { filename: 'cemetery-profitability', headers: ['Cemetery', 'Jobs', 'Revenue', 'Profit', 'Margin%', 'Avg permit days', 'Avg order-to-install days'], rows: rows.map(r => [r.cemetery, r.n, Math.round(r.revenue), Math.round(r.profit), r.margin < 0 ? '' : r.margin, r.permitDays ?? '', r.installDays ?? '']) },
+      body: (
+        <>
+          <SortableTable columns={columns} rows={rows} grid="1.3fr 50px 90px 88px 64px 70px 96px" initialSort={{ key: 'profit', dir: 'desc' }} onDrill={ctx.onDrill} />
+          {(!anyPermit || !anyInstall) && <div className="rb-flag">Permit-days / order-to-install columns are blank where the milestone timestamps (status_date) weren’t recorded — those are sparsely captured today, so the timing columns fill in only as jobs flow through with dated milestones.</div>}
+        </>
+      ),
+    }
+  },
+}
+
+const STUCK_JOBS = {
+  id: 'stuck_jobs', group: 'operations', daily: false,
+  title: 'Stuck Jobs',
+  why: 'Jobs with no movement lately — and whether the ball is in our court or theirs.',
+  compute(bundle, ctx) {
+    const nowMs = ctx.range.end.getTime()
+    const defs = [
+      { key: '3', label: '3–6 days', lo: 3, hi: 6, color: '#b8842a' },
+      { key: '7', label: '7–13 days', lo: 7, hi: 13, color: '#d2691e' },
+      { key: '14', label: '14–29 days', lo: 14, hi: 29, color: '#c0501e' },
+      { key: '30', label: '30+ days', lo: 30, hi: Infinity, color: '#b54040' },
+    ]
+    const acc = {}; defs.forEach(d => acc[d.key] = { ids: [], v: 0 })
+    let internal = 0, customer = 0
+    for (const j of bundle.jobs) {
+      if (!isActiveJob(j)) continue
+      const days = daysBetween(j.last_update_at || j.created_at, nowMs)
+      if (days < 3) continue
+      const d = defs.find(x => days >= x.lo && days <= x.hi); if (!d) continue
+      const o = j.order
+      acc[d.key].v += o ? rowGrandTotal(o) : 0; acc[d.key].ids.push(j.id)
+      const awaitingCust = (msDone(j, 'proof_sent') && !msDone(j, 'proof_approved')) || j.overall_status === 'waiting_on_customer' || (o && rowBalanceDue(o) > 0 && (msDone(j, 'installed') || ['installed', 'closed'].includes(o.status)))
+      if (awaitingCust) customer++; else internal++
+    }
+    const buckets = defs.map(d => ({ label: d.label, value: acc[d.key].v, count: acc[d.key].ids.length, ids: acc[d.key].ids, color: d.color, kind: 'jobs', drillTitle: `Stuck · ${d.label}` }))
+    const total = buckets.reduce((s, b) => s + b.count, 0)
+    const over14 = acc['14'].ids.length + acc['30'].ids.length
+    const health = total === 0 ? 'green' : healthFrom(over14, { red: 8, yellow: 3, invert: true })
+    if (total === 0) return { health: 'green', value: 0, body: <div className="rb-empty">Nothing stuck — every active job has moved in the last 3 days.</div> }
+    return {
+      health, value: over14,
+      csv: { filename: 'stuck-jobs', headers: ['No-movement bucket', '$ value', 'Jobs'], rows: buckets.map(b => [b.label, Math.round(b.value), b.count]) },
+      body: (
+        <>
+          <BucketBars buckets={buckets} onDrill={ctx.onDrill} />
+          <div className="rb-split"><strong>{internal}</strong> waiting on us · <strong>{customer}</strong> waiting on the customer</div>
+        </>
+      ),
+    }
+  },
+}
+
+const CYCLE_TIME_STAGE = {
+  id: 'cycle_time_stage', group: 'operations', daily: false,
+  title: 'Cycle Time by Stage',
+  why: 'Average days each stage takes, by job type — and the single biggest delay.',
+  compute() {
+    // Honest "not yet tracked": per-stage transition timing needs milestone
+    // status_date (when each milestone completed). That's populated on roughly
+    // 3% of milestones today, so stage-to-stage durations can't be computed
+    // without fabricating. The cascade now stamps status_date going forward, so
+    // this becomes real as jobs flow through — flag a backfill / capture.
+    return {
+      health: 'neutral',
+      note: 'Not yet tracked. Per-stage durations need a completion timestamp (status_date) on each milestone — currently filled on only ~3% of milestones, so there’s not enough to average. New completions now stamp it, so this earns out over time (a backfill would speed it up).',
+    }
+  },
+}
+
 // Registry. (Daily Command = those with daily:true; Library = all, grouped.)
 export const REPORTS = [
   MONEY_AT_RISK,
@@ -347,6 +606,11 @@ export const REPORTS = [
   BOTTLENECK_RADAR,
   OVERDUE_HEATMAP,
   CUSTOMER_WAITING,
+  TRUE_PROFIT_JOB,
+  PROFIT_JOB_TYPE,
+  CEMETERY_PROFIT,
+  STUCK_JOBS,
+  CYCLE_TIME_STAGE,
 ]
 
 export const REPORTS_BY_ID = Object.fromEntries(REPORTS.map(r => [r.id, r]))
