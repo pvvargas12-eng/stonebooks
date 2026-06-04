@@ -27,6 +27,7 @@ import JobsTab from './JobsTab'
 import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
+import PaymentsTab from './PaymentsTab'
 import EmailTab from './EmailTab'
 import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
@@ -205,6 +206,7 @@ const NAV_PRIMARY = [
   { key: 'scheduler', label: 'Scheduler' },
   { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
+  { key: 'payments',  label: 'Payments' },
   { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
 ]
@@ -645,6 +647,7 @@ export default function Stonebooks() {
 {tab === 'calendar'  && <SchedulerTab variant="calendar" user={user} profile={profile} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab />}
+{tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
             'Coming next: design library management — upload new monuments, edit metadata, organize by category.',
