@@ -710,6 +710,7 @@ export async function recordOrderPayment(orderId, input = {}) {
     createdAt: nowIso,
     createdBy: input.createdBy || null,
     note: input.note || null,
+    direction: 'in',         // QB-readiness — customer payments are inbound
     locked: true,            // a recorded payment is a committed money record
     voided: false, voidedReason: null, voidedAt: null, voidedBy: null,
   }
@@ -813,6 +814,51 @@ export function needsSignedContract(o) {
   if (payments.some(p => p && (p.locked ?? true) && !p.voided && Number(p.amount) > 0)) return true
   if (payments.length === 0 && Number(o.depositAmount ?? o.deposit_amount ?? 0) > 0) return true
   return false
+}
+
+// ── OUTGOING PAYMENTS (Payments tab v2) ─────────────────────────────────────
+// Money paid OUT — suppliers, subs, overhead. Not tied to a customer order, so
+// it lives in its own table (20260604_outgoing_payments.sql). Stored atomically
+// with the fields QuickBooks needs (payee, category, method, reference, amount,
+// date) so a later sync is a mapping job. Returns [] gracefully if the table
+// hasn't been created yet (migration pending) so the UI never crashes.
+export async function listOutgoingPayments() {
+  const { data, error } = await supabase
+    .from('outgoing_payments').select('*').order('paid_date', { ascending: false })
+  if (error) { console.warn('[payments] listOutgoingPayments:', error.message); return [] }
+  return data || []
+}
+
+export async function recordOutgoingPayment(input = {}) {
+  const amount = Number(input.amount)
+  if (!input.payee || !String(input.payee).trim()) return { ok: false, error: 'Enter a payee.' }
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'Enter an amount greater than zero.' }
+  const row = {
+    payee:      String(input.payee).trim(),
+    category:   input.category?.trim() || null,
+    method:     input.method || null,
+    reference:  input.reference?.trim() || null,
+    amount,
+    paid_date:  input.paidDate || new Date().toISOString().slice(0, 10),
+    direction:  'out',
+    notes:      input.notes?.trim() || null,
+    created_by: input.createdBy || null,
+  }
+  const { data, error } = await supabase.from('outgoing_payments').insert(row).select().single()
+  if (error) {
+    if (/relation .*outgoing_payments.* does not exist|could not find the table/i.test(error.message)) {
+      return { ok: false, error: 'Outgoing payments aren’t set up yet — apply the 20260604_outgoing_payments migration in Supabase Studio, then try again.' }
+    }
+    return { ok: false, error: error.message }
+  }
+  return { ok: true, payment: data }
+}
+
+export async function deleteOutgoingPayment(id) {
+  if (!id) return { ok: false, error: 'Missing id' }
+  const { error } = await supabase.from('outgoing_payments').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
 }
 
 // ── BULK OPERATIONS (Orders Triage Workbench) ───────────────────────────────

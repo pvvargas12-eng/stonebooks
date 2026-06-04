@@ -117,7 +117,7 @@ function Section({ title, span = 1, children }) {
 // =============================================================================
 // MAIN
 // =============================================================================
-export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer }) {
+export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer, initialAction = null, onConsumeInitialAction }) {
   const [order, setOrder] = useState(null)
   const [job, setJob] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -177,6 +177,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
+
+  // Deep-link action — e.g. the Payments tab's "Contact" opens the email
+  // composer once the order has loaded (fires once, then consumes the flag).
+  const initialActionRef = useRef(false)
+  useEffect(() => {
+    if (initialAction === 'email' && order && !initialActionRef.current) {
+      initialActionRef.current = true
+      setEmailModal({ to: order?.customer?.email || '', subject: '', body: '', busy: false, error: null, sent: false })
+      onConsumeInitialAction?.()
+    }
+  }, [initialAction, order, onConsumeInitialAction])
 
   const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))

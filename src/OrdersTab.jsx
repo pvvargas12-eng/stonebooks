@@ -170,7 +170,7 @@ function furthestStage(job) {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected }) {
+export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [orders, setOrders] = useState([])
   const [allJobs, setAllJobs] = useState([])
@@ -628,7 +628,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       <OrderDetail orderId={selectedOrderId} onBack={() => { setSelectedOrderId(null); reload() }}
         onEditInSales={(id) => onEditOrder?.(id)}
         onEditInSalesPortal={(id) => onOpenOrder?.(id)}
-        onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer} />
+        onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer}
+        initialAction={initialAction} onConsumeInitialAction={onConsumeInitialAction} />
     )
   }
 
