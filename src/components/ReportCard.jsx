@@ -100,6 +100,17 @@ export const REPORT_CSS = `
   .rb-legend-dot { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
   .rb-legend-val { font-weight: 600; color: #1e2d3d; font-variant-numeric: tabular-nums; }
   .rb-empty { font-size: 13px; color: #a0a09a; padding: 8px 0; }
+  .rb-flag { font-size: 12px; color: #6b5d2f; background: #fbf3dd; border: 0.5px solid #e8d9a8; border-radius: 8px; padding: 8px 10px; margin-top: 12px; line-height: 1.45; }
+
+  /* Stage table */
+  .rb-stage-table { display: flex; flex-direction: column; }
+  .rb-stage-row { display: grid; grid-template-columns: 1.5fr 56px 100px 76px 70px; gap: 8px; align-items: center; width: 100%; text-align: left; font: inherit; background: none; border: none; border-bottom: 0.5px solid #f1efeb; padding: 8px 0; cursor: pointer; }
+  .rb-stage-row.rb-stage-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #a0a09a; cursor: default; }
+  .rb-stage-row:not(.rb-stage-head):hover { background: #faf8f3; }
+  .rb-stage-row:last-child { border-bottom: none; }
+  .rb-stage-row .num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; color: #4a4a45; }
+  .rb-stage-name { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: #1e2d3d; }
+  .rb-stage-dot { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
 
   /* Drill modal */
   .rb-drill-backdrop { position: fixed; inset: 0; background: rgba(15,20,25,0.42); z-index: 1100; display: flex; align-items: center; justify-content: center; padding: 24px; }
