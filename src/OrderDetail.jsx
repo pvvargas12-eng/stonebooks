@@ -19,7 +19,7 @@ import {
   fmtUSD, fmtDate, statusInfo, jobStatusInfo, customerName,
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
-  uploadOrderAttachment, listOrderAttachments, recordOrderPayment,
+  uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES,
@@ -130,6 +130,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Attachments
   const [proofVers, setProofVers] = useState([])
   const [uploads, setUploads] = useState([])
+  const [completionPhotos, setCompletionPhotos] = useState([])
   const [uploadBusy, setUploadBusy] = useState(false)
   const fileRef = useRef(null)
   // Email
@@ -157,14 +158,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       if (cancelled) return
       setOrder(o); setJob(j); setLoading(false)
       // Secondary loads (notes + attachment sources + emails) — non-blocking.
-      const [nts, ups, pvs, ems] = await Promise.all([
+      const [nts, ups, pvs, ems, cps] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
         getOrderEmails(orderId),
+        listCompletionPhotos(orderId),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps)
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
@@ -643,6 +645,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </div>
           </Section>
 
+          {/* 7b — Completion photos (ITEM 4): job-site photos captured at task
+              completion in the Scheduler/Calendar. Read-only here. */}
+          {completionPhotos.length > 0 && (
+            <Section title="Completion photos" span={2}>
+              <div className="sb-od-completion-grid">
+                {completionPhotos.map(p => (
+                  <a key={p.path} className="sb-od-completion-thumb" href={p.url} target="_blank" rel="noreferrer" title={p.name}>
+                    <img src={p.url} alt={p.name} loading="lazy" />
+                  </a>
+                ))}
+              </div>
+            </Section>
+          )}
+
           {/* 8 — Notes */}
           <Section title="Notes" span={2}>
             <div className="sb-od-note-composer">
@@ -938,6 +954,14 @@ const OD_CSS = `
   .sb-od-inline-actions { margin-top: 12px; padding-top: 10px; border-top: 0.5px solid #f1efeb; }
 
   /* Attachments */
+  .sb-od-completion-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px;
+  }
+  .sb-od-completion-thumb {
+    display: block; aspect-ratio: 1 / 1; border-radius: 6px; overflow: hidden;
+    border: 0.5px solid #e6e3dd; background: #f4f2ee;
+  }
+  .sb-od-completion-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .sb-od-attach-list { display: flex; flex-direction: column; }
   .sb-od-attach-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13.5px; }
   .sb-od-attach-row + .sb-od-attach-row { border-top: 0.5px solid #f1efeb; }

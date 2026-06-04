@@ -351,6 +351,42 @@ export async function listOrderAttachments(orderId) {
     })
 }
 
+// ── Completion photos (ITEM 4) ──────────────────────────────────────────────
+// Field/production work (setting, delivery, inscription, acid wash, repair —
+// the kinds flagged requiresCompletionPhoto) gets photographed at completion.
+// Stored in the SAME public bucket as other order attachments, under the
+// brief's layout `<order_id>/completion/`. No new bucket, no migration: the
+// files in storage ARE the persisted refs (mirrors listOrderAttachments), so
+// they survive navigation and show on the order record on reload.
+export async function uploadCompletionPhoto(orderId, file) {
+  if (!orderId || !file) return { ok: false, error: 'Missing orderId or file' }
+  const safe = String(file.name || 'photo').replace(/[^\w.-]+/g, '_')
+  const path = `${orderId}/completion/${crypto.randomUUID()}_${safe}`
+  const { error } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (error) return { ok: false, error: error.message }
+  const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  return { ok: true, url: data.publicUrl, path, name: safe }
+}
+
+export async function listCompletionPhotos(orderId) {
+  if (!orderId) return []
+  const dir = `${orderId}/completion`
+  const { data, error } = await supabase.storage
+    .from('orders-attachments-public')
+    .list(dir, { sortBy: { column: 'created_at', order: 'desc' } })
+  if (error) { console.warn('[completion] listCompletionPhotos:', error.message); return [] }
+  return (data || [])
+    .filter(f => f && f.name && f.id)   // skip folder placeholders
+    .map(f => {
+      const path = `${dir}/${f.name}`
+      const { data: u } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+      const display = f.name.replace(/^[0-9a-f-]{36}_/i, '')
+      return { name: display, url: u.publicUrl, path, createdAt: f.created_at || null }
+    })
+}
+
 // The job spawned from an order (read-only), with its milestones — drives the
 // Order Detail "Related job" card (stage / next task / blockers). Returns the
 // earliest job for the order (orders spawn one job today; mausoleum-door orders

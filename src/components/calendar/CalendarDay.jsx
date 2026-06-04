@@ -17,10 +17,12 @@ import {
   customerName,
   getDayView,
   unmarkBatchJobComplete,
+  markBatchJobComplete,
 } from '../../lib/stonebooksData'
 import PromiseBadge from '../scheduler/PromiseBadge'
 import CarryoverBanner from './CarryoverBanner'
 import CalendarDayDispatch from './CalendarDayDispatch'
+import CompletionPhotoUploader from '../CompletionPhotoUploader'
 
 export default function CalendarDay({
   date,
@@ -51,6 +53,39 @@ export default function CalendarDay({
     setUnmarkBusy(false)
     if (!res.ok) { setUnmarkError(res.error || 'Failed to unmark.'); return }
     setConfirmUnmark(null)
+    onReload?.()
+  }
+
+  // ITEM 4 — completion photos. After a field/production stop (a kind flagged
+  // requiresCompletionPhoto) is marked complete, open the photo box for that
+  // stop's order. Owned here so both the field dispatch sheet and the shop
+  // blocks route through one modal. The completion already succeeded — photos
+  // are optional and never block.
+  const [photoTarget, setPhotoTarget] = useState(null)   // { orderId, label }
+  const openPhotoBoxIfNeeded = (stop, kindInfo) => {
+    if (!kindInfo?.requiresCompletionPhoto) return
+    const orderId = stop?.job?.order_id || stop?.job?.order?.id || null
+    if (!orderId) return
+    const label = stop?.job?.order?.primary_lastname
+      || customerName(stop?.job?.order?.customer)
+      || null
+    setPhotoTarget({ orderId, label })
+  }
+
+  // Shop-stop completion (ITEM 4 enabler). Shop blocks had no complete control,
+  // so acid_wash / repair work could never be ticked done — and never trigger a
+  // photo. This adds the missing per-stop completion for shop blocks, sharing
+  // the same data path + photo trigger as the field dispatch sheet.
+  const [completeBusyId, setCompleteBusyId] = useState(null)
+  const handleCompleteShopStop = async (stop, batch) => {
+    if (!stop || stop.completed_at) return
+    setCompleteBusyId(stop.id)
+    onCascadeWarning?.(null)
+    const res = await markBatchJobComplete(stop.id, { actorName, actorUserId })
+    setCompleteBusyId(null)
+    if (!res.ok) return
+    if (res.warning) onCascadeWarning?.(res.warning)
+    openPhotoBoxIfNeeded(stop, batchKindInfo(batch.kind))
     onReload?.()
   }
 
@@ -137,6 +172,7 @@ export default function CalendarDay({
               onCascadeWarning={onCascadeWarning}
               onRequestUnmark={setConfirmUnmark}
               onUnschedule={onUnschedule}
+              onCompleted={openPhotoBoxIfNeeded}
               onReload={onReload}
             />
           ))}
@@ -156,6 +192,8 @@ export default function CalendarDay({
               promisesByJob={promisesByJob}
               onRequestUnmark={setConfirmUnmark}
               onUnschedule={onUnschedule}
+              onCompleteStop={handleCompleteShopStop}
+              completeBusyId={completeBusyId}
             />
           ))}
         </section>
@@ -214,6 +252,14 @@ export default function CalendarDay({
           </div>
         </div>
       )}
+
+      {photoTarget && (
+        <CompletionPhotoUploader
+          orderId={photoTarget.orderId}
+          label={photoTarget.label}
+          onClose={() => setPhotoTarget(null)}
+        />
+      )}
     </div>
   )
 }
@@ -221,7 +267,7 @@ export default function CalendarDay({
 // Shop-batch block — quieter than the field dispatch sheet. The crew isn't
 // driving anywhere, so mileage and stop ordering don't apply. Just the
 // title, the worker, the stones in the block, and any notes.
-function ShopBatchBlock({ batch, promisesByJob, onRequestUnmark, onUnschedule }) {
+function ShopBatchBlock({ batch, promisesByJob, onRequestUnmark, onUnschedule, onCompleteStop, completeBusyId }) {
   const kindInfo = batchKindInfo(batch.kind)
   const stops = batch.stops || []
   return (
@@ -257,13 +303,24 @@ function ShopBatchBlock({ batch, promisesByJob, onRequestUnmark, onUnschedule })
             || customerName(s.job?.order?.customer)
             || '—'
           const promises = promisesByJob?.get(s.job_id) || []
+          const isDone = !!s.completed_at
           return (
             <li key={s.id} className="sb-cal-shop-stop">
+              {onCompleteStop && (
+                <input
+                  type="checkbox"
+                  className="sb-cal-shop-stop-check"
+                  checked={isDone}
+                  disabled={completeBusyId === s.id}
+                  onChange={() => isDone ? onRequestUnmark?.(s) : onCompleteStop(s, batch)}
+                  aria-label={isDone ? `Unmark ${surname} complete` : `Mark ${surname} complete`}
+                />
+              )}
               <span className="sb-cal-shop-stop-name">{surname}</span>
               {promises.length > 0 && (
                 <PromiseBadge promise={promises[0]} size="sm" />
               )}
-              {s.completed_at && (
+              {isDone && (
                 <>
                   <span className="sb-cal-shop-stop-done">complete</span>
                   {onRequestUnmark && (
@@ -440,6 +497,10 @@ const localStyles = `
   }
   .sb-cal-shop-stop:first-child {
     border-top: none;
+  }
+  .sb-cal-shop-stop-check {
+    accent-color: var(--sb-accent, #b8842a);
+    cursor: pointer;
   }
   .sb-cal-shop-stop-name {
     font-weight: 500;

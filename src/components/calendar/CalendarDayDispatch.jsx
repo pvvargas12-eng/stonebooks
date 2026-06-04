@@ -22,7 +22,7 @@ import {
 } from '../../lib/stonebooksData'
 import PromiseBadge from '../scheduler/PromiseBadge'
 
-export default function CalendarDayDispatch({ batch, promisesByJob, actorName, actorUserId, onCascadeWarning, onRequestUnmark, onUnschedule, onReload }) {
+export default function CalendarDayDispatch({ batch, promisesByJob, actorName, actorUserId, onCascadeWarning, onRequestUnmark, onUnschedule, onCompleted, onReload }) {
   const [busyStopId, setBusyStopId] = useState(null)
   const [statusBusy, setStatusBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -51,6 +51,10 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
       return
     }
     if (res.warning) onCascadeWarning?.(res.warning)
+    // ITEM 4 — offer a completion-photo box for photo-required kinds. Fires
+    // before reload so the just-completed stop (with its order join) is read
+    // from the current props snapshot.
+    onCompleted?.(stop, kindInfo)
     onReload?.()
   }
 
