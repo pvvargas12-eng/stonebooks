@@ -27,6 +27,7 @@ import {
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
   autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone,
 } from './lib/stonebooksData'
+import { generateCarveText } from './lib/carveText'
 import {
   SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
@@ -321,9 +322,13 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
 
           {sections.includes('customer') && <CustomerCard order={order} update={update} updatePricing={updatePricing} />}
           {sections.includes('cemetery') && <CemeteryCard order={order} update={update} />}
-          {sections.includes('inscription_type') && <InscriptionTypeCard order={order} updateInsc={updateInsc} />}
           {sections.includes('monument') && <MonumentCard order={order} update={update} updatePricing={updatePricing} />}
+          {/* Deceased FIRST so its data exists to populate the engraving text. */}
           {sections.includes('deceased') && <DeceasedCard order={order} update={update} updateInsc={updateInsc} variant={cfg.deceasedVariant} />}
+          {sections.includes('inscription_type') && <InscriptionTypeCard order={order} updateInsc={updateInsc} />}
+          {/* Auto-populated engraving text (same generator as the wizard) — only
+              for inscription orders, right after the type, before engraver notes. */}
+          {sections.includes('inscription_type') && <InscriptionCarveTextCard order={order} updateInsc={updateInsc} />}
           {sections.includes('inscription') && <InscriptionCard order={order} updateInsc={updateInsc} />}
           {sections.includes('catalog') && <CatalogPickerCard order={order} update={update} />}
 
@@ -980,6 +985,60 @@ function InscriptionTypeCard({ order, updateInsc }) {
 }
 
 // =============================================================================
+// INSCRIPTION CARVE TEXT — auto-populated engraving text (shared generator)
+// =============================================================================
+// Mirrors the wizard's behavior: auto-fills from the deceased name/dates + the
+// inscription tier, regenerating on any input/tier change UNLESS staff have
+// edited it. Distinct from the "Notes for the engraver" box (free text) — this
+// is the exact text to carve.
+function InscriptionCarveTextCard({ order, updateInsc }) {
+  const insc = order.inscription || {}
+  const carveInputsKey = JSON.stringify((order.deceased || []).map(d =>
+    [d.firstName, d.middleName, d.lastName, d.dateOfBirth, d.dateOfDeath, d.isReserved]))
+  const autoCarveText = useMemo(
+    () => generateCarveText(order),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [insc.tier, insc.type, carveInputsKey],
+  )
+  useEffect(() => {
+    if (insc.carveTextEdited) return
+    if ((insc.carveText || '') !== autoCarveText) {
+      updateInsc({ carveText: autoCarveText })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCarveText, insc.carveTextEdited])
+
+  // Until a tier is picked there's nothing to auto-fill from.
+  if (!insc.tier) return null
+
+  return (
+    <Card title="Engraving text" sub="Exactly what gets carved — auto-filled from the name & dates, editable.">
+      <textarea
+        className="of-input of-carve-text"
+        value={insc.carveText || ''}
+        onChange={e => updateInsc({ carveText: e.target.value, carveTextEdited: true })}
+        rows={insc.tier === 'full' ? 3 : 2}
+        placeholder="Auto-fills from the deceased name and dates"
+        spellCheck={false}
+      />
+      <div className="of-carve-foot">
+        {insc.carveTextEdited ? (
+          <>
+            <span className="of-carve-edited">Manually edited</span>
+            <button type="button" className="of-link"
+              onClick={() => updateInsc({ carveText: autoCarveText, carveTextEdited: false })}>
+              ↻ Reset to auto
+            </button>
+          </>
+        ) : (
+          <span className="of-muted">Auto-generated. Type to override.</span>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// =============================================================================
 // CATALOG PICKER (reuses the Sales Portal monuments catalog + design snapshot)
 // =============================================================================
 function catalogThumb(url) {
@@ -1179,16 +1238,54 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
   const p = order.pricing || {}
   const hasManual = manualTotal != null && manualTotal !== ''
   const ownerQuoteItems = lineItems.filter(it => it.quotePending)
+
+  // ── Editable line items (all quick orders) ────────────────────────────────
+  const overrides = p.lineItemOverrides || {}
+  const customItems = p.customLineItems || []
+  const setOverride = (code, val) => updatePricing({ lineItemOverrides: { ...overrides, [code]: val === '' ? '' : Number(val) } })
+  const clearOverride = (code) => { const next = { ...overrides }; delete next[code]; updatePricing({ lineItemOverrides: next }) }
+  const setCustom = (arr) => updatePricing({ customLineItems: arr })
+  const setCustomField = (id, patch) => setCustom(customItems.map(c => c.id === id ? { ...c, ...patch } : c))
+  const addCustom = () => setCustom([...customItems, { id: uid(), label: '', amount: 0, quotePending: false }])
+  const removeCustom = (id) => setCustom(customItems.filter(c => c.id !== id))
+
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
       <div className="of-li">
-        {lineItems.map((it, i) => (
-          <div className="of-li-row" key={`${it.code}-${i}`}>
-            <span className="of-li-label">{it.label}</span>
-            <span className="of-li-amt">{it.quotePending ? '$— (owner quote)' : fmtUSD(it.amount)}</span>
-          </div>
-        ))}
-        {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size or add an add-on.</p>}
+        {lineItems.map((it, i) => {
+          const isCustom = !!it.custom
+          const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
+          return (
+            <div className="of-li-row of-li-edit" key={`${it.code}-${i}`}>
+              {isCustom ? (
+                <input className="of-input of-li-label-input" value={it.label === 'Custom item' ? '' : it.label}
+                  placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} />
+              ) : (
+                <span className="of-li-label">{it.label}</span>
+              )}
+              {it.quotePending ? (
+                <span className="of-li-amt of-li-amt-quote">$— (owner quote)</span>
+              ) : (
+                <div className="of-num-wrap of-li-amt-wrap">
+                  <span className="of-num-prefix">$</span>
+                  <input className="of-input of-li-amt-input" type="number" value={Number(it.amount) || 0}
+                    onChange={e => isCustom
+                      ? setCustomField(it.code, { amount: e.target.value === '' ? 0 : Number(e.target.value) })
+                      : setOverride(it.code, e.target.value)} />
+                </div>
+              )}
+              {isCustom ? (
+                <button type="button" className="of-li-x" title="Remove line item" onClick={() => removeCustom(it.code)}>×</button>
+              ) : overridden ? (
+                <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
+              ) : (
+                <span className="of-li-x-spacer" />
+              )}
+            </div>
+          )
+        })}
+        {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
+        <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>
       </div>
 
       <div className="of-toggles">
@@ -1383,6 +1480,22 @@ const OF_CSS = `
   .of-li-row:last-child { border-bottom: none; }
   .of-li-label { color: #333; }
   .of-li-amt { color: #1e2d3d; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* Editable line-item rows */
+  .of-li-edit { align-items: center; gap: 10px; }
+  .of-li-edit .of-li-label { flex: 1; min-width: 0; }
+  .of-li-label-input { flex: 1; min-width: 0; font-size: 13.5px; padding: 6px 9px; }
+  .of-li-amt-wrap { width: 120px; flex: 0 0 auto; }
+  .of-li-amt-input { text-align: right; font-variant-numeric: tabular-nums; padding-top: 6px; padding-bottom: 6px; }
+  .of-li-amt-quote { width: 120px; text-align: right; flex: 0 0 auto; color: #a0a09a; font-weight: 500; }
+  .of-li-x { flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; line-height: 1; color: #a0a09a; background: none; border: 0.5px solid transparent; border-radius: 6px; cursor: pointer; }
+  .of-li-x:hover { color: #b3261e; border-color: #e3c3c3; background: #fbe5e5; }
+  .of-li-x-spacer { flex: 0 0 auto; width: 26px; }
+  .of-li-add { margin-top: 8px; align-self: flex-start; }
+
+  /* Engraving text (carve) card */
+  .of-carve-text { font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.6; resize: vertical; white-space: pre; }
+  .of-carve-foot { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+  .of-carve-edited { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #9A7209; }
 
   .of-toggles { display: flex; flex-direction: column; gap: 10px; border-top: 0.5px dashed #e0ded9; padding-top: 14px; }
   .of-discount { width: 140px; }

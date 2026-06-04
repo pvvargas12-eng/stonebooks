@@ -277,6 +277,28 @@ export function computeFormLineItems(order) {
     if (it.raw?.quotePending) it.quotePending = true
   }
 
+  // Operator amount overrides — the Finance card lets staff edit any computed
+  // line's amount; a non-empty override on that line's code wins.
+  const ov = pr.lineItemOverrides || {}
+  for (const it of items) {
+    if (ov[it.code] != null && ov[it.code] !== '') it.amount = Number(ov[it.code])
+  }
+
+  // Custom line items — staff-added one-off lines (Add-ons card OR Finance card).
+  // These now ACTUALLY become line items (and count in the total); previously
+  // they were captured but never priced.
+  for (const c of (pr.customLineItems || [])) {
+    if (!c) continue
+    items.push({
+      code: c.id || `custom-${c.label || 'item'}`,
+      label: c.label || 'Custom item',
+      amount: Number(c.amount) || 0,
+      editable: true,
+      custom: true,
+      quotePending: !!c.quotePending,
+    })
+  }
+
   return items
 }
 
