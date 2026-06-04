@@ -32,30 +32,43 @@ export function statusInfo(code) {
 
 // ── CUSTOMERS ────────────────────────────────────────────────────────────────
 
+// Page through ALL rows of a query in 1000-row batches. PostgREST enforces a
+// server-side max-rows cap (1000) that .limit() CANNOT override, so a single
+// request silently truncates large tables (the customers table has 1100+ rows;
+// late-alphabet customers like "Wermouth" at rank ~1073 fell past row 1000 and
+// never loaded — confirmed via Content-Range 0-999/1116). buildQuery must return
+// a FRESH PostgREST builder each call so .range() can be applied per page.
+export async function fetchAllPaged(buildQuery, pageSize = 1000) {
+  let from = 0
+  const all = []
+  for (;;) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1)
+    if (error) { console.error('fetchAllPaged:', error.message); break }
+    const batch = data || []
+    all.push(...batch)
+    if (batch.length < pageSize) break
+    from += pageSize
+  }
+  return all
+}
+
 export async function listAllCustomers({ includeArchived = false } = {}) {
-  // Explicit high limit — without it PostgREST's default ~1000-row cap silently
-  // dropped late-alphabet customers (ordered by last_name asc), so e.g.
-  // "Wermouth" never loaded and never appeared in the Customers tab.
-  let q = supabase
-    .from('customers')
-    .select('*')
-    .order('last_name', { ascending: true, nullsFirst: false })
-    .limit(10000)
-  if (!includeArchived) q = q.or('archived.is.null,archived.eq.false')
-  const { data, error } = await q
-  if (error) { console.error('listAllCustomers:', error); return [] }
-  return data || []
+  return fetchAllPaged(() => {
+    let q = supabase
+      .from('customers')
+      .select('*')
+      .order('last_name', { ascending: true, nullsFirst: false })
+    if (!includeArchived) q = q.or('archived.is.null,archived.eq.false')
+    return q
+  })
 }
 
 export async function listArchivedCustomers() {
-  const { data, error } = await supabase
+  return fetchAllPaged(() => supabase
     .from('customers')
     .select('*')
     .eq('archived', true)
-    .order('last_name', { ascending: true })
-    .limit(10000)
-  if (error) { console.error('listArchivedCustomers:', error); return [] }
-  return data || []
+    .order('last_name', { ascending: true }))
 }
 
 export async function archiveCustomer(customerId) {

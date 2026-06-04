@@ -13,7 +13,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  listAllCustomers, listArchivedCustomers, listOrdersForCustomer,
+  listAllCustomers, listArchivedCustomers, listOrdersForCustomer, fetchAllPaged,
   createCustomer, archiveCustomer, unarchiveCustomer, deleteCustomer,
   getJobs,
   rowGrandTotal, rowTotalPaid, statusInfo,
@@ -114,20 +114,22 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
     setLoading(true)
     setLoadErr(null)
     try {
-      const [cs, ordersRes, jobs] = await Promise.all([
+      const [cs, orders, jobs] = await Promise.all([
         statusFilter === 'archived' ? listArchivedCustomers()
           : statusFilter === 'all'  ? listAllCustomers({ includeArchived: true })
           : listAllCustomers(),
-        supabase.from('orders').select(
+        // Page through ALL orders — PostgREST caps a single request at 1000 rows
+        // (.limit can't override it), which truncated late orders / rollups.
+        fetchAllPaged(() => supabase.from('orders').select(
           'id, customer_id, status, order_number, updated_at, created_at, signed_at, pricing_locked_at, ' +
           'deposit_amount, balance_amount, payments, pricing, add_ons, ' +
           'target_completion_date, primary_lastname, deceased, service_types, cemetery_id, ' +
           'cemetery:cemeteries(id, name)'
-        ).limit(10000),   // avoid PostgREST's ~1000 default cap (incomplete rollups)
+        )),
         getJobs({ includeClosed: true, limit: 1000 }),
       ])
       setCustomers(cs || [])
-      setAllOrders(ordersRes.data || [])
+      setAllOrders(orders || [])
       setAllJobs(jobs || [])
     } catch (e) {
       setLoadErr(e?.message || 'Failed to load customers')
