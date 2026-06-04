@@ -33,10 +33,14 @@ export function statusInfo(code) {
 // ── CUSTOMERS ────────────────────────────────────────────────────────────────
 
 export async function listAllCustomers({ includeArchived = false } = {}) {
+  // Explicit high limit — without it PostgREST's default ~1000-row cap silently
+  // dropped late-alphabet customers (ordered by last_name asc), so e.g.
+  // "Wermouth" never loaded and never appeared in the Customers tab.
   let q = supabase
     .from('customers')
     .select('*')
     .order('last_name', { ascending: true, nullsFirst: false })
+    .limit(10000)
   if (!includeArchived) q = q.or('archived.is.null,archived.eq.false')
   const { data, error } = await q
   if (error) { console.error('listAllCustomers:', error); return [] }
@@ -49,6 +53,7 @@ export async function listArchivedCustomers() {
     .select('*')
     .eq('archived', true)
     .order('last_name', { ascending: true })
+    .limit(10000)
   if (error) { console.error('listArchivedCustomers:', error); return [] }
   return data || []
 }

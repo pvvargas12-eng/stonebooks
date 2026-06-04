@@ -123,7 +123,7 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
           'deposit_amount, balance_amount, payments, pricing, add_ons, ' +
           'target_completion_date, primary_lastname, deceased, service_types, cemetery_id, ' +
           'cemetery:cemeteries(id, name)'
-        ),
+        ).limit(10000),   // avoid PostgREST's ~1000 default cap (incomplete rollups)
         getJobs({ includeClosed: true, limit: 1000 }),
       ])
       setCustomers(cs || [])
