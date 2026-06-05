@@ -11,9 +11,10 @@
 import { useState, useMemo, useEffect } from 'react'
 import {
   getOrderById, getCemeteryOrders, getCemeteryOrder, getCemeteryPricingForOrder, getDoorPrice,
+  updateCemeteryOrder,
   setOrderQuoteStatus, setCemeteryOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName,
   rowGrandTotal, customerName, fmtUSD, fmtDate, fmtRelative, sendOrderEmail,
-  QUOTE_STATUS_LABEL, QUOTE_STATUS_TONE, NJ_TAX_RATE,
+  QUOTE_STATUS_LABEL, QUOTE_STATUS_TONE, NJ_TAX_RATE, CC_SURCHARGE,
 } from './lib/stonebooksData'
 import { rowToOrder, saveOrder, generateEstimatePDF } from './SalesMode'
 import { computeFormLineItems, computeTotals } from './lib/orderRates'
@@ -367,11 +368,12 @@ function ReviewDesk({ row, onReload, onEditOrder, onClose }) {
   )
 }
 
-// ── CEMETERY (crypt / mausoleum door) review desk — read-only doors + Layer 2 ─
+// ── CEMETERY (crypt / mausoleum door) review desk — EDITABLE, same as orders ──
 function CemeteryReviewDesk({ row, onReload, onClose }) {
   const [order, setOrder] = useState(null)
   const [events, setEvents] = useState(() => Array.isArray(row?.quote_events) ? row.quote_events : [])
   const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
   const [msg, setMsg] = useState(null)
   const id = row.id
 
@@ -382,8 +384,48 @@ function CemeteryReviewDesk({ row, onReload, onClose }) {
   }, [id])
 
   const pricing = useMemo(() => (order ? getCemeteryPricingForOrder(order) : null), [order])
-  const total = Number(order?.total_amount || row.total_amount || 0)
+  // Reuse the wizard's exact door-pricing helpers (price_override mechanism).
+  const keyOf = (s) => (typeof s === 'string' ? s : s?.key)
+  const itemMapFor = (d) => (pricing?.type === 'indoor_outdoor_split' ? (d.location ? (pricing[d.location] || {}) : {}) : (pricing?.items || {}))
+  const defaultPrice = (d, k) => Number(itemMapFor(d)?.[k]?.price) || 0
+  const overrideOf = (d, k) => { const s = (d.selectedItems || []).find(x => keyOf(x) === k); return (s && typeof s === 'object' && s.price_override != null) ? Number(s.price_override) : null }
+  const effPrice = (d, k) => { const o = overrideOf(d, k); return o != null ? o : defaultPrice(d, k) }
 
+  const doors = order?.doors || []
+  const subtotal = useMemo(() => (order?.doors || []).reduce((s, d) => s + (pricing ? getDoorPrice(d, pricing) : 0), 0), [order, pricing])
+  const taxAmt = order?.tax_applied ? subtotal * NJ_TAX_RATE : 0
+  const ccAmt = order?.cc_fee_applied ? subtotal * CC_SURCHARGE : 0
+  const total = subtotal + taxAmt + ccAmt
+
+  const setDoors = (fn) => { setDirty(true); setOrder(o => ({ ...o, doors: fn(o.doors || []) })) }
+  const setToggle = (field, val) => { setDirty(true); setOrder(o => ({ ...o, [field]: val })) }
+  // Edit an item's price via the same { key, price_override } shape the wizard
+  // writes; clearing reverts to the cemetery's default price.
+  const setItemPrice = (di, key, val) => setDoors(ds => ds.map((d, idx) => {
+    if (idx !== di) return d
+    const num = val === '' ? null : Number(val)
+    return { ...d, selectedItems: (d.selectedItems || []).map(s => (keyOf(s) === key ? (num == null ? { key } : { key, price_override: num }) : s)) }
+  }))
+  const setCustomPrice = (di, li, val) => setDoors(ds => ds.map((d, idx) => {
+    if (idx !== di) return d
+    return { ...d, customLineItems: (d.customLineItems || []).map((c, j) => (j === li ? { ...c, price: val === '' ? 0 : Number(val) } : c)) }
+  }))
+
+  // Persist to the cemetery_order — fail-loud (updateCemeteryOrder .select()s).
+  const persist = async () => {
+    setSaving(true); setMsg(null)
+    const r = await updateCemeteryOrder(id, {
+      doors: order.doors,
+      total_amount: Math.round(total * 100) / 100,
+      tax_applied: !!order.tax_applied,
+      cc_fee_applied: !!order.cc_fee_applied,
+    })
+    setSaving(false)
+    if (!r.ok) { setMsg({ kind: 'err', text: r.error }); return { ok: false } }
+    setDirty(false)
+    return { ok: true }
+  }
+  const saveOnly = async () => { const r = await persist(); if (r.ok) { setMsg({ kind: 'ok', text: 'Changes saved.' }); onReload?.() } }
   const addNote = async (text) => {
     const by = await getCurrentStaffName().catch(() => null)
     const r = await appendQuoteEvent('cemetery_orders', id, { type: 'note', by, text })
@@ -391,6 +433,7 @@ function CemeteryReviewDesk({ row, onReload, onClose }) {
     return r
   }
   const moveTo = async (status, eventType) => {
+    if (dirty) { const r = await persist(); if (!r.ok) return }
     setSaving(true); setMsg(null)
     const r = await moveStatus({ table: 'cemetery_orders', id, status, eventType, setEvents, setMsg, onReload })
     setSaving(false)
@@ -398,7 +441,6 @@ function CemeteryReviewDesk({ row, onReload, onClose }) {
   }
 
   if (!order) return <div className="qh-desk-empty">Loading cemetery order…</div>
-  const doors = order.doors || []
 
   return (
     <div className="qh-review">
@@ -406,26 +448,52 @@ function CemeteryReviewDesk({ row, onReload, onClose }) {
       <ApprovedStamp events={events} />
 
       <div className="qh-lines">
-        <div className="qh-lines-head"><span>Door</span><span>Location</span><span>Price</span><span /></div>
+        <div className="qh-lines-head"><span>Door / item</span><span>Location</span><span>Price</span><span /></div>
         {doors.length === 0 ? <div className="qh-line"><span className="qh-line-label qh-dim">No doors on this order.</span></div>
-          : doors.map((d, i) => (
-            <div key={i} className="qh-line">
-              <span className="qh-line-label">{d.work_type ? d.work_type.replace(/_/g, ' ') : `Door ${i + 1}`}</span>
-              <span className="qh-line-qty-static" style={{ textAlign: 'left', textTransform: 'capitalize' }}>{d.location || '—'}</span>
-              <div className="qh-line-price-static">{fmtUSD(getDoorPrice(d, pricing))}</div>
-              <span />
-            </div>
-          ))}
+          : doors.map((d, di) => {
+            const sel = d.selectedItems || []
+            const cust = d.customLineItems || []
+            const lines = sel.length
+              ? sel.map(s => ({ kind: 'sel', key: keyOf(s) }))
+              : cust.map((c, j) => ({ kind: 'custom', j, label: c.label, price: c.price }))
+            if (lines.length === 0) return (
+              <div key={di} className="qh-line">
+                <span className="qh-line-label">Door {di + 1}</span>
+                <span className="qh-line-qty-static" style={{ textAlign: 'left', textTransform: 'capitalize' }}>{d.location || '—'}</span>
+                <span className="qh-line-price-static">—</span><span />
+              </div>
+            )
+            return lines.map((ln, li) => (
+              <div key={`${di}-${li}`} className="qh-line">
+                <span className="qh-line-label">Door {di + 1}{ln.kind === 'sel' ? ` — ${String(ln.key).replace(/_/g, ' ')}` : (ln.label ? ` — ${ln.label}` : '')}</span>
+                <span className="qh-line-qty-static" style={{ textAlign: 'left', textTransform: 'capitalize' }}>{d.location || '—'}</span>
+                <div className="qh-line-price">
+                  <span className="qh-line-dollar">$</span>
+                  {ln.kind === 'sel'
+                    ? <input type="number" step="0.01" value={effPrice(d, ln.key)} onChange={e => setItemPrice(di, ln.key, e.target.value)} />
+                    : <input type="number" step="0.01" value={Number(ln.price) || 0} onChange={e => setCustomPrice(di, ln.j, e.target.value)} />}
+                </div>
+                <span />
+              </div>
+            ))
+          })}
       </div>
 
       <div className="qh-totals">
-        <div className="qh-total-row qh-grand"><span>Total{order.tax_applied ? ' (incl. NJ tax)' : ''}</span><span>{fmtUSD(total)}</span></div>
+        <div className="qh-total-row"><span>Subtotal</span><span>{fmtUSD(subtotal)}</span></div>
+        <label className="qh-toggle"><input type="checkbox" checked={!!order.tax_applied} onChange={e => setToggle('tax_applied', e.target.checked)} /> NJ tax (6.625%)</label>
+        {order.tax_applied && <div className="qh-total-row"><span>NJ tax</span><span>{fmtUSD(taxAmt)}</span></div>}
+        <label className="qh-toggle"><input type="checkbox" checked={!!order.cc_fee_applied} onChange={e => setToggle('cc_fee_applied', e.target.checked)} /> Card fee (3%)</label>
+        {order.cc_fee_applied && <div className="qh-total-row"><span>Card fee</span><span>{fmtUSD(ccAmt)}</span></div>}
+        <div className="qh-total-row qh-grand"><span>Grand total</span><span>{fmtUSD(total)}</span></div>
       </div>
-      <div className="qh-dim" style={{ marginBottom: 14 }}>Cemetery door pricing is door-based — edit doors on the cemetery order itself; the Quote Hub handles approval + history.</div>
+
       {msg && <div className={msg.kind === 'err' ? 'qh-msg-err' : 'qh-msg-ok'}>{msg.text}</div>}
 
       <div className="qh-actions">
-        <div className="qh-actions-left" />
+        <div className="qh-actions-left">
+          <button type="button" className="qh-btn qh-btn-ghost" onClick={saveOnly} disabled={saving || !dirty}>{saving ? 'Saving…' : 'Save changes'}</button>
+        </div>
         <div className="qh-actions-right">
           <button type="button" className="qh-btn qh-btn-warn" onClick={() => moveTo('needs_changes', 'changes_requested')} disabled={saving}>Needs Changes</button>
           <button type="button" className="qh-btn qh-btn-go" onClick={() => moveTo('approved', 'approved')} disabled={saving}>Approve Quote</button>
@@ -547,6 +615,7 @@ const QH_CSS = `
   .qh-totals { margin-bottom: 16px; }
   .qh-total-row { display: flex; justify-content: space-between; font-size: 14px; color: #6b6256; padding: 5px 2px; }
   .qh-total-row.qh-grand { border-top: 1.5px solid #ece3d2; margin-top: 4px; padding-top: 10px; font-size: 18px; font-weight: 700; color: #2a2118; }
+  .qh-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #6b6256; padding: 4px 2px; cursor: pointer; }
 
   .qh-dim { font-size: 13px; color: #a89c86; }
   .qh-msg-err { font-size: 13px; color: #b3261e; background: #fbeceb; border: 1px solid #f0cfca; border-radius: 8px; padding: 9px 11px; margin-bottom: 14px; }
