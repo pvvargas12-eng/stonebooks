@@ -7534,10 +7534,14 @@ export async function generateEstimatePDF(order, opts = {}) {
     if (cem.grave) lot.push(`Grave ${cem.grave}`)
     if (lot.length) rightLines.push(lot.join(' · '))
     const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
+    // Only the SELECTED grave type prints (plain text); nothing if none set.
+    const graveLabel = graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null
+    const hasFoundation = !!order.foundationType
+    const extraRows = (graveLabel ? 1 : 0) + (hasFoundation ? 1 : 0)
 
     const headerH = 7
     const leftBodyH = leftLines.length * lineH
-    const rightBodyH = (rightLines.length + 2) * lineH + 1   // + grave-type row + foundation row
+    const rightBodyH = (rightLines.length + extraRows) * lineH + (extraRows ? 1 : 0)
     const boxH = headerH + Math.max(leftBodyH, rightBodyH) + 4
     ensure(boxH + 4)
 
@@ -7561,25 +7565,22 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.text(doc.splitTextToSize(ln, colW - 2 * padX), lx + padX, ly); ly += lineH
     })
 
-    // Right body — location lines, then grave-type (selected bold), then FOUNDATION.
+    // Right body — location lines, then ONLY the selected grave type (plain),
+    // then "Foundation: X" only when set. Both lines disappear when unset.
     let ry = boxTop + headerH + 4.5
     doc.setFontSize(9)
     rightLines.forEach((ln, i) => {
       doc.setFont('helvetica', i === 0 ? 'bold' : 'normal')
       doc.text(doc.splitTextToSize(ln, colW - 2 * padX), rx + padX, ry); ry += lineH
     })
-    ry += 1
-    doc.setFontSize(8); doc.setTextColor(...TEXT)
-    let gx = rx + padX
-    graveOpts.forEach(([code, label], i) => {
-      const sel = order.plot?.type === code
-      doc.setFont('helvetica', sel ? 'bold' : 'normal')
-      const seg = label + (i < graveOpts.length - 1 ? '  /  ' : '')
-      doc.text(seg, gx, ry); gx += doc.getTextWidth(seg)
-    })
-    ry += lineH
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
-    doc.text(`FOUNDATION: ${order.foundationType || '____________'}`, rx + padX, ry)
+    if (extraRows) ry += 1
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+    if (graveLabel) {
+      doc.text(graveLabel, rx + padX, ry); ry += lineH
+    }
+    if (hasFoundation) {
+      doc.text(`Foundation: ${order.foundationType}`, rx + padX, ry); ry += lineH
+    }
 
     y = boxTop + boxH + 4
   }
@@ -7860,7 +7861,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
   doc.setTextColor(...TEXT)
-  doc.text('Subtotal', W - M - 60, y)
+  doc.text('SUBTOTAL', W - M - 60, y)
   doc.text(fmtUSD(subtotalPdf), W - M, y, { align: 'right' })
   y += 5
 
@@ -7890,7 +7891,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     const tax = postDiscountTaxBase * NJ_TAX_RATE
     runningTotal += tax
     doc.setTextColor(...GREY)
-    doc.text('NJ Sales Tax (6.625%)', W - M - 60, y)
+    doc.text('NJ SALES TAX (6.625%)', W - M - 60, y)
     doc.setTextColor(...TEXT)
     doc.text(fmtUSD(tax), W - M, y, { align: 'right' })
     y += 5
@@ -7946,7 +7947,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
   doc.setTextColor(...GREY)
-  doc.text('Balance (at delivery / installation)', W - M - 90, y)
+  doc.text('BALANCE AT DELIVERY', W - M - 90, y)
   doc.setTextColor(...TEXT)
   doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
   y += 7
