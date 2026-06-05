@@ -7634,25 +7634,8 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 2
   }
 
-  // ============================ SERVICE ==================================
-  if (order.serviceTypes?.length) {
-    const labels = order.serviceTypes.map(c => SERVICE_TYPES.find(s => s.code === c)?.label).filter(Boolean)
-    if (labels.length) {
-      sectionHeader('Service')
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(10)
-      doc.setTextColor(...TEXT)
-      doc.text(labels.join(' · '), M, y)
-      y += 5
-      if (order.otherServiceDescription) {
-        doc.setFontSize(9)
-        doc.setTextColor(...GREY)
-        const wrapped = doc.splitTextToSize(order.otherServiceDescription, W - M - M)
-        doc.text(wrapped, M, y); y += 4 * wrapped.length
-      }
-      y += 2
-    }
-  }
+  // SERVICE section removed (round 2) — the line-item descriptions already make
+  // the services clear, so a separate SERVICE block was redundant.
 
   // ============================ STONE SPECS =============================
   const shape = SHAPES.find(s => s.code === order.shape)
@@ -7762,14 +7745,23 @@ export async function generateEstimatePDF(order, opts = {}) {
   // pricing + legal terms + the signature row (see the reserve logic below).
   sectionHeader('Pricing')
 
-  const lineItems = buildLineItems(order)
-  // Apply overrides
-  const itemsResolved = lineItems.map(it => {
-    const ov = order.pricing?.overrides?.[it.code]
-    return { ...it, amount: ov != null ? Number(ov) : it.amount }
-  })
-  // Custom items
-  const customItems = order.pricing?.customLineItems || []
+  // SINGLE SOURCE OF TRUTH for line items — the same computeFormLineItems the
+  // OrderForm / QuoteHub screens use. It already de-dupes custom line items, so
+  // there is no path that can emit a custom charge twice (this is what fixed the
+  // acid-wash double-charge). Dynamic import avoids the SalesMode<->orderRates
+  // static circular import.
+  const { computeFormLineItems } = await import('./lib/orderRates')
+  const allItems = computeFormLineItems(order)
+  // Overlay the wizard's override map too — OrderForm overrides are applied
+  // inside computeFormLineItems (pricing.lineItemOverrides); the wizard uses
+  // pricing.overrides, so honor both here.
+  const ovMap = order.pricing?.overrides || {}
+  for (const it of allItems) {
+    if (ovMap[it.code] != null && ovMap[it.code] !== '') it.amount = Number(ovMap[it.code])
+  }
+  // Priced lines only. Quote-pending items carry no agreed price yet, so they are
+  // excluded from the priced table and the subtotal.
+  const pricedItems = allItems.filter(it => !it.quotePending && it.amount != null)
 
   // Columns: Description | Qty | Rate | Total. Rate + Total hide on the estimate
   // (showLinePrices=false) — the estimate shows Description + Qty only; the grand
@@ -7788,8 +7780,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   }
 
   // Header row (reserve the whole table so it never orphans).
-  const lineRowCount = itemsResolved.filter(it => it.amount != null).length
-    + customItems.filter(it => it.label || it.amount).length
+  const lineRowCount = pricedItems.length
   ensure(lineRowCount * 5 + 12)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(8)
@@ -7830,16 +7821,11 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   let subtotalDisc = 0       // discount-eligible (everything except cemetery permit)
   let subtotalPermitPdf = 0  // cemetery permit only (passed through, no discount)
-  for (const it of itemsResolved) {
-    if (it.amount == null) continue
-    renderLineRow(it.label, it.amount, it.code)
-    if (it.code === 'addon-permit') subtotalPermitPdf += Number(it.amount) || 0
-    else                            subtotalDisc      += Number(it.amount) || 0
-  }
-  for (const it of customItems) {
-    if (!it.label && !it.amount) continue
-    renderLineRow(it.label || '(custom item)', it.amount, it.code)
-    subtotalDisc += Number(it.amount) || 0
+  const isPermitCode = (c) => c === 'addon-permit' || c === 'permit'
+  for (const it of pricedItems) {
+    renderLineRow(it.label || '(item)', it.amount, it.code)
+    if (isPermitCode(it.code)) subtotalPermitPdf += Number(it.amount) || 0
+    else                       subtotalDisc      += Number(it.amount) || 0
   }
   const subtotalPdf = subtotalDisc + subtotalPermitPdf
 
@@ -7921,36 +7907,49 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.text(fmtUSD(runningTotal), ptBoxX + ptBoxW - 3, ptBoxY + 10, { align: 'right' })
   y = ptBoxY + ptBoxH + 7
 
-  // ============================ DEPOSIT BLOCK ============================
-  // 50% deposit policy. On contract: "Due today". On estimate: "Required at signing".
-  const deposit = runningTotal * 0.5
-  const balance = runningTotal - deposit
+  // ===================== PAYMENT TERMS (by service type) =====================
+  // Small services (acid wash / repair / inscription / other — NO new stone or
+  // monument fabrication) are PAID IN FULL before work begins. Orders that
+  // include a new stone or monument keep the 50% deposit / balance split.
+  const STONE_SVC = ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
+  const svcCodes = order.serviceTypes || []
+  const hasStone = svcCodes.some(c => STONE_SVC.includes(c))
+  const hasAcid = svcCodes.includes('ACID_WASH')
+  const hasRepair = svcCodes.includes('REPAIR')
+  const hasInscription = svcCodes.includes('INSCRIPTION')
+  const paidInFull = !hasStone
 
-  ensure(20)
   y += 2
-  doc.setDrawColor(...GOLD)
-  doc.setLineWidth(0.4)
-  // Sprint 3s.3 — deposit block label column widened from 60mm to 90mm so
-  // 'Balance (at delivery / installation)' no longer overflows into the
-  // right-aligned value. Gold divider widened to match the new label width.
-  doc.line(W - M - 90, y, W - M, y)
-  y += 5
-
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(11)
-  doc.setTextColor(...GOLD)
-  doc.text(isContract ? 'DUE TODAY (50% DEPOSIT)' : 'DEPOSIT AT SIGNING (50%)', W - M - 90, y)
-  doc.setTextColor(...NAVY)
-  doc.text(fmtUSD(deposit), W - M, y, { align: 'right' })
-  y += 5
-
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(10)
-  doc.setTextColor(...GREY)
-  doc.text('BALANCE AT DELIVERY', W - M - 90, y)
-  doc.setTextColor(...TEXT)
-  doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
-  y += 7
+  if (paidInFull) {
+    ensure(12)
+    doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
+    doc.line(M, y, W - M, y)
+    y += 5
+    // Label starts at the LEFT margin (plenty of room) so the long phrase can
+    // never collide with the right-aligned amount.
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
+    doc.text('PAID IN FULL REQUIRED BEFORE WORK BEGINS', M, y)
+    doc.setTextColor(...NAVY)
+    doc.text(fmtUSD(runningTotal), W - M, y, { align: 'right' })
+    y += 7
+  } else {
+    const deposit = runningTotal * 0.5
+    const balance = runningTotal - deposit
+    ensure(18)
+    doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
+    doc.line(W - M - 90, y, W - M, y)
+    y += 5
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
+    doc.text(isContract ? 'DUE TODAY (50% DEPOSIT)' : 'DEPOSIT AT SIGNING (50%)', W - M - 90, y)
+    doc.setTextColor(...NAVY)
+    doc.text(fmtUSD(deposit), W - M, y, { align: 'right' })
+    y += 5
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+    doc.text('BALANCE AT DELIVERY', W - M - 90, y)
+    doc.setTextColor(...TEXT)
+    doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
+    y += 7
+  }
 
   // ============================ NOTES ====================================
   // Customer-facing notes from the pricing step (NOT the internal staff notes)
@@ -7958,57 +7957,93 @@ export async function generateEstimatePDF(order, opts = {}) {
   // we keep it internal and don't emit it.
 
   // ============================ SIGN-OFF =================================
-  // Sprint 3u Part C — contracts carry the full legal terms (5 paragraphs);
-  // estimates keep the short "valid 30 days" notice. The whole sign-off block
-  // (divider + terms + signature pair) is reserved together so the legal text
-  // never splits mid-sentence and the signatures never orphan onto a page of
-  // their own. (Part D converts this reservation to the shared ensureBlock.)
-  const LEGAL_FS = 7.5      // pt — legal terms (tight, to fit one page)
-  const LEGAL_LH = 3.2      // mm per line at 7.5pt
-  const PARA_GAP = 2.6      // mm between paragraphs
+  // Legal terms are selected by service type (round 2) and rendered by REAL
+  // height — every paragraph reserves its measured height via ensure(), so the
+  // block flows to a clean second page rather than ever overlapping the
+  // signature block. Estimates keep the short "valid 30 days" notice.
+  const LEGAL_FS = hasStone ? 7.5 : 9      // small-service blocks read larger
+  const LEGAL_LH = hasStone ? 3.2 : 4.0
+  const PARA_GAP = 2.8
 
-  const legalParagraphs = [
+  // FULL terms — new stone / monument (unchanged deep block).
+  const FULL_PARAS = [
     'Client agrees to pay Shevchenko Monuments LLC a deposit equal to fifty percent (50%) of the total contract price. This deposit is non-refundable. The remaining balance is due in full prior to the commencement of any carving work. Carving work is defined as any operation that physically alters the granite, including sandblasting, hand-carving, laser etching, or shape carving. Materials for the memorial may be ordered prior to balance payment; in such cases, Shevchenko Monuments bears the material cost at the Client\'s risk should the contract be subsequently breached.',
     'Ownership of the described memorial shall remain with Shevchenko Monuments until payment is received in full. If payment is not made in accordance with this agreement — whether at delivery or thereafter — Shevchenko Monuments is authorized to enter the cemetery and remove the memorial without prior notice and without liability for emotional distress, consequential damages, or other claims. Client agrees that legal fees incurred by Shevchenko Monuments in any contested removal shall be the responsibility of the Client. If the memorial is removed for non-payment and Client subsequently requests reinstallation, a reset fee of five hundred dollars ($500) shall apply in addition to any unpaid balance.',
     'Any changes to the design, materials, or scope of work after this contract is signed require written agreement between Client and Shevchenko Monuments. Such changes may incur additional costs and may reset the production timeline.',
     'Client has fourteen (14) days from the date of delivery or installation to raise quality concerns in writing. After this fourteen-day window, the work shall be deemed accepted in full.',
     'This agreement is final and not subject to cancellation. Client grants permission for Shevchenko Monuments to use photographs of the completed memorial for display, portfolio, or advertising purposes.',
   ]
+  // Verbatim small-service blocks (used when a single small service is present).
+  const ACID_PARA = 'Payment is due in full before any cleaning or restoration work begins. Acid washing and cleaning are performed on an existing monument; results vary with the age, type, and condition of the stone, and Shevchenko Monuments cannot guarantee removal of all staining, etching, or weathering, nor is it responsible for pre-existing damage, cracks, or deterioration. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+  const REPAIR_PARA = 'Payment is due in full before any repair work begins. Repairs are performed on an existing monument and are limited by the age, material, and condition of the stone; Shevchenko Monuments cannot guarantee a flawless or permanent result on weathered, cracked, or previously repaired stone, and is not responsible for pre-existing damage or for further deterioration arising from existing conditions. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+  const INSCR_PARA = 'Payment is due in full before any carving begins. Client is responsible for reviewing and approving all spelling, dates, and layout before work starts; once carving begins it cannot be undone, and Shevchenko Monuments is not responsible for errors in an approved proof. Added lettering is matched to the existing monument as closely as possible, but exact matching of font, depth, and color is not guaranteed due to natural stone variation and weathering. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+  const GENERIC_PARA = 'Payment terms are as stated above. Completion is expected on or near the due date, subject to circumstances beyond our control. Any changes after signing require written agreement and may affect cost and timeline. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+  // Unique bodies — for combining multiple small services WITHOUT repeating the
+  // shared paid-in-full / scheduling / photograph lines.
+  const ACID_BODY = 'Acid washing and cleaning are performed on an existing monument; results vary with the age, type, and condition of the stone, and Shevchenko Monuments cannot guarantee removal of all staining, etching, or weathering, nor is it responsible for pre-existing damage, cracks, or deterioration.'
+  const REPAIR_BODY = 'Repairs are performed on an existing monument and are limited by the age, material, and condition of the stone; Shevchenko Monuments cannot guarantee a flawless or permanent result on weathered, cracked, or previously repaired stone, and is not responsible for pre-existing damage or for further deterioration arising from existing conditions.'
+  const INSCR_BODY = 'Client is responsible for reviewing and approving all spelling, dates, and layout before work starts; once carving begins it cannot be undone, and Shevchenko Monuments is not responsible for errors in an approved proof. Added lettering is matched to the existing monument as closely as possible, but exact matching of font, depth, and color is not guaranteed due to natural stone variation and weathering.'
 
-  // Divider + legal terms (contract) / accept text (estimate), flowing from the
-  // current y. The signature row is pinned near the bottom so the whole document
-  // stays on ONE page (no page break — the lower half of page 1 has room).
+  let legalParagraphs
+  if (hasStone) {
+    legalParagraphs = FULL_PARAS
+  } else {
+    const smalls = [hasAcid && 'acid', hasRepair && 'repair', hasInscription && 'inscription'].filter(Boolean)
+    if (smalls.length === 0) {
+      legalParagraphs = [GENERIC_PARA]
+    } else if (smalls.length === 1) {
+      legalParagraphs = [smalls[0] === 'acid' ? ACID_PARA : smalls[0] === 'repair' ? REPAIR_PARA : INSCR_PARA]
+    } else {
+      // Combine: shared paid-in-full + each unique body + shared scheduling +
+      // shared photograph (each shared line shown exactly once).
+      legalParagraphs = [
+        'Payment is due in full before any work begins.',
+        ...(hasAcid ? [ACID_BODY] : []),
+        ...(hasRepair ? [REPAIR_BODY] : []),
+        ...(hasInscription ? [INSCR_BODY] : []),
+        'Scheduling is subject to cemetery access and weather.',
+        'Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.',
+      ]
+    }
+  }
+
+  // Divider, then terms (contract) / accept text (estimate). Each paragraph
+  // reserves its REAL rendered height; ensure() page-breaks cleanly when needed,
+  // so text is never truncated or overlapped.
   y += 5
-  doc.setDrawColor(...LIGHT_RULE)
-  doc.setLineWidth(0.2)
+  ensure(8)
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2)
   doc.line(M, y, W - M, y)
   y += 4
 
   if (isContract) {
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(LEGAL_FS)
     doc.setTextColor(...TEXT)
-    legalParagraphs.forEach((para) => {
+    for (const para of legalParagraphs) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(LEGAL_FS)
       const lines = doc.splitTextToSize(para, W - M - M)
-      doc.text(para, M, y, { align: 'justify', maxWidth: W - M - M })
+      ensure(lines.length * LEGAL_LH + PARA_GAP)
+      doc.text(lines, M, y)
       y += lines.length * LEGAL_LH + PARA_GAP
-    })
+    }
   } else {
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9)
-    doc.setTextColor(...GREY)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...GREY)
     const acceptText = 'This estimate is valid for 30 days from the date above. ' +
       'To accept and proceed with production, please sign below. A signed copy will become your contract.'
     const wrapped = doc.splitTextToSize(acceptText, W - M - M)
+    ensure(wrapped.length * 4 + 4)
     doc.text(wrapped, M, y)
     y += 4 * wrapped.length
   }
 
-  // ── Signature row — pinned near the bottom (single page) ──
-  const colW = (W - M - M - 8) / 2
-  const sigImgH = 14
-  const signTop = H - 34            // top of the signature area
-  const lineY = signTop + sigImgH + 2
+  // ── Signature block — FLOWS after the legal text (never pinned to a fixed Y,
+  // so it can never overlap). Customer + Rep each get a signature line and a date
+  // line on their own rows; the fillable AcroForm fields sit ON the lines.
+  const sigColW = (W - 2 * M - 10) / 2
+  const sigLx = M, sigRx = M + sigColW + 10
+  ensure(48)                        // whole block fits on this page, or starts fresh
+  y += 12
+  const sigLineY = y                // signature line
+  const sigDateY = y + 16           // date line (its own row below)
 
   // Embed real signature PNGs when the contract was e-signed in-app.
   let custSigData = null, repSigData = null
@@ -8016,49 +8051,45 @@ export async function generateEstimatePDF(order, opts = {}) {
     if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
     if (order.repSignatureUrl)      repSigData  = await urlToDataURL(order.repSignatureUrl)
   }
-  if (custSigData) { try { doc.addImage(custSigData, 'PNG', M + 2, signTop, colW - 4, sigImgH) } catch (e) { console.warn('cust sig embed:', e) } }
-  if (repSigData)  { try { doc.addImage(repSigData,  'PNG', M + colW + 10, signTop, colW - 4, sigImgH) } catch (e) { console.warn('rep sig embed:', e) } }
+  if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLx, sigLineY - 11, sigColW, 10) } catch (e) { console.warn('cust sig embed:', e) } }
+  if (repSigData)  { try { doc.addImage(repSigData,  'PNG', sigRx, sigLineY - 11, sigColW, 10) } catch (e) { console.warn('rep sig embed:', e) } }
 
-  // Signature lines + labels.
   doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
-  doc.line(M, lineY, M + colW, lineY)
-  doc.line(M + colW + 8, lineY, W - M, lineY)
+  doc.line(sigLx, sigLineY, sigLx + sigColW, sigLineY)
+  doc.line(sigRx, sigLineY, sigRx + sigColW, sigLineY)
+  doc.line(sigLx, sigDateY, sigLx + sigColW, sigDateY)
+  doc.line(sigRx, sigDateY, sigRx + sigColW, sigDateY)
+
   doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
   const custLabel = `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim()
-  doc.text(custLabel ? `Customer: ${custLabel}` : 'Customer signature', M, lineY + 4)
-  doc.text(order.salesRep ? `Shevchenko Monuments — ${order.salesRep}` : 'Shevchenko Monuments representative', M + colW + 8, lineY + 4)
-  doc.text('Date', M + colW - 28, lineY + 4)
-  doc.text('Date', W - M - 28, lineY + 4)
+  doc.text(custLabel ? `Customer signature — ${custLabel}` : 'Customer signature', sigLx, sigLineY + 4)
+  doc.text(order.salesRep ? `Shevchenko Monuments — ${order.salesRep}` : 'Shevchenko Monuments representative', sigRx, sigLineY + 4)
+  doc.text('Date', sigLx, sigDateY + 4)
+  doc.text('Date', sigRx, sigDateY + 4)
 
-  // Fillable AcroForm fields (Adobe Fill & Sign) over each line — they persist in
-  // the DOWNLOADED file and only render in real PDF viewers (Adobe), not the
-  // in-app preview. Coords are top-left in mm; verify/nudge in actual Adobe.
-  const dateW = 30
-  // Structured rects (mm, top-left origin) for the two CUSTOMER boxes — reused by
-  // the remote e-signing flow to stamp the signature/date into the snapshot PDF
-  // server-side (pdf-lib, which flips to a bottom-left origin). Page dims travel
-  // with them so the converter never has to assume Letter.
+  // Fillable AcroForm fields placed ON each line (box just above the line). Coords
+  // are top-left in mm; the customer rects also drive the remote e-sign stamping.
   const signFields = {
     unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
-    customer_signature: { x: M, y: lineY - 13, w: colW - dateW - 4, h: 12 },
-    customer_date:      { x: M + colW - dateW, y: lineY - 13, w: dateW, h: 12 },
+    customer_signature: { x: sigLx, y: sigLineY - 9, w: sigColW, h: 8 },
+    customer_date:      { x: sigLx, y: sigDateY - 9, w: sigColW, h: 8 },
   }
   const AcroFormTextField = window.jspdf?.AcroFormTextField
   if (AcroFormTextField) {
-    const addSigField = (name, fx, fw) => {
+    const addSigField = (name, r) => {
       const f = new AcroFormTextField()
       f.fieldName = name
-      f.Rect = [fx, lineY - 13, fw, 12]   // box sitting just above the line
+      f.Rect = [r.x, r.y, r.w, r.h]
       f.fontSize = 11
       doc.addField(f)
     }
-    addSigField('customer_signature', M, colW - dateW - 4)
-    addSigField('customer_date',      M + colW - dateW, dateW)
-    addSigField('rep_signature',      M + colW + 8, colW - dateW - 4)
-    addSigField('rep_date',           W - M - dateW, dateW)
+    addSigField('customer_signature', signFields.customer_signature)
+    addSigField('customer_date',      signFields.customer_date)
+    addSigField('rep_signature',      { x: sigRx, y: sigLineY - 9, w: sigColW, h: 8 })
+    addSigField('rep_date',           { x: sigRx, y: sigDateY - 9, w: sigColW, h: 8 })
   }
 
-  y = lineY + 8
+  y = sigDateY + 8
 
   addFooter()
 
