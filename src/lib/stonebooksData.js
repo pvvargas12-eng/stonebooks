@@ -302,6 +302,40 @@ export async function sendOrderEmail({ orderId, to, subject, body }) {
   return { ok: true, data }
 }
 
+// ── Remote contract e-signing (R2) ────────────────────────────────────────
+// Create a signing link for an order. The browser generates the CONTRACT-variant
+// PDF (the jsPDF generator is browser-only) and passes its bytes + the customer
+// signature/date rects; the signing-create Edge Function (service role) stores
+// the immutable snapshot in the private "signatures" bucket and records a
+// signature_requests row, returning the public /sign/<token> URL.
+//
+// Deploy-safe: if the 20260618 migration isn't applied or the function isn't
+// deployed, this returns { ok:false, error } with a clear setup message instead
+// of throwing — same posture as the foundation_type / quote-status columns.
+export async function createSigningLink({ orderId, pdfBase64, sigFieldRects, customerEmail }) {
+  if (!orderId) return { ok: false, error: 'Missing order id.' }
+  if (!pdfBase64) return { ok: false, error: 'Contract PDF could not be generated.' }
+  const { data, error } = await supabase.functions.invoke('signing-create', {
+    body: {
+      order_id: orderId,
+      pdf_base64: pdfBase64,
+      sig_field_rects: sigFieldRects || null,
+      customer_email: customerEmail || null,
+    },
+  })
+  if (error) {
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.detail || ctx.error } catch { /* ignore */ }
+    // Common not-yet-deployed signals → friendly setup message.
+    if (/not.?found|404|Failed to send a request|does not exist|relation .* does not exist|server_not_configured/i.test(detail || '')) {
+      detail = 'Remote signing isn’t set up yet — apply the 20260618 migration and deploy the signing-create Edge Function (and set SIGN_BASE_URL).'
+    }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.detail || data.error }
+  return { ok: true, url: data?.url, requestId: data?.request_id, expiresAt: data?.expires_at }
+}
+
 // ── Order notes (20260601_order_notes.sql) ────────────────────────────────
 export async function getOrderNotes(orderId) {
   if (!orderId) return []

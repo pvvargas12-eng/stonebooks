@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -8032,9 +8032,18 @@ export async function generateEstimatePDF(order, opts = {}) {
   // Fillable AcroForm fields (Adobe Fill & Sign) over each line — they persist in
   // the DOWNLOADED file and only render in real PDF viewers (Adobe), not the
   // in-app preview. Coords are top-left in mm; verify/nudge in actual Adobe.
+  const dateW = 30
+  // Structured rects (mm, top-left origin) for the two CUSTOMER boxes — reused by
+  // the remote e-signing flow to stamp the signature/date into the snapshot PDF
+  // server-side (pdf-lib, which flips to a bottom-left origin). Page dims travel
+  // with them so the converter never has to assume Letter.
+  const signFields = {
+    unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
+    customer_signature: { x: M, y: lineY - 13, w: colW - dateW - 4, h: 12 },
+    customer_date:      { x: M + colW - dateW, y: lineY - 13, w: dateW, h: 12 },
+  }
   const AcroFormTextField = window.jspdf?.AcroFormTextField
   if (AcroFormTextField) {
-    const dateW = 30
     const addSigField = (name, fx, fw) => {
       const f = new AcroFormTextField()
       f.fieldName = name
@@ -8060,10 +8069,10 @@ export async function generateEstimatePDF(order, opts = {}) {
   // Sprint 3i — preview and email flows want the doc object without saving.
   // Default behavior remains "save to user's Downloads".
   if (opts.returnDoc) {
-    return { doc, filename }
+    return { doc, filename, signFields }
   }
   doc.save(filename)
-  return { doc, filename }
+  return { doc, filename, signFields }
 }
 
 // Thin wrapper for contract PDFs. Exported so the Order Detail View can open
@@ -11842,6 +11851,116 @@ function EstimatesStep({ order, update }) {
   )
 }
 
+// Remote contract e-signing (R2). Generates the CONTRACT-variant PDF in the
+// browser (the jsPDF generator is browser-only), hands its bytes + the customer
+// signature/date rects to the signing-create Edge Function, and surfaces the
+// resulting /sign/<token> link with Copy + Compose-email (mailto) actions. NO
+// email is sent automatically in this build — staff send the link themselves.
+// R5 extends this with status badge / copy-again / void.
+function RemoteSigningSection({ order }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [result, setResult] = useState(null)   // { url, expiresText }
+  const [copied, setCopied] = useState(false)
+
+  const arrayBufferToBase64 = (buf) => {
+    const bytes = new Uint8Array(buf)
+    let bin = ''
+    const CHUNK = 0x8000
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK))
+    }
+    return btoa(bin)
+  }
+
+  const handleCreate = async () => {
+    setBusy(true); setErr(null); setCopied(false)
+    try {
+      const { doc, signFields } = await generateContractPDF(order, { returnDoc: true })
+      const buf = await doc.output('blob').arrayBuffer()
+      const pdfBase64 = arrayBufferToBase64(buf)
+      const res = await createSigningLink({
+        orderId: order.id,
+        pdfBase64,
+        sigFieldRects: signFields,
+        customerEmail: order.customer?.email || null,
+      })
+      if (!res.ok) { setErr(res.error || 'Could not create signing link.'); return }
+      let expiresText = ''
+      if (res.expiresAt) { try { expiresText = new Date(res.expiresAt).toLocaleDateString() } catch { /* ignore */ } }
+      setResult({ url: res.url, expiresText })
+    } catch (e) {
+      setErr(e.message || 'Could not create signing link.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleCopy = async () => {
+    if (!result?.url) return
+    try { await navigator.clipboard.writeText(result.url); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    catch { setErr('Copy failed — select the link and copy manually.') }
+  }
+
+  const composeHref = () => {
+    const to = order.customer?.email || ''
+    const subject = `Your contract from Shevchenko Monuments${order.orderNumber ? ` — ${order.orderNumber}` : ''}`
+    const body =
+      `Hello,\n\n` +
+      `Please review and sign your monument contract using the secure link below:\n\n` +
+      `${result?.url || ''}\n\n` +
+      `This link expires${result?.expiresText ? ` on ${result.expiresText}` : ' in 14 days'}. ` +
+      `After signing, you can download your signed copy right away.\n\n` +
+      `Thank you,\nShevchenko Monuments\n732-442-1286`
+    return `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+  }
+
+  return (
+    <Section title="Sign remotely" eyebrow="Email a secure link — customer signs online">
+      <p className="sm-helper" style={{ marginTop: 0 }}>
+        Create a private link, then send it to the customer yourself. They open it (no
+        login), review the contract, and sign. You'll get the signed copy on this order.
+      </p>
+      <button
+        type="button"
+        className="sm-btn sm-btn-navy"
+        onClick={handleCreate}
+        disabled={busy}
+      >
+        {busy ? 'Creating link…' : result ? 'Create a new link' : 'Create signing link'}
+      </button>
+
+      {err && <div className="sm-pdf-err" style={{ marginTop: 10 }}>⚠ {err}</div>}
+
+      {result && (
+        <div style={{ marginTop: 14 }}>
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px',
+              background: '#f6f8fa', border: '1px solid #d7dee6', borderRadius: 6,
+              fontFamily: 'JetBrains Mono, monospace', fontSize: 13, wordBreak: 'break-all',
+            }}
+          >
+            {result.url}
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="sm-btn" onClick={handleCopy}>
+              {copied ? '✓ Copied' : 'Copy link'}
+            </button>
+            <a className="sm-btn sm-btn-navy" href={composeHref()}>
+              Compose email
+            </a>
+          </div>
+          <div className="sm-helper" style={{ marginTop: 8 }}>
+            {result.expiresText ? `Link expires ${result.expiresText}.` : 'Link expires in 14 days.'}{' '}
+            No email is sent automatically — use Compose email or paste the link into your own message.
+          </div>
+        </div>
+      )}
+    </Section>
+  )
+}
+
 // New wizard step — captures signatures and converts Estimate → Contract.
 // Shows lock-banner if order is already in CONTRACT state.
 function SignStep({ order, update }) {
@@ -12096,6 +12215,8 @@ function SignStep({ order, update }) {
           {err && <div className="sm-pdf-err">⚠ {err}</div>}
         </Section>
       )}
+
+      {!isLocked && <RemoteSigningSection order={order} />}
 
       {isLocked && (
         <Section title="Download contract PDF" eyebrow="Print or email">
