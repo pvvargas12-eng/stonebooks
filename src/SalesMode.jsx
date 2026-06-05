@@ -7752,6 +7752,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   // static circular import.
   const { computeFormLineItems } = await import('./lib/orderRates')
   const allItems = computeFormLineItems(order)
+  // ROOT FIX: a line item's `code` can be non-string (e.g. a custom item whose id
+  // is numeric/missing). Optional chaining does NOT guard a non-string, so any
+  // downstream code?.startsWith(...) would throw. Normalize every code to a
+  // string ('' when absent) here, at the assembly point, so no path can crash.
+  for (const it of allItems) it.code = String(it.code ?? '')
   // Overlay the wizard's override map too — OrderForm overrides are applied
   // inside computeFormLineItems (pricing.lineItemOverrides); the wizard uses
   // pricing.overrides, so honor both here.
@@ -7775,7 +7780,8 @@ export async function generateEstimatePDF(order, opts = {}) {
   const addonByCode = {}
   for (const a of (order.addOns || [])) addonByCode[a.code] = a
   const lineItemQty = (code) => {
-    if (code?.startsWith('addon-')) return addonByCode[code.slice(6)]?.qty || 1
+    const c = String(code ?? '')
+    if (c.startsWith('addon-')) return addonByCode[c.slice(6)]?.qty || 1
     return 1
   }
 
@@ -7807,7 +7813,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     const qty = lineItemQty(code)
     // Strip the " × N" suffix buildLineItems bakes into addon labels — the Qty
     // column carries that now.
-    const desc = code?.startsWith('addon-') ? label.replace(/ × \d+$/, '') : label
+    const desc = String(code ?? '').startsWith('addon-') ? String(label ?? '').replace(/ × \d+$/, '') : label
     const descLines = doc.splitTextToSize(desc, descWrapW)
     doc.text(descLines, descX, y)
     doc.text(String(qty), qtyRightX, y, { align: 'right' })
