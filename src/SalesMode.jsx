@@ -8041,44 +8041,44 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 4 * wrapped.length
   }
 
-  // ── Signature block — FLOWS after the legal text (never pinned to a fixed Y,
-  // so it can never overlap). Customer + Rep each get a signature line and a date
-  // line on their own rows; the fillable AcroForm fields sit ON the lines.
-  const sigColW = (W - 2 * M - 10) / 2
-  const sigLx = M, sigRx = M + sigColW + 10
-  ensure(48)                        // whole block fits on this page, or starts fresh
-  y += 12
-  const sigLineY = y                // signature line
-  const sigDateY = y + 16           // date line (its own row below)
+  // ── Signature block — CUSTOMER ONLY (no shop/rep line). Flows after the legal
+  // text and reserves only its REAL height (~32mm), so a short contract keeps it
+  // in the empty space at the bottom of page 1 and only breaks when page 1 is
+  // genuinely full. Inline "label: ____" lines; the name is NOT pre-printed —
+  // the customer signs the blank line (or signing-submit stamps their cursive
+  // name + date onto the same line via the rects below).
+  ensure(32)
+  y += 10
+  const sigLineY = y                       // signature line
+  const dateLineY = sigLineY + 14          // date line (its own row below)
 
-  // Embed real signature PNGs when the contract was e-signed in-app.
-  let custSigData = null, repSigData = null
-  if (isContract) {
-    if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
-    if (order.repSignatureUrl)      repSigData  = await urlToDataURL(order.repSignatureUrl)
-  }
-  if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLx, sigLineY - 11, sigColW, 10) } catch (e) { console.warn('cust sig embed:', e) } }
-  if (repSigData)  { try { doc.addImage(repSigData,  'PNG', sigRx, sigLineY - 11, sigColW, 10) } catch (e) { console.warn('rep sig embed:', e) } }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+  const sigLabelW = doc.getTextWidth('Customer signature:')
+  const sigLineX1 = M + sigLabelW + 4
+  const sigLineX2 = W - M
+  const dateLabelW = doc.getTextWidth('Date:')
+  const dateLineX1 = M + dateLabelW + 4
+  const dateLineX2 = dateLineX1 + 62
 
+  // Embed the customer's signature image only when the contract was e-signed
+  // in-app (customerSignatureUrl); otherwise the line stays blank.
+  let custSigData = null
+  if (isContract && order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
+  if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLineX1, sigLineY - 9, Math.min(80, sigLineX2 - sigLineX1), 8) } catch (e) { console.warn('cust sig embed:', e) } }
+
+  doc.text('Customer signature:', M, sigLineY)
+  doc.text('Date:', M, dateLineY)
   doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
-  doc.line(sigLx, sigLineY, sigLx + sigColW, sigLineY)
-  doc.line(sigRx, sigLineY, sigRx + sigColW, sigLineY)
-  doc.line(sigLx, sigDateY, sigLx + sigColW, sigDateY)
-  doc.line(sigRx, sigDateY, sigRx + sigColW, sigDateY)
+  doc.line(sigLineX1, sigLineY, sigLineX2, sigLineY)
+  doc.line(dateLineX1, dateLineY, dateLineX2, dateLineY)
 
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
-  const custLabel = `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim()
-  doc.text(custLabel ? `Customer signature — ${custLabel}` : 'Customer signature', sigLx, sigLineY + 4)
-  doc.text(order.salesRep ? `Shevchenko Monuments — ${order.salesRep}` : 'Shevchenko Monuments representative', sigRx, sigLineY + 4)
-  doc.text('Date', sigLx, sigDateY + 4)
-  doc.text('Date', sigRx, sigDateY + 4)
-
-  // Fillable AcroForm fields placed ON each line (box just above the line). Coords
-  // are top-left in mm; the customer rects also drive the remote e-sign stamping.
+  // Fillable AcroForm fields ON the blank lines (box just above each line). Coords
+  // are top-left in mm; these customer rects also drive the remote e-sign stamping
+  // (signing-submit draws the cursive name + date here). Customer only — no rep.
   const signFields = {
     unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
-    customer_signature: { x: sigLx, y: sigLineY - 9, w: sigColW, h: 8 },
-    customer_date:      { x: sigLx, y: sigDateY - 9, w: sigColW, h: 8 },
+    customer_signature: { x: sigLineX1, y: sigLineY - 8, w: sigLineX2 - sigLineX1, h: 8 },
+    customer_date:      { x: dateLineX1, y: dateLineY - 8, w: dateLineX2 - dateLineX1, h: 8 },
   }
   const AcroFormTextField = window.jspdf?.AcroFormTextField
   if (AcroFormTextField) {
@@ -8091,11 +8091,9 @@ export async function generateEstimatePDF(order, opts = {}) {
     }
     addSigField('customer_signature', signFields.customer_signature)
     addSigField('customer_date',      signFields.customer_date)
-    addSigField('rep_signature',      { x: sigRx, y: sigLineY - 9, w: sigColW, h: 8 })
-    addSigField('rep_date',           { x: sigRx, y: sigDateY - 9, w: sigColW, h: 8 })
   }
 
-  y = sigDateY + 8
+  y = dateLineY + 8
 
   addFooter()
 
