@@ -16,9 +16,12 @@
 // `icon` column holds one — ignored).
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from './lib/supabase'
 import { fetchAllPaged } from './lib/stonebooksData'
+
+const IMAGE_BUCKET = 'monument-images'
+const safeFileName = (n) => String(n || 'photo').replace(/[^\w.-]+/g, '_').slice(-80)
 
 const thumbUrl = (url) => (url && url.includes('drive.google.com') ? url.replace(/sz=w\d+/i, 'sz=w400') : url)
 const fullUrl  = (url) => (url && url.includes('drive.google.com') ? url.replace(/sz=w\d+/i, 'sz=w1200') : url)
@@ -56,11 +59,12 @@ function CatImage({ src, alt, full = false, className }) {
 
 export default function CatalogTab({ onStartOrder }) {
   const [monuments, setMonuments] = useState(null)   // null = loading; full list (archived + active)
-  const [view, setView] = useState('gallery')        // 'gallery' | 'settings'
+  const [view, setView] = useState('gallery')        // 'gallery' | 'archive' | 'duplicates' | 'form'
   const [search, setSearch] = useState('')
   const [fShape, setFShape] = useState('')
   const [fColor, setFColor] = useState('')
   const [selectedId, setSelectedId] = useState(null)
+  const [editing, setEditing] = useState(null)       // monument being edited; null in 'form' = add
 
   useEffect(() => {
     let cancelled = false
@@ -79,6 +83,7 @@ export default function CatalogTab({ onStartOrder }) {
 
   const shapeOptions = useMemo(() => [...new Set(active.map((m) => m.meta?.Type).filter(Boolean))].sort(), [active])
   const colorOptions = useMemo(() => [...new Set(active.map((m) => m.granite_color).filter(Boolean))].sort(), [active])
+  const carveOptions = useMemo(() => [...new Set(active.map((m) => m.carve_type).filter(Boolean))].sort(), [active])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -124,8 +129,25 @@ export default function CatalogTab({ onStartOrder }) {
     return { ok: true, count: done.size }
   }
 
+  // Add / edit — the saved row comes back from .select(); merge into state.
+  const handleSaved = (savedRow, mode) => {
+    setMonuments((arr) => {
+      const base = arr || []
+      const next = mode === 'edit'
+        ? base.map((m) => (m.id === savedRow.id ? savedRow : m))
+        : [...base, savedRow]
+      return next.sort((a, b) => String(a.lastname || 'zzz').localeCompare(String(b.lastname || 'zzz')))
+    })
+    setSelectedId(mode === 'edit' ? savedRow.id : null)
+    setEditing(null)
+    setView('gallery')
+  }
+  const openAdd = () => { setEditing(null); setSelectedId(null); setView('form') }
+  const openEdit = (m) => { setEditing(m); setView('form') }
+  const cancelForm = () => { setEditing(null); setView('gallery') }
+
   const inSettings = view === 'archive' || view === 'duplicates'
-  const goHome = () => { setView('gallery'); setSelectedId(null) }
+  const goHome = () => { setView('gallery'); setSelectedId(null); setEditing(null) }
 
   return (
     <div className="cat-root">
@@ -138,14 +160,20 @@ export default function CatalogTab({ onStartOrder }) {
         <button
           type="button"
           className={`cat-gear ${inSettings ? 'on' : ''}`}
-          onClick={() => { setSelectedId(null); setView(inSettings ? 'gallery' : 'archive') }}
+          onClick={() => { setSelectedId(null); setEditing(null); setView(inSettings ? 'gallery' : 'archive') }}
           aria-label="Settings"
           title="Settings"
         ><Gear /></button>
       </div>
 
       <div className="cat-page">
-        {inSettings ? (
+        {view === 'form' ? (
+          <DesignForm
+            monument={editing}
+            shapeOptions={shapeOptions} colorOptions={colorOptions} carveOptions={carveOptions}
+            onCancel={cancelForm} onSaved={handleSaved}
+          />
+        ) : inSettings ? (
           <>
             <SettingsHeader active={view} onBack={goHome} onTab={setView} />
             {view === 'archive' ? (
@@ -159,6 +187,7 @@ export default function CatalogTab({ onStartOrder }) {
             monument={selected}
             onBack={goHome}
             onStartOrder={onStartOrder}
+            onEdit={() => openEdit(selected)}
             onArchive={() => setArchivedFlag(selected.id, true)}
           />
         ) : (
@@ -167,7 +196,7 @@ export default function CatalogTab({ onStartOrder }) {
             search={search} setSearch={setSearch}
             fShape={fShape} setFShape={setFShape} shapeOptions={shapeOptions}
             fColor={fColor} setFColor={setFColor} colorOptions={colorOptions}
-            onOpen={setSelectedId}
+            onOpen={setSelectedId} onAdd={openAdd}
           />
         )}
       </div>
@@ -175,7 +204,7 @@ export default function CatalogTab({ onStartOrder }) {
   )
 }
 
-function Gallery({ monuments, filtered, search, setSearch, fShape, setFShape, shapeOptions, fColor, setFColor, colorOptions, onOpen }) {
+function Gallery({ monuments, filtered, search, setSearch, fShape, setFShape, shapeOptions, fColor, setFColor, colorOptions, onOpen, onAdd }) {
   return (
     <>
       <div className="cat-head">
@@ -183,8 +212,9 @@ function Gallery({ monuments, filtered, search, setSearch, fShape, setFShape, sh
           <div className="cat-eyebrow">Design Library</div>
           <h1 className="cat-title">Catalog</h1>
         </div>
-        <div className="cat-count">
-          {monuments === null ? 'Loading…' : `${filtered.length.toLocaleString()} design${filtered.length === 1 ? '' : 's'}`}
+        <div className="cat-head-right">
+          <span className="cat-count">{monuments === null ? 'Loading…' : `${filtered.length.toLocaleString()} design${filtered.length === 1 ? '' : 's'}`}</span>
+          <button type="button" className="cat-add-btn" onClick={onAdd}>+ Add design</button>
         </div>
       </div>
 
@@ -221,7 +251,7 @@ function Gallery({ monuments, filtered, search, setSearch, fShape, setFShape, sh
   )
 }
 
-function CatalogDetail({ monument: m, onBack, onStartOrder, onArchive }) {
+function CatalogDetail({ monument: m, onBack, onStartOrder, onEdit, onArchive }) {
   const [confirm, setConfirm] = useState(false)
   const specs = [
     ['Granite', m.granite_color],
@@ -255,6 +285,7 @@ function CatalogDetail({ monument: m, onBack, onStartOrder, onArchive }) {
 
           <div className="cat-detail-actions">
             <button type="button" className="cat-order-btn" onClick={() => onStartOrder?.(m)}>Start an order from this</button>
+            <button type="button" className="cat-edit-btn" onClick={() => onEdit?.()}>Edit</button>
           </div>
           <div className="cat-danger-zone">
             <button type="button" className="cat-archive-link" onClick={() => setConfirm(true)}>Archive this design</button>
@@ -360,6 +391,137 @@ function Check() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M20 6L9 17l-5-5" />
     </svg>
+  )
+}
+
+// Add / edit a design. Photo -> monument-images bucket -> public URL -> img.
+// Every write is awaited and confirmed (.select()); failures keep the form open.
+function DesignForm({ monument, shapeOptions, colorOptions, carveOptions, onCancel, onSaved }) {
+  const isEdit = !!monument
+  const [name, setName] = useState(monument?.lastname || '')
+  const [granite, setGranite] = useState(monument?.granite_color || '')
+  const [shape, setShape] = useState(monument?.meta?.Type || '')
+  const [carve, setCarve] = useState(monument?.carve_type || '')
+  const [description, setDescription] = useState(monument?.description || '')
+  const [salesNote, setSalesNote] = useState(monument?.meta?.SalesUse || '')
+  const [tagsStr, setTagsStr] = useState((monument?.tags || []).join(', '))
+  const [imgUrl, setImgUrl] = useState(monument?.img || '')
+  const [uploading, setUploading] = useState(false)
+  const [uploadErr, setUploadErr] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState(null)
+  const fileRef = useRef(null)
+
+  const pickPhoto = async (file) => {
+    if (!file) return
+    setUploading(true); setUploadErr(null)
+    try {
+      const path = `${monument?.id || 'new'}/${Date.now()}_${safeFileName(file.name)}`
+      const { error: upErr } = await supabase.storage.from(IMAGE_BUCKET).upload(path, file, { upsert: false, contentType: file.type || undefined })
+      if (upErr) throw upErr
+      const { data } = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(path)
+      if (!data?.publicUrl) throw new Error('Could not get the image URL.')
+      setImgUrl(data.publicUrl)
+    } catch (e) {
+      setUploadErr(/row-level security|policy|denied|unauthor|bucket/i.test(e?.message || '')
+        ? 'Upload isn’t permitted yet — apply migration 20260614_monuments_management (creates the bucket + staff policy).'
+        : (e?.message || 'Upload failed.'))
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const save = async () => {
+    if (!name.trim()) { setSaveErr('Enter a name.'); return }
+    setSaving(true); setSaveErr(null)
+    const tags = tagsStr.split(',').map((t) => t.trim()).filter(Boolean)
+    const meta = { ...(monument?.meta || {}), Type: shape.trim() || null, Color: granite.trim() || null, SalesUse: salesNote.trim() || null }
+    const base = {
+      lastname: name.trim(),
+      granite_color: granite.trim() || null,
+      carve_type: carve.trim() || null,
+      description: description.trim() || null,
+      tags, meta, img: imgUrl || null,
+    }
+    try {
+      const q = isEdit
+        ? supabase.from('monuments').update(base).eq('id', monument.id).select()
+        : supabase.from('monuments').insert({ id: `cat-${crypto.randomUUID()}`, is_archived: false, ...base }).select()
+      const { data, error } = await q
+      if (error) throw error
+      if (!data || data.length === 0) throw new Error('The change didn’t save — apply migration 20260614_monuments_management, then try again.')
+      onSaved(data[0], isEdit ? 'edit' : 'add')
+    } catch (e) {
+      setSaveErr(/row-level security|policy/i.test(e?.message || '')
+        ? 'Not permitted — apply migration 20260614_monuments_management (staff write policy).'
+        : (e?.message || 'Save failed.'))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="cat-back" onClick={onCancel}>&larr; Back to catalog</button>
+      <div className="cat-form-head">
+        <div>
+          <div className="cat-eyebrow">{isEdit ? 'Edit' : 'New'}</div>
+          <h1 className="cat-title">{isEdit ? 'Edit design' : 'Add design'}</h1>
+        </div>
+        <div className="cat-form-head-actions">
+          <button type="button" className="cat-modal-cancel cat-form-cancel" onClick={onCancel} disabled={saving}>Cancel</button>
+          <button type="button" className="cat-order-btn" onClick={save} disabled={saving || uploading}>{saving ? 'Saving…' : 'Save design'}</button>
+        </div>
+      </div>
+
+      <div className="cat-form-grid">
+        <div className="cat-form-photo">
+          <div className="cat-card-tile"><CatImage src={imgUrl} alt={name} full className="cat-card-img" /></div>
+          <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(e.target.files?.[0])} />
+          <button type="button" className="cat-upload-btn" disabled={uploading} onClick={() => fileRef.current?.click()}>
+            {uploading ? 'Uploading…' : imgUrl ? 'Replace photo' : 'Upload photo'}
+          </button>
+          {uploadErr && <div className="cat-form-error">{uploadErr}</div>}
+        </div>
+
+        <div className="cat-form-fields">
+          <label className="cat-field">
+            <span>Name</span>
+            <input className="cat-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Family name shown on the card" autoFocus />
+          </label>
+          <div className="cat-field-row">
+            <label className="cat-field">
+              <span>Granite / color</span>
+              <input className="cat-input" list="cat-colors" value={granite} onChange={(e) => setGranite(e.target.value)} placeholder="e.g. Gray" />
+              <datalist id="cat-colors">{colorOptions.map((c) => <option key={c} value={c} />)}</datalist>
+            </label>
+            <label className="cat-field">
+              <span>Shape</span>
+              <input className="cat-input" list="cat-shapes" value={shape} onChange={(e) => setShape(e.target.value)} placeholder="e.g. Single Upright" />
+              <datalist id="cat-shapes">{shapeOptions.map((s) => <option key={s} value={s} />)}</datalist>
+            </label>
+          </div>
+          <label className="cat-field">
+            <span>Carve type</span>
+            <input className="cat-input" list="cat-carves" value={carve} onChange={(e) => setCarve(e.target.value)} placeholder="e.g. Flat Carve" />
+            <datalist id="cat-carves">{carveOptions.map((c) => <option key={c} value={c} />)}</datalist>
+          </label>
+          <label className="cat-field">
+            <span>Description</span>
+            <textarea className="cat-input cat-textarea" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What the design features" />
+          </label>
+          <label className="cat-field">
+            <span>When to show this</span>
+            <textarea className="cat-input cat-textarea" rows={2} value={salesNote} onChange={(e) => setSalesNote(e.target.value)} placeholder="Sales note — which families this suits" />
+          </label>
+          <label className="cat-field">
+            <span>Tags</span>
+            <input className="cat-input" value={tagsStr} onChange={(e) => setTagsStr(e.target.value)} placeholder="Comma-separated, e.g. Cross, Roses, Veteran" />
+          </label>
+          {saveErr && <div className="cat-form-error">{saveErr}</div>}
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -628,4 +790,32 @@ const CATALOG_CSS = `
   .cat-actionbar-btn { font: inherit; font-size: 14px; font-weight: 600; color: #1e2330; background: #fff; border: none; border-radius: 999px; padding: 9px 20px; cursor: pointer; transition: opacity 0.15s; }
   .cat-actionbar-btn:hover:not(:disabled) { background: #f3f0ea; }
   .cat-actionbar-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* MANAGEMENT — add / edit */
+  .cat-head-right { display: flex; align-items: center; gap: 16px; }
+  .cat-add-btn { font: inherit; font-size: 14px; font-weight: 600; color: #fff; background: #1e2330; border: 1px solid #1e2330; border-radius: 10px; padding: 10px 18px; cursor: pointer; transition: background 0.15s; white-space: nowrap; }
+  .cat-add-btn:hover { background: #2c3446; }
+  .cat-edit-btn { font: inherit; font-size: 14px; font-weight: 600; color: #1e2330; background: #f3f0ea; border: 1px solid #e4e0d8; border-radius: 10px; padding: 13px 24px; cursor: pointer; transition: background 0.15s; }
+  .cat-edit-btn:hover { background: #ece8e0; }
+
+  .cat-form-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 26px; flex-wrap: wrap; }
+  .cat-form-head-actions { display: flex; gap: 10px; align-items: center; }
+  .cat-form-cancel { flex: 0 0 auto; }
+  .cat-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 40px; align-items: start; }
+  @media (max-width: 860px) { .cat-form-grid { grid-template-columns: 1fr; gap: 24px; } }
+  .cat-form-photo { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 82px; }
+  .cat-upload-btn { font: inherit; font-size: 14px; font-weight: 600; color: #1e2330; background: #fff; border: 1px solid #cbc4b5; border-radius: 10px; padding: 11px; cursor: pointer; transition: all 0.15s; }
+  .cat-upload-btn:hover:not(:disabled) { border-color: #9A7209; color: #9A7209; }
+  .cat-upload-btn:disabled { opacity: 0.6; cursor: default; }
+
+  .cat-form-fields { display: flex; flex-direction: column; gap: 16px; }
+  .cat-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 520px) { .cat-field-row { grid-template-columns: 1fr; } }
+  .cat-field { display: flex; flex-direction: column; gap: 6px; }
+  .cat-field > span { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #9a948a; }
+  .cat-input { font: inherit; font-size: 15px; padding: 11px 13px; border: 1px solid #e4e0d8; border-radius: 9px; background: #fff; color: #2a2a2a; outline: none; transition: border-color 0.15s; width: 100%; box-sizing: border-box; }
+  .cat-input:focus { border-color: #b8935a; }
+  .cat-input::placeholder { color: #b3ada3; }
+  .cat-textarea { resize: vertical; line-height: 1.55; }
+  .cat-form-error { font-size: 13px; color: #9a4a40; background: #fbeceb; border: 1px solid #f0cfca; border-radius: 8px; padding: 9px 11px; }
 `
