@@ -1330,6 +1330,7 @@ export function makeBlankOrder() {
     serviceTypes: [],
     otherServiceDescription: '',
     familyType: '',
+    foundationType: null,
 
     // Customer (full embedded; saved to customers table on save)
     customer: {
@@ -1687,13 +1688,15 @@ export async function saveOrder(order) {
   orderRow.customer_id = customerId || null
   orderRow.cemetery_id = cemeteryId || null
 
+  // Deploy-safety: orders.foundation_type may not be migrated yet. If a write
+  // fails because that column is missing, drop it and retry once so order saving
+  // never breaks before 20260617 is applied.
+  const isMissingFoundation = (e) => e && /foundation_type/i.test(e.message || '')
+  const withoutFoundation = (row) => { const r = { ...row }; delete r.foundation_type; return r }
+
   if (order.id) {
-    const { data, error } = await supabase
-      .from('orders')
-      .update(orderRow)
-      .eq('id', order.id)
-      .select()
-      .single()
+    let { data, error } = await supabase.from('orders').update(orderRow).eq('id', order.id).select().single()
+    if (isMissingFoundation(error)) ({ data, error } = await supabase.from('orders').update(withoutFoundation(orderRow)).eq('id', order.id).select().single())
     if (error) { console.error('updateOrder error:', error); return { ok: false, error } }
     await _ensureOrderCustomerLink(data, customerId)
     return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
@@ -1701,11 +1704,8 @@ export async function saveOrder(order) {
 
   // New order: generate number first
   const orderNumber = order.orderNumber || (await generateOrderNumber())
-  const { data, error } = await supabase
-    .from('orders')
-    .insert({ ...orderRow, order_number: orderNumber })
-    .select()
-    .single()
+  let { data, error } = await supabase.from('orders').insert({ ...orderRow, order_number: orderNumber }).select().single()
+  if (isMissingFoundation(error)) ({ data, error } = await supabase.from('orders').insert({ ...withoutFoundation(orderRow), order_number: orderNumber }).select().single())
   if (error) { console.error('insertOrder error:', error); return { ok: false, error } }
   await _ensureOrderCustomerLink(data, customerId)
   return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
@@ -1911,6 +1911,7 @@ function orderToRow(order) {
     service_types: order.serviceTypes || [],
     other_service_description: order.otherServiceDescription || null,
     family_type: order.familyType || null,
+    foundation_type: order.foundationType || null,
 
     plot_type: order.plot.type || null,
     plot_section: order.plot.section || null,
@@ -2069,6 +2070,7 @@ export function rowToOrder(row, customerRow, cemeteryRow) {
     serviceTypes: row.service_types || [],
     otherServiceDescription: row.other_service_description || '',
     familyType: row.family_type || '',
+    foundationType: row.foundation_type || null,
 
     customer: customerRow ? rowToCustomer(customerRow) : makeBlankOrder().customer,
     cemetery: cemeteryRow ? rowToCemetery(cemeteryRow) : makeBlankOrder().cemetery,

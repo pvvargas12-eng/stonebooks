@@ -63,6 +63,8 @@ const PLOT_TYPES = [
   { code: 'dd',     label: 'Double deep' },
   { code: 'family', label: 'Family die' },
 ]
+// Foundation type — plain text column (orders.foundation_type), extend freely.
+const FOUNDATION_TYPES = ['Strip', 'Our Foundation', 'Cemetery Foundation']
 
 // Add-on kinds the compact form supports. Priced kinds reuse the existing
 // configurator math via addonPrice(); title/verse/panel/other are manual-price.
@@ -577,6 +579,8 @@ function CemeteryCard({ order, update }) {
         <Grid cols={2}>
           <SelectField label="Plot type" value={plot.type} onChange={v => setPlot({ type: v })}
             options={PLOT_TYPES.map(p => ({ value: p.code, label: p.label }))} placeholder="Select arrangement…" />
+          <SelectField label="Foundation type" value={order.foundationType || ''} onChange={v => update({ foundationType: v || null })}
+            options={FOUNDATION_TYPES.map(f => ({ value: f, label: f }))} placeholder="Not set…" />
           <TextField label="Section" value={plot.section} onChange={v => setPlot({ section: v })} />
           <TextField label="Block" value={plot.block} onChange={v => setPlot({ block: v })} />
           <TextField label="Lot" value={plot.lot} onChange={v => setPlot({ lot: v })} />
