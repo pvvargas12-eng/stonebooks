@@ -954,9 +954,26 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
       uploadedBy,
     })
     if (error) { setUpload({ status: 'error', error: error.message }); return }
-    // Prepend the new current version; demote any prior current row locally to
-    // mirror what create_proof_version did server-side.
-    setVersions(prev => [data, ...prev.map(v => ({ ...v, is_current: false }))])
+    // Build the local current version from the KNOWN values so the proof image
+    // shows the INSTANT it's uploaded — not only after Approve. create_proof_version
+    // is an RPC whose return shape can omit layout_image_url (or wrap the row in an
+    // array), which is why the image previously didn't appear until a later reload.
+    // up.url is the public bucket URL, so it's display-ready immediately.
+    const row = Array.isArray(data) ? data[0] : data
+    setVersions(prev => {
+      const maxNum = prev.reduce((m, v) => Math.max(m, v.version_number || 0), 0)
+      const newVersion = {
+        ...(row || {}),
+        id: row?.id ?? `local-${Date.now()}`,
+        job_id: jobId,
+        layout_image_url: up.url,                       // public URL — displays now
+        is_current: true,
+        version_number: row?.version_number ?? (maxNum + 1),
+        uploaded_by: row?.uploaded_by ?? uploadedBy,
+        uploaded_at: row?.uploaded_at ?? new Date().toISOString(),
+      }
+      return [newVersion, ...prev.map(v => ({ ...v, is_current: false }))]
+    })
     setUpload({ status: 'success', error: null })
     // Uploading a layout IS creating the proof — advance proof_created so the
     // operational surface (proofSummary, Jobs queue) reflects it.
