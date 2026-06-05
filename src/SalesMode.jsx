@@ -7309,19 +7309,16 @@ export async function generateEstimatePDF(order, opts = {}) {
   const H = 279.4
   const M = 16     // margin
   // Black & white only on this document — every "color" is black; rules are
-  // thin black; backgrounds stay white. (WATERMARK is the one light tone, used
-  // solely for the faint family-name watermark.)
+  // thin black; backgrounds stay white.
   const NAVY = [0, 0, 0]
   const GOLD = [0, 0, 0]
   const GREY = [0, 0, 0]
   const TEXT = [0, 0, 0]
   const LIGHT_RULE = [0, 0, 0]
-  const WATERMARK = [210, 210, 210]
 
-  // Family (last) name — used by the top-right info box AND the faint F/N
-  // watermark. Falls back to the order # so nothing is blank.
+  // Family (last) name — used by the top-right info box "File" line. Falls back
+  // to the order # so nothing is blank.
   const familyName = (order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
-  const fnWatermark = (familyName || order.orderNumber || '').toUpperCase()
 
   let y = M
 
@@ -7384,11 +7381,6 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   // Footer at bottom of every page
   const addFooter = () => {
-    // Faint family-name watermark, bottom-right (per page).
-    if (fnWatermark) {
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(...WATERMARK)
-      doc.text(fnWatermark, W - M, H - 18, { align: 'right' })
-    }
     const yF = H - 10
     doc.setDrawColor(...LIGHT_RULE)
     doc.setLineWidth(0.2)
@@ -7402,13 +7394,6 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.text(isContract ? 'Signed contract — pricing locked' : 'This estimate is valid for 30 days', W / 2, yF, { align: 'center' })
   }
 
-  // Faint family-name watermark, top-left (drawn first so the black letterhead
-  // overlays it). The footer redraws it bottom-right on every page.
-  if (fnWatermark) {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(...WATERMARK)
-    doc.text(fnWatermark, M, M + 4)
-  }
-
   // ============================ LETTERHEAD ===============================
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(17)
@@ -7419,7 +7404,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // estimate-vs-contract difference is the rate column, not the title.
   doc.setFontSize(13)
   doc.setTextColor(...GOLD)
-  doc.text(isContract ? 'EST. CONTRACT' : 'ESTIMATE', W - M, y + 6, { align: 'right' })
+  doc.text(isContract ? 'CONTRACT' : 'ESTIMATE', W - M, y + 6, { align: 'right' })
 
   // Letterhead address (left column).
   doc.setFont('helvetica', 'normal')
@@ -7509,18 +7494,8 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10)
     doc.setTextColor(...NAVY)
-    doc.text(`Estimated Due Date: ${due.dateText}`, M, y)
+    doc.text(`Due Date: ${due.dateText}`, M, y)
     y += 5
-
-    // Unsigned preview — the date is provisional until signing locks the anchor.
-    // Suppressed for mausoleum ranges: those are staff-entered, not calculated.
-    if (!order.signedAt && !due.isRange) {
-      doc.setFont('helvetica', 'italic')
-      doc.setFontSize(8)
-      doc.setTextColor(...GREY)
-      doc.text('Calculated from today. Final due date set at signing.', M, y)
-      y += 4
-    }
 
     // Delivery disclaimer — exact legal text, contract only (signed or unsigned).
     doc.setFont('helvetica', 'italic')
@@ -7782,13 +7757,8 @@ export async function generateEstimatePDF(order, opts = {}) {
   }
 
   // ============================ PRICING ==================================
-  // Force a new page if we're more than halfway down — keep pricing together
-  if (y > H * 0.6) {
-    addFooter()
-    doc.addPage()
-    y = M
-  }
-
+  // One-page document — no forced page break; the lower half of page 1 holds
+  // pricing + legal terms + the signature row (see the reserve logic below).
   sectionHeader('Pricing')
 
   const lineItems = buildLineItems(order)
@@ -7992,10 +7962,9 @@ export async function generateEstimatePDF(order, opts = {}) {
   // (divider + terms + signature pair) is reserved together so the legal text
   // never splits mid-sentence and the signatures never orphan onto a page of
   // their own. (Part D converts this reservation to the shared ensureBlock.)
-  const LEGAL_FS = 8        // pt — legal terms font size
-  const LEGAL_LH = 3.5      // mm per line at 8pt
-  const PARA_GAP = 3.5      // mm between paragraphs
-  const SIGN_PAIR_H = 38    // mm — signature pair footprint
+  const LEGAL_FS = 7.5      // pt — legal terms (tight, to fit one page)
+  const LEGAL_LH = 3.2      // mm per line at 7.5pt
+  const PARA_GAP = 2.6      // mm between paragraphs
 
   const legalParagraphs = [
     'Client agrees to pay Shevchenko Monuments LLC a deposit equal to fifty percent (50%) of the total contract price. This deposit is non-refundable. The remaining balance is due in full prior to the commencement of any carving work. Carving work is defined as any operation that physically alters the granite, including sandblasting, hand-carving, laser etching, or shape carving. Materials for the memorial may be ordered prior to balance payment; in such cases, Shevchenko Monuments bears the material cost at the Client\'s risk should the contract be subsequently breached.',
@@ -8005,99 +7974,80 @@ export async function generateEstimatePDF(order, opts = {}) {
     'This agreement is final and not subject to cancellation. Client grants permission for Shevchenko Monuments to use photographs of the completed memorial for display, portfolio, or advertising purposes.',
   ]
 
-  // Measure the sign-off body so the whole block can be reserved at once.
-  let legalSplit = null
-  let estimateWrapped = null
-  let signOffBodyH = 0
-  if (isContract) {
-    doc.setFontSize(LEGAL_FS)
-    legalSplit = legalParagraphs.map(p => doc.splitTextToSize(p, W - M - M))
-    signOffBodyH = legalSplit.reduce((sum, lines) => sum + lines.length * LEGAL_LH, 0)
-      + PARA_GAP * (legalSplit.length - 1)
-  } else {
-    doc.setFontSize(9)
-    const acceptText = 'This estimate is valid for 30 days from the date above. ' +
-      'To accept and proceed with production, please sign below. A signed copy will become your contract.'
-    estimateWrapped = doc.splitTextToSize(acceptText, W - M - M)
-    signOffBodyH = 4 * estimateWrapped.length
-  }
-
-  // Reserve divider (6 + 5) + body + trailing gap (6) + signature pair together.
-  ensure(6 + 5 + signOffBodyH + 6 + SIGN_PAIR_H)
-
-  y += 6
+  // Divider + legal terms (contract) / accept text (estimate), flowing from the
+  // current y. The signature row is pinned near the bottom so the whole document
+  // stays on ONE page (no page break — the lower half of page 1 has room).
+  y += 5
   doc.setDrawColor(...LIGHT_RULE)
   doc.setLineWidth(0.2)
   doc.line(M, y, W - M, y)
-  y += 5
+  y += 4
 
   if (isContract) {
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(LEGAL_FS)
     doc.setTextColor(...TEXT)
-    legalParagraphs.forEach((para, i) => {
+    legalParagraphs.forEach((para) => {
+      const lines = doc.splitTextToSize(para, W - M - M)
       doc.text(para, M, y, { align: 'justify', maxWidth: W - M - M })
-      y += legalSplit[i].length * LEGAL_LH + PARA_GAP
+      y += lines.length * LEGAL_LH + PARA_GAP
     })
-    y += 6 - PARA_GAP
   } else {
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(9)
     doc.setTextColor(...GREY)
-    doc.text(estimateWrapped, M, y)
-    y += 4 * estimateWrapped.length + 6
+    const acceptText = 'This estimate is valid for 30 days from the date above. ' +
+      'To accept and proceed with production, please sign below. A signed copy will become your contract.'
+    const wrapped = doc.splitTextToSize(acceptText, W - M - M)
+    doc.text(wrapped, M, y)
+    y += 4 * wrapped.length
   }
 
-  // Two signature blocks side by side. In contract mode, embed the actual
-  // signature PNGs above each line; in estimate mode, leave them blank.
-  ensure(36)
+  // ── Signature row — pinned near the bottom (single page) ──
   const colW = (W - M - M - 8) / 2
-  const sigImgH = 18
-  const lineY = y + sigImgH + 2
+  const sigImgH = 14
+  const signTop = H - 34            // top of the signature area
+  const lineY = signTop + sigImgH + 2
 
-  // Pre-fetch signature images (only in contract mode)
-  let custSigData = null
-  let repSigData = null
+  // Embed real signature PNGs when the contract was e-signed in-app.
+  let custSigData = null, repSigData = null
   if (isContract) {
     if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
     if (order.repSignatureUrl)      repSigData  = await urlToDataURL(order.repSignatureUrl)
   }
+  if (custSigData) { try { doc.addImage(custSigData, 'PNG', M + 2, signTop, colW - 4, sigImgH) } catch (e) { console.warn('cust sig embed:', e) } }
+  if (repSigData)  { try { doc.addImage(repSigData,  'PNG', M + colW + 10, signTop, colW - 4, sigImgH) } catch (e) { console.warn('rep sig embed:', e) } }
 
-  // Customer side
-  if (custSigData) {
-    try {
-      doc.addImage(custSigData, 'PNG', M + 2, y, colW - 4, sigImgH)
-    } catch (e) { console.warn('Customer signature embed failed:', e) }
-  }
-  doc.setDrawColor(...TEXT)
-  doc.setLineWidth(0.4)
+  // Signature lines + labels.
+  doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
   doc.line(M, lineY, M + colW, lineY)
-  doc.setFontSize(8)
-  doc.setTextColor(...GREY)
+  doc.line(M + colW + 8, lineY, W - M, lineY)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
   const custLabel = `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim()
   doc.text(custLabel ? `Customer: ${custLabel}` : 'Customer signature', M, lineY + 4)
-  if (isContract && order.signedAt) {
-    doc.text(`Signed ${new Date(order.signedAt).toLocaleDateString('en-US')}`, W / 2 - 4 - 35, lineY + 4)
-  } else {
-    doc.text('Date: ____________________', W / 2 - 4 - 35, lineY + 4)
+  doc.text(order.salesRep ? `Shevchenko Monuments — ${order.salesRep}` : 'Shevchenko Monuments representative', M + colW + 8, lineY + 4)
+  doc.text('Date', M + colW - 28, lineY + 4)
+  doc.text('Date', W - M - 28, lineY + 4)
+
+  // Fillable AcroForm fields (Adobe Fill & Sign) over each line — they persist in
+  // the DOWNLOADED file and only render in real PDF viewers (Adobe), not the
+  // in-app preview. Coords are top-left in mm; verify/nudge in actual Adobe.
+  const AcroFormTextField = window.jspdf?.AcroFormTextField
+  if (AcroFormTextField) {
+    const dateW = 30
+    const addSigField = (name, fx, fw) => {
+      const f = new AcroFormTextField()
+      f.fieldName = name
+      f.Rect = [fx, lineY - 13, fw, 12]   // box sitting just above the line
+      f.fontSize = 11
+      doc.addField(f)
+    }
+    addSigField('customer_signature', M, colW - dateW - 4)
+    addSigField('customer_date',      M + colW - dateW, dateW)
+    addSigField('rep_signature',      M + colW + 8, colW - dateW - 4)
+    addSigField('rep_date',           W - M - dateW, dateW)
   }
 
-  // Sales rep side
-  if (repSigData) {
-    try {
-      doc.addImage(repSigData, 'PNG', M + colW + 10, y, colW - 4, sigImgH)
-    } catch (e) { console.warn('Rep signature embed failed:', e) }
-  }
-  doc.line(M + colW + 8, lineY, W - M, lineY)
-  doc.setFontSize(8)
-  doc.setTextColor(...GREY)
-  const repLabel = order.salesRep || ''
-  doc.text(repLabel ? `Shevchenko Monuments — ${repLabel}` : 'Shevchenko Monuments representative', M + colW + 8, lineY + 4)
-  if (isContract && order.signedAt) {
-    doc.text(`Signed ${new Date(order.signedAt).toLocaleDateString('en-US')}`, W - M - 35, lineY + 4)
-  } else {
-    doc.text('Date: ____________________', W - M - 35, lineY + 4)
-  }
   y = lineY + 8
 
   addFooter()
