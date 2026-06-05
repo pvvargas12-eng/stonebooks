@@ -53,6 +53,7 @@ import { HUB_HOME_CONFIGS } from './lib/hubConfigs'
 // tabs anywhere).
 import QueuesTab from './QueuesTab'
 import PermitHub from './PermitHub'
+import QuoteHub from './QuoteHub'
 
 // Hub render order — Admin → Design → Production → Installation. Mirrors the
 // workflow from office through shop to field. Owner aggregator + Sales sit
@@ -66,6 +67,7 @@ const HUB_ORDER = ['admin', 'design', 'production', 'installation']
 const SECTION_HUBS = [
   { code: 'workflow', label: 'Workflow', description: 'Production queues — designs, stones, foundations, installs' },
   { code: 'permits',  label: 'Permits',  description: 'Permit filing + what’s blocking install' },
+  { code: 'quote',    label: 'Quote Hub', description: 'Owner approval — review + adjust quotes before they go out' },
 ]
 const SECTION_CODES = SECTION_HUBS.map(s => s.code)
 const ALL_HUB_CODES = [...HUB_ORDER, ...SECTION_CODES]
@@ -102,7 +104,7 @@ export default function JobsDepartmentView({
 }) {
   const [hub, setHub] = useState(() => getSelectedHub(userId))
   const [jobs, setJobs] = useState(null)
-  const [orders, setOrders] = useState(null)             // eslint-disable-line no-unused-vars
+  const [orders, setOrders] = useState(null)             // consumed by the Quote Hub section
   const [loadErr, setLoadErr] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -308,7 +310,11 @@ export default function JobsDepartmentView({
       {/* BRANCH — Workflow + Permits section hubs re-parent a whole existing
           surface; Design hub gets the studio surface; other hubs keep the
           list-view body. */}
-      {hub === 'workflow' ? (
+      {hub === 'quote' ? (
+        <div className="sb-crm-container">
+          <QuoteHub orders={orders || []} jobs={jobs || []} onReload={loadJobs} onEditOrder={onEditOrder} />
+        </div>
+      ) : hub === 'workflow' ? (
         <QueuesTab onOpenQueue={onOpenQueue} />
       ) : hub === 'permits' ? (
         <PermitHub
