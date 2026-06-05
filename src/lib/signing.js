@@ -24,11 +24,11 @@ export function loadSigningRequest(token) {
   return invoke('signing-load', { token })
 }
 
-// Submit the signature (R4). signaturePng is a data URL.
-export function submitSignature({ token, signaturePng, signerName, consent }) {
+// Submit the signature. Type-name-to-cursive: the server stamps the typed name
+// in a script font (no image is sent).
+export function submitSignature({ token, signerName, consent }) {
   return invoke('signing-submit', {
     token,
-    signature_png: signaturePng,
     signer_name: signerName,
     consent: !!consent,
   })

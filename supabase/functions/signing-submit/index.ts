@@ -1,12 +1,13 @@
 // =============================================================================
 // signing-submit — Supabase Edge Function (Remote e-signing, step R4)
 // =============================================================================
-// PUBLIC endpoint (no staff login). The /sign/<token> page posts the drawn
-// signature + typed name + consent. Runs as SERVICE ROLE, re-validates the
-// token, stamps the signature into the immutable unsigned snapshot with pdf-lib,
-// appends an ESIGN/UETA audit certificate page, stores signed.pdf, flips the
-// request to 'signed' and the order to 'contracted', and returns a signed URL to
-// the finished PDF for the customer to download.
+// PUBLIC endpoint (no staff login). The /sign/<token> page posts the typed name
+// + consent (type-name-to-cursive — no drawn image). Runs as SERVICE ROLE,
+// re-validates the token, stamps the name into the immutable unsigned snapshot in
+// the SAME Dancing Script cursive the signer saw (embedded via fontkit) plus the
+// date, appends an ESIGN/UETA audit certificate page, stores signed.pdf, flips
+// the request to 'signed' and the order to 'contracted', and returns a signed URL
+// to the finished PDF for the customer to download.
 //
 // Deploy WITHOUT JWT verification:
 //   supabase functions deploy signing-submit --no-verify-jwt
@@ -21,6 +22,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { PDFDocument, StandardFonts, rgb } from 'https://esm.sh/pdf-lib@1.17.1'
+import fontkit from 'https://esm.sh/@pdf-lib/fontkit@1.1.1'
+import { DANCING_SCRIPT_BASE64 } from './dancingScript.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -62,15 +65,13 @@ Deno.serve(async (req) => {
   const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
   if (!SUPABASE_URL || !SERVICE_ROLE) return json({ error: 'server_not_configured' }, 500)
 
-  let body: { token?: string; signature_png?: string; signer_name?: string; consent?: boolean }
+  let body: { token?: string; signer_name?: string; consent?: boolean }
   try { body = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
   const token = (body.token || '').trim()
   const signerName = (body.signer_name || '').trim()
-  const sigPng = body.signature_png || ''
   if (!token) return json({ error: 'missing_token' }, 400)
   if (body.consent !== true) return json({ error: 'consent_required' }, 400)
   if (!signerName) return json({ error: 'missing_signer_name' }, 400)
-  if (!sigPng.startsWith('data:image/png')) return json({ error: 'missing_signature' }, 400)
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
 
@@ -105,8 +106,12 @@ Deno.serve(async (req) => {
   let signedBytes: Uint8Array
   try {
     const pdf = await PDFDocument.load(unsignedBytes)
+    pdf.registerFontkit(fontkit)
     const font = await pdf.embedFont(StandardFonts.Helvetica)
     const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold)
+    // Dancing Script — the SAME cursive the signer saw on the /sign page, embedded
+    // (subset) into the output PDF so the stamped signature matches exactly.
+    const scriptFont = await pdf.embedFont(bytesFromBase64(DANCING_SCRIPT_BASE64), { subset: true })
     const page = pdf.getPages()[0]
     const pageH = page.getHeight()
 
@@ -114,33 +119,25 @@ Deno.serve(async (req) => {
     const sigRect = rects.customer_signature
     const dateRect = rects.customer_date
 
-    // Signature image, fit within its box preserving aspect ratio.
+    // Cursive signature — the typed name in Dancing Script, drawn ON the signature
+    // line and auto-sized down to fit the box width.
     if (sigRect) {
-      const png = await pdf.embedPng(bytesFromBase64(sigPng.split(',')[1]))
       const boxX = sigRect.x * MM_TO_PT
       const boxW = sigRect.w * MM_TO_PT
       const boxH = sigRect.h * MM_TO_PT
-      const boxYTop = sigRect.y * MM_TO_PT
-      const boxYBottom = pageH - boxYTop - boxH
-      const scale = Math.min(boxW / png.width, boxH / png.height)
-      const drawW = png.width * scale
-      const drawH = png.height * scale
-      page.drawImage(png, {
-        x: boxX + (boxW - drawW) / 2,
-        y: boxYBottom + (boxH - drawH) / 2,
-        width: drawW,
-        height: drawH,
-      })
+      const boxYBottom = pageH - sigRect.y * MM_TO_PT - boxH
+      const maxW = boxW - 6
+      let size = 22
+      while (size > 9 && scriptFont.widthOfTextAtSize(signerName, size) > maxW) size -= 1
+      page.drawText(signerName, { x: boxX + 3, y: boxYBottom + 2, size, font: scriptFont, color: rgb(0.06, 0.08, 0.1) })
     }
 
-    // Date text in the date box (left-aligned, vertically centered-ish).
+    // Date — long format to match the page ("June 5, 2026"), drawn in the date box.
     if (dateRect) {
-      const d = new Date(nowMs)
-      const dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
-      const boxYTop = dateRect.y * MM_TO_PT
+      const dateStr = new Date(nowMs).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
       const boxH = dateRect.h * MM_TO_PT
-      const baseline = pageH - boxYTop - boxH + (boxH - 9) / 2 + 1
-      page.drawText(dateStr, { x: dateRect.x * MM_TO_PT, y: baseline, size: 9, font, color: rgb(0.06, 0.08, 0.1) })
+      const boxYBottom = pageH - dateRect.y * MM_TO_PT - boxH
+      page.drawText(dateStr, { x: dateRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 11, font, color: rgb(0.06, 0.08, 0.1) })
     }
 
     // ── Audit certificate page (Letter, matches contract) ──

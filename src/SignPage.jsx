@@ -3,98 +3,25 @@
 // =============================================================================
 // Rendered standalone (no CRM chrome, NO staff auth) when the URL path is
 // /sign/<token>. Loads the contract via signing-load, lets the customer review
-// the PDF, type their full name, check the e-sign consent box, draw a signature,
-// and submit. On success they get a "Download your signed copy" button.
+// the PDF, type their printed name, check the e-sign consent box, GENERATE a
+// cursive (Dancing Script) signature from the typed name + today's date, and
+// submit. On success they get a "Download your signed copy" button.
+//
+// The signature is type-name-to-cursive only — no draw pad. The signed PDF stamps
+// the same name in the same Dancing Script font (embedded server-side via
+// fontkit), so the stamped signature matches exactly what the signer saw here.
 //
 // Self-contained on purpose: it does NOT import SalesMode (11k+ lines) or the
 // staff data layer — only src/lib/signing.js (which only needs the anon client).
 // The ESIGN/UETA legal backbone is the consent checkbox + the audit trail the
 // signing-submit function records (IP, user agent, timestamps, name, hash).
 // =============================================================================
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { loadSigningRequest, submitSignature } from './lib/signing'
 
 const BRONZE = '#9a6a3a'
 const INK = '#0F1419'
-
-// ── Minimal signature pad (pointer drawing on a canvas) ─────────────────────
-function SignaturePad({ onChange }) {
-  const canvasRef = useRef(null)
-  const drawingRef = useRef(false)
-  const lastRef = useRef(null)
-  const [hasInk, setHasInk] = useState(false)
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    // Size the backing store to the displayed size for crisp lines.
-    const ratio = window.devicePixelRatio || 1
-    const rect = canvas.getBoundingClientRect()
-    canvas.width = rect.width * ratio
-    canvas.height = rect.height * ratio
-    const ctx = canvas.getContext('2d')
-    ctx.scale(ratio, ratio)
-    ctx.lineWidth = 2.2
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    ctx.strokeStyle = INK
-  }, [])
-
-  const pos = (e) => {
-    const canvas = canvasRef.current
-    const rect = canvas.getBoundingClientRect()
-    const t = e.touches?.[0]
-    const cx = t ? t.clientX : e.clientX
-    const cy = t ? t.clientY : e.clientY
-    return { x: cx - rect.left, y: cy - rect.top }
-  }
-
-  const start = (e) => { e.preventDefault(); drawingRef.current = true; lastRef.current = pos(e) }
-  const move = (e) => {
-    if (!drawingRef.current) return
-    e.preventDefault()
-    const ctx = canvasRef.current.getContext('2d')
-    const p = pos(e)
-    ctx.beginPath()
-    ctx.moveTo(lastRef.current.x, lastRef.current.y)
-    ctx.lineTo(p.x, p.y)
-    ctx.stroke()
-    lastRef.current = p
-    if (!hasInk) { setHasInk(true) }
-    onChange?.(canvasRef.current.toDataURL('image/png'))
-  }
-  const end = () => { drawingRef.current = false; lastRef.current = null }
-
-  const clear = () => {
-    const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    setHasInk(false)
-    onChange?.(null)
-  }
-
-  return (
-    <div>
-      <div style={{ position: 'relative', border: `1px solid #cfd6de`, borderRadius: 8, background: '#fff' }}>
-        <canvas
-          ref={canvasRef}
-          style={{ width: '100%', height: 170, touchAction: 'none', display: 'block', borderRadius: 8, cursor: 'crosshair' }}
-          onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
-          onTouchStart={start} onTouchMove={move} onTouchEnd={end}
-        />
-        {!hasInk && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', color: '#9aa6b2', fontSize: 14 }}>
-            Sign here
-          </div>
-        )}
-      </div>
-      <button type="button" onClick={clear}
-        style={{ marginTop: 8, background: 'none', border: 'none', color: BRONZE, cursor: 'pointer', fontSize: 13, padding: 0 }}>
-        Clear signature
-      </button>
-    </div>
-  )
-}
+const SCRIPT_FONT = "'Dancing Script', 'Brush Script MT', cursive"
 
 const shell = { minHeight: '100vh', background: '#eef1f4', color: INK, fontFamily: 'Inter, system-ui, sans-serif', padding: '24px 16px' }
 const card = { maxWidth: 820, margin: '0 auto', background: '#fff', borderRadius: 12, boxShadow: '0 2px 18px rgba(15,20,25,0.08)', overflow: 'hidden' }
@@ -104,10 +31,12 @@ const btnPrimary = (enabled) => ({
   padding: '13px 22px', fontSize: 15, fontWeight: 600, cursor: enabled ? 'pointer' : 'not-allowed', width: '100%',
 })
 
-// Page shell — module-level so it isn't re-created each render.
+// Page shell — module-level so it isn't re-created each render. Loads the
+// Dancing Script webfont so the on-screen cursive matches the stamped PDF.
 function Frame({ children }) {
   return (
     <div style={shell}>
+      <style>{"@import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap');"}</style>
       <div style={card}>
         <div style={{ background: INK, color: '#fff', padding: '18px 26px' }}>
           <div style={{ fontSize: 13, letterSpacing: 1.5, color: BRONZE, fontWeight: 600 }}>SHEVCHENKO MONUMENTS</div>
@@ -125,7 +54,8 @@ export default function SignPage({ token }) {
   const [data, setData] = useState(null)          // loaded request
   const [signerName, setSignerName] = useState('')
   const [consent, setConsent] = useState(false)
-  const [sigPng, setSigPng] = useState(null)
+  const [generated, setGenerated] = useState(false)  // cursive signature generated
+  const [sigDate, setSigDate] = useState('')         // display date stamped with it
   const [submitting, setSubmitting] = useState(false)
   const [submitErr, setSubmitErr] = useState(null)
   const [signedUrl, setSignedUrl] = useState(null)
@@ -145,13 +75,28 @@ export default function SignPage({ token }) {
     return () => { cancelled = true }
   }, [token])
 
-  const canSubmit = !!(consent && sigPng && signerName.trim() && !submitting)
+  // Editing the name (or un-checking consent) invalidates a generated signature —
+  // the cursive must always match the name that gets submitted.
+  const onNameChange = (v) => { setSignerName(v); if (generated) setGenerated(false) }
+  const onConsentChange = (v) => { setConsent(v); if (!v && generated) setGenerated(false) }
+
+  const canGenerate = !!(signerName.trim() && consent && !generated)
+  const canSubmit = !!(generated && signerName.trim() && consent && !submitting)
+
+  const handleGenerate = () => {
+    if (!canGenerate) return
+    // Event handler (not render) — new Date() is fine here.
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    setSigDate(today)
+    setGenerated(true)
+  }
 
   const handleSubmit = async () => {
     if (!canSubmit) return
     setSubmitting(true); setSubmitErr(null)
     try {
-      const res = await submitSignature({ token, signaturePng: sigPng, signerName: signerName.trim(), consent: true })
+      // No image — the server stamps the typed name in the script font.
+      const res = await submitSignature({ token, signerName: signerName.trim(), consent: true })
       if (!res.ok) { setSubmitErr(res.error || 'Could not record your signature. Please try again.'); return }
       setSignedUrl(res.signed_url || null)
     } catch (e) {
@@ -217,35 +162,69 @@ export default function SignPage({ token }) {
           <div style={{ color: '#6b7682', fontSize: 14 }}>The contract document is unavailable. Please contact the office.</div>
         )}
 
-        <div style={{ marginTop: 22 }}>
-          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Your full legal name</label>
+        {/* Print name */}
+        <div style={{ marginTop: 24 }}>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Print name</label>
           <input
             value={signerName}
-            onChange={(e) => setSignerName(e.target.value)}
+            onChange={(e) => onNameChange(e.target.value)}
             placeholder="Type your full name"
             style={{ width: '100%', padding: '12px 13px', fontSize: 15, border: '1px solid #cfd6de', borderRadius: 8, boxSizing: 'border-box' }}
           />
         </div>
 
-        <div style={{ marginTop: 18 }}>
-          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Signature</label>
-          <SignaturePad onChange={setSigPng} />
-        </div>
-
+        {/* Consent */}
         <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 18, fontSize: 14, lineHeight: 1.45, cursor: 'pointer' }}>
-          <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }} />
+          <input type="checkbox" checked={consent} onChange={(e) => onConsentChange(e.target.checked)} style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }} />
           <span>I have reviewed this contract and agree to sign it electronically. I understand my electronic
             signature is legally binding, the same as a handwritten signature.</span>
         </label>
 
+        {/* Generate */}
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={!canGenerate}
+          style={{
+            ...btnPrimary(canGenerate), marginTop: 18, width: 'auto', padding: '11px 20px',
+            background: canGenerate ? BRONZE : '#c4ccd4',
+          }}
+        >
+          {generated ? 'Signature generated ✓' : 'Generate e-signature'}
+        </button>
+        {!generated && (
+          <div style={{ color: '#6b7682', fontSize: 13, marginTop: 8 }}>
+            Type your name and check the box, then generate your signature.
+          </div>
+        )}
+
+        {/* Generated cursive signature + date */}
+        {generated && (
+          <div style={{ marginTop: 18, border: '1px solid #d7dee6', borderRadius: 10, background: '#fbfcfd', padding: '18px 20px', display: 'flex', gap: 24, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 280px', minWidth: 220 }}>
+              <div style={{ fontFamily: SCRIPT_FONT, fontSize: 40, lineHeight: 1.1, color: INK, paddingBottom: 4, borderBottom: '1px solid #2b333b' }}>
+                {signerName.trim()}
+              </div>
+              <div style={{ fontSize: 11, color: '#8a929b', marginTop: 4, letterSpacing: 0.4 }}>SIGNATURE</div>
+            </div>
+            <div style={{ flex: '0 1 160px', minWidth: 130 }}>
+              <div style={{ fontSize: 16, color: INK, paddingBottom: 8, borderBottom: '1px solid #2b333b' }}>
+                {sigDate}
+              </div>
+              <div style={{ fontSize: 11, color: '#8a929b', marginTop: 4, letterSpacing: 0.4 }}>DATE</div>
+            </div>
+          </div>
+        )}
+
         {submitErr && <div style={{ marginTop: 14, color: '#b3261e', fontSize: 14 }}>⚠ {submitErr}</div>}
 
+        {/* Submit */}
         <button type="button" onClick={handleSubmit} disabled={!canSubmit} style={{ ...btnPrimary(canSubmit), marginTop: 18 }}>
           {submitting ? 'Submitting…' : 'Sign & submit'}
         </button>
-        {!canSubmit && !submitting && (
+        {generated && !submitting && (
           <div style={{ color: '#6b7682', fontSize: 13, marginTop: 8, textAlign: 'center' }}>
-            Type your name, draw your signature, and check the box to enable signing.
+            Submitting applies this signature to your contract.
           </div>
         )}
       </div>
