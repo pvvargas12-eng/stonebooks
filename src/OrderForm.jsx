@@ -933,22 +933,22 @@ function AddOnsCard({ order, update, updatePricing, kinds = [] }) {
           <button type="button" className="of-link" onClick={() => setCustom([...customItems, { id: uid(), label: '', amount: 0, quotePending: false }])}>+ Add custom item</button>
         </div>
         {customItems.length === 0 && <p className="of-muted">No custom items.</p>}
-        {customItems.map((it, i) => (
+        {customItems.map((it) => (
           <div className="of-rowcard" key={it.id}>
             <Grid cols={2}>
-              <TextField label="Description" value={it.label} onChange={v => setCustom(customItems.map((x, j) => j === i ? { ...x, label: v } : x))} placeholder="Custom shape, special color, one-off…" full />
+              <TextField label="Description" value={it.label} onChange={v => setCustom(customItems.map(x => x.id === it.id ? { ...x, label: v } : x))} placeholder="Custom shape, special color, one-off…" full />
             </Grid>
             <div className="of-rowcard-foot">
               <Field label="Price">
                 <div className="of-num-wrap">
                   <span className="of-num-prefix">$</span>
                   <input className="of-input" type="number" value={it.amount ?? 0} disabled={it.quotePending}
-                    onChange={e => setCustom(customItems.map((x, j) => j === i ? { ...x, amount: Number(e.target.value) } : x))} />
+                    onChange={e => setCustom(customItems.map(x => x.id === it.id ? { ...x, amount: Number(e.target.value) } : x))} />
                 </div>
               </Field>
               <CheckRow checked={it.quotePending} label="Add to owner's quote list"
-                onChange={v => setCustom(customItems.map((x, j) => j === i ? { ...x, quotePending: v } : x))} />
-              <button type="button" className="of-remove" onClick={() => setCustom(customItems.filter((_, j) => j !== i))}>Remove</button>
+                onChange={v => setCustom(customItems.map(x => x.id === it.id ? { ...x, quotePending: v } : x))} />
+              <button type="button" className="of-remove" onClick={() => setCustom(customItems.filter(x => x.id !== it.id))}>Remove</button>
             </div>
             {it.quotePending && <p className="of-quote-note">Excluded from the total until the owner sets a price.</p>}
           </div>

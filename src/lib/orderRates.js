@@ -187,7 +187,13 @@ function baseDepthOf(order) {
 // and saw-base. Items flagged quotePending render as "$— (owner quote)".
 export function computeFormLineItems(order) {
   // Drop the engine's flat polish-margin; we recompute it per-foot below.
-  const items = buildLineItems(order).filter(it => it.code !== 'polish-margin')
+  // ALSO drop buildLineItems' custom-line-item rows (code `custom-<id>`,
+  // isCustom): we re-emit each custom item ONCE below with proper custom +
+  // quotePending flags and a stable id. Without this, every custom charge is
+  // counted twice — once by the engine, once here — which surfaced as the
+  // acid-wash double-charge (two non-removable engine rows + two removable
+  // form rows, all summing) on E-26-0245. Single source of truth = this loop.
+  const items = buildLineItems(order).filter(it => it.code !== 'polish-margin' && !it.isCustom)
   const shape = SHAPES.find(s => s.code === order.shape)
   const svc = order.serviceTypes || []
   const pr = order.pricing || {}
@@ -195,7 +201,13 @@ export function computeFormLineItems(order) {
   // (0a) Additional-inscription base — tier-driven (Full / MDY / Year).
   if (svc.includes('INSCRIPTION')) {
     const tier = INSCRIPTION_TIERS.find(t => t.code === order.inscription?.tier)
-    if (tier) items.unshift({ code: 'inscription-base', label: `Inscription — ${tier.label}`, amount: tier.price, editable: true })
+    if (tier) {
+      // Supersede any type-driven inscription-base buildLineItems emitted, so an
+      // order carrying BOTH inscription.type and a tier doesn't double-count.
+      const dup = items.findIndex(it => it.code === 'inscription-base')
+      if (dup >= 0) items.splice(dup, 1)
+      items.unshift({ code: 'inscription-base', label: `Inscription — ${tier.label}`, amount: tier.price, editable: true })
+    }
   }
 
   // (0b) Acid-wash base — price by monument type, with override + owner-quote.
