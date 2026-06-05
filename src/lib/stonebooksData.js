@@ -1278,21 +1278,44 @@ export const QUOTE_STATUS_TONE = {
 }
 
 // Quote Hub lifecycle: draft → pending_review → approved / needs_changes →
-// sent_to_customer. Confirmed with .select() (fail loud — no silent 0-row drop)
-// and degrades gracefully when the 20260615 column isn't applied yet.
-export async function setOrderQuoteStatus(orderId, status) {
-  if (!orderId) return { ok: false, error: 'No orderId' }
-  const { data, error } = await supabase.from('orders')
+// sent_to_customer. Table-aware (orders | cemetery_orders). Confirmed with
+// .select() (fail loud — no silent 0-row drop) and degrades gracefully when the
+// column isn't applied yet.
+const _quoteMissing = (msg) => /quote_status|quote_events/i.test(msg || '') || /schema cache|column/i.test(msg || '')
+async function _setQuoteStatus(table, id, status) {
+  if (!id) return { ok: false, error: 'No id' }
+  const { data, error } = await supabase.from(table)
     .update({ quote_status: status, updated_at: new Date().toISOString() })
-    .eq('id', orderId).select('id')
+    .eq('id', id).select('id')
   if (error) {
-    if (/quote_status/i.test(error.message) || /schema cache|column/i.test(error.message)) {
-      return { ok: false, error: 'Quote Hub isn’t set up yet — apply the 20260615_orders_quote_status migration.' }
-    }
+    if (_quoteMissing(error.message)) return { ok: false, error: 'Quote Hub isn’t set up yet — apply the quote_status migration.' }
     return { ok: false, error: error.message }
   }
   if (!data || data.length === 0) return { ok: false, error: 'The change didn’t save — try again.' }
   return { ok: true }
+}
+export const setOrderQuoteStatus = (orderId, status) => _setQuoteStatus('orders', orderId, status)
+export const setCemeteryOrderQuoteStatus = (id, status) => _setQuoteStatus('cemetery_orders', id, status)
+
+// Append-only quote_events log: [{ type, by, at, text }], type ∈
+// sent|approved|changes_requested|sent_to_customer|note. Read-modify-write
+// (single-operator shop) + fail-loud .select() confirm; graceful if absent.
+export async function appendQuoteEvent(table, id, event) {
+  if (!id || !event?.type) return { ok: false, error: 'Missing id or event type' }
+  const { data: row, error: rErr } = await supabase.from(table).select('quote_events').eq('id', id).maybeSingle()
+  if (rErr) {
+    if (_quoteMissing(rErr.message)) return { ok: false, error: 'Quote Hub isn’t set up yet — apply the quote_events migration.' }
+    return { ok: false, error: rErr.message }
+  }
+  const ev = { type: event.type, by: event.by || null, at: new Date().toISOString(), text: event.text || null }
+  const next = [...(Array.isArray(row?.quote_events) ? row.quote_events : []), ev]
+  const { data, error } = await supabase.from(table).update({ quote_events: next }).eq('id', id).select('id')
+  if (error) {
+    if (_quoteMissing(error.message)) return { ok: false, error: 'Quote Hub isn’t set up yet — apply the quote_events migration.' }
+    return { ok: false, error: error.message }
+  }
+  if (!data || data.length === 0) return { ok: false, error: 'The note didn’t save — try again.' }
+  return { ok: true, event: ev }
 }
 
 // Cemetery permit requirements (the "Cemetery requirements" editor).

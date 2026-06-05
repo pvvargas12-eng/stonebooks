@@ -23,8 +23,9 @@ import {
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
-  setOrderQuoteStatus, QUOTE_STATUS_LABEL, QUOTE_STATUS_TONE,
+  setOrderQuoteStatus, appendQuoteEvent,
 } from './lib/stonebooksData'
+import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
@@ -153,9 +154,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
   const [permitMsg, setPermitMsg] = useState(null)
-  // Quote Hub send
-  const [quoteBusy, setQuoteBusy] = useState(false)
-  const [quoteMsg, setQuoteMsg] = useState(null)
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -232,12 +230,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Send this order to the Quote Hub for the owner's final approval. Works the
   // same regardless of how the order was created (it lives on the shared detail).
   const sendToQuoteHub = async () => {
-    if (quoteBusy) return
-    setQuoteBusy(true); setQuoteMsg(null)
     const r = await setOrderQuoteStatus(orderId, 'pending_review')
-    setQuoteBusy(false)
-    if (!r.ok) { setQuoteMsg(r.error); return }
-    await refreshOrder()
+    if (r.ok) {
+      await appendQuoteEvent('orders', orderId, { type: 'sent', by: await getCurrentStaffName() })
+      await refreshOrder()
+    }
+    return r
   }
 
   const handleAddNote = async () => {
@@ -621,15 +619,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             {/* Quote Hub — send for the owner's final approval. Appears on every
                 order regardless of how it was created. */}
             <div className="sb-od-quote">
-              <span className="sb-od-quote-chip" style={{ color: QUOTE_STATUS_TONE[order.quote_status || 'draft'], borderColor: QUOTE_STATUS_TONE[order.quote_status || 'draft'] }}>
-                {QUOTE_STATUS_LABEL[order.quote_status || 'draft']}
-              </span>
-              {(!order.quote_status || order.quote_status === 'draft' || order.quote_status === 'needs_changes') && (
-                <button type="button" className="sb-od-quote-btn" onClick={sendToQuoteHub} disabled={quoteBusy}>
-                  {quoteBusy ? 'Sending…' : 'Send to Quote Hub for Final Approval'}
-                </button>
-              )}
-              {quoteMsg && <div className="sb-od-quote-err">{quoteMsg}</div>}
+              <QuoteStatusBlock status={order.quote_status} onSend={sendToQuoteHub} />
             </div>
           </Section>
 

@@ -22,8 +22,9 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
+import QuoteStatusBlock from './components/QuoteStatusBlock'
 
 // =============================================================================
 // STATIC DATA
@@ -10516,6 +10517,16 @@ function ContinueLater({ order, update, onDepositLogged }) {
   const dims = [order.width, order.depth, order.thickness].filter(x => x != null).join(' × ')
   const inscType = INSCRIPTION_TYPES.find(t => t.code === order.inscription?.type)?.label
 
+  // Quote Hub — the wizard's Saved view is where every creation flow lands, so
+  // the button lives here too (covers inscription / repair / bronze / etc.).
+  const [qStatus, setQStatus] = useState(order.quoteStatus || 'draft')
+  const sendQuote = async () => {
+    if (!order.id) return { ok: false, error: 'Save the order first.' }
+    const r = await setOrderQuoteStatus(order.id, 'pending_review')
+    if (r.ok) { await appendQuoteEvent('orders', order.id, { type: 'sent', by: await getCurrentStaffName() }); setQStatus('pending_review') }
+    return r
+  }
+
   // Compute grand total from current pricing
   const lineItems = buildLineItems(order)
   const subtotal = lineItems.reduce((sum, it) => {
@@ -10535,6 +10546,10 @@ function ContinueLater({ order, update, onDepositLogged }) {
           Everything captured so far is saved. The contract + signature step
           is the last piece — coming in the next build.
         </p>
+      </div>
+
+      <div className="sm-card" style={{ marginBottom: 16 }}>
+        <QuoteStatusBlock status={qStatus} onSend={sendQuote} disabled={!order.id} hint="Save the order before sending it for quote approval." />
       </div>
 
       {/* Sprint L2 Phase 4 Commit 6 — side-confirmation banner; reuses

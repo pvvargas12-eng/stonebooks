@@ -17,6 +17,7 @@ import {
   getCemeteryPacketSignedUrl,
   getFinancialRecords,
   recordPayment,
+  setCemeteryOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName,
   PAYMENT_METHODS,
   paymentMethodLabel,
   fmtUSD,
@@ -25,6 +26,7 @@ import {
 } from './lib/stonebooksData'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
+import QuoteStatusBlock from './components/QuoteStatusBlock'
 
 // Production lifecycle (NOT payment — payment is computed separately).
 const CO_STATUS = {
@@ -95,6 +97,12 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
     if (url) window.open(url, '_blank', 'noopener')
   }
 
+  const sendCemQuote = async () => {
+    const r = await setCemeteryOrderQuoteStatus(order.id, 'pending_review')
+    if (r.ok) { await appendQuoteEvent('cemetery_orders', order.id, { type: 'sent', by: await getCurrentStaffName() }); await reload() }
+    return r
+  }
+
   // Edit: drafts resume the wizard at Step 1; submitted orders reopen it in
   // edit mode (lands on the doors editor — Phase 7).
   const onEdit = () => {
@@ -156,6 +164,11 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
         {(order.tax_applied || order.cc_fee_applied) && (
           <span>· {[order.tax_applied ? 'NJ tax' : null, order.cc_fee_applied ? 'CC fee' : null].filter(Boolean).join(' + ')} applied</span>
         )}
+      </div>
+
+      {/* Quote Hub — crypt / mausoleum door orders go through owner approval too */}
+      <div className="cod-quote" style={{ margin: '4px 0 16px' }}>
+        <QuoteStatusBlock status={order.quote_status} onSend={sendCemQuote} disabled={order.status === 'draft'} hint="Submit the order before sending it for quote approval." />
       </div>
 
       <div className="cod-actions">
