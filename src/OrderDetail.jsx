@@ -94,10 +94,36 @@ const deceasedName = (d) => {
 }
 
 // ── Field + Section primitives ───────────────────────────────────────────────
+// One small, relevant emoji per data line for fast scanning. Chosen by keyword
+// in the field label so every line gets a consistent icon without threading a
+// prop through ~30 call sites.
+function fieldIcon(label) {
+  const l = String(label || '').toLowerCase()
+  if (l.includes('phone')) return '📞'
+  if (l.includes('email')) return '✉️'
+  if (l.includes('cemetery')) return '📍'
+  if (l.includes('grave')) return '🪦'
+  if (l.includes('section') || l.includes('plot') || l.includes('location')) return '📌'
+  if (l.includes('balance') || l.includes('total') || l.includes('collected') || l.includes('payment')) return '💵'
+  if (l.includes('date') || l.includes('completion') || l.includes('target')) return '📅'
+  if (l.includes('permit')) return '📋'
+  if (l.includes('foundation')) return '🧱'
+  if (l.includes('inscription')) return '✍️'
+  if (l.includes('deceased')) return '🕊️'
+  if (l.includes('proof') || l.includes('approval')) return '✅'
+  if (l.includes('referral') || l.includes('funeral')) return '🏵️'
+  if (l.includes('address')) return '🏠'
+  if (l.includes('name') || l.includes('contact')) return '👤'
+  if (l.includes('shape') || l.includes('monument') || l.includes('type') || l.includes('color') || l.includes('die') || l.includes('base') || l.includes('finish') || l.includes('add-on')) return '🪨'
+  if (l.includes('stage') || l.includes('task') || l.includes('blocker') || l.includes('job')) return '🔧'
+  return '•'
+}
+
 function Field({ label, value, hint }) {
   const empty = value == null || value === '' || (Array.isArray(value) && value.length === 0)
   return (
     <div className="sb-od-field">
+      <span className="sb-od-field-icon" aria-hidden="true">{fieldIcon(label)}</span>
       <div className="sb-od-field-label">{label}</div>
       <div className={`sb-od-field-value${empty ? ' sb-od-missing' : ''}`}>
         {empty ? '—' : value}
@@ -107,12 +133,30 @@ function Field({ label, value, hint }) {
   )
 }
 
-function Section({ title, span = 1, children }) {
+function Section({ title, span = 1, id, children }) {
   return (
-    <section className={`sb-od-card sb-od-span-${span}`}>
+    <section id={id} className={`sb-od-card sb-od-span-${span}`}>
       <div className="sb-od-card-eyebrow">{title}</div>
       <div className="sb-od-card-body">{children}</div>
     </section>
+  )
+}
+
+// Left-rail section nav. Smooth-scrolls to a section by id; no URL hash change.
+function SectionRail({ items }) {
+  const jump = (id) => {
+    const el = typeof document !== 'undefined' && document.getElementById(id)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  return (
+    <nav className="sb-od-rail" aria-label="Order sections">
+      {items.map(it => (
+        <button key={it.id} type="button" className="sb-od-rail-item" onClick={() => jump(it.id)}>
+          <span className="sb-od-rail-emoji" aria-hidden="true">{it.emoji}</span>
+          <span>{it.label}</span>
+        </button>
+      ))}
+    </nav>
   )
 }
 
@@ -408,6 +452,29 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const cemAddr = [cem.address, [cem.city, cem.state, cem.zip].filter(Boolean).join(', ')].filter(Boolean)
   const referral = [humanize(cust.referral_source), cust.referral_source_detail].filter(Boolean).join(' — ')
 
+  // Quick-glance values (the three things to read the instant the order opens).
+  const plotShort = [
+    order.plot_section && `Sec ${order.plot_section}`,
+    order.plot_block && `Blk ${order.plot_block}`,
+    order.plot_lot && `Lot ${order.plot_lot}`,
+    order.plot_grave && `Grave ${order.plot_grave}`,
+  ].filter(Boolean).join(' · ')
+  const orderType = jobTypeLabel(job?.job_type, order.service_types)
+
+  // Left-rail section nav (Completion photos only when present).
+  const railItems = [
+    { id: 'od-customer', emoji: '👤', label: 'Customer & contact' },
+    { id: 'od-cemetery', emoji: '📍', label: 'Cemetery & grave' },
+    { id: 'od-monument', emoji: '🪨', label: 'Monument' },
+    { id: 'od-financial', emoji: '💵', label: 'Financial' },
+    { id: 'od-permit', emoji: '📋', label: 'Permit' },
+    { id: 'od-job', emoji: '🔧', label: 'Related job' },
+    { id: 'od-attachments', emoji: '📎', label: 'Attachments' },
+    ...(completionPhotos.length > 0 ? [{ id: 'od-photos', emoji: '📷', label: 'Completion photos' }] : []),
+    { id: 'od-notes', emoji: '📝', label: 'Notes' },
+    { id: 'od-email', emoji: '✉️', label: 'Email traffic' },
+  ]
+
   // Monument
   const dims = [order.width_inches, order.depth_inches, order.thickness_inches, order.height_inches]
     .filter(v => v != null && v !== '').map(v => `${v}"`).join(' × ')
@@ -519,6 +586,37 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </div>
         </header>
 
+        {/* ── QUICK-GLANCE STRIP — read the instant the order opens ──────────── */}
+        <div className="sb-od-glance">
+          <div className="sb-od-glance-item">
+            <span className="sb-od-glance-emoji" aria-hidden="true">📍</span>
+            <div className="sb-od-glance-text">
+              <div className="sb-od-glance-label">Cemetery</div>
+              <div className="sb-od-glance-value">
+                {cem.name || <span className="sb-od-missing">—</span>}
+                {plotShort && <span className="sb-od-glance-sub"> · {plotShort}</span>}
+              </div>
+            </div>
+          </div>
+          <div className="sb-od-glance-item">
+            <span className="sb-od-glance-emoji" aria-hidden="true">📞</span>
+            <div className="sb-od-glance-text">
+              <div className="sb-od-glance-label">Contact</div>
+              <div className="sb-od-glance-value">
+                {customerName(cust) !== '—' ? customerName(cust) : <span className="sb-od-missing">—</span>}
+                {cust.phone_primary && <span className="sb-od-glance-sub"> · {fmtPhone(cust.phone_primary)}</span>}
+              </div>
+            </div>
+          </div>
+          <div className="sb-od-glance-item">
+            <span className="sb-od-glance-emoji" aria-hidden="true">🪦</span>
+            <div className="sb-od-glance-text">
+              <div className="sb-od-glance-label">Type of order</div>
+              <div className="sb-od-glance-value">{orderType || <span className="sb-od-missing">—</span>}</div>
+            </div>
+          </div>
+        </div>
+
         {/* A6 — "signed contract still needed": a deposit auto-completed the
             contract step, but no real signature is on file yet. Persists until
             the order is signed. */}
@@ -557,10 +655,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         </div>
         {actionNote && <div className="sb-od-actionnote">{actionNote}</div>}
 
-        {/* ── SECTIONS ────────────────────────────────────────────────────── */}
-        <div className="sb-od-grid">
+        {/* ── SECTIONS with left-rail nav ───────────────────────────────────── */}
+        <div className="sb-od-layout">
+          <SectionRail items={railItems} />
+          <div className="sb-od-grid">
           {/* 1 — Customer / contact */}
-          <Section title="Customer & contact">
+          <Section id="od-customer" title="Customer & contact">
             <Field label="Name" value={
               customerName(cust) !== '—'
                 ? <button type="button" className="sb-od-link" onClick={() => cust.id && onOpenCustomer?.(cust.id)}>{customerName(cust)}</button>
@@ -574,7 +674,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 2 — Cemetery / grave */}
-          <Section title="Cemetery & grave">
+          <Section id="od-cemetery" title="Cemetery & grave">
             <Field label="Cemetery" value={cem.name} />
             <Field label="Address" value={cemAddr.length ? cemAddr.map((l, i) => <div key={i}>{l}</div>) : null} />
             <Field label="Section / Block / Lot" value={[order.plot_section, order.plot_block, order.plot_lot].some(Boolean)
@@ -588,7 +688,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 3 — Monument */}
-          <Section title="Monument">
+          <Section id="od-monument" title="Monument">
             <Field label="Type" value={jobTypeLabel(job?.job_type, order.service_types)} />
             <Field label="Shape" value={humanize(order.shape)} />
             <Field label="Die size" value={dims} />
@@ -604,7 +704,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 4 — Financial */}
-          <Section title="Financial">
+          <Section id="od-financial" title="Financial">
             <Field label="Contract total" value={total > 0 ? fmtUSD(total) : null} />
             <Field label="Collected" value={fmtUSD(paid)} />
             <Field label="Payments made" value={payments.length
@@ -624,7 +724,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 4b — Permit */}
-          <Section title="Permit">
+          <Section id="od-permit" title="Permit">
             {permitDraft ? (
               <div className="sb-od-permit-edit">
                 <label className="sb-od-modal-field"><span>Permit status</span>
@@ -666,7 +766,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 5 — Related job */}
-          <Section title="Related job">
+          <Section id="od-job" title="Related job">
             {job ? (
               <>
                 <Field label="Stage" value={jobStage?.label} />
@@ -685,7 +785,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 7 — Attachments (aggregated from existing buckets) */}
-          <Section title="Attachments" span={2}>
+          <Section id="od-attachments" title="Attachments" span={2}>
             {attachmentRows.length === 0 ? (
               <div className="sb-od-empty-inline">No attachments yet.</div>
             ) : (
@@ -714,7 +814,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           {/* 7b — Completion photos (ITEM 4): job-site photos captured at task
               completion in the Scheduler/Calendar. Read-only here. */}
           {completionPhotos.length > 0 && (
-            <Section title="Completion photos" span={2}>
+            <Section id="od-photos" title="Completion photos" span={2}>
               <div className="sb-od-completion-grid">
                 {completionPhotos.map(p => (
                   <a key={p.path} className="sb-od-completion-thumb" href={p.url} target="_blank" rel="noreferrer" title={p.name}>
@@ -726,7 +826,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           )}
 
           {/* 8 — Notes */}
-          <Section title="Notes" span={2}>
+          <Section id="od-notes" title="Notes" span={2}>
             <div className="sb-od-note-composer">
               <textarea
                 ref={noteRef}
@@ -760,7 +860,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 6 — Email traffic */}
-          <Section title="Email traffic" span={2}>
+          <Section id="od-email" title="Email traffic" span={2}>
             {/* AI drafts — state-aware. Each generates via Claude Haiku then
                 opens the composer prefilled; the human always sends. */}
             <div className="sb-od-draft-row">
@@ -816,6 +916,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               </div>
             </Section>
           )}
+          </div>
         </div>
       </div>
 
@@ -1034,6 +1135,40 @@ const OD_CSS = `
   .sb-od-actionnote { font-size: 12.5px; color: #876307; background: rgba(154,114,9,0.07);
     border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 7px 12px; margin: 10px 0 0; }
 
+  /* Quick-glance strip — the three things to read the instant the order opens. */
+  .sb-od-glance { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0 4px; }
+  @media (max-width: 720px) { .sb-od-glance { grid-template-columns: 1fr; } }
+  .sb-od-glance-item {
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; border: 0.5px solid var(--sb-border, #e4e2dd); border-radius: 12px; padding: 12px 16px;
+  }
+  .sb-od-glance-emoji { font-size: 22px; line-height: 1; flex-shrink: 0; }
+  .sb-od-glance-text { min-width: 0; }
+  .sb-od-glance-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: #9a8a5e; font-weight: 700; }
+  .sb-od-glance-value { font-size: 16px; font-weight: 700; color: #1a1a17; margin-top: 2px; line-height: 1.25; word-break: break-word; }
+  .sb-od-glance-sub { font-size: 14px; font-weight: 500; color: #6b6b66; }
+
+  /* Section layout: sticky left rail + the card grid. */
+  .sb-od-layout { display: flex; align-items: flex-start; gap: 22px; margin-top: 20px; }
+  .sb-od-layout .sb-od-grid { flex: 1; min-width: 0; margin-top: 0; }
+  .sb-od-rail {
+    position: sticky; top: 16px; flex: 0 0 196px; width: 196px;
+    display: flex; flex-direction: column; gap: 2px; align-self: flex-start;
+  }
+  .sb-od-rail-item {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    background: none; border: none; border-radius: 8px; padding: 8px 10px;
+    font: inherit; font-size: 13.5px; font-weight: 500; color: #4a4a45; cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .sb-od-rail-item:hover { background: #f1ede2; color: #111; }
+  .sb-od-rail-emoji { font-size: 15px; line-height: 1; flex-shrink: 0; }
+  @media (max-width: 920px) {
+    .sb-od-layout { flex-direction: column; }
+    .sb-od-rail { position: static; flex-direction: row; flex-wrap: wrap; width: 100%; flex-basis: auto; gap: 6px; }
+    .sb-od-rail-item { width: auto; border: 0.5px solid var(--sb-border, #e4e2dd); }
+  }
+
   .sb-od-grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px;
   }
@@ -1044,11 +1179,12 @@ const OD_CSS = `
     background: #fff; border: 0.5px solid var(--sb-border, #e4e2dd); border-radius: 12px; padding: 18px 20px;
   }
   .sb-od-card-eyebrow {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #9A7209;
-    font-weight: 600; margin-bottom: 12px;
+    font-size: 16px; text-transform: uppercase; letter-spacing: 0.04em; color: #6e5206;
+    font-weight: 800; margin-bottom: 14px;
   }
-  .sb-od-field { display: grid; grid-template-columns: 150px 1fr; gap: 12px; padding: 6px 0; align-items: baseline; }
+  .sb-od-field { display: grid; grid-template-columns: 22px 150px 1fr; gap: 10px; padding: 6px 0; align-items: baseline; }
   .sb-od-field + .sb-od-field { border-top: 0.5px solid #f1efeb; }
+  .sb-od-field-icon { font-size: 13px; line-height: 1.2; text-align: center; opacity: 0.9; }
   .sb-od-field-label { font-size: 12.5px; color: #8a8a85; }
   .sb-od-field-value { font-size: 13.5px; color: #222; word-break: break-word; }
   .sb-od-field-value.sb-od-missing { color: #b8b6b1; }
