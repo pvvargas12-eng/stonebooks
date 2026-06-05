@@ -7308,11 +7308,20 @@ export async function generateEstimatePDF(order, opts = {}) {
   const W = 215.9
   const H = 279.4
   const M = 16     // margin
-  const NAVY = [30, 45, 61]
-  const GOLD = [140, 109, 63]
-  const GREY = [110, 110, 110]
-  const TEXT = [42, 42, 42]
-  const LIGHT_RULE = [220, 220, 220]
+  // Black & white only on this document — every "color" is black; rules are
+  // thin black; backgrounds stay white. (WATERMARK is the one light tone, used
+  // solely for the faint family-name watermark.)
+  const NAVY = [0, 0, 0]
+  const GOLD = [0, 0, 0]
+  const GREY = [0, 0, 0]
+  const TEXT = [0, 0, 0]
+  const LIGHT_RULE = [0, 0, 0]
+  const WATERMARK = [210, 210, 210]
+
+  // Family (last) name — used by the top-right info box AND the faint F/N
+  // watermark. Falls back to the order # so nothing is blank.
+  const familyName = (order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
+  const fnWatermark = (familyName || order.orderNumber || '').toUpperCase()
 
   let y = M
 
@@ -7375,6 +7384,11 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   // Footer at bottom of every page
   const addFooter = () => {
+    // Faint family-name watermark, bottom-right (per page).
+    if (fnWatermark) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(...WATERMARK)
+      doc.text(fnWatermark, W - M, H - 18, { align: 'right' })
+    }
     const yF = H - 10
     doc.setDrawColor(...LIGHT_RULE)
     doc.setLineWidth(0.2)
@@ -7388,6 +7402,13 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.text(isContract ? 'Signed contract — pricing locked' : 'This estimate is valid for 30 days', W / 2, yF, { align: 'center' })
   }
 
+  // Faint family-name watermark, top-left (drawn first so the black letterhead
+  // overlays it). The footer redraws it bottom-right on every page.
+  if (fnWatermark) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(...WATERMARK)
+    doc.text(fnWatermark, M, M + 4)
+  }
+
   // ============================ LETTERHEAD ===============================
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(17)
@@ -7398,7 +7419,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // estimate-vs-contract difference is the rate column, not the title.
   doc.setFontSize(13)
   doc.setTextColor(...GOLD)
-  doc.text('EST. CONTRACT', W - M, y + 6, { align: 'right' })
+  doc.text(isContract ? 'EST. CONTRACT' : 'ESTIMATE', W - M, y + 6, { align: 'right' })
 
   // Letterhead address (left column).
   doc.setFont('helvetica', 'normal')
@@ -7414,8 +7435,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   if (order.targetCompletionDate) infoDue = shortDate(new Date(order.targetCompletionDate + 'T00:00:00'))
   else { try { const dd = calculateDueDate(order); infoDue = (dd && dd.dateText) || 'TBD' } catch { infoDue = 'TBD' } }
   // Family (last) name — falls back to the order # so it's never blank (Commit 3).
-  const famLast = (order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
-  const fileLabel = famLast || (order.orderNumber || 'DRAFT')
+  const fileLabel = familyName || (order.orderNumber || 'DRAFT')
   const ibRows = [['Date', infoDate], ['Due Date', infoDue], ['File', fileLabel], ['Order #', order.orderNumber || 'DRAFT']]
   const ibW = 62, ibX = W - M - ibW, ibTop = y + 11
   doc.setDrawColor(...LIGHT_RULE)
@@ -7430,12 +7450,19 @@ export async function generateEstimatePDF(order, opts = {}) {
     iy += 5
   }
 
-  // Gold rule below the taller of the two columns.
+  // Rule below the taller of the two columns.
   y = Math.max(y + 21, ibTop + ibRows.length * 5 + 5)
   doc.setDrawColor(...GOLD)
-  doc.setLineWidth(0.7)
+  doc.setLineWidth(0.5)
   doc.line(M, y, W - M, y)
   y += 6
+
+  // Estimate-only: 30-day validity note under the title/info box.
+  if (!isContract) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+    doc.text('This estimate is valid for 30 days.', M, y)
+    y += 6
+  }
 
   // ============================ DUE DATE ================================
   // Sprint 3u — contract only. Estimates skip this block entirely.
@@ -7503,59 +7530,97 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 4 * ddLines.length + 2
   }
 
-  // ============================ CUSTOMER ================================
-  sectionHeader('Prepared for')
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(12)
-  doc.setTextColor(...TEXT)
-  doc.text(pdfCustomerLine(order), M, y)
-  y += 5
-  const c = order.customer || {}
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(9)
-  doc.setTextColor(...GREY)
-  const addrLines = []
-  if (c.address) addrLines.push(c.address)
-  const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
-  if (cityLine) addrLines.push(cityLine)
-  if (c.phone) addrLines.push('Phone: ' + c.phone)
-  if (c.email) addrLines.push('Email: ' + c.email)
-  if (c.altEmail) addrLines.push('Alt email: ' + c.altEmail)
-  for (const line of addrLines) {
-    doc.text(line, M, y); y += 4
-  }
-  y += 2
+  // ================= TWO BOXED COLUMNS (NAME | CEMETERY) =================
+  {
+    const c = order.customer || {}
+    const cem = order.cemetery || {}
+    const colGap = 6
+    const colW = (W - 2 * M - colGap) / 2
+    const lx = M, rx = M + colW + colGap
+    const boxTop = y
+    const padX = 3
+    const lineH = 4.4
 
-  // ============================ CEMETERY ================================
-  if (order.cemetery?.name) {
-    sectionHeader('Cemetery')
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(11)
-    doc.setTextColor(...TEXT)
-    doc.text(order.cemetery.name, M, y)
-    y += 5
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9)
-    doc.setTextColor(...GREY)
-    if (order.cemetery.city || order.cemetery.state) {
-      doc.text([order.cemetery.city, order.cemetery.state].filter(Boolean).join(', '), M, y)
-      y += 4
-    }
+    const leftLines = [pdfCustomerLine(order)]
+    if (c.address) leftLines.push(c.address)
+    const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
+    if (cityLine) leftLines.push(cityLine)
+    if (c.phone) leftLines.push('Phone: ' + c.phone)
+    if (c.email) leftLines.push('Email: ' + c.email)
+    if (c.altEmail) leftLines.push('Alt email: ' + c.altEmail)
+
+    const rightLines = []
+    if (cem.name) rightLines.push(cem.name)
+    const cemLoc = [cem.city, cem.state].filter(Boolean).join(', ')
+    if (cemLoc) rightLines.push(cemLoc)
     const lot = []
-    if (order.cemetery.section) lot.push(`Section ${order.cemetery.section}`)
-    if (order.cemetery.lot) lot.push(`Lot ${order.cemetery.lot}`)
-    if (order.cemetery.grave) lot.push(`Grave ${order.cemetery.grave}`)
-    if (lot.length) { doc.text(lot.join(' · '), M, y); y += 4 }
-    // Grave type + the new Foundation Type (Commit 1) in the cemetery block.
-    const graveLabel = ({ single: 'Single', sxs: 'Side by side', dd: 'Double deep', family: 'Family die' })[order.plot?.type]
-    if (graveLabel) { doc.text(`Grave type: ${graveLabel}`, M, y); y += 4 }
-    if (order.foundationType) { doc.text(`Foundation: ${order.foundationType}`, M, y); y += 4 }
-    y += 2
+    if (cem.section) lot.push(`Section ${cem.section}`)
+    if (cem.lot) lot.push(`Lot ${cem.lot}`)
+    if (cem.grave) lot.push(`Grave ${cem.grave}`)
+    if (lot.length) rightLines.push(lot.join(' · '))
+    const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
+
+    const headerH = 7
+    const leftBodyH = leftLines.length * lineH
+    const rightBodyH = (rightLines.length + 2) * lineH + 1   // + grave-type row + foundation row
+    const boxH = headerH + Math.max(leftBodyH, rightBodyH) + 4
+    ensure(boxH + 4)
+
+    // Boxes (thin black borders, white fill).
+    doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.4)
+    doc.rect(lx, boxTop, colW, boxH)
+    doc.rect(rx, boxTop, colW, boxH)
+    // Headers.
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(...TEXT)
+    doc.text('NAME / ADDRESS / PHONE / EMAIL', lx + padX, boxTop + 4.6)
+    doc.text('CEMETERY', rx + padX, boxTop + 4.6)
+    doc.setLineWidth(0.2)
+    doc.line(lx, boxTop + headerH, lx + colW, boxTop + headerH)
+    doc.line(rx, boxTop + headerH, rx + colW, boxTop + headerH)
+
+    // Left body.
+    let ly = boxTop + headerH + 4.5
+    doc.setFontSize(9)
+    leftLines.forEach((ln, i) => {
+      doc.setFont('helvetica', i === 0 ? 'bold' : 'normal')
+      doc.text(doc.splitTextToSize(ln, colW - 2 * padX), lx + padX, ly); ly += lineH
+    })
+
+    // Right body — location lines, then grave-type (selected bold), then FOUNDATION.
+    let ry = boxTop + headerH + 4.5
+    doc.setFontSize(9)
+    rightLines.forEach((ln, i) => {
+      doc.setFont('helvetica', i === 0 ? 'bold' : 'normal')
+      doc.text(doc.splitTextToSize(ln, colW - 2 * padX), rx + padX, ry); ry += lineH
+    })
+    ry += 1
+    doc.setFontSize(8); doc.setTextColor(...TEXT)
+    let gx = rx + padX
+    graveOpts.forEach(([code, label], i) => {
+      const sel = order.plot?.type === code
+      doc.setFont('helvetica', sel ? 'bold' : 'normal')
+      const seg = label + (i < graveOpts.length - 1 ? '  /  ' : '')
+      doc.text(seg, gx, ry); gx += doc.getTextWidth(seg)
+    })
+    ry += lineH
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
+    doc.text(`FOUNDATION: ${order.foundationType || '____________'}`, rx + padX, ry)
+
+    y = boxTop + boxH + 4
   }
 
-  // ============================ IN MEMORY OF ============================
+  // ============================ DECEASED INFORMATION ====================
   if (order.deceased?.length) {
-    sectionHeader('In memory of')
+    // Black banner bar with reversed (white) centered title.
+    ensure(12)
+    y += 2
+    const barH = 6.5
+    doc.setFillColor(0, 0, 0)
+    doc.rect(M, y, W - 2 * M, barH, 'F')
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255)
+    doc.text('DECEASED INFORMATION', W / 2, y + 4.5, { align: 'center' })
+    doc.setTextColor(...TEXT)
+    y += barH + 5
     const lines = pdfDeceasedLines(order)
     for (const ln of lines) {
       ensure(6)
@@ -7735,37 +7800,23 @@ export async function generateEstimatePDF(order, opts = {}) {
   // Custom items
   const customItems = order.pricing?.customLineItems || []
 
-  // Sprint 3u — 4-column line items: Description | Color | Qty | Rate.
-  // buildLineItems flattens to {code,label,amount} only, so Color and Qty are
-  // cross-referenced back out of order.addOns here. base-stone/color-premium
-  // take the order's granite color; addon rows take their own bling/vase color.
-  const descX = M                 // 16   — Description left edge, wraps at 72mm
-  const colorX = M + 74           // 90   — Color left edge, wraps at 36mm
-  const qtyRightX = W - M - 28     // 171.9 — Qty, right-aligned
-  const rateRightX = W - M        // 199.9 — Rate, right-aligned
+  // Columns: Description | Qty | Rate | Total. Rate + Total hide on the estimate
+  // (showLinePrices=false) — the estimate shows Description + Qty only; the grand
+  // Total at the bottom still appears. Total per line = Qty × Rate (= amount).
+  const descX = M
+  const totalRightX = W - M             // Total, right-aligned
+  const rateRightX = W - M - 34          // Rate, right-aligned
+  const qtyRightX = showLinePrices ? W - M - 70 : W - M   // Qty right edge
+  const descWrapW = (qtyRightX - 12) - descX             // wrap before the Qty column
 
   const addonByCode = {}
   for (const a of (order.addOns || [])) addonByCode[a.code] = a
-
-  const lineItemColor = (code) => {
-    if (code === 'base-stone' || code === 'color-premium') {
-      return GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || ''
-    }
-    if (code?.startsWith('addon-')) {
-      const a = addonByCode[code.slice(6)]
-      const colorCode = a?.blingColor || a?.vaseColor
-      return colorCode ? (GRANITE_COLORS.find(c => c.code === colorCode)?.label || '') : ''
-    }
-    return ''
-  }
   const lineItemQty = (code) => {
     if (code?.startsWith('addon-')) return addonByCode[code.slice(6)]?.qty || 1
     return 1
   }
 
-  // Header row
-  // Sprint 3u Part D — reserve the whole line-items table (column header +
-  // one row per item + footer slack) so the table header never orphans.
+  // Header row (reserve the whole table so it never orphans).
   const lineRowCount = itemsResolved.filter(it => it.amount != null).length
     + customItems.filter(it => it.label || it.amount).length
   ensure(lineRowCount * 5 + 12)
@@ -7773,12 +7824,14 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFontSize(8)
   doc.setTextColor(...GREY)
   doc.text('DESCRIPTION', descX, y)
-  doc.text('COLOR', colorX, y)
   doc.text('QTY', qtyRightX, y, { align: 'right' })
-  doc.text('RATE', rateRightX, y, { align: 'right' })
+  if (showLinePrices) {
+    doc.text('RATE', rateRightX, y, { align: 'right' })
+    doc.text('TOTAL', totalRightX, y, { align: 'right' })
+  }
   y += 1.5
   doc.setDrawColor(...LIGHT_RULE)
-  doc.setLineWidth(0.2)
+  doc.setLineWidth(0.3)
   doc.line(M, y, W - M, y)
   y += 4
 
@@ -7786,28 +7839,22 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFontSize(9.5)
   doc.setTextColor(...TEXT)
 
-  // Draw one 4-column row. Mutates y via closure.
+  // Draw one row. Mutates y via closure.
   const renderLineRow = (label, amount, code) => {
     ensure(5)
     const qty = lineItemQty(code)
-    const colorLabel = lineItemColor(code)
-    // Strip the " x N" suffix buildLineItems bakes into addon labels — the Qty
-    // column now carries that information.
+    // Strip the " × N" suffix buildLineItems bakes into addon labels — the Qty
+    // column carries that now.
     const desc = code?.startsWith('addon-') ? label.replace(/ × \d+$/, '') : label
-    const descLines = doc.splitTextToSize(desc, 72)
-    const colorLines = colorLabel ? doc.splitTextToSize(colorLabel, 36) : []
+    const descLines = doc.splitTextToSize(desc, descWrapW)
     doc.text(descLines, descX, y)
-    if (colorLines.length) doc.text(colorLines, colorX, y)
     doc.text(String(qty), qtyRightX, y, { align: 'right' })
     if (showLinePrices) {
-      const rateText = qty > 1 ? `${fmtUSD(amount / qty)} each` : fmtUSD(amount)
-      doc.text(rateText, rateRightX, y, { align: 'right' })
-    } else {
-      // Estimates hide per-item rate values so customers can shop around without
-      // exposing per-item pricing to competitors. Final total stays visible.
-      doc.text('—', rateRightX, y, { align: 'right' })
+      const rate = qty > 0 ? amount / qty : amount
+      doc.text(fmtUSD(rate), rateRightX, y, { align: 'right' })
+      doc.text(fmtUSD(amount), totalRightX, y, { align: 'right' })   // Qty × Rate
     }
-    y += 4 * Math.max(descLines.length, colorLines.length, 1) + 0.5
+    y += 4 * Math.max(descLines.length, 1) + 0.5
   }
 
   let subtotalDisc = 0       // discount-eligible (everything except cemetery permit)
@@ -7888,18 +7935,20 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 5
   }
 
-  // Grand total — emphasized
-  y += 1
-  doc.setDrawColor(...NAVY)
-  doc.setLineWidth(0.5)
-  doc.line(W - M - 80, y, W - M, y)
-  y += 5
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(13)
-  doc.setTextColor(...NAVY)
-  doc.text('GRAND TOTAL', W - M - 60, y)
-  doc.text(fmtUSD(runningTotal), W - M, y, { align: 'right' })
-  y += 8
+  // Payment footer — "PAYMENT:" on the left, the grand Total in a large
+  // black-bordered box on the right.
+  y += 4
+  ensure(18)
+  const ptBoxW = 64, ptBoxH = 13, ptBoxX = W - M - ptBoxW, ptBoxY = y
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...TEXT)
+  doc.text('PAYMENT:', M, ptBoxY + 8.5)
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.6)
+  doc.rect(ptBoxX, ptBoxY, ptBoxW, ptBoxH)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8)
+  doc.text('TOTAL', ptBoxX + 3, ptBoxY + 5)
+  doc.setFontSize(15)
+  doc.text(fmtUSD(runningTotal), ptBoxX + ptBoxW - 3, ptBoxY + 10, { align: 'right' })
+  y = ptBoxY + ptBoxH + 7
 
   // ============================ DEPOSIT BLOCK ============================
   // 50% deposit policy. On contract: "Due today". On estimate: "Required at signing".
