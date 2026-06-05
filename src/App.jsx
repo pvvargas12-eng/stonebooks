@@ -497,17 +497,8 @@ function CatalogStandalone() {
   }
   if (!authed) return <CatalogLoginGate />
   if (seed) return <SalesMode onClose={() => setSeed(null)} seedDesign={seed} />
-  return (
-    <div style={{ minHeight: '100vh', background: '#fbfaf7' }}>
-      <div style={{ borderBottom: '1px solid #ece8e0', background: '#fff', padding: '14px 24px', display: 'flex', alignItems: 'baseline', gap: 12 }}>
-        <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 18, color: '#1e2330' }}>
-          Shevchenko <span style={{ color: '#9A7209' }}>Monuments</span>
-        </span>
-        <span style={{ fontSize: 11, color: '#9a948a', letterSpacing: '0.14em', textTransform: 'uppercase' }}>Catalog</span>
-      </div>
-      <CatalogTab onStartOrder={setSeed} />
-    </div>
-  )
+  // CatalogTab renders its own top bar (brand + Settings gear) and full-height shell.
+  return <CatalogTab onStartOrder={setSeed} />
 }
 
 // ── PRIVATE-APP LOGIN GATE ───────────────────────────────────────
