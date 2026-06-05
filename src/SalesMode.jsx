@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -11851,17 +11851,36 @@ function EstimatesStep({ order, update }) {
   )
 }
 
-// Remote contract e-signing (R2). Generates the CONTRACT-variant PDF in the
+// Status badge tones for signing requests (R5).
+const SIGN_STATUS_BADGE = {
+  pending:  { label: 'Pending', bg: '#eef1f4', fg: '#48535f', bd: '#d3dae1' },
+  viewed:   { label: 'Viewed',  bg: '#fff5e6', fg: '#8a5a12', bd: '#f0cf94' },
+  signed:   { label: 'Signed',  bg: '#e8f5ec', fg: '#1f7a3d', bd: '#a9d9ba' },
+  expired:  { label: 'Expired', bg: '#f2f3f5', fg: '#8a929b', bd: '#d3dae1' },
+  voided:   { label: 'Voided',  bg: '#fdeceb', fg: '#b3261e', bd: '#f1bdb8' },
+}
+const SIGN_ORIGIN = typeof window !== 'undefined' ? window.location.origin : ''
+
+// Remote contract e-signing (R2 + R5). Generates the CONTRACT-variant PDF in the
 // browser (the jsPDF generator is browser-only), hands its bytes + the customer
 // signature/date rects to the signing-create Edge Function, and surfaces the
 // resulting /sign/<token> link with Copy + Compose-email (mailto) actions. NO
-// email is sent automatically in this build — staff send the link themselves.
-// R5 extends this with status badge / copy-again / void.
-function RemoteSigningSection({ order }) {
+// email is sent automatically in this build — staff send the link themselves
+// (see the auto-email seam below). R5 adds the management list: per-request
+// status badge, copy-link-again, void, and download-signed.
+function RemoteSigningSection({ order, locked }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [result, setResult] = useState(null)   // { url, expiresText }
   const [copied, setCopied] = useState(false)
+  const [requests, setRequests] = useState([])
+  const [copiedId, setCopiedId] = useState(null)
+
+  const loadReqs = useCallback(() => {
+    if (!order.id) return
+    getSignatureRequestsForOrder(order.id).then(setRequests).catch(() => { /* deploy-safe: stays [] */ })
+  }, [order.id])
+  useEffect(() => { loadReqs() }, [loadReqs])
 
   const arrayBufferToBase64 = (buf) => {
     const bytes = new Uint8Array(buf)
@@ -11889,6 +11908,11 @@ function RemoteSigningSection({ order }) {
       let expiresText = ''
       if (res.expiresAt) { try { expiresText = new Date(res.expiresAt).toLocaleDateString() } catch { /* ignore */ } }
       setResult({ url: res.url, expiresText })
+      loadReqs()
+      // ── FUTURE auto-email seam (DO NOT enable in this build) ──
+      // To auto-send the link on create, call the existing gmail-send path here:
+      //   await sendOrderEmail({ orderId: order.id, to: order.customer?.email, subject, body: <link> })
+      // Left manual on purpose — staff send the link themselves for now.
     } catch (e) {
       setErr(e.message || 'Could not create signing link.')
     } finally {
@@ -11900,6 +11924,24 @@ function RemoteSigningSection({ order }) {
     if (!result?.url) return
     try { await navigator.clipboard.writeText(result.url); setCopied(true); setTimeout(() => setCopied(false), 2000) }
     catch { setErr('Copy failed — select the link and copy manually.') }
+  }
+
+  // R5 per-request actions.
+  const copyAgain = async (req) => {
+    const url = `${SIGN_ORIGIN}/sign/${req.token}`
+    try { await navigator.clipboard.writeText(url); setCopiedId(req.id); setTimeout(() => setCopiedId(null), 2000) }
+    catch { setErr('Copy failed — copy the link manually.') }
+  }
+  const voidReq = async (req) => {
+    if (!window.confirm('Void this signing link? The customer will no longer be able to open or sign it.')) return
+    const res = await voidSignatureRequest(req.id)
+    if (!res.ok) { setErr(res.error || 'Could not void the link.'); return }
+    loadReqs()
+  }
+  const downloadSigned = async (req) => {
+    const url = await getSignedContractUrl(req.signed_pdf_path)
+    if (!url) { setErr('Signed copy is unavailable.'); return }
+    window.open(url, '_blank', 'noopener')
   }
 
   const composeHref = () => {
@@ -11915,20 +11957,27 @@ function RemoteSigningSection({ order }) {
     return `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   }
 
+  // A locked order with no remote-signing activity (signed in-app) shows nothing.
+  if (locked && requests.length === 0) return null
+
   return (
     <Section title="Sign remotely" eyebrow="Email a secure link — customer signs online">
-      <p className="sm-helper" style={{ marginTop: 0 }}>
-        Create a private link, then send it to the customer yourself. They open it (no
-        login), review the contract, and sign. You'll get the signed copy on this order.
-      </p>
-      <button
-        type="button"
-        className="sm-btn sm-btn-navy"
-        onClick={handleCreate}
-        disabled={busy}
-      >
-        {busy ? 'Creating link…' : result ? 'Create a new link' : 'Create signing link'}
-      </button>
+      {!locked && (
+        <>
+          <p className="sm-helper" style={{ marginTop: 0 }}>
+            Create a private link, then send it to the customer yourself. They open it (no
+            login), review the contract, and sign. You'll get the signed copy on this order.
+          </p>
+          <button
+            type="button"
+            className="sm-btn sm-btn-navy"
+            onClick={handleCreate}
+            disabled={busy}
+          >
+            {busy ? 'Creating link…' : result ? 'Create a new link' : 'Create signing link'}
+          </button>
+        </>
+      )}
 
       {err && <div className="sm-pdf-err" style={{ marginTop: 10 }}>⚠ {err}</div>}
 
@@ -11955,6 +12004,51 @@ function RemoteSigningSection({ order }) {
             {result.expiresText ? `Link expires ${result.expiresText}.` : 'Link expires in 14 days.'}{' '}
             No email is sent automatically — use Compose email or paste the link into your own message.
           </div>
+        </div>
+      )}
+
+      {/* R5 — existing signing links for this order with live status. */}
+      {requests.length > 0 && (
+        <div style={{ marginTop: result ? 18 : 4 }}>
+          <div className="sm-helper" style={{ marginBottom: 6, fontWeight: 600 }}>Signing links</div>
+          {requests.map((req) => {
+            const badge = SIGN_STATUS_BADGE[req.displayStatus] || SIGN_STATUS_BADGE.pending
+            const active = req.displayStatus === 'pending' || req.displayStatus === 'viewed'
+            return (
+              <div key={req.id} style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                padding: '10px 12px', marginBottom: 8, border: '1px solid #e2e7ec', borderRadius: 6, background: '#fff',
+              }}>
+                <span style={{
+                  fontSize: 11, fontWeight: 700, letterSpacing: 0.5, padding: '3px 9px', borderRadius: 20,
+                  background: badge.bg, color: badge.fg, border: `1px solid ${badge.bd}`,
+                }}>{badge.label}</span>
+                <span style={{ fontSize: 12, color: '#6b7682' }}>
+                  {req.customer_email || 'no email on file'}
+                  {req.signer_name ? ` · signed by ${req.signer_name}` : ''}
+                </span>
+                <span style={{ flex: 1 }} />
+                {active && (
+                  <button type="button" className="sm-btn" style={{ padding: '5px 12px', fontSize: 12 }} onClick={() => copyAgain(req)}>
+                    {copiedId === req.id ? '✓ Copied' : 'Copy link again'}
+                  </button>
+                )}
+                {active && (
+                  <button type="button" className="sm-btn" style={{ padding: '5px 12px', fontSize: 12, color: '#b3261e' }} onClick={() => voidReq(req)}>
+                    Void
+                  </button>
+                )}
+                {req.displayStatus === 'signed' && req.signed_pdf_path && (
+                  <button type="button" className="sm-btn sm-btn-navy" style={{ padding: '5px 12px', fontSize: 12 }} onClick={() => downloadSigned(req)}>
+                    Download signed
+                  </button>
+                )}
+              </div>
+            )
+          })}
+          {/* ── FUTURE auto-email seam (DO NOT enable in this build) ──
+              On the 'signed' transition, email the signed copy to the customer +
+              shop here (via the existing gmail-send path). Left manual for now. */}
         </div>
       )}
     </Section>
@@ -12216,7 +12310,7 @@ function SignStep({ order, update }) {
         </Section>
       )}
 
-      {!isLocked && <RemoteSigningSection order={order} />}
+      <RemoteSigningSection order={order} locked={isLocked} />
 
       {isLocked && (
         <Section title="Download contract PDF" eyebrow="Print or email">

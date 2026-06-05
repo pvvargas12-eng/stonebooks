@@ -336,6 +336,47 @@ export async function createSigningLink({ orderId, pdfBase64, sigFieldRects, cus
   return { ok: true, url: data?.url, requestId: data?.request_id, expiresAt: data?.expires_at }
 }
 
+// List the signing requests for an order (staff RLS). Deploy-safe: returns [] if
+// the table doesn't exist yet. Computes a display status that reflects lazy
+// expiry (a pending/viewed request past expires_at reads as 'expired') without
+// writing — the signing-load endpoint performs the authoritative DB flip.
+export async function getSignatureRequestsForOrder(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('signature_requests')
+    .select('id, order_id, token, status, expires_at, signed_pdf_path, signer_name, customer_email, viewed_at, signed_at, created_at')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[signing] getSignatureRequestsForOrder:', error.message); return [] }
+  const now = Date.now()
+  return (data || []).map((r) => {
+    let displayStatus = r.status
+    if ((r.status === 'pending' || r.status === 'viewed') && r.expires_at && new Date(r.expires_at).getTime() < now) {
+      displayStatus = 'expired'
+    }
+    return { ...r, displayStatus }
+  })
+}
+
+// Void a pending/viewed signing request so its link stops working (the signing-*
+// functions reject 'voided'). Staff RLS write.
+export async function voidSignatureRequest(requestId) {
+  if (!requestId) return { ok: false, error: 'Missing request id.' }
+  const { error } = await supabase
+    .from('signature_requests').update({ status: 'voided' }).eq('id', requestId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Short-lived signed URL to a stored signed contract PDF (private bucket; staff
+// storage policy). Returns null on failure.
+export async function getSignedContractUrl(path) {
+  if (!path) return null
+  const { data, error } = await supabase.storage.from('signatures').createSignedUrl(path, 600)
+  if (error) { console.warn('[signing] getSignedContractUrl:', error.message); return null }
+  return data?.signedUrl || null
+}
+
 // ── Order notes (20260601_order_notes.sql) ────────────────────────────────
 export async function getOrderNotes(orderId) {
   if (!orderId) return []
