@@ -27,6 +27,7 @@ import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
 import UndoToast from './components/calendar/UndoToast.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import { supabase } from './lib/supabase'
+import { cachedFetch } from './lib/dataCache'
 
 const CUST_PAGE_SIZE = 50
 
@@ -127,7 +128,9 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
           'target_completion_date, primary_lastname, deceased, service_types, cemetery_id, ' +
           'cemetery:cemeteries(id, name)'
         )),
-        getJobs({ includeClosed: true, limit: 1000 }),
+        // Shared with the Orders board under 'jobs:all' — switching Orders<->Customers
+        // reuses the jobs dataset instead of refetching ~8k milestone rows each time.
+        cachedFetch('jobs:all', () => getJobs({ includeClosed: true, limit: 2000 })),
       ])
       setCustomers(cs || [])
       setAllOrders(orders || [])

@@ -166,8 +166,11 @@ export async function updateCustomerNotes(customerId, notes) {
 // only, 'all'/undefined → both. `statuses` still narrows by the lifecycle enum
 // when provided. The Triage Workbench loads by `archived` and filters status
 // client-side.
-export async function listAllOrders({ statuses, archived, limit = 500 } = {}) {
-  let q = supabase.from('orders').select('*, customer:customers(*), cemetery:cemeteries(*)')
+export async function listAllOrders({ statuses, archived, limit = 500, select } = {}) {
+  // `select` lets a list view fetch ONLY the columns it renders (the Orders
+  // board passes a trimmed set — heavy jsonb like deceased/designs/design_snapshot
+  // is loaded lazily on the detail view). Default unchanged for other consumers.
+  let q = supabase.from('orders').select(select || '*, customer:customers(*), cemetery:cemeteries(*)')
   if (statuses && statuses.length) q = q.in('status', statuses)
   if (archived === false)     q = q.or('archived.is.null,archived.eq.false')
   else if (archived === true) q = q.eq('archived', true)

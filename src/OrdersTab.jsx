@@ -30,6 +30,20 @@ import {
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
+import { cachedFetch, peekCache, invalidateCache } from './lib/dataCache'
+
+// Trimmed column set for the Orders board — ONLY what the list + status/payment
+// derivations read (verified against every helper). Heavy jsonb (deceased,
+// designs, design_snapshot, mausoleum_intake, element_filters, …) is NOT here —
+// the detail view fetches the full row. Keeps the board fetch ~0.4MB vs ~1.0MB.
+const ORDERS_BOARD_SELECT =
+  'id, status, archived, order_number, created_at, updated_at, signed_at, pricing_locked_at, ' +
+  'target_completion_date, primary_lastname, sales_rep, service_types, shape, granite_color, ' +
+  'width_inches, standard_size_code, pricing, add_ons, contract_total, payments, deposit_amount, ' +
+  'balance_amount, payment_status, permit_required, permit_status, customer_id, cemetery_id, ' +
+  'customer:customers(id, first_name, last_name, email, phone_primary), cemetery:cemeteries(id, name)'
+const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`
+const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with CustomersTab
 import OrderDetail from './OrderDetail.jsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -172,9 +186,12 @@ function furthestStage(job) {
 // ── Component ────────────────────────────────────────────────────────────────
 export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
-  const [orders, setOrders] = useState([])
-  const [allJobs, setAllJobs] = useState([])
-  const [loading, setLoading] = useState(true)
+  // Seed from the cross-mount cache so re-opening Orders renders instantly
+  // (default archiveView is 'active'). loading starts false only when both
+  // datasets are already cached.
+  const [orders, setOrders] = useState(() => peekCache(ORDERS_KEY('active')) ?? [])
+  const [allJobs, setAllJobs] = useState(() => peekCache(JOBS_KEY) ?? [])
+  const [loading, setLoading] = useState(() => peekCache(ORDERS_KEY('active')) === undefined || peekCache(JOBS_KEY) === undefined)
   const [loadErr, setLoadErr] = useState(null)
   const [reloadNonce, setReloadNonce] = useState(0)
 
@@ -213,11 +230,16 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // ── Load (by archive view) ────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setLoadErr(null)
+    const oKey = ORDERS_KEY(archiveView)
     const archived = archiveView === 'all' ? undefined : (archiveView === 'archived')
+    // Only show the spinner when a dataset isn't already cached — a cached
+    // re-entry stays instant. cachedFetch returns cached data within the TTL and
+    // refetches in the background otherwise.
+    if (peekCache(oKey) === undefined || peekCache(JOBS_KEY) === undefined) setLoading(true)
+    setLoadErr(null)
     Promise.all([
-      listAllOrders({ archived, limit: 2000 }),
-      getJobs({ includeClosed: true, limit: 2000 }),
+      cachedFetch(oKey, () => listAllOrders({ archived, limit: 2000, select: ORDERS_BOARD_SELECT })),
+      cachedFetch(JOBS_KEY, () => getJobs({ includeClosed: true, limit: 2000 })),
     ])
       .then(([rows, jobs]) => {
         if (cancelled) return
@@ -227,7 +249,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     return () => { cancelled = true }
   }, [archiveView, reloadNonce])
 
-  const reload = useCallback(() => setReloadNonce(n => n + 1), [])
+  const reload = useCallback(() => { invalidateCache('orders:board'); invalidateCache(JOBS_KEY); setReloadNonce(n => n + 1) }, [])
 
   // Consume an incoming queue selection from the Queues dashboard: clear other
   // filters, force the active view, apply the queue, and tell the parent it's
@@ -521,9 +543,13 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // and flashes blank mid-edit). enriched recomputes from orders + allJobs.
   const patchOrderLocal = useCallback((orderId, fields) => {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, ...fields } : o))
+    // The DB changed — drop the cache so a re-entry refetches fresh (the current
+    // view already shows the optimistic patch).
+    invalidateCache('orders:board')
   }, [])
   const patchJobMilestonesLocal = useCallback((orderId, plan) => {
     if (!plan) return
+    invalidateCache(JOBS_KEY)
     const statusByKey = {}
     for (const k of (plan.done || []))       statusByKey[k] = 'done'
     for (const k of (plan.notStarted || [])) statusByKey[k] = 'not_started'
