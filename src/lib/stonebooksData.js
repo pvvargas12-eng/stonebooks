@@ -43,7 +43,11 @@ export async function fetchAllPaged(buildQuery, pageSize = 1000) {
   const all = []
   for (;;) {
     const { data, error } = await buildQuery().range(from, from + pageSize - 1)
-    if (error) { console.error('fetchAllPaged:', error.message); break }
+    // THROW (don't break) on a page error — returning the partial pages as if
+    // complete is the silent-truncation bug class that bit the customers list.
+    // Callers wrap this in try/catch / .catch / the profit safe() guard, so a
+    // failed load surfaces as empty rather than silently wrong-and-partial.
+    if (error) throw new Error(`fetchAllPaged: ${error.message}`)
     const batch = data || []
     all.push(...batch)
     if (batch.length < pageSize) break
@@ -3124,21 +3128,21 @@ async function _getProfitOverviewInner() {
     catch (e) { console.warn(`[profit] ${label} threw:`, e?.message || e); return { data: [], error: e } }
   }
 
-  const [finPays, finExps, jobsRes, cemRes, estRes, ordersRes, outRes] = await Promise.all([
-    safe(getFinancialRecords({ recordType: 'payment_received' }), 'payments').then(r => Array.isArray(r) ? r : (r?.data || [])),
-    safe(getFinancialRecords({ recordType: 'expense_incurred' }), 'expenses').then(r => Array.isArray(r) ? r : (r?.data || [])),
-    safe(supabase.from('jobs').select('id, job_type, order_id, cemetery_order_id, quoted_total, overall_status'), 'jobs'),
-    safe(supabase.from('cemetery_orders').select('id, cemetery_name, total_amount, status, created_at, submitted_at'), 'cemetery_orders'),
-    safe(supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount'), 'estimates'),
+  // Every list input pages through ALL rows (fetchAllPaged) — a single PostgREST
+  // request is capped at 1000, which would silently under-count money once any
+  // of these tables passes 1000 rows. toArr normalizes both the array return
+  // (fetchAllPaged / getFinancialRecords) and the safe()-on-throw {data:[]} shape.
+  const toArr = (r) => (Array.isArray(r) ? r : (r?.data || []))
+  const [finPays, finExps, jobs, cems, estimates, orders, outgoing] = await Promise.all([
+    safe(getFinancialRecords({ recordType: 'payment_received' }), 'payments').then(toArr),
+    safe(getFinancialRecords({ recordType: 'expense_incurred' }), 'expenses').then(toArr),
+    safe(fetchAllPaged(() => supabase.from('jobs').select('id, job_type, order_id, cemetery_order_id, quoted_total, overall_status')), 'jobs').then(toArr),
+    safe(fetchAllPaged(() => supabase.from('cemetery_orders').select('id, cemetery_name, total_amount, status, created_at, submitted_at')), 'cemetery_orders').then(toArr),
+    safe(fetchAllPaged(() => supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount')), 'estimates').then(toArr),
     // D1 — archived orders never count toward any financial rollup.
-    safe(supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at, archived').or('archived.is.null,archived.eq.false').limit(10000), 'orders'),
-    safe(supabase.from('outgoing_payments').select('id, amount, category, paid_date, order_id, recurring_bill_id'), 'outgoing'),
+    safe(fetchAllPaged(() => supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at, archived').or('archived.is.null,archived.eq.false')), 'orders').then(toArr),
+    safe(fetchAllPaged(() => supabase.from('outgoing_payments').select('id, amount, category, paid_date, order_id, recurring_bill_id')), 'outgoing').then(toArr),
   ])
-  const jobs = jobsRes?.data || []
-  const cems = cemRes?.data || []
-  const estimates = estRes?.data || []
-  const orders = ordersRes?.data || []
-  const outgoing = outRes?.data || []
 
   // Outgoing payments are real money OUT. Normalize into the same expense-row
   // shape the overview already sums ({ amount, occurred_at, order_id, job_id }).
@@ -3189,11 +3193,12 @@ async function _getProfitOverviewInner() {
   const activeJobIds = jobs.filter(j => !JOB_CLOSED.includes(j.overall_status)).map(j => j.id)
   let milestones = []
   if (activeJobIds.length) {
-    const mres = await safe(
-      supabase.from('job_milestones').select('*').in('job_id', activeJobIds),
+    // Page through ALL milestones — a flat select is capped at 1000 of ~8k+ rows,
+    // which truncated stageByJob and gave many jobs a wrong/defaulted stage.
+    milestones = await safe(
+      fetchAllPaged(() => supabase.from('job_milestones').select('*').in('job_id', activeJobIds)),
       'job_milestones',
-    )
-    milestones = mres?.data || []
+    ).then(toArr)
   }
   const stageByJob = {}
   {

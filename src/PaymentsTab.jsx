@@ -128,13 +128,14 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const ordersQuery = () => supabase.from('orders').select(ORDER_SELECT)
     .or('archived.is.null,archived.eq.false').order('updated_at', { ascending: false })
 
-  const loadOrders = useCallback(async () => setOrders(await fetchAllPaged(ordersQuery) || []), [])
+  const loadOrders = useCallback(async () => { try { setOrders(await fetchAllPaged(ordersQuery) || []) } catch { setOrders([]) } }, [])
   const loadOutgoing = useCallback(async () => setOutgoing(await listOutgoingPayments() || []), [])
   const loadBills = useCallback(async () => setBills(await listRecurringBills() || []), [])
 
   useEffect(() => {
     let cancelled = false
-    fetchAllPaged(ordersQuery).then(r => { if (!cancelled) setOrders(r || []) })
+    // fetchAllPaged can throw on a page error — keep the floating promise caught.
+    fetchAllPaged(ordersQuery).then(r => { if (!cancelled) setOrders(r || []) }).catch(() => { if (!cancelled) setOrders([]) })
     listOutgoingPayments().then(r => { if (!cancelled) setOutgoing(r || []) })
     listRecurringBills().then(r => { if (!cancelled) setBills(r || []) })
     return () => { cancelled = true }
