@@ -28,6 +28,7 @@ import SchedulerTab from './SchedulerTab'
 import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
 import PaymentsTab from './PaymentsTab'
+import VendorsTab from './VendorsTab'
 import EmailTab from './EmailTab'
 import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
@@ -207,6 +208,7 @@ const NAV_PRIMARY = [
   { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
   { key: 'payments',  label: 'Payments' },
+  { key: 'vendors',   label: 'Vendors' },
   { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
 ]
@@ -649,6 +651,7 @@ export default function Stonebooks() {
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
+{tab === 'vendors'   && <VendorsTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
             'Coming next: design library management — upload new monuments, edit metadata, organize by category.',
