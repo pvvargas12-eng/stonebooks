@@ -15,7 +15,7 @@
 do $$
 declare
   t        text;
-  allow    text[] := array['monuments'];
+  allow    text[] := array[]::text[];   -- empty (mirrors the migration) — also un-denies monuments
   excluded text[] := array[
     'partners','partner_users',
     'vendor_requests','vendor_items','vendor_batches','vendor_pos','vendor_po_items',

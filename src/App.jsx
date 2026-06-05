@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './lib/supabase'
+import { getSession, onAuthStateChange, signInWithPassword } from './lib/auth'
 import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
 
@@ -463,6 +464,45 @@ export default function App() {
   return <CustomerApp />
 }
 
+// ── PRIVATE-APP LOGIN GATE ───────────────────────────────────────
+// The catalog is no longer public. An unauthenticated visitor gets a branded
+// staff sign-in instead of an empty page. On success, CustomerApp's auth
+// listener flips `authed` and the catalog renders.
+const gateInput = {
+  width: '100%', padding: '11px 13px', marginBottom: 10, fontSize: 14,
+  border: '1px solid var(--border-dark)', borderRadius: 6, outline: 'none',
+  background: 'var(--cream)', color: 'var(--text)',
+}
+function CatalogLoginGate() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true); setErr(null)
+    const r = await signInWithPassword(email, password)
+    setBusy(false)
+    if (!r.ok) setErr(r.error)
+    // On success the auth listener in CustomerApp flips `authed` → catalog shows.
+  }
+  return (
+    <>
+      <style>{css}</style>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
+        <form onSubmit={submit} style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', width: '100%', maxWidth: 380, boxShadow: 'var(--shadow-md)' }}>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: 24, color: 'var(--navy)', marginBottom: 4 }}>Shevchenko <span style={{ color: 'var(--accent)' }}>Monuments</span></div>
+          <div style={{ fontSize: 13, color: 'var(--text-mid)', marginBottom: 22 }}>Staff sign-in required.</div>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" autoFocus autoComplete="username" style={gateInput} />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" autoComplete="current-password" style={gateInput} />
+          {err && <div style={{ color: '#b54040', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+          <button type="submit" className="btn btn-navy" disabled={busy} style={{ width: '100%', padding: '12px', fontSize: 13 }}>{busy ? 'Signing in…' : 'Sign In'}</button>
+        </form>
+      </div>
+    </>
+  )
+}
+
 function CustomerApp() {
   const [monuments, setMonuments] = useState([])
   const [filtered, setFiltered] = useState([])
@@ -477,9 +517,23 @@ function CustomerApp() {
   const [favorites, setFavorites] = useState([])
   const [favOpen, setFavOpen] = useState(false)
   const [toast, setToast] = useState(null)
+  // The catalog is private (anon has zero DB access). undefined = checking auth,
+  // false = signed out → login gate, true = signed in → catalog.
+  const [authed, setAuthed] = useState(undefined)
 
-  // Load all monuments from Supabase
+  // Resolve the session and subscribe to auth changes. Signing in flips `authed`
+  // → the catalog renders and its data load fires.
   useEffect(() => {
+    let cancelled = false
+    getSession().then(s => { if (!cancelled) setAuthed(!!s) })
+    const unsub = onAuthStateChange((u) => setAuthed(!!u))
+    return () => { cancelled = true; unsub() }
+  }, [])
+
+  // Load all monuments from Supabase — only once signed in (anon reads nothing).
+  useEffect(() => {
+    if (authed !== true) return
+    let cancelled = false
     async function load() {
       setLoading(true)
       let all = []
@@ -495,12 +549,14 @@ function CustomerApp() {
         if (data.length < batchSize) break
         from += batchSize
       }
+      if (cancelled) return
       setMonuments(all)
       setFiltered(all)
       setLoading(false)
     }
     load()
-  }, [])
+    return () => { cancelled = true }
+  }, [authed])
 
   const showToast = (msg) => {
     setToast(msg)
@@ -665,6 +721,20 @@ function CustomerApp() {
     setGalleryTitle('All Designs')
     setGalleryPage(1)
     setPage('gallery')
+  }
+
+  // Private app: resolve auth before showing anything.
+  if (authed === undefined) {
+    return (
+      <>
+        <style>{css}</style>
+        <div className="loading" style={{ minHeight: '100vh' }}><div className="spinner" />Loading…</div>
+      </>
+    )
+  }
+  // Unauthenticated visitor → staff sign-in, not an empty catalog.
+  if (!authed) {
+    return <CatalogLoginGate />
   }
 
   return (
