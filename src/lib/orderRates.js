@@ -22,6 +22,11 @@ import {
 } from '../SalesMode'
 import { supabase } from './supabase'
 
+// Feet-inches dimension string for line-item labels (e.g. 30,14,6 → "2-6 × 1-2 × 0-6").
+// Labels carry product name + SIZE only — never pricing math.
+const ftInch = (n) => { n = Number(n); if (!n) return null; return `${Math.floor(n / 12)}-${n % 12}` }
+const fiDims = (o) => [ftInch(o.width), ftInch(o.depth), ftInch(o.thickness ?? o.height)].filter(Boolean).join(' × ')
+
 // Re-export the existing dropdown lists so the form imports everything from here.
 export {
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
@@ -237,7 +242,8 @@ export function computeFormLineItems(order) {
     if (baseStone && L > 0 && H > 0) {
       const rate = liveRates.customDiePerSqIn
       baseStone.amount = Math.round(L * H * rate * 100) / 100
-      baseStone.label = `${shape.label} (custom ${L}″ × ${H}″ face × $${rate}/sq in)`
+      // Label = product name + size only (feet-inches). NO pricing math.
+      baseStone.label = `${shape.label}${fiDims(order) ? ` ${fiDims(order)}` : ''}`
     }
   }
 
@@ -261,7 +267,7 @@ export function computeFormLineItems(order) {
     const heightIn = Number(order.height) || 0
     const rate = liveRates.polishSidePerFoot[thickness] ?? liveRates.polishSidePerFoot[8]
     if (heightIn > 0) {
-      items.push({ code: 'polish-sides', label: `Polish die sides (${heightIn}″ tall @ ${thickness}″ thick)`, amount: Math.round((heightIn / 12) * rate), editable: true })
+      items.push({ code: 'polish-sides', label: 'Polish die sides', amount: Math.round((heightIn / 12) * rate), editable: true })
     }
   }
 
@@ -273,13 +279,13 @@ export function computeFormLineItems(order) {
   if (bc.include && bc.polishMargin2in && baseW > 0 && baseD > 0) {
     const perimeter = 2 * (baseW + baseD)
     const rate = liveRates.basePolishMarginPerFoot
-    items.push({ code: 'base-margin', label: `2″ polished margin (perimeter ${perimeter}″ ÷ 12 × $${rate})`, amount: Math.round((perimeter / 12) * rate), editable: true })
+    items.push({ code: 'base-margin', label: '2″ polished margin', amount: Math.round((perimeter / 12) * rate), editable: true })
   }
 
   // (4) Saw base — (base length ÷ 12) × $45 when the base finish is SB (sawn).
   if (bc.include && bc.finish === 'SB' && baseW > 0) {
     const rate = liveRates.sawBasePerFoot
-    items.push({ code: 'saw-base', label: `Saw base (${baseW}″ ÷ 12 × $${rate})`, amount: Math.round((baseW / 12) * rate), editable: true })
+    items.push({ code: 'saw-base', label: 'Saw base', amount: Math.round((baseW / 12) * rate), editable: true })
   }
 
   // Owner-quote flag — custom line items the form flags for the owner to price

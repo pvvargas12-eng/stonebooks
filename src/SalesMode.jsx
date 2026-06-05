@@ -9011,22 +9011,19 @@ export function buildLineItems(order) {
     // matches the pricing sheet (the foundation goes under the base, so the
     // base is what determines the foundation size).
     if (order.pricing.foundationCalc) {
-      let footW = null, footD = null, source = null
+      let footW = null, footD = null
       const hasBase = order.baseConfig.include || shape.requiresBase
       if (hasBase) {
         if (order.baseConfig.sizeCode && order.baseConfig.sizeCode !== 'custom') {
           const baseSize = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
           footW = baseSize?.w; footD = baseSize?.d
-          source = 'base'
         } else if (order.baseConfig.sizeCode === 'custom') {
           footW = order.baseConfig.width; footD = order.baseConfig.depth
-          source = 'custom base'
         }
       }
       // Fall back to stone footprint if no base info available
       if (!footW || !footD) {
         footW = order.width; footD = order.depth
-        source = 'marker'
       }
       if (footW && footD) {
         const sqIn = footW * footD
@@ -9034,7 +9031,8 @@ export function buildLineItems(order) {
         const computed = order.pricing.foundationOverride ?? Math.round(sqIn * rate)
         items.push({
           code: 'foundation',
-          label: `Foundation (${footW}″ × ${footD}″ ${source} = ${sqIn} sq in × $${rate.toFixed(2)})`,
+          // Label = product name + size only (feet-inches). NO pricing math.
+          label: `Foundation${(footW && footD) ? ` ${ftIn(footW)} × ${ftIn(footD)}` : ''}`,
           amount: computed,
           editable: true,
         })
