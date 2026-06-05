@@ -29,6 +29,8 @@ import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
 import PaymentsTab from './PaymentsTab'
 import VendorsTab from './VendorsTab'
+import PartnerPortal from './PartnerPortal'
+import { getMyPartnerContext } from './lib/vendorsData'
 import EmailTab from './EmailTab'
 import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
@@ -256,6 +258,9 @@ function OrderTypeChooser({ onPickFamily, onPickCemetery, onClose }) {
 
 export default function Stonebooks() {
   const [user, setUser] = useState(undefined)  // undefined = loading; null = signed out; object = signed in
+  // Vendor portal binding — undefined = resolving; null = staff; object = partner.
+  // A partner-mapped auth user gets the external portal instead of the staff app.
+  const [portal, setPortal] = useState(undefined)
   const [theme, setTheme] = useState(loadTheme())
   const [tab, setTab] = useState('today')
   const [salesOpen, setSalesOpen] = useState(false)
@@ -346,6 +351,18 @@ export default function Stonebooks() {
     return () => { if (unsub) unsub() }
   }, [])
 
+  // Resolve the vendor-portal binding once we have a signed-in user. A user
+  // mapped in partner_users gets the partner portal; everyone else is staff.
+  // Cancelled-guard .then keeps this off the set-state-in-effect path.
+  useEffect(() => {
+    if (!user?.id) return
+    let cancelled = false
+    getMyPartnerContext()
+      .then(ctx => { if (!cancelled) setPortal(ctx) })
+      .catch(() => { if (!cancelled) setPortal(null) })
+    return () => { cancelled = true }
+  }, [user?.id])
+
   // Load owner-set pricing overrides once at startup so the New Order form
   // prices at the configured values (falls back to constant defaults silently).
   useEffect(() => { loadPricingConfig() }, [])
@@ -429,10 +446,11 @@ export default function Stonebooks() {
   // de-duped internally; calling it on every user-change is safe.
   useEffect(() => {
     if (!user?.id) return
+    if (portal !== null) return   // partner (or still resolving) — don't warm staff data
     refreshEntityIndex().catch(err => {
       console.warn('[Stonebooks] entity index warm-up failed:', err)
     })
-  }, [user?.id])
+  }, [user?.id, portal])
 
   // v2 W-2 — On sign-in, restore the most-recently-focused workpiece.
   // We restore from workpieces[0] (the registry orders most-recent-first
@@ -535,6 +553,22 @@ export default function Stonebooks() {
         <LoginScreen />
       </>
     )
+  }
+
+  // Signed in, but the portal binding is still resolving.
+  if (portal === undefined) {
+    return (
+      <>
+        <style>{themeCSS}</style>
+        <style>{shellStyles}</style>
+        <div className="sb-loading">Loading…</div>
+      </>
+    )
+  }
+
+  // Partner-mapped auth user → external partner portal (NOT the staff app).
+  if (portal) {
+    return <PartnerPortal context={portal} onSignOut={() => { setPortal(null); setUser(null) }} />
   }
 
   // Sales Mode opens as a full-screen overlay. A fresh sale first shows the

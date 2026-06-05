@@ -17,6 +17,7 @@ import {
   uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, addVendorEvent, listVendorEvents,
   listVendorBatches, createVendorBatch, updateVendorBatch, setItemBatch,
   listVendorPOs, createVendorPO, updateVendorPO, nextPONumber,
+  invitePartnerUser, listPartnerUsers,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 
@@ -474,7 +475,42 @@ function PartnerModal({ partner, onClose, onSaved }) {
         <label className="vend-rush-field"><input type="checkbox" checked={f.active} onChange={e => set('active', e.target.checked)} /> <span>Active</span></label>
         {error && <div className="vend-error">{error}</div>}
         <div className="vend-modal-actions"><button type="button" className="vend-cancel" onClick={onClose} disabled={busy}>Cancel</button><button type="button" className="vend-primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button></div>
+        {partner && <PortalInvite partner={partner} defaultEmail={f.email} />}
       </div>
+    </div>
+  )
+}
+
+// Staff invites a partner contact to the external portal. The partner gets an
+// email and SETS THEIR OWN password — staff never type partner credentials.
+function PortalInvite({ partner, defaultEmail }) {
+  const [email, setEmail] = useState(defaultEmail || '')
+  const [users, setUsers] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    listPartnerUsers(partner.id).then(u => { if (!cancelled) setUsers(u) })
+    return () => { cancelled = true }
+  }, [partner.id])
+  const invite = async () => {
+    setBusy(true); setMsg(null)
+    const res = await invitePartnerUser({ partnerId: partner.id, email })
+    setBusy(false)
+    if (!res.ok) { setMsg({ kind: 'err', text: res.error }); return }
+    setMsg({ kind: 'ok', text: `Invite sent to ${email}. They’ll set their own password.` })
+    listPartnerUsers(partner.id).then(setUsers)
+  }
+  return (
+    <div className="vend-invite">
+      <div className="vend-invite-title">Portal access</div>
+      <p className="vend-invite-sub">Invite this partner to log into the portal and submit their own work. They set their own password from the email.</p>
+      <div className="vend-invite-row">
+        <input className="vic-input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="partner contact email" />
+        <button type="button" className="vend-primary" onClick={invite} disabled={busy || !email.trim()}>{busy ? 'Sending…' : 'Send invite'}</button>
+      </div>
+      {msg && <div className={msg.kind === 'err' ? 'vend-error' : 'vend-invite-ok'}>{msg.text}</div>}
+      {users.length > 0 && <div className="vend-invite-users">{users.length} portal user{users.length === 1 ? '' : 's'} linked</div>}
     </div>
   )
 }
@@ -670,6 +706,13 @@ const VEND_CSS = `
   .vend-error { color: #b54040; font-size: 13px; padding: 8px 10px; background: #fbe5e5; border-radius: 8px; }
   .vend-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
   .vend-cancel { font: inherit; font-size: 14px; font-weight: 500; padding: 9px 18px; border-radius: 8px; border: 0.5px solid #e6e3dd; background: #fff; color: #6b6b66; cursor: pointer; }
+  .vend-invite { border-top: 0.5px solid #f1efeb; margin-top: 6px; padding-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .vend-invite-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; }
+  .vend-invite-sub { font-size: 12px; color: #8a8a85; line-height: 1.5; margin: 0; }
+  .vend-invite-row { display: flex; gap: 8px; align-items: center; }
+  .vend-invite-row .vic-input { flex: 1; }
+  .vend-invite-ok { color: #2d6a4f; font-size: 13px; padding: 8px 10px; background: #e8f5ee; border-radius: 8px; }
+  .vend-invite-users { font-size: 12px; color: #6b6b66; }
 
   .vend-drawer-backdrop { position: fixed; inset: 0; background: rgba(15,20,25,0.42); z-index: 1100; display: flex; justify-content: flex-end; }
   .vend-drawer { background: #fff; width: min(620px, 100%); height: 100%; overflow-y: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 16px; box-shadow: -8px 0 32px rgba(15,20,25,0.16); }

@@ -296,3 +296,64 @@ export async function updateVendorPO(id, patch = {}) {
   if (error) return wrapErr(error)
   return { ok: true }
 }
+
+// ── Partner portal: identity + invites (PHASE 3) ─────────────────────────────
+// Resolves the CURRENT auth user to a partner mapping. Returns
+// { partnerId, partner } for a portal user, or null for staff (no mapping).
+// This is what App routing uses to decide staff app vs partner portal. The
+// partner_users RLS lets a partner read only their own mapping row, and the
+// scoped partners policy lets them read only their own company — so this is
+// safe to call from either side.
+export async function getMyPartnerContext() {
+  const { data: auth } = await supabase.auth.getUser()
+  const userId = auth?.user?.id
+  if (!userId) return null
+  const { data: mapping, error } = await supabase
+    .from('partner_users').select('partner_id').eq('auth_user_id', userId).maybeSingle()
+  if (error || !mapping) return null   // staff (or pre-migration): no portal binding
+  const { data: partner } = await supabase.from('partners').select('*').eq('id', mapping.partner_id).maybeSingle()
+  return { partnerId: mapping.partner_id, partner: partner || null }
+}
+
+// Staff invites an outside partner contact to the portal. Routes through the
+// vendor-invite Edge Function (service role) — the partner sets their OWN
+// password from the invite email; staff never type partner credentials.
+export async function invitePartnerUser({ partnerId, email } = {}) {
+  if (!partnerId) return { ok: false, error: 'Missing partner.' }
+  if (!email?.trim()) return { ok: false, error: 'Enter the partner contact’s email.' }
+  const { data, error } = await supabase.functions.invoke('vendor-invite', {
+    body: { partner_id: partnerId, email: email.trim().toLowerCase(), redirect_to: window.location.origin },
+  })
+  if (error) {
+    // Edge function not deployed yet, or returned an error body.
+    let msg = error.message || 'Invite failed.'
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) msg = ctx.detail || ctx.error } catch { /* ignore */ }
+    if (/not.*found|404|failed to fetch|failed to send/i.test(msg)) {
+      msg = 'Invite isn’t available yet — deploy the vendor-invite Edge Function (supabase functions deploy vendor-invite), then try again.'
+    }
+    return { ok: false, error: msg }
+  }
+  if (data?.error) return { ok: false, error: data.detail || data.error }
+  return { ok: true, userId: data?.user_id }
+}
+
+// Portal users mapped to a partner (staff view — who can log into the portal
+// for this company). Staff RLS sees all mappings.
+export async function listPartnerUsers(partnerId) {
+  if (!partnerId) return []
+  const { data, error } = await supabase
+    .from('partner_users').select('*').eq('partner_id', partnerId).order('created_at', { ascending: true })
+  if (error) { console.warn('[vendors] listPartnerUsers:', error.message); return [] }
+  return data || []
+}
+
+// Partner portal job lists. RLS scopes every row to the caller's partner, so
+// these need no explicit partner_id filter — isolation is enforced server-side.
+export async function listMyRequests() {
+  const { data, error } = await supabase
+    .from('vendor_requests')
+    .select('*, items:vendor_items(*)')
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[vendors] listMyRequests:', error.message); return [] }
+  return data || []
+}
