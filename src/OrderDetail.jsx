@@ -23,6 +23,7 @@ import {
   getProofVersions, getProofSignatureSignedUrl,
   getOrderEmails, sendOrderEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
+  setOrderQuoteStatus, QUOTE_STATUS_LABEL, QUOTE_STATUS_TONE,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -152,6 +153,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
   const [permitMsg, setPermitMsg] = useState(null)
+  // Quote Hub send
+  const [quoteBusy, setQuoteBusy] = useState(false)
+  const [quoteMsg, setQuoteMsg] = useState(null)
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -223,6 +227,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     setPermitBusy(false)
     if (!r.ok) { setPermitMsg({ type: 'err', text: r.error }); return }
     setPermitDraft(null); await refreshOrder()
+  }
+
+  // Send this order to the Quote Hub for the owner's final approval. Works the
+  // same regardless of how the order was created (it lives on the shared detail).
+  const sendToQuoteHub = async () => {
+    if (quoteBusy) return
+    setQuoteBusy(true); setQuoteMsg(null)
+    const r = await setOrderQuoteStatus(orderId, 'pending_review')
+    setQuoteBusy(false)
+    if (!r.ok) { setQuoteMsg(r.error); return }
+    await refreshOrder()
   }
 
   const handleAddNote = async () => {
@@ -601,6 +616,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <Field label="Balance due" value={fmtUSD(balance)} />
             <div className="sb-od-inline-actions">
               <button type="button" className="sb-od-link" onClick={handleOpenContract}>Open contract PDF</button>
+            </div>
+
+            {/* Quote Hub — send for the owner's final approval. Appears on every
+                order regardless of how it was created. */}
+            <div className="sb-od-quote">
+              <span className="sb-od-quote-chip" style={{ color: QUOTE_STATUS_TONE[order.quote_status || 'draft'], borderColor: QUOTE_STATUS_TONE[order.quote_status || 'draft'] }}>
+                {QUOTE_STATUS_LABEL[order.quote_status || 'draft']}
+              </span>
+              {(!order.quote_status || order.quote_status === 'draft' || order.quote_status === 'needs_changes') && (
+                <button type="button" className="sb-od-quote-btn" onClick={sendToQuoteHub} disabled={quoteBusy}>
+                  {quoteBusy ? 'Sending…' : 'Send to Quote Hub for Final Approval'}
+                </button>
+              )}
+              {quoteMsg && <div className="sb-od-quote-err">{quoteMsg}</div>}
             </div>
           </Section>
 
@@ -1038,6 +1067,14 @@ const OD_CSS = `
   .sb-od-link:hover { color: #876307; }
   .sb-od-link:disabled { opacity: 0.5; cursor: default; }
   .sb-od-inline-actions { margin-top: 12px; padding-top: 10px; border-top: 0.5px solid #f1efeb; }
+
+  /* Quote Hub send */
+  .sb-od-quote { margin-top: 12px; padding-top: 12px; border-top: 0.5px solid #f1efeb; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .sb-od-quote-chip { font-size: 11px; font-weight: 700; border: 1px solid; border-radius: 999px; padding: 2px 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .sb-od-quote-btn { font: inherit; font-size: 13px; font-weight: 700; color: #1a1206; background: #9A7209; border: 1px solid #9A7209; border-radius: 8px; padding: 9px 16px; cursor: pointer; transition: background 0.15s; }
+  .sb-od-quote-btn:hover:not(:disabled) { background: #b3870c; }
+  .sb-od-quote-btn:disabled { opacity: 0.6; cursor: default; }
+  .sb-od-quote-err { font-size: 12px; color: #b3261e; }
 
   /* Attachments */
   .sb-od-need-signature {

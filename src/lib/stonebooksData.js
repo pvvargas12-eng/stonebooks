@@ -1261,6 +1261,40 @@ export async function setOrderPermit(orderId, patch) {
   return { ok: true }
 }
 
+// Quote Hub status vocabulary — one source for OrderDetail's chip + the hub.
+export const QUOTE_STATUS_LABEL = {
+  draft: 'Draft',
+  pending_review: 'Pending owner review',
+  approved: 'Quote approved',
+  needs_changes: 'Needs changes',
+  sent_to_customer: 'Sent to customer',
+}
+export const QUOTE_STATUS_TONE = {
+  draft: '#9a948a',          // grey
+  pending_review: '#9a7209', // amber/gold
+  approved: '#2d7a4f',       // green
+  needs_changes: '#b3261e',  // red
+  sent_to_customer: '#1d4ed8', // blue
+}
+
+// Quote Hub lifecycle: draft → pending_review → approved / needs_changes →
+// sent_to_customer. Confirmed with .select() (fail loud — no silent 0-row drop)
+// and degrades gracefully when the 20260615 column isn't applied yet.
+export async function setOrderQuoteStatus(orderId, status) {
+  if (!orderId) return { ok: false, error: 'No orderId' }
+  const { data, error } = await supabase.from('orders')
+    .update({ quote_status: status, updated_at: new Date().toISOString() })
+    .eq('id', orderId).select('id')
+  if (error) {
+    if (/quote_status/i.test(error.message) || /schema cache|column/i.test(error.message)) {
+      return { ok: false, error: 'Quote Hub isn’t set up yet — apply the 20260615_orders_quote_status migration.' }
+    }
+    return { ok: false, error: error.message }
+  }
+  if (!data || data.length === 0) return { ok: false, error: 'The change didn’t save — try again.' }
+  return { ok: true }
+}
+
 // Cemetery permit requirements (the "Cemetery requirements" editor).
 export async function listCemeteriesWithPermit() {
   const { data, error } = await supabase.from('cemeteries').select('*').order('name', { ascending: true })

@@ -640,6 +640,7 @@ export default function Stonebooks() {
         <aside className="sb-sidebar">
           <div className="sb-sidebar-brand">
             <StonebooksWordmark size={18} color="var(--sb-text-on-dark)" />
+            <div className="sb-sidebar-brand-sub">Shevchenko Monuments</div>
           </div>
 
           <nav className="sb-nav">
@@ -1152,6 +1153,14 @@ const shellStyles = `
   .sb-sidebar-brand {
     padding: 8px 8px 32px;
     margin-bottom: 16px;
+  }
+  .sb-sidebar-brand-sub {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--sb-text-on-dark-muted);
+    margin-top: 5px;
+    padding-left: 2px;
   }
   .sb-nav { flex: 1; display: flex; flex-direction: column; }
   .sb-nav-section-label {
