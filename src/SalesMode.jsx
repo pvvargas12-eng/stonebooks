@@ -7263,7 +7263,8 @@ function reencodeImageViaCanvas(src, { mime = 'image/png', quality, label } = {}
 // Generate the order PDF — works for both Estimate and Contract.
 // mode 'estimate' or 'contract'. Contract embeds signature images and
 // changes the badge/filename.
-async function generateEstimatePDF(order, opts = {}) {
+// eslint-disable-next-line react-refresh/only-export-components
+export async function generateEstimatePDF(order, opts = {}) {
   const mode = opts.mode || (order.signedAt ? 'contract' : 'estimate')
   const isContract = mode === 'contract'
   let JsPDF
