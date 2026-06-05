@@ -347,6 +347,20 @@ export async function listPartnerUsers(partnerId) {
   return data || []
 }
 
+// Staff signal: how many PARTNER-submitted requests are still awaiting first
+// triage (≥1 line item still in 'submitted'). Honest + schema-free — it rises
+// when a partner submits and falls as staff advance the items off 'submitted'.
+// Returns 0 on any error / unapplied migration so the shell badge never breaks.
+export async function getNewPartnerRequestCount() {
+  const { data, error } = await supabase
+    .from('vendor_items')
+    .select('request_id, request:vendor_requests!inner(source)')
+    .eq('status', 'submitted')
+    .eq('request.source', 'partner')
+  if (error) { console.warn('[vendors] getNewPartnerRequestCount:', error.message); return 0 }
+  return new Set((data || []).map(r => r.request_id)).size
+}
+
 // Partner portal job lists. RLS scopes every row to the caller's partner, so
 // these need no explicit partner_id filter — isolation is enforced server-side.
 export async function listMyRequests() {

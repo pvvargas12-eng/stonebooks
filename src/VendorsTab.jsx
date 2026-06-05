@@ -46,6 +46,14 @@ export default function VendorsTab() {
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(t => t === msg ? null : t), 3000) }, [])
 
+  // Partner-submitted requests still awaiting first triage (≥1 'submitted' item).
+  const newPartnerCount = useMemo(() => {
+    if (!items) return 0
+    const ids = new Set()
+    for (const it of items) if (it.request?.source === 'partner' && it.status === 'submitted') ids.add(it.request_id)
+    return ids.size
+  }, [items])
+
   const loadAll = useCallback(async () => {
     const [p, it, b, po] = await Promise.all([listPartners(), listVendorItems(), listVendorBatches(), listVendorPOs()])
     setPartners(p); setItems(it); setBatches(b); setPos(po)
@@ -66,7 +74,12 @@ export default function VendorsTab() {
       </div>
 
       <div className="vend-subnav">
-        {SUBNAV.map(s => <button key={s.code} type="button" className={`vend-subtab ${sub === s.code ? 'on' : ''}`} onClick={() => setSub(s.code)}>{s.label}</button>)}
+        {SUBNAV.map(s => (
+          <button key={s.code} type="button" className={`vend-subtab ${sub === s.code ? 'on' : ''}`} onClick={() => setSub(s.code)}>
+            {s.label}
+            {s.code === 'queue' && newPartnerCount > 0 && <span className="vend-subbadge">{newPartnerCount}</span>}
+          </button>
+        ))}
       </div>
 
       {sub === 'queue' && <WorkQueue items={items} partners={partners} onOpen={setDrawerId} />}
@@ -88,16 +101,33 @@ function WorkQueue({ items, partners, onOpen }) {
   const [fPartner, setFPartner] = useState('')
   const [fType, setFType] = useState('')
   const [fStatus, setFStatus] = useState('')
+  const [onlyNew, setOnlyNew] = useState(false)
+  const isNew = (i) => i.request?.source === 'partner' && i.status === 'submitted'
+  const newCount = useMemo(() => {
+    if (!items) return 0
+    const ids = new Set()
+    for (const it of items) if (isNew(it)) ids.add(it.request_id)
+    return ids.size
+  }, [items])
   const rows = useMemo(() => {
     if (!items) return null
     return items.filter(i =>
       (!fPartner || i.request?.partner_id === fPartner) &&
       (!fType || i.work_type === fType) &&
-      (!fStatus || i.status === fStatus))
-  }, [items, fPartner, fType, fStatus])
+      (!fStatus || i.status === fStatus) &&
+      (!onlyNew || isNew(i)))
+      // New partner items first, then most-recently-updated.
+      .sort((a, b) => (isNew(b) - isNew(a)) || String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
+  }, [items, fPartner, fType, fStatus, onlyNew])
 
   return (
     <>
+      {newCount > 0 && (
+        <div className="vend-newbanner">
+          <span><strong>{newCount}</strong> new partner request{newCount === 1 ? '' : 's'} awaiting triage</span>
+          <button type="button" onClick={() => setOnlyNew(v => !v)}>{onlyNew ? 'Show all' : 'Show only these'}</button>
+        </div>
+      )}
       <div className="vend-filters">
         <select value={fPartner} onChange={e => setFPartner(e.target.value)}><option value="">All partners</option>{partners.map(p => <option key={p.id} value={p.id}>{p.company_name}</option>)}</select>
         <select value={fType} onChange={e => setFType(e.target.value)}><option value="">All work types</option>{WORK_TYPES.map(t => <option key={t} value={t}>{statusLabel(t)}</option>)}</select>
@@ -111,7 +141,7 @@ function WorkQueue({ items, partners, onOpen }) {
           : rows.length === 0 ? <div className="vend-empty">No items. Use “+ New vendor request”. (If this stays empty, the 20260608 migration may need to be applied.)</div>
           : rows.map(i => (
             <div key={i.id} className="vend-row">
-              <div className="vend-strong">{i.request?.partner?.company_name || '—'}</div>
+              <div className="vend-strong">{i.request?.partner?.company_name || '—'}{isNew(i) && <span className="vend-newpill">NEW</span>}</div>
               <div>{statusLabel(i.work_type)}</div>
               <div className="vend-mono">{i.vendor_reference || '—'}</div>
               <div><StatusChip status={i.status} /></div>
@@ -679,6 +709,11 @@ const VEND_CSS = `
   .vend-subnav { display: inline-flex; gap: 4px; padding: 4px; background: #f0eeea; border-radius: 999px; margin-bottom: 16px; }
   .vend-subtab { font: inherit; font-size: 13px; padding: 7px 18px; border: none; background: transparent; color: #6b6b66; border-radius: 999px; cursor: pointer; }
   .vend-subtab.on { background: #fff; color: #1e2d3d; font-weight: 600; box-shadow: 0 1px 2px rgba(15,20,25,0.08); }
+  .vend-subbadge { display: inline-block; margin-left: 7px; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: #9A7209; color: #fff; font-size: 10px; font-weight: 700; line-height: 17px; text-align: center; vertical-align: middle; }
+  .vend-newbanner { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fdf8ec; border: 0.5px solid #e8d9a8; border-radius: 10px; padding: 11px 16px; margin-bottom: 12px; font-size: 14px; color: #6b5d2f; }
+  .vend-newbanner strong { color: #9A7209; font-size: 16px; }
+  .vend-newbanner button { font: inherit; font-size: 12px; font-weight: 600; color: #9A7209; background: #fff; border: 0.5px solid #d8c89a; border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+  .vend-newpill { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: #9A7209; color: #fff; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; vertical-align: middle; }
   .vend-filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .vend-filters select { font: inherit; font-size: 13px; padding: 7px 10px; border: 0.5px solid #e6e3dd; border-radius: 8px; background: #fff; }
   .vend-table { background: #fff; border: 0.5px solid #e6e3dd; border-radius: 12px; overflow: hidden; }

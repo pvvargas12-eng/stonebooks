@@ -581,6 +581,55 @@ Hygiene items that surfaced during the 2026-05-28 DEMO-DATA-CLEANUP rename pass.
 - **18 archived/draft `E-26-0001` through `E-26-0018` orders** — manual UI test orders from early dev. Most are `archived`; 5 are `draft`. One has `primary_lastname='asdfasdf'` and status `paid_in_full` (smoke test). Same DELETE story as the Paul Vargas customers. Watch out: the demo-seed rename moved the DEMO orders into `E-26-0019` through `E-26-0043`, so this purge is about the FIRST 18 only.
 - **Fairview Cemetery name collision** — two real cemetery rows share the name `Fairview Cemetery` (one in Westfield NJ, one in Staten Island NY, both seeded 2026-05-08). Surfaced by Phase C Tx3 GATE 2 duplicate-name check (not from the rename — pre-existing collision). Apply the same disambiguation pattern used for the demo cemetery renames: rename to `Fairview Cemetery — Westfield` / `Fairview Cemetery — Staten Island`. Trivial UPDATE.
 
+## Sprint VENDOR-PORTAL — Vendor / Partner Portal V1 (+ app-wide privacy lockdown)
+
+A B2B work-tracker: outside companies (engravers, setters, design shops) submit work to Shevchenko and track it to pickup; staff run it all from an internal Vendors tab. Built in phases; then the whole app was made private. Commits `953e9e8` (P1) → `feac331` (P2) → `79b5861` (P3) → `953d6d8` (partner lockdown) → `f9aefbb`/`194e14f` (anon lockdown + private app) → staff-signal + this doc.
+
+### Data model (Phase 1 — `supabase/migrations/20260608_vendor_portal.sql`)
+9 tables, private storage bucket:
+- **`partners`** — the outside company (name, contact, phone, email, address, payment_terms, active).
+- **`partner_users`** — maps a Supabase Auth user → exactly one partner (`unique(auth_user_id)`, role `'partner'`). This is the **sole** staff/partner discriminator: a user IS a partner iff they have a row here; STAFF = authenticated user with NO row here. No separate staff table.
+- **`vendor_requests`** — parent request. `source` ∈ `'partner'|'internal'` discriminates the two creation paths. Carries **quote placeholders only** (`quote_required`, `quote_status`, `quote_approved_by_owner`, `quote_id`, `owner_review_status`) — DATA ONLY, no quote UI this build.
+- **`vendor_items`** — the line items (editable). 8-state status enum: `submitted → waiting_on_info → ready_to_work → in_progress → design_uploaded → ready_for_pickup → completed` (+ `cancelled`). work_type ∈ `design|blasting|setting|other`.
+- **`vendor_batches`** — optional grouping of items.
+- **`vendor_pos` / `vendor_po_items`** — simple POs, **no pricing logic** (custom amount only), draft/sent.
+- **`vendor_attachments`** — files per request OR item; `uploader_role` ∈ `partner|staff`, `kind` ∈ `upload|completion_photo`. Stored in the private **`vendor-files`** bucket under `<partner_id>/...` (signed-URL downloads, never public).
+- **`vendor_events`** — timeline (`submitted|status_changed|file_uploaded|info_requested|email_sent|completed`; `note` added in P3 for comments).
+- All 9 get RLS + an authenticated-all policy in P1 so the **internal tab ships first**; partner-scoping comes in P3.
+
+### Both creation paths converge (key invariant)
+`createVendorRequest(input)` in `src/lib/vendorsData.js` is the **single shared path**. Internal staff (`source:'internal'`, NewRequestModal in `VendorsTab.jsx`) and external partners (`source:'partner'`, NewRequestForm in `PartnerPortal.jsx`) produce **identical** `vendor_requests` + `vendor_items` rows and both land in the same internal Work Queue. The shared item card is `src/components/VendorItemCard.jsx` (work-type tiles, vendor ref, stone/base size, color datalist, drag-drop attachments, **prominent work-type-specific notes box**, optional cemetery/family). Files stage in memory (`_files`) and upload after the item has an id.
+
+### Internal Vendors tab (Phase 2 — `src/VendorsTab.jsx`)
+Sidebar nav `Vendors`. Sub-nav **Work Queue | Batches | Partners | POs**. Work Queue = all items across partners (partner/type/status filters) → item drawer (full edit, status, files in 3 groups, photos, request-info email, Ready/Completed, add-to-batch, generate PO, duplicate/remove/+item/edit-parent, timeline). Partners CRUD (this is where a partner is set up before a portal invite). Batches (create/add/remove/status/PO). POs (from item or batch, draft/send, PDF via jsPDF **CDN loader** — jsPDF is NOT an npm dep). Partner-facing emails route through a **reviewable composer** (reuses `sendOrderEmail` with `orderId:null`) — never silently auto-send the meaningful ones.
+
+### External partner portal (Phase 3 — `src/PartnerPortal.jsx`, `supabase/migrations/20260609_vendor_portal_rls.sql`)
+- **Routing:** `getMyPartnerContext()` resolves the signed-in user → partner or null. `Stonebooks.jsx` renders `<PartnerPortal>` for a partner-mapped user instead of the staff app; the entity-index warm-up is gated to staff so partner sessions don't pull CRM data.
+- **Portal surfaces:** Home (stats + active work), New Request (shared path), Open Jobs / Ready for Pickup / Completed (cards → read-only detail drawer), POs (view-only). Detail drawer: view fields/notes, download Shevchenko files + completion photos (signed URLs), upload additional files, comment, timeline. **Partners cannot change status or edit submitted line items** — submit / view / upload-additional / comment only.
+- **Partner-scoped RLS (multi-tenant isolation):** `vp_my_partner_id()` / `vp_owns_request()` / `vp_owns_item()` / `vp_owns_po()` SECURITY DEFINER helpers. Replaces the P1 broad policies on all 9 tables with STAFF full-CRUD (`vp_my_partner_id() IS NULL`) + PARTNER scoped (own `partner_id` rows only, via direct column or request/item/po join). Storage scoped to the partner's `<partner_id>/` prefix. **One partner can never see another's data** — verification checklist at the bottom of the migration.
+- **Invite flow (`supabase/functions/vendor-invite/index.ts`):** staff open a partner → Portal access → enter the contact email → the Edge Function (service role, rejects partner callers) `inviteUserByEmail` so the **partner sets their own password** from the email (staff never type partner credentials), then upserts the `partner_users` mapping. `invitePartnerUser()` in vendorsData calls it.
+
+### App-wide privacy lockdown (the anon key ships in the frontend = public)
+Two sequential RLS passes — **apply in order, verify each before the next** (I cannot run prod SQL from here; each migration ships a discovery query + a verification block + a one-file rollback in `supabase/backups/`):
+- **PASS 1 — partner lockdown (`20260610_partner_lockdown.sql`, rollback `2026-06-04_partner_lockdown_rollback.sql`).** `is_staff()` = authenticated AND not in `partner_users`. Adds a **RESTRICTIVE** `to authenticated using(is_staff())` policy to every non-vendor table (AND-combines → genuinely excludes partners; staff + anon untouched; non-destructive/reversible). RLS-off core tables (orders/customers/jobs/…, likely created via dashboard with RLS off) get RLS enabled + an anon-preserve + staff permissive; original state logged in `_vp_rls_lockdown_log` for exact rollback. Also `storage.objects` (partners narrowed to `vendor-files`). Net: **partners blocked from all non-vendor tables.**
+- **PASS 2 — anon lockdown / private app (`20260611_anon_lockdown.sql`, rollback `2026-06-04_anon_lockdown_rollback.sql`).** Anon allowlist is **EMPTY** — the catalog is no longer public. Adds RESTRICTIVE `to anon using(false)` to every table (monuments included) and drops the PASS-1 anon-preserve grants. Net: **the public anon key has ZERO access to any table.** App side: `src/App.jsx` `CustomerApp` resolves auth first and shows `CatalogLoginGate` (branded staff sign-in) to unauthenticated visitors instead of an empty page; the monuments load is gated on auth. Consequence: the public anon SalesMode order-creation path is closed along with the catalog; staff workflows (authenticated) are unaffected.
+
+Three-role end state (verify in Studio): **anon** → 0 on everything; **staff** → full catalog + CRM unchanged (`is_staff()=true`); **partner** → vendor data only.
+
+### Staff notification on partner submit (closing the last gap)
+`getNewPartnerRequestCount()` (vendorsData) = distinct partner-source requests with ≥1 `'submitted'` item — honest + schema-free (rises on partner submit, falls as staff advance items off `submitted`). Surfaced as a **bronze badge on the `Vendors` sidebar nav item** (refreshes on tab change + every 60s, staff-only) so a submit is visible **without opening the tab**; reinforced inside the Work Queue with a count badge on the sub-nav, an "N new partner requests awaiting triage" banner with a Show-only toggle, `NEW` row pills, and new-first sort. Staff email on submit is **available** via the existing reviewable composer but intentionally **not auto-sent** (avoids noise / Gmail-dependency); the in-app signal satisfies the acceptance.
+
+### Migrations to run in Studio (in order) + deploy
+1. `20260608_vendor_portal.sql` — tables + bucket.
+2. `20260609_vendor_portal_rls.sql` — partner-scoped RLS (run the isolation checklist).
+3. `20260610_partner_lockdown.sql` — block partners from non-vendor tables (run STEP-0 discovery + STEP-5 verify; staff must keep full access).
+4. `20260611_anon_lockdown.sql` — private app (run STEP-0 + three-role verify). Re-runnable.
+5. **Deploy the Edge Function:** `supabase functions deploy vendor-invite` (else the invite button reports it's unavailable; everything else works).
+Each pass has a matching rollback in `supabase/backups/` for instant revert.
+
+### NOT in V1 (parked)
+Quotes tab / pricing / billing / vendor price lists / QuickBooks / vendor performance reports. Quote fields are data-only placeholders. Also parked: a "resume partner draft" list, kind-aware batch routing for vendor work, and surfacing the new-request signal on the Today action-item list (the sidebar badge already covers cross-tab visibility).
+
 ## Deferred / known issues
 
 - **Mausoleum range on calendar/customer-list/receipt** — those surfaces show only `targetCompletionDate` (the range start); the `targetCompletionEndDate` is not yet surfaced there. Future sprint if needed.

@@ -30,7 +30,7 @@ import ProfitTab from './ProfitTab'
 import PaymentsTab from './PaymentsTab'
 import VendorsTab from './VendorsTab'
 import PartnerPortal from './PartnerPortal'
-import { getMyPartnerContext } from './lib/vendorsData'
+import { getMyPartnerContext, getNewPartnerRequestCount } from './lib/vendorsData'
 import EmailTab from './EmailTab'
 import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
@@ -261,6 +261,9 @@ export default function Stonebooks() {
   // Vendor portal binding — undefined = resolving; null = staff; object = partner.
   // A partner-mapped auth user gets the external portal instead of the staff app.
   const [portal, setPortal] = useState(undefined)
+  // Staff signal: count of partner-submitted vendor requests awaiting triage,
+  // shown as a badge on the Vendors nav item (visible from any tab).
+  const [vendorAlertCount, setVendorAlertCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
   const [tab, setTab] = useState('today')
   const [salesOpen, setSalesOpen] = useState(false)
@@ -362,6 +365,19 @@ export default function Stonebooks() {
       .catch(() => { if (!cancelled) setPortal(null) })
     return () => { cancelled = true }
   }, [user?.id])
+
+  // Staff-only: keep the Vendors nav badge current. Reloads on tab change and
+  // every 60s so a partner submit surfaces without opening the Vendors tab.
+  useEffect(() => {
+    if (!user?.id || portal !== null) return
+    let cancelled = false
+    const load = () => getNewPartnerRequestCount()
+      .then(n => { if (!cancelled) setVendorAlertCount(n) })
+      .catch(() => {})
+    load()
+    const id = setInterval(load, 60000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [user?.id, portal, tab])
 
   // Load owner-set pricing overrides once at startup so the New Order form
   // prices at the configured values (falls back to constant defaults silently).
@@ -628,7 +644,12 @@ export default function Stonebooks() {
                 type="button"
                 className={`sb-nav-item ${tab === item.key ? 'on' : ''}`}
                 onClick={() => handleNav(item.key)}
-              >{item.label}</button>
+              >
+                <span>{item.label}</span>
+                {item.key === 'vendors' && vendorAlertCount > 0 && (
+                  <span className="sb-nav-badge" title={`${vendorAlertCount} new partner request${vendorAlertCount === 1 ? '' : 's'} awaiting triage`}>{vendorAlertCount}</span>
+                )}
+              </button>
             ))}
 
             <div className="sb-nav-section-label" style={{ marginTop: 16 }}>Tools</div>
@@ -1131,7 +1152,10 @@ const shellStyles = `
     margin: 28px 0 10px;
   }
   .sb-nav-item {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     width: 100%;
     text-align: left;
     background: transparent;
@@ -1146,6 +1170,19 @@ const shellStyles = `
     transition: background 0.15s, color 0.15s;
   }
   .sb-nav-item:hover { background: rgba(255,255,255,0.06); color: var(--sb-text-on-dark); }
+  .sb-nav-badge {
+    flex-shrink: 0;
+    min-width: 19px;
+    height: 19px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--sb-bronze);
+    color: #1a1206;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 19px;
+    text-align: center;
+  }
   .sb-nav-item.on    {
     background: rgba(255,255,255,0.10);
     color: var(--sb-text-on-dark);
