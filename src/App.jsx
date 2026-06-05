@@ -4,6 +4,7 @@ import { getSession, onAuthStateChange, signInWithPassword } from './lib/auth'
 import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
 import CatalogTab from './CatalogTab'
+import SignPage from './SignPage'
 
 // ── BUILD MODE ROUTING ───────────────────────────────────────────
 // Two deployments from one repo:
@@ -467,7 +468,19 @@ const isCatalogRoute = () => {
   return new URLSearchParams(window.location.search).get('catalog') === '1'
 }
 
+// /sign/<token> — PUBLIC remote contract signing. No staff auth; the token is the
+// credential and is validated by the service-role signing-* Edge Functions.
+const getSignToken = () => {
+  if (typeof window === 'undefined') return null
+  const m = window.location.pathname.match(/^\/sign\/([^/?#]+)/)
+  return m ? decodeURIComponent(m[1]) : null
+}
+
 export default function App() {
+  const signToken = getSignToken()
+  if (signToken) {
+    return <SignPage token={signToken} />
+  }
   if (isCatalogRoute()) {
     return <CatalogStandalone />
   }
