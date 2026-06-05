@@ -7282,54 +7282,60 @@ export async function generateEstimatePDF(order, opts = {}) {
     return
   }
 
-  const doc = new JsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
-
-  // jsPDF's default Helvetica is WinAnsi-encoded, which doesn't include
-  // the Unicode prime/double-prime characters or some other glyphs we use
-  // in the UI. Wrap doc.text to auto-replace them with ASCII equivalents.
-  const cleanForPdf = (s) => {
-    if (s == null) return ''
-    return String(s)
-      .replace(/″/g, '"')      // double prime → straight quote
-      .replace(/′/g, "'")      // single prime → apostrophe
-      .replace(/[“”]/g, '"')   // smart quotes → straight
-      .replace(/[‘’]/g, "'")
-      .replace(/…/g, '...')
-  }
-  const _origText = doc.text.bind(doc)
-  doc.text = (text, ...rest) => {
-    const cleaned = Array.isArray(text) ? text.map(cleanForPdf) : cleanForPdf(text)
-    return _origText(cleaned, ...rest)
-  }
-  const _origSplit = doc.splitTextToSize.bind(doc)
-  doc.splitTextToSize = (text, w) => _origSplit(cleanForPdf(text), w)
-
+  // ── Page geometry + ONE-PAGE FAILSAFE ──────────────────────────────────────
   // Letter size in mm: 215.9 × 279.4
   const W = 215.9
   const H = 279.4
-  const M = 16     // margin
-  // Black & white only on this document — every "color" is black; rules are
-  // thin black; backgrounds stay white.
-  const NAVY = [0, 0, 0]
-  const GOLD = [0, 0, 0]
-  const GREY = [0, 0, 0]
-  const TEXT = [0, 0, 0]
-  const LIGHT_RULE = [0, 0, 0]
-
-  // Family (last) name — used by the top-right info box "File" line. Falls back
-  // to the order # so nothing is blank.
+  const M = 16            // margin
+  // Readability floor for the auto-fit. A FULL new-stone contract (all sections +
+  // the 5-paragraph legal block) is ~395mm tall at S=1 and needs S~0.66 to clear
+  // the footer, so a 0.72 floor would clip it. 0.55 covers even a +20% outlier
+  // (~470mm) with no overlap; in practice the floor never engages — real contracts
+  // render at ~0.66+ and estimates higher still.
+  const MIN_SCALE = 0.55
+  const usableBottom = H - 15   // content must end above the footer (drawn at H-10)
+  // Black & white only — every "color" is black; rules thin black; bg white.
+  const NAVY = [0, 0, 0], GOLD = [0, 0, 0], GREY = [0, 0, 0], TEXT = [0, 0, 0], LIGHT_RULE = [0, 0, 0]
+  // Family (last) name — top-right "File" line; falls back to the order #.
   const familyName = (order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
 
-  let y = M
-
-  // Helper: ensure we have room for `need` mm of content; otherwise new page.
-  // Sprint 3u Part D — thin binding of the shared ensureBlock helper, so every
-  // page-break decision (legacy per-row calls and the new per-block height
-  // reservations) runs through one place. footerReserve 12 matches the prior
-  // threshold (H - M - 12).
-  const ensure = (need) => {
-    y = ensureBlock(doc, y, need, { pageHeight: H, margin: M, footerReserve: 12, onBreak: addFooter })
+  // jsPDF's Helvetica is WinAnsi — replace prime/smart-quote glyphs with ASCII.
+  const cleanForPdf = (s) => {
+    if (s == null) return ''
+    return String(s)
+      .replace(/″/g, '"').replace(/′/g, "'")
+      .replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/…/g, '...')
   }
+
+  // buildDoc(S) renders the ENTIRE document at vertical scale S. Font sizes shrink
+  // via a setFontSize wrapper, and every Y coordinate maps through phys() so the
+  // y-cursor logic below stays in logical (S=1) units — no per-line edits needed.
+  // We MEASURE at S=1 (page breaks disabled, so y is the true content height);
+  // if it overflows one usable page we rebuild at a proportionally smaller S
+  // (floored at MIN_SCALE). The footer draws in RAW physical coords so it always
+  // sits at the page bottom regardless of S. This GUARANTEES a single page.
+  const buildDoc = async (S) => {
+    const doc = new JsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+    const phys = (yL) => M + (yL - M) * S
+    const rawText = doc.text.bind(doc)
+    const rawLine = doc.line.bind(doc)
+    doc.text = (text, x, yL, ...rest) =>
+      rawText(Array.isArray(text) ? text.map(cleanForPdf) : cleanForPdf(text), x, phys(yL), ...rest)
+    const _origSplit = doc.splitTextToSize.bind(doc)
+    doc.splitTextToSize = (text, w) => _origSplit(cleanForPdf(text), w)
+    const _setFS = doc.setFontSize.bind(doc)
+    doc.setFontSize = (n) => _setFS(n * S)
+    doc.line = (x1, y1, x2, y2, ...r) => rawLine(x1, phys(y1), x2, phys(y2), ...r)
+    const _rawRect = doc.rect.bind(doc)
+    doc.rect = (x, yy, w, h, ...r) => _rawRect(x, phys(yy), w, h * S, ...r)
+    const _rawRR = doc.roundedRect.bind(doc)
+    doc.roundedRect = (x, yy, w, h, rx, ry, ...r) => _rawRR(x, phys(yy), w, h * S, rx, ry * S, ...r)
+    const _rawImg = doc.addImage.bind(doc)
+    doc.addImage = (data, fmt, x, yy, w, h, ...r) => _rawImg(data, fmt, x, phys(yy), w, h * S, ...r)
+
+    let y = M
+    // Page breaks disabled — the S failsafe is the only fit mechanism.
+    const ensure = () => {}
 
   // Helper: section header (gold all-caps eyebrow + thin grey rule)
   const sectionHeader = (title) => {
@@ -7384,14 +7390,13 @@ export async function generateEstimatePDF(order, opts = {}) {
     const yF = H - 10
     doc.setDrawColor(...LIGHT_RULE)
     doc.setLineWidth(0.2)
-    doc.line(M, yF - 3, W - M, yF - 3)
+    rawLine(M, yF - 3, W - M, yF - 3)            // RAW: pinned to the physical bottom
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(7.5)
     doc.setTextColor(...GREY)
-    doc.text(`${COMPANY_INFO.legalName} · ${COMPANY_INFO.phone}`, M, yF)
-    const pageStr = `Page ${doc.internal.getCurrentPageInfo().pageNumber}`
-    doc.text(pageStr, W - M, yF, { align: 'right' })
-    doc.text(isContract ? 'Signed contract — pricing locked' : 'This estimate is valid for 30 days', W / 2, yF, { align: 'center' })
+    rawText(`${COMPANY_INFO.legalName} · ${COMPANY_INFO.phone}`, M, yF)
+    rawText(`Page ${doc.internal.getCurrentPageInfo().pageNumber}`, W - M, yF, { align: 'right' })
+    rawText(isContract ? 'Signed contract — pricing locked' : 'This estimate is valid for 30 days', W / 2, yF, { align: 'center' })
   }
 
   // ============================ LETTERHEAD ===============================
@@ -8022,91 +8027,97 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.line(M, y, W - M, y)
   y += 4
 
+  // CONTRACT carries the legal terms. The ESTIMATE has no legal block here — its
+  // sign-off is the call-to-action below (the 30-day note already prints near the
+  // title, and the CTA repeats it).
   if (isContract) {
     doc.setTextColor(...TEXT)
     for (const para of legalParagraphs) {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(LEGAL_FS)
       const lines = doc.splitTextToSize(para, W - M - M)
-      ensure(lines.length * LEGAL_LH + PARA_GAP)
       doc.text(lines, M, y)
       y += lines.length * LEGAL_LH + PARA_GAP
     }
-  } else {
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...GREY)
-    const acceptText = 'This estimate is valid for 30 days from the date above. ' +
-      'To accept and proceed with production, please sign below. A signed copy will become your contract.'
-    const wrapped = doc.splitTextToSize(acceptText, W - M - M)
-    ensure(wrapped.length * 4 + 4)
-    doc.text(wrapped, M, y)
-    y += 4 * wrapped.length
   }
 
-  // ── Signature block — CUSTOMER ONLY (no shop/rep line). Flows after the legal
-  // text and reserves only its REAL height (~32mm), so a short contract keeps it
-  // in the empty space at the bottom of page 1 and only breaks when page 1 is
-  // genuinely full. Inline "label: ____" lines; the name is NOT pre-printed —
-  // the customer signs the blank line (or signing-submit stamps their cursive
-  // name + date onto the same line via the rects below).
-  ensure(32)
-  y += 10
-  const sigLineY = y                       // signature line
-  const dateLineY = sigLineY + 14          // date line (its own row below)
+  // ── Sign-off ────────────────────────────────────────────────────────────────
+  // CONTRACT → blank customer signature + date (no rep line, no pre-filled name).
+  // ESTIMATE → call/email CTA where the signature would be (an estimate isn't
+  // signed). The one-page failsafe guarantees this all lands on page 1.
+  let signFields = null
+  if (isContract) {
+    y += 10
+    const sigLineY = y                       // signature line
+    const dateLineY = sigLineY + 14          // date line (its own row below)
 
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
-  const sigLabelW = doc.getTextWidth('Customer signature:')
-  const sigLineX1 = M + sigLabelW + 4
-  const sigLineX2 = W - M
-  const dateLabelW = doc.getTextWidth('Date:')
-  const dateLineX1 = M + dateLabelW + 4
-  const dateLineX2 = dateLineX1 + 62
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+    const sigLabelW = doc.getTextWidth('Customer signature:')
+    const sigLineX1 = M + sigLabelW + 4
+    const sigLineX2 = W - M
+    const dateLabelW = doc.getTextWidth('Date:')
+    const dateLineX1 = M + dateLabelW + 4
+    const dateLineX2 = dateLineX1 + 62
 
-  // Embed the customer's signature image only when the contract was e-signed
-  // in-app (customerSignatureUrl); otherwise the line stays blank.
-  let custSigData = null
-  if (isContract && order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
-  if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLineX1, sigLineY - 9, Math.min(80, sigLineX2 - sigLineX1), 8) } catch (e) { console.warn('cust sig embed:', e) } }
+    // In-app e-signed contracts embed the captured signature image; else blank.
+    let custSigData = null
+    if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
+    if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLineX1, sigLineY - 9, Math.min(80, sigLineX2 - sigLineX1), 8) } catch (e) { console.warn('cust sig embed:', e) } }
 
-  doc.text('Customer signature:', M, sigLineY)
-  doc.text('Date:', M, dateLineY)
-  doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
-  doc.line(sigLineX1, sigLineY, sigLineX2, sigLineY)
-  doc.line(dateLineX1, dateLineY, dateLineX2, dateLineY)
+    doc.text('Customer signature:', M, sigLineY)
+    doc.text('Date:', M, dateLineY)
+    doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
+    doc.line(sigLineX1, sigLineY, sigLineX2, sigLineY)
+    doc.line(dateLineX1, dateLineY, dateLineX2, dateLineY)
 
-  // Fillable AcroForm fields ON the blank lines (box just above each line). Coords
-  // are top-left in mm; these customer rects also drive the remote e-sign stamping
-  // (signing-submit draws the cursive name + date here). Customer only — no rep.
-  const signFields = {
-    unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
-    customer_signature: { x: sigLineX1, y: sigLineY - 8, w: sigLineX2 - sigLineX1, h: 8 },
-    customer_date:      { x: dateLineX1, y: dateLineY - 8, w: dateLineX2 - dateLineX1, h: 8 },
-  }
-  const AcroFormTextField = window.jspdf?.AcroFormTextField
-  if (AcroFormTextField) {
-    const addSigField = (name, r) => {
-      const f = new AcroFormTextField()
-      f.fieldName = name
-      f.Rect = [r.x, r.y, r.w, r.h]
-      f.fontSize = 11
-      doc.addField(f)
+    // AcroForm fields + signFields in PHYSICAL coords (phys-mapped) so the remote
+    // e-sign stamping lands on the blank lines regardless of the auto-fit scale.
+    signFields = {
+      unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
+      customer_signature: { x: sigLineX1, y: phys(sigLineY - 8), w: sigLineX2 - sigLineX1, h: 8 * S },
+      customer_date:      { x: dateLineX1, y: phys(dateLineY - 8), w: dateLineX2 - dateLineX1, h: 8 * S },
     }
-    addSigField('customer_signature', signFields.customer_signature)
-    addSigField('customer_date',      signFields.customer_date)
+    const AcroFormTextField = window.jspdf?.AcroFormTextField
+    if (AcroFormTextField) {
+      const addSigField = (name, r) => {
+        const f = new AcroFormTextField()
+        f.fieldName = name
+        f.Rect = [r.x, r.y, r.w, r.h]
+        f.fontSize = 11
+        doc.addField(f)
+      }
+      addSigField('customer_signature', signFields.customer_signature)
+      addSigField('customer_date',      signFields.customer_date)
+    }
+    y = dateLineY + 8
+  } else {
+    // ESTIMATE — no signature. Call-to-action in the signature's place.
+    y += 8
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(...TEXT)
+    const cta = 'This estimate is valid for 30 days. To move forward, call or email Shevchenko Monuments — ' +
+      '732-442-1286 / shevcoteam@gmail.com — and we\'ll prepare your contract.'
+    const ctaLines = doc.splitTextToSize(cta, W - M - M)
+    doc.text(ctaLines, M, y)
+    y += 4.6 * ctaLines.length
   }
-
-  y = dateLineY + 8
 
   addFooter()
 
-  // Build filename
   const last = (order.customer?.lastName || (isContract ? 'Contract' : 'Estimate')).replace(/[^a-z0-9]/gi, '_')
   const num = order.orderNumber || 'draft'
   const filename = `Shevchenko-${isContract ? 'Contract' : 'Estimate'}-${num}-${last}.pdf`
 
-  // Sprint 3i — preview and email flows want the doc object without saving.
-  // Default behavior remains "save to user's Downloads".
-  if (opts.returnDoc) {
-    return { doc, filename, signFields }
+  return { doc, finalY: y, filename, signFields }
   }
+  // ── One-page failsafe driver ────────────────────────────────────────────────
+  // Measure at S=1; if content overflows one usable page, rebuild at a smaller S
+  // (floored at MIN_SCALE) so everything shrinks proportionally onto ONE page.
+  let built = await buildDoc(1)
+  if (built.finalY > usableBottom) {
+    const S = Math.max(MIN_SCALE, Math.min(1, (usableBottom - M) / (built.finalY - M)))
+    built = await buildDoc(S)
+  }
+  const { doc, filename, signFields } = built
+  if (opts.returnDoc) return { doc, filename, signFields }
   doc.save(filename)
   return { doc, filename, signFields }
 }
