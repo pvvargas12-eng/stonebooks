@@ -1,37 +1,27 @@
 // =============================================================================
-// Catalog — premium staff-facing design gallery (Build 1: browse + detail).
+// Catalog — premium design gallery (gallery + detail). Read-only except the
+// single Delete action in the detail view (Fix 3). Renders standalone (its own
+// /catalog route, no CRM chrome) — see CatalogStandalone in App.jsx.
 // =============================================================================
-// Read-only over the existing `monuments` table. No writes, no new tables, no
-// storage. Editorial showroom feel: tall image tiles, serif name plates, one
-// quiet spec line. Filter options are derived from the DISTINCT values actually
-// present in the paged data (fetchAllPaged — never capped at 1000 rows).
-//
 // Data mapping (verified against prod): name=lastname (title-cased), the long
 // `name` is the descriptive title (detail only), granite=granite_color,
-// shape/style=meta.Type, image=img (full Google-Drive URL, single image; no
-// dimensions / price / archived flag exist in the data — so none are shown).
-// NO emojis anywhere by design (the `icon` column holds one — it is ignored).
+// shape/style=meta.Type, image=img (full Google-Drive URL, single image). No
+// dimensions / price / archived flag exist, so none are shown. NO emojis (the
+// `icon` column holds one — ignored).
 // =============================================================================
 
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from './lib/supabase'
 import { fetchAllPaged } from './lib/stonebooksData'
 
-// Reuse the public site's exact image source: Google-Drive thumbnail links,
-// rewritten to a sensible width per surface. referrerPolicy=no-referrer is
-// required or Drive refuses to serve the image.
 const thumbUrl = (url) => (url && url.includes('drive.google.com') ? url.replace(/sz=w\d+/i, 'sz=w400') : url)
 const fullUrl  = (url) => (url && url.includes('drive.google.com') ? url.replace(/sz=w\d+/i, 'sz=w1200') : url)
 
-const titleCase = (s) => String(s || '')
-  .toLowerCase()
-  .replace(/\b\w/g, (c) => c.toUpperCase())
-  .trim()
-
-// One quiet spec line: granite · carve type (only the parts that exist).
+const titleCase = (s) => String(s || '').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()).trim()
 const specLine = (m) => [m.granite_color, m.carve_type].filter(Boolean).join('  ·  ')
 
 // An image that degrades to an elegant monogram placeholder — never a broken img.
+// object-fit: contain so the ENTIRE photo is visible, letterboxed on a neutral fill.
 function CatImage({ src, alt, full = false, className }) {
   const [failed, setFailed] = useState(false)
   if (!src || failed) {
@@ -60,6 +50,9 @@ export default function CatalogTab({ onStartOrder }) {
   const [fShape, setFShape] = useState('')
   const [fColor, setFColor] = useState('')
   const [selectedId, setSelectedId] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [delError, setDelError] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -73,7 +66,6 @@ export default function CatalogTab({ onStartOrder }) {
     return () => { cancelled = true }
   }, [])
 
-  // Filter options come straight from the data present — not a hardcoded list.
   const shapeOptions = useMemo(() => {
     if (!monuments) return []
     return [...new Set(monuments.map((m) => m.meta?.Type).filter(Boolean))].sort()
@@ -102,17 +94,50 @@ export default function CatalogTab({ onStartOrder }) {
     [selectedId, monuments],
   )
 
+  const closeDetail = () => { setSelectedId(null); setConfirmDelete(false); setDelError(null) }
+
+  const doDelete = async () => {
+    if (!selected) return
+    setDeleting(true); setDelError(null)
+    const { error } = await supabase.from('monuments').delete().eq('id', selected.id)
+    setDeleting(false)
+    if (error) {
+      setDelError(/row-level security|permission|policy/i.test(error.message)
+        ? 'Couldn’t delete — the catalog delete permission isn’t set up yet (apply migration 20260612_monuments_staff_delete).'
+        : (error.message || 'Delete failed.'))
+      return
+    }
+    const removedId = selected.id
+    setMonuments((arr) => (arr || []).filter((m) => m.id !== removedId))
+    setConfirmDelete(false)
+    setSelectedId(null)
+  }
+
   if (selected) {
     return (
-      <div className="sb-page sb-page-wide">
+      <div className="cat-page">
         <style>{CATALOG_CSS}</style>
-        <CatalogDetail monument={selected} onBack={() => setSelectedId(null)} onStartOrder={onStartOrder} />
+        <CatalogDetail
+          monument={selected}
+          onBack={closeDetail}
+          onStartOrder={onStartOrder}
+          onDelete={() => { setDelError(null); setConfirmDelete(true) }}
+        />
+        {confirmDelete && (
+          <DeleteConfirm
+            monument={selected}
+            busy={deleting}
+            error={delError}
+            onCancel={() => { if (!deleting) { setConfirmDelete(false); setDelError(null) } }}
+            onConfirm={doDelete}
+          />
+        )}
       </div>
     )
   }
 
   return (
-    <div className="sb-page sb-page-wide">
+    <div className="cat-page">
       <style>{CATALOG_CSS}</style>
 
       <div className="cat-head">
@@ -166,7 +191,7 @@ export default function CatalogTab({ onStartOrder }) {
   )
 }
 
-function CatalogDetail({ monument: m, onBack, onStartOrder }) {
+function CatalogDetail({ monument: m, onBack, onStartOrder, onDelete }) {
   const specs = [
     ['Granite', m.granite_color],
     ['Shape / style', m.meta?.Type],
@@ -214,19 +239,44 @@ function CatalogDetail({ monument: m, onBack, onStartOrder }) {
               Start an order from this
             </button>
           </div>
+
+          <div className="cat-danger-zone">
+            <button type="button" className="cat-delete-link" onClick={onDelete}>Delete this design</button>
+          </div>
         </div>
       </div>
     </>
   )
 }
 
+function DeleteConfirm({ monument: m, busy, error, onCancel, onConfirm }) {
+  return (
+    <div className="cat-modal-backdrop" onClick={(e) => e.target === e.currentTarget && onCancel()}>
+      <div className="cat-modal" role="dialog" aria-modal="true">
+        <div className="cat-modal-media">
+          <CatImage src={m.img} alt={m.lastname || m.name} className="cat-modal-img" />
+        </div>
+        <div className="cat-modal-name">{titleCase(m.lastname) || titleCase(m.name) || 'Untitled'}</div>
+        <p className="cat-modal-copy">Permanently remove this design from the catalog? This can&rsquo;t be undone.</p>
+        {error && <div className="cat-modal-error">{error}</div>}
+        <div className="cat-modal-actions">
+          <button type="button" className="cat-modal-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="cat-modal-delete" onClick={onConfirm} disabled={busy}>{busy ? 'Deleting…' : 'Delete'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const CATALOG_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600&display=swap');
-  .cat-serif, .cat-card-name, .cat-detail-name, .cat-ph-mono { font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; }
+  .cat-card-name, .cat-detail-name, .cat-ph-mono, .cat-title, .cat-modal-name { font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; }
+
+  .cat-page { max-width: 1240px; margin: 0 auto; padding: 30px 24px 64px; }
 
   .cat-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
   .cat-eyebrow { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #9a948a; font-weight: 600; margin-bottom: 6px; }
-  .cat-title { font-family: 'Playfair Display', Georgia, serif; font-size: 34px; font-weight: 500; color: #1e2330; letter-spacing: -0.01em; margin: 0; }
+  .cat-title { font-size: 34px; font-weight: 500; color: #1e2330; letter-spacing: -0.01em; margin: 0; }
   .cat-count { font-size: 13px; color: #9a948a; padding-bottom: 6px; white-space: nowrap; }
 
   .cat-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 26px; }
@@ -241,9 +291,10 @@ const CATALOG_CSS = `
   @media (max-width: 560px) { .cat-grid { grid-template-columns: 1fr; } }
 
   .cat-card { display: flex; flex-direction: column; text-align: left; background: none; border: none; padding: 0; cursor: pointer; }
-  .cat-card-tile { aspect-ratio: 4 / 5; border: 1px solid #e7e3db; border-radius: 12px; overflow: hidden; background: #faf8f4; transition: border-color 0.18s, transform 0.18s; }
+  /* FULL image, never cropped: square tile, contain, neutral letterbox fill. */
+  .cat-card-tile { aspect-ratio: 1 / 1; border: 1px solid #e7e3db; border-radius: 12px; overflow: hidden; background: #f5f1ea; display: flex; align-items: center; justify-content: center; transition: border-color 0.18s, transform 0.18s; }
   .cat-card:hover .cat-card-tile { border-color: #c9bfa8; transform: translateY(-2px); }
-  .cat-card-img { width: 100%; height: 100%; object-fit: cover; display: block; background: #fff; }
+  .cat-card-img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .cat-card-body { padding: 13px 3px 4px; }
   .cat-card-name { font-size: 19px; font-weight: 500; color: #1e2330; line-height: 1.15; }
   .cat-card-spec { font-size: 13px; color: #9a948a; margin-top: 3px; }
@@ -259,10 +310,11 @@ const CATALOG_CSS = `
   .cat-detail { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 40px; align-items: start; }
   @media (max-width: 860px) { .cat-detail { grid-template-columns: 1fr; gap: 24px; } }
   .cat-detail-media { position: sticky; top: 20px; }
-  .cat-detail-img { width: 100%; border: 1px solid #e7e3db; border-radius: 14px; background: #fff; display: block; }
+  /* FULL monument, uncropped: contain against a neutral fill, height-capped. */
+  .cat-detail-img { width: 100%; max-height: 72vh; object-fit: contain; border: 1px solid #e7e3db; border-radius: 14px; background: #f5f1ea; display: block; }
   .cat-detail .cat-ph { aspect-ratio: 4 / 5; border: 1px solid #e7e3db; border-radius: 14px; }
 
-  .cat-detail-name { font-family: 'Playfair Display', Georgia, serif; font-size: 38px; font-weight: 500; color: #1e2330; line-height: 1.05; margin: 6px 0 4px; letter-spacing: -0.01em; }
+  .cat-detail-name { font-size: 38px; font-weight: 500; color: #1e2330; line-height: 1.05; margin: 6px 0 4px; letter-spacing: -0.01em; }
   .cat-detail-sub { font-size: 16px; color: #6b6b66; line-height: 1.4; margin-bottom: 22px; }
 
   .cat-specs { margin: 8px 0 22px; border-top: 1px solid #ece8e0; }
@@ -280,4 +332,24 @@ const CATALOG_CSS = `
   .cat-detail-actions { display: flex; gap: 10px; }
   .cat-order-btn { font: inherit; font-size: 14px; font-weight: 600; color: #fff; background: #1e2330; border: 1px solid #1e2330; border-radius: 10px; padding: 13px 26px; cursor: pointer; transition: background 0.15s; }
   .cat-order-btn:hover { background: #2c3446; }
+
+  /* Destructive, secondary — set apart at the bottom. */
+  .cat-danger-zone { margin-top: 30px; padding-top: 18px; border-top: 1px solid #ece8e0; }
+  .cat-delete-link { font: inherit; font-size: 13px; color: #9a4a40; background: none; border: none; padding: 4px 0; cursor: pointer; }
+  .cat-delete-link:hover { color: #7e372f; text-decoration: underline; }
+
+  /* DELETE CONFIRM */
+  .cat-modal-backdrop { position: fixed; inset: 0; background: rgba(28,25,22,0.46); backdrop-filter: blur(2px); z-index: 1200; display: flex; align-items: center; justify-content: center; padding: 22px; }
+  .cat-modal { background: #fff; border-radius: 14px; width: 100%; max-width: 380px; padding: 24px; box-shadow: 0 20px 60px rgba(28,25,22,0.3); text-align: center; }
+  .cat-modal-media { width: 132px; height: 132px; margin: 0 auto 16px; border: 1px solid #e7e3db; border-radius: 11px; overflow: hidden; background: #f5f1ea; display: flex; align-items: center; justify-content: center; }
+  .cat-modal-img { width: 100%; height: 100%; object-fit: contain; }
+  .cat-modal-name { font-size: 22px; font-weight: 500; color: #1e2330; margin-bottom: 8px; }
+  .cat-modal-copy { font-size: 14px; line-height: 1.6; color: #6b6b66; margin-bottom: 18px; }
+  .cat-modal-error { font-size: 13px; color: #9a4a40; background: #fbeceb; border: 1px solid #f0cfca; border-radius: 8px; padding: 9px 11px; margin-bottom: 16px; text-align: left; }
+  .cat-modal-actions { display: flex; gap: 10px; }
+  .cat-modal-cancel { flex: 1; font: inherit; font-size: 14px; font-weight: 500; color: #4a4a44; background: #f3f0ea; border: 1px solid #e4e0d8; border-radius: 9px; padding: 11px; cursor: pointer; }
+  .cat-modal-cancel:hover { background: #ece8e0; }
+  .cat-modal-delete { flex: 1; font: inherit; font-size: 14px; font-weight: 600; color: #fff; background: #9a4a40; border: 1px solid #9a4a40; border-radius: 9px; padding: 11px; cursor: pointer; }
+  .cat-modal-delete:hover { background: #843e35; }
+  .cat-modal-delete:disabled, .cat-modal-cancel:disabled { opacity: 0.55; cursor: default; }
 `

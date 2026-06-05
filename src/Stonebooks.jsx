@@ -29,7 +29,6 @@ import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
 import PaymentsTab from './PaymentsTab'
 import VendorsTab from './VendorsTab'
-import CatalogTab from './CatalogTab'
 import PartnerPortal from './PartnerPortal'
 import { getMyPartnerContext, getNewPartnerRequestCount } from './lib/vendorsData'
 import EmailTab from './EmailTab'
@@ -272,7 +271,6 @@ export default function Stonebooks() {
   const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
   const [salesCemeteryEdit, setSalesCemeteryEdit] = useState(false)  // true → wizard opens in edit mode (submitted order)
   const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
-  const [salesSeedDesign, setSalesSeedDesign] = useState(null)  // Catalog → seed a fresh order's primary design
   // New Order form (single-screen, type-aware). orderFormId null = new, set = edit.
   const [orderFormOpen, setOrderFormOpen] = useState(false)
   const [orderFormId, setOrderFormId] = useState(null)
@@ -331,21 +329,12 @@ export default function Stonebooks() {
     setSalesKind('cemetery')
     setSalesOpen(true)
   }
-  // Catalog → "Start an order from this": fresh family order seeded with the
-  // monument as the primary design (skips the order-type chooser).
-  const startOrderFromDesign = (monument) => {
-    setSalesOrderId(null)
-    setSalesSeedDesign(monument)
-    setSalesKind('family')
-    setSalesOpen(true)
-  }
   const closeSales = () => {
     setSalesOpen(false)
     setSalesOrderId(null)
     setSalesCemeteryId(null)
     setSalesCemeteryEdit(false)
     setSalesKind(null)
-    setSalesSeedDesign(null)
   }
   // New Order form — id null = new; an order id = edit (replaces "Edit in Sales Portal").
   const openOrderForm = (id = null) => { setOrderFormId(id); setOrderFormOpen(true) }
@@ -602,7 +591,7 @@ export default function Stonebooks() {
   // order-type chooser; resuming an order (salesKind preset to 'family') skips it.
   if (salesOpen) {
     if (salesKind === 'family') {
-      return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} seedDesign={salesSeedDesign} />
+      return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} />
     }
     if (salesKind === 'cemetery') {
       return <CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} />
@@ -631,6 +620,12 @@ export default function Stonebooks() {
   const handleNav = (key) => {
     if (key === 'sales') {
       openSales()
+      return
+    }
+    if (key === 'catalog') {
+      // Catalog opens as its own isolated link in a new tab (no CRM chrome) so
+      // it can be handed to a customer. The CRM stays put in its own tab.
+      window.open('/catalog', '_blank', 'noopener')
       return
     }
     setTab(key)
@@ -719,7 +714,7 @@ export default function Stonebooks() {
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
-          {tab === 'catalog'   && <CatalogTab onStartOrder={startOrderFromDesign} />}
+          {tab === 'catalog'   && <CatalogLaunch />}
           {tab === 'settings'  && <SettingsTab user={user} profile={profile} theme={theme} setTheme={setTheme} onProfileChange={reloadProfile} />}
         </main>
       </div>
@@ -1013,6 +1008,26 @@ function AboutSettings() {
 // =============================================================================
 // SHARED COMPONENTS
 // =============================================================================
+
+// Shown only if the catalog tab is reached inside the CRM (e.g. command surface);
+// the sidebar nav itself opens the isolated /catalog route in a new tab.
+function CatalogLaunch() {
+  return (
+    <div className="sb-page">
+      <div className="sb-page-head">
+        <div><div className="sb-page-eyebrow">Design Library</div><h1 className="sb-page-title">Catalog</h1></div>
+      </div>
+      <div className="sb-empty" style={{ maxWidth: 460, margin: '48px auto', textAlign: 'center', lineHeight: 1.65 }}>
+        <p style={{ marginBottom: 18 }}>The catalog opens in its own window so it can be shown to a customer without exposing the rest of the CRM.</p>
+        <button
+          type="button"
+          onClick={() => window.open('/catalog', '_blank', 'noopener')}
+          style={{ font: 'inherit', fontSize: 14, fontWeight: 600, color: '#fff', background: '#1e2330', border: 'none', borderRadius: 9, padding: '12px 24px', cursor: 'pointer' }}
+        >Open catalog</button>
+      </div>
+    </div>
+  )
+}
 
 function SettingsRow({ label, hint, children }) {
   return (

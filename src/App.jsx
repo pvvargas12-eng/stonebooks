@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase'
 import { getSession, onAuthStateChange, signInWithPassword } from './lib/auth'
 import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
+import CatalogTab from './CatalogTab'
 
 // ── BUILD MODE ROUTING ───────────────────────────────────────────
 // Two deployments from one repo:
@@ -456,12 +457,57 @@ const fullUrl = (url) => {
 }
 
 // ── MAIN APP ─────────────────────────────────────────────────────
+// The /catalog route (or ?catalog=1) renders the catalog as its OWN isolated
+// link — no CRM sidebar, tabs, or links to Orders / Payments / Profit. It opens
+// in a new browser tab from the CRM so the CRM stays in its own tab and the
+// catalog tab can be handed to a customer. Still behind staff auth.
+const isCatalogRoute = () => {
+  if (typeof window === 'undefined') return false
+  if (window.location.pathname.replace(/\/+$/, '') === '/catalog') return true
+  return new URLSearchParams(window.location.search).get('catalog') === '1'
+}
+
 export default function App() {
+  if (isCatalogRoute()) {
+    return <CatalogStandalone />
+  }
   // ── If this is a staff build, render Stonebooks instead ──
   if (APP_MODE === 'stonebooks') {
     return <Stonebooks />
   }
   return <CustomerApp />
+}
+
+// Standalone catalog: staff sign-in gate, then the gallery/detail with NO CRM
+// chrome. "Start an order from this" opens the sales wizard as a full-screen
+// overlay (seeded with the design) and returns here on close. There is no
+// visible path into the CRM from this route.
+function CatalogStandalone() {
+  const [authed, setAuthed] = useState(undefined)
+  const [seed, setSeed] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    getSession().then((s) => { if (!cancelled) setAuthed(!!s) })
+    const unsub = onAuthStateChange((u) => setAuthed(!!u))
+    return () => { cancelled = true; unsub() }
+  }, [])
+
+  if (authed === undefined) {
+    return (<><style>{css}</style><div className="loading" style={{ minHeight: '100vh' }}><div className="spinner" />Loading…</div></>)
+  }
+  if (!authed) return <CatalogLoginGate />
+  if (seed) return <SalesMode onClose={() => setSeed(null)} seedDesign={seed} />
+  return (
+    <div style={{ minHeight: '100vh', background: '#fbfaf7' }}>
+      <div style={{ borderBottom: '1px solid #ece8e0', background: '#fff', padding: '14px 24px', display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 18, color: '#1e2330' }}>
+          Shevchenko <span style={{ color: '#9A7209' }}>Monuments</span>
+        </span>
+        <span style={{ fontSize: 11, color: '#9a948a', letterSpacing: '0.14em', textTransform: 'uppercase' }}>Catalog</span>
+      </div>
+      <CatalogTab onStartOrder={setSeed} />
+    </div>
+  )
 }
 
 // ── PRIVATE-APP LOGIN GATE ───────────────────────────────────────
