@@ -8153,7 +8153,10 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   doc.text(COMPANY_INFO.name, M, y + 5)
   doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
   doc.text('LAYOUT APPROVAL', W - M, y + 5, { align: 'right' })
-  y += 9
+  // Family name (F/N) top-right — falls back to the order # so it's never blank.
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+  doc.text(`F/N: ${meta('family_name') || meta('order_number') || '—'}`, W - M, y + 10, { align: 'right' })
+  y += 13
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.4); doc.line(M, y, W - M, y)
   y += 6
 
