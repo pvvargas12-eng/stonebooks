@@ -6895,11 +6895,12 @@ function CustomerPhotoUploader({ photo, orderId, onUpload, onClear }) {
 
 // Company info — used as letterhead on every PDF
 const COMPANY_INFO = {
-  name: 'SHEVCHENKO MONUMENTS',
+  name: 'SHEVCHENKO MONUMENTS, LLC.',
   legalName: 'Shevchenko Monuments LLC',
   address: '329 S Florida Grove Rd',
   city: 'Perth Amboy, NJ 08861',
   phone: '732-442-1286',
+  email: 'shevcoteam@gmail.com',
   established: 'Family-owned since 1919',
 }
 
@@ -7269,6 +7270,10 @@ function reencodeImageViaCanvas(src, { mime = 'image/png', quality, label } = {}
 export async function generateEstimatePDF(order, opts = {}) {
   const mode = opts.mode || (order.signedAt ? 'contract' : 'estimate')
   const isContract = mode === 'contract'
+  // One flag drives rate visibility (don't fork the template): the estimate and
+  // contract share the same layout — the estimate HIDES per-line prices (pricing
+  // protection), the contract SHOWS them.
+  const showLinePrices = isContract
   let JsPDF
   try {
     JsPDF = await loadJsPDF()
@@ -7385,41 +7390,51 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   // ============================ LETTERHEAD ===============================
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(20)
+  doc.setFontSize(17)
   doc.setTextColor(...NAVY)
   doc.text(COMPANY_INFO.name, M, y + 6)
 
-  // "ESTIMATE" or "CONTRACT" badge top-right
-  doc.setFontSize(11)
+  // Title top-right — same document title for estimate + contract; the
+  // estimate-vs-contract difference is the rate column, not the title.
+  doc.setFontSize(13)
   doc.setTextColor(...GOLD)
-  doc.text(isContract ? 'CONTRACT' : 'ESTIMATE', W - M, y + 6, { align: 'right' })
-  y += 8
+  doc.text('EST. CONTRACT', W - M, y + 6, { align: 'right' })
 
+  // Letterhead address (left column).
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(8.5)
   doc.setTextColor(...GREY)
-  doc.text(`${COMPANY_INFO.address} · ${COMPANY_INFO.city}`, M, y + 4)
-  y += 4
-  doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, M, y + 4)
-  y += 6
+  doc.text(`${COMPANY_INFO.address} · ${COMPANY_INFO.city}`, M, y + 13)
+  doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.email}`, M, y + 17)
 
-  // Gold rule
+  // Top-right info box: Date · Due Date · File (family name) · Order #.
+  const shortDate = (d) => d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' })
+  const infoDate = shortDate(isContract && order.signedAt ? new Date(order.signedAt) : new Date())
+  let infoDue
+  if (order.targetCompletionDate) infoDue = shortDate(new Date(order.targetCompletionDate + 'T00:00:00'))
+  else { try { const dd = calculateDueDate(order); infoDue = (dd && dd.dateText) || 'TBD' } catch { infoDue = 'TBD' } }
+  // Family (last) name — falls back to the order # so it's never blank (Commit 3).
+  const famLast = (order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
+  const fileLabel = famLast || (order.orderNumber || 'DRAFT')
+  const ibRows = [['Date', infoDate], ['Due Date', infoDue], ['File', fileLabel], ['Order #', order.orderNumber || 'DRAFT']]
+  const ibW = 62, ibX = W - M - ibW, ibTop = y + 11
+  doc.setDrawColor(...LIGHT_RULE)
+  doc.setLineWidth(0.3)
+  doc.roundedRect(ibX, ibTop, ibW, ibRows.length * 5 + 3, 1.2, 1.2)
+  let iy = ibTop + 5
+  for (const [lab, val] of ibRows) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
+    doc.text(lab, ibX + 2.5, iy)
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT)
+    doc.text(String(val), ibX + ibW - 2.5, iy, { align: 'right' })
+    iy += 5
+  }
+
+  // Gold rule below the taller of the two columns.
+  y = Math.max(y + 21, ibTop + ibRows.length * 5 + 5)
   doc.setDrawColor(...GOLD)
   doc.setLineWidth(0.7)
   doc.line(M, y, W - M, y)
-  y += 6
-
-  // Order # and date row
-  const dateStr = isContract && order.signedAt
-    ? new Date(order.signedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-    : new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(10)
-  doc.setTextColor(...NAVY)
-  doc.text(`${isContract ? 'Contract' : 'Estimate'} #${order.orderNumber || 'DRAFT'}`, M, y)
-  doc.setFont('helvetica', 'normal')
-  doc.setTextColor(...GREY)
-  doc.text(isContract ? `Signed ${dateStr}` : dateStr, W - M, y, { align: 'right' })
   y += 6
 
   // ============================ DUE DATE ================================
@@ -7531,6 +7546,10 @@ export async function generateEstimatePDF(order, opts = {}) {
     if (order.cemetery.lot) lot.push(`Lot ${order.cemetery.lot}`)
     if (order.cemetery.grave) lot.push(`Grave ${order.cemetery.grave}`)
     if (lot.length) { doc.text(lot.join(' · '), M, y); y += 4 }
+    // Grave type + the new Foundation Type (Commit 1) in the cemetery block.
+    const graveLabel = ({ single: 'Single', sxs: 'Side by side', dd: 'Double deep', family: 'Family die' })[order.plot?.type]
+    if (graveLabel) { doc.text(`Grave type: ${graveLabel}`, M, y); y += 4 }
+    if (order.foundationType) { doc.text(`Foundation: ${order.foundationType}`, M, y); y += 4 }
     y += 2
   }
 
@@ -7780,7 +7799,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.text(descLines, descX, y)
     if (colorLines.length) doc.text(colorLines, colorX, y)
     doc.text(String(qty), qtyRightX, y, { align: 'right' })
-    if (isContract) {
+    if (showLinePrices) {
       const rateText = qty > 1 ? `${fmtUSD(amount / qty)} each` : fmtUSD(amount)
       doc.text(rateText, rateRightX, y, { align: 'right' })
     } else {
@@ -8443,7 +8462,7 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   doc.setTextColor(...GREY)
   doc.text(`${COMPANY_INFO.address} · ${COMPANY_INFO.city}`, M, y + 4)
   y += 4
-  doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, M, y + 4)
+  doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.email}`, M, y + 4)
   y += 6
 
   doc.setDrawColor(...GOLD)
