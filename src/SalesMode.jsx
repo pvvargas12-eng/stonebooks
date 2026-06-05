@@ -10106,13 +10106,27 @@ function buildSteps(order) {
   return keys.map(k => ({ key: k, ...STEP_DEFS[k] }))
 }
 
-export default function SalesMode({ onClose, initialOrderId = null }) {
-  // Resume / load
-  const [phase, setPhase] = useState('loading')   // loading | resume | wizard
+export default function SalesMode({ onClose, initialOrderId = null, seedDesign = null }) {
+  // Resume / load. A catalog `seedDesign` (no initialOrderId) opens straight into
+  // a fresh wizard with that monument pre-selected as the PRIMARY design — the
+  // only field that maps cleanly. Seeded at init (not via an effect) so there's
+  // no synchronous set-state-in-effect. Color / size / shape / customer stay
+  // blank for the user; nothing is fabricated.
+  const [phase, setPhase] = useState(!initialOrderId && seedDesign ? 'wizard' : 'loading')
   const [drafts, setDrafts] = useState([])
 
   // Order state
-  const [order, setOrder] = useState(makeBlankOrder())
+  const [order, setOrder] = useState(() => {
+    const blank = makeBlankOrder()
+    if (initialOrderId || !seedDesign) return blank
+    const m = seedDesign
+    const snapshot = {
+      id: m.id, lastname: m.lastname, name: m.name, img: m.img,
+      carve_type: m.carve_type, granite_color: m.granite_color,
+      cats: m.cats, tags: m.tags, description: m.description,
+    }
+    return { ...blank, designs: [{ id: m.id, snapshot }] }
+  })
   const [stepIdx, setStepIdx] = useState(0)
 
   // UI state
@@ -10155,11 +10169,12 @@ export default function SalesMode({ onClose, initialOrderId = null }) {
   }, [mode])
 
   // Always start at the dashboard — it's the entry/landing for Sales Mode —
-  // UNLESS Stonebooks launched us with a specific order to open (see initialOrderId effect).
+  // UNLESS Stonebooks launched us with a specific order to open (initialOrderId)
+  // or with a catalog design to seed a fresh order (seedDesign).
   useEffect(() => {
-    if (initialOrderId) return  // the initialOrderId effect handles this case
+    if (initialOrderId || seedDesign) return  // initialOrderId effect / seed init handle these
     setPhase('resume')
-  }, [initialOrderId])
+  }, [initialOrderId, seedDesign])
 
   // Auto-save with debounce
   const orderForSaveRef = useRef(order)

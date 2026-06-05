@@ -29,6 +29,7 @@ import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
 import PaymentsTab from './PaymentsTab'
 import VendorsTab from './VendorsTab'
+import CatalogTab from './CatalogTab'
 import PartnerPortal from './PartnerPortal'
 import { getMyPartnerContext, getNewPartnerRequestCount } from './lib/vendorsData'
 import EmailTab from './EmailTab'
@@ -271,6 +272,7 @@ export default function Stonebooks() {
   const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
   const [salesCemeteryEdit, setSalesCemeteryEdit] = useState(false)  // true → wizard opens in edit mode (submitted order)
   const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
+  const [salesSeedDesign, setSalesSeedDesign] = useState(null)  // Catalog → seed a fresh order's primary design
   // New Order form (single-screen, type-aware). orderFormId null = new, set = edit.
   const [orderFormOpen, setOrderFormOpen] = useState(false)
   const [orderFormId, setOrderFormId] = useState(null)
@@ -329,12 +331,21 @@ export default function Stonebooks() {
     setSalesKind('cemetery')
     setSalesOpen(true)
   }
+  // Catalog → "Start an order from this": fresh family order seeded with the
+  // monument as the primary design (skips the order-type chooser).
+  const startOrderFromDesign = (monument) => {
+    setSalesOrderId(null)
+    setSalesSeedDesign(monument)
+    setSalesKind('family')
+    setSalesOpen(true)
+  }
   const closeSales = () => {
     setSalesOpen(false)
     setSalesOrderId(null)
     setSalesCemeteryId(null)
     setSalesCemeteryEdit(false)
     setSalesKind(null)
+    setSalesSeedDesign(null)
   }
   // New Order form — id null = new; an order id = edit (replaces "Edit in Sales Portal").
   const openOrderForm = (id = null) => { setOrderFormId(id); setOrderFormOpen(true) }
@@ -591,7 +602,7 @@ export default function Stonebooks() {
   // order-type chooser; resuming an order (salesKind preset to 'family') skips it.
   if (salesOpen) {
     if (salesKind === 'family') {
-      return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} />
+      return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} seedDesign={salesSeedDesign} />
     }
     if (salesKind === 'cemetery') {
       return <CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} />
@@ -708,10 +719,7 @@ export default function Stonebooks() {
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
-          {tab === 'catalog'   && <PlaceholderTab title="Catalog" lines={[
-            'Coming next: design library management — upload new monuments, edit metadata, organize by category.',
-            'For now, the catalog browses on the customer-facing site.',
-          ]} />}
+          {tab === 'catalog'   && <CatalogTab onStartOrder={startOrderFromDesign} />}
           {tab === 'settings'  && <SettingsTab user={user} profile={profile} theme={theme} setTheme={setTheme} onProfileChange={reloadProfile} />}
         </main>
       </div>
@@ -1005,19 +1013,6 @@ function AboutSettings() {
 // =============================================================================
 // SHARED COMPONENTS
 // =============================================================================
-
-function PlaceholderTab({ title, lines = [] }) {
-  return (
-    <div className="sb-page">
-      <div className="sb-page-head">
-        <h1 className="sb-page-title">{title}</h1>
-      </div>
-      <div className="sb-empty">
-        {lines.map((l, i) => <p key={i} style={{ marginBottom: 8 }}>{l}</p>)}
-      </div>
-    </div>
-  )
-}
 
 function SettingsRow({ label, hint, children }) {
   return (
