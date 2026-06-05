@@ -113,7 +113,18 @@ export default function CatalogTab({ onStartOrder }) {
     setMonuments((arr) => (arr || []).filter((m) => m.id !== id))
     return { ok: true }
   }
+  // Bulk archive in ONE batched UPDATE … WHERE id IN (...), confirmed by .select().
+  const archiveMany = async (ids) => {
+    if (!ids.length) return { ok: false, error: 'Nothing selected.' }
+    const { data, error } = await supabase.from('monuments').update({ is_archived: true }).in('id', ids).select('id')
+    if (error) return { ok: false, error: friendlyErr(error, 'Archive') }
+    if (!data || data.length === 0) return { ok: false, error: 'The change didn’t save — apply migration 20260613_monuments_archive, then try again.' }
+    const done = new Set(data.map((r) => r.id))
+    setMonuments((arr) => (arr || []).map((m) => (done.has(m.id) ? { ...m, is_archived: true } : m)))
+    return { ok: true, count: done.size }
+  }
 
+  const inSettings = view === 'archive' || view === 'duplicates'
   const goHome = () => { setView('gallery'); setSelectedId(null) }
 
   return (
@@ -126,16 +137,23 @@ export default function CatalogTab({ onStartOrder }) {
         </button>
         <button
           type="button"
-          className={`cat-gear ${view === 'settings' ? 'on' : ''}`}
-          onClick={() => { setSelectedId(null); setView(view === 'settings' ? 'gallery' : 'settings') }}
+          className={`cat-gear ${inSettings ? 'on' : ''}`}
+          onClick={() => { setSelectedId(null); setView(inSettings ? 'gallery' : 'archive') }}
           aria-label="Settings"
           title="Settings"
         ><Gear /></button>
       </div>
 
       <div className="cat-page">
-        {view === 'settings' ? (
-          <ArchiveSettings archived={archived} loading={monuments === null} onBack={goHome} onRestore={(id) => setArchivedFlag(id, false)} onPurge={purge} />
+        {inSettings ? (
+          <>
+            <SettingsHeader active={view} onBack={goHome} onTab={setView} />
+            {view === 'archive' ? (
+              <ArchiveSettings archived={archived} loading={monuments === null} onRestore={(id) => setArchivedFlag(id, false)} onPurge={purge} />
+            ) : (
+              <DuplicatesView active={active} loading={monuments === null} onArchiveMany={archiveMany} />
+            )}
+          </>
         ) : selected ? (
           <CatalogDetail
             monument={selected}
@@ -260,7 +278,20 @@ function CatalogDetail({ monument: m, onBack, onStartOrder, onArchive }) {
   )
 }
 
-function ArchiveSettings({ archived, loading, onBack, onRestore, onPurge }) {
+// Settings sub-nav: Back to catalog + Archive / Duplicates segmented control.
+function SettingsHeader({ active, onBack, onTab }) {
+  return (
+    <div className="cat-settings-header">
+      <button type="button" className="cat-back" onClick={onBack}>&larr; Back to catalog</button>
+      <div className="cat-segments">
+        <button type="button" className={`cat-segment ${active === 'archive' ? 'on' : ''}`} onClick={() => onTab('archive')}>Archive</button>
+        <button type="button" className={`cat-segment ${active === 'duplicates' ? 'on' : ''}`} onClick={() => onTab('duplicates')}>Duplicates</button>
+      </div>
+    </div>
+  )
+}
+
+function ArchiveSettings({ archived, loading, onRestore, onPurge }) {
   const [purgeTarget, setPurgeTarget] = useState(null)
   const [busyId, setBusyId] = useState(null)
   const [rowError, setRowError] = useState(null)
@@ -274,7 +305,6 @@ function ArchiveSettings({ archived, loading, onBack, onRestore, onPurge }) {
 
   return (
     <>
-      <button type="button" className="cat-back" onClick={onBack}>&larr; Back to catalog</button>
       <div className="cat-head">
         <div>
           <div className="cat-eyebrow">Settings</div>
@@ -325,7 +355,113 @@ function ArchiveSettings({ archived, loading, onBack, onRestore, onPurge }) {
   )
 }
 
+function Check() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  )
+}
+
+// Show duplicates: group the gallery by name, show only names that repeat 2+,
+// select the extras, archive them all in one batched UPDATE.
+function DuplicatesView({ active, loading, onArchiveMany }) {
+  const [selected, setSelected] = useState(() => new Set())
+  const [confirm, setConfirm] = useState(false)
+
+  const groups = useMemo(() => {
+    const map = new Map()
+    for (const m of active) {
+      const key = (m.lastname || m.name || '').trim().toLowerCase()
+      if (!key) continue
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(m)
+    }
+    return [...map.values()]
+      .filter((g) => g.length >= 2)
+      .sort((a, b) => nameOf(a[0]).localeCompare(nameOf(b[0])))
+  }, [active])
+
+  const totalPhotos = useMemo(() => groups.reduce((n, g) => n + g.length, 0), [groups])
+  const selectedCount = selected.size
+
+  const toggle = (id) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+
+  const doArchive = async () => {
+    const res = await onArchiveMany([...selected])
+    if (res.ok) setSelected(new Set())
+    return res
+  }
+
+  return (
+    <>
+      <div className="cat-head">
+        <div>
+          <div className="cat-eyebrow">Settings</div>
+          <h1 className="cat-title">Duplicates</h1>
+        </div>
+        <div className="cat-count">
+          {loading ? 'Loading…'
+            : groups.length === 0 ? 'None'
+            : `${groups.length.toLocaleString()} name${groups.length === 1 ? '' : 's'}  ·  ${totalPhotos.toLocaleString()} photos`}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="cat-empty">Loading…</div>
+      ) : groups.length === 0 ? (
+        <div className="cat-empty">No duplicate names. Every design in the gallery has a unique name.</div>
+      ) : (
+        <div className="cat-dupes">
+          {groups.map((g) => (
+            <div key={nameOf(g[0]).toLowerCase()} className="cat-dupe-group">
+              <div className="cat-dupe-name">{nameOf(g[0])}<span>{g.length} photos</span></div>
+              <div className="cat-grid">
+                {g.map((m) => {
+                  const sel = selected.has(m.id)
+                  return (
+                    <button key={m.id} type="button" className={`cat-card cat-select-card ${sel ? 'sel' : ''}`} onClick={() => toggle(m.id)} aria-pressed={sel}>
+                      <div className="cat-card-tile">
+                        <CatImage src={m.img} alt={m.lastname || m.name} className="cat-card-img" />
+                        <span className="cat-check">{sel ? <Check /> : null}</span>
+                      </div>
+                      <div className="cat-card-body">
+                        <div className="cat-card-name">{nameOf(m)}</div>
+                        {specLine(m) && <div className="cat-card-spec">{specLine(m)}</div>}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {groups.length > 0 && (
+        <div className="cat-actionbar">
+          <span className="cat-actionbar-count">{selectedCount} selected</span>
+          <button type="button" className="cat-actionbar-btn" disabled={selectedCount === 0} onClick={() => setConfirm(true)}>Archive selected</button>
+        </div>
+      )}
+
+      {confirm && (
+        <ConfirmModal
+          title={`Archive ${selectedCount} design${selectedCount === 1 ? '' : 's'}?`}
+          copy="You can restore them from the Archive."
+          confirmLabel="Archive"
+          busyLabel="Archiving…"
+          onCancel={() => setConfirm(false)}
+          run={doArchive}
+          onDone={() => setConfirm(false)}
+        />
+      )}
+    </>
+  )
+}
+
 // Shared confirm dialog. `run` returns { ok, error }; on ok we call onDone.
+// `monument` is optional — omit it for a bulk action (title-only heading).
 function ConfirmModal({ monument: m, title, copy, confirmLabel, busyLabel, destructive, onCancel, run, onDone }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -339,9 +475,18 @@ function ConfirmModal({ monument: m, title, copy, confirmLabel, busyLabel, destr
   return (
     <div className="cat-modal-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}>
       <div className="cat-modal" role="dialog" aria-modal="true">
-        <div className="cat-modal-media"><CatImage src={m.img} alt={m.lastname || m.name} className="cat-modal-img" /></div>
-        <div className="cat-modal-name">{nameOf(m)}</div>
-        <p className="cat-modal-copy">{title} {copy}</p>
+        {m ? (
+          <>
+            <div className="cat-modal-media"><CatImage src={m.img} alt={m.lastname || m.name} className="cat-modal-img" /></div>
+            <div className="cat-modal-name">{nameOf(m)}</div>
+            <p className="cat-modal-copy">{title} {copy}</p>
+          </>
+        ) : (
+          <>
+            <div className="cat-modal-name cat-modal-name-bulk">{title}</div>
+            <p className="cat-modal-copy">{copy}</p>
+          </>
+        )}
         {error && <div className="cat-modal-error">{error}</div>}
         <div className="cat-modal-actions">
           <button type="button" className="cat-modal-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
@@ -456,4 +601,31 @@ const CATALOG_CSS = `
   .cat-modal-delete { flex: 1; font: inherit; font-size: 14px; font-weight: 600; color: #fff; background: #9a4a40; border: 1px solid #9a4a40; border-radius: 9px; padding: 11px; cursor: pointer; }
   .cat-modal-delete:hover { background: #843e35; }
   .cat-modal-delete:disabled, .cat-modal-confirm:disabled, .cat-modal-cancel:disabled { opacity: 0.55; cursor: default; }
+  .cat-modal-name-bulk { margin-top: 4px; margin-bottom: 10px; }
+
+  /* SETTINGS sub-nav */
+  .cat-settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .cat-settings-header .cat-back { margin-bottom: 0; }
+  .cat-segments { display: inline-flex; gap: 2px; background: #f1ede5; border-radius: 999px; padding: 3px; }
+  .cat-segment { font: inherit; font-size: 13px; font-weight: 500; color: #6b6b66; background: none; border: none; border-radius: 999px; padding: 7px 18px; cursor: pointer; }
+  .cat-segment.on { background: #fff; color: #1e2330; font-weight: 600; box-shadow: 0 1px 2px rgba(28,25,22,0.1); }
+
+  /* DUPLICATES */
+  .cat-dupes { display: flex; flex-direction: column; gap: 36px; padding-bottom: 96px; }
+  .cat-dupe-name { font-family: 'Playfair Display', Georgia, serif; font-size: 22px; font-weight: 500; color: #1e2330; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #ece8e0; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .cat-dupe-name span { font-family: system-ui, sans-serif; font-size: 12px; font-weight: 400; color: #9a948a; letter-spacing: 0.04em; }
+
+  .cat-select-card { position: relative; }
+  .cat-select-card .cat-card-tile { position: relative; transition: border-color 0.15s, box-shadow 0.15s, transform 0.18s; }
+  .cat-select-card.sel .cat-card-tile { border-color: #9A7209; box-shadow: 0 0 0 2px #9A7209; transform: none; }
+  .cat-check { position: absolute; top: 9px; right: 9px; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid #cbc4b5; background: rgba(255,255,255,0.82); display: flex; align-items: center; justify-content: center; }
+  .cat-select-card.sel .cat-check { background: #9A7209; border-color: #9A7209; }
+  .cat-select-card.sel .cat-card-name { color: #9A7209; }
+
+  /* persistent action bar (floating pill) */
+  .cat-actionbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 60; display: flex; align-items: center; gap: 16px; background: #1e2330; color: #fff; border-radius: 999px; padding: 10px 12px 10px 22px; box-shadow: 0 12px 36px rgba(28,25,22,0.34); }
+  .cat-actionbar-count { font-size: 14px; color: rgba(255,255,255,0.82); white-space: nowrap; }
+  .cat-actionbar-btn { font: inherit; font-size: 14px; font-weight: 600; color: #1e2330; background: #fff; border: none; border-radius: 999px; padding: 9px 20px; cursor: pointer; transition: opacity 0.15s; }
+  .cat-actionbar-btn:hover:not(:disabled) { background: #f3f0ea; }
+  .cat-actionbar-btn:disabled { opacity: 0.4; cursor: default; }
 `
