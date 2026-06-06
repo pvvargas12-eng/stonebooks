@@ -7643,37 +7643,36 @@ export async function generateEstimatePDF(order, opts = {}) {
   // the services clear, so a separate SERVICE block was redundant.
 
   // ============================ STONE SPECS =============================
-  const shape = SHAPES.find(s => s.code === order.shape)
-  if (shape) {
-    // Sprint 3u Part D — reserve the whole stone-specs block (section header +
-    // one row per populated spec field + trailing gap) so it never splits.
+  // The Shape + FULL size ALWAYS prints, in feet-inches (the standard notation),
+  // on EVERY contract/estimate — even for shapes not in the catalog (bronze,
+  // mausoleum, repair, etc.). The size must never be omitted or truncated.
+  {
+    const shape = SHAPES.find(s => s.code === order.shape)
     const color = GRANITE_COLORS.find(g => g.code === order.graniteColor)
     const top = TOP_SHAPES.find(t => t.code === order.topShape)
     const polish = POLISH_LEVELS.find(p => p.code === order.polishLevel)
     const sides = SIDES_OPTIONS.find(s => s.code === order.sides)
-    let specRows = 1  // Shape always renders
-    if (color) specRows++
-    if (top) specRows++
-    if (polish) specRows++
-    if (sides) specRows++
-    if (order.baseConfig?.include) specRows++
-    ensure(12 + specRows * 5 + 2)
 
-    sectionHeader('Stone specifications')
-    const stdSize = order.standardSizeCode ? shape.standardSizes.find(s => s.code === order.standardSizeCode) : null
-    // The standardSize label IS the dimensions (e.g. "2-0 × 1-0 × 1-6"),
-    // so use it directly. Custom dims fall back to the entered numbers.
-    const sizeText = stdSize
-      ? stdSize.label
-      : [order.width, order.depth, order.thickness].filter(x => x != null).join(' × ') + '"'
-    kvRow('Shape', sizeText ? `${shape.label} — ${sizeText}` : shape.label)
+    const stdSize = (shape && order.standardSizeCode) ? shape.standardSizes.find(s => s.code === order.standardSizeCode) : null
+    const fi = (v) => { const n = Number(v); return n ? `${Math.floor(n / 12)}-${n % 12}` : null }
+    // standardSize label IS the dimensions (e.g. "2-0 × 1-0 × 1-6"); custom dims
+    // render in the same feet-inches notation.
+    const sizeText = stdSize ? stdSize.label : [order.width, order.depth, order.thickness].map(fi).filter(Boolean).join(' × ')
+    const titleCase = (s) => String(s || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim()
+    const svcName = (order.serviceTypes || []).map(c => SERVICE_TYPES.find(t => t.code === c)?.label).filter(Boolean)[0]
+    const shapeName = shape?.label || titleCase(order.shape) || svcName || 'Monument'
+    const shapeLine = sizeText ? `${shapeName} — ${sizeText}` : shapeName
 
-    if (color) kvRow('Granite color', `${color.label} (${color.origin})`)
-    if (top) kvRow('Top shape', top.label)
-    if (polish) kvRow('Polish level', polish.label)
-    if (sides) kvRow('Sides', sides.label)
+    if (shapeLine || color || top || polish || sides || order.baseConfig?.include) {
+      ensure(40)
+      sectionHeader('Stone specifications')
+      kvRow('Shape', shapeLine)
+      if (color) kvRow('Granite color', `${color.label} (${color.origin})`)
+      if (top) kvRow('Top shape', top.label)
+      if (polish) kvRow('Polish level', polish.label)
+      if (sides) kvRow('Sides', sides.label)
 
-    if (order.baseConfig?.include) {
+      if (order.baseConfig?.include) {
       const baseSize = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
       const baseHeight = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
       const baseSides = BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)
@@ -7684,9 +7683,10 @@ export async function generateEstimatePDF(order, opts = {}) {
         baseSides?.label,
         order.baseConfig.polishMargin2in ? '2" polish margin' : '',
       ].filter(Boolean).join(' · ')
-      if (baseDesc) kvRow('Base', baseDesc)
+        if (baseDesc) kvRow('Base', baseDesc)
+      }
+      y += 2
     }
-    y += 2
   }
 
   // ============================ DESIGN ===================================
