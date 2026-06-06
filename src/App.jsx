@@ -908,7 +908,6 @@ function CustomerApp() {
             <div className="cat-grid">
               {CATEGORIES.map(cat => (
                 <div key={cat.id} className="cat-card" onClick={() => goToCategory(cat.id)}>
-                  <span className="cat-icon">{cat.icon}</span>
                   <div className="cat-name">{cat.label}</div>
                   <div className="cat-sub">{cat.sub}</div>
                 </div>

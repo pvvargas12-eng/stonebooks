@@ -94,36 +94,10 @@ const deceasedName = (d) => {
 }
 
 // ── Field + Section primitives ───────────────────────────────────────────────
-// One small, relevant emoji per data line for fast scanning. Chosen by keyword
-// in the field label so every line gets a consistent icon without threading a
-// prop through ~30 call sites.
-function fieldIcon(label) {
-  const l = String(label || '').toLowerCase()
-  if (l.includes('phone')) return '📞'
-  if (l.includes('email')) return '✉️'
-  if (l.includes('cemetery')) return '📍'
-  if (l.includes('grave')) return '🪦'
-  if (l.includes('section') || l.includes('plot') || l.includes('location')) return '📌'
-  if (l.includes('balance') || l.includes('total') || l.includes('collected') || l.includes('payment')) return '💵'
-  if (l.includes('date') || l.includes('completion') || l.includes('target')) return '📅'
-  if (l.includes('permit')) return '📋'
-  if (l.includes('foundation')) return '🧱'
-  if (l.includes('inscription')) return '✍️'
-  if (l.includes('deceased')) return '🕊️'
-  if (l.includes('proof') || l.includes('approval')) return '✅'
-  if (l.includes('referral') || l.includes('funeral')) return '🏵️'
-  if (l.includes('address')) return '🏠'
-  if (l.includes('name') || l.includes('contact')) return '👤'
-  if (l.includes('shape') || l.includes('monument') || l.includes('type') || l.includes('color') || l.includes('die') || l.includes('base') || l.includes('finish') || l.includes('add-on')) return '🪨'
-  if (l.includes('stage') || l.includes('task') || l.includes('blocker') || l.includes('job')) return '🔧'
-  return '•'
-}
-
 function Field({ label, value, hint }) {
   const empty = value == null || value === '' || (Array.isArray(value) && value.length === 0)
   return (
     <div className="sb-od-field">
-      <span className="sb-od-field-icon" aria-hidden="true">{fieldIcon(label)}</span>
       <div className="sb-od-field-label">{label}</div>
       <div className={`sb-od-field-value${empty ? ' sb-od-missing' : ''}`}>
         {empty ? '—' : value}
@@ -152,7 +126,6 @@ function SectionRail({ items }) {
     <nav className="sb-od-rail" aria-label="Order sections">
       {items.map(it => (
         <button key={it.id} type="button" className="sb-od-rail-item" onClick={() => jump(it.id)}>
-          <span className="sb-od-rail-emoji" aria-hidden="true">{it.emoji}</span>
           <span>{it.label}</span>
         </button>
       ))}
@@ -463,16 +436,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
   // Left-rail section nav (Completion photos only when present).
   const railItems = [
-    { id: 'od-customer', emoji: '👤', label: 'Customer & contact' },
-    { id: 'od-cemetery', emoji: '📍', label: 'Cemetery & grave' },
-    { id: 'od-monument', emoji: '🪨', label: 'Monument' },
-    { id: 'od-financial', emoji: '💵', label: 'Financial' },
-    { id: 'od-permit', emoji: '📋', label: 'Permit' },
-    { id: 'od-job', emoji: '🔧', label: 'Related job' },
-    { id: 'od-attachments', emoji: '📎', label: 'Attachments' },
-    ...(completionPhotos.length > 0 ? [{ id: 'od-photos', emoji: '📷', label: 'Completion photos' }] : []),
-    { id: 'od-notes', emoji: '📝', label: 'Notes' },
-    { id: 'od-email', emoji: '✉️', label: 'Email traffic' },
+    { id: 'od-customer', label: 'Customer & contact' },
+    { id: 'od-cemetery', label: 'Cemetery & grave' },
+    { id: 'od-monument', label: 'Monument' },
+    { id: 'od-financial', label: 'Financial' },
+    { id: 'od-permit', label: 'Permit' },
+    { id: 'od-job', label: 'Related job' },
+    { id: 'od-attachments', label: 'Attachments' },
+    ...(completionPhotos.length > 0 ? [{ id: 'od-photos', label: 'Completion photos' }] : []),
+    { id: 'od-notes', label: 'Notes' },
+    { id: 'od-email', label: 'Email traffic' },
   ]
 
   // Monument
@@ -589,7 +562,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         {/* ── QUICK-GLANCE STRIP — read the instant the order opens ──────────── */}
         <div className="sb-od-glance">
           <div className="sb-od-glance-item">
-            <span className="sb-od-glance-emoji" aria-hidden="true">📍</span>
             <div className="sb-od-glance-text">
               <div className="sb-od-glance-label">Cemetery</div>
               <div className="sb-od-glance-value">
@@ -599,7 +571,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </div>
           </div>
           <div className="sb-od-glance-item">
-            <span className="sb-od-glance-emoji" aria-hidden="true">📞</span>
             <div className="sb-od-glance-text">
               <div className="sb-od-glance-label">Contact</div>
               <div className="sb-od-glance-value">
@@ -609,7 +580,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </div>
           </div>
           <div className="sb-od-glance-item">
-            <span className="sb-od-glance-emoji" aria-hidden="true">🪦</span>
             <div className="sb-od-glance-text">
               <div className="sb-od-glance-label">Type of order</div>
               <div className="sb-od-glance-value">{orderType || <span className="sb-od-missing">—</span>}</div>
@@ -1142,7 +1112,6 @@ const OD_CSS = `
     display: flex; align-items: center; gap: 12px;
     background: #fff; border: 0.5px solid var(--sb-border, #e4e2dd); border-radius: 12px; padding: 12px 16px;
   }
-  .sb-od-glance-emoji { font-size: 22px; line-height: 1; flex-shrink: 0; }
   .sb-od-glance-text { min-width: 0; }
   .sb-od-glance-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: #9a8a5e; font-weight: 700; }
   .sb-od-glance-value { font-size: 16px; font-weight: 700; color: #1a1a17; margin-top: 2px; line-height: 1.25; word-break: break-word; }
@@ -1162,7 +1131,6 @@ const OD_CSS = `
     transition: background 0.12s, color 0.12s;
   }
   .sb-od-rail-item:hover { background: #f1ede2; color: #111; }
-  .sb-od-rail-emoji { font-size: 15px; line-height: 1; flex-shrink: 0; }
   @media (max-width: 920px) {
     .sb-od-layout { flex-direction: column; }
     .sb-od-rail { position: static; flex-direction: row; flex-wrap: wrap; width: 100%; flex-basis: auto; gap: 6px; }
@@ -1182,9 +1150,8 @@ const OD_CSS = `
     font-size: 16px; text-transform: uppercase; letter-spacing: 0.04em; color: #6e5206;
     font-weight: 800; margin-bottom: 14px;
   }
-  .sb-od-field { display: grid; grid-template-columns: 22px 150px 1fr; gap: 10px; padding: 6px 0; align-items: baseline; }
+  .sb-od-field { display: grid; grid-template-columns: 150px 1fr; gap: 12px; padding: 6px 0; align-items: baseline; }
   .sb-od-field + .sb-od-field { border-top: 0.5px solid #f1efeb; }
-  .sb-od-field-icon { font-size: 13px; line-height: 1.2; text-align: center; opacity: 0.9; }
   .sb-od-field-label { font-size: 12.5px; color: #8a8a85; }
   .sb-od-field-value { font-size: 13.5px; color: #222; word-break: break-word; }
   .sb-od-field-value.sb-od-missing { color: #b8b6b1; }
