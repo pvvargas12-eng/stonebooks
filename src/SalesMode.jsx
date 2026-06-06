@@ -7885,7 +7885,9 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   let runningTotal = postDiscountTaxBase
   if (order.pricing?.applyTax) {
-    const tax = postDiscountTaxBase * NJ_TAX_RATE
+    // Tax the monument (discountable) portion only — the cemetery permit is a
+    // pass-through and is not taxed (matches computeTotals / rowGrandTotal).
+    const tax = (subtotalDisc - discountAmountPdf) * NJ_TAX_RATE
     runningTotal += tax
     doc.setTextColor(...GREY)
     doc.text('NJ SALES TAX (6.625%)', W - M - 60, y)
@@ -8467,7 +8469,9 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     y = ensureBlock(doc, y, need, { pageHeight: H, margin: M, footerReserve: 0 })
   }
 
-  // Compute totals — same logic as PaymentTrackingSection / PdfDownloadButton
+  // Compute totals — ONE formula (matches PaymentTrackingSection / contract).
+  // buildLineItems already includes custom line items, so they must NOT be added
+  // again. The cemetery permit is a pass-through and is NOT taxed.
   const lineItems = buildLineItems(order)
   let subtotalDisc = 0, subtotalPermit = 0
   for (const it of lineItems) {
@@ -8477,15 +8481,13 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     if (it.code === 'addon-permit') subtotalPermit += amt
     else                            subtotalDisc   += amt
   }
-  for (const c of (order.pricing?.customLineItems || [])) {
-    subtotalDisc += Number(c.amount) || 0
-  }
   const discountPct = Number(order.pricing?.discountPct) || 0
   const discountAmount = subtotalDisc * (discountPct / 100)
-  const taxBase = (subtotalDisc - discountAmount) + subtotalPermit
-  const tax = order.pricing?.applyTax ? taxBase * NJ_TAX_RATE : 0
-  const cc  = order.pricing?.applyCCSurcharge ? (taxBase + tax) * CC_SURCHARGE : 0
-  const grandTotal = taxBase + tax + cc
+  const taxableBase = subtotalDisc - discountAmount
+  const tax = order.pricing?.applyTax ? taxableBase * NJ_TAX_RATE : 0
+  const grandBeforeCC = taxableBase + subtotalPermit + tax
+  const cc  = order.pricing?.applyCCSurcharge ? grandBeforeCC * CC_SURCHARGE : 0
+  const grandTotal = Math.round((grandBeforeCC + cc) * 100) / 100
 
   // Sprint M2 Phase 2 — this-payment fields come from the passed payment
   // object; running totals sum the whole non-voided payments[] array (the
@@ -9137,10 +9139,12 @@ export function PricingStep({ order, update }) {
   const subtotalAfterDiscount = subtotalDiscountable - discountAmount
   const subtotal = subtotalDiscountable + subtotalPermit         // pre-discount total (kept for display compat)
 
-  const taxBase = subtotalAfterDiscount + subtotalPermit
-  const taxAmount = order.pricing.applyTax ? Math.round(taxBase * NJ_TAX_RATE * 100) / 100 : 0
-  const ccAmount  = order.pricing.applyCCSurcharge ? Math.round((taxBase + taxAmount) * CC_SURCHARGE * 100) / 100 : 0
-  const total = taxBase + taxAmount + ccAmount
+  // Tax the monument (discountable) portion only — cemetery permit is a
+  // pass-through and is NOT taxed (matches computeTotals / contract / payments).
+  const taxAmount = order.pricing.applyTax ? Math.round(subtotalAfterDiscount * NJ_TAX_RATE * 100) / 100 : 0
+  const grandBeforeCC = subtotalAfterDiscount + subtotalPermit + taxAmount
+  const ccAmount  = order.pricing.applyCCSurcharge ? Math.round(grandBeforeCC * CC_SURCHARGE * 100) / 100 : 0
+  const total = grandBeforeCC + ccAmount
 
   // Custom line items
   const addCustomLineItem = () => {
@@ -9413,7 +9417,7 @@ export function PricingStep({ order, update }) {
               </div>
               <div className="sm-totals-row">
                 <span>Subtotal after discount</span>
-                <span>${taxBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span>${(subtotalAfterDiscount + subtotalPermit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
               </div>
             </>
           )}
@@ -10952,25 +10956,23 @@ function PaymentConfirmModal({ open, type, onConfirm, onCancel }) {
 
 // Sprint 3i — Track deposit + balance payments
 function PaymentTrackingSection({ order, update, onDepositLogged }) {
-  // Compute current grand total so we can show balance owed
+  // Current grand total — ONE formula, matching computeTotals / the contract:
+  // buildLineItems ALREADY includes custom line items (code custom-<id>), so they
+  // must NOT be added again (that double-count drove the wrong Payments total).
+  // The cemetery permit is a pass-through and is NOT taxed.
   const lineItems = buildLineItems(order)
-  const subtotalDisc = lineItems.reduce(
-    (s, it) => s + (it.code === 'addon-permit' ? 0 : (
-      order.pricing?.overrides?.[it.code] != null
-        ? Number(order.pricing.overrides[it.code])
-        : (it.amount || 0))), 0)
-  const subtotalPermit = lineItems.reduce(
-    (s, it) => s + (it.code === 'addon-permit' ? (
-      order.pricing?.overrides?.[it.code] != null
-        ? Number(order.pricing.overrides[it.code])
-        : (it.amount || 0)) : 0), 0)
-  const customs = (order.pricing?.customLineItems || []).reduce((s, c) => s + (Number(c.amount) || 0), 0)
+  const lineAmt = (it) => (order.pricing?.overrides?.[it.code] != null
+    ? Number(order.pricing.overrides[it.code])
+    : (Number(it.amount) || 0))
+  const subtotalDisc = lineItems.reduce((s, it) => s + (it.code === 'addon-permit' ? 0 : lineAmt(it)), 0)
+  const subtotalPermit = lineItems.reduce((s, it) => s + (it.code === 'addon-permit' ? lineAmt(it) : 0), 0)
   const discountPct = Number(order.pricing?.discountPct) || 0
-  const discountAmt = (subtotalDisc + customs) * (discountPct / 100)
-  const taxBase = (subtotalDisc + customs - discountAmt) + subtotalPermit
-  const tax = order.pricing?.applyTax ? taxBase * NJ_TAX_RATE : 0
-  const cc  = order.pricing?.applyCCSurcharge ? (taxBase + tax) * CC_SURCHARGE : 0
-  const grandTotal = taxBase + tax + cc
+  const discountAmt = subtotalDisc * (discountPct / 100)
+  const taxableBase = subtotalDisc - discountAmt
+  const tax = order.pricing?.applyTax ? taxableBase * NJ_TAX_RATE : 0
+  const grandBeforeCC = taxableBase + subtotalPermit + tax
+  const cc  = order.pricing?.applyCCSurcharge ? grandBeforeCC * CC_SURCHARGE : 0
+  const grandTotal = Math.round((grandBeforeCC + cc) * 100) / 100
 
   // Sprint M2 Phase 2 — array-driven. payments[] is authoritative; the UI never
   // touches the legacy depositAmount/balanceAmount fields anymore (orderToRow

@@ -320,8 +320,10 @@ export function computeFormLineItems(order) {
   return items
 }
 
-// ── Totals — replicate the PricingStep / rowGrandTotal formula (single source).
-// Permit lines are taxed but NOT discounted. Returns the breakdown + grand total.
+// ── Totals — THE single source of truth for an order's grand total. Every view
+// (order detail, contract PDF, payments) must derive from this so no two screens
+// can disagree. Cemetery permit lines are a pass-through fee: NOT discounted and
+// NOT taxed (sales tax applies to the monument work only).
 export function computeTotals(items, { applyTax = true, applyCCSurcharge = false, discountPct = 0 } = {}) {
   const isPermit = it => it.code === 'addon-permit' || it.code === 'permit'
   let subtotalDisc = 0, subtotalPermit = 0
@@ -331,16 +333,17 @@ export function computeTotals(items, { applyTax = true, applyCCSurcharge = false
     else subtotalDisc += Number(it.amount) || 0
   }
   const discountAmt = subtotalDisc * (Number(discountPct) || 0) / 100
-  const taxBase = (subtotalDisc - discountAmt) + subtotalPermit
-  const tax = applyTax ? taxBase * liveRates.njTax : 0
-  const cc = applyCCSurcharge ? (taxBase + tax) * liveRates.ccSurcharge : 0
+  const taxableBase = subtotalDisc - discountAmt          // permit excluded — not taxed
+  const tax = applyTax ? taxableBase * liveRates.njTax : 0
+  const grandBeforeCC = taxableBase + subtotalPermit + tax
+  const cc = applyCCSurcharge ? grandBeforeCC * liveRates.ccSurcharge : 0
   return {
     subtotalDisc: Math.round(subtotalDisc * 100) / 100,
     subtotalPermit: Math.round(subtotalPermit * 100) / 100,
     discountAmt: Math.round(discountAmt * 100) / 100,
     tax: Math.round(tax * 100) / 100,
     cc: Math.round(cc * 100) / 100,
-    grandTotal: Math.round(taxBase + tax + cc),
+    grandTotal: Math.round((grandBeforeCC + cc) * 100) / 100,
   }
 }
 

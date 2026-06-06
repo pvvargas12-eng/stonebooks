@@ -536,12 +536,15 @@ export function rowGrandTotal(order) {
   const discountPct = Number(pricing.discountPct) || 0
   const discountAmt = subtotalDisc * (discountPct / 100)
 
-  // Tax + CC
-  const taxBase = (subtotalDisc - discountAmt) + subtotalPermit
-  const tax = pricing.applyTax ? taxBase * NJ_TAX_RATE : 0
-  const cc  = pricing.applyCCSurcharge ? (taxBase + tax) * CC_SURCHARGE : 0
+  // Tax + CC. Cemetery permit is a pass-through — NOT taxed (matches computeTotals
+  // in orderRates, the single source of truth). Cents preserved so the order
+  // detail total matches the contract / payments to the cent.
+  const taxableBase = subtotalDisc - discountAmt
+  const tax = pricing.applyTax ? taxableBase * NJ_TAX_RATE : 0
+  const grandBeforeCC = taxableBase + subtotalPermit + tax
+  const cc  = pricing.applyCCSurcharge ? grandBeforeCC * CC_SURCHARGE : 0
 
-  return Math.round(taxBase + tax + cc)
+  return Math.round((grandBeforeCC + cc) * 100) / 100
 }
 
 // Sprint M2 Phase 2 — payment helpers prefer the payments[] array when it's

@@ -170,8 +170,24 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   // Deposit captured at entry — becomes the first payment in payments[].
   const [deposit, setDeposit] = useState({ amount: '', method: 'check', date: todayISODate() })
 
-  const update = (patch) => setOrder(o => ({ ...o, ...patch }))
-  const updatePricing = (patch) => setOrder(o => ({ ...o, pricing: { ...o.pricing, ...patch } }))
+  // A stale "manual total override" must never silently diverge from the line
+  // items: any edit that changes the priced contents clears it, so the displayed
+  // and saved total fall back to the computed line-item total (which is what the
+  // contract + payments use). Staff can re-enter a manual total afterward.
+  const TOTAL_AFFECTING = ['addOns', 'shape', 'standardSizeCode', 'width', 'height', 'depth', 'thickness', 'graniteColor', 'serviceTypes', 'baseConfig', 'foundationType']
+  const update = (patch) => setOrder(o => {
+    const touchesTotal = TOTAL_AFFECTING.some(k => k in patch)
+    const hasManual = o.pricing?.manualTotal != null && o.pricing?.manualTotal !== ''
+    if (touchesTotal && hasManual) return { ...o, ...patch, pricing: { ...o.pricing, manualTotal: null } }
+    return { ...o, ...patch }
+  })
+  const updatePricing = (patch) => setOrder(o => {
+    const next = { ...o.pricing, ...patch }
+    // Editing any pricing field other than the override itself invalidates it.
+    const hasManual = o.pricing?.manualTotal != null && o.pricing?.manualTotal !== ''
+    if (!('manualTotal' in patch) && hasManual) next.manualTotal = null
+    return { ...o, pricing: next }
+  })
   const updateInsc = (patch) => setOrder(o => ({ ...o, inscription: { ...o.inscription, ...patch } }))
 
   const changeType = (k) => {
