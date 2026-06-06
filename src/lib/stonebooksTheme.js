@@ -30,9 +30,11 @@ export const STONEBOOKS_TOKENS = {
     full: '999px',
   },
 
-  // Typography stacks
+  // Typography stacks. `display` is the Quote Hub title face (Fraunces); `sans`
+  // is the shared body face (Quote Hub body inherits the app sans).
   font: {
     sans: '"Inter", "Söhne", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+    display: '"Fraunces", Georgia, serif',
     mono: '"JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Monaco, Consolas, monospace',
   },
 
@@ -54,42 +56,41 @@ export const STONEBOOKS_TOKENS = {
   },
 }
 
-// Light theme — the default. Pure functional palette.
+// Light theme — the default. Palette adopted verbatim from the Quote Hub screen
+// (src/QuoteHub.jsx) so the whole app shares the Quote Hub look.
 export const STONEBOOKS_LIGHT = {
   // Surfaces
-  bg:           '#fbfbfa',  // page background
-  surface:      '#ffffff',  // cards, modals, inputs
-  surfaceMuted: '#f4f4f2',  // hover states, secondary surfaces
-  sidebar:      '#0f1419',  // navy near-black (matches logo)
+  bg:           '#faf7f1',  // QH page background (warm cream)
+  surface:      '#ffffff',  // QH card / panel
+  surfaceMuted: '#fdf6e8',  // QH pending-line / muted cream
+  sidebar:      '#0f1419',  // KEPT: dark sidebar identity + white logo
 
   // Borders
-  border:       '#e8e8e6',
-  borderHover:  '#d4d4d0',
-  borderFocus:  '#1d4ed8',  // info-blue ring
+  border:       '#ece3d2',  // QH default border
+  borderHover:  '#e4dcc8',  // QH input border (slightly darker)
+  borderFocus:  '#9a7209',  // QH gold ring
 
   // Text
-  textPrimary:   '#0f1419',
-  textSecondary: '#5d5d5a',
-  textMuted:     '#8b8b87',
-  textOnDark:    '#fafafa',  // text on the dark sidebar
+  textPrimary:   '#2a2118',  // QH primary/body
+  textSecondary: '#6b6256',  // QH secondary
+  textMuted:     '#8a7f6c',  // QH tertiary
+  textOnDark:    '#fafafa',  // KEPT: text on the dark sidebar
   textOnDarkMuted: '#9b9b97',
 
-  // Accent — single functional info color, used sparingly
-  accent:       '#1d4ed8',
-  accentHover:  '#1e40af',
-  accentBg:     '#eef2ff',
+  // Accent — QH brand gold
+  accent:       '#9a7209',
+  accentHover:  '#876307',
+  accentBg:     '#f5ede0',
 
-  // Bronze — operational identity accent (Shevchenko Monuments).
-  // Used 1–3 times per screen: active-nav stripe, hero customer name
-  // dotted underline, primary-design role badge. Never load-bearing
-  // for functional state (use the blue accent for info / focus).
-  bronze:       '#b08d57',
+  // Bronze — operational identity accent. Aligned to the QH brand gold so the
+  // active-nav stripe / badges match the Quote Hub.
+  bronze:       '#9a7209',
 
-  // Status colors (only appear when carrying real information)
-  statusRed:     '#b54040',  statusRedBg:    '#fdeded',
-  statusGreen:   '#2d7a4f',  statusGreenBg:  '#e9f5ee',
-  statusAmber:   '#b8842a',  statusAmberBg:  '#fbf4e4',
-  statusBlue:    '#1d4ed8',  statusBlueBg:   '#eef2ff',
+  // Status colors (QH greens/reds)
+  statusRed:     '#b3261e',  statusRedBg:    '#fbeceb',
+  statusGreen:   '#2d7a4f',  statusGreenBg:  '#e8f5ee',
+  statusAmber:   '#b39a6a',  statusAmberBg:  '#fdf6e8',
+  statusBlue:    '#9a7209',  statusBlueBg:   '#f5ede0',
 }
 
 // Dark theme — inverts surface relationship; same accents
@@ -127,8 +128,10 @@ export function buildThemeCSS(theme = 'light') {
   const k = STONEBOOKS_TOKENS
 
   return `
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap');
     :root {
       --sb-bg:           ${t.bg};
+      --sb-canvas:       ${t.bg};
       --sb-surface:      ${t.surface};
       --sb-surface-muted:${t.surfaceMuted};
       --sb-sidebar:      ${t.sidebar};
@@ -150,6 +153,7 @@ export function buildThemeCSS(theme = 'light') {
       --sb-blue:   ${t.statusBlue};  --sb-blue-bg:  ${t.statusBlueBg};
 
       --sb-font-sans: ${k.font.sans};
+      --sb-font-display: ${k.font.display};
       --sb-font-mono: ${k.font.mono};
 
       --sb-r-sm:   ${k.radius.sm};
@@ -157,6 +161,9 @@ export function buildThemeCSS(theme = 'light') {
       --sb-r-lg:   ${k.radius.lg};
       --sb-r-full: ${k.radius.full};
     }
+    /* Quote Hub title face applied to page/section titles app-wide. */
+    .sb-od-title, .sb-page-title, .sb-page-head h1, .sb-page-head h2,
+    .qh-title, .qh-review-name, .sb-hero-title, .sb-tab-title { font-family: var(--sb-font-display); }
   `
 }
 
