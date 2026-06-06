@@ -606,13 +606,14 @@ export default function Stonebooks() {
   }
 
   // New Order form — full-screen overlay (single-screen, type-aware). On save,
-  // close and land on Orders.
+  // land on the saved order's DETAIL view (so the edits can be reviewed), not the
+  // Orders list. OrdersTab opens OrderDetail for initialSelectedId = orderDetailId.
   if (orderFormOpen) {
     return (
       <OrderForm
         orderId={orderFormId}
         onClose={closeOrderForm}
-        onSaved={() => { closeOrderForm(); setTab('orders') }}
+        onSaved={(savedId) => { closeOrderForm(); if (savedId) setOrderDetailId(savedId); setTab('orders') }}
       />
     )
   }
