@@ -25,7 +25,7 @@ import {
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
-  autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone,
+  autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone, applyDepositMilestones,
 } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import {
@@ -299,6 +299,12 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
       const br = await backfillJobMilestones(jid, templateMs[stageIdx].key)
       if (!br.ok) { setBusy(false); setErr(`Saved, but stage backfill failed: ${br.error}`); return }
     }
+
+    // A logged deposit auto-completes contract_signed + deposit_received on the
+    // job. createJobFromOrder already does this for NEW orders; this covers the
+    // EDIT path (job already exists) so editing an order with a deposit still
+    // ticks the deposit milestone. Deposit-gated + idempotent; non-fatal.
+    if (savedId) { try { await applyDepositMilestones(savedId) } catch (e) { console.warn('applyDepositMilestones:', e?.message) } }
 
     setBusy(false)
     onSaved?.(savedId, jid)
