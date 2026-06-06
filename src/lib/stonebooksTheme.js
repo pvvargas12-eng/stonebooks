@@ -63,7 +63,7 @@ export const STONEBOOKS_LIGHT = {
   bg:           '#faf7f1',  // QH page background (warm cream)
   surface:      '#ffffff',  // QH card / panel
   surfaceMuted: '#fdf6e8',  // QH pending-line / muted cream
-  sidebar:      '#0f1419',  // KEPT: dark sidebar identity + white logo
+  sidebar:      '#2a2118',  // QH warm brownish-dark (its darkest value) — no navy
 
   // Borders
   border:       '#ece3d2',  // QH default border
@@ -74,8 +74,8 @@ export const STONEBOOKS_LIGHT = {
   textPrimary:   '#2a2118',  // QH primary/body
   textSecondary: '#6b6256',  // QH secondary
   textMuted:     '#8a7f6c',  // QH tertiary
-  textOnDark:    '#fafafa',  // KEPT: text on the dark sidebar
-  textOnDarkMuted: '#9b9b97',
+  textOnDark:    '#faf7f1',  // QH cream — text on the warm-dark sidebar
+  textOnDarkMuted: '#a89c86', // QH warm subtle — muted on-dark text/nav (warm contrast)
 
   // Accent — QH brand gold
   accent:       '#9a7209',

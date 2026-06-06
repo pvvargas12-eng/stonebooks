@@ -639,7 +639,7 @@ export default function Stonebooks() {
       <div className="sb-root">
         <aside className="sb-sidebar">
           <div className="sb-sidebar-brand">
-            <StonebooksWordmark size={18} color="var(--sb-text-on-dark)" />
+            <StonebooksWordmark size={28} color="var(--sb-text-on-dark)" />
             <div className="sb-sidebar-brand-sub">Shevchenko Monuments</div>
           </div>
 
