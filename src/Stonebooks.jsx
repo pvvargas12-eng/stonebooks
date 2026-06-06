@@ -1181,7 +1181,8 @@ const shellStyles = `
     border: none;
     color: var(--sb-text-on-dark-muted);
     font: inherit;
-    font-size: 15px;
+    font-size: 17px;
+    font-weight: 600;
     padding: 11px 12px;
     border-radius: var(--sb-r-md);
     cursor: pointer;
@@ -1205,12 +1206,12 @@ const shellStyles = `
   .sb-nav-item.on    {
     background: rgba(255,255,255,0.10);
     color: var(--sb-text-on-dark);
-    font-weight: 500;
+    font-weight: 700;
     box-shadow: inset 3px 0 0 var(--sb-bronze);
   }
   .sb-nav-item-action {
     color: var(--sb-text-on-dark);
-    font-weight: 500;
+    font-weight: 700;
   }
   .sb-sidebar-foot {
     border-top: 0.5px solid rgba(255,255,255,0.06);
