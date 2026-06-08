@@ -7385,18 +7385,23 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'normal')
   }
 
-  // Footer at bottom of every page
+  // Footer on EVERY page — left: contract # · legal name · phone; right: Page X of
+  // N. Stamped on all pages at the end (raw physical coords + raw font size so it's
+  // a constant size regardless of the auto-fit scale S).
   const addFooter = () => {
     const yF = H - 10
-    doc.setDrawColor(...LIGHT_RULE)
-    doc.setLineWidth(0.2)
-    rawLine(M, yF - 3, W - M, yF - 3)            // RAW: pinned to the physical bottom
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(7.5)
-    doc.setTextColor(...GREY)
-    rawText(`${COMPANY_INFO.legalName} · ${COMPANY_INFO.phone}`, M, yF)
-    rawText(`Page ${doc.internal.getCurrentPageInfo().pageNumber}`, W - M, yF, { align: 'right' })
-    rawText(isContract ? 'Signed contract — pricing locked' : 'This estimate is valid for 30 days', W / 2, yF, { align: 'center' })
+    const N = doc.internal.getNumberOfPages()
+    const leftTxt = isContract
+      ? `Contract No. ${order.orderNumber || 'DRAFT'} · ${COMPANY_INFO.legalName} · ${COMPANY_INFO.phone}`
+      : `${COMPANY_INFO.legalName} · ${COMPANY_INFO.phone}`
+    for (let i = 1; i <= N; i++) {
+      doc.setPage(i)
+      doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2)
+      rawLine(M, yF - 3, W - M, yF - 3)          // RAW: pinned to the physical bottom
+      doc.setFont('helvetica', 'normal'); _setFS(7.5); doc.setTextColor(...GREY)
+      rawText(leftTxt, M, yF)
+      rawText(`Page ${i} of ${N}`, W - M, yF, { align: 'right' })
+    }
   }
 
   // ============================ LETTERHEAD ===============================
@@ -7404,6 +7409,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFontSize(20)
   doc.setTextColor(...NAVY)
   doc.text(COMPANY_INFO.name, M, y + 6.5)
+
+  // Heritage mark — "Est. 1919" beside the company name (zero vertical cost).
+  const _nameW = doc.getTextWidth(COMPANY_INFO.name)
+  doc.setFont('times', 'italic'); doc.setFontSize(8.5); doc.setTextColor(...GREY)
+  doc.text('Est. 1919', M + _nameW + 4, y + 6.5)
 
   // Title top-right — A2: sized + weighted to MATCH the company name (was 13pt).
   doc.setFont('helvetica', 'bold')
@@ -7945,13 +7955,9 @@ export async function generateEstimatePDF(order, opts = {}) {
   // we keep it internal and don't emit it.
 
   // ============================ SIGN-OFF =================================
-  // Legal terms are selected by service type (round 2) and rendered by REAL
-  // height — every paragraph reserves its measured height via ensure(), so the
-  // block flows to a clean second page rather than ever overlapping the
-  // signature block. Estimates keep the short "valid 30 days" notice.
-  const LEGAL_FS = hasStone ? 7.5 : 9      // small-service blocks read larger
-  const LEGAL_LH = hasStone ? 3.2 : 4.0
-  const PARA_GAP = 2.2     // A9 — tighter paragraph spacing so legal stays compact
+  // Legal terms are selected by service type; the TERMS & CONDITIONS block below
+  // renders them as a numbered, justified serif list at its own ~7pt scale
+  // (TERMS_FS/LH/GAP), so no shared font-size consts are needed here.
 
   // FULL terms — new stone / monument (unchanged deep block).
   const FULL_PARAS = [
@@ -7995,26 +8001,48 @@ export async function generateEstimatePDF(order, opts = {}) {
     }
   }
 
-  // Divider, then terms (contract) / accept text (estimate). Each paragraph
-  // reserves its REAL rendered height; ensure() page-breaks cleanly when needed,
-  // so text is never truncated or overlapped.
+  // Thin divider before the terms / sign-off.
   y += 3
-  ensure(8)
   doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2)
   doc.line(M, y, W - M, y)
   y += 3
 
-  // CONTRACT carries the legal terms. The ESTIMATE has no legal block here — its
-  // sign-off is the call-to-action below (the 30-day note already prints near the
-  // title, and the CTA repeats it).
+  // CONTRACT — TERMS & CONDITIONS. A black section bar (reuses the document's bar
+  // style), then a NUMBERED list set in a serif face (times), JUSTIFIED, at ~7pt
+  // single-leading so it stays compact. Governing-law + entire-agreement clauses
+  // are appended; client initials trail the last clause. The ESTIMATE has no legal
+  // block here — its sign-off is the call-to-action below.
   if (isContract) {
+    const numberedTerms = [
+      ...legalParagraphs,
+      'This agreement is governed by the laws of the State of New Jersey.',
+      'This writing is the entire agreement between the parties; no oral modifications are binding.',
+    ]
+    // Black section bar.
+    const tcBarH = 6
+    doc.setFillColor(0, 0, 0)
+    doc.rect(M, y, W - 2 * M, tcBarH, 'F')
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(255, 255, 255)
+    doc.text('TERMS & CONDITIONS', W / 2, y + 4.2, { align: 'center' })
     doc.setTextColor(...TEXT)
-    for (const para of legalParagraphs) {
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(LEGAL_FS)
-      const lines = doc.splitTextToSize(para, W - M - M)
-      doc.text(lines, M, y)
-      y += lines.length * LEGAL_LH + PARA_GAP
-    }
+    y += tcBarH + 3
+
+    // ~7pt serif, justified, single leading, minimal inter-clause gap.
+    const TERMS_FS = 7, TERMS_LH = 2.8, TERMS_GAP = 1.0
+    doc.setTextColor(...TEXT)
+    numberedTerms.forEach((para, i) => {
+      doc.setFont('times', 'normal'); doc.setFontSize(TERMS_FS)
+      const txt = `${i + 1}. ${para}`
+      const lines = doc.splitTextToSize(txt, W - 2 * M)
+      // Justify multi-line clauses; a single-line clause stays left (justify would
+      // stretch a lone line oddly).
+      doc.text(txt, M, y, lines.length > 1 ? { maxWidth: W - 2 * M, align: 'justify' } : undefined)
+      y += lines.length * TERMS_LH + TERMS_GAP
+    })
+    // Client initials — trailing the last clause on one tight right-aligned line.
+    doc.setFont('times', 'normal'); doc.setFontSize(TERMS_FS); doc.setTextColor(...TEXT)
+    doc.text('Client initials: ________', W - M, y, { align: 'right' })
+    y += TERMS_LH + 1
   }
 
   // ── Sign-off ────────────────────────────────────────────────────────────────
@@ -8023,37 +8051,52 @@ export async function generateEstimatePDF(order, opts = {}) {
   // signed). The one-page failsafe guarantees this all lands on page 1.
   let signFields = null
   if (isContract) {
-    y += 6
-    const sigY = y       // A8 — signature + date share ONE row
+    // Two-party signature band: an acknowledgment line, then TWO columns side by
+    // side (customer left, shop right) on the SAME vertical band — minimal height.
+    y += 3
+    doc.setFont('times', 'normal'); doc.setFontSize(8); doc.setTextColor(...TEXT)
+    const ackTxt = 'By signing below, Client acknowledges having read and agreed to all terms and conditions above.'
+    const ackLines = doc.splitTextToSize(ackTxt, W - 2 * M)
+    doc.text(ackTxt, M, y, ackLines.length > 1 ? { maxWidth: W - 2 * M, align: 'justify' } : undefined)
+    y += ackLines.length * 3.4 + 3
 
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...TEXT)
-    const sigLabel = 'Customer Signature:'
-    const dateLabel = 'Date:'
-    const sigLabelW = doc.getTextWidth(sigLabel)
-    const dateLabelW = doc.getTextWidth(dateLabel)
-    const dateLineX2 = W - M
-    const dateLineX1 = dateLineX2 - 42                  // 42mm date line on the right
-    const dateLabelX = dateLineX1 - dateLabelW - 3
-    const sigLineX1 = M + sigLabelW + 3
-    const sigLineX2 = dateLabelX - 8                    // signature line runs up to "Date:"
+    const colGap = 10
+    const colW = (W - 2 * M - colGap) / 2
+    const lcx = M, rcx = M + colW + colGap
+    const rowA = y + 6
+    const rowB = rowA + 9
 
-    // In-app e-signed contracts embed the captured signature image; else blank.
+    // Labeled underline: draws the label then a rule to lineX2; returns [x1, x2].
+    const ul = (label, x, lineX2, yy) => {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...TEXT)
+      doc.text(label, x, yy)
+      const x1 = x + doc.getTextWidth(label) + 2
+      doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
+      doc.line(x1, yy, lineX2, yy)
+      return [x1, lineX2]
+    }
+
+    // LEFT — customer: Signature + Date on row A, Printed Name on row B.
+    const sigDateX = lcx + colW * 0.62
+    const [csX1, csX2] = ul('Customer Signature:', lcx, sigDateX - 12, rowA)
+    const [cdX1, cdX2] = ul('Date:', sigDateX, lcx + colW, rowA)
+    ul('Printed Name:', lcx, lcx + colW, rowB)
+
+    // RIGHT — shop acceptance: signature line on row A, Date on row B.
+    ul('Accepted by Shevchenko Monuments:', rcx, rcx + colW, rowA)
+    ul('Date:', rcx, rcx + colW * 0.6, rowB)
+
+    // Embed the captured e-signature on the customer signature line, if present.
     let custSigData = null
     if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
-    if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLineX1, sigY - 8, Math.min(70, sigLineX2 - sigLineX1), 7) } catch (e) { console.warn('cust sig embed:', e) } }
+    if (custSigData) { try { doc.addImage(custSigData, 'PNG', csX1, rowA - 6.5, Math.min(60, csX2 - csX1), 6) } catch (e) { console.warn('cust sig embed:', e) } }
 
-    doc.text(sigLabel, M, sigY)
-    doc.text(dateLabel, dateLabelX, sigY)
-    doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
-    doc.line(sigLineX1, sigY, sigLineX2, sigY)
-    doc.line(dateLineX1, sigY, dateLineX2, sigY)
-
-    // AcroForm fields + signFields in PHYSICAL coords (phys-mapped) so the remote
-    // e-sign stamping lands on the blank lines regardless of the auto-fit scale.
+    // AcroForm fields + signFields in PHYSICAL coords so remote e-sign stamping
+    // lands on the customer signature/date lines regardless of the auto-fit scale.
     signFields = {
       unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
-      customer_signature: { x: sigLineX1, y: phys(sigY - 7), w: sigLineX2 - sigLineX1, h: 7 * S },
-      customer_date:      { x: dateLineX1, y: phys(sigY - 7), w: dateLineX2 - dateLineX1, h: 7 * S },
+      customer_signature: { x: csX1, y: phys(rowA - 6), w: csX2 - csX1, h: 6 * S },
+      customer_date:      { x: cdX1, y: phys(rowA - 6), w: cdX2 - cdX1, h: 6 * S },
     }
     const AcroFormTextField = window.jspdf?.AcroFormTextField
     if (AcroFormTextField) {
@@ -8067,7 +8110,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       addSigField('customer_signature', signFields.customer_signature)
       addSigField('customer_date',      signFields.customer_date)
     }
-    y = sigY + 8
+    y = rowB + 6
   } else {
     // ESTIMATE — no signature. Call-to-action in the signature's place.
     y += 8
