@@ -7071,8 +7071,12 @@ function pdfDeceasedLines(order) {
   // shared formatPersonDates helper.
   // Sprint L2 Phase 4 Commit 2 — order-level dateFormat from order.inscription
   // overrides per-person (which is now orphaned). Lift once outside the loop.
-  const orderDateFormat = order.inscription?.dateFormat
-  const orderDateFormatCustom = order.inscription?.dateFormatCustom
+  // The contract/estimate ALWAYS prints full Month D, YYYY dates for every person
+  // (formatPersonDates falls back to a partial only when month/day are genuinely
+  // absent in the data). The stored per-order dateFormat is intentionally ignored
+  // here so a year-only default can never strip the full birth/death dates.
+  const orderDateFormat = 'month_day_year'
+  const orderDateFormatCustom = null
 
   for (const d of order.deceased || []) {
     if (d.isReserved) {
@@ -7297,7 +7301,10 @@ export async function generateEstimatePDF(order, opts = {}) {
   // Black & white only — every "color" is black; rules thin black; bg white.
   const NAVY = [0, 0, 0], GOLD = [0, 0, 0], GREY = [0, 0, 0], TEXT = [0, 0, 0], LIGHT_RULE = [0, 0, 0]
   // Family (last) name — top-right "File" line; falls back to the order #.
-  const familyName = (order.inscription?.familyName || order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
+  // Family name — resolve in order: explicit order family-name -> deceased surname
+  // -> customer last name. (Deceased surname outranks the customer record so a
+  // stale/mismatched customer last name can't print an unrelated family name.)
+  const familyName = (order.inscription?.familyName || (order.deceased || []).find(d => d?.lastName)?.lastName || order.customer?.lastName || '').trim()
 
   // jsPDF's Helvetica is WinAnsi — replace prime/smart-quote glyphs with ASCII.
   const cleanForPdf = (s) => {
@@ -7439,21 +7446,23 @@ export async function generateEstimatePDF(order, opts = {}) {
   const custFullName = [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ').trim()
   const fileLabel = familyName || custFullName || (order.orderNumber || 'DRAFT')
   const ibRows = [['Date', infoDate], ['Due Date', infoDue], ['Family Name', fileLabel], ['Order #', order.orderNumber || 'DRAFT']]
-  const ibW = 62, ibX = W - M - ibW, ibTop = y + 11
+  // Enlarged header info box (#6) — bigger box + text, square corners, uniform
+  // 0.4 stroke (#4).
+  const ibW = 74, ibRowH = 6, ibX = W - M - ibW, ibTop = y + 11
   doc.setDrawColor(...LIGHT_RULE)
-  doc.setLineWidth(0.3)
-  doc.roundedRect(ibX, ibTop, ibW, ibRows.length * 5 + 3, 1.2, 1.2)
-  let iy = ibTop + 5
+  doc.setLineWidth(0.4)
+  doc.rect(ibX, ibTop, ibW, ibRows.length * ibRowH + 4)
+  let iy = ibTop + 5.5
   for (const [lab, val] of ibRows) {
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
-    doc.text(lab, ibX + 2.5, iy)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...GREY)
+    doc.text(lab, ibX + 3, iy)
     doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT)
-    doc.text(String(val), ibX + ibW - 2.5, iy, { align: 'right' })
-    iy += 5
+    doc.text(String(val), ibX + ibW - 3, iy, { align: 'right' })
+    iy += ibRowH
   }
 
   // Rule below the taller of the two columns.
-  y = Math.max(y + 21, ibTop + ibRows.length * 5 + 5)
+  y = Math.max(y + 21, ibTop + ibRows.length * ibRowH + 7)
   doc.setDrawColor(...GOLD)
   doc.setLineWidth(0.5)
   doc.line(M, y, W - M, y)
@@ -7741,32 +7750,8 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 2
   }
 
-  // ============================ INSCRIPTION ==============================
-  if (order.inscription?.epitaph || order.inscription?.customNotes || order.inscription?.type) {
-    sectionHeader('Inscription')
-    const inscType = INSCRIPTION_TYPES.find(t => t.code === order.inscription.type)
-    if (inscType) kvRow('Type', inscType.label)
-    if (order.inscription.customFont) {
-      kvRow('Font', order.inscription.customFont + (order.inscription.customFontDescription ? ` — ${order.inscription.customFontDescription}` : ''))
-    }
-    if (order.inscription.epitaph) {
-      ensure(10)
-      doc.setFont('helvetica', 'italic')
-      doc.setFontSize(11)
-      doc.setTextColor(...NAVY)
-      const wrapped = doc.splitTextToSize(`"${order.inscription.epitaph}"`, W - M - M - 4)
-      doc.text(wrapped, M + 4, y); y += 5 * wrapped.length
-    }
-    if (order.inscription.customNotes) {
-      ensure(6)
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(9)
-      doc.setTextColor(...GREY)
-      const wrapped = doc.splitTextToSize('Notes: ' + order.inscription.customNotes, W - M - M)
-      doc.text(wrapped, M, y); y += 4 * wrapped.length
-    }
-    y += 2
-  }
+  // INSCRIPTION / Notes block removed from the customer-facing PDF (#3) — the
+  // boxed section now runs Stone Specifications -> Pricing with nothing between.
 
   // ============================ PRICING ==================================
   // One-page document — no forced page break; the lower half of page 1 holds
@@ -7901,8 +7886,8 @@ export async function generateEstimatePDF(order, opts = {}) {
   totRow('TOTAL', fmtUSD(finalTotal), { bold: true, size: 12, gap: 6 })
 
   // A6 — close the single boxed section around specs → pricing → final total.
-  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.4)
-  doc.roundedRect(M - 2, specBoxStart - 2, W - 2 * M + 4, (y - specBoxStart) + 2, 2, 2)
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.4)   // #4 — square corners, uniform stroke
+  doc.rect(M - 2, specBoxStart - 2, W - 2 * M + 4, (y - specBoxStart) + 2)
   y += 6
 
   // ===================== PAYMENT TERMS (by service type) =====================
@@ -8051,24 +8036,19 @@ export async function generateEstimatePDF(order, opts = {}) {
   // signed). The one-page failsafe guarantees this all lands on page 1.
   let signFields = null
   if (isContract) {
-    // Two-party signature band: an acknowledgment line, then TWO columns side by
-    // side (customer left, shop right) on the SAME vertical band — minimal height.
+    // Acknowledgment line, then ONE signature row (no counterparty column):
+    // Customer Signature: ____  Date: ____  Printed Name: ____
     y += 3
     doc.setFont('times', 'normal'); doc.setFontSize(8); doc.setTextColor(...TEXT)
     const ackTxt = 'By signing below, Client acknowledges having read and agreed to all terms and conditions above.'
     const ackLines = doc.splitTextToSize(ackTxt, W - 2 * M)
     doc.text(ackTxt, M, y, ackLines.length > 1 ? { maxWidth: W - 2 * M, align: 'justify' } : undefined)
-    y += ackLines.length * 3.4 + 3
+    y += ackLines.length * 3.4 + 5
 
-    const colGap = 10
-    const colW = (W - 2 * M - colGap) / 2
-    const lcx = M, rcx = M + colW + colGap
-    const rowA = y + 6
-    const rowB = rowA + 9
-
+    const sigY = y
     // Labeled underline: draws the label then a rule to lineX2; returns [x1, x2].
     const ul = (label, x, lineX2, yy) => {
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...TEXT)
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...TEXT)
       doc.text(label, x, yy)
       const x1 = x + doc.getTextWidth(label) + 2
       doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
@@ -8076,27 +8056,26 @@ export async function generateEstimatePDF(order, opts = {}) {
       return [x1, lineX2]
     }
 
-    // LEFT — customer: Signature + Date on row A, Printed Name on row B.
-    const sigDateX = lcx + colW * 0.62
-    const [csX1, csX2] = ul('Customer Signature:', lcx, sigDateX - 12, rowA)
-    const [cdX1, cdX2] = ul('Date:', sigDateX, lcx + colW, rowA)
-    ul('Printed Name:', lcx, lcx + colW, rowB)
-
-    // RIGHT — shop acceptance: signature line on row A, Date on row B.
-    ul('Accepted by Shevchenko Monuments:', rcx, rcx + colW, rowA)
-    ul('Date:', rcx, rcx + colW * 0.6, rowB)
+    const usableW = W - 2 * M
+    const sigEnd = M + usableW * 0.46
+    const dateStart = sigEnd + 6
+    const dateEnd = dateStart + 28
+    const nameStart = dateEnd + 6
+    const [csX1, csX2] = ul('Customer Signature:', M, sigEnd, sigY)
+    const [cdX1, cdX2] = ul('Date:', dateStart, dateEnd, sigY)
+    ul('Printed Name:', nameStart, W - M, sigY)
 
     // Embed the captured e-signature on the customer signature line, if present.
     let custSigData = null
     if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
-    if (custSigData) { try { doc.addImage(custSigData, 'PNG', csX1, rowA - 6.5, Math.min(60, csX2 - csX1), 6) } catch (e) { console.warn('cust sig embed:', e) } }
+    if (custSigData) { try { doc.addImage(custSigData, 'PNG', csX1, sigY - 7, Math.min(60, csX2 - csX1), 6) } catch (e) { console.warn('cust sig embed:', e) } }
 
     // AcroForm fields + signFields in PHYSICAL coords so remote e-sign stamping
     // lands on the customer signature/date lines regardless of the auto-fit scale.
     signFields = {
       unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
-      customer_signature: { x: csX1, y: phys(rowA - 6), w: csX2 - csX1, h: 6 * S },
-      customer_date:      { x: cdX1, y: phys(rowA - 6), w: cdX2 - cdX1, h: 6 * S },
+      customer_signature: { x: csX1, y: phys(sigY - 6), w: csX2 - csX1, h: 6 * S },
+      customer_date:      { x: cdX1, y: phys(sigY - 6), w: cdX2 - cdX1, h: 6 * S },
     }
     const AcroFormTextField = window.jspdf?.AcroFormTextField
     if (AcroFormTextField) {
@@ -8110,7 +8089,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       addSigField('customer_signature', signFields.customer_signature)
       addSigField('customer_date',      signFields.customer_date)
     }
-    y = rowB + 6
+    y = sigY + 6
   } else {
     // ESTIMATE — no signature. Call-to-action in the signature's place.
     y += 8
