@@ -193,79 +193,12 @@ export async function getOrderById(id) {
   return data
 }
 
-// ── Order emails (Gmail Phase 2 — 20260601_order_emails.sql) ───────────────
-// Read the per-order email log (authenticated SELECT). Writes happen only via
-// the gmail-send Edge Function (service role).
-export async function getOrderEmails(orderId) {
-  if (!orderId) return []
-  const { data, error } = await supabase
-    .from('order_emails')
-    .select('*')
-    .eq('order_id', orderId)
-    .order('sent_at', { ascending: false, nullsFirst: false })
-  if (error) { console.warn('[email] getOrderEmails:', error.message); return [] }
-  return data || []
-}
-
-// List the connected mailbox's recent messages for a folder (read-only).
-// label: 'INBOX' | 'SENT' (default INBOX). Tokens stay server-side in the
-// gmail-list Edge Function. Returns { ok, messages?, error? }.
-export async function gmailListMessages(label = 'INBOX') {
-  const folder = label === 'SENT' ? 'SENT' : 'INBOX'
-  const { data, error } = await supabase.functions.invoke('gmail-list', { body: { label: folder } })
-  if (error) {
-    let detail = error.message
-    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
-    return { ok: false, error: detail }
-  }
-  if (data?.error) return { ok: false, error: data.error }
-  return { ok: true, messages: data?.messages || [] }
-}
-
-// Run inbound auto-association over recent INBOX mail (gmail-sync Edge
-// Function). Returns { ok, scanned?, attached?, byThread?, byAddress?, skipped?, error? }.
-export async function gmailSyncInbox() {
-  const { data, error } = await supabase.functions.invoke('gmail-sync', { body: {} })
-  if (error) {
-    let detail = error.message
-    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
-    return { ok: false, error: detail }
-  }
-  if (data?.error) return { ok: false, error: data.error }
-  return { ok: true, ...data }
-}
-
-// For a set of Gmail message ids, return a map { messageId: { orderId,
-// orderNumber } } for any that are associated to an order (read-only — reads
-// the order_emails log written by gmail-sync / gmail-send). Drives the inbox
-// "→ order" badge.
-export async function getEmailAssociations(messageIds) {
-  if (!Array.isArray(messageIds) || messageIds.length === 0) return {}
-  const { data, error } = await supabase
-    .from('order_emails')
-    .select('gmail_message_id, order_id, order:orders(order_number)')
-    .in('gmail_message_id', messageIds)
-    .not('order_id', 'is', null)
-  if (error) { console.warn('[email] getEmailAssociations:', error.message); return {} }
-  const map = {}
-  for (const r of data || []) {
-    if (r.gmail_message_id) map[r.gmail_message_id] = { orderId: r.order_id, orderNumber: r.order?.order_number || null }
-  }
-  return map
-}
-
-// Fetch a full thread for the reading pane via the gmail-thread Edge Function.
-export async function gmailGetThread(threadId) {
-  if (!threadId) return { ok: false, error: 'Missing threadId' }
-  const { data, error } = await supabase.functions.invoke('gmail-thread', { body: { threadId } })
-  if (error) {
-    let detail = error.message
-    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
-    return { ok: false, error: detail }
-  }
-  if (data?.error) return { ok: false, error: data.error }
-  return { ok: true, messages: data?.messages || [] }
-}
+// Legacy Gmail-OAuth reads REMOVED (Path B cutover): getOrderEmails (order_emails
+// log), gmailListMessages / gmailGetThread / gmailSyncInbox (gmail-list/thread/
+// sync Edge Functions over the OAuth-connected — possibly paul@ — account), and
+// getEmailAssociations. The Email tab + per-order panel now read ONLY the
+// `messages` table (shevcoteam, synced by /api/email/sync). No legacy read path
+// remains, so nothing surfaces the old OAuth account's mail.
 
 // Generate an AI draft email for an order via the ai-draft Edge Function
 // (Claude Haiku). mode ∈ reply | request_photo | request_approval |

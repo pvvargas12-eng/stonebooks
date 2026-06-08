@@ -1,18 +1,16 @@
 // =============================================================================
-// Stonebooks — Email tab (Gmail Phase 3 Commit 1: inbox read + compose)
+// Stonebooks — Email tab (Gmail Path B — App-Password SMTP/IMAP, shevcoteam@)
 // =============================================================================
 // Top-level mailbox surface for the shared shop Gmail (shevcoteam@gmail.com).
-// NOTE: still reads via the legacy gmail-list/thread Edge Functions; the G4 phase
-// rebuilds this on the `messages` table (App-Password IMAP). Send already routes
-// through sendShopEmail (shop Gmail SMTP only).
-//   • Inbox list — recent INBOX messages (gmail-list), newest-first, unread
-//     emphasized.
-//   • Reading modal — click a message to read the full thread (gmail-thread).
-//   • Compose — To / Subject / Body, sent via gmail-send (sendOrderEmail with
-//     no order_id).
-// Read + compose only. Auto-associating inbound mail to orders and AI-drafted
-// replies are later commits — not here. Tokens never reach the browser; all
-// Gmail calls go through the Edge Functions.
+// Reads ONLY the `messages` table (synced from shevcoteam by /api/email/sync) —
+// there is NO legacy gmail-list / OAuth read path, so the old (paul@) account's
+// mail never appears here.
+//   • Inbox — grouped by CUSTOMER (one thread per customer), unread emphasis
+//     (getInboxThreads).
+//   • Reading pane — the customer's full thread inbound+outbound (getMessageThread).
+//   • Compose / Reply — sent via sendShopEmail (shop Gmail SMTP only; signature
+//     auto-added; In-Reply-To/References set so Gmail threads it).
+//   • "Sync now" — triggers /api/email/sync (the cron runs it every ~3 min).
 // =============================================================================
 
 import { useState, useEffect } from 'react'
