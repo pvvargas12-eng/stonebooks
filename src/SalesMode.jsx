@@ -7297,7 +7297,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // Black & white only — every "color" is black; rules thin black; bg white.
   const NAVY = [0, 0, 0], GOLD = [0, 0, 0], GREY = [0, 0, 0], TEXT = [0, 0, 0], LIGHT_RULE = [0, 0, 0]
   // Family (last) name — top-right "File" line; falls back to the order #.
-  const familyName = (order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
+  const familyName = (order.inscription?.familyName || order.customer?.lastName || (order.deceased || []).find(d => d?.lastName)?.lastName || '').trim()
 
   // jsPDF's Helvetica is WinAnsi — replace prime/smart-quote glyphs with ASCII.
   const cleanForPdf = (s) => {
@@ -7401,15 +7401,15 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   // ============================ LETTERHEAD ===============================
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(17)
+  doc.setFontSize(20)
   doc.setTextColor(...NAVY)
-  doc.text(COMPANY_INFO.name, M, y + 6)
+  doc.text(COMPANY_INFO.name, M, y + 6.5)
 
-  // Title top-right — same document title for estimate + contract; the
-  // estimate-vs-contract difference is the rate column, not the title.
-  doc.setFontSize(13)
+  // Title top-right — A2: sized + weighted to MATCH the company name (was 13pt).
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(20)
   doc.setTextColor(...GOLD)
-  doc.text(isContract ? 'CONTRACT' : 'ESTIMATE', W - M, y + 6, { align: 'right' })
+  doc.text(isContract ? 'CONTRACT' : 'ESTIMATE', W - M, y + 6.5, { align: 'right' })
 
   // Letterhead address (left column).
   doc.setFont('helvetica', 'normal')
@@ -7424,9 +7424,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   let infoDue
   if (order.targetCompletionDate) infoDue = shortDate(new Date(order.targetCompletionDate + 'T00:00:00'))
   else { try { const dd = calculateDueDate(order); infoDue = (dd && dd.dateText) || 'TBD' } catch { infoDue = 'TBD' } }
-  // Family (last) name — falls back to the order # so it's never blank (Commit 3).
-  const fileLabel = familyName || (order.orderNumber || 'DRAFT')
-  const ibRows = [['Date', infoDate], ['Due Date', infoDue], ['File', fileLabel], ['Order #', order.orderNumber || 'DRAFT']]
+  // A4 — "Family Name" (was "File"); falls back to the full customer name, then
+  // the order #, so it is never blank.
+  const custFullName = [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ').trim()
+  const fileLabel = familyName || custFullName || (order.orderNumber || 'DRAFT')
+  const ibRows = [['Date', infoDate], ['Due Date', infoDue], ['Family Name', fileLabel], ['Order #', order.orderNumber || 'DRAFT']]
   const ibW = 62, ibX = W - M - ibW, ibTop = y + 11
   doc.setDrawColor(...LIGHT_RULE)
   doc.setLineWidth(0.3)
@@ -7521,13 +7523,19 @@ export async function generateEstimatePDF(order, opts = {}) {
     const padX = 3
     const lineH = 4.4
 
+    // A3 — pull the FULL customer block. Read the real record keys (addressLine1 /
+    // phonePrimary / emailAlt) with legacy fallbacks; only render city/state/zip
+    // when there's an actual city or zip, so a lone "NJ" never shows by itself.
+    const street = [c.addressLine1 || c.address, c.addressLine2].filter(Boolean).join(', ')
+    const phone = c.phonePrimary || c.phone
+    const altEmail = c.emailAlt || c.altEmail
     const leftLines = [pdfCustomerLine(order)]
-    if (c.address) leftLines.push(c.address)
+    if (street) leftLines.push(street)
     const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
-    if (cityLine) leftLines.push(cityLine)
-    if (c.phone) leftLines.push('Phone: ' + c.phone)
+    if (c.city || c.zip) leftLines.push(cityLine)
+    if (phone) leftLines.push('Phone: ' + phone)
     if (c.email) leftLines.push('Email: ' + c.email)
-    if (c.altEmail) leftLines.push('Alt email: ' + c.altEmail)
+    if (altEmail) leftLines.push('Alt email: ' + altEmail)
 
     const rightLines = []
     if (cem.name) rightLines.push(cem.name)
@@ -7642,6 +7650,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   // SERVICE section removed (round 2) — the line-item descriptions already make
   // the services clear, so a separate SERVICE block was redundant.
 
+  // A6 — ONE boxed section: stone specs + design + pricing + totals are wrapped in
+  // a single bordered container (drawn after the content, just below). Capture the
+  // top here; the bottom + the rect are emitted right after the FINAL TOTAL.
+  const specBoxStart = y + 1
+
   // ============================ STONE SPECS =============================
   // The Shape + FULL size ALWAYS prints, in feet-inches (the standard notation),
   // on EVERY contract/estimate — even for shapes not in the catalog (bronze,
@@ -7755,7 +7768,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // there is no path that can emit a custom charge twice (this is what fixed the
   // acid-wash double-charge). Dynamic import avoids the SalesMode<->orderRates
   // static circular import.
-  const { computeFormLineItems } = await import('./lib/orderRates')
+  const { computeFormLineItems, computeTotals } = await import('./lib/orderRates')
   const allItems = computeFormLineItems(order)
   // ROOT FIX: a line item's `code` can be non-string (e.g. a custom item whose id
   // is numeric/missing). Optional chaining does NOT guard a non-string, so any
@@ -7830,95 +7843,57 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 4 * Math.max(descLines.length, 1) + 0.5
   }
 
-  let subtotalDisc = 0       // discount-eligible (everything except cemetery permit)
-  let subtotalPermitPdf = 0  // cemetery permit only (passed through, no discount)
-  const isPermitCode = (c) => c === 'addon-permit' || c === 'permit'
-  for (const it of pricedItems) {
-    renderLineRow(it.label || '(item)', it.amount, it.code)
-    if (isPermitCode(it.code)) subtotalPermitPdf += Number(it.amount) || 0
-    else                       subtotalDisc      += Number(it.amount) || 0
+  for (const it of pricedItems) renderLineRow(it.label || '(item)', it.amount, it.code)
+
+  // A7 — ONE total. The numbers come from computeTotals (the single source of
+  // truth), so the PDF can never disagree with the order screen. Clean
+  // Subtotal / Discount / Tax / FINAL TOTAL ladder — no separate bordered TOTAL
+  // box and no "PAYMENT:" section. Deposit/balance prints once, below the box.
+  const prPdf = order.pricing || {}
+  const totals = computeTotals(allItems, {
+    applyTax: prPdf.applyTax !== false,
+    applyCCSurcharge: !!prPdf.applyCCSurcharge,
+    discountType: prPdf.discountType,
+    discountValue: prPdf.discountValue,
+    discountPct: Number(prPdf.discountPct) || 0,
+  })
+  const manualTotalPdf = (prPdf.manualTotal != null && prPdf.manualTotal !== '') ? Number(prPdf.manualTotal) : null
+  const finalTotal = manualTotalPdf != null ? manualTotalPdf : totals.grandTotal
+  const subtotalPdf = totals.subtotalDisc + totals.subtotalPermit
+
+  const totLabelX = W - M - 80, totValX = W - M
+  const totRow = (label, value, o = {}) => {
+    doc.setFont('helvetica', o.bold ? 'bold' : 'normal')
+    doc.setFontSize(o.size || 10)
+    doc.setTextColor(...TEXT)
+    doc.text(label, totLabelX, y)
+    doc.text(value, totValX, y, { align: 'right' })
+    y += o.gap || 5
   }
-  const subtotalPdf = subtotalDisc + subtotalPermitPdf
 
-  // Sprint 3u Part D — reserve the whole totals block (one row per populated
-  // line + spacers/dividers) so it never splits across a page boundary.
-  const discountPctPdf = Number(order.pricing?.discountPct) || 0
-  let totalsRows = 2  // Subtotal + GRAND TOTAL always render
-  if (discountPctPdf > 0) totalsRows += 2  // Discount + Subtotal-after-discount
-  if (order.pricing?.applyTax) totalsRows += 1
-  if (order.pricing?.applyCCSurcharge) totalsRows += 1
-  ensure(totalsRows * 5 + 15)
-
-  // Totals block
   y += 3
-  doc.setDrawColor(...LIGHT_RULE)
-  doc.line(W - M - 80, y, W - M, y)
-  y += 4
-
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(10)
-  doc.setTextColor(...TEXT)
-  doc.text('SUBTOTAL', W - M - 60, y)
-  doc.text(fmtUSD(subtotalPdf), W - M, y, { align: 'right' })
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.3)
+  doc.line(totLabelX, y, totValX, y)
   y += 5
-
-  // Discount (applied to discountable portion only)
-  const discountAmountPdf = subtotalDisc * (discountPctPdf / 100)
-  let postDiscountTaxBase = subtotalPdf
-  if (discountPctPdf > 0) {
-    doc.setTextColor(...GOLD)
-    doc.setFont('helvetica', 'bold')
-    const lab = subtotalPermitPdf > 0
-      ? `Discount (${discountPctPdf}% — permit excluded)`
-      : `Discount (${discountPctPdf}%)`
-    doc.text(lab, W - M - 60, y)
-    doc.text('-' + fmtUSD(discountAmountPdf), W - M, y, { align: 'right' })
-    y += 5
-    doc.setFont('helvetica', 'normal')
-    postDiscountTaxBase = subtotalPdf - discountAmountPdf
-
-    doc.setTextColor(...TEXT)
-    doc.text('Subtotal after discount', W - M - 60, y)
-    doc.text(fmtUSD(postDiscountTaxBase), W - M, y, { align: 'right' })
-    y += 5
+  totRow('Subtotal', fmtUSD(subtotalPdf))
+  if (totals.discountAmt > 0) {
+    const dLabel = (prPdf.discountType === 'amount')
+      ? `Discount (${fmtUSD(Number(prPdf.discountValue) || 0)})`
+      : `Discount (${Number((prPdf.discountValue != null && prPdf.discountValue !== '') ? prPdf.discountValue : prPdf.discountPct) || 0}%)`
+    totRow(dLabel, '-' + fmtUSD(totals.discountAmt))
   }
+  if (totals.tax > 0) totRow('NJ Sales Tax (6.625%)', fmtUSD(totals.tax))
+  if (totals.cc > 0)  totRow('Card Surcharge (3%)', fmtUSD(totals.cc))
+  y += 1
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.5)
+  doc.line(totLabelX, y, totValX, y)
+  y += 5
+  totRow('TOTAL', fmtUSD(finalTotal), { bold: true, size: 12, gap: 6 })
 
-  let runningTotal = postDiscountTaxBase
-  if (order.pricing?.applyTax) {
-    // Tax the monument (discountable) portion only — the cemetery permit is a
-    // pass-through and is not taxed (matches computeTotals / rowGrandTotal).
-    const tax = (subtotalDisc - discountAmountPdf) * NJ_TAX_RATE
-    runningTotal += tax
-    doc.setTextColor(...GREY)
-    doc.text('NJ SALES TAX (6.625%)', W - M - 60, y)
-    doc.setTextColor(...TEXT)
-    doc.text(fmtUSD(tax), W - M, y, { align: 'right' })
-    y += 5
-  }
-  if (order.pricing?.applyCCSurcharge) {
-    const cc = runningTotal * CC_SURCHARGE
-    runningTotal += cc
-    doc.setTextColor(...GREY)
-    doc.text('CC Surcharge (3%)', W - M - 60, y)
-    doc.setTextColor(...TEXT)
-    doc.text(fmtUSD(cc), W - M, y, { align: 'right' })
-    y += 5
-  }
-
-  // Payment footer — "PAYMENT:" on the left, the grand Total in a large
-  // black-bordered box on the right.
-  y += 4
-  ensure(18)
-  const ptBoxW = 64, ptBoxH = 13, ptBoxX = W - M - ptBoxW, ptBoxY = y
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...TEXT)
-  doc.text('PAYMENT:', M, ptBoxY + 8.5)
-  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.6)
-  doc.rect(ptBoxX, ptBoxY, ptBoxW, ptBoxH)
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(8)
-  doc.text('TOTAL', ptBoxX + 3, ptBoxY + 5)
-  doc.setFontSize(15)
-  doc.text(fmtUSD(runningTotal), ptBoxX + ptBoxW - 3, ptBoxY + 10, { align: 'right' })
-  y = ptBoxY + ptBoxH + 7
+  // A6 — close the single boxed section around specs → pricing → final total.
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.4)
+  doc.roundedRect(M - 2, specBoxStart - 2, W - 2 * M + 4, (y - specBoxStart) + 2, 2, 2)
+  y += 6
 
   // ===================== PAYMENT TERMS (by service type) =====================
   // Small services (acid wash / repair / inscription / other — NO new stone or
@@ -7943,11 +7918,11 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
     doc.text('PAID IN FULL REQUIRED BEFORE WORK BEGINS', M, y)
     doc.setTextColor(...NAVY)
-    doc.text(fmtUSD(runningTotal), W - M, y, { align: 'right' })
+    doc.text(fmtUSD(finalTotal), W - M, y, { align: 'right' })
     y += 7
   } else {
-    const deposit = runningTotal * 0.5
-    const balance = runningTotal - deposit
+    const deposit = finalTotal * 0.5
+    const balance = finalTotal - deposit
     ensure(18)
     doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
     doc.line(W - M - 90, y, W - M, y)
@@ -7976,7 +7951,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // signature block. Estimates keep the short "valid 30 days" notice.
   const LEGAL_FS = hasStone ? 7.5 : 9      // small-service blocks read larger
   const LEGAL_LH = hasStone ? 3.2 : 4.0
-  const PARA_GAP = 2.8
+  const PARA_GAP = 2.2     // A9 — tighter paragraph spacing so legal stays compact
 
   // FULL terms — new stone / monument (unchanged deep block).
   const FULL_PARAS = [
@@ -8023,11 +7998,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   // Divider, then terms (contract) / accept text (estimate). Each paragraph
   // reserves its REAL rendered height; ensure() page-breaks cleanly when needed,
   // so text is never truncated or overlapped.
-  y += 5
+  y += 3
   ensure(8)
   doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2)
   doc.line(M, y, W - M, y)
-  y += 4
+  y += 3
 
   // CONTRACT carries the legal terms. The ESTIMATE has no legal block here — its
   // sign-off is the call-to-action below (the 30-day note already prints near the
@@ -8048,35 +8023,37 @@ export async function generateEstimatePDF(order, opts = {}) {
   // signed). The one-page failsafe guarantees this all lands on page 1.
   let signFields = null
   if (isContract) {
-    y += 10
-    const sigLineY = y                       // signature line
-    const dateLineY = sigLineY + 14          // date line (its own row below)
+    y += 6
+    const sigY = y       // A8 — signature + date share ONE row
 
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
-    const sigLabelW = doc.getTextWidth('Customer signature:')
-    const sigLineX1 = M + sigLabelW + 4
-    const sigLineX2 = W - M
-    const dateLabelW = doc.getTextWidth('Date:')
-    const dateLineX1 = M + dateLabelW + 4
-    const dateLineX2 = dateLineX1 + 62
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...TEXT)
+    const sigLabel = 'Customer Signature:'
+    const dateLabel = 'Date:'
+    const sigLabelW = doc.getTextWidth(sigLabel)
+    const dateLabelW = doc.getTextWidth(dateLabel)
+    const dateLineX2 = W - M
+    const dateLineX1 = dateLineX2 - 42                  // 42mm date line on the right
+    const dateLabelX = dateLineX1 - dateLabelW - 3
+    const sigLineX1 = M + sigLabelW + 3
+    const sigLineX2 = dateLabelX - 8                    // signature line runs up to "Date:"
 
     // In-app e-signed contracts embed the captured signature image; else blank.
     let custSigData = null
     if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
-    if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLineX1, sigLineY - 9, Math.min(80, sigLineX2 - sigLineX1), 8) } catch (e) { console.warn('cust sig embed:', e) } }
+    if (custSigData) { try { doc.addImage(custSigData, 'PNG', sigLineX1, sigY - 8, Math.min(70, sigLineX2 - sigLineX1), 7) } catch (e) { console.warn('cust sig embed:', e) } }
 
-    doc.text('Customer signature:', M, sigLineY)
-    doc.text('Date:', M, dateLineY)
+    doc.text(sigLabel, M, sigY)
+    doc.text(dateLabel, dateLabelX, sigY)
     doc.setDrawColor(...TEXT); doc.setLineWidth(0.4)
-    doc.line(sigLineX1, sigLineY, sigLineX2, sigLineY)
-    doc.line(dateLineX1, dateLineY, dateLineX2, dateLineY)
+    doc.line(sigLineX1, sigY, sigLineX2, sigY)
+    doc.line(dateLineX1, sigY, dateLineX2, sigY)
 
     // AcroForm fields + signFields in PHYSICAL coords (phys-mapped) so the remote
     // e-sign stamping lands on the blank lines regardless of the auto-fit scale.
     signFields = {
       unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
-      customer_signature: { x: sigLineX1, y: phys(sigLineY - 8), w: sigLineX2 - sigLineX1, h: 8 * S },
-      customer_date:      { x: dateLineX1, y: phys(dateLineY - 8), w: dateLineX2 - dateLineX1, h: 8 * S },
+      customer_signature: { x: sigLineX1, y: phys(sigY - 7), w: sigLineX2 - sigLineX1, h: 7 * S },
+      customer_date:      { x: dateLineX1, y: phys(sigY - 7), w: dateLineX2 - dateLineX1, h: 7 * S },
     }
     const AcroFormTextField = window.jspdf?.AcroFormTextField
     if (AcroFormTextField) {
@@ -8090,7 +8067,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       addSigField('customer_signature', signFields.customer_signature)
       addSigField('customer_date',      signFields.customer_date)
     }
-    y = dateLineY + 8
+    y = sigY + 8
   } else {
     // ESTIMATE — no signature. Call-to-action in the signature's place.
     y += 8
