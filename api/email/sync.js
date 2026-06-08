@@ -23,13 +23,22 @@ import { createClient } from '@supabase/supabase-js'
 // next run (cron or manual) continues from the saved cursor. Small batch + a
 // wall-clock budget keep every invocation well under the function timeout.
 const MAX_PER_RUN = 15          // messages per mailbox per run — keep one invocation short
-const RUN_BUDGET_MS = 45000     // overall wall-clock budget; stop fetching past this and return
 
-// imapflow hard timeouts — fail fast instead of hanging the whole invocation.
+// === HARD wall-clock guarantees ============================================
+// imapflow's built-in timeouts proved unreliable on Vercel — a connect/op can
+// hang at a layer they don't catch, and the whole invocation gets killed at the
+// platform limit. So we race EVERY network step against our own setTimeout and
+// hard-cap the whole handler. The function ALWAYS returns within ~HANDLER_BUDGET.
+const HANDLER_BUDGET_MS = 25000 // absolute ceiling — return partial rather than hang
+const CONNECT_TIMEOUT_MS = 12000 // connect()+auth must settle within this
+const STEP_TIMEOUT_MS = 15000   // any single open/fetch/parse step
+const RUN_BUDGET_MS = 18000     // graceful per-run budget (below the hard cap) — stop, persist cursor, return
+
+// imapflow's own timeouts (belt-and-suspenders; the Promise.race below is the real guard).
 const IMAP_TIMEOUTS = {
-  connectionTimeout: 15000,     // TCP/TLS connect ceiling
-  greetingTimeout: 10000,       // wait for server greeting
-  socketTimeout: 30000,         // idle/stall ceiling on the socket
+  connectionTimeout: 12000,
+  greetingTimeout: 10000,
+  socketTimeout: 25000,
 }
 
 const MAILBOXES = [
@@ -39,6 +48,24 @@ const MAILBOXES = [
 
 const lc = (s) => (s ? String(s).toLowerCase().trim() : null)
 const snippetOf = (t) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+
+// Race a promise against a wall-clock timer. The timer fires regardless of what
+// the underlying (possibly-hung) promise is doing — that's the whole point.
+function withTimeout(promise, ms, label) {
+  let t
+  const timer = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(`timeout:${label} after ${ms}ms`)), ms)
+  })
+  return Promise.race([Promise.resolve(promise), timer]).finally(() => clearTimeout(t))
+}
+
+// Tear the IMAP client down on EVERY exit path (success, error, or hard-cap
+// timeout) so a hung socket can't keep the function alive. logout() is graceful
+// but can itself hang — race it, then force .close().
+async function closeClient(client) {
+  try { await withTimeout(client.logout(), 3000, 'logout') } catch { /* ignore */ }
+  try { client.close() } catch { /* ignore */ }
+}
 
 async function matchCustomerId(admin, addr) {
   if (!addr) return null
@@ -97,7 +124,9 @@ async function syncMailbox(client, admin, mailbox, direction, { anchor = false, 
   let uidValidity = state?.uid_validity != null ? Number(state.uid_validity) : null
   let processed = 0, maxUid = lastUid, more = false
 
-  const lock = await client.getMailboxLock(mailbox)
+  // Open/select the mailbox — raced so a hung SELECT can't stall the run.
+  const lock = await withTimeout(client.getMailboxLock(mailbox), STEP_TIMEOUT_MS, `open:${mailbox}`)
+  console.log(`[email/sync] selected ${mailbox}`)
   try {
     const box = client.mailbox
     const curValidity = Number(box.uidValidity)
@@ -111,18 +140,29 @@ async function syncMailbox(client, admin, mailbox, direction, { anchor = false, 
       const tail = Math.max(0, Number(box.uidNext || 1) - 1)
       maxUid = Math.max(maxUid, tail)
     } else if (box.exists > 0) {
-      for await (const msg of client.fetch(`${lastUid + 1}:*`, { uid: true, source: true }, { uid: true })) {
-        if (msg.uid <= lastUid) continue       // ':*' always returns the last msg even if below range
-        // Batch cap OR wall-clock budget → stop, persist cursor, let the next run continue.
-        if (processed >= MAX_PER_RUN || (deadline && Date.now() > deadline)) { more = true; break }
-        try {
-          const parsed = await simpleParser(msg.source)
-          await upsertParsed(admin, parsed, direction, msg.uid)
-        } catch (e) { console.warn('[email/sync] parse/insert failed uid', msg.uid, e?.message) }
-        maxUid = Math.max(maxUid, msg.uid)
-        processed++
+      // Manual iteration so each `.next()` (the network read) can be raced — a
+      // bare `for await` would hang invisibly waiting on the server.
+      const iter = client.fetch(`${lastUid + 1}:*`, { uid: true, source: true }, { uid: true })[Symbol.asyncIterator]()
+      try {
+        while (true) {
+          // Batch cap OR wall-clock budget → stop, persist cursor, let the next run continue.
+          if (processed >= MAX_PER_RUN || (deadline && Date.now() > deadline)) { more = true; break }
+          const step = await withTimeout(iter.next(), STEP_TIMEOUT_MS, `fetch:${mailbox}`)
+          if (step.done) break
+          const msg = step.value
+          if (msg.uid <= lastUid) continue       // ':*' always returns the last msg even if below range
+          try {
+            const parsed = await withTimeout(simpleParser(msg.source), STEP_TIMEOUT_MS, 'parse')
+            await upsertParsed(admin, parsed, direction, msg.uid)
+          } catch (e) { console.warn('[email/sync] parse/insert failed uid', msg.uid, e?.message) }
+          maxUid = Math.max(maxUid, msg.uid)
+          processed++
+        }
+      } finally {
+        try { await iter.return?.() } catch { /* ignore — stop the stream */ }
       }
     }
+    console.log(`[email/sync] fetched ${processed} from ${mailbox} (more=${more})`)
   } finally {
     lock.release()
   }
@@ -171,23 +211,46 @@ export default async function handler(req, res) {
   // future polls only see NEW mail (use once after a clean-slate delete).
   const anchor = String(req.query?.anchor || (typeof req.body === 'object' ? req.body?.anchor : '') || '') === '1'
 
-  // Wall-clock budget for this invocation. Each mailbox pull stops at the deadline
-  // and persists its cursor, so a manual/browser hit returns quickly and the
-  // remaining backfill is picked up by the next run instead of one long request.
+  // Graceful per-run budget (below the hard cap): each mailbox stops here and
+  // persists its cursor, so a manual/browser hit returns quickly and backfill
+  // continues on the next run. The hard cap below is the safety net for true hangs.
   const deadline = Date.now() + RUN_BUDGET_MS
 
+  // `results` is mutated as each mailbox completes, so even if the hard cap fires
+  // mid-run we can return whatever was imported so far.
   const results = []
-  try {
-    await client.connect()
+  const doWork = async () => {
+    console.log('[email/sync] connecting')
+    await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, 'connect')
+    console.log('[email/sync] connected/authed')
     for (const mb of MAILBOXES) {
       if (Date.now() > deadline) { results.push({ mailbox: mb.name, skipped: 'time_budget', more: true }); continue }
       try { results.push(await syncMailbox(client, admin, mb.name, mb.direction, { anchor, deadline })) }
       catch (e) { results.push({ mailbox: mb.name, error: e?.message || String(e) }) }
     }
-  } catch (e) {
-    return res.status(502).json({ error: 'imap_failed', detail: e?.message || String(e) })
+  }
+
+  // Hard cap the WHOLE work body. Whatever happens inside, this handler returns
+  // within ~HANDLER_BUDGET_MS — a batch, a clear error, or a partial result.
+  let outcome
+  try {
+    outcome = await Promise.race([
+      doWork().then(() => ({ kind: 'done' }), (e) => ({ kind: 'error', error: e })),
+      new Promise((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), HANDLER_BUDGET_MS)),
+    ])
   } finally {
-    try { await client.logout() } catch { /* ignore */ }
+    await closeClient(client)   // tear down on success, error, AND hard-cap timeout
+  }
+
+  if (outcome.kind === 'error') {
+    const detail = outcome.error?.message || String(outcome.error)
+    console.error('[email/sync] failed:', detail)
+    const code = /^timeout:connect\b/.test(detail) ? 'imap_connect_timeout' : 'imap_failed'
+    return res.status(502).json({ error: code, detail, results })
+  }
+  if (outcome.kind === 'timeout') {
+    console.warn('[email/sync] hard cap hit — returning partial')
+    return res.status(200).json({ ok: true, anchor, more: true, partial: true, results })
   }
 
   // `more` true → not fully drained; hit the endpoint again (or wait for cron) to continue.
