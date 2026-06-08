@@ -174,6 +174,7 @@ export default function EmailTab() {
             </div>
           )}
 
+          <div className="sb-email-body">
           <div className="sb-email-list">
             {loading ? (
               <div className="sb-email-empty">Loading…</div>
@@ -206,52 +207,54 @@ export default function EmailTab() {
               ))
             )}
           </div>
-        </div>
-      </div>
 
-      {/* Reading modal — full thread */}
-      {reading && (
-        <div className="sb-email-modal-overlay" onClick={() => setReading(null)}>
-          <div className="sb-email-reader" onClick={e => e.stopPropagation()}>
-            <div className="sb-email-reader-head">
-              <div className="sb-email-reader-subject">{reading.subject}</div>
-              <button type="button" className="sb-email-btn" onClick={() => setReading(null)}>Close</button>
-            </div>
-            <div className="sb-email-reader-body">
-              {reading.busy ? (
-                <div className="sb-email-empty">Loading thread…</div>
-              ) : reading.err ? (
-                <div className="sb-email-error">{reading.err}</div>
-              ) : (
-                reading.messages.map(msg => (
-                  <div key={msg.id} className="sb-email-msg">
-                    <div className="sb-email-msg-meta">
-                      <span className="sb-email-msg-from">{fromName(msg.from)}</span>
-                      <span className="sb-email-msg-addr">&lt;{fromEmail(msg.from)}&gt;</span>
-                      <span className="sb-email-msg-date">{emailDate(msg.date)}</span>
-                    </div>
-                    <div className="sb-email-msg-body">{msg.body || '(no text body)'}</div>
+          {/* Reading pane — full thread, inline (no modal) */}
+          <div className="sb-email-reader-pane">
+            {reading ? (
+              <>
+                <div className="sb-email-reader-head">
+                  <div className="sb-email-reader-subject">{reading.subject}</div>
+                  <button type="button" className="sb-email-btn" onClick={() => setReading(null)}>Close</button>
+                </div>
+                <div className="sb-email-reader-body">
+                  {reading.busy ? (
+                    <div className="sb-email-empty">Loading thread…</div>
+                  ) : reading.err ? (
+                    <div className="sb-email-error">{reading.err}</div>
+                  ) : (
+                    reading.messages.map(msg => (
+                      <div key={msg.id} className="sb-email-msg">
+                        <div className="sb-email-msg-meta">
+                          <span className="sb-email-msg-from">{fromName(msg.from)}</span>
+                          <span className="sb-email-msg-addr">&lt;{fromEmail(msg.from)}&gt;</span>
+                          <span className="sb-email-msg-date">{emailDate(msg.date)}</span>
+                        </div>
+                        <div className="sb-email-msg-body">{msg.body || '(no text body)'}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {!reading.busy && !reading.err && (
+                  <div className="sb-email-reader-foot">
+                    <button
+                      type="button"
+                      className="sb-email-btn sb-email-btn-primary"
+                      onClick={() => {
+                        const first = reading.messages[0]
+                        const subj = reading.subject.startsWith('Re:') ? reading.subject : `Re: ${reading.subject}`
+                        setComposer({ to: fromEmail(first?.from) || '', subject: subj, body: '', busy: false, error: null, sent: false })
+                      }}
+                    >Reply</button>
                   </div>
-                ))
-              )}
-            </div>
-            {!reading.busy && !reading.err && (
-              <div className="sb-email-reader-foot">
-                <button
-                  type="button"
-                  className="sb-email-btn sb-email-btn-primary"
-                  onClick={() => {
-                    const first = reading.messages[0]
-                    const subj = reading.subject.startsWith('Re:') ? reading.subject : `Re: ${reading.subject}`
-                    setReading(null)
-                    setComposer({ to: fromEmail(first?.from) || '', subject: subj, body: '', busy: false, error: null, sent: false })
-                  }}
-                >Reply</button>
-              </div>
+                )}
+              </>
+            ) : (
+              <div className="sb-email-reader-empty">Select a message to read it here.</div>
             )}
           </div>
+          </div>
         </div>
-      )}
+      </div>
 
       {/* Compose modal — reuses the gmail-send path */}
       {composer && (
@@ -300,9 +303,20 @@ export default function EmailTab() {
 }
 
 const EMAIL_CSS = `
-  .sb-email-page { background: var(--sb-canvas, #faf9f7); min-height: 100%; padding: 24px 0 64px; }
-  .sb-email-shell { max-width: 1040px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: 180px 1fr; gap: 24px; align-items: start; }
+  .sb-email-page { background: var(--sb-canvas, #faf7f1); min-height: 100%; padding: 24px 0 64px; }
+  /* Full-width — fills the page like the other tabs / Quote Hub (no centered card). */
+  .sb-email-shell { margin: 0; padding: 0 32px; display: grid; grid-template-columns: 200px 1fr; gap: 28px; align-items: start; }
   @media (max-width: 720px) { .sb-email-shell { grid-template-columns: 1fr; } }
+
+  /* List + inline reading pane, side by side, filling the width. */
+  .sb-email-body { display: grid; grid-template-columns: minmax(340px, 460px) 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 1100px) { .sb-email-body { grid-template-columns: 1fr; } }
+  .sb-email-reader-pane {
+    background: #fff; border: 0.5px solid var(--sb-border, #ece3d2); border-radius: 12px;
+    min-height: 460px; max-height: calc(100vh - 200px); display: flex; flex-direction: column;
+    overflow: hidden; position: sticky; top: 24px;
+  }
+  .sb-email-reader-empty { color: #8a8a85; font-size: 14.5px; padding: 80px 24px; text-align: center; margin: auto; }
 
   /* Left rail */
   .sb-email-rail { display: flex; flex-direction: column; gap: 6px; position: sticky; top: 24px; }
@@ -322,7 +336,7 @@ const EMAIL_CSS = `
 
   .sb-email-main { min-width: 0; }
   .sb-email-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 18px; }
-  .sb-email-title { font-size: 28px; font-weight: 600; color: #111; margin: 0; }
+  .sb-email-title { font-family: var(--sb-font-display, 'Fraunces', Georgia, serif); font-size: 30px; font-weight: 600; color: #2a2118; margin: 0; letter-spacing: -0.01em; }
   .sb-email-sub { font-size: 13px; color: #8a8a85; margin-top: 4px; }
   .sb-email-head-actions { display: flex; gap: 8px; }
   .sb-email-btn {
@@ -351,9 +365,9 @@ const EMAIL_CSS = `
   }
   .sb-email-empty { color: #8a8a85; font-size: 14px; padding: 40px 0; text-align: center; }
 
-  .sb-email-list { background: #fff; border: 0.5px solid var(--sb-border, #e4e2dd); border-radius: 12px; overflow: hidden; max-height: 70vh; overflow-y: auto; }
+  .sb-email-list { background: #fff; border: 0.5px solid var(--sb-border, #ece3d2); border-radius: 12px; overflow: hidden; max-height: calc(100vh - 200px); overflow-y: auto; }
   .sb-email-row {
-    display: grid; grid-template-columns: 180px 1fr 90px; gap: 14px; align-items: center;
+    display: grid; grid-template-columns: minmax(96px, 150px) 1fr auto; gap: 10px; align-items: center;
     width: 100%; text-align: left; background: none; border: none; cursor: pointer;
     padding: 12px 16px; font: inherit; border-bottom: 0.5px solid #f1efeb; position: relative;
   }
