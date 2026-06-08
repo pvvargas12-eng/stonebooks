@@ -15,7 +15,7 @@
 
 import { SHOP_COORDINATES } from './stonebooksData'
 
-const USER_AGENT = 'Stonebooks/1.0 (paul@shevchenkomonuments.com)'
+const USER_AGENT = 'Stonebooks/1.0 (shevcoteam@gmail.com)'
 const POINTS_BASE = 'https://api.weather.gov/points'
 // Session cache — key by rounded lat,lng so multiple consumers share the
 // same payload. We do NOT persist across reloads; the page lifetime is the

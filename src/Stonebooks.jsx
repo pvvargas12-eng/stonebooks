@@ -740,7 +740,6 @@ export default function Stonebooks() {
 // authenticated write — harden both once a real role system lands.
 const OWNER_EMAILS = [
   'pv.vargas12@gmail.com',
-  'paul@shevcomonuments.com',
   'pauly_vargas@outlook.com',
 ]
 const isOwner = (user) => !!user?.email && OWNER_EMAILS.includes(String(user.email).toLowerCase())
@@ -1043,75 +1042,19 @@ function SettingsRow({ label, hint, children }) {
   )
 }
 
-// Gmail integration Phase 1 — Connect only. Builds the Google consent URL
-// (minimal scopes: openid email profile) and redirects; the gmail-oauth-callback
-// Edge Function exchanges the code + stores the refresh token server-side, then
-// redirects back with ?gmail=connected&email=… (captured at the shell mount into
-// localStorage). Connected state here reads that localStorage flag — Phase 1
-// display only; server-verified status + disconnect land in a later phase.
-const GMAIL_LS_KEY = 'sb_gmail_connected_email'
-function IntegrationsSettings({ user, profile }) {
-  const [connectedEmail, setConnectedEmail] = useState(() => {
-    try { return localStorage.getItem(GMAIL_LS_KEY) || null } catch { return null }
-  })
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
-  const supaUrl = import.meta.env.VITE_SUPABASE_URL
-  const configured = Boolean(clientId && supaUrl)
-
-  const connect = () => {
-    if (!configured) return
-    const redirectUri = `${supaUrl}/functions/v1/gmail-oauth-callback`
-    const state = btoa(JSON.stringify({
-      uid: user.id,
-      by: profile?.display_name || user.email,
-      ret: window.location.origin,
-    }))
-    const params = new URLSearchParams({
-      client_id: clientId,
-      redirect_uri: redirectUri,
-      response_type: 'code',
-      // Phase 2 — basic profile + gmail.send + gmail.readonly. readonly is for
-      // the upcoming inbox so staff re-consent only once. Space-separated.
-      scope: [
-        'openid', 'email', 'profile',
-        'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.readonly',
-      ].join(' '),
-      access_type: 'offline',          // needed for a refresh token
-      prompt: 'consent',               // force a refresh token every consent
-      include_granted_scopes: 'true',
-      hd: 'shevcomonuments.com',       // Workspace domain hint
-      state,
-    })
-    window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
-  }
-
-  const disconnect = () => {
-    // Phase 1 clears the local display flag only. Server-side token revocation /
-    // row removal is a later phase (tokens are intentionally client-invisible).
-    try { localStorage.removeItem(GMAIL_LS_KEY) } catch { /* ignore */ }
-    setConnectedEmail(null)
-  }
-
+// Email integration — Gmail Path B (App Password + SMTP/IMAP, single shared shop
+// account shevcoteam@gmail.com). Credentials live server-side in the Vercel env
+// (GMAIL_ADDRESS / GMAIL_APP_PASSWORD); there is NO in-app OAuth connect and no
+// per-user mailbox. The legacy Google-OAuth connect flow (gmail.send/readonly,
+// the @shevcomonuments.com domain hint) was retired so nothing routes through any
+// other account.
+function IntegrationsSettings() {
   return (
     <SettingsRow
-      label="Google account"
-      hint="Connect a @shevcomonuments.com mailbox. Authorizes sending and reading mail (gmail.send + gmail.readonly) so Stonebooks can send order emails and, soon, show replies. If you connected before, click Connect once more to grant the new permissions."
+      label="Email account"
+      hint="Stonebooks sends and receives through the shop Gmail (shevcoteam@gmail.com) via App-Password SMTP/IMAP, configured server-side in the deployment environment. No in-app connection is needed."
     >
-      {connectedEmail ? (
-        <div className="sb-form-stack">
-          <div className="sb-msg sb-msg-ok">✓ Connected as {connectedEmail}</div>
-          <button type="button" className="sb-btn" onClick={disconnect}>Disconnect</button>
-        </div>
-      ) : configured ? (
-        <button type="button" className="sb-btn-primary" onClick={connect}>
-          Connect Google account
-        </button>
-      ) : (
-        <div className="sb-msg sb-msg-err">
-          Not configured — set VITE_GOOGLE_CLIENT_ID (and VITE_SUPABASE_URL) in the app environment.
-        </div>
-      )}
+      <div className="sb-msg sb-msg-ok">Email routes through shevcoteam@gmail.com — configured server-side.</div>
     </SettingsRow>
   )
 }

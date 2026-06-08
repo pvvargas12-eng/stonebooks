@@ -25,7 +25,7 @@ import { createClient } from '@supabase/supabase-js'
 
 const SUPABASE_URL  = process.env.SUPABASE_URL
 const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY
-const USER_AGENT    = 'Stonebooks/1.0 (paul@shevchenkomonuments.com)'
+const USER_AGENT    = 'Stonebooks/1.0 (shevcoteam@gmail.com)'
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
 const DELAY_MS      = 1100   // a hair over 1s to be safely under Nominatim's limit
 

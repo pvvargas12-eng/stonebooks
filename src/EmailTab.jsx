@@ -1,7 +1,10 @@
 // =============================================================================
 // Stonebooks — Email tab (Gmail Phase 3 Commit 1: inbox read + compose)
 // =============================================================================
-// Top-level mailbox surface for the connected @shevcomonuments.com account.
+// Top-level mailbox surface for the shared shop Gmail (shevcoteam@gmail.com).
+// NOTE: still reads via the legacy gmail-list/thread Edge Functions; the G4 phase
+// rebuilds this on the `messages` table (App-Password IMAP). Send already routes
+// through sendShopEmail (shop Gmail SMTP only).
 //   • Inbox list — recent INBOX messages (gmail-list), newest-first, unread
 //     emphasized.
 //   • Reading modal — click a message to read the full thread (gmail-thread).
