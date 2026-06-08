@@ -4,5 +4,9 @@
   ],
   "crons": [
     { "path": "/api/email/sync", "schedule": "*/3 * * * *" }
-  ]
+  ],
+  "functions": {
+    "api/email/sync.js": { "maxDuration": 60 },
+    "api/email/send.js": { "maxDuration": 30 }
+  }
 }
