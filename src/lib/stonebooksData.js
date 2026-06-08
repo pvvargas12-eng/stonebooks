@@ -393,11 +393,46 @@ export async function getMessages(folder = 'INBOX', { limit = 200 } = {}) {
   return { ok: true, messages: (data || []).map(_msgToInboxItem) }
 }
 
+// Inbox grouped by CUSTOMER — one thread per customer (latest message), unread
+// count, sorted newest-first. Unmatched mail groups by its address. Inbox folder
+// groups inbound, Sent groups outbound; clicking opens the full customer thread.
+export async function getInboxThreads(folder = 'INBOX', { limit = 500 } = {}) {
+  const direction = folder === 'SENT' ? 'outbound' : 'inbound'
+  const { data, error } = await supabase.from('messages')
+    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, is_read, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email)')
+    .eq('direction', direction)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.warn('[messages] getInboxThreads:', error.message); return { ok: false, error: error.message, threads: [] } }
+  const map = new Map()
+  for (const r of (data || [])) {
+    const addr = (r.from_email || (r.to_emails || [])[0] || 'unknown').toLowerCase()
+    const key = r.customer_id || `addr:${addr}`
+    let t = map.get(key)
+    if (!t) {                                         // first seen = latest (desc order)
+      const c = r.customer
+      const name = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : ''
+      map.set(key, t = {
+        key, customerId: r.customer_id || null, threadKey: r.thread_key, matched: !!r.customer_id,
+        name: name || r.from_email || (r.to_emails || [])[0] || 'Unknown',
+        contact: c?.email || addr,
+        latestSubject: r.subject || '(no subject)',
+        latestSnippet: r.snippet || (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        latestDate: r.received_at || r.sent_at || r.created_at,
+        unread: 0,
+      })
+    }
+    if (r.direction === 'inbound' && !r.is_read) t.unread++
+  }
+  return { ok: true, threads: Array.from(map.values()) }
+}
+
 // CUSTOMER-LEVEL thread — the whole history with the shop (inbound + outbound,
 // chronological). order_id is never used to filter. Falls back to thread-by-key
-// for unmatched mail (no customer).
+// for unmatched mail (no customer). gmailMessageId + threadKey are returned so a
+// reply can set In-Reply-To / References.
 export async function getMessageThread({ customerId, threadKey } = {}) {
-  let q = supabase.from('messages').select('id, direction, from_email, to_emails, subject, body_text, body_html, has_attachments, attachments, sent_at, received_at, created_at, is_read')
+  let q = supabase.from('messages').select('id, gmail_message_id, thread_key, direction, from_email, to_emails, subject, body_text, body_html, has_attachments, attachments, sent_at, received_at, created_at, is_read')
   if (customerId) q = q.eq('customer_id', customerId)
   else if (threadKey) q = q.eq('thread_key', threadKey)
   else return { ok: true, messages: [] }
@@ -407,6 +442,8 @@ export async function getMessageThread({ customerId, threadKey } = {}) {
     ok: true,
     messages: (data || []).map(r => ({
       id: r.id,
+      gmailMessageId: r.gmail_message_id,
+      threadKey: r.thread_key,
       direction: r.direction,
       from: r.from_email,
       to: (r.to_emails || []).join(', '),
@@ -422,6 +459,16 @@ export async function getMessageThread({ customerId, threadKey } = {}) {
 export async function markMessageRead(id) {
   if (!id) return { ok: false }
   const { error } = await supabase.from('messages').update({ is_read: true }).eq('id', id)
+  return { ok: !error, error: error?.message }
+}
+
+// Mark a whole customer thread's inbound mail read (on open).
+export async function markThreadRead({ customerId, threadKey } = {}) {
+  let q = supabase.from('messages').update({ is_read: true }).eq('direction', 'inbound').eq('is_read', false)
+  if (customerId) q = q.eq('customer_id', customerId)
+  else if (threadKey) q = q.eq('thread_key', threadKey)
+  else return { ok: false }
+  const { error } = await q
   return { ok: !error, error: error?.message }
 }
 

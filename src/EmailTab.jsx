@@ -16,7 +16,7 @@
 // =============================================================================
 
 import { useState, useEffect } from 'react'
-import { getMessages, getMessageThread, sendOrderEmail, syncInbox, markMessageRead, getEmailSignature } from './lib/stonebooksData'
+import { getInboxThreads, getMessageThread, sendShopEmail, syncInbox, markThreadRead, getEmailSignature } from './lib/stonebooksData'
 
 const FOLDERS = [
   { key: 'INBOX', label: 'Inbox' },
@@ -63,11 +63,12 @@ export default function EmailTab() {
 
   // Load the current folder from the messages table. Inbox = inbound, Sent =
   // outbound. (Reads shevcoteam's mail synced by /api/email/sync — not paul@.)
+  // Load the current folder, GROUPED BY CUSTOMER (one thread per customer).
   const load = async (target = folder) => {
     setLoading(true); setErr(null)
-    const res = await getMessages(target)
+    const res = await getInboxThreads(target)
     if (!res.ok) { setErr(res.error || 'Could not load mail'); setMessages([]); setLoading(false); return }
-    setMessages(res.messages); setLoading(false)
+    setMessages(res.threads); setLoading(false)
   }
   const switchFolder = (key) => {
     if (key === folder) return
@@ -78,10 +79,10 @@ export default function EmailTab() {
   // loading inits true; fire once on mount (no synchronous setState before await).
   useEffect(() => {
     let cancelled = false
-    getMessages('INBOX').then(res => {
+    getInboxThreads('INBOX').then(res => {
       if (cancelled) return
       if (!res.ok) { setErr(res.error || 'Could not load mail'); setMessages([]) }
-      else setMessages(res.messages)
+      else setMessages(res.threads)
       setLoading(false)
     })
     return () => { cancelled = true }
@@ -100,16 +101,36 @@ export default function EmailTab() {
   const isSent = folder === 'SENT'
   const folderLabel = FOLDERS.find(f => f.key === folder)?.label || 'Inbox'
 
-  // Open the CUSTOMER's full thread (every message with the shop), not just this
-  // message — same thread shown in every one of that customer's orders.
-  const openThread = async (m) => {
-    const key = m.customerId || m.threadKey
-    setReading({ key, subject: m.subject || '(no subject)', busy: true, messages: [], err: null })
-    if (m.unread && m.id) { markMessageRead(m.id); setMessages(ms => ms.map(x => x.id === m.id ? { ...x, unread: false } : x)) }
-    const res = await getMessageThread({ customerId: m.customerId, threadKey: m.threadKey })
+  // Open the CUSTOMER's full thread (every message with the shop) — the same
+  // thread shown in every one of that customer's orders.
+  const openThread = async (t) => {
+    const key = t.key
+    setReading({ key, name: t.name, contact: t.contact, customerId: t.customerId, threadKey: t.threadKey, busy: true, messages: [], err: null })
+    if (t.unread > 0) {
+      markThreadRead({ customerId: t.customerId, threadKey: t.threadKey })
+      setMessages(ms => ms.map(x => x.key === key ? { ...x, unread: 0 } : x))
+    }
+    const res = await getMessageThread({ customerId: t.customerId, threadKey: t.threadKey })
     setReading(r => r && r.key === key
       ? (res.ok ? { ...r, busy: false, messages: res.messages } : { ...r, busy: false, err: res.error || 'Could not load thread' })
       : r)
+  }
+
+  // Reply into a thread — sets In-Reply-To / References so Gmail threads it.
+  const replyToThread = () => {
+    if (!reading || !reading.messages.length) return
+    const msgs = reading.messages
+    const last = [...msgs].reverse().find(m => m.gmailMessageId) || msgs[msgs.length - 1]
+    const lastInbound = [...msgs].reverse().find(m => m.direction === 'inbound')
+    const replyTo = fromEmail((lastInbound || last)?.from) || reading.contact || ''
+    const subj = (last.subject || '').replace(/^(re:\s*)+/i, '')
+    const refs = msgs.map(m => m.gmailMessageId).filter(Boolean)
+    setComposer({
+      to: replyTo, subject: subj ? `Re: ${subj}` : 'Re:', body: '',
+      customerId: reading.customerId || null,
+      inReplyTo: last.gmailMessageId || null, references: refs,
+      busy: false, error: null, sent: false,
+    })
   }
 
   const openComposer = () => setComposer({ to: '', subject: '', body: '', busy: false, error: null, sent: false })
@@ -119,9 +140,15 @@ export default function EmailTab() {
     const to = composer.to.trim(), subject = composer.subject.trim()
     if (!to || !subject || composer.busy) return
     setComposer(c => ({ ...c, busy: true, error: null }))
-    const res = await sendOrderEmail({ orderId: null, to, subject, body: composer.body })
+    const res = await sendShopEmail({
+      to, subject, text: composer.body,
+      customerId: composer.customerId || null,
+      inReplyTo: composer.inReplyTo || null, references: composer.references || null,
+    })
     if (!res.ok) { setComposer(c => ({ ...c, busy: false, error: res.error || 'Send failed' })); return }
     setComposer(c => ({ ...c, busy: false, sent: true }))
+    // Refresh so the just-sent message threads in (and the Sent folder updates).
+    load(folder)
   }
 
   return (
@@ -179,23 +206,23 @@ export default function EmailTab() {
             ) : messages.length === 0 && !err ? (
               <div className="sb-email-empty">{isSent ? 'No sent mail.' : 'Inbox is empty.'}</div>
             ) : (
-              messages.map(m => (
+              messages.map(t => (
                 <button
-                  key={m.id}
+                  key={t.key}
                   type="button"
-                  className={`sb-email-row${m.unread ? ' sb-email-row-unread' : ''}`}
-                  onClick={() => openThread(m)}
+                  className={`sb-email-row${t.unread > 0 ? ' sb-email-row-unread' : ''}`}
+                  onClick={() => openThread(t)}
                 >
-                  {m.unread && <span className="sb-email-unread-dot" aria-label="unread" />}
-                  {/* Sent shows the recipient; Inbox shows the sender. */}
+                  {t.unread > 0 && <span className="sb-email-unread-dot" aria-label="unread" />}
+                  {/* One row per customer — their whole thread with the shop. */}
                   <span className="sb-email-from">
-                    {isSent ? `To: ${fromName(m.to)}` : fromName(m.from)}
+                    {t.name}{t.unread > 0 ? <span className="sb-email-unread-count"> {t.unread}</span> : null}
                   </span>
                   <span className="sb-email-mid">
-                    <span className="sb-email-subject">{m.subject || '(no subject)'}</span>
-                    <span className="sb-email-snippet">{m.snippet}</span>
+                    <span className="sb-email-subject">{t.latestSubject || '(no subject)'}</span>
+                    <span className="sb-email-snippet">{t.latestSnippet}</span>
                   </span>
-                  <span className="sb-email-date">{emailDate(m.date)}</span>
+                  <span className="sb-email-date">{emailDate(t.latestDate)}</span>
                 </button>
               ))
             )}
@@ -206,7 +233,10 @@ export default function EmailTab() {
             {reading ? (
               <>
                 <div className="sb-email-reader-head">
-                  <div className="sb-email-reader-subject">{reading.subject}</div>
+                  <div>
+                    <div className="sb-email-reader-subject">{reading.name || 'Conversation'}</div>
+                    {reading.contact && <div className="sb-email-reader-contact">{reading.contact}</div>}
+                  </div>
                   <button type="button" className="sb-email-btn" onClick={() => setReading(null)}>Close</button>
                 </div>
                 <div className="sb-email-reader-body">
@@ -214,12 +244,14 @@ export default function EmailTab() {
                     <div className="sb-email-empty">Loading thread…</div>
                   ) : reading.err ? (
                     <div className="sb-email-error">{reading.err}</div>
+                  ) : reading.messages.length === 0 ? (
+                    <div className="sb-email-empty">No messages in this thread yet.</div>
                   ) : (
                     reading.messages.map(msg => (
-                      <div key={msg.id} className="sb-email-msg">
+                      <div key={msg.id} className={`sb-email-msg${msg.direction === 'outbound' ? ' sb-email-msg-out' : ''}`}>
                         <div className="sb-email-msg-meta">
-                          <span className="sb-email-msg-from">{fromName(msg.from)}</span>
-                          <span className="sb-email-msg-addr">&lt;{fromEmail(msg.from)}&gt;</span>
+                          <span className="sb-email-msg-from">{msg.direction === 'outbound' ? 'Shevchenko Monuments' : fromName(msg.from)}</span>
+                          {msg.subject && <span className="sb-email-msg-subj">{msg.subject}</span>}
                           <span className="sb-email-msg-date">{emailDate(msg.date)}</span>
                         </div>
                         <div className="sb-email-msg-body">{msg.body || '(no text body)'}</div>
@@ -229,15 +261,7 @@ export default function EmailTab() {
                 </div>
                 {!reading.busy && !reading.err && (
                   <div className="sb-email-reader-foot">
-                    <button
-                      type="button"
-                      className="sb-email-btn sb-email-btn-primary"
-                      onClick={() => {
-                        const first = reading.messages[0]
-                        const subj = reading.subject.startsWith('Re:') ? reading.subject : `Re: ${reading.subject}`
-                        setComposer({ to: fromEmail(first?.from) || '', subject: subj, body: '', busy: false, error: null, sent: false })
-                      }}
-                    >Reply</button>
+                    <button type="button" className="sb-email-btn sb-email-btn-primary" onClick={replyToThread}>Reply</button>
                   </div>
                 )}
               </>
@@ -310,6 +334,10 @@ const EMAIL_CSS = `
     overflow: hidden; position: sticky; top: 24px;
   }
   .sb-email-reader-empty { color: #8a8a85; font-size: 14.5px; padding: 80px 24px; text-align: center; margin: auto; }
+  .sb-email-unread-count { display: inline-block; background: #9a7209; color: #fff; font-size: 11px; font-weight: 700; border-radius: 999px; padding: 0 6px; margin-left: 5px; vertical-align: middle; }
+  .sb-email-reader-contact { font-size: 12.5px; color: #8a7f6c; margin-top: 2px; }
+  .sb-email-msg-out { background: #faf7f1; }
+  .sb-email-msg-subj { font-size: 12px; color: #8a7f6c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
   /* Left rail */
   .sb-email-rail { display: flex; flex-direction: column; gap: 6px; position: sticky; top: 24px; }

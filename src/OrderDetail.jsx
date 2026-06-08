@@ -21,7 +21,7 @@ import {
   getOrderNotes, addOrderNote, getCurrentStaffName,
   uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
-  getOrderEmails, sendOrderEmail, aiDraftEmail,
+  getMessageThread, sendShopEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
 } from './lib/stonebooksData'
@@ -184,11 +184,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       if (cancelled) return
       setOrder(o); setJob(j); setLoading(false)
       // Secondary loads (notes + attachment sources + emails) — non-blocking.
+      // Email is the CUSTOMER's full thread (same shown in every order of theirs),
+      // not order-segregated — keyed by the order's customer_id.
       const [nts, ups, pvs, ems, cps] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
-        getOrderEmails(orderId),
+        o.customer_id ? getMessageThread({ customerId: o.customer_id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
       ])
       if (cancelled) return
@@ -296,10 +298,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const subject = (emailModal.subject || '').trim()
     if (!to || !subject || emailModal.busy) return
     setEmailModal(m => ({ ...m, busy: true, error: null }))
-    const res = await sendOrderEmail({ orderId, to, subject, body: emailModal.body })
+    const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body })
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
-    setEmails(await getOrderEmails(orderId))
+    if (order?.customer_id) setEmails((await getMessageThread({ customerId: order.customer_id })).messages || [])
   }
 
   // Polish — rewrite the user's CURRENT composer body via ai-draft (mode
@@ -849,7 +851,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <button type="button" className="sb-od-link" onClick={openEmailComposer}>+ Send email</button>
             </div>
             {emails.length === 0 ? (
-              <div className="sb-od-empty-inline">No emails on this order yet.</div>
+              <div className="sb-od-empty-inline">No email with this customer yet — Send email to start a thread.</div>
             ) : (
               <div className="sb-od-email-list">
                 {emails.map(em => (
@@ -860,10 +862,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     <div className="sb-od-email-main">
                       <div className="sb-od-email-subject">{em.subject || '(no subject)'}</div>
                       <div className="sb-od-email-sub">
-                        {em.direction === 'inbound' ? `from ${em.from_email || '—'}` : `to ${em.to_email || '—'}`}
-                        {em.sent_at ? ` · ${fmtDate(em.sent_at)}` : ''}
+                        {em.direction === 'inbound' ? `from ${em.from || '—'}` : `to ${em.to || '—'}`}
+                        {em.date ? ` · ${fmtDate(em.date)}` : ''}
                       </div>
-                      {em.snippet && <div className="sb-od-email-snippet">{em.snippet}</div>}
+                      {em.body && <div className="sb-od-email-snippet">{em.body.slice(0, 160)}</div>}
                     </div>
                   </div>
                 ))}
