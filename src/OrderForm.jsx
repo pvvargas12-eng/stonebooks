@@ -229,6 +229,8 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const totals = useMemo(() => computeTotals(lineItems, {
     applyTax: order.pricing?.applyTax !== false,
     applyCCSurcharge: !!order.pricing?.applyCCSurcharge,
+    discountType: order.pricing?.discountType,
+    discountValue: order.pricing?.discountValue,
     discountPct: Number(order.pricing?.discountPct) || 0,
   }), [lineItems, order.pricing])
   const manualTotal = order.pricing?.manualTotal
@@ -1283,6 +1285,26 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
   const removeDerived = (it) => updatePricing({ removedLineItems: [...removed.filter(r => r.code !== it.code), { code: it.code, label: it.label }] })
   const restoreDerived = (code) => updatePricing({ removedLineItems: removed.filter(r => r.code !== code) })
 
+  // Per-line taxable / discountable override (B4). Custom lines store the flag on
+  // their own record; derived lines store it in pricing.lineItemFlagOverrides[code].
+  const flagOv = p.lineItemFlagOverrides || {}
+  const setFlag = (it, key, val) => it.custom
+    ? setCustomField(it.code, { [key]: val })
+    : updatePricing({ lineItemFlagOverrides: { ...flagOv, [it.code]: { ...(flagOv[it.code] || {}), [key]: val } } })
+
+  // Discount type (% or $). Reads the new fields with a fall back to legacy discountPct.
+  const discType = p.discountType || 'pct'
+  const discValue = (p.discountValue != null && p.discountValue !== '') ? p.discountValue : (p.discountPct ?? '')
+  const setDiscount = (patch) => {
+    const next = { discountType: discType, discountValue: discValue, ...patch }
+    // Mirror to legacy discountPct so any un-migrated reader stays correct.
+    next.discountPct = next.discountType === 'pct' ? (Number(next.discountValue) || 0) : 0
+    updatePricing(next)
+  }
+  const discLabel = discType === 'amount'
+    ? `Discount (${fmtUSD(Number(discValue) || 0)})`
+    : `Discount (${Number(discValue) || 0}%)`
+
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
       <div className="of-li">
@@ -1290,7 +1312,8 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
           const isCustom = !!it.custom
           const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
           return (
-            <div className="of-li-row of-li-edit" key={`${it.code}-${i}`}>
+            <div key={`${it.code}-${i}`}>
+            <div className="of-li-row of-li-edit">
               {isCustom ? (
                 <input className="of-input of-li-label-input" value={it.label === 'Custom item' ? '' : it.label}
                   placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} />
@@ -1316,6 +1339,18 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
                   onClick={() => isCustom ? removeCustom(it.code) : removeDerived(it)}>×</button>
               </span>
             </div>
+            {!it.quotePending && (
+              <div style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '1px 2px 7px', fontSize: 12, color: 'var(--sb-text-muted, #8a7f6c)' }}>
+                <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={it.taxable !== false} onChange={e => setFlag(it, 'taxable', e.target.checked)} /> Taxable
+                </label>
+                <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={it.discountable !== false} onChange={e => setFlag(it, 'discountable', e.target.checked)} /> Discountable
+                </label>
+                {it.category && <span style={{ opacity: 0.7, textTransform: 'capitalize' }}>{it.category}</span>}
+              </div>
+            )}
+            </div>
           )
         })}
         {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
@@ -1334,15 +1369,19 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
       <div className="of-toggles">
         <CheckRow checked={p.applyTax !== false} onChange={v => updatePricing({ applyTax: v })} label="Apply NJ sales tax (6.625%)" />
         <CheckRow checked={!!p.applyCCSurcharge} onChange={v => updatePricing({ applyCCSurcharge: v })} label="Add 3% credit-card surcharge" />
-        <div className="of-discount">
-          <NumberField label="Discount %" value={p.discountPct} onChange={v => updatePricing({ discountPct: v || 0 })} suffix="%" />
+        <div className="of-discount" style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+          <SelectField label="Discount" value={discType} onChange={v => setDiscount({ discountType: v })}
+            options={[{ value: 'pct', label: '% off' }, { value: 'amount', label: '$ off' }]} />
+          <NumberField label={discType === 'amount' ? 'Amount ($)' : 'Amount (%)'} value={discValue}
+            onChange={v => setDiscount({ discountValue: v === '' ? '' : Number(v) })}
+            suffix={discType === 'amount' ? '' : '%'} />
         </div>
       </div>
 
       <div className="of-totals">
         <div className="of-tot-row"><span>Subtotal</span><span>{fmtUSD(totals.subtotalDisc)}</span></div>
-        {totals.discountAmt > 0 && <div className="of-tot-row of-tot-neg"><span>Discount</span><span>−{fmtUSD(totals.discountAmt)}</span></div>}
-        {totals.subtotalPermit > 0 && <div className="of-tot-row"><span>Permit (not discounted)</span><span>{fmtUSD(totals.subtotalPermit)}</span></div>}
+        {totals.discountAmt > 0 && <div className="of-tot-row of-tot-neg"><span>{discLabel}</span><span>−{fmtUSD(totals.discountAmt)}</span></div>}
+        {totals.subtotalPermit > 0 && <div className="of-tot-row"><span>Fees (permit/cemetery — not taxed)</span><span>{fmtUSD(totals.subtotalPermit)}</span></div>}
         {totals.tax > 0 && <div className="of-tot-row"><span>NJ tax</span><span>{fmtUSD(totals.tax)}</span></div>}
         {totals.cc > 0 && <div className="of-tot-row"><span>CC surcharge</span><span>{fmtUSD(totals.cc)}</span></div>}
         <div className={`of-tot-row of-tot-grand${hasManual ? ' of-tot-struck' : ''}`}><span>Calculated total</span><span>{fmtUSD(totals.grandTotal)}</span></div>

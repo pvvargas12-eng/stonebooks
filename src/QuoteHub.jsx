@@ -246,6 +246,8 @@ function ReviewDesk({ row, onReload, onEditOrder, onClose }) {
   const totals = useMemo(() => computeTotals(items, {
     applyTax: order?.pricing?.applyTax !== false,
     applyCCSurcharge: !!order?.pricing?.applyCCSurcharge,
+    discountType: order?.pricing?.discountType,
+    discountValue: order?.pricing?.discountValue,
     discountPct: Number(order?.pricing?.discountPct) || 0,
   }), [items, order])
 

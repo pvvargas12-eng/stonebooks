@@ -371,23 +371,44 @@ export function computeFormLineItems(order) {
 // (order detail, contract PDF, payments) must derive from this so no two screens
 // can disagree. Cemetery permit lines are a pass-through fee: NOT discounted and
 // NOT taxed (sales tax applies to the monument work only).
-export function computeTotals(items, { applyTax = true, applyCCSurcharge = false, discountPct = 0 } = {}) {
-  const isPermit = it => it.code === 'addon-permit' || it.code === 'permit'
-  let subtotalDisc = 0, subtotalPermit = 0
+export function computeTotals(items, { applyTax = true, applyCCSurcharge = false, discountType, discountValue, discountPct = 0 } = {}) {
+  // Per-item flags drive everything now (generalizes the old permit special-case):
+  // tax applies to taxable lines; the discount applies to discountable lines.
+  let taxableSum = 0, feeUntaxedSum = 0, discountableSum = 0, taxableDiscountableSum = 0
   for (const it of items) {
     if (it.quotePending) continue        // unpriced — excluded until the owner quotes it
-    if (isPermit(it)) subtotalPermit += Number(it.amount) || 0
-    else subtotalDisc += Number(it.amount) || 0
+    const amt = Number(it.amount) || 0
+    const taxable = it.taxable !== false
+    const discountable = it.discountable !== false
+    if (taxable) taxableSum += amt; else feeUntaxedSum += amt
+    if (discountable) discountableSum += amt
+    if (taxable && discountable) taxableDiscountableSum += amt
   }
-  const discountAmt = subtotalDisc * (Number(discountPct) || 0) / 100
-  const taxableBase = subtotalDisc - discountAmt          // permit excluded — not taxed
+
+  // Discount type: explicit 'pct' | 'amount' wins; otherwise fall back to the
+  // legacy discountPct (% ). The discount applies ONLY to discountable items; a
+  // $ discount can never exceed the discountable base.
+  const type = discountType || (Number(discountPct) ? 'pct' : null)
+  const rawVal = (discountValue != null && discountValue !== '') ? Number(discountValue) : (Number(discountPct) || 0)
+  let discountAmt = 0
+  if (type === 'pct')         discountAmt = discountableSum * (rawVal || 0) / 100
+  else if (type === 'amount') discountAmt = Math.min(rawVal || 0, discountableSum)
+  discountAmt = Math.round(discountAmt * 100) / 100
+
+  // Reduce the taxable base only by the taxable share of the discount (covers a
+  // line manually flagged discountable-but-untaxed). In the common case every
+  // discountable line is also taxable, so this is just taxableSum - discountAmt.
+  const taxableShare = discountableSum > 0 ? (taxableDiscountableSum / discountableSum) : 0
+  const taxableBase = Math.max(0, taxableSum - discountAmt * taxableShare)
   const tax = applyTax ? taxableBase * liveRates.njTax : 0
-  const grandBeforeCC = taxableBase + subtotalPermit + tax
+  const grandBeforeCC = taxableSum + feeUntaxedSum - discountAmt + tax
   const cc = applyCCSurcharge ? grandBeforeCC * liveRates.ccSurcharge : 0
   return {
-    subtotalDisc: Math.round(subtotalDisc * 100) / 100,
-    subtotalPermit: Math.round(subtotalPermit * 100) / 100,
-    discountAmt: Math.round(discountAmt * 100) / 100,
+    // Kept keys for back-compat: subtotalDisc = taxable (non-fee) subtotal,
+    // subtotalPermit = untaxed pass-through fees (permit/cemetery).
+    subtotalDisc: Math.round(taxableSum * 100) / 100,
+    subtotalPermit: Math.round(feeUntaxedSum * 100) / 100,
+    discountAmt,
     tax: Math.round(tax * 100) / 100,
     cc: Math.round(cc * 100) / 100,
     grandTotal: Math.round((grandBeforeCC + cc) * 100) / 100,
