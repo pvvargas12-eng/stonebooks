@@ -1126,6 +1126,176 @@ export async function updateRecurringBill(id, patch = {}) {
   return { ok: true }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// FIX LOG — internal bug / request tracker (20260608_fix_log migration)
+// ════════════════════════════════════════════════════════════════════════════
+// Two tables: fix_log_items + fix_log_comments. The timeline is unified — a
+// comment AND every owner field-change both land in fix_log_comments (the change
+// rows carry an auto body like "Status: Working On It -> Fixed"). Deploy-safe:
+// every helper degrades to a friendly "run the migration" state if the tables
+// aren't there yet, so shipping the UI before the SQL never crashes.
+
+// Shared label taxonomies — reused by the UI for badges, selects, and auto-bodies.
+export const FIX_TYPES = [
+  { value: 'bug',        label: 'Bug' },
+  { value: 'edit',       label: 'Edit' },
+  { value: 'build_idea', label: 'Build Idea' },
+  { value: 'question',   label: 'Question' },
+]
+export const FIX_PRIORITIES = [
+  { value: 'low',    label: 'Low' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'high',   label: 'High' },
+  { value: 'urgent', label: 'Urgent' },
+]
+export const FIX_STATUSES = [
+  { value: 'new',        label: 'New' },
+  { value: 'in_review',  label: 'In Review' },
+  { value: 'working',    label: 'Working On It' },
+  { value: 'fixed',      label: 'Fixed' },
+  { value: 'not_fixing', label: 'Not Fixing' },
+]
+const _fixLabel = (list, value) => list.find(o => o.value === value)?.label || value || '—'
+export const fixTypeLabel     = (v) => _fixLabel(FIX_TYPES, v)
+export const fixPriorityLabel = (v) => _fixLabel(FIX_PRIORITIES, v)
+export const fixStatusLabel   = (v) => _fixLabel(FIX_STATUSES, v)
+
+const _fixTableMissing = (error) =>
+  !!error && /fix_log/i.test(error.message || '') &&
+  /(does not exist|could not find the table|schema cache)/i.test(error.message || '')
+
+// List items, newest-updated first. `filter` accepts { status, type, priority }.
+// Returns { ok, items, needsMigration } — needsMigration true → tables not applied.
+export async function listFixItems(filter = {}) {
+  let q = supabase.from('fix_log_items').select('*').order('created_at', { ascending: false })
+  if (filter.status)   q = q.eq('status', filter.status)
+  if (filter.type)     q = q.eq('type', filter.type)
+  if (filter.priority) q = q.eq('priority', filter.priority)
+  const { data, error } = await q
+  if (error) {
+    if (_fixTableMissing(error)) return { ok: false, items: [], needsMigration: true }
+    return { ok: false, items: [], error: error.message }
+  }
+  return { ok: true, items: data || [] }
+}
+
+export async function getFixItem(id) {
+  if (!id) return { ok: false, error: 'Missing id' }
+  const { data, error } = await supabase.from('fix_log_items').select('*').eq('id', id).maybeSingle()
+  if (error) {
+    if (_fixTableMissing(error)) return { ok: false, needsMigration: true }
+    return { ok: false, error: error.message }
+  }
+  return { ok: true, item: data }
+}
+
+// Create — status always starts at 'new'; created_at is DB-default. Logs a
+// "Created" timeline anchor so the detail timeline is never empty.
+export async function createFixItem(fields = {}) {
+  const title = String(fields.title || '').trim()
+  if (!title) return { ok: false, error: 'Enter a title.' }
+  const type     = FIX_TYPES.some(o => o.value === fields.type) ? fields.type : 'bug'
+  const priority = FIX_PRIORITIES.some(o => o.value === fields.priority) ? fields.priority : 'normal'
+  const row = {
+    tenant_id:   TENANT_ID,
+    title,
+    description: String(fields.description || '').trim() || null,
+    type,
+    priority,
+    status:      'new',
+    reported_by: String(fields.reportedBy || '').trim() || null,
+  }
+  const { data, error } = await supabase.from('fix_log_items').insert(row).select().single()
+  if (error) {
+    if (_fixTableMissing(error)) {
+      return { ok: false, needsMigration: true, error: 'The Fix Log isn’t set up yet — apply the 20260608_fix_log migration in Supabase Studio, then try again.' }
+    }
+    return { ok: false, error: error.message }
+  }
+  // Best-effort creation anchor — never block the create if this insert fails.
+  await supabase.from('fix_log_comments').insert({
+    item_id: data.id, kind: 'created', body: 'Created', author: row.reported_by,
+  }).then(() => {}, () => {})
+  return { ok: true, item: data }
+}
+
+// Update item fields AND log one timeline row per changed field. `fields` may
+// include `author` (the editor's display name) — used only to stamp the timeline
+// rows, never written as a column. Diffs against the current row so an unchanged
+// field logs nothing. Returns { ok, item }.
+export async function updateFixItem(id, fields = {}) {
+  if (!id) return { ok: false, error: 'Missing id' }
+  const author = String(fields.author || '').trim() || null
+
+  const { data: prev, error: readErr } = await supabase.from('fix_log_items').select('*').eq('id', id).maybeSingle()
+  if (readErr) {
+    if (_fixTableMissing(readErr)) return { ok: false, needsMigration: true }
+    return { ok: false, error: readErr.message }
+  }
+  if (!prev) return { ok: false, error: 'Item not found.' }
+
+  const patch = {}
+  if (fields.title       !== undefined) patch.title       = String(fields.title).trim()
+  if (fields.description !== undefined) patch.description = String(fields.description || '').trim() || null
+  if (fields.type        !== undefined && FIX_TYPES.some(o => o.value === fields.type))           patch.type = fields.type
+  if (fields.priority    !== undefined && FIX_PRIORITIES.some(o => o.value === fields.priority))   patch.priority = fields.priority
+  if (fields.status      !== undefined && FIX_STATUSES.some(o => o.value === fields.status))       patch.status = fields.status
+  if (Object.keys(patch).length === 0) return { ok: true, item: prev }   // nothing to change
+
+  const { data, error } = await supabase.from('fix_log_items').update(patch).eq('id', id).select().single()
+  if (error) {
+    if (_fixTableMissing(error)) return { ok: false, needsMigration: true }
+    return { ok: false, error: error.message }
+  }
+
+  // Build a timeline event per meaningful change (updated_at is DB-trigger-set).
+  const events = []
+  if (patch.status   !== undefined && patch.status   !== prev.status)
+    events.push({ kind: 'status',   body: `Status: ${fixStatusLabel(prev.status)} -> ${fixStatusLabel(patch.status)}` })
+  if (patch.priority !== undefined && patch.priority !== prev.priority)
+    events.push({ kind: 'priority', body: `Priority: ${fixPriorityLabel(prev.priority)} -> ${fixPriorityLabel(patch.priority)}` })
+  if (patch.type     !== undefined && patch.type     !== prev.type)
+    events.push({ kind: 'type',     body: `Type: ${fixTypeLabel(prev.type)} -> ${fixTypeLabel(patch.type)}` })
+  if (patch.title    !== undefined && patch.title    !== prev.title)
+    events.push({ kind: 'title',    body: `Title changed to “${patch.title}”` })
+  if (patch.description !== undefined && (patch.description || '') !== (prev.description || ''))
+    events.push({ kind: 'description', body: 'Description updated' })
+  if (events.length) {
+    await supabase.from('fix_log_comments')
+      .insert(events.map(e => ({ item_id: id, kind: e.kind, body: e.body, author })))
+      .then(() => {}, () => {})   // timeline is best-effort — the field change already persisted
+  }
+  return { ok: true, item: data }
+}
+
+export async function addFixComment(item_id, body, author) {
+  if (!item_id) return { ok: false, error: 'Missing item id' }
+  const text = String(body || '').trim()
+  if (!text) return { ok: false, error: 'Enter a comment.' }
+  const { data, error } = await supabase.from('fix_log_comments')
+    .insert({ item_id, kind: 'comment', body: text, author: String(author || '').trim() || null })
+    .select().single()
+  if (error) {
+    if (_fixTableMissing(error)) return { ok: false, needsMigration: true }
+    return { ok: false, error: error.message }
+  }
+  // Touch the parent so it re-sorts to the top of the list (a comment is activity).
+  await supabase.from('fix_log_items').update({ updated_at: new Date().toISOString() }).eq('id', item_id).then(() => {}, () => {})
+  return { ok: true, comment: data }
+}
+
+// Full chronological timeline (comments + change events), oldest first.
+export async function listFixTimeline(item_id) {
+  if (!item_id) return { ok: false, error: 'Missing item id', timeline: [] }
+  const { data, error } = await supabase.from('fix_log_comments')
+    .select('*').eq('item_id', item_id).order('created_at', { ascending: true })
+  if (error) {
+    if (_fixTableMissing(error)) return { ok: false, needsMigration: true, timeline: [] }
+    return { ok: false, error: error.message, timeline: [] }
+  }
+  return { ok: true, timeline: data || [] }
+}
+
 // ── BULK OPERATIONS (Orders Triage Workbench) ───────────────────────────────
 // Every bulk write is ONE batched statement (.update().in('id', ids)) — never a
 // per-row loop. Tenant-scoped (belt-and-suspenders over RLS) + reversible. No
