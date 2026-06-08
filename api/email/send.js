@@ -88,6 +88,13 @@ export default async function handler(req, res) {
     try {
       const ref0 = references ? (Array.isArray(references) ? references[0] : String(references).split(/\s+/)[0]) : null
       const threadKey = ref0 || in_reply_to || info.messageId || null
+      // customer_id is the thread grouping key — if the caller didn't supply one,
+      // match the recipient address to a customer so this send threads correctly.
+      let custId = customer_id || null
+      if (!custId && toList[0]) {
+        const { data: cust } = await admin.from('customers').select('id').ilike('email', toList[0].toLowerCase()).limit(1).maybeSingle()
+        custId = cust?.id || null
+      }
       await admin.from('messages').insert({
         gmail_message_id: info.messageId || null,
         thread_key: threadKey,
@@ -101,7 +108,7 @@ export default async function handler(req, res) {
         has_attachments: mailAttachments.length > 0,
         attachments: mailAttachments.map(a => ({ filename: a.filename, contentType: a.contentType || null })),
         order_id: order_id || null,
-        customer_id: customer_id || null,
+        customer_id: custId,
         sent_at: new Date().toISOString(),
         is_read: true,
       })

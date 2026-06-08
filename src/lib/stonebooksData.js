@@ -361,6 +361,83 @@ export async function sendOrderEmail({ orderId, to, subject, body }) {
   return sendShopEmail({ orderId, to, subject, text: body })
 }
 
+// ── Path B reads — the `messages` table (Email tab + per-order panel) ────────
+const _stripHtmlText = (h) => (h ? String(h).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '')
+
+function _msgToInboxItem(r) {
+  return {
+    id: r.id,
+    gmailMessageId: r.gmail_message_id,
+    threadKey: r.thread_key,
+    from: r.from_email,
+    to: (r.to_emails || []).join(', '),
+    subject: r.subject,
+    snippet: r.snippet || _stripHtmlText(r.body_html) || (r.body_text || '').slice(0, 160),
+    date: r.received_at || r.sent_at || r.created_at,
+    unread: r.direction === 'inbound' && !r.is_read,
+    customerId: r.customer_id,
+    orderId: r.order_id,
+  }
+}
+
+// Flat folder list. Inbox = inbound, Sent = outbound. Newest first.
+export async function getMessages(folder = 'INBOX', { limit = 200 } = {}) {
+  const direction = folder === 'SENT' ? 'outbound' : 'inbound'
+  const { data, error } = await supabase
+    .from('messages')
+    .select('id, gmail_message_id, thread_key, direction, from_email, to_emails, subject, snippet, body_text, body_html, customer_id, order_id, is_read, sent_at, received_at, created_at')
+    .eq('direction', direction)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.warn('[messages] getMessages:', error.message); return { ok: false, error: error.message, messages: [] } }
+  return { ok: true, messages: (data || []).map(_msgToInboxItem) }
+}
+
+// CUSTOMER-LEVEL thread — the whole history with the shop (inbound + outbound,
+// chronological). order_id is never used to filter. Falls back to thread-by-key
+// for unmatched mail (no customer).
+export async function getMessageThread({ customerId, threadKey } = {}) {
+  let q = supabase.from('messages').select('id, direction, from_email, to_emails, subject, body_text, body_html, has_attachments, attachments, sent_at, received_at, created_at, is_read')
+  if (customerId) q = q.eq('customer_id', customerId)
+  else if (threadKey) q = q.eq('thread_key', threadKey)
+  else return { ok: true, messages: [] }
+  const { data, error } = await q.order('created_at', { ascending: true })
+  if (error) { console.warn('[messages] getMessageThread:', error.message); return { ok: false, error: error.message, messages: [] } }
+  return {
+    ok: true,
+    messages: (data || []).map(r => ({
+      id: r.id,
+      direction: r.direction,
+      from: r.from_email,
+      to: (r.to_emails || []).join(', '),
+      subject: r.subject,
+      body: r.body_text || _stripHtmlText(r.body_html) || '',
+      hasAttachments: r.has_attachments,
+      attachments: r.attachments || [],
+      date: r.received_at || r.sent_at || r.created_at,
+    })),
+  }
+}
+
+export async function markMessageRead(id) {
+  if (!id) return { ok: false }
+  const { error } = await supabase.from('messages').update({ is_read: true }).eq('id', id)
+  return { ok: !error, error: error?.message }
+}
+
+// Trigger the IMAP poll on demand (the "Sync now" button). The cron runs it too.
+export async function syncInbox() {
+  let token = null
+  try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
+  try {
+    const res = await fetch('/api/email/sync', { method: 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
+    const j = await res.json().catch(() => ({}))
+    if (res.ok && j?.ok) return { ok: true, processed: (j.results || []).reduce((s, r) => s + (r.processed || 0), 0) }
+    if (res.status === 404 || j?.error === 'server_not_configured') return { ok: false, error: 'Email sync backend not deployed/configured yet.' }
+    return { ok: false, error: j?.detail || j?.error || `Sync failed (${res.status}).` }
+  } catch { return { ok: false, error: 'Email sync backend unreachable.' } }
+}
+
 // ── Remote contract e-signing (R2) ────────────────────────────────────────
 // Create a signing link for an order. The browser generates the CONTRACT-variant
 // PDF (the jsPDF generator is browser-only) and passes its bytes + the customer

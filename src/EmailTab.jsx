@@ -16,7 +16,7 @@
 // =============================================================================
 
 import { useState, useEffect } from 'react'
-import { gmailListMessages, gmailGetThread, sendOrderEmail, gmailSyncInbox, getEmailAssociations, getEmailSignature } from './lib/stonebooksData'
+import { getMessages, getMessageThread, sendOrderEmail, syncInbox, markMessageRead, getEmailSignature } from './lib/stonebooksData'
 
 const FOLDERS = [
   { key: 'INBOX', label: 'Inbox' },
@@ -47,7 +47,6 @@ function emailDate(str) {
 export default function EmailTab() {
   const [folder, setFolder] = useState('INBOX')  // 'INBOX' | 'SENT'
   const [messages, setMessages] = useState([])
-  const [assoc, setAssoc] = useState({})         // { gmailMessageId: { orderNumber } }
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [syncing, setSyncing] = useState(false)
@@ -62,54 +61,53 @@ export default function EmailTab() {
     return () => { cancelled = true }
   }, [])
 
-  // After messages load, look up which are associated to an order (for badges).
-  const loadAssoc = async (msgs) => {
-    const ids = (msgs || []).map(m => m.id).filter(Boolean)
-    setAssoc(await getEmailAssociations(ids))
-  }
-  // Load the current folder. Used by the folder switch, Refresh, and post-sync.
+  // Load the current folder from the messages table. Inbox = inbound, Sent =
+  // outbound. (Reads shevcoteam's mail synced by /api/email/sync — not paul@.)
   const load = async (target = folder) => {
     setLoading(true); setErr(null)
-    const res = await gmailListMessages(target)
+    const res = await getMessages(target)
     if (!res.ok) { setErr(res.error || 'Could not load mail'); setMessages([]); setLoading(false); return }
     setMessages(res.messages); setLoading(false)
-    loadAssoc(res.messages)
   }
   const switchFolder = (key) => {
     if (key === folder) return
     setFolder(key)
-    setMessages([]); setAssoc({})
+    setMessages([])
     load(key)
   }
   // loading inits true; fire once on mount (no synchronous setState before await).
   useEffect(() => {
     let cancelled = false
-    gmailListMessages('INBOX').then(res => {
+    getMessages('INBOX').then(res => {
       if (cancelled) return
       if (!res.ok) { setErr(res.error || 'Could not load mail'); setMessages([]) }
-      else { setMessages(res.messages); loadAssoc(res.messages) }
+      else setMessages(res.messages)
       setLoading(false)
     })
     return () => { cancelled = true }
   }, [])
 
-  // "Sync inbox" — run auto-association over recent inbound, then refresh.
+  // "Sync now" — trigger the IMAP poll, then refresh the list.
   const sync = async () => {
     setSyncing(true); setSyncMsg(null)
-    const res = await gmailSyncInbox()
+    const res = await syncInbox()
     setSyncing(false)
     if (!res.ok) { setSyncMsg(`Sync failed — ${res.error || 'error'}`); return }
-    setSyncMsg(`Scanned ${res.scanned} · attached ${res.attached} (${res.byThread} by thread, ${res.byAddress} by address)`)
+    setSyncMsg(`Synced — ${res.processed} new message${res.processed === 1 ? '' : 's'}`)
     load(folder)
   }
 
   const isSent = folder === 'SENT'
   const folderLabel = FOLDERS.find(f => f.key === folder)?.label || 'Inbox'
 
+  // Open the CUSTOMER's full thread (every message with the shop), not just this
+  // message — same thread shown in every one of that customer's orders.
   const openThread = async (m) => {
-    setReading({ threadId: m.threadId, subject: m.subject || '(no subject)', busy: true, messages: [], err: null })
-    const res = await gmailGetThread(m.threadId)
-    setReading(r => r && r.threadId === m.threadId
+    const key = m.customerId || m.threadKey
+    setReading({ key, subject: m.subject || '(no subject)', busy: true, messages: [], err: null })
+    if (m.unread && m.id) { markMessageRead(m.id); setMessages(ms => ms.map(x => x.id === m.id ? { ...x, unread: false } : x)) }
+    const res = await getMessageThread({ customerId: m.customerId, threadKey: m.threadKey })
+    setReading(r => r && r.key === key
       ? (res.ok ? { ...r, busy: false, messages: res.messages } : { ...r, busy: false, err: res.error || 'Could not load thread' })
       : r)
   }
@@ -195,11 +193,6 @@ export default function EmailTab() {
                   </span>
                   <span className="sb-email-mid">
                     <span className="sb-email-subject">{m.subject || '(no subject)'}</span>
-                    {assoc[m.id] && (
-                      <span className="sb-email-assoc" title="Associated to an order">
-                        → {assoc[m.id].orderNumber || 'Order'}
-                      </span>
-                    )}
                     <span className="sb-email-snippet">{m.snippet}</span>
                   </span>
                   <span className="sb-email-date">{emailDate(m.date)}</span>
