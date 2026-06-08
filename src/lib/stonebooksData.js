@@ -286,12 +286,51 @@ export async function aiDraftEmail({ orderId, mode, balance, total, draftText, p
   return { ok: true, subject: data?.subject || '', body: data?.body || '' }
 }
 
+// ── Shop-wide email signature (appended to EVERY outgoing email) ────────────
+// One shared signature, editable in Settings. Falls back to a built-in default
+// (the shop's name/address/phone/email) so signatures work before the
+// 20260608_email_settings migration is applied. Cached after first load.
+const DEFAULT_EMAIL_SIGNATURE = {
+  signature_text: 'Shevchenko Monuments, LLC.\n329 S Florida Grove Rd, Perth Amboy, NJ 08861\n732-442-1286 · shevcoteam@gmail.com',
+  signature_html: '<div style="font-size:13px;line-height:1.5;color:#555;font-family:Arial,sans-serif;"><strong>Shevchenko Monuments, LLC.</strong><br>329 S Florida Grove Rd, Perth Amboy, NJ 08861<br>732-442-1286 &middot; <a href="mailto:shevcoteam@gmail.com">shevcoteam@gmail.com</a></div>',
+}
+let _emailSigCache  // undefined until first load
+export async function getEmailSignature() {
+  if (_emailSigCache !== undefined) return _emailSigCache
+  try {
+    const { data, error } = await supabase.from('email_settings').select('signature_html, signature_text').limit(1).maybeSingle()
+    if (error) throw error
+    _emailSigCache = (data && (data.signature_text || data.signature_html)) ? data : DEFAULT_EMAIL_SIGNATURE
+  } catch {
+    _emailSigCache = DEFAULT_EMAIL_SIGNATURE   // table not applied yet → built-in default
+  }
+  return _emailSigCache
+}
+export async function saveEmailSignature({ html, text }) {
+  const { error } = await supabase.from('email_settings').upsert(
+    { tenant_id: TENANT_ID, signature_html: html ?? null, signature_text: text ?? null, updated_at: new Date().toISOString() },
+    { onConflict: 'tenant_id' })
+  if (error) return { ok: false, error: error.message }
+  _emailSigCache = { signature_html: html ?? '', signature_text: text ?? '' }
+  return { ok: true }
+}
+
 // THE shop email send — EXCLUSIVELY through the shop Gmail (shevcoteam@gmail.com)
 // via the App-Password SMTP Node endpoint (/api/email/send), which logs an
 // outbound `messages` row. The legacy gmail-send / Gmail-OAuth path was REMOVED
 // so no send can ever go out from any other (e.g. paul@) account. Supports HTML +
 // PDF attachments [{ filename, contentBase64, contentType }] and threading headers.
-export async function sendShopEmail({ to, subject, html, text, attachments, orderId, customerId, inReplyTo, references } = {}) {
+// The shop signature is auto-appended to every send (includeSignature=false opts
+// out — e.g. for a re-send that already carries one).
+export async function sendShopEmail({ to, subject, html, text, attachments, orderId, customerId, inReplyTo, references, includeSignature = true } = {}) {
+  let finalText = text, finalHtml = html
+  if (includeSignature) {
+    try {
+      const sig = await getEmailSignature()
+      if (sig?.signature_text) finalText = (finalText ? `${finalText}\n\n` : '') + `-- \n${sig.signature_text}`
+      if (sig?.signature_html && finalHtml) finalHtml = `${finalHtml}<br><br>-- <br>${sig.signature_html}`
+    } catch { /* signature is best-effort — never block a send */ }
+  }
   let token = null
   try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
   let res
@@ -300,7 +339,7 @@ export async function sendShopEmail({ to, subject, html, text, attachments, orde
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({
-        to, subject, html, text, attachments,
+        to, subject, html: finalHtml, text: finalText, attachments,
         order_id: orderId || null, customer_id: customerId || null,
         in_reply_to: inReplyTo || null, references: references || null,
       }),

@@ -16,7 +16,7 @@
 // =============================================================================
 
 import { useState, useEffect } from 'react'
-import { gmailListMessages, gmailGetThread, sendOrderEmail, gmailSyncInbox, getEmailAssociations } from './lib/stonebooksData'
+import { gmailListMessages, gmailGetThread, sendOrderEmail, gmailSyncInbox, getEmailAssociations, getEmailSignature } from './lib/stonebooksData'
 
 const FOLDERS = [
   { key: 'INBOX', label: 'Inbox' },
@@ -54,6 +54,13 @@ export default function EmailTab() {
   const [syncMsg, setSyncMsg] = useState(null)
   const [reading, setReading] = useState(null)   // { threadId, subject, busy, messages, err } | null
   const [composer, setComposer] = useState(null) // { to, subject, body, busy, error, sent } | null
+  const [signature, setSignature] = useState('') // shop signature (auto-appended; shown in Compose)
+
+  useEffect(() => {
+    let cancelled = false
+    getEmailSignature().then(s => { if (!cancelled) setSignature(s?.signature_text || '') })
+    return () => { cancelled = true }
+  }, [])
 
   // After messages load, look up which are associated to an order (for badges).
   const loadAssoc = async (msgs) => {
@@ -269,6 +276,12 @@ export default function EmailTab() {
                 <label className="sb-email-field"><span>Message</span>
                   <textarea className="sb-email-input" rows={8} value={composer.body}
                     onChange={e => setComposer(c => ({ ...c, body: e.target.value }))} placeholder="Write your message…" /></label>
+                {signature && (
+                  <div className="sb-email-sig-preview">
+                    <div className="sb-email-sig-label">Signature — added automatically</div>
+                    <div className="sb-email-sig-body">{signature}</div>
+                  </div>
+                )}
                 {composer.error && <div className="sb-email-error">{composer.error}</div>}
                 <div className="sb-email-composer-actions">
                   <button type="button" className="sb-email-btn" onClick={closeComposer} disabled={composer.busy}>Cancel</button>
@@ -325,6 +338,9 @@ const EMAIL_CSS = `
     border: 0.5px solid rgba(179,38,30,0.3); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
   }
   .sb-email-error-hint { font-size: 12px; color: #8a8a85; margin-top: 4px; }
+  .sb-email-sig-preview { margin-top: 12px; padding: 10px 12px; background: #faf7f1; border: 0.5px solid var(--sb-border, #ece3d2); border-radius: 8px; }
+  .sb-email-sig-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: #9a8a5e; font-weight: 700; margin-bottom: 4px; }
+  .sb-email-sig-body { font-size: 12.5px; color: #6b6256; white-space: pre-wrap; line-height: 1.45; }
   .sb-email-syncmsg {
     font-size: 12.5px; color: #876307; background: rgba(154,114,9,0.07);
     border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px;

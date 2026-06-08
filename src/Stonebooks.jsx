@@ -15,7 +15,7 @@ import {
   onAuthStateChange, updatePassword,
 } from './lib/auth'
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
-import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD } from './lib/stonebooksData'
+import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature } from './lib/stonebooksData'
 import { loadPricingConfig } from './lib/orderRates'
 import PricingSettings from './components/PricingSettings'
 import SalesMode from './SalesMode'
@@ -779,7 +779,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {section === 'profile'      && <ProfileSettings user={user} profile={profile} onProfileChange={onProfileChange} />}
           {section === 'appearance'   && <AppearanceSettings theme={theme} setTheme={setTheme} />}
           {section === 'pricing'      && <PricingSettings user={user} canEdit={isOwner(user)} />}
-          {section === 'integrations' && <IntegrationsSettings user={user} profile={profile} />}
+          {section === 'integrations' && <><IntegrationsSettings /><EmailSignatureSettings /></>}
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
           {section === 'staff'      && <StaffSettings />}
@@ -1055,6 +1055,55 @@ function IntegrationsSettings() {
       hint="Stonebooks sends and receives through the shop Gmail (shevcoteam@gmail.com) via App-Password SMTP/IMAP, configured server-side in the deployment environment. No in-app connection is needed."
     >
       <div className="sb-msg sb-msg-ok">Email routes through shevcoteam@gmail.com — configured server-side.</div>
+    </SettingsRow>
+  )
+}
+
+// Plain-text signature → a simple styled HTML block (auto-links email addresses).
+function signatureTextToHtml(text) {
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const lines = String(text || '').split('\n')
+    .map(l => esc(l).replace(/([\w.+-]+@[\w.-]+\.\w+)/g, '<a href="mailto:$1">$1</a>'))
+  return `<div style="font-size:13px;line-height:1.5;color:#555;font-family:Arial,sans-serif;">${lines.join('<br>')}</div>`
+}
+
+// Shop-wide email signature — appended to every outgoing email (system + manual).
+function EmailSignatureSettings() {
+  const [text, setText] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    getEmailSignature().then(sig => { if (!cancelled) { setText(sig?.signature_text || ''); setLoaded(true) } })
+    return () => { cancelled = true }
+  }, [])
+  const save = async () => {
+    setBusy(true); setMsg(null)
+    const res = await saveEmailSignature({ text, html: signatureTextToHtml(text) })
+    setBusy(false)
+    setMsg(res.ok ? { ok: true, t: 'Signature saved — added to the bottom of future emails.' } : { ok: false, t: res.error || 'Save failed.' })
+  }
+  return (
+    <SettingsRow
+      label="Email signature"
+      hint="Appended to the bottom of EVERY outgoing email — system (signing links, photo requests) and manual Compose. One shared shop signature."
+    >
+      <div className="sb-form-stack">
+        <textarea
+          className="sb-input"
+          rows={5}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          disabled={!loaded}
+          placeholder={'Shevchenko Monuments, LLC.\n329 S Florida Grove Rd, Perth Amboy, NJ 08861\n732-442-1286 · shevcoteam@gmail.com'}
+          style={{ fontFamily: 'inherit', resize: 'vertical', minHeight: 96 }}
+        />
+        {msg && <div className={`sb-msg ${msg.ok ? 'sb-msg-ok' : 'sb-msg-err'}`}>{msg.t}</div>}
+        <button type="button" className="sb-btn-primary" onClick={save} disabled={busy || !loaded}>
+          {busy ? 'Saving…' : 'Save signature'}
+        </button>
+      </div>
     </SettingsRow>
   )
 }
