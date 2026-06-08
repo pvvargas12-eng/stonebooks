@@ -18,7 +18,20 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { createClient } from '@supabase/supabase-js'
 
-const MAX_PER_RUN = 40          // cap per mailbox per run — keeps under the function timeout
+// Per-run caps. The function must NOT depend on draining the whole mailbox in one
+// HTTP request — it pulls a small batch, advances the cursor, and returns; the
+// next run (cron or manual) continues from the saved cursor. Small batch + a
+// wall-clock budget keep every invocation well under the function timeout.
+const MAX_PER_RUN = 15          // messages per mailbox per run — keep one invocation short
+const RUN_BUDGET_MS = 45000     // overall wall-clock budget; stop fetching past this and return
+
+// imapflow hard timeouts — fail fast instead of hanging the whole invocation.
+const IMAP_TIMEOUTS = {
+  connectionTimeout: 15000,     // TCP/TLS connect ceiling
+  greetingTimeout: 10000,       // wait for server greeting
+  socketTimeout: 30000,         // idle/stall ceiling on the socket
+}
+
 const MAILBOXES = [
   { name: 'INBOX', direction: 'inbound' },
   { name: '[Gmail]/Sent Mail', direction: 'outbound' },
@@ -78,11 +91,11 @@ async function upsertParsed(admin, parsed, direction, uid) {
   return true
 }
 
-async function syncMailbox(client, admin, mailbox, direction, { anchor = false } = {}) {
+async function syncMailbox(client, admin, mailbox, direction, { anchor = false, deadline = 0 } = {}) {
   const { data: state } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', mailbox).maybeSingle()
   let lastUid = Number(state?.last_uid) || 0
   let uidValidity = state?.uid_validity != null ? Number(state.uid_validity) : null
-  let processed = 0, maxUid = lastUid
+  let processed = 0, maxUid = lastUid, more = false
 
   const lock = await client.getMailboxLock(mailbox)
   try {
@@ -100,7 +113,8 @@ async function syncMailbox(client, admin, mailbox, direction, { anchor = false }
     } else if (box.exists > 0) {
       for await (const msg of client.fetch(`${lastUid + 1}:*`, { uid: true, source: true }, { uid: true })) {
         if (msg.uid <= lastUid) continue       // ':*' always returns the last msg even if below range
-        if (processed >= MAX_PER_RUN) break
+        // Batch cap OR wall-clock budget → stop, persist cursor, let the next run continue.
+        if (processed >= MAX_PER_RUN || (deadline && Date.now() > deadline)) { more = true; break }
         try {
           const parsed = await simpleParser(msg.source)
           await upsertParsed(admin, parsed, direction, msg.uid)
@@ -117,7 +131,7 @@ async function syncMailbox(client, admin, mailbox, direction, { anchor = false }
     mailbox, last_uid: maxUid, uid_validity: uidValidity,
     last_run_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }, { onConflict: 'mailbox' })
-  return { mailbox, processed, lastUid: maxUid }
+  return { mailbox, processed, lastUid: maxUid, more }
 }
 
 export default async function handler(req, res) {
@@ -127,14 +141,7 @@ export default async function handler(req, res) {
   const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY
   const CRON_SECRET = process.env.CRON_SECRET
   if (!GMAIL_ADDRESS || !GMAIL_APP_PASSWORD || !SUPABASE_URL || !SERVICE_ROLE) {
-    // TEMP DIAGNOSTIC — reports which specific vars are missing at runtime. Revert after.
-    const missing = []
-    if (!GMAIL_ADDRESS) missing.push('GMAIL_ADDRESS')
-    if (!GMAIL_APP_PASSWORD) missing.push('GMAIL_APP_PASSWORD')
-    if (!SUPABASE_URL) missing.push('SUPABASE_URL|VITE_SUPABASE_URL')
-    if (!SERVICE_ROLE) missing.push('SUPABASE_SERVICE_ROLE_KEY')
-    const seen = Object.keys(process.env).filter(k => /GMAIL|SUPABASE/.test(k)).sort()
-    return res.status(500).json({ error: 'server_not_configured', missing, seen })
+    return res.status(500).json({ error: 'server_not_configured' })
   }
 
   // Auth: Vercel Cron (CRON_SECRET bearer, if set) OR an authenticated staff user.
@@ -158,16 +165,23 @@ export default async function handler(req, res) {
     host: 'imap.gmail.com', port: 993, secure: true,
     auth: { user: GMAIL_ADDRESS, pass: GMAIL_APP_PASSWORD },
     logger: false,
+    ...IMAP_TIMEOUTS,            // fail fast on connect/greeting/socket stalls
   })
   // ?anchor=1 → don't import; jump each cursor to the current mailbox tail so
   // future polls only see NEW mail (use once after a clean-slate delete).
   const anchor = String(req.query?.anchor || (typeof req.body === 'object' ? req.body?.anchor : '') || '') === '1'
 
+  // Wall-clock budget for this invocation. Each mailbox pull stops at the deadline
+  // and persists its cursor, so a manual/browser hit returns quickly and the
+  // remaining backfill is picked up by the next run instead of one long request.
+  const deadline = Date.now() + RUN_BUDGET_MS
+
   const results = []
   try {
     await client.connect()
     for (const mb of MAILBOXES) {
-      try { results.push(await syncMailbox(client, admin, mb.name, mb.direction, { anchor })) }
+      if (Date.now() > deadline) { results.push({ mailbox: mb.name, skipped: 'time_budget', more: true }); continue }
+      try { results.push(await syncMailbox(client, admin, mb.name, mb.direction, { anchor, deadline })) }
       catch (e) { results.push({ mailbox: mb.name, error: e?.message || String(e) }) }
     }
   } catch (e) {
@@ -176,5 +190,7 @@ export default async function handler(req, res) {
     try { await client.logout() } catch { /* ignore */ }
   }
 
-  return res.status(200).json({ ok: true, anchor, results })
+  // `more` true → not fully drained; hit the endpoint again (or wait for cron) to continue.
+  const more = results.some(r => r && r.more)
+  return res.status(200).json({ ok: true, anchor, more, results })
 }
