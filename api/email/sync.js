@@ -127,7 +127,14 @@ export default async function handler(req, res) {
   const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY
   const CRON_SECRET = process.env.CRON_SECRET
   if (!GMAIL_ADDRESS || !GMAIL_APP_PASSWORD || !SUPABASE_URL || !SERVICE_ROLE) {
-    return res.status(500).json({ error: 'server_not_configured' })
+    // TEMP DIAGNOSTIC — reports which specific vars are missing at runtime. Revert after.
+    const missing = []
+    if (!GMAIL_ADDRESS) missing.push('GMAIL_ADDRESS')
+    if (!GMAIL_APP_PASSWORD) missing.push('GMAIL_APP_PASSWORD')
+    if (!SUPABASE_URL) missing.push('SUPABASE_URL|VITE_SUPABASE_URL')
+    if (!SERVICE_ROLE) missing.push('SUPABASE_SERVICE_ROLE_KEY')
+    const seen = Object.keys(process.env).filter(k => /GMAIL|SUPABASE/.test(k)).sort()
+    return res.status(500).json({ error: 'server_not_configured', missing, seen })
   }
 
   // Auth: Vercel Cron (CRON_SECRET bearer, if set) OR an authenticated staff user.
