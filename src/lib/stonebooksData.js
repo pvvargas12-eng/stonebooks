@@ -286,20 +286,64 @@ export async function aiDraftEmail({ orderId, mode, balance, total, draftText, p
   return { ok: true, subject: data?.subject || '', body: data?.body || '' }
 }
 
-// Send an order email via the gmail-send Edge Function. Tokens stay server-side;
-// the browser only passes the message fields. Returns { ok, data?, error? }.
-export async function sendOrderEmail({ orderId, to, subject, body }) {
+// Legacy send — gmail-send Edge Function (Gmail OAuth). Kept as the deploy-safe
+// FALLBACK for sendShopEmail until the Path B /api endpoint is live in prod.
+async function _sendViaGmailEdge({ orderId, to, subject, body }) {
   const { data, error } = await supabase.functions.invoke('gmail-send', {
     body: { order_id: orderId || null, to, subject, body },
   })
   if (error) {
-    // FunctionsHttpError carries the non-2xx; surface the body's error if present.
     let detail = error.message
     try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.error } catch { /* ignore */ }
     return { ok: false, error: detail }
   }
   if (data?.error) return { ok: false, error: data.error }
-  return { ok: true, data }
+  return { ok: true, data, via: 'gmail-edge' }
+}
+
+const _stripHtml = (h) => (h ? String(h).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '')
+
+// G2 — THE shop email send. Routes through the new App-Password SMTP Node
+// endpoint (/api/email/send) which sends from shevcoteam@gmail.com and logs an
+// outbound `messages` row. Deploy-safe: if that endpoint isn't live yet (404 /
+// not-configured / unreachable) it falls back to the legacy gmail-send Edge
+// Function, so email never breaks during the transition. Supports HTML + PDF
+// attachments [{ filename, contentBase64, contentType }] and threading headers.
+export async function sendShopEmail({ to, subject, html, text, attachments, orderId, customerId, inReplyTo, references } = {}) {
+  try {
+    let token = null
+    try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
+    const res = await fetch('/api/email/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({
+        to, subject, html, text, attachments,
+        order_id: orderId || null, customer_id: customerId || null,
+        in_reply_to: inReplyTo || null, references: references || null,
+      }),
+    })
+    if (res.ok) {
+      const j = await res.json().catch(() => ({}))
+      if (j?.ok) return { ok: true, via: 'smtp', messageId: j.messageId || null }
+    } else {
+      const j = await res.json().catch(() => ({}))
+      // Only fall back when the endpoint is genuinely not live (so we never
+      // double-send after a real SMTP attempt). 404 = not deployed; 500
+      // server_not_configured = secret not set yet.
+      if (!(res.status === 404 || j?.error === 'server_not_configured')) {
+        return { ok: false, error: j?.detail || j?.error || `Email failed (${res.status}).` }
+      }
+    }
+  } catch { /* endpoint unreachable (not deployed) — fall back */ }
+
+  // Fallback: legacy gmail-send (text-only; no attachments on this path).
+  return _sendViaGmailEdge({ orderId, to, subject, body: text || _stripHtml(html) })
+}
+
+// Back-compat wrapper — existing callers pass { orderId, to, subject, body }.
+// Every Stonebooks email now flows through sendShopEmail (new path + fallback).
+export async function sendOrderEmail({ orderId, to, subject, body }) {
+  return sendShopEmail({ orderId, to, subject, text: body })
 }
 
 // ── Remote contract e-signing (R2) ────────────────────────────────────────
