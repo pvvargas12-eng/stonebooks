@@ -14,9 +14,16 @@
 // SUPABASE_SERVICE_ROLE_KEY, and optionally CRON_SECRET (if set, cron must present
 // it as a Bearer token; staff JWT is also accepted for the manual button).
 // =============================================================================
+import dns from 'node:dns'
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { createClient } from '@supabase/supabase-js'
+
+// Force IPv4. Vercel's egress often can't route IPv6, and Node may prefer the
+// AAAA record — so the TCP connect to imap.gmail.com:993 silently hangs (SMTP
+// send works because nodemailer resolves differently). This makes every DNS
+// lookup return IPv4 first; we also resolve an A record explicitly below.
+dns.setDefaultResultOrder('ipv4first')
 
 // Per-run caps. The function must NOT depend on draining the whole mailbox in one
 // HTTP request — it pulls a small batch, advances the cursor, and returns; the
@@ -201,10 +208,25 @@ export default async function handler(req, res) {
   // is the only scheduled caller). Set CRON_SECRET to lock the endpoint down.
   if (!authorized && CRON_SECRET) return res.status(401).json({ error: 'not_authorized' })
 
+  // Explicitly resolve an IPv4 (A) record and connect to the IP directly, so we
+  // never even attempt the IPv6 route. `servername` keeps TLS SNI + cert
+  // validation pointed at the real hostname. Falls back to the hostname if the
+  // resolve fails (setDefaultResultOrder('ipv4first') still biases that path).
+  let imapHost = 'imap.gmail.com'
+  try {
+    const addrs = await withTimeout(dns.promises.resolve4('imap.gmail.com'), 4000, 'dns')
+    if (addrs && addrs.length) imapHost = addrs[0]
+    console.log('[email/sync] resolved imap.gmail.com (A) ->', imapHost)
+  } catch (e) {
+    console.warn('[email/sync] resolve4 failed, using hostname:', e?.message)
+  }
+
   const client = new ImapFlow({
-    host: 'imap.gmail.com', port: 993, secure: true,
+    host: imapHost, port: 993, secure: true,
+    servername: 'imap.gmail.com',      // TLS SNI + cert validation against the real host
     auth: { user: GMAIL_ADDRESS, pass: GMAIL_APP_PASSWORD },
     logger: false,
+    tls: { servername: 'imap.gmail.com', family: 4 },
     ...IMAP_TIMEOUTS,            // fail fast on connect/greeting/socket stalls
   })
   // ?anchor=1 → don't import; jump each cursor to the current mailbox tail so
