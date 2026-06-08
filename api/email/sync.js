@@ -78,7 +78,7 @@ async function upsertParsed(admin, parsed, direction, uid) {
   return true
 }
 
-async function syncMailbox(client, admin, mailbox, direction) {
+async function syncMailbox(client, admin, mailbox, direction, { anchor = false } = {}) {
   const { data: state } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', mailbox).maybeSingle()
   let lastUid = Number(state?.last_uid) || 0
   let uidValidity = state?.uid_validity != null ? Number(state.uid_validity) : null
@@ -91,7 +91,13 @@ async function syncMailbox(client, admin, mailbox, direction) {
     if (uidValidity != null && curValidity !== uidValidity) { lastUid = 0; maxUid = 0 }   // UIDVALIDITY changed → restart
     uidValidity = curValidity
 
-    if (box.exists > 0) {
+    // ANCHOR MODE: jump the cursor to the CURRENT tail (uidNext - 1) WITHOUT
+    // importing anything, so future polls only fetch mail that arrives from now
+    // on (no backfill of existing history). Use after a clean-slate delete.
+    if (anchor) {
+      const tail = Math.max(0, Number(box.uidNext || 1) - 1)
+      maxUid = Math.max(maxUid, tail)
+    } else if (box.exists > 0) {
       for await (const msg of client.fetch(`${lastUid + 1}:*`, { uid: true, source: true }, { uid: true })) {
         if (msg.uid <= lastUid) continue       // ':*' always returns the last msg even if below range
         if (processed >= MAX_PER_RUN) break
@@ -146,11 +152,15 @@ export default async function handler(req, res) {
     auth: { user: GMAIL_ADDRESS, pass: GMAIL_APP_PASSWORD },
     logger: false,
   })
+  // ?anchor=1 → don't import; jump each cursor to the current mailbox tail so
+  // future polls only see NEW mail (use once after a clean-slate delete).
+  const anchor = String(req.query?.anchor || (typeof req.body === 'object' ? req.body?.anchor : '') || '') === '1'
+
   const results = []
   try {
     await client.connect()
     for (const mb of MAILBOXES) {
-      try { results.push(await syncMailbox(client, admin, mb.name, mb.direction)) }
+      try { results.push(await syncMailbox(client, admin, mb.name, mb.direction, { anchor })) }
       catch (e) { results.push({ mailbox: mb.name, error: e?.message || String(e) }) }
     }
   } catch (e) {
@@ -159,5 +169,5 @@ export default async function handler(req, res) {
     try { await client.logout() } catch { /* ignore */ }
   }
 
-  return res.status(200).json({ ok: true, results })
+  return res.status(200).json({ ok: true, anchor, results })
 }
