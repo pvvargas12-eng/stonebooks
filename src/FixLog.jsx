@@ -12,8 +12,9 @@
 // =============================================================================
 import { useState, useEffect, useCallback } from 'react'
 import {
-  listFixItems, getFixItem, createFixItem,
-  FIX_TYPES, FIX_PRIORITIES,
+  listFixItems, getFixItem, createFixItem, updateFixItem,
+  addFixComment, listFixTimeline,
+  FIX_TYPES, FIX_PRIORITIES, FIX_STATUSES,
   fixTypeLabel, fixPriorityLabel, fixStatusLabel,
 } from './lib/stonebooksData'
 
@@ -132,34 +133,72 @@ function CreateFixModal({ defaultReporter, onClose, onCreated }) {
 }
 
 // =============================================================================
-// Detail (read-only header — commit 2; timeline + triage arrive in commit 3)
+// Detail — header, owner triage controls, unified timeline, always-on comment box
 // =============================================================================
-function FixDetail({ id, onBack }) {
+function FixDetail({ id, isOwner = false, author = '', onBack }) {
   const [item, setItem] = useState(null)
+  const [timeline, setTimeline] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  // Inline title/description edit (owner only).
+  const [editing, setEditing] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftDesc, setDraftDesc] = useState('')
+
+  const [comment, setComment] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
-    const r = await getFixItem(id)
+    const [r, t] = await Promise.all([getFixItem(id), listFixTimeline(id)])
     setLoading(false)
     if (!r.ok) { setError(r.needsMigration ? 'migration' : (r.error || 'Could not load this item.')); return }
+    setError('')
     setItem(r.item)
+    setTimeline(t.timeline || [])
   }, [id])
 
   useEffect(() => { load() }, [load])
 
+  // Every owner change routes through updateFixItem, which logs the timeline event.
+  const applyUpdate = async (patch) => {
+    setBusy(true)
+    const r = await updateFixItem(id, { ...patch, author })
+    setBusy(false)
+    if (!r.ok) { setError(r.error || 'Update failed.'); return }
+    await load()
+  }
+
+  const startEdit = () => { setDraftTitle(item.title || ''); setDraftDesc(item.description || ''); setError(''); setEditing(true) }
+  const saveEdits = async () => {
+    if (!draftTitle.trim()) { setError('Title can’t be empty.'); return }
+    await applyUpdate({ title: draftTitle, description: draftDesc })
+    setEditing(false)
+  }
+
+  const submitComment = async () => {
+    if (!comment.trim()) return
+    setBusy(true)
+    const r = await addFixComment(id, comment, author)
+    setBusy(false)
+    if (!r.ok) { setError(r.error || 'Could not add comment.'); return }
+    setComment('')
+    await load()
+  }
+
   if (loading) return <div className="fl-empty">Loading…</div>
   if (error === 'migration') return <MigrationNote />
-  if (error) return <div className="fl-empty">{error}</div>
-  if (!item) return <div className="fl-empty">Item not found.</div>
+  if (!item) return <div className="fl-empty">{error || 'Item not found.'}</div>
 
   return (
     <div className="fl-detail">
       <button type="button" className="fl-back" onClick={onBack}>← Back to Fix Log</button>
 
       <div className="fl-detail-head">
-        <h2 className="fl-detail-title">{item.title}</h2>
+        {editing
+          ? <input className="fl-input fl-edit-title" value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} />
+          : <h2 className="fl-detail-title">{item.title}</h2>}
         <div className="fl-badge-row">
           <Badge tone="neutral">{fixTypeLabel(item.type)}</Badge>
           <Badge tone={priorityTone(item.priority)}>{fixPriorityLabel(item.priority)}</Badge>
@@ -170,7 +209,80 @@ function FixDetail({ id, onBack }) {
         </div>
       </div>
 
-      {item.description && <div className="fl-detail-desc">{item.description}</div>}
+      {/* Owner triage — gated; non-owner staff see the read-only badges above only. */}
+      {isOwner && (
+        <div className="fl-triage">
+          <div className="fl-triage-label">Triage</div>
+          <div className="fl-triage-row">
+            <label className="fl-triage-field">
+              <span>Status</span>
+              <select className="fl-input" value={item.status} disabled={busy}
+                onChange={(e) => applyUpdate({ status: e.target.value })}>
+                {FIX_STATUSES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="fl-triage-field">
+              <span>Priority</span>
+              <select className="fl-input" value={item.priority} disabled={busy}
+                onChange={(e) => applyUpdate({ priority: e.target.value })}>
+                {FIX_PRIORITIES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="fl-triage-field">
+              <span>Type</span>
+              <select className="fl-input" value={item.type} disabled={busy}
+                onChange={(e) => applyUpdate({ type: e.target.value })}>
+                {FIX_TYPES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            {!editing && (
+              <button type="button" className="fl-btn-ghost fl-triage-edit" onClick={startEdit} disabled={busy}>
+                Edit title / description
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Description (inline editor when owner is editing) */}
+      {editing ? (
+        <div className="fl-edit-block">
+          <textarea className="fl-input fl-textarea" rows={4} value={draftDesc}
+            onChange={(e) => setDraftDesc(e.target.value)} placeholder="Description" />
+          <div className="fl-modal-actions">
+            <button type="button" className="fl-btn-ghost" onClick={() => { setEditing(false); setError('') }} disabled={busy}>Cancel</button>
+            <button type="button" className="fl-btn" onClick={saveEdits} disabled={busy}>Save</button>
+          </div>
+        </div>
+      ) : (
+        item.description
+          ? <div className="fl-detail-desc">{item.description}</div>
+          : <div className="fl-detail-desc fl-muted">No description.</div>
+      )}
+
+      {error && error !== 'migration' && <div className="fl-error">{error}</div>}
+
+      {/* Unified timeline — comments AND field-change events, oldest first. */}
+      <div className="fl-section-label">Timeline</div>
+      <div className="fl-timeline">
+        {timeline.length === 0
+          ? <div className="fl-muted" style={{ fontSize: 14 }}>No activity yet.</div>
+          : timeline.map(ev => (
+            <div key={ev.id} className={`fl-tl ${ev.kind === 'comment' ? 'fl-tl-comment' : 'fl-tl-event'}`}>
+              <div className="fl-tl-body">{ev.body}</div>
+              <div className="fl-tl-meta">{ev.author || 'Someone'} · {fmtDateTime(ev.created_at)}</div>
+            </div>
+          ))}
+      </div>
+
+      {/* Comment box — ALWAYS available, including after Fixed / Not Fixing. */}
+      <div className="fl-comment-box">
+        <textarea className="fl-input fl-textarea" rows={3} value={comment}
+          onChange={(e) => setComment(e.target.value)} placeholder="Add a comment…" />
+        <div className="fl-modal-actions">
+          <button type="button" className="fl-btn" onClick={submitComment} disabled={busy || !comment.trim()}>Add comment</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -216,7 +328,8 @@ export default function FixLog({ user, profile, isOwner = false }) {
     return (
       <div className="fl-wrap">
         <FixLogStyles />
-        <FixDetail id={selectedId} onBack={() => { setSelectedId(null); load() }} />
+        <FixDetail id={selectedId} isOwner={isOwner} author={reporter}
+          onBack={() => { setSelectedId(null); load() }} />
       </div>
     )
   }
@@ -337,6 +450,28 @@ function FixLogStyles() {
       .fl-detail-title { font-family: var(--sb-font-display); font-size: 26px; font-weight: 600; margin: 0; color: var(--sb-text); }
       .fl-detail-meta { font-size: 14px; color: var(--sb-text-muted); }
       .fl-detail-desc { font-size: 16px; line-height: 1.6; color: var(--sb-text); white-space: pre-wrap; margin-bottom: 24px; }
+      .fl-muted { color: var(--sb-text-muted); }
+
+      .fl-edit-title { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+      .fl-edit-block { margin-bottom: 24px; }
+
+      .fl-triage { background: var(--sb-surface-muted); border: 0.5px solid var(--sb-border); border-radius: var(--sb-r-lg); padding: 16px; margin-bottom: 22px; }
+      .fl-triage-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sb-text-muted); margin-bottom: 12px; }
+      .fl-triage-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
+      .fl-triage-field { display: flex; flex-direction: column; gap: 5px; min-width: 150px; }
+      .fl-triage-field > span { font-size: 13px; font-weight: 600; color: var(--sb-text-secondary); }
+      .fl-triage-edit { margin-left: auto; align-self: flex-end; padding: 9px 14px; }
+
+      .fl-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sb-text-muted); margin: 6px 0 12px; }
+      .fl-timeline { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; }
+      .fl-tl { padding: 11px 14px; border-radius: var(--sb-r-md); }
+      .fl-tl-comment { background: var(--sb-surface); border: 0.5px solid var(--sb-border); }
+      .fl-tl-event { background: transparent; border-left: 2px solid var(--sb-border); border-radius: 0; padding-left: 12px; }
+      .fl-tl-body { font-size: 15px; color: var(--sb-text); white-space: pre-wrap; }
+      .fl-tl-event .fl-tl-body { color: var(--sb-text-secondary); font-size: 14px; }
+      .fl-tl-meta { font-size: 12px; color: var(--sb-text-muted); margin-top: 4px; }
+
+      .fl-comment-box { border-top: 0.5px solid var(--sb-border); padding-top: 18px; }
     `}</style>
   )
 }
