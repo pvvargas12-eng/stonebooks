@@ -185,6 +185,27 @@ function baseDepthOf(order) {
   return BASE_SIZES.find(x => x.code === bc.sizeCode)?.d || 0
 }
 
+// ── Per-item category + tax/discount eligibility ────────────────────────────
+// Generalizes the old hardcoded "permit is untaxed" rule into per-line flags:
+// every line carries { category, taxable, discountable } so tax applies only to
+// taxable lines and the discount only to discountable lines (computeTotals reads
+// these). Pass-through fees (permit, cemetery, delivery) are never discountable;
+// permit + cemetery are also never taxed. Stone + carving/monument add-ons
+// (lettering, etching, vases, emblems, photo, acid wash, repair) are both.
+// Defaults only — the Finance card can override taxable/discountable per line.
+export function classifyLineItem(code) {
+  const c = String(code || '').toLowerCase()
+  if (/permit|cemetery/.test(c))   return { category: 'fee',     taxable: false, discountable: false }
+  if (/deliver|setup/.test(c))     return { category: 'fee',     taxable: true,  discountable: false }
+  if (/^addon-|^inscription|^custom-font|^rush-|^acid-wash|^repair|color-premium-custom/.test(c))
+    return { category: 'carving', taxable: true, discountable: true }
+  return { category: 'stone', taxable: true, discountable: true }   // die / base / foundation / polish / color / mausoleum
+}
+
+// A line item is a payment record (deposit/balance) — these are NEVER products
+// and must never appear in the line-item list (B2). Guard by code OR label.
+const _isPaymentRow = (it) => /\b(payment|deposit|balance)\b/i.test(`${it.code || ''} ${it.label || ''}`)
+
 // ── Line items — reconcile the existing engine with this build's pricing ────
 // Keep everything buildLineItems already gets right (standard die, color %,
 // base block, base-height, foundation, add-ons, lettering, veteran, permit).
@@ -314,10 +335,36 @@ export function computeFormLineItems(order) {
       editable: true,
       custom: true,
       quotePending: !!c.quotePending,
+      // Custom items carry their own flags (operator-editable in the Finance card);
+      // default to a taxable + discountable monument line.
+      category: c.category || 'custom',
+      taxable: c.taxable !== false,
+      discountable: c.discountable !== false,
     })
   }
 
-  return items
+  // Stamp category + tax/discount flags on every line. Derived lines get classifier
+  // defaults; per-line Finance-card overrides (pricing.lineItemFlagOverrides[code])
+  // win for BOTH derived and custom lines so any item can be flipped case by case.
+  const flagOv = pr.lineItemFlagOverrides || {}
+  for (const it of items) {
+    if (!it.custom) {
+      const cls = classifyLineItem(it.code)
+      it.category = cls.category
+      it.taxable = cls.taxable
+      it.discountable = cls.discountable
+    }
+    const fo = flagOv[it.code]
+    if (fo) {
+      if (fo.taxable != null) it.taxable = !!fo.taxable
+      if (fo.discountable != null) it.discountable = !!fo.discountable
+    }
+  }
+
+  // (B2) Payments/deposits are never line items. (B3) Operator-removed lines drop
+  // out here — the single source, so PDF + totals + Finance card all agree.
+  const removedCodes = new Set((pr.removedLineItems || []).map(r => (typeof r === 'string' ? r : r?.code)).filter(Boolean))
+  return items.filter(it => !_isPaymentRow(it) && !removedCodes.has(it.code))
 }
 
 // ── Totals — THE single source of truth for an order's grand total. Every view

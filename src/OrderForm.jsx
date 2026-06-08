@@ -1275,6 +1275,14 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
   const addCustom = () => setCustom([...customItems, { id: uid(), label: '', amount: 0, quotePending: false }])
   const removeCustom = (id) => setCustom(customItems.filter(c => c.id !== id))
 
+  // Every line is deletable (B3). Custom lines drop from customLineItems; derived
+  // lines (base stone, foundation, add-ons, etc.) are recorded in removedLineItems
+  // so computeFormLineItems filters them out everywhere (form + PDF + totals).
+  // Reversible via the restore strip — no permanently-locked rows.
+  const removed = p.removedLineItems || []
+  const removeDerived = (it) => updatePricing({ removedLineItems: [...removed.filter(r => r.code !== it.code), { code: it.code, label: it.label }] })
+  const restoreDerived = (code) => updatePricing({ removedLineItems: removed.filter(r => r.code !== code) })
+
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
       <div className="of-li">
@@ -1300,17 +1308,26 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
                       : setOverride(it.code, e.target.value)} />
                 </div>
               )}
-              {isCustom ? (
-                <button type="button" className="of-li-x" title="Remove line item" onClick={() => removeCustom(it.code)}>×</button>
-              ) : overridden ? (
-                <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
-              ) : (
-                <span className="of-li-x-spacer" />
-              )}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 2, justifySelf: 'end' }}>
+                {!isCustom && overridden && (
+                  <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
+                )}
+                <button type="button" className="of-li-x" title="Remove line item"
+                  onClick={() => isCustom ? removeCustom(it.code) : removeDerived(it)}>×</button>
+              </span>
             </div>
           )
         })}
         {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
+        {removed.length > 0 && (
+          <div className="of-li-removed" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13 }}>
+            <span className="of-muted">Removed:</span>
+            {removed.map(r => (
+              <button key={r.code} type="button" className="of-link" title="Restore this line item"
+                onClick={() => restoreDerived(r.code)}>{r.label || r.code} ↩</button>
+            ))}
+          </div>
+        )}
         <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>
       </div>
 
