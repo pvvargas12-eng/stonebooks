@@ -3,7 +3,7 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "crons": [
-    { "path": "/api/email/sync", "schedule": "*/3 * * * *" }
+    { "path": "/api/email/sync", "schedule": "0 9 * * *" }
   ],
   "functions": {
     "api/email/sync.js": { "maxDuration": 60 },
