@@ -28,6 +28,7 @@ import {
   autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone, applyDepositMilestones,
 } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
+import QuotesManager from './components/QuotesManager'
 import {
   SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
@@ -374,6 +375,8 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
               deposit={deposit} setDeposit={setDeposit}
               markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate} />
           )}
+
+          {sections.includes('finance') && <QuotesManager order={order} update={update} />}
 
           <StatusCard isEdit={isEdit} templateMs={templateMs} stageIdx={stageIdx} setStageIdx={setStageIdx} />
         </div>

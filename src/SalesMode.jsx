@@ -16,7 +16,7 @@
 // Sprint 4 will add: Other service-type branches (FULL_INSC, ACID_WASH, etc.)
 // =============================================================================
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { supabase } from './lib/supabase'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
@@ -1512,8 +1512,13 @@ export function makeBlankOrder() {
     cancelReason: null,
     cancelNotes: '',
 
-    // Sprint 3i — multi-quote per customer
+    // Sprint 3i — multi-quote per customer (separate orders branched off a parent)
     parentQuoteId: null,
+
+    // Multi-quote substrate — ADDITIONAL quotes on THIS order, beyond Quote 1.
+    // Quote 1 is the order's own primary columns; each entry here is
+    // { id, title, spec }, spec = extractSpecFromOrder snapshot (no cached total).
+    quotes: [],
 
     // Sprint 3i — Mausoleum intake (only used when service includes MAUSOLEUM)
     mausoleumIntake: {
@@ -1688,24 +1693,34 @@ export async function saveOrder(order) {
   orderRow.customer_id = customerId || null
   orderRow.cemetery_id = cemeteryId || null
 
-  // Deploy-safety: orders.foundation_type may not be migrated yet. If a write
-  // fails because that column is missing, drop it and retry once so order saving
-  // never breaks before 20260617 is applied.
+  // Deploy-safety: orders.foundation_type (20260617) and orders.quotes (20260618)
+  // may not be migrated yet. If a write fails because one of those columns is
+  // missing, drop it and retry so order saving never breaks before the migration
+  // is applied. The DB reports one missing column at a time, so we retry per
+  // column (up to both) and only then surface a real error.
   const isMissingFoundation = (e) => e && /foundation_type/i.test(e.message || '')
-  const withoutFoundation = (row) => { const r = { ...row }; delete r.foundation_type; return r }
+  const isMissingQuotes = (e) => e && /\bquotes\b/i.test(e.message || '')
+  const writeOrder = async (op) => {
+    let row = order.id ? orderRow : { ...orderRow, order_number: order.orderNumber || (await generateOrderNumber()) }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await op(row)
+      if (!res.error) return res
+      if (isMissingFoundation(res.error)) { const r = { ...row }; delete r.foundation_type; row = r; continue }
+      if (isMissingQuotes(res.error)) { const r = { ...row }; delete r.quotes; row = r; continue }
+      return res
+    }
+    return op(row)
+  }
 
   if (order.id) {
-    let { data, error } = await supabase.from('orders').update(orderRow).eq('id', order.id).select().single()
-    if (isMissingFoundation(error)) ({ data, error } = await supabase.from('orders').update(withoutFoundation(orderRow)).eq('id', order.id).select().single())
+    const { data, error } = await writeOrder((row) => supabase.from('orders').update(row).eq('id', order.id).select().single())
     if (error) { console.error('updateOrder error:', error); return { ok: false, error } }
     await _ensureOrderCustomerLink(data, customerId)
     return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
   }
 
-  // New order: generate number first
-  const orderNumber = order.orderNumber || (await generateOrderNumber())
-  let { data, error } = await supabase.from('orders').insert({ ...orderRow, order_number: orderNumber }).select().single()
-  if (isMissingFoundation(error)) ({ data, error } = await supabase.from('orders').insert({ ...withoutFoundation(orderRow), order_number: orderNumber }).select().single())
+  // New order: writeOrder() generates the order number into the row.
+  const { data, error } = await writeOrder((row) => supabase.from('orders').insert(row).select().single())
   if (error) { console.error('insertOrder error:', error); return { ok: false, error } }
   await _ensureOrderCustomerLink(data, customerId)
   return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
@@ -1988,6 +2003,8 @@ function orderToRow(order) {
     cancel_reason: order.cancelReason || null,
     cancel_notes: order.cancelNotes || null,
     parent_quote_id: order.parentQuoteId || null,
+    // Multi-quote substrate — additional quotes ride as JSONB on the order row.
+    quotes: Array.isArray(order.quotes) ? order.quotes : [],
     mausoleum_intake: order.mausoleumIntake || null,
 
     deceased: order.deceased || [],
@@ -2222,6 +2239,8 @@ export function rowToOrder(row, customerRow, cemeteryRow) {
     cancelReason: row.cancel_reason || null,
     cancelNotes: row.cancel_notes || '',
     parentQuoteId: row.parent_quote_id || null,
+    // Multi-quote substrate — read-fallback to [] for pre-migration rows.
+    quotes: Array.isArray(row.quotes) ? row.quotes : [],
     mausoleumIntake: row.mausoleum_intake || {
       capacity: '', footprint: '', colorPreference: '',
       style: '', roofStyle: '', features: [],
@@ -7417,11 +7436,6 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setTextColor(...NAVY)
   doc.text(COMPANY_INFO.name, M, y + 6.5)
 
-  // Heritage mark — "Est. 1919" beside the company name (zero vertical cost).
-  const _nameW = doc.getTextWidth(COMPANY_INFO.name)
-  doc.setFont('times', 'italic'); doc.setFontSize(8.5); doc.setTextColor(...GREY)
-  doc.text('Est. 1919', M + _nameW + 4, y + 6.5)
-
   // Title top-right — A2: sized + weighted to MATCH the company name (was 13pt).
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(20)
@@ -7782,8 +7796,8 @@ export async function generateEstimatePDF(order, opts = {}) {
   const pricedItems = allItems.filter(it => !it.quotePending && it.amount != null)
 
   // Columns: Description | Qty | Rate | Total. Rate + Total hide on the estimate
-  // (showLinePrices=false) — the estimate shows Description + Qty only; the grand
-  // Total at the bottom still appears. Total per line = Qty × Rate (= amount).
+  // (showLinePrices=false) — the estimate shows Description only (no Qty/Rate/
+  // Total columns); a single all-in TOTAL at the bottom still appears.
   const descX = M
   const totalRightX = W - M             // Total, right-aligned
   const rateRightX = W - M - 34          // Rate, right-aligned
@@ -7805,8 +7819,8 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFontSize(8)
   doc.setTextColor(...GREY)
   doc.text('DESCRIPTION', descX, y)
-  doc.text('QTY', qtyRightX, y, { align: 'right' })
   if (showLinePrices) {
+    doc.text('QTY', qtyRightX, y, { align: 'right' })
     doc.text('RATE', rateRightX, y, { align: 'right' })
     doc.text('TOTAL', totalRightX, y, { align: 'right' })
   }
@@ -7829,8 +7843,8 @@ export async function generateEstimatePDF(order, opts = {}) {
     const desc = String(code ?? '').startsWith('addon-') ? String(label ?? '').replace(/ × \d+$/, '') : label
     const descLines = doc.splitTextToSize(desc, descWrapW)
     doc.text(descLines, descX, y)
-    doc.text(String(qty), qtyRightX, y, { align: 'right' })
     if (showLinePrices) {
+      doc.text(String(qty), qtyRightX, y, { align: 'right' })
       const rate = qty > 0 ? amount / qty : amount
       doc.text(fmtUSD(rate), rateRightX, y, { align: 'right' })
       doc.text(fmtUSD(amount), totalRightX, y, { align: 'right' })   // Qty × Rate
@@ -7838,12 +7852,12 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += 4 * Math.max(descLines.length, 1) + 0.5
   }
 
-  for (const it of pricedItems) renderLineRow(it.label || '(item)', it.amount, it.code)
-
-  // A7 — ONE total. The numbers come from computeTotals (the single source of
-  // truth), so the PDF can never disagree with the order screen. Clean
-  // Subtotal / Discount / Tax / FINAL TOTAL ladder — no separate bordered TOTAL
-  // box and no "PAYMENT:" section. Deposit/balance prints once, below the box.
+  // A7 — totals for the LIVE order. Hoisted above the single/multi branch so
+  // `finalTotal` stays in scope for the contract PAYMENT TERMS below. computeTotals
+  // is the single source of truth, so the PDF can never disagree with the order
+  // screen. CONTRACT shows the full Subtotal/Discount/Tax/FINAL TOTAL ladder; a
+  // single-quote ESTIMATE shows one all-in TOTAL (tax in); a multi-quote ESTIMATE
+  // shows one descriptions-only block + all-in total PER quote.
   const prPdf = order.pricing || {}
   const totals = computeTotals(allItems, {
     applyTax: prPdf.applyTax !== false,
@@ -7866,34 +7880,82 @@ export async function generateEstimatePDF(order, opts = {}) {
     y += o.gap || 5
   }
 
-  y += 3
-  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.3)
-  doc.line(totLabelX, y, totValX, y)
-  y += 5
-  totRow('Subtotal', fmtUSD(subtotalPdf))
-  if (totals.discountAmt > 0) {
-    const dLabel = (prPdf.discountType === 'amount')
-      ? `Discount (${fmtUSD(Number(prPdf.discountValue) || 0)})`
-      : `Discount (${Number((prPdf.discountValue != null && prPdf.discountValue !== '') ? prPdf.discountValue : prPdf.discountPct) || 0}%)`
-    totRow(dLabel, '-' + fmtUSD(totals.discountAmt))
+  // ESTIMATE multi-quote: Quote 1 = the live order; each additional quote is
+  // synthesized via applySpecToOrder and priced by the same live engine (no
+  // cached totals). Contract is always single-quote (additionalQuotes is []).
+  const { applySpecToOrder } = await import('./lib/quoteSpec')
+  const additionalQuotes = (!isContract && Array.isArray(order.quotes) && order.quotes.length)
+    ? order.quotes : []
+  const allInTotalFor = (o) => {
+    const items = computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') }))
+    const t = computeTotals(items, {
+      applyTax: o.pricing?.applyTax !== false,
+      applyCCSurcharge: !!o.pricing?.applyCCSurcharge,
+      discountType: o.pricing?.discountType,
+      discountValue: o.pricing?.discountValue,
+      discountPct: Number(o.pricing?.discountPct) || 0,
+    })
+    const mt = (o.pricing?.manualTotal != null && o.pricing?.manualTotal !== '') ? Number(o.pricing.manualTotal) : null
+    return mt != null ? mt : t.grandTotal
   }
-  if (totals.tax > 0) totRow('NJ Sales Tax (6.625%)', fmtUSD(totals.tax))
-  if (totals.cc > 0)  totRow('Card Surcharge (3%)', fmtUSD(totals.cc))
-  y += 1
-  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.5)
-  doc.line(totLabelX, y, totValX, y)
-  y += 5
-  totRow('TOTAL', fmtUSD(finalTotal), { bold: true, size: 12, gap: 6 })
 
-  // A6 — close the single boxed section around specs → pricing → final total.
+  if (additionalQuotes.length === 0) {
+    for (const it of pricedItems) renderLineRow(it.label || '(item)', it.amount, it.code)
+
+    y += 3
+    doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.3)
+    doc.line(totLabelX, y, totValX, y)
+    y += 5
+    if (isContract) {
+      totRow('Subtotal', fmtUSD(subtotalPdf))
+      if (totals.discountAmt > 0) {
+        const dLabel = (prPdf.discountType === 'amount')
+          ? `Discount (${fmtUSD(Number(prPdf.discountValue) || 0)})`
+          : `Discount (${Number((prPdf.discountValue != null && prPdf.discountValue !== '') ? prPdf.discountValue : prPdf.discountPct) || 0}%)`
+        totRow(dLabel, '-' + fmtUSD(totals.discountAmt))
+      }
+      if (totals.tax > 0) totRow('NJ Sales Tax (6.625%)', fmtUSD(totals.tax))
+      if (totals.cc > 0)  totRow('Card Surcharge (3%)', fmtUSD(totals.cc))
+      y += 1
+      doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.5)
+      doc.line(totLabelX, y, totValX, y)
+      y += 5
+    }
+    totRow('TOTAL', fmtUSD(finalTotal), { bold: true, size: 12, gap: 6 })
+  } else {
+    // One block per quote: "QUOTE N — title", descriptions only, "Quote N Total".
+    const renderQuoteBlock = (label, o) => {
+      ensure(14)
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...NAVY)
+      doc.text(String(label).toUpperCase(), descX, y); y += 4.5
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...TEXT)
+      const items = computeFormLineItems(o).filter(it => !it.quotePending && it.amount != null)
+      for (const it of items) renderLineRow(it.label || '(item)', it.amount, String(it.code ?? ''))
+      y += 1
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(...TEXT)
+      doc.text(`${label} Total:`, descX, y)
+      doc.text(fmtUSD(allInTotalFor(o)), W - M, y, { align: 'right' })
+      y += 6
+    }
+    renderQuoteBlock('Quote 1', order)
+    additionalQuotes.forEach((q, i) => {
+      y += 1
+      doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2); doc.line(M, y, W - M, y); y += 4
+      renderQuoteBlock(q.title || `Quote ${i + 2}`, applySpecToOrder(order, q.spec))
+    })
+  }
+
+  // A6 — close the single boxed section around specs → pricing → total(s).
   doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.4)   // #4 — square corners, uniform stroke
   doc.rect(M - 2, specBoxStart - 2, W - 2 * M + 4, (y - specBoxStart) + 2)
   y += 6
 
-  // ===================== PAYMENT TERMS (by service type) =====================
-  // Small services (acid wash / repair / inscription / other — NO new stone or
-  // monument fabrication) are PAID IN FULL before work begins. Orders that
-  // include a new stone or monument keep the 50% deposit / balance split.
+  // ============ PAYMENT TERMS (CONTRACT ONLY, by service type) ============
+  // Payment terms belong on the contract, not the estimate — nothing is "due"
+  // on a quote. Small services (acid wash / repair / inscription / other — NO
+  // new stone or monument fabrication) are PAID IN FULL before work begins.
+  // Orders that include a new stone or monument keep the 50% deposit / balance
+  // split.
   const STONE_SVC = ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
   const svcCodes = order.serviceTypes || []
   const hasStone = svcCodes.some(c => STONE_SVC.includes(c))
@@ -7902,36 +7964,38 @@ export async function generateEstimatePDF(order, opts = {}) {
   const hasInscription = svcCodes.includes('INSCRIPTION')
   const paidInFull = !hasStone
 
-  y += 2
-  if (paidInFull) {
-    ensure(12)
-    doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
-    doc.line(M, y, W - M, y)
-    y += 5
-    // Label starts at the LEFT margin (plenty of room) so the long phrase can
-    // never collide with the right-aligned amount.
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
-    doc.text('PAID IN FULL REQUIRED BEFORE WORK BEGINS', M, y)
-    doc.setTextColor(...NAVY)
-    doc.text(fmtUSD(finalTotal), W - M, y, { align: 'right' })
-    y += 7
-  } else {
-    const deposit = finalTotal * 0.5
-    const balance = finalTotal - deposit
-    ensure(18)
-    doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
-    doc.line(W - M - 90, y, W - M, y)
-    y += 5
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
-    doc.text(isContract ? 'DUE TODAY (50% DEPOSIT)' : 'DEPOSIT AT SIGNING (50%)', W - M - 90, y)
-    doc.setTextColor(...NAVY)
-    doc.text(fmtUSD(deposit), W - M, y, { align: 'right' })
-    y += 5
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
-    doc.text('BALANCE AT DELIVERY', W - M - 90, y)
-    doc.setTextColor(...TEXT)
-    doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
-    y += 7
+  if (isContract) {
+    y += 2
+    if (paidInFull) {
+      ensure(12)
+      doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
+      doc.line(M, y, W - M, y)
+      y += 5
+      // Label starts at the LEFT margin (plenty of room) so the long phrase can
+      // never collide with the right-aligned amount.
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
+      doc.text('PAID IN FULL REQUIRED BEFORE WORK BEGINS', M, y)
+      doc.setTextColor(...NAVY)
+      doc.text(fmtUSD(finalTotal), W - M, y, { align: 'right' })
+      y += 7
+    } else {
+      const deposit = finalTotal * 0.5
+      const balance = finalTotal - deposit
+      ensure(18)
+      doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
+      doc.line(W - M - 90, y, W - M, y)
+      y += 5
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
+      doc.text('DUE TODAY (50% DEPOSIT)', W - M - 90, y)
+      doc.setTextColor(...NAVY)
+      doc.text(fmtUSD(deposit), W - M, y, { align: 'right' })
+      y += 5
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+      doc.text('BALANCE AT DELIVERY', W - M - 90, y)
+      doc.setTextColor(...TEXT)
+      doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
+      y += 7
+    }
   }
 
   // ============================ NOTES ====================================
@@ -7995,7 +8059,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // CONTRACT — TERMS & CONDITIONS. A black section bar (reuses the document's bar
   // style), then a NUMBERED list set in a serif face (times), JUSTIFIED, at ~7pt
   // single-leading so it stays compact. Governing-law + entire-agreement clauses
-  // are appended; client initials trail the last clause. The ESTIMATE has no legal
+  // are appended. The ESTIMATE has no legal
   // block here — its sign-off is the call-to-action below.
   if (isContract) {
     const numberedTerms = [
@@ -8024,10 +8088,6 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.text(txt, M, y, lines.length > 1 ? { maxWidth: W - 2 * M, align: 'justify' } : undefined)
       y += lines.length * TERMS_LH + TERMS_GAP
     })
-    // Client initials — trailing the last clause on one tight right-aligned line.
-    doc.setFont('times', 'normal'); doc.setFontSize(TERMS_FS); doc.setTextColor(...TEXT)
-    doc.text('Client initials: ________', W - M, y, { align: 'right' })
-    y += TERMS_LH + 1
   }
 
   // ── Sign-off ────────────────────────────────────────────────────────────────
@@ -8091,14 +8151,21 @@ export async function generateEstimatePDF(order, opts = {}) {
     }
     y = sigY + 6
   } else {
-    // ESTIMATE — no signature. Call-to-action in the signature's place.
+    // ESTIMATE — no signature. Call-to-action in the signature's place, then the
+    // 30-day price guarantee as the closing line.
     y += 8
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(...TEXT)
-    const cta = 'This estimate is valid for 30 days. To move forward, call or email Shevchenko Monuments — ' +
-      '732-442-1286 / shevcoteam@gmail.com — and we\'ll prepare your contract.'
+    const cta = additionalQuotes.length > 0
+      ? 'This estimate is valid for 30 days. To move forward, call or email Shevchenko Monuments — ' +
+        '732-442-1286 / shevcoteam@gmail.com — and reference the quote you\'d like to proceed with.'
+      : 'To move forward, call or email Shevchenko Monuments — ' +
+        '732-442-1286 / shevcoteam@gmail.com — and we\'ll prepare your contract.'
     const ctaLines = doc.splitTextToSize(cta, W - M - M)
     doc.text(ctaLines, M, y)
-    y += 4.6 * ctaLines.length
+    y += 4.6 * ctaLines.length + 2
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(...TEXT)
+    doc.text('This price is guaranteed for 30 days from the date above.', M, y)
+    y += 5
   }
 
   addFooter()
@@ -9095,6 +9162,11 @@ export function buildLineItems(order) {
   return items
 }
 
+// Lazy-mounted so it doesn't pull orderRates into SalesMode's static import
+// graph (orderRates builds RATES from SHAPES at init; a static cycle would read
+// SHAPES before this module finishes defining it). Loads at render — after init.
+const QuotesManager = lazy(() => import('./components/QuotesManager'))
+
 export function PricingStep({ order, update }) {
   const lineItems = useMemo(() => buildLineItems(order), [order])
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
@@ -9325,6 +9397,13 @@ export function PricingStep({ order, update }) {
           + Add a custom line item
         </button>
       </Section>
+
+      {/* Multi-quote — additional priced quotes on this order (additive; renders
+          its own card only). Lazy + Suspense to keep orderRates out of SalesMode's
+          static import cycle. */}
+      <Suspense fallback={null}>
+        <QuotesManager order={order} update={update} />
+      </Suspense>
 
       {/* Foundation toggle */}
       <Section title="Foundation" eyebrow="Auto-calculated from W × D × rate per sq in">
