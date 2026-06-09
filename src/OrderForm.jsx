@@ -69,7 +69,8 @@ const FOUNDATION_TYPES = ['Strip', 'Our Foundation', 'Cemetery Foundation']
 
 // Add-on kinds the compact form supports. Priced kinds reuse the existing
 // configurator math via addonPrice(); title/verse/panel/other are manual-price.
-const ADDON_KINDS = [
+// eslint-disable-next-line react-refresh/only-export-components
+export const ADDON_KINDS = [
   { code: 'etching',      label: 'Laser etching' },
   { code: 'vase',         label: 'Vase' },
   { code: 'photo',        label: 'Photo' },
@@ -631,7 +632,7 @@ function CemeteryCard({ order, update }) {
 // =============================================================================
 // MONUMENT (new-stone)
 // =============================================================================
-function MonumentCard({ order, update, updatePricing }) {
+export function MonumentCard({ order, update, updatePricing }) {
   const shapeObj = SHAPES.find(s => s.code === order.shape) || null
   const typeCode = MONUMENT_TYPES.find(t => t.shapeCodes.includes(order.shape))?.code || ''
   const typeObj = MONUMENT_TYPES.find(t => t.code === typeCode) || null
@@ -854,7 +855,7 @@ function InscriptionCard({ order, updateInsc }) {
 // =============================================================================
 // ADD-ONS
 // =============================================================================
-function AddOnsCard({ order, update, updatePricing, kinds = [] }) {
+export function AddOnsCard({ order, update, updatePricing, kinds = [] }) {
   const addOns = order.addOns || []
   const setAddOns = (arr) => update({ addOns: arr })
   const customItems = order.pricing?.customLineItems || []
@@ -1263,14 +1264,15 @@ function AcidWashCard({ order, update, updatePricing }) {
 }
 
 // =============================================================================
-// FINANCIAL + signed date
+// LINE ITEMS BOX — derived lines + per-line $ override + remove + add custom +
+// per-line taxable/discountable flags. Backed entirely by computeFormLineItems
+// (passed in as `lineItems`) and order.pricing.{lineItemOverrides,
+// customLineItems, removedLineItems, lineItemFlagOverrides} via updatePricing.
+// Extracted from FinanceCard so the SAME box renders inside each multi-quote
+// panel (QuotesManager) — one implementation, mount-agnostic.
 // =============================================================================
-function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate }) {
+export function LineItemsBox({ order, lineItems, updatePricing }) {
   const p = order.pricing || {}
-  const hasManual = manualTotal != null && manualTotal !== ''
-  const ownerQuoteItems = lineItems.filter(it => it.quotePending)
-
-  // ── Editable line items (all quick orders) ────────────────────────────────
   const overrides = p.lineItemOverrides || {}
   const customItems = p.customLineItems || []
   const setOverride = (code, val) => updatePricing({ lineItemOverrides: { ...overrides, [code]: val === '' ? '' : Number(val) } })
@@ -1280,20 +1282,84 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
   const addCustom = () => setCustom([...customItems, { id: uid(), label: '', amount: 0, quotePending: false }])
   const removeCustom = (id) => setCustom(customItems.filter(c => c.id !== id))
 
-  // Every line is deletable (B3). Custom lines drop from customLineItems; derived
-  // lines (base stone, foundation, add-ons, etc.) are recorded in removedLineItems
-  // so computeFormLineItems filters them out everywhere (form + PDF + totals).
-  // Reversible via the restore strip — no permanently-locked rows.
   const removed = p.removedLineItems || []
   const removeDerived = (it) => updatePricing({ removedLineItems: [...removed.filter(r => r.code !== it.code), { code: it.code, label: it.label }] })
   const restoreDerived = (code) => updatePricing({ removedLineItems: removed.filter(r => r.code !== code) })
 
-  // Per-line taxable / discountable override (B4). Custom lines store the flag on
-  // their own record; derived lines store it in pricing.lineItemFlagOverrides[code].
   const flagOv = p.lineItemFlagOverrides || {}
   const setFlag = (it, key, val) => it.custom
     ? setCustomField(it.code, { [key]: val })
     : updatePricing({ lineItemFlagOverrides: { ...flagOv, [it.code]: { ...(flagOv[it.code] || {}), [key]: val } } })
+
+  return (
+    <div className="of-li">
+      {lineItems.map((it, i) => {
+        const isCustom = !!it.custom
+        const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
+        return (
+          <div key={`${it.code}-${i}`}>
+          <div className="of-li-row of-li-edit">
+            {isCustom ? (
+              <input className="of-input of-li-label-input" value={it.label === 'Custom item' ? '' : it.label}
+                placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} />
+            ) : (
+              <span className="of-li-label">{it.label}</span>
+            )}
+            {it.quotePending ? (
+              <span className="of-li-amt of-li-amt-quote">$— (owner quote)</span>
+            ) : (
+              <div className="of-num-wrap of-li-amt-wrap">
+                <span className="of-num-prefix">$</span>
+                <input className="of-input of-li-amt-input" type="number" value={Number(it.amount) || 0}
+                  onChange={e => isCustom
+                    ? setCustomField(it.code, { amount: e.target.value === '' ? 0 : Number(e.target.value) })
+                    : setOverride(it.code, e.target.value)} />
+              </div>
+            )}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 2, justifySelf: 'end' }}>
+              {!isCustom && overridden && (
+                <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
+              )}
+              <button type="button" className="of-li-x" title="Remove line item"
+                onClick={() => isCustom ? removeCustom(it.code) : removeDerived(it)}>×</button>
+            </span>
+          </div>
+          {!it.quotePending && (
+            <div style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '1px 2px 7px', fontSize: 12, color: 'var(--sb-text-muted, #8a7f6c)' }}>
+              <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
+                <input type="checkbox" checked={it.taxable !== false} onChange={e => setFlag(it, 'taxable', e.target.checked)} /> Taxable
+              </label>
+              <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
+                <input type="checkbox" checked={it.discountable !== false} onChange={e => setFlag(it, 'discountable', e.target.checked)} /> Discountable
+              </label>
+              {it.category && <span style={{ opacity: 0.7, textTransform: 'capitalize' }}>{it.category}</span>}
+            </div>
+          )}
+          </div>
+        )
+      })}
+      {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
+      {removed.length > 0 && (
+        <div className="of-li-removed" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13 }}>
+          <span className="of-muted">Removed:</span>
+          {removed.map(r => (
+            <button key={r.code} type="button" className="of-link" title="Restore this line item"
+              onClick={() => restoreDerived(r.code)}>{r.label || r.code} ↩</button>
+          ))}
+        </div>
+      )}
+      <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>
+    </div>
+  )
+}
+
+// =============================================================================
+// FINANCIAL + signed date
+// =============================================================================
+function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate }) {
+  const p = order.pricing || {}
+  const hasManual = manualTotal != null && manualTotal !== ''
+  const ownerQuoteItems = lineItems.filter(it => it.quotePending)
 
   // Discount type (% or $). Reads the new fields with a fall back to legacy discountPct.
   const discType = p.discountType || 'pct'
@@ -1310,64 +1376,7 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
 
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
-      <div className="of-li">
-        {lineItems.map((it, i) => {
-          const isCustom = !!it.custom
-          const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
-          return (
-            <div key={`${it.code}-${i}`}>
-            <div className="of-li-row of-li-edit">
-              {isCustom ? (
-                <input className="of-input of-li-label-input" value={it.label === 'Custom item' ? '' : it.label}
-                  placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} />
-              ) : (
-                <span className="of-li-label">{it.label}</span>
-              )}
-              {it.quotePending ? (
-                <span className="of-li-amt of-li-amt-quote">$— (owner quote)</span>
-              ) : (
-                <div className="of-num-wrap of-li-amt-wrap">
-                  <span className="of-num-prefix">$</span>
-                  <input className="of-input of-li-amt-input" type="number" value={Number(it.amount) || 0}
-                    onChange={e => isCustom
-                      ? setCustomField(it.code, { amount: e.target.value === '' ? 0 : Number(e.target.value) })
-                      : setOverride(it.code, e.target.value)} />
-                </div>
-              )}
-              <span style={{ display: 'flex', alignItems: 'center', gap: 2, justifySelf: 'end' }}>
-                {!isCustom && overridden && (
-                  <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
-                )}
-                <button type="button" className="of-li-x" title="Remove line item"
-                  onClick={() => isCustom ? removeCustom(it.code) : removeDerived(it)}>×</button>
-              </span>
-            </div>
-            {!it.quotePending && (
-              <div style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '1px 2px 7px', fontSize: 12, color: 'var(--sb-text-muted, #8a7f6c)' }}>
-                <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={it.taxable !== false} onChange={e => setFlag(it, 'taxable', e.target.checked)} /> Taxable
-                </label>
-                <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={it.discountable !== false} onChange={e => setFlag(it, 'discountable', e.target.checked)} /> Discountable
-                </label>
-                {it.category && <span style={{ opacity: 0.7, textTransform: 'capitalize' }}>{it.category}</span>}
-              </div>
-            )}
-            </div>
-          )
-        })}
-        {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
-        {removed.length > 0 && (
-          <div className="of-li-removed" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13 }}>
-            <span className="of-muted">Removed:</span>
-            {removed.map(r => (
-              <button key={r.code} type="button" className="of-link" title="Restore this line item"
-                onClick={() => restoreDerived(r.code)}>{r.label || r.code} ↩</button>
-            ))}
-          </div>
-        )}
-        <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>
-      </div>
+      <LineItemsBox order={order} lineItems={lineItems} updatePricing={updatePricing} />
 
       <div className="of-toggles">
         <CheckRow checked={p.applyTax !== false} onChange={v => updatePricing({ applyTax: v })} label="Apply NJ sales tax (6.625%)" />
@@ -1479,7 +1488,8 @@ function StatusCard({ isEdit, templateMs, stageIdx, setStageIdx }) {
 // =============================================================================
 // STYLES
 // =============================================================================
-const OF_CSS = `
+// eslint-disable-next-line react-refresh/only-export-components
+export const OF_CSS = `
   .of-overlay { position: fixed; inset: 0; z-index: 950; background: var(--cream, #faf8f4); display: flex; flex-direction: column;
     font-family: var(--font-b, 'Lato'), 'Helvetica Neue', sans-serif; color: var(--text, #2a2a2a); }
   .of-overlay input, .of-overlay select, .of-overlay textarea, .of-overlay button { font-family: var(--font-b, 'Lato'), sans-serif; }
