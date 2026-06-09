@@ -1519,6 +1519,10 @@ export function makeBlankOrder() {
     // Quote 1 is the order's own primary columns; each entry here is
     // { id, title, spec }, spec = extractSpecFromOrder snapshot (no cached total).
     quotes: [],
+    // Quote 1's editable display name in the multi-quote editor (Quote 1 = the
+    // live order, so its name lives here; additional quotes use quotes[].title).
+    // null → show the default "Quote 1". NOT captured by extractSpecFromOrder.
+    quoteTitle: null,
 
     // Sprint 3i — Mausoleum intake (only used when service includes MAUSOLEUM)
     mausoleumIntake: {
@@ -1700,6 +1704,7 @@ export async function saveOrder(order) {
   // column (up to both) and only then surface a real error.
   const isMissingFoundation = (e) => e && /foundation_type/i.test(e.message || '')
   const isMissingQuotes = (e) => e && /\bquotes\b/i.test(e.message || '')
+  const isMissingQuoteTitle = (e) => e && /quote_title/i.test(e.message || '')
   const writeOrder = async (op) => {
     let row = order.id ? orderRow : { ...orderRow, order_number: order.orderNumber || (await generateOrderNumber()) }
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -1707,6 +1712,7 @@ export async function saveOrder(order) {
       if (!res.error) return res
       if (isMissingFoundation(res.error)) { const r = { ...row }; delete r.foundation_type; row = r; continue }
       if (isMissingQuotes(res.error)) { const r = { ...row }; delete r.quotes; row = r; continue }
+      if (isMissingQuoteTitle(res.error)) { const r = { ...row }; delete r.quote_title; row = r; continue }
       return res
     }
     return op(row)
@@ -2005,6 +2011,7 @@ function orderToRow(order) {
     parent_quote_id: order.parentQuoteId || null,
     // Multi-quote substrate — additional quotes ride as JSONB on the order row.
     quotes: Array.isArray(order.quotes) ? order.quotes : [],
+    quote_title: order.quoteTitle || null,
     mausoleum_intake: order.mausoleumIntake || null,
 
     deceased: order.deceased || [],
@@ -2241,6 +2248,7 @@ export function rowToOrder(row, customerRow, cemeteryRow) {
     parentQuoteId: row.parent_quote_id || null,
     // Multi-quote substrate — read-fallback to [] for pre-migration rows.
     quotes: Array.isArray(row.quotes) ? row.quotes : [],
+    quoteTitle: row.quote_title || null,
     mausoleumIntake: row.mausoleum_intake || {
       capacity: '', footprint: '', colorPreference: '',
       style: '', roofStyle: '', features: [],
@@ -7937,7 +7945,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.text(fmtUSD(allInTotalFor(o)), W - M, y, { align: 'right' })
       y += 6
     }
-    renderQuoteBlock('Quote 1', order)
+    renderQuoteBlock(order.quoteTitle || 'Quote 1', order)
     additionalQuotes.forEach((q, i) => {
       y += 1
       doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2); doc.line(M, y, W - M, y); y += 4

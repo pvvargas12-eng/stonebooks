@@ -91,7 +91,13 @@ export default function QuotesManager({ order, update }) {
       {quotes.length > 0 && (
         <>
           <div style={S.q1row}>
-            <span style={S.q1title}>Quote 1</span>
+            <input
+              style={S.titleInput}
+              value={order.quoteTitle || ''}
+              disabled={isLocked}
+              placeholder="Quote 1"
+              onChange={(e) => update({ quoteTitle: e.target.value })}
+            />
             <span style={S.q1total}>{money(priceOrder(order))}</span>
           </div>
           <div style={S.subtle}>Quote 1 is this order’s current configuration (edited on the form above).</div>
