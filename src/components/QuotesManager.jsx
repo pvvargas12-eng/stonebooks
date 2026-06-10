@@ -27,6 +27,7 @@ import { useState, useRef } from 'react'
 import { MonumentCard, AddOnsCard, LineItemsBox, ADDON_KINDS, OF_CSS } from '../OrderForm'
 import { computeFormLineItems, priceOrderTotals } from '../lib/orderRates'
 import { extractSpecFromOrder, applySpecToOrder } from '../lib/quoteSpec'
+import { logOrderActivity, getSignedContract } from '../lib/stonebooksData'
 
 const money = (n) =>
   `$${(Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -68,13 +69,76 @@ export default function QuotesManager({ order, update }) {
   // Update a quote's spec via a function of its CURRENT spec (ref-latest).
   const patchSpecBy = (id, fn) =>
     commit(quotesRef.current.map((q) => (q.id === id ? { ...q, spec: fn(q.spec) } : q)))
-  const removeQuote = (id) => commit(quotesRef.current.filter((q) => q.id !== id))
   const addQuote = () => {
     if (isLocked || isMausoleum) return
     const q = { id: newId(), title: `Quote ${quotes.length + 2}`, spec: extractSpecFromOrder(order) }
     commit([...quotes, q])
     setOpenId(q.id)
   }
+
+  // ── Promote / delete lifecycle ──────────────────────────────────────────────
+  const [confirm, setConfirm] = useState(null)  // { kind, q?, nextTitle? } | null
+
+  const logAct = (note) => {
+    if (!order.id) return
+    logOrderActivity(order.id, { type: 'change', field: 'Quote', note, actor: order.salesRep || 'Staff' }).catch(() => {})
+  }
+  // Relabel any default-numbered ("Quote N") or empty title to its array position
+  // (snapshots are positions 2+; Quote 1 is the primary). Custom names preserved.
+  const renumber = (arr) => arr.map((q, i) => {
+    const t = (q.title || '').trim()
+    return (!t || /^Quote \d+$/.test(t)) ? { ...q, title: `Quote ${i + 2}` } : q
+  })
+
+  // Promote a snapshot to primary: snapshot the current primary (preserved, never
+  // destroyed), apply the promoted spec onto the order's primary columns, drop the
+  // promoted entry from the array. Totals everywhere then derive from the new
+  // primary via priceOrderTotals.
+  const doPromote = (q) => {
+    const demoted = { id: newId(), title: order.quoteTitle || 'Quote 1', spec: extractSpecFromOrder(order) }
+    const applied = applySpecToOrder(order, q.spec)
+    const nextQuotes = renumber([demoted, ...quotes.filter((x) => x.id !== q.id)])
+    quotesRef.current = nextQuotes
+    update({ ...applied, quoteTitle: q.title || 'Quote 1', quotes: nextQuotes })
+    setConfirm(null); setOpenId(null)
+    logAct(`${q.title || 'Quote'} promoted to primary`)
+  }
+
+  const doDeleteSnapshot = (q) => {
+    const nextQuotes = renumber(quotes.filter((x) => x.id !== q.id))
+    quotesRef.current = nextQuotes
+    update({ quotes: nextQuotes })
+    setConfirm(null)
+    logAct(`${q.title || 'Quote'} deleted`)
+  }
+
+  // Delete the primary: auto-promote the first snapshot into the primary slot (the
+  // deleted primary is NOT preserved). Blocked when no snapshots exist (the row
+  // isn't rendered then, so an order always keeps at least one quote).
+  const doDeletePrimary = () => {
+    if (quotes.length === 0) { setConfirm(null); return }
+    const next = quotes[0]
+    const applied = applySpecToOrder(order, next.spec)
+    const rest = renumber(quotes.slice(1))
+    const deletedLabel = order.quoteTitle || 'Quote 1'
+    quotesRef.current = rest
+    update({ ...applied, quoteTitle: next.title || 'Quote 1', quotes: rest })
+    setConfirm(null)
+    logAct(`${deletedLabel} deleted`)
+  }
+
+  // Promote freely when unsigned; warn loudly when a signed contract is pinned
+  // (or the order is e-signed) — promoting changes working numbers but never the
+  // signed contract.
+  const requestPromote = async (q) => {
+    if (isMausoleum) return
+    let signed = !!order.signedAt
+    if (!signed && order.id) { try { signed = !!(await getSignedContract(order.id)) } catch { /* bucket pending */ } }
+    if (signed) { setConfirm({ kind: 'promote', q }); return }
+    doPromote(q)
+  }
+  const requestDeleteSnapshot = (q) => setConfirm({ kind: 'delete-snapshot', q })
+  const requestDeletePrimary = () => setConfirm({ kind: 'delete-primary', nextTitle: quotes[0]?.title || 'Quote 2' })
 
   return (
     <div style={S.wrap}>
@@ -108,8 +172,12 @@ export default function QuotesManager({ order, update }) {
               </span>
             )}
             <span style={S.q1total}>{money(priceOrder(order))}</span>
+            <span style={S.primaryBadge}>PRIMARY</span>
+            {!isMausoleum && (
+              <button type="button" style={S.xBtn} title="Delete this quote (promotes the next quote to primary)" onClick={requestDeletePrimary}>×</button>
+            )}
           </div>
-          <div style={S.subtle}>Quote 1 is this order’s current configuration (edited on the form above).</div>
+          <div style={S.subtle}>Quote 1 is this order’s current configuration (edited on the form above). It drives the contract, pricing, and balance.</div>
         </>
       )}
 
@@ -146,12 +214,15 @@ export default function QuotesManager({ order, update }) {
                 </span>
               )}
               <span style={S.qtotal}>{money(priceOrder(synth))}</span>
+              {!isMausoleum && (
+                <button type="button" style={S.promoteBtn} title="Make this the primary quote (drives the contract & pricing)" onClick={() => requestPromote(q)}>
+                  Use this quote
+                </button>
+              )}
               <button type="button" style={S.linkBtn} onClick={() => setOpenId(isOpen ? null : q.id)}>
                 {isOpen ? 'Close' : 'Edit'}
               </button>
-              {!isLocked && (
-                <button type="button" style={S.xBtn} title="Remove this quote" onClick={() => removeQuote(q.id)}>×</button>
-              )}
+              <button type="button" style={S.xBtn} title="Delete this quote" onClick={() => requestDeleteSnapshot(q)}>×</button>
             </div>
 
             {isOpen && (
@@ -167,6 +238,49 @@ export default function QuotesManager({ order, update }) {
           </div>
         )
       })}
+
+      {confirm && (
+        <div style={S.overlay} onClick={() => setConfirm(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+            {confirm.kind === 'promote' && (
+              <>
+                <div style={S.modalTitle}>Promote this quote?</div>
+                <p style={S.modalBody}>
+                  This order has a <strong>signed contract</strong> based on the current primary. Promoting{' '}
+                  <strong>{confirm.q.title || 'this quote'}</strong> changes the working numbers (pricing, balance, the draft contract) but does <strong>NOT</strong> touch the signed contract — the signed pin stays in place.
+                </p>
+                <div style={S.modalActions}>
+                  <button type="button" style={S.btn} onClick={() => setConfirm(null)}>Cancel</button>
+                  <button type="button" style={S.btnPrimary} onClick={() => doPromote(confirm.q)}>Promote anyway</button>
+                </div>
+              </>
+            )}
+            {confirm.kind === 'delete-snapshot' && (
+              <>
+                <div style={S.modalTitle}>Delete {confirm.q.title || 'this quote'}?</div>
+                <p style={S.modalBody}>This quote will be removed from the order. This can’t be undone.</p>
+                <div style={S.modalActions}>
+                  <button type="button" style={S.btn} onClick={() => setConfirm(null)}>Cancel</button>
+                  <button type="button" style={S.btnDanger} onClick={() => doDeleteSnapshot(confirm.q)}>Delete</button>
+                </div>
+              </>
+            )}
+            {confirm.kind === 'delete-primary' && (
+              <>
+                <div style={S.modalTitle}>Delete the primary quote?</div>
+                <p style={S.modalBody}>
+                  <strong>{order.quoteTitle || 'Quote 1'}</strong> is the current primary. Deleting it promotes{' '}
+                  <strong>{confirm.nextTitle}</strong> to become the new primary (the deleted quote is not kept). This can’t be undone.
+                </p>
+                <div style={S.modalActions}>
+                  <button type="button" style={S.btn} onClick={() => setConfirm(null)}>Cancel</button>
+                  <button type="button" style={S.btnDanger} onClick={doDeletePrimary}>Delete &amp; promote next</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -190,4 +304,14 @@ const S = {
   linkBtn: { border: 'none', background: 'none', color: '#9a7209', cursor: 'pointer', fontWeight: 600 },
   xBtn: { border: 'none', background: 'none', color: '#b3261e', cursor: 'pointer', fontSize: 16, lineHeight: 1 },
   editor: { marginTop: 10, paddingTop: 8, borderTop: '1px dashed #e3ded3' },
+  promoteBtn: { border: '1px solid #2e7d3a', color: '#2e7d3a', background: '#fff', borderRadius: 6, padding: '3px 9px', cursor: 'pointer', fontWeight: 600, fontSize: 12, whiteSpace: 'nowrap' },
+  primaryBadge: { marginLeft: 8, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.05em', color: '#fff', background: '#2e7d3a', borderRadius: 4, padding: '1px 5px' },
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(15,20,25,0.5)', zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  modal: { background: '#fff', borderRadius: 10, width: 'min(460px, 94vw)', padding: 20, boxShadow: '0 20px 60px rgba(0,0,0,0.35)' },
+  modalTitle: { fontWeight: 700, fontSize: 16, marginBottom: 8 },
+  modalBody: { fontSize: 13.5, color: '#444', lineHeight: 1.5, margin: '0 0 16px' },
+  modalActions: { display: 'flex', justifyContent: 'flex-end', gap: 10 },
+  btn: { border: '1px solid #d8d2c4', background: '#fff', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600 },
+  btnPrimary: { border: '1px solid #9a7209', background: '#9a7209', color: '#fff', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600 },
+  btnDanger: { border: '1px solid #b3261e', background: '#b3261e', color: '#fff', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', fontWeight: 600 },
 }
