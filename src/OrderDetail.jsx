@@ -22,6 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
+  ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
   getProofVersions, getProofSignatureSignedUrl,
   getMessageThread, sendShopEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
@@ -32,6 +33,7 @@ import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
+import OrderPipelineRail from './components/OrderPipelineRail'
 import { TEAM_ROSTER } from './lib/team'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
 
@@ -140,7 +142,7 @@ function SectionRail({ items }) {
 // =============================================================================
 // MAIN
 // =============================================================================
-export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer, initialAction = null, onConsumeInitialAction }) {
+export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer, onOpenHub, initialAction = null, onConsumeInitialAction }) {
   const [order, setOrder] = useState(null)
   const [job, setJob] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -176,6 +178,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Attachment delete confirm (#A) — { path, name } | null
   const [delAttach, setDelAttach] = useState(null)
   const [delAttachBusy, setDelAttachBusy] = useState(false)
+  // Pipeline rail task-remove confirm (× with confirm)
+  const [delTask, setDelTask] = useState(null)   // order_activity task row | null
   // Signed contract (#C)
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
   const [signModal, setSignModal] = useState(null)             // { file, busy, error } | null
@@ -216,6 +220,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       ])
       if (cancelled) return
       setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc)
+      // Inject order-content-derived milestones on load (idempotent). If the set
+      // changed, re-fetch the job so the rail shows the live milestones.
+      if (j?.id) {
+        const dr = await ensureDerivedMilestones(orderId, { order: o, job: j })
+        if (!cancelled && dr?.ok && (dr.inserted || dr.removed)) {
+          const j2 = await getJobByOrderId(orderId)
+          if (!cancelled) setJob(j2)
+        }
+      }
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
@@ -235,6 +248,52 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
   const refreshOrder = async () => { const o = await getOrderById(orderId); if (o) setOrder(o) }
   const refreshActivity = async () => setActivity(await getOrderActivity(orderId))
+  const refreshJob = async () => { const j = await getJobByOrderId(orderId); setJob(j) }
+
+  // ── Pipeline rail handlers ──────────────────────────────────────────────────
+  const milestoneStatusLabel = (s) => s === 'done' ? 'Done' : s === 'in_progress' ? 'In progress' : s === 'blocked' ? 'Blocked' : 'Not started'
+
+  // Tap a rail milestone → real updateMilestone path (auto-overrides readiness
+  // gating frictionlessly) + order_activity log so the order timeline reflects it.
+  const handleRailMilestone = async (key, status) => {
+    if (!job?.id) return
+    const prev = (job.milestones || []).find(m => m.milestone_key === key)
+    const label = prev?.label || key
+    let res = await updateMilestone(job.id, key, { status })
+    if (!res.ok && res.requiresOverride) {
+      res = await updateMilestoneWithOverride(job.id, key, { status }, 'Set from order pipeline rail')
+    }
+    if (!res.ok) { setActionNote(`Could not update ${label} — ${res.error || 'blocked'}.`); return }
+    await logOrderActivity(orderId, {
+      type: 'change', field: 'Milestone',
+      oldValue: milestoneStatusLabel(prev?.status), newValue: milestoneStatusLabel(status),
+      note: `${label}: ${milestoneStatusLabel(prev?.status)} → ${milestoneStatusLabel(status)}`,
+      actor: await getCurrentStaffName(),
+    })
+    await refreshJob(); refreshActivity()
+  }
+
+  const handleOpenPhase = (phaseCode) => {
+    if (phaseCode === 'sales') { onEditInSalesPortal?.(orderId); return }
+    if (onOpenHub) { onOpenHub(phaseCode, job?.id || null); return }
+    if (job?.id) onOpenJob?.(job.id)
+    else setActionNote('No production job yet for this order — it’s created when the order is signed.')
+  }
+
+  const handleAddRailTask = async (phase, text) => {
+    const actor = await getCurrentStaffName()
+    await logOrderActivity(orderId, { type: 'task', note: text, field: phase, taskStatus: 'open', actor })
+    refreshActivity()
+  }
+
+  const confirmRemoveTask = async () => {
+    if (!delTask) return
+    await deleteOrderActivity(delTask.id)
+    setDelTask(null)
+    refreshActivity()
+  }
+
+  const pipelineTasks = activity.filter(a => a.type === 'task')
 
   // ── Activity log (#4) handlers ──────────────────────────────────────────────
   const handleAddActivity = async () => {
@@ -1121,8 +1180,32 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </Section>
           )}
           </div>
+          <div className="sb-od-rail-right">
+            <OrderPipelineRail
+              order={order}
+              job={job}
+              tasks={pipelineTasks}
+              onUpdateMilestone={handleRailMilestone}
+              onOpenPhase={handleOpenPhase}
+              onAddTask={handleAddRailTask}
+              onRemoveTask={(tk) => setDelTask(tk)}
+            />
+          </div>
         </div>
       </div>
+
+      {delTask && (
+        <div className="sb-od-modal-overlay" onClick={() => setDelTask(null)}>
+          <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Remove task" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Remove this task?</div>
+            <p className="sb-od-danger-summary"><strong>{delTask.note}</strong> will be removed from the pipeline and the activity log. This can’t be undone.</p>
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setDelTask(null)}>Cancel</button>
+              <button type="button" className="sb-od-danger-btn" onClick={confirmRemoveTask}>Remove</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {profileOpen && <CustomerProfileSheet order={order} onClose={() => setProfileOpen(false)} />}
 
@@ -1364,7 +1447,9 @@ function BackBar({ onBack }) {
 // =============================================================================
 const OD_CSS = `
   .sb-od-page { background: var(--sb-canvas, #faf9f7); min-height: 100%; padding: 24px 0 64px; }
-  .sb-od-container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  /* Wider than the legacy 1080 to reclaim dead horizontal margin for the
+     left nav | cards | pipeline rail three-column layout. */
+  .sb-od-container { max-width: 1480px; margin: 0 auto; padding: 0 24px; }
   .sb-od-back {
     background: none; border: none; color: #6b6b66; font: inherit; font-size: 13px;
     cursor: pointer; padding: 0; margin-bottom: 16px;
@@ -1427,6 +1512,15 @@ const OD_CSS = `
     transition: background 0.12s, color 0.12s;
   }
   .sb-od-rail-item:hover { background: #f1ede2; color: #111; }
+  /* Right-hand pipeline rail column (additive third column). */
+  .sb-od-rail-right {
+    position: sticky; top: 16px; flex: 0 0 264px; width: 264px; align-self: flex-start;
+    background: #fff; border: 1px solid #ece6d8; border-radius: 10px; padding: 14px;
+    max-height: calc(100vh - 32px); overflow-y: auto;
+  }
+  @media (max-width: 1080px) {
+    .sb-od-rail-right { position: static; flex: 1 1 auto; width: 100%; max-height: none; margin-top: 16px; }
+  }
   @media (max-width: 920px) {
     .sb-od-layout { flex-direction: column; }
     .sb-od-rail { position: static; flex-direction: row; flex-wrap: wrap; width: 100%; flex-basis: auto; gap: 6px; }

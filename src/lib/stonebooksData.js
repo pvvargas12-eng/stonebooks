@@ -6,6 +6,7 @@
 // =============================================================================
 
 import { supabase } from './supabase'
+import { deriveMilestones, isDerivedKey } from './orderPipeline'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
 export const NJ_TAX_RATE = 0.06625
@@ -692,12 +693,79 @@ export async function addOrderTask(orderId, { note, assignee, dueDate, actor } =
   return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, taskStatus: 'open' })
 }
 
+// Remove an activity/task row (used by the rail's task × and confirm).
+export async function deleteOrderActivity(activityId) {
+  if (!activityId) return { ok: false }
+  const { error } = await supabase.from('order_activity').delete().eq('id', activityId)
+  if (error) { console.warn('[order_activity] delete failed:', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
 // Toggle a task open/done.
 export async function setOrderTaskStatus(activityId, status) {
   if (!activityId) return { ok: false }
   const { error } = await supabase.from('order_activity').update({ task_status: status }).eq('id', activityId)
   if (error) { console.warn('[order_activity] task status update failed:', error.message); return { ok: false, error: error.message } }
   return { ok: true }
+}
+
+// ── Derived milestones (order-content-driven) ───────────────────────────────
+// Inject the milestones an order's contents trigger (etching/photo/etc.) as REAL
+// job_milestones rows, so they're tappable through updateMilestone, persist, and
+// auto-log identically to template milestones. Idempotent: inserts the missing
+// ones; removes derived rows whose trigger disappeared ONLY when still
+// 'not_started' (started/done are preserved). No-op when the order has no job yet
+// (pre-signing). Call on order LOAD and order SAVE — never per render.
+export async function ensureDerivedMilestones(orderId, opts = {}) {
+  if (!orderId) return { ok: false }
+  try {
+    const order = opts.order || (await getOrderById(orderId))
+    if (!order) return { ok: false }
+    const job = opts.job !== undefined ? opts.job : (await getJobByOrderId(orderId))
+    if (!job) return { ok: true, skipped: 'no-job' }
+
+    const existing = job.milestones || []
+    const existingKeys = new Set(existing.map(m => m.milestone_key))
+    const expected = deriveMilestones(order)
+    const expectedKeys = new Set(expected.map(m => m.key))
+
+    // 1. Insert derived milestones that aren't on the job yet.
+    const toInsert = expected.filter(e => !existingKeys.has(e.key)).map((e, i) => ({
+      tenant_id: order.tenant_id || job.tenant_id || null,
+      job_id: job.id,
+      milestone_key: e.key,
+      label: e.label,
+      group: e.group,
+      team: e.team || null,
+      status: 'not_started',
+      sort_order: 900 + i,            // derived steps sort after template milestones
+      requires: [],
+      is_decision: false,
+      cascades_to: [],
+      is_customer_visible: false,
+      due_date: null,
+      updated_at: new Date().toISOString(),
+    }))
+    let inserted = 0
+    if (toInsert.length) {
+      const { error } = await supabase.from('job_milestones').insert(toInsert)
+      if (error) console.warn('[derived] insert failed:', error.message); else inserted = toInsert.length
+    }
+
+    // 2. Remove derived rows whose trigger is gone, ONLY if still not_started.
+    const stale = existing.filter(m =>
+      isDerivedKey(m.milestone_key) && !expectedKeys.has(m.milestone_key) && (m.status || 'not_started') === 'not_started')
+    let removed = 0
+    if (stale.length) {
+      const { error } = await supabase.from('job_milestones')
+        .delete().eq('job_id', job.id).in('milestone_key', stale.map(m => m.milestone_key))
+      if (error) console.warn('[derived] remove failed:', error.message); else removed = stale.length
+    }
+    return { ok: true, inserted, removed }
+  } catch (e) {
+    console.warn('[derived] ensureDerivedMilestones:', e?.message)
+    return { ok: false, error: e?.message }
+  }
 }
 
 // The job spawned from an order (read-only), with its milestones — drives the

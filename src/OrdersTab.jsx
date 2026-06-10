@@ -184,7 +184,7 @@ function furthestStage(job) {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
+export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, onOpenHub, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   // Seed from the cross-mount cache so re-opening Orders renders instantly
   // (default archiveView is 'active'). loading starts false only when both
@@ -654,7 +654,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       <OrderDetail orderId={selectedOrderId} onBack={() => { setSelectedOrderId(null); reload() }}
         onEditInSales={(id) => onEditOrder?.(id)}
         onEditInSalesPortal={(id) => onOpenOrder?.(id)}
-        onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer}
+        onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer} onOpenHub={onOpenHub}
         initialAction={initialAction} onConsumeInitialAction={onConsumeInitialAction} />
     )
   }
