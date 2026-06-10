@@ -9225,7 +9225,7 @@ const QuotesManager = lazy(() => import('./components/QuotesManager'))
 // ("Due date overridden: <old> → <new>"). The auto value is computed in an effect
 // (NOT in render) because calculateDueDateRaw calls new Date() — bare new Date()
 // during render is a React 19 purity ERROR that fails the Vercel build.
-function DueDateControl({ order, update, isLocked }) {
+function DueDateControl({ order, update, updatePricing, isLocked }) {
   const [auto, setAuto] = useState({ isoDate: null, isTBD: false })
   useEffect(() => {
     setAuto(calculateDueDateRaw(order))
@@ -9273,6 +9273,28 @@ function DueDateControl({ order, update, isLocked }) {
             ? (auto.isoDate && current !== auto.isoDate ? `Manual override · auto would be ${fmt(auto.isoDate)}` : 'Set')
             : (auto.isTBD ? 'No standard timeline — set manually' : `Auto: ${fmt(auto.isoDate)}`)}
         </span>
+      </div>
+
+      {/* Rush fee (#7) — flat NON-taxable fee tied to the due date. Set the date
+          manually above; there is no automatic date math. */}
+      <div className="sm-rush-row">
+        <label className="sm-rush-lab">Rush fee <span className="sm-rush-tax">non-taxable</span></label>
+        <div className="sm-rush-amt">
+          <span className="sm-rush-dollar">$</span>
+          <input
+            type="number" className="sm-rush-input" min="0" step="1" disabled={isLocked}
+            value={order.pricing?.rushFee ?? ''} placeholder="0"
+            onChange={e => updatePricing({ rushFee: e.target.value === '' ? null : Number(e.target.value) })}
+          />
+        </div>
+        <input
+          type="text" className="sm-rush-note" disabled={isLocked}
+          value={order.pricing?.rushFeeNote || ''} placeholder="Internal note — never shown on the customer PDF"
+          onChange={e => updatePricing({ rushFeeNote: e.target.value })}
+        />
+      </div>
+      <div className="sm-helper">
+        Adds a non-taxable “Rush service fee” line to the contract and rolls into the estimate’s all-in total. Adjust the due date above manually — no automatic date change.
       </div>
     </Section>
   )
@@ -9334,37 +9356,16 @@ export function PricingStep({ order, update }) {
   const ccAmount  = order.pricing.applyCCSurcharge ? Math.round(grandBeforeCC * CC_SURCHARGE * 100) / 100 : 0
   const total = grandBeforeCC + ccAmount
 
-  // TEMP DIAGNOSTIC (#8) — log the legacy wizard total alongside the shared
-  // priceOrderTotals pipeline (the one the estimate/contract PDF + quotes use) so
-  // a divergence is visible in the console. Dynamic import avoids the
-  // SalesMode<->orderRates static cycle. Remove once the calc is unified.
+  // Compute the unified totals (priceOrderTotals — the same pipeline the estimate/
+  // contract PDF + quotes use). Dynamic import avoids the SalesMode<->orderRates
+  // static cycle; result feeds `view` below.
   useEffect(() => {
     let alive = true
     import('./lib/orderRates').then(({ priceOrderTotals }) => {
-      if (!alive) return
-      const r = priceOrderTotals(order)
-      setUTotals(r)
-      const t = r.totals
-      const pr = order.pricing || {}
-      console.log('[QUOTE-CALC] ' + JSON.stringify({
-        orderId: order.id || '(unsaved)',
-        quote: order.quoteTitle || 'Quote 1',
-        legacy_wizard_total: Math.round(total * 100) / 100,
-        shared_displayed_total: r.displayed,
-        delta: Math.round((r.displayed - total) * 100) / 100,
-        taxable_subtotal: t.subtotalDisc,
-        fee_untaxed_subtotal: t.subtotalPermit,
-        discount_type: pr.discountType || (Number(pr.discountPct) ? 'pct' : 'none'),
-        discount_value: pr.discountValue ?? pr.discountPct ?? 0,
-        discount_amount: t.discountAmt,
-        tax: t.tax,
-        cc_surcharge: t.cc,
-        manual_total_override: r.manual,
-        computed_grand_total: t.grandTotal,
-      }))
+      if (alive) setUTotals(priceOrderTotals(order))
     }).catch(() => {})
     return () => { alive = false }
-  }, [order, total])
+  }, [order])
 
   // Displayed totals — prefer the unified priceOrderTotals result; fall back to
   // the legacy inline ladder only until the async import resolves (first tick).
@@ -9491,8 +9492,8 @@ export function PricingStep({ order, update }) {
         </div>
       )}
 
-      {/* Due date — directly before the line-item pricing section (#6) */}
-      <DueDateControl order={order} update={update} isLocked={isLocked} />
+      {/* Due date + rush fee — directly before the line-item pricing section (#6, #7) */}
+      <DueDateControl order={order} update={update} updatePricing={updatePricing} isLocked={isLocked} />
 
       {/* Line items table */}
       <Section title="Line items" eyebrow="Override any amount that needs adjusting">
@@ -16490,6 +16491,13 @@ input[type="date"].sm-textinput {
   font-family: inherit; color: var(--sm-ink, #1a1a1a); background: #fff;
 }
 .sm-duedate-note { font-size: 12px; color: #8a8472; }
+.sm-rush-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.sm-rush-lab { font-size: 13px; font-weight: 600; color: var(--sm-ink, #1a1a1a); }
+.sm-rush-tax { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #7a4a12; background: #fdf2e9; border: 1px solid #e0a85f; border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
+.sm-rush-amt { display: inline-flex; align-items: center; border: 1px solid #d8d2c4; border-radius: 6px; padding: 0 8px; background: #fff; }
+.sm-rush-dollar { color: #8a8472; }
+.sm-rush-input { width: 90px; border: none; outline: none; padding: 6px 4px; font: inherit; font-size: 14px; background: transparent; }
+.sm-rush-note { flex: 1 1 240px; min-width: 200px; border: 1px solid #d8d2c4; border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
 .sm-toast-cemetery {
   background: linear-gradient(135deg, #2d6a4f 0%, #3a8866 100%);
 }

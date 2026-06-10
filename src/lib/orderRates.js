@@ -196,8 +196,9 @@ function baseDepthOf(order) {
 export function classifyLineItem(code) {
   const c = String(code || '').toLowerCase()
   if (/permit|cemetery/.test(c))   return { category: 'fee',     taxable: false, discountable: false }
+  if (/^rush-/.test(c))            return { category: 'fee',     taxable: false, discountable: false }   // rush fees are NON-taxable (#7)
   if (/deliver|setup/.test(c))     return { category: 'fee',     taxable: true,  discountable: false }
-  if (/^addon-|^inscription|^custom-font|^rush-|^acid-wash|^repair|color-premium-custom/.test(c))
+  if (/^addon-|^inscription|^custom-font|^acid-wash|^repair|color-premium-custom/.test(c))
     return { category: 'carving', taxable: true, discountable: true }
   return { category: 'stone', taxable: true, discountable: true }   // die / base / foundation / polish / color / mausoleum
 }
@@ -307,6 +308,15 @@ export function computeFormLineItems(order) {
   if (bc.include && bc.finish === 'SB' && baseW > 0) {
     const rate = liveRates.sawBasePerFoot
     items.push({ code: 'saw-base', label: 'Saw base', amount: Math.round((baseW / 12) * rate), editable: true })
+  }
+
+  // (5) Custom rush fee (#7) — a flat NON-taxable service fee tied to the due-date
+  // control. classifyLineItem('rush-fee') stamps it taxable:false. The internal
+  // rush note (pricing.rushFeeNote) is NEVER emitted onto the line item, so it
+  // can't reach the customer-facing PDF — the label stays generic.
+  const rushFee = Number(pr.rushFee) || 0
+  if (rushFee > 0) {
+    items.push({ code: 'rush-fee', label: 'Rush service fee', amount: rushFee, editable: true })
   }
 
   // Owner-quote flag — custom line items the form flags for the owner to price
