@@ -9236,6 +9236,38 @@ export function PricingStep({ order, update }) {
   const ccAmount  = order.pricing.applyCCSurcharge ? Math.round(grandBeforeCC * CC_SURCHARGE * 100) / 100 : 0
   const total = grandBeforeCC + ccAmount
 
+  // TEMP DIAGNOSTIC (#8) — log the legacy wizard total alongside the shared
+  // priceOrderTotals pipeline (the one the estimate/contract PDF + quotes use) so
+  // a divergence is visible in the console. Dynamic import avoids the
+  // SalesMode<->orderRates static cycle. Remove once the calc is unified.
+  useEffect(() => {
+    let alive = true
+    import('./lib/orderRates').then(({ priceOrderTotals }) => {
+      if (!alive) return
+      const r = priceOrderTotals(order)
+      const t = r.totals
+      const pr = order.pricing || {}
+      // eslint-disable-next-line no-console
+      console.log('[QUOTE-CALC]', {
+        orderId: order.id || '(unsaved)',
+        quote: order.quoteTitle || 'Quote 1',
+        legacy_wizard_total: Math.round(total * 100) / 100,
+        shared_displayed_total: r.displayed,
+        delta: Math.round((r.displayed - total) * 100) / 100,
+        taxable_subtotal: t.subtotalDisc,
+        fee_untaxed_subtotal: t.subtotalPermit,
+        discount_type: pr.discountType || (Number(pr.discountPct) ? 'pct' : 'none'),
+        discount_value: pr.discountValue ?? pr.discountPct ?? 0,
+        discount_amount: t.discountAmt,
+        tax: t.tax,
+        cc_surcharge: t.cc,
+        manual_total_override: r.manual,
+        computed_grand_total: t.grandTotal,
+      })
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [order, total])
+
   // Custom line items
   const addCustomLineItem = () => {
     if (isLocked) return
@@ -9501,6 +9533,19 @@ export function PricingStep({ order, update }) {
 
       {/* Totals */}
       <Section title="Totals" eyebrow="Final estimate">
+        {order.pricing?.manualTotal != null && order.pricing?.manualTotal !== '' && (
+          <div className="sm-manual-total-warn">
+            <span>
+              ⚠ <strong>Manual total override is set: ${Number(order.pricing.manualTotal).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+              {' '}— the estimate &amp; contract PDF and all quotes will show this fixed amount, not the calculated total below.
+            </span>
+            {!isLocked && (
+              <button type="button" className="sm-manual-total-clear" onClick={() => updatePricing({ manualTotal: null })}>
+                Clear override
+              </button>
+            )}
+          </div>
+        )}
         <div className="sm-totals">
           <div className="sm-totals-row">
             <span>Subtotal</span>
@@ -16298,6 +16343,17 @@ input[type="date"].sm-textinput {
 }
 .sm-toast-info     { background: var(--sm-navy); }
 .sm-toast-error    { background: #b3261e; }
+.sm-manual-total-warn {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: #fdf2e9; border: 1px solid #e0a85f; border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 12px; font-size: 13px; color: #7a4a12;
+}
+.sm-manual-total-warn span { flex: 1 1 240px; }
+.sm-manual-total-clear {
+  border: 1px solid #b3261e; color: #b3261e; background: #fff;
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; font-weight: 600; white-space: nowrap;
+}
+.sm-manual-total-clear:hover { background: #b3261e; color: #fff; }
 .sm-toast-cemetery {
   background: linear-gradient(135deg, #2d6a4f 0%, #3a8866 100%);
 }

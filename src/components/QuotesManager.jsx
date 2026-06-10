@@ -49,6 +49,14 @@ function priceOrder(o) {
   return manual != null ? manual : totals.grandTotal
 }
 
+// Manual grand-total override on an order, or null. When set, it wins over the
+// computed total everywhere (PDF + quotes) — surfaced here so a stuck override is
+// visible and clearable. (#8 diagnostic)
+function manualOf(o) {
+  const mt = o?.pricing?.manualTotal
+  return (mt != null && mt !== '') ? Number(mt) : null
+}
+
 export default function QuotesManager({ order, update }) {
   const quotes = Array.isArray(order.quotes) ? order.quotes : []
   const isMausoleum = (order.serviceTypes || []).includes('MAUSOLEUM')
@@ -98,6 +106,15 @@ export default function QuotesManager({ order, update }) {
               placeholder="Quote 1"
               onChange={(e) => update({ quoteTitle: e.target.value })}
             />
+            {manualOf(order) != null && (
+              <span style={S.manualTag} title="Manual override — overrides the calculated total">
+                manual override
+                {!isLocked && (
+                  <button type="button" style={S.manualClear} title="Clear manual override"
+                    onClick={() => update({ pricing: { ...(order.pricing || {}), manualTotal: null } })}>×</button>
+                )}
+              </span>
+            )}
             <span style={S.q1total}>{money(priceOrder(order))}</span>
           </div>
           <div style={S.subtle}>Quote 1 is this order’s current configuration (edited on the form above).</div>
@@ -127,6 +144,15 @@ export default function QuotesManager({ order, update }) {
                 placeholder="Quote title"
                 onChange={(e) => patchQuote(q.id, { title: e.target.value })}
               />
+              {manualOf(synth) != null && (
+                <span style={S.manualTag} title="Manual override — overrides the calculated total">
+                  manual override
+                  {!isLocked && (
+                    <button type="button" style={S.manualClear} title="Clear manual override"
+                      onClick={() => adUpdatePricing({ manualTotal: null })}>×</button>
+                  )}
+                </span>
+              )}
               <span style={S.qtotal}>{money(priceOrder(synth))}</span>
               <button type="button" style={S.linkBtn} onClick={() => setOpenId(isOpen ? null : q.id)}>
                 {isOpen ? 'Close' : 'Edit'}
@@ -167,6 +193,8 @@ const S = {
   qrow: { display: 'flex', alignItems: 'center', gap: 8 },
   titleInput: { flex: '0 0 220px', border: '1px solid #d8d2c4', borderRadius: 4, padding: '4px 6px' },
   qtotal: { marginLeft: 'auto', fontWeight: 700 },
+  manualTag: { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: '#7a4a12', background: '#fdf2e9', border: '1px solid #e0a85f', borderRadius: 4, padding: '2px 6px' },
+  manualClear: { border: 'none', background: 'none', color: '#b3261e', cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: 0 },
   linkBtn: { border: 'none', background: 'none', color: '#9a7209', cursor: 'pointer', fontWeight: 600 },
   xBtn: { border: 'none', background: 'none', color: '#b3261e', cursor: 'pointer', fontSize: 16, lineHeight: 1 },
   editor: { marginTop: 10, paddingTop: 8, borderTop: '1px dashed #e3ded3' },

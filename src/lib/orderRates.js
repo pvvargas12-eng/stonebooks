@@ -415,6 +415,36 @@ export function computeTotals(items, { applyTax = true, applyCCSurcharge = false
   }
 }
 
+// ── priceOrderTotals — THE single entry point for "what is this order's total".
+// Runs the EXACT pipeline the estimate/contract PDF uses so no surface (wizard
+// PricingStep, QuotesManager, PDF) can disagree:
+//   1. computeFormLineItems(order)        — the canonical priced line items
+//   2. overlay pricing.overrides[code]    — the wizard's per-line override map
+//      (computeFormLineItems already honors pricing.lineItemOverrides; the wizard
+//      writes pricing.overrides, which the PDF overlays separately — do the same)
+//   3. computeTotals(...)                 — taxable/discountable-aware, pct OR $ discount
+//   4. manualTotal                        — a manual grand-total override wins
+// Returns { items, totals, manual, displayed }. `displayed` is the number every
+// surface must show. Callers that need the raw breakdown read `totals`.
+export function priceOrderTotals(order) {
+  const o = order || {}
+  const pr = o.pricing || {}
+  const items = computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') }))
+  const ov = pr.overrides || {}
+  for (const it of items) {
+    if (ov[it.code] != null && ov[it.code] !== '') it.amount = Number(ov[it.code])
+  }
+  const totals = computeTotals(items, {
+    applyTax: pr.applyTax !== false,
+    applyCCSurcharge: !!pr.applyCCSurcharge,
+    discountType: pr.discountType,
+    discountValue: pr.discountValue,
+    discountPct: Number(pr.discountPct) || 0,
+  })
+  const manual = (pr.manualTotal != null && pr.manualTotal !== '') ? Number(pr.manualTotal) : null
+  return { items, totals, manual, displayed: manual != null ? manual : totals.grandTotal }
+}
+
 // =============================================================================
 // OWNER-EDITABLE PRICING CONFIG (Settings → Pricing)
 // =============================================================================
