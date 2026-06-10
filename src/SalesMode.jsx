@@ -1846,19 +1846,27 @@ async function fetchMonuments() {
   return all
 }
 
-// Upload a file to Supabase Storage, return public URL + path
+// Upload a file to the order's attachments. Returns { ok, url, path, name } on
+// success or { ok:false, error } on failure — callers MUST surface the error so
+// uploads never fail silently (#1). Files land in the public bucket under
+// attachments/{orderId}/ — the SAME location listOrderAttachments() reads, so a
+// file attached anywhere (wizard, photo pickers) also shows in the Order Detail
+// attachments list. The previous 'orders-attachments' bucket was never created,
+// so every upload here failed silently (return null) — that was the bug.
+// Requires a saved order: a throwaway 'pending-' path would orphan the file.
 async function uploadAttachment(file, orderId) {
-  const ext = (file.name.split('.').pop() || 'bin').toLowerCase()
-  const safeOrder = orderId || 'pending-' + Date.now()
-  const path = `${safeOrder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+  if (!file) return { ok: false, error: 'No file selected.' }
+  if (!orderId) return { ok: false, error: 'Save the order first (add a customer or service), then attach files.' }
+  const safe = String(file.name || 'file').replace(/[^\w.-]+/g, '_')
+  const path = `attachments/${orderId}/${crypto.randomUUID()}_${safe}`
   const { error: upErr } = await supabase.storage
-    .from('orders-attachments')
-    .upload(path, file, { upsert: false, contentType: file.type })
-  if (upErr) { console.error('uploadAttachment error:', upErr); return null }
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (upErr) { console.error('uploadAttachment error:', upErr); return { ok: false, error: upErr.message } }
   const { data: urlData } = supabase.storage
-    .from('orders-attachments')
+    .from('orders-attachments-public')
     .getPublicUrl(path)
-  return { url: urlData.publicUrl, path }
+  return { ok: true, url: urlData.publicUrl, path, name: safe }
 }
 
 // Upload a base64 signature data URL as a PNG to storage. Returns { url, path }.
@@ -4761,10 +4769,10 @@ export function InscriptionStep({ order, update }) {
     setUploading(true)
     const result = await uploadAttachment(file, order.id)
     setUploading(false)
-    if (result) {
+    if (result.ok) {
       updateInsc({ preExistingPhotoUrl: result.url, preExistingPhotoPath: result.path })
     } else {
-      alert('Upload failed. Check the browser console for details.')
+      alert('Upload failed — ' + result.error)
     }
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -6889,8 +6897,8 @@ function CustomerPhotoUploader({ photo, orderId, onUpload, onClear }) {
     setUploading(true)
     const r = await uploadAttachment(file, orderId)
     setUploading(false)
-    if (r) onUpload(r.url, r.path)
-    else alert('Upload failed. Check the browser console for details.')
+    if (r.ok) onUpload(r.url, r.path)
+    else alert('Upload failed — ' + r.error)
     if (ref.current) ref.current.value = ''
   }
 

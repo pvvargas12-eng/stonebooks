@@ -1151,7 +1151,7 @@ function CatalogPickerCard({ order, update }) {
 }
 
 // =============================================================================
-// ATTACHMENTS (drag-drop, reuses uploadAttachment → orders-attachments bucket)
+// ATTACHMENTS (drag-drop, reuses uploadAttachment → orders-attachments-public bucket)
 // =============================================================================
 function AttachmentsCard({ order, updatePricing }) {
   const files = order.pricing?.attachments || []
@@ -1165,12 +1165,14 @@ function AttachmentsCard({ order, updatePricing }) {
     if (arr.length === 0) return
     setBusy(true); setErr(null)
     const uploaded = []
+    let lastError = null
     for (const f of arr) {
       const r = await uploadAttachment(f, order.id)
-      if (r) uploaded.push({ url: r.url, path: r.path, name: f.name, type: f.type })
-      else setErr('One or more files failed to upload.')
+      if (r.ok) uploaded.push({ url: r.url, path: r.path, name: f.name, type: f.type })
+      else lastError = r.error
     }
     setBusy(false)
+    if (lastError) setErr(`Upload failed — ${lastError}`)
     if (uploaded.length) updatePricing({ attachments: [...files, ...uploaded] })
   }
   const onDrop = (e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer?.files) }
