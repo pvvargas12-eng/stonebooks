@@ -1881,6 +1881,19 @@ async function uploadAttachment(file, orderId) {
   return { ok: true, url: urlData.publicUrl, path, name: safe }
 }
 
+// #2 — keep ONE current Estimate / Contract PDF in the order's attachments,
+// replaced on every regenerate (fixed filename + upsert, so they never stack).
+// Lands under attachments/{orderId}/ so listOrderAttachments() surfaces it in the
+// same list as manual uploads, and it's previewable. Never throws (best-effort).
+async function captureOrderPdfAttachment(orderId, blob, kind) {
+  if (!orderId || !blob) return
+  const path = `attachments/${orderId}/${kind} (current).pdf`
+  const { error } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, blob, { upsert: true, contentType: 'application/pdf' })
+  if (error) console.warn('captureOrderPdfAttachment:', error.message)
+}
+
 // Upload a base64 signature data URL as a PNG to storage. Returns { url, path }.
 // `who` is 'customer' or 'rep'.
 async function uploadSignature(dataUrl, who, orderId) {
@@ -8226,6 +8239,12 @@ export async function generateEstimatePDF(order, opts = {}) {
     built = await buildDoc(S)
   }
   const { doc, filename, signFields } = built
+  // #2 — auto-capture the current estimate/contract into the order's attachments
+  // (one copy each, replaced on regenerate). Fire-and-forget so it never blocks
+  // or breaks PDF generation; only for saved orders (capture needs an order id).
+  if (order.id) {
+    captureOrderPdfAttachment(order.id, doc.output('blob'), isContract ? 'Contract' : 'Estimate').catch(() => {})
+  }
   if (opts.returnDoc) return { doc, filename, signFields }
   doc.save(filename)
   return { doc, filename, signFields }

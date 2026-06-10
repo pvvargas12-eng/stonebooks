@@ -29,6 +29,7 @@ import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
+import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -167,6 +168,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [deleteErr, setDeleteErr] = useState(null)
   // Approval packet preview
   const [approvalSheet, setApprovalSheet] = useState(null)  // { url, doc, filename, version } | null
+  // In-app attachment preview (#3) — { url, name, mime, isBlob } | null
+  const [preview, setPreview] = useState(null)
   // Permit editor
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
@@ -282,9 +285,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
   const openSignature = async (path) => {
     const url = await getProofSignatureSignedUrl(path)
-    if (url) window.open(url, '_blank', 'noopener')
+    if (url) openPreview('Signature.png', url, 'image/png', false)
     else setActionNote('Could not open signature (signed URL expired or blocked).')
   }
+
+  // In-app attachment preview (#3). isBlob → revoke the object URL on close.
+  const openPreview = (name, url, mime, isBlob = false) => setPreview({ name, url, mime, isBlob })
+  const closePreview = () => setPreview(p => { if (p?.isBlob && p.url) URL.revokeObjectURL(p.url); return null })
 
   // ── Email (Gmail Phase 2) ──────────────────────────────────────────────────
   const openEmailComposer = () => {
@@ -470,7 +477,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     setActionNote(null)
     try {
       const camel = rowToOrder(order, order.customer, order.cemetery)
-      await generateContractPDF(camel)
+      const { doc, filename } = await generateContractPDF(camel, { returnDoc: true })
+      const url = URL.createObjectURL(doc.output('blob'))
+      openPreview(filename || 'Contract.pdf', url, 'application/pdf', true)
     } catch (e) {
       setActionNote(`Could not open contract — ${e?.message || 'error'}.`)
     }
@@ -768,9 +777,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     <span className="sb-od-attach-label">{a.label}</span>
                     {a.sub && <span className="sb-od-attach-sub">{a.sub}</span>}
                     {a.href ? (
-                      <a className="sb-od-link sb-od-attach-open" href={a.href} target="_blank" rel="noreferrer">Open ↗</a>
+                      <button type="button" className="sb-od-link sb-od-attach-open" onClick={() => openPreview(a.label, a.href, '', false)}>Preview</button>
                     ) : (
-                      <button type="button" className="sb-od-link sb-od-attach-open" onClick={a.onOpen}>Open ↗</button>
+                      <button type="button" className="sb-od-link sb-od-attach-open" onClick={a.onOpen}>Preview</button>
                     )}
                   </div>
                 ))}
@@ -789,9 +798,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <Section id="od-photos" title="Completion photos" span={2}>
               <div className="sb-od-completion-grid">
                 {completionPhotos.map(p => (
-                  <a key={p.path} className="sb-od-completion-thumb" href={p.url} target="_blank" rel="noreferrer" title={p.name}>
+                  <button type="button" key={p.path} className="sb-od-completion-thumb" onClick={() => openPreview(p.name, p.url, '', false)} title={p.name}>
                     <img src={p.url} alt={p.name} loading="lazy" />
-                  </a>
+                  </button>
                 ))}
               </div>
             </Section>
@@ -1055,6 +1064,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </div>
         </div>
       )}
+
+      <AttachmentPreviewModal attachment={preview} onClose={closePreview} />
     </div>
   )
 }
@@ -1197,7 +1208,7 @@ const OD_CSS = `
   }
   .sb-od-completion-thumb {
     display: block; aspect-ratio: 1 / 1; border-radius: 6px; overflow: hidden;
-    border: 0.5px solid #e6e3dd; background: #f4f2ee;
+    border: 0.5px solid #e6e3dd; background: #f4f2ee; padding: 0; cursor: pointer; width: 100%;
   }
   .sb-od-completion-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .sb-od-attach-list { display: flex; flex-direction: column; }
