@@ -19,6 +19,7 @@ import {
   fmtUSD, fmtDate, fmtPhone, statusInfo, jobStatusInfo, customerName,
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
+  getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getMessageThread, sendShopEmail, aiDraftEmail,
@@ -30,6 +31,7 @@ import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
+import { TEAM_ROSTER } from './lib/team'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -174,6 +176,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
   const [permitMsg, setPermitMsg] = useState(null)
+  // Activity log (#4)
+  const [activity, setActivity] = useState([])
+  const [actNote, setActNote] = useState('')
+  const [taskForm, setTaskForm] = useState({ note: '', assignee: '', dueDate: '' })
+  const [actBusy, setActBusy] = useState(false)
+  const [actOpen, setActOpen] = useState(null)   // 'activity' | 'task' | null
 
   // loading inits true; OrderDetail mounts fresh per selected order (OrdersTab
   // conditionally renders it), so the effect fires once — no synchronous
@@ -189,15 +197,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       // Secondary loads (notes + attachment sources + emails) — non-blocking.
       // Email is the CUSTOMER's full thread (same shown in every order of theirs),
       // not order-segregated — keyed by the order's customer_id.
-      const [nts, ups, pvs, ems, cps] = await Promise.all([
+      const [nts, ups, pvs, ems, cps, acts] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
         o.customer_id ? getMessageThread({ customerId: o.customer_id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
+        getOrderActivity(orderId),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts)
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
@@ -216,6 +225,31 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
   const refreshOrder = async () => { const o = await getOrderById(orderId); if (o) setOrder(o) }
+  const refreshActivity = async () => setActivity(await getOrderActivity(orderId))
+
+  // ── Activity log (#4) handlers ──────────────────────────────────────────────
+  const handleAddActivity = async () => {
+    const note = actNote.trim()
+    if (!note || actBusy) return
+    setActBusy(true)
+    const actor = await getCurrentStaffName()
+    await addOrderActivityNote(orderId, note, actor)
+    setActBusy(false); setActNote(''); setActOpen(null)
+    refreshActivity()
+  }
+  const handleAddTask = async () => {
+    const note = taskForm.note.trim()
+    if (!note || actBusy) return
+    setActBusy(true)
+    const actor = await getCurrentStaffName()
+    await addOrderTask(orderId, { note, assignee: taskForm.assignee || null, dueDate: taskForm.dueDate || null, actor })
+    setActBusy(false); setTaskForm({ note: '', assignee: '', dueDate: '' }); setActOpen(null)
+    refreshActivity()
+  }
+  const toggleTask = async (a) => {
+    await setOrderTaskStatus(a.id, a.task_status === 'done' ? 'open' : 'done')
+    refreshActivity()
+  }
 
   // ── Permit status editor ───────────────────────────────────────────────────
   const openPermitEdit = () => {
@@ -243,10 +277,19 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       if (!patch.permit_filed_at) patch.permit_filed_at = today
       if (!patch.permit_approved_at) patch.permit_approved_at = today
     }
+    const prevPermit = order.permit_status
     const r = await setOrderPermit(orderId, patch)
     setPermitBusy(false)
     if (!r.ok) { setPermitMsg({ type: 'err', text: r.error }); return }
     setPermitDraft(null); await refreshOrder()
+    if (patch.permit_status && patch.permit_status !== prevPermit) {
+      await logOrderActivity(orderId, {
+        type: 'change', field: 'Permit status',
+        oldValue: humanize(prevPermit) || '(none)', newValue: humanize(patch.permit_status),
+        actor: await getCurrentStaffName(),
+      })
+      refreshActivity()
+    }
   }
 
   // Send this order to the Quote Hub for the owner's final approval. Works the
@@ -372,8 +415,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       note: payModal.note.trim() || null, createdBy,
     })
     if (!res.ok) { setPayModal(m => ({ ...m, busy: false, confirm: false, error: res.error || 'Could not record the payment.' })); return }
+    const method = payModal.method
     setPayModal(null)
     await refreshOrder()
+    await logOrderActivity(orderId, {
+      type: 'activity',
+      note: `Payment recorded: ${fmtUSD(amount)}${method ? ` (${method})` : ''}`,
+      actor: createdBy,
+    })
+    refreshActivity()
     setActionNote(`Payment of ${fmtUSD(amount)} recorded.`)
   }
 
@@ -806,6 +856,68 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </Section>
           )}
 
+          {/* 8 — Activity log (#4): changes / notes / tasks, newest first */}
+          <Section id="od-activity" title="Activity" span={2}>
+            <div className="sb-od-act-actions">
+              <button type="button" className="sb-od-link" onClick={() => setActOpen(actOpen === 'activity' ? null : 'activity')}>+ Add activity</button>
+              <button type="button" className="sb-od-link" onClick={() => setActOpen(actOpen === 'task' ? null : 'task')}>+ Add task</button>
+            </div>
+
+            {actOpen === 'activity' && (
+              <div className="sb-od-act-form">
+                <textarea className="sb-od-act-input" rows={2} placeholder="What happened?" value={actNote} onChange={e => setActNote(e.target.value)} />
+                <div className="sb-od-act-form-actions">
+                  <button type="button" className="sb-od-btn" disabled={actBusy || !actNote.trim()} onClick={handleAddActivity}>{actBusy ? 'Saving…' : 'Add'}</button>
+                  <button type="button" className="sb-od-link" onClick={() => { setActOpen(null); setActNote('') }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {actOpen === 'task' && (
+              <div className="sb-od-act-form">
+                <textarea className="sb-od-act-input" rows={2} placeholder="Task description" value={taskForm.note} onChange={e => setTaskForm(f => ({ ...f, note: e.target.value }))} />
+                <div className="sb-od-act-form-row">
+                  <select className="sb-od-act-select" value={taskForm.assignee} onChange={e => setTaskForm(f => ({ ...f, assignee: e.target.value }))}>
+                    <option value="">Assign to…</option>
+                    {TEAM_ROSTER.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <input type="date" className="sb-od-act-select" value={taskForm.dueDate} onChange={e => setTaskForm(f => ({ ...f, dueDate: e.target.value }))} />
+                </div>
+                <div className="sb-od-act-form-actions">
+                  <button type="button" className="sb-od-btn" disabled={actBusy || !taskForm.note.trim()} onClick={handleAddTask}>{actBusy ? 'Saving…' : 'Add task'}</button>
+                  <button type="button" className="sb-od-link" onClick={() => { setActOpen(null); setTaskForm({ note: '', assignee: '', dueDate: '' }) }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {activity.length === 0 ? (
+              <div className="sb-od-empty-inline">No activity yet.</div>
+            ) : (
+              <div className="sb-od-act-list">
+                {activity.map(a => (
+                  <div key={a.id} className={`sb-od-act-row sb-od-act-${a.type}`}>
+                    <div className="sb-od-act-main">
+                      {a.type === 'change' && <span className="sb-od-act-text"><strong>{a.field}</strong>: {a.old_value} → {a.new_value}</span>}
+                      {a.type === 'activity' && <span className="sb-od-act-text">{a.note}</span>}
+                      {a.type === 'task' && (
+                        <span className="sb-od-act-text">
+                          <span className={`sb-od-act-badge ${a.task_status === 'done' ? 'done' : 'open'}`}>{a.task_status === 'done' ? '✓ Done' : 'Task'}</span>
+                          {a.note}
+                          {a.assignee && <span className="sb-od-act-assignee"> · {a.assignee}</span>}
+                          {a.due_date && <span className="sb-od-act-due"> · due {fmtDate(a.due_date)}</span>}
+                        </span>
+                      )}
+                      <span className="sb-od-act-meta">{fmtDate(a.created_at)}{a.actor ? ` · ${a.actor}` : ''}</span>
+                    </div>
+                    {a.type === 'task' && (
+                      <button type="button" className="sb-od-link" onClick={() => toggleTask(a)}>{a.task_status === 'done' ? 'Reopen' : 'Mark done'}</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+
           {/* 8 — Notes */}
           <Section id="od-notes" title="Notes" span={2}>
             <div className="sb-od-note-composer">
@@ -1211,6 +1323,26 @@ const OD_CSS = `
     border: 0.5px solid #e6e3dd; background: #f4f2ee; padding: 0; cursor: pointer; width: 100%;
   }
   .sb-od-completion-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .sb-od-act-actions { display: flex; gap: 16px; margin-bottom: 10px; }
+  .sb-od-act-form { background: #faf8f3; border: 1px solid #e7e2d6; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+  .sb-od-act-input { width: 100%; box-sizing: border-box; border: 1px solid #d8d2c4; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13.5px; resize: vertical; }
+  .sb-od-act-form-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .sb-od-act-select { border: 1px solid #d8d2c4; border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 13px; }
+  .sb-od-act-form-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .sb-od-act-list { display: flex; flex-direction: column; }
+  .sb-od-act-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; font-size: 13.5px; }
+  .sb-od-act-row + .sb-od-act-row { border-top: 0.5px solid #f1efeb; }
+  .sb-od-act-main { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; }
+  .sb-od-act-text { color: #222; word-break: break-word; }
+  .sb-od-act-meta { font-size: 11.5px; color: #9a958c; }
+  .sb-od-act-change .sb-od-act-text { color: #555; }
+  .sb-od-act-assignee, .sb-od-act-due { color: #8a8a85; }
+  .sb-od-act-badge {
+    display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; border-radius: 4px; padding: 1px 6px; margin-right: 6px; vertical-align: middle;
+  }
+  .sb-od-act-badge.open { background: #fdf2e9; color: #b06a12; border: 0.5px solid #e0a85f; }
+  .sb-od-act-badge.done { background: #e8f5ea; color: #2e7d3a; border: 0.5px solid #9bd0a6; }
   .sb-od-attach-list { display: flex; flex-direction: column; }
   .sb-od-attach-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13.5px; }
   .sb-od-attach-row + .sb-od-attach-row { border-top: 0.5px solid #f1efeb; }

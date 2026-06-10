@@ -11903,7 +11903,19 @@ function OrderStatusChanger({ order, update }) {
               type="button"
               className={`sm-status-pill ${on ? 'on' : ''}`}
               data-status={s.code}
-              onClick={() => update({ status: s.code })}
+              onClick={() => {
+                const prev = order.status || 'draft'
+                if (s.code === prev) return
+                update({ status: s.code })
+                if (order.id) {
+                  const lbl = (c) => ORDER_STATUSES.find(x => x.code === c)?.label || c
+                  logOrderActivity(order.id, {
+                    type: 'change', field: 'Order status',
+                    oldValue: lbl(prev), newValue: lbl(s.code),
+                    actor: order.salesRep || 'Staff',
+                  }).catch(() => {})
+                }
+              }}
             >
               {on && '✓ '}{s.label}
             </button>
