@@ -21,6 +21,7 @@ import {
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
+  getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getProofVersions, getProofSignatureSignedUrl,
   getMessageThread, sendShopEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
@@ -175,6 +176,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Attachment delete confirm (#A) — { path, name } | null
   const [delAttach, setDelAttach] = useState(null)
   const [delAttachBusy, setDelAttachBusy] = useState(false)
+  // Signed contract (#C)
+  const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
+  const [signModal, setSignModal] = useState(null)             // { file, busy, error } | null
+  const [overrideModal, setOverrideModal] = useState(null)     // { reason, busy, error } | null
   // Permit editor
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
@@ -200,16 +205,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       // Secondary loads (notes + attachment sources + emails) — non-blocking.
       // Email is the CUSTOMER's full thread (same shown in every order of theirs),
       // not order-segregated — keyed by the order's customer_id.
-      const [nts, ups, pvs, ems, cps, acts] = await Promise.all([
+      const [nts, ups, pvs, ems, cps, acts, sc] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
         o.customer_id ? getMessageThread({ customerId: o.customer_id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
         getOrderActivity(orderId),
+        getSignedContract(orderId),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc)
     }).catch(e => { if (!cancelled) { setErr(e?.message || 'Failed to load order'); setLoading(false) } })
     return () => { cancelled = true }
   }, [orderId])
@@ -266,6 +272,62 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     await refreshUploads()
     await logOrderActivity(orderId, { type: 'activity', note: `Attachment deleted: ${name}`, actor: await getCurrentStaffName() })
     refreshActivity()
+  }
+
+  // ── Signed contract (#C) ────────────────────────────────────────────────────
+  const refreshSignedContract = async () => setSignedContract(await getSignedContract(orderId))
+
+  const previewSignedContract = async () => {
+    const r = await signedContractFileUrl(orderId)
+    if (!r.ok) { setActionNote(`Could not open signed contract — ${r.error}.`); return }
+    openPreview('Contract (signed).pdf', r.url, 'application/pdf', false)
+  }
+
+  const handleMarkSigned = async () => {
+    if (!signModal || signModal.busy) return
+    setSignModal(m => ({ ...m, busy: true, error: null }))
+    let payload
+    try {
+      if (signModal.file) {
+        payload = { file: signModal.file }
+      } else {
+        const camel = rowToOrder(order, order.customer, order.cemetery)
+        const { doc } = await generateContractPDF(camel, { returnDoc: true })
+        payload = { blob: doc.output('blob') }
+      }
+    } catch (e) {
+      setSignModal(m => ({ ...m, busy: false, error: e?.message || 'Could not prepare the contract.' })); return
+    }
+    const usedScan = !!signModal.file
+    const res = await markContractSigned(orderId, payload)
+    if (!res.ok) { setSignModal(m => ({ ...m, busy: false, error: res.error })); return }
+    setSignModal(null)
+    await refreshSignedContract()
+    await logOrderActivity(orderId, {
+      type: 'change', field: 'Contract', oldValue: 'draft', newValue: 'signed',
+      note: `Contract marked signed${usedScan ? ' (scanned copy uploaded)' : ' (current contract designated)'}`,
+      actor: await getCurrentStaffName(),
+    })
+    refreshActivity()
+    setActionNote('Contract marked as signed.')
+  }
+
+  const handleOverrideSigned = async () => {
+    if (!overrideModal || overrideModal.busy) return
+    const reason = (overrideModal.reason || '').trim()
+    if (!reason) { setOverrideModal(m => ({ ...m, error: 'A reason is required.' })); return }
+    setOverrideModal(m => ({ ...m, busy: true, error: null }))
+    const res = await removeSignedContract(orderId)
+    if (!res.ok) { setOverrideModal(m => ({ ...m, busy: false, error: res.error })); return }
+    setOverrideModal(null)
+    await refreshSignedContract()
+    await logOrderActivity(orderId, {
+      type: 'change', field: 'Signed contract', oldValue: 'signed', newValue: 'overridden',
+      note: `Signed contract overridden: ${reason}`,
+      actor: await getCurrentStaffName(),
+    })
+    refreshActivity()
+    setActionNote('Signed contract overridden — you can mark a new contract signed.')
   }
 
   // ── Permit status editor ───────────────────────────────────────────────────
@@ -574,6 +636,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Layout proofs (orders-attachments-public) + signatures (proof-signatures,
   // signed URL on open) + the generated contract PDF + general uploads.
   const attachmentRows = [
+    // Pinned signed contract (#C) — private bucket, signed-URL preview, override-only.
+    ...(signedContract ? [{
+      key: 'signed-contract', kind: 'Contract', label: 'Contract (signed)',
+      sub: signedContract.signedAt ? `signed ${fmtDate(signedContract.signedAt)}` : 'signed',
+      onOpen: previewSignedContract, signed: true,
+    }] : []),
     ...proofVers.filter(v => v.layout_image_url).map(v => ({
       key: `proof-${v.id}`, kind: 'Layout proof', label: `Layout v${v.version_number}`,
       sub: v.uploaded_at ? fmtDate(v.uploaded_at) : null, href: v.layout_image_url,
@@ -582,12 +650,22 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       key: `sig-${v.id}`, kind: 'Signature', label: `Signature v${v.version_number}`,
       sub: v.approved_by_name ? `by ${v.approved_by_name}` : null, onOpen: () => openSignature(v.signature_url),
     })),
-    { key: 'contract', kind: 'Document', label: 'Contract PDF', sub: 'generated on open', onOpen: handleOpenContract },
-    ...uploads.map((u, i) => ({
-      key: `up-${i}`, kind: 'Upload', label: u.name,
-      sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
-      path: u.path, deletable: true,
-    })),
+    {
+      key: 'contract', kind: 'Document',
+      label: signedContract ? 'Contract (draft)' : 'Contract PDF',
+      sub: signedContract ? 'draft — superseded by signed' : 'generated on open',
+      onOpen: handleOpenContract, draft: !!signedContract,
+    },
+    ...uploads.map((u, i) => {
+      const isCurrentContract = u.name === 'Contract (current).pdf'
+      return {
+        key: `up-${i}`, kind: 'Upload',
+        label: (isCurrentContract && signedContract) ? 'Contract (draft)' : u.name,
+        sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
+        path: u.path, deletable: true,
+        draft: isCurrentContract && !!signedContract,
+      }
+    }),
   ]
 
   // ── AI draft modes — state-aware (only what the order warrants) ────────────
@@ -840,14 +918,21 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             ) : (
               <div className="sb-od-attach-list">
                 {attachmentRows.map(a => (
-                  <div key={a.key} className="sb-od-attach-row">
+                  <div key={a.key} className={`sb-od-attach-row${a.signed ? ' sb-od-attach-row-signed' : ''}${a.draft ? ' sb-od-attach-row-draft' : ''}`}>
                     <span className="sb-od-attach-kind">{a.kind}</span>
-                    <span className="sb-od-attach-label">{a.label}</span>
+                    <span className="sb-od-attach-label">
+                      {a.label}
+                      {a.signed && <span className="sb-od-attach-badge-signed">SIGNED</span>}
+                      {a.draft && <span className="sb-od-attach-badge-draft">DRAFT</span>}
+                    </span>
                     {a.sub && <span className="sb-od-attach-sub">{a.sub}</span>}
                     {a.href ? (
                       <button type="button" className="sb-od-link sb-od-attach-open" onClick={() => openPreview(a.label, a.href, '', false)}>Preview</button>
                     ) : (
                       <button type="button" className="sb-od-link sb-od-attach-open" onClick={a.onOpen}>Preview</button>
+                    )}
+                    {a.signed && (
+                      <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setOverrideModal({ reason: '', busy: false, error: null })}>Override</button>
                     )}
                     {a.deletable && a.path && (
                       <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setDelAttach({ path: a.path, name: a.label })}>Delete</button>
@@ -860,6 +945,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <button type="button" className="sb-od-link" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
                 {uploadBusy ? 'Uploading…' : '+ Upload attachment'}
               </button>
+              {!signedContract && (
+                <button type="button" className="sb-od-link" onClick={() => setSignModal({ file: null, busy: false, error: null })}>
+                  ✓ Mark contract signed
+                </button>
+              )}
             </div>
           </Section>
 
@@ -1213,6 +1303,51 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         </div>
       )}
 
+      {signModal && (
+        <div className="sb-od-modal-overlay" onClick={() => { if (!signModal.busy) setSignModal(null) }}>
+          <div className="sb-od-modal" role="dialog" aria-modal="true" aria-label="Mark contract signed" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Mark contract as signed</div>
+            <p className="sb-od-danger-summary" style={{ background: 'none', border: 'none', padding: 0 }}>
+              Upload the scanned signed contract, or leave it empty to designate the <strong>current generated contract</strong> as signed. The signed copy is stored privately and pins as <strong>Contract (signed)</strong>; later regenerations become drafts.
+            </p>
+            <label className="sb-od-modal-field"><span>Scanned signed copy <em className="sb-od-opt">optional — PDF/image</em></span>
+              <input type="file" accept="application/pdf,image/*" className="sb-od-note-input"
+                onChange={e => { const f = e.target.files?.[0] || null; setSignModal(m => ({ ...m, file: f })) }} />
+            </label>
+            {signModal.error && <div className="sb-msg sb-msg-err" style={{ marginBottom: 8 }}>{signModal.error}</div>}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setSignModal(null)} disabled={signModal.busy}>Cancel</button>
+              <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={handleMarkSigned} disabled={signModal.busy}>
+                {signModal.busy ? 'Saving…' : (signModal.file ? 'Upload & mark signed' : 'Mark current as signed')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {overrideModal && (
+        <div className="sb-od-modal-overlay" onClick={() => { if (!overrideModal.busy) setOverrideModal(null) }}>
+          <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Override signed contract" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Override the signed contract?</div>
+            <p className="sb-od-danger-summary">
+              This removes the pinned <strong>Contract (signed)</strong> from this order. The current draft becomes the working contract again. A reason is required and recorded in the activity log. <strong>This cannot be undone.</strong>
+            </p>
+            <label className="sb-od-modal-field"><span>Reason <em className="sb-od-opt">required</em></span>
+              <textarea className="sb-od-note-input" rows={2} value={overrideModal.reason}
+                onChange={e => setOverrideModal(m => ({ ...m, reason: e.target.value }))}
+                placeholder="e.g. customer requested a pricing change; re-signing required" />
+            </label>
+            {overrideModal.error && <div className="sb-msg sb-msg-err" style={{ marginBottom: 8 }}>{overrideModal.error}</div>}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setOverrideModal(null)} disabled={overrideModal.busy}>Cancel</button>
+              <button type="button" className="sb-od-danger-btn" onClick={handleOverrideSigned} disabled={overrideModal.busy || !overrideModal.reason.trim()}>
+                {overrideModal.busy ? 'Overriding…' : 'Override signed contract'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AttachmentPreviewModal attachment={preview} onClose={closePreview} />
     </div>
   )
@@ -1360,6 +1495,14 @@ const OD_CSS = `
   }
   .sb-od-completion-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .sb-od-attach-del { color: #b3261e; }
+  .sb-od-attach-row-signed { background: #f1f8f2; border-radius: 6px; padding-left: 6px; padding-right: 6px; }
+  .sb-od-attach-row-draft { opacity: 0.66; }
+  .sb-od-attach-badge-signed, .sb-od-attach-badge-draft {
+    display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em;
+    border-radius: 4px; padding: 1px 5px; margin-left: 7px; vertical-align: middle;
+  }
+  .sb-od-attach-badge-signed { background: #2e7d3a; color: #fff; }
+  .sb-od-attach-badge-draft { background: #e7e2d6; color: #7a756a; }
   .sb-od-act-actions { display: flex; gap: 16px; margin-bottom: 10px; }
   .sb-od-act-form { background: #faf8f3; border: 1px solid #e7e2d6; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   .sb-od-act-input { width: 100%; box-sizing: border-box; border: 1px solid #d8d2c4; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13.5px; resize: vertical; }

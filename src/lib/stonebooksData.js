@@ -542,6 +542,57 @@ export async function deleteOrderAttachment(path) {
   return { ok: true }
 }
 
+// ── Signed contract (#C) — PRIVATE bucket, signed-URL access only (5A.3) ─────
+// Signed contracts never touch the public bucket. They live in
+// orders-attachments-private under <order_id>/contract-signed.pdf. All helpers
+// degrade gracefully (return null / { ok:false }) until the 20260622 migration
+// creates the bucket.
+const PRIVATE_ATTACH_BUCKET = 'orders-attachments-private'
+const signedContractPath = (orderId) => `${orderId}/contract-signed.pdf`
+
+// Returns { path, signedAt } for the pinned signed contract, or null.
+export async function getSignedContract(orderId) {
+  if (!orderId) return null
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .list(String(orderId), { search: 'contract-signed' })
+  if (error) { console.warn('[signed-contract] list (bucket pending?):', error.message); return null }
+  const f = (data || []).find(x => x && x.name === 'contract-signed.pdf')
+  if (!f) return null
+  return { path: signedContractPath(orderId), signedAt: f.created_at || f.updated_at || null }
+}
+
+// Short-lived signed URL for preview/download (default 5 min). Never public.
+export async function signedContractFileUrl(orderId, seconds = 300) {
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .createSignedUrl(signedContractPath(orderId), seconds)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, url: data.signedUrl }
+}
+
+// Pin a contract as signed — `file` (a scanned upload) or `blob` (the generated
+// current contract). Upserts so re-marking replaces the pinned copy.
+export async function markContractSigned(orderId, { blob, file } = {}) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const body = file || blob
+  if (!body) return { ok: false, error: 'No file to mark signed' }
+  const { error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .upload(signedContractPath(orderId), body, { upsert: true, contentType: 'application/pdf' })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, path: signedContractPath(orderId) }
+}
+
+export async function removeSignedContract(orderId) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const { error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .remove([signedContractPath(orderId)])
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function listOrderAttachments(orderId) {
   if (!orderId) return []
   const dir = `attachments/${orderId}`
