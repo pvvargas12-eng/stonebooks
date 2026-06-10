@@ -587,6 +587,59 @@ export async function listCompletionPhotos(orderId) {
     })
 }
 
+// ── Order activity log (#4) — per-order timeline of changes / notes / tasks ──
+// Backed by the order_activity table (20260620_order_activity.sql). Best-effort:
+// if the table isn't migrated yet every call no-ops with a console.warn so a
+// caller's primary write (e.g. a due-date override) never fails because logging
+// is unavailable. type ∈ 'change' | 'activity' | 'task'.
+export async function logOrderActivity(orderId, entry = {}) {
+  if (!orderId) return { ok: false }
+  const row = {
+    order_id: orderId,
+    type: entry.type || 'activity',
+    field: entry.field ?? null,
+    old_value: entry.oldValue ?? null,
+    new_value: entry.newValue ?? null,
+    note: entry.note ?? null,
+    actor: entry.actor ?? null,
+    assignee: entry.assignee ?? null,
+    task_status: entry.taskStatus ?? (entry.type === 'task' ? 'open' : null),
+    due_date: entry.dueDate || null,
+  }
+  const { data, error } = await supabase.from('order_activity').insert(row).select().single()
+  if (error) { console.warn('[order_activity] log failed (migration pending?):', error.message); return { ok: false, error: error.message } }
+  return { ok: true, row: data }
+}
+
+export async function getOrderActivity(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('order_activity')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[order_activity] read failed (migration pending?):', error.message); return [] }
+  return data || []
+}
+
+// Manual free-text activity entry.
+export async function addOrderActivityNote(orderId, note, actor) {
+  return logOrderActivity(orderId, { type: 'activity', note, actor })
+}
+
+// Manual task — note + assignee + optional due date; opens as 'open'.
+export async function addOrderTask(orderId, { note, assignee, dueDate, actor } = {}) {
+  return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, taskStatus: 'open' })
+}
+
+// Toggle a task open/done.
+export async function setOrderTaskStatus(activityId, status) {
+  if (!activityId) return { ok: false }
+  const { error } = await supabase.from('order_activity').update({ task_status: status }).eq('id', activityId)
+  if (error) { console.warn('[order_activity] task status update failed:', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
 // The job spawned from an order (read-only), with its milestones — drives the
 // Order Detail "Related job" card (stage / next task / blockers). Returns the
 // earliest job for the order (orders spawn one job today; mausoleum-door orders

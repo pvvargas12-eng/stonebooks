@@ -16,6 +16,8 @@ export const TEAM_ROSTER = [
   'Collin',
   'Denise',
   'Alex',
+  'Bill',
+  'Maria',
 ]
 
 // Default selection on the "Mark as promised" picker. Cathy answers the
