@@ -7831,7 +7831,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // there is no path that can emit a custom charge twice (this is what fixed the
   // acid-wash double-charge). Dynamic import avoids the SalesMode<->orderRates
   // static circular import.
-  const { computeFormLineItems, computeTotals } = await import('./lib/orderRates')
+  const { computeFormLineItems, computeTotals, priceOrderTotals } = await import('./lib/orderRates')
   const allItems = computeFormLineItems(order)
   // ROOT FIX: a line item's `code` can be non-string (e.g. a custom item whose id
   // is numeric/missing). Optional chaining does NOT guard a non-string, so any
@@ -7940,18 +7940,9 @@ export async function generateEstimatePDF(order, opts = {}) {
   const { applySpecToOrder } = await import('./lib/quoteSpec')
   const additionalQuotes = (!isContract && Array.isArray(order.quotes) && order.quotes.length)
     ? order.quotes : []
-  const allInTotalFor = (o) => {
-    const items = computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') }))
-    const t = computeTotals(items, {
-      applyTax: o.pricing?.applyTax !== false,
-      applyCCSurcharge: !!o.pricing?.applyCCSurcharge,
-      discountType: o.pricing?.discountType,
-      discountValue: o.pricing?.discountValue,
-      discountPct: Number(o.pricing?.discountPct) || 0,
-    })
-    const mt = (o.pricing?.manualTotal != null && o.pricing?.manualTotal !== '') ? Number(o.pricing.manualTotal) : null
-    return mt != null ? mt : t.grandTotal
-  }
+  // Per-quote all-in total — the SAME unified pipeline as the wizard + quotes
+  // ($ discounts, per-line flags, manualTotal all honored, plus pricing.overrides).
+  const allInTotalFor = (o) => priceOrderTotals(o).displayed
 
   if (additionalQuotes.length === 0) {
     for (const it of pricedItems) renderLineRow(it.label || '(item)', it.amount, it.code)
@@ -7983,7 +7974,8 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...NAVY)
       doc.text(String(label).toUpperCase(), descX, y); y += 4.5
       doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...TEXT)
-      const items = computeFormLineItems(o).filter(it => !it.quotePending && it.amount != null)
+      // Items via priceOrderTotals so per-line overrides (pricing.overrides) show.
+      const items = priceOrderTotals(o).items.filter(it => !it.quotePending && it.amount != null)
       for (const it of items) renderLineRow(it.label || '(item)', it.amount, String(it.code ?? ''))
       y += 1
       doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(...TEXT)
@@ -9289,6 +9281,12 @@ function DueDateControl({ order, update, isLocked }) {
 export function PricingStep({ order, update }) {
   const lineItems = useMemo(() => buildLineItems(order), [order])
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
+  // Unified totals (#8) — computed via priceOrderTotals (the SAME pipeline the
+  // estimate/contract PDF + quotes use: $-or-% discounts, per-line taxable/
+  // discountable flags, and manualTotal all honored). Loaded async because
+  // orderRates can't be statically imported here (cycle). Falls back to the
+  // legacy inline ladder for the first render tick only.
+  const [uTotals, setUTotals] = useState(null)
 
   // Gate all mutations through this — edits are silent no-ops when locked.
   // Visual feedback comes from the banner + CSS dimming.
@@ -9345,6 +9343,7 @@ export function PricingStep({ order, update }) {
     import('./lib/orderRates').then(({ priceOrderTotals }) => {
       if (!alive) return
       const r = priceOrderTotals(order)
+      setUTotals(r)
       const t = r.totals
       const pr = order.pricing || {}
       console.log('[QUOTE-CALC] ' + JSON.stringify({
@@ -9366,6 +9365,23 @@ export function PricingStep({ order, update }) {
     }).catch(() => {})
     return () => { alive = false }
   }, [order, total])
+
+  // Displayed totals — prefer the unified priceOrderTotals result; fall back to
+  // the legacy inline ladder only until the async import resolves (first tick).
+  const view = uTotals
+    ? {
+        subtotal: (uTotals.totals.subtotalDisc || 0) + (uTotals.totals.subtotalPermit || 0),
+        discountAmount: uTotals.totals.discountAmt || 0,
+        subtotalAfterDiscount: (uTotals.totals.subtotalDisc || 0) - (uTotals.totals.discountAmt || 0) + (uTotals.totals.subtotalPermit || 0),
+        taxAmount: uTotals.totals.tax || 0,
+        ccAmount: uTotals.totals.cc || 0,
+        total: uTotals.displayed,
+        isManual: uTotals.manual != null,
+      }
+    : {
+        subtotal, discountAmount, subtotalAfterDiscount: subtotalAfterDiscount + subtotalPermit,
+        taxAmount, ccAmount, total, isManual: false,
+      }
 
   // Custom line items
   const addCustomLineItem = () => {
@@ -9651,35 +9667,35 @@ export function PricingStep({ order, update }) {
         <div className="sm-totals">
           <div className="sm-totals-row">
             <span>Subtotal</span>
-            <span>${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            <span>${view.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           </div>
-          {discountPct > 0 && (
+          {view.discountAmount > 0 && (
             <>
               <div className="sm-totals-row sm-totals-row-discount">
-                <span>Discount ({discountPct}%{subtotalPermit > 0 ? ' — permit excluded' : ''})</span>
-                <span>−${discountAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span>Discount{order.pricing.discountType === 'amount' ? '' : ` (${discountPct}%)`}</span>
+                <span>−${view.discountAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
               </div>
               <div className="sm-totals-row">
                 <span>Subtotal after discount</span>
-                <span>${(subtotalAfterDiscount + subtotalPermit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span>${view.subtotalAfterDiscount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
               </div>
             </>
           )}
           {order.pricing.applyTax && (
             <div className="sm-totals-row">
               <span>NJ Sales Tax (6.625%)</span>
-              <span>${taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              <span>${view.taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           )}
           {order.pricing.applyCCSurcharge && (
             <div className="sm-totals-row">
               <span>CC Surcharge (3%)</span>
-              <span>${ccAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              <span>${view.ccAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           )}
           <div className="sm-totals-row sm-totals-row-grand">
-            <span>Total</span>
-            <span>${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            <span>Total{view.isManual ? ' (manual override)' : ''}</span>
+            <span>${view.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           </div>
         </div>
 
@@ -9691,7 +9707,7 @@ export function PricingStep({ order, update }) {
               <span className="sm-deposit-card-sub">50% deposit at signing</span>
             </div>
             <div className="sm-deposit-card-amt">
-              ${(total * 0.5).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              ${(view.total * 0.5).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
           </div>
           <div className="sm-deposit-card-row">
@@ -9700,7 +9716,7 @@ export function PricingStep({ order, update }) {
               <span className="sm-deposit-card-sub">Remaining 50% — at delivery / installation</span>
             </div>
             <div className="sm-deposit-card-amt sm-deposit-card-amt-bal">
-              ${(total * 0.5).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              ${(view.total * 0.5).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
           </div>
         </div>

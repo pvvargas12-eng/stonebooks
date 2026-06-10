@@ -25,7 +25,7 @@
 
 import { useState, useRef } from 'react'
 import { MonumentCard, AddOnsCard, LineItemsBox, ADDON_KINDS, OF_CSS } from '../OrderForm'
-import { computeFormLineItems, computeTotals } from '../lib/orderRates'
+import { computeFormLineItems, priceOrderTotals } from '../lib/orderRates'
 import { extractSpecFromOrder, applySpecToOrder } from '../lib/quoteSpec'
 
 const money = (n) =>
@@ -33,20 +33,12 @@ const money = (n) =>
 const newId = () =>
   (globalThis.crypto?.randomUUID?.() || `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`)
 
-// Price any (synthesized) order via the live engine — the SAME path the estimate
-// PDF uses, so a quote's shown total can never disagree with its PDF.
+// Price any (synthesized) order via priceOrderTotals — the SAME unified pipeline
+// the wizard + estimate/contract PDF use ($ discounts, per-line taxable/
+// discountable flags, pricing.overrides, and manualTotal all honored), so a
+// quote's shown total can never disagree with its PDF.
 function priceOrder(o) {
-  const items = computeFormLineItems(o)
-  const pr = o.pricing || {}
-  const totals = computeTotals(items, {
-    applyTax: pr.applyTax !== false,
-    applyCCSurcharge: !!pr.applyCCSurcharge,
-    discountType: pr.discountType,
-    discountValue: pr.discountValue,
-    discountPct: Number(pr.discountPct) || 0,
-  })
-  const manual = (pr.manualTotal != null && pr.manualTotal !== '') ? Number(pr.manualTotal) : null
-  return manual != null ? manual : totals.grandTotal
+  return priceOrderTotals(o).displayed
 }
 
 // Manual grand-total override on an order, or null. When set, it wins over the
