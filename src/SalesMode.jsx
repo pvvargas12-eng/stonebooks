@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -9227,6 +9227,65 @@ export function buildLineItems(order) {
 // SHAPES before this module finishes defining it). Loads at render — after init.
 const QuotesManager = lazy(() => import('./components/QuotesManager'))
 
+// #6 — Due-date control rendered directly before the line-item pricing section.
+// Defaults to the auto-computed target completion date; a manual override writes
+// order.targetCompletionDate AND logs to the order activity log
+// ("Due date overridden: <old> → <new>"). The auto value is computed in an effect
+// (NOT in render) because calculateDueDateRaw calls new Date() — bare new Date()
+// during render is a React 19 purity ERROR that fails the Vercel build.
+function DueDateControl({ order, update, isLocked }) {
+  const [auto, setAuto] = useState({ isoDate: null, isTBD: false })
+  useEffect(() => {
+    setAuto(calculateDueDateRaw(order))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(order.serviceTypes), order.graniteColor, order.signedAt])
+
+  const current = order.targetCompletionDate || ''
+  const fmt = (iso) => {
+    if (!iso) return '(none)'
+    const d = new Date(iso + 'T00:00:00')
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  }
+  const applyDate = (newVal) => {
+    if (isLocked) return
+    const oldVal = order.targetCompletionDate || (auto.isTBD ? '' : auto.isoDate || '')
+    update({ targetCompletionDate: newVal })
+    if (order.id && newVal !== oldVal) {
+      logOrderActivity(order.id, {
+        type: 'change',
+        field: 'Due date',
+        oldValue: fmt(oldVal),
+        newValue: fmt(newVal),
+        note: `Due date overridden: ${fmt(oldVal)} → ${fmt(newVal)}`,
+        actor: order.salesRep || 'Staff',
+      }).catch(() => {})
+    }
+  }
+
+  return (
+    <Section title="Estimated due date" eyebrow="Defaults to the auto-calculated date — override if needed">
+      <div className="sm-duedate-row">
+        <input
+          type="date"
+          className="sm-duedate-input"
+          value={current || (auto.isTBD ? '' : auto.isoDate || '')}
+          disabled={isLocked}
+          onChange={(e) => applyDate(e.target.value)}
+        />
+        {!isLocked && !auto.isTBD && (
+          <button type="button" className="sm-pricing-reset" title="Reset to auto-calculated date"
+            onClick={() => applyDate(auto.isoDate || '')}>↺ Auto</button>
+        )}
+        <span className="sm-duedate-note">
+          {current
+            ? (auto.isoDate && current !== auto.isoDate ? `Manual override · auto would be ${fmt(auto.isoDate)}` : 'Set')
+            : (auto.isTBD ? 'No standard timeline — set manually' : `Auto: ${fmt(auto.isoDate)}`)}
+        </span>
+      </div>
+    </Section>
+  )
+}
+
 export function PricingStep({ order, update }) {
   const lineItems = useMemo(() => buildLineItems(order), [order])
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
@@ -9416,6 +9475,9 @@ export function PricingStep({ order, update }) {
           To make changes, this order would need to be re-opened by an admin.
         </div>
       )}
+
+      {/* Due date — directly before the line-item pricing section (#6) */}
+      <DueDateControl order={order} update={update} isLocked={isLocked} />
 
       {/* Line items table */}
       <Section title="Line items" eyebrow="Override any amount that needs adjusting">
@@ -16395,6 +16457,12 @@ input[type="date"].sm-textinput {
   border-radius: 6px; padding: 4px 10px; cursor: pointer; font-weight: 600; white-space: nowrap;
 }
 .sm-manual-total-clear:hover { background: #b3261e; color: #fff; }
+.sm-duedate-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sm-duedate-input {
+  border: 1px solid #d8d2c4; border-radius: 6px; padding: 6px 10px; font-size: 14px;
+  font-family: inherit; color: var(--sm-ink, #1a1a1a); background: #fff;
+}
+.sm-duedate-note { font-size: 12px; color: #8a8472; }
 .sm-toast-cemetery {
   background: linear-gradient(135deg, #2d6a4f 0%, #3a8866 100%);
 }
