@@ -1220,6 +1220,18 @@ const COLOR_FAMILY_LABELS = {
   mahogany: 'Mahogany', green: 'Green', multi: 'Multi / Other',
 }
 
+// Granite origin (#5) — country-of-origin (China/India/etc.) is never shown.
+// Barre Grey and Mountain Rose are Shevchenko's two domestic granites; every
+// other stone is Imported. This is the SINGLE source of truth for both the
+// Domestic/Imported display label AND the due-date supplier-confidence buffer
+// (calculateDueDateRaw treats Domestic as the fast 5-month lead time). Accepts a
+// color object or a color code string.
+const DOMESTIC_GRANITE_CODES = new Set(['medium-barre-grey', 'mountain-rose'])
+function getGraniteOrigin(color) {
+  const code = typeof color === 'string' ? color : color?.code
+  return DOMESTIC_GRANITE_CODES.has(code) ? 'Domestic' : 'Imported'
+}
+
 // CSS hex hint per color family — used to tint the live preview when no design
 // is selected. Approximate; not a substitute for the actual photo swatch.
 const COLOR_FAMILY_HEX = {
@@ -3746,7 +3758,7 @@ export function ColorStep({ order, update }) {
                   <div className="sm-color-info">
                     <div className="sm-color-name">{c.label}</div>
                     <div className="sm-color-meta">
-                      <span>{c.origin}</span>
+                      <span>{getGraniteOrigin(c)}</span>
                       {c.premium > 0 && <span className="sm-color-premium">+{Math.round(c.premium * 100)}%</span>}
                     </div>
                   </div>
@@ -7188,7 +7200,9 @@ function calculateDueDateRaw(order, anchorDate) {
       // Barre Grey and Mountain Rose are Shevchenko's most reliable supply chains.
       // All other stones get the conservative 6-month buffer. Rule is a risk-buffer
       // based on supplier confidence, not granite family or geography. Updated 2026-05-14.
-      const fast = order.graniteColor === 'medium-barre-grey' || order.graniteColor === 'mountain-rose'
+      // Domestic == fast; reads the shared getGraniteOrigin helper so display +
+      // due-date math can never disagree on which stones are domestic.
+      const fast = getGraniteOrigin(order.graniteColor) === 'Domestic'
       return { unit: 'months', value: fast ? 5 : 6 }
     }
     if (svc === 'BRONZE')      return { unit: 'months', value: 4 }
@@ -7740,7 +7754,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       ensure(40)
       sectionHeader('Stone specifications')
       kvRow('Shape', shapeLine)
-      if (color) kvRow('Granite color', `${color.label} (${color.origin})`)
+      if (color) kvRow('Granite color', `${color.label} (${getGraniteOrigin(color)})`)
       if (top) kvRow('Top shape', top.label)
       if (polish) kvRow('Polish level', polish.label)
       if (sides) kvRow('Sides', sides.label)
@@ -10861,7 +10875,7 @@ function ContinueLater({ order, update, onDepositLogged }) {
               <div>
                 <div className="sm-summary-lab">Granite</div>
                 <div className="sm-summary-val">
-                  {color ? `${color.label} (${color.origin})` : '—'}
+                  {color ? `${color.label} (${getGraniteOrigin(color)})` : '—'}
                 </div>
               </div>
             </>
