@@ -9347,8 +9347,7 @@ export function PricingStep({ order, update }) {
       const r = priceOrderTotals(order)
       const t = r.totals
       const pr = order.pricing || {}
-      // eslint-disable-next-line no-console
-      console.log('[QUOTE-CALC]', {
+      console.log('[QUOTE-CALC] ' + JSON.stringify({
         orderId: order.id || '(unsaved)',
         quote: order.quoteTitle || 'Quote 1',
         legacy_wizard_total: Math.round(total * 100) / 100,
@@ -9363,7 +9362,7 @@ export function PricingStep({ order, update }) {
         cc_surcharge: t.cc,
         manual_total_override: r.manual,
         computed_grand_total: t.grandTotal,
-      })
+      }))
     }).catch(() => {})
     return () => { alive = false }
   }, [order, total])
