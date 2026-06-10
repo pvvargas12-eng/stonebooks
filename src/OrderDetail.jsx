@@ -54,11 +54,6 @@ const PAY_TYPES = [
 ]
 const permitStatusLabel = (s) => (PERMIT_STATUSES.find(x => x.code === (s || 'unknown'))?.label || s)
 const permitTone = (s) => ({ approved: 'green', submitted: 'blue', required: 'amber', not_required: 'green', unknown: 'bronze' }[s || 'unknown'] || 'bronze')
-const odFeeRange = (lo, hi) => {
-  if (lo == null && hi == null) return null
-  if (lo != null && hi != null) return `$${Number(lo).toLocaleString()}–$${Number(hi).toLocaleString()}`
-  return `$${Number(lo != null ? lo : hi).toLocaleString()}`
-}
 
 const stageTone = (status) => {
   switch (status) {
@@ -180,6 +175,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [delAttachBusy, setDelAttachBusy] = useState(false)
   // Pipeline rail task-remove confirm (× with confirm)
   const [delTask, setDelTask] = useState(null)   // order_activity task row | null
+  const [permitTaskText, setPermitTaskText] = useState('')
   // Signed contract (#C)
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
   const [signModal, setSignModal] = useState(null)             // { file, busy, error } | null
@@ -294,6 +290,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
 
   const pipelineTasks = activity.filter(a => a.type === 'task')
+  const permitTasks = activity.filter(a => a.type === 'task' && a.field === 'permit')
+  const addPermitTask = async () => {
+    const text = permitTaskText.trim()
+    if (!text) return
+    const actor = await getCurrentStaffName()
+    await logOrderActivity(orderId, { type: 'task', field: 'permit', note: text, taskStatus: 'open', actor })
+    setPermitTaskText('')
+    refreshActivity()
+  }
 
   // ── Activity log (#4) handlers ──────────────────────────────────────────────
   const handleAddActivity = async () => {
@@ -589,7 +594,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
   const pressure = computeOrderPressure(order, job, job?.milestones)
   // Permit derived values
-  const permitFeeRange = odFeeRange(order.permit_fee_low ?? order.cemetery?.permit_fee_low, order.permit_fee_high ?? order.cemetery?.permit_fee_high)
   const readyBlocked = (job?.milestones || []).some(m => m.milestone_key === 'ready_to_install' && m.status === 'done')
     && order.permit_status !== 'approved' && order.permit_status !== 'not_required'
   const total = rowGrandTotal(order)
@@ -889,6 +893,40 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <Field label="Proof / approval" value={proofLabel} hint={job ? null : 'no production job yet'} />
           </Section>
 
+          {/* 3b — Design / proof quick-view (item B) */}
+          <Section id="od-design" title="Design / proof">
+            <Field label="Shape" value={humanize(order.shape)} />
+            <Field label="Stone color" value={humanize(order.granite_color)} />
+            <Field label="Die size" value={dims} />
+            <Field label="Inscription" value={[insc.epitaph, insc.customNotes].filter(Boolean).join(' · ')} />
+            {(() => {
+              const proof = proofVers.find(p => p.is_current) || proofVers[0]
+              if (!proof) {
+                return (
+                  <div className="sb-od-empty-inline">
+                    No proof yet — <button type="button" className="sb-od-link" onClick={() => handleOpenPhase('design')}>open the Design hub →</button>
+                  </div>
+                )
+              }
+              const viewProof = () => proof.layout_image_url && openPreview(`Layout v${proof.version_number}`, proof.layout_image_url, '', false)
+              const statusText = proof.approved_at ? `Approved ${fmtDate(proof.approved_at)}` : (proof.sent_at ? 'Awaiting customer approval' : 'Draft')
+              return (
+                <div className="sb-od-design-proof">
+                  <button type="button" className="sb-od-design-thumb" onClick={viewProof} title="View proof">
+                    {proof.layout_image_url
+                      ? <img src={proof.layout_image_url} alt={`Layout v${proof.version_number}`} loading="lazy" />
+                      : <span className="sb-od-design-noimg">No image</span>}
+                  </button>
+                  <div className="sb-od-design-meta">
+                    <div><strong>Proof v{proof.version_number}</strong>{proof.is_current ? ' · current' : ''}</div>
+                    <div>{statusText}</div>
+                    {proof.layout_image_url && <button type="button" className="sb-od-link" onClick={viewProof}>View proof</button>}
+                  </div>
+                </div>
+              )
+            })()}
+          </Section>
+
           {/* 4 — Financial */}
           <Section id="od-financial" title="Financial">
             <Field label="Contract total" value={total > 0 ? fmtUSD(total) : null} />
@@ -935,7 +973,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             ) : (
               <>
                 <Field label="Cemetery requires permit" value={cem.permit_required == null ? null : (cem.permit_required ? 'Yes' : 'No')} hint={cem.permit_required == null ? (cem.id ? null : 'cemetery not linked') : null} />
-                <Field label="Expected fee" value={permitFeeRange} />
                 <Field label="Permit status" value={<Pill severity={permitTone(order.permit_status)}>{permitStatusLabel(order.permit_status)}</Pill>} />
                 {readyBlocked && <Field label="⚠ Blocking install" value="Stone is ready to set but the permit isn't approved." />}
                 <Field label="Filed / Approved" value={[order.permit_filed_at && `filed ${fmtDate(order.permit_filed_at)}`, order.permit_approved_at && `approved ${fmtDate(order.permit_approved_at)}`].filter(Boolean).join(' · ') || null} />
@@ -944,6 +981,25 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 <Field label="Document requirements" value={cem.permit_document_requirements} />
                 <Field label="Cemetery instructions" value={cem.permit_instructions} />
                 <Field label="Permit contact" value={[cem.permit_contact_name, cem.permit_contact_phone, cem.permit_contact_email].filter(Boolean).join(' · ') || null} />
+
+                {/* Permit tasks — order_activity (type 'task', field 'permit'). */}
+                <div className="sb-od-permit-tasks">
+                  <div className="sb-od-field-label">Permit tasks</div>
+                  {permitTasks.length === 0 && <div className="sb-od-empty-inline">No permit tasks yet.</div>}
+                  {permitTasks.map(t => (
+                    <div key={t.id} className="sb-od-permit-task">
+                      <button type="button" className="sb-od-permit-task-toggle" onClick={() => toggleTask(t)} title="Toggle done">{t.task_status === 'done' ? '✓' : '○'}</button>
+                      <span className={t.task_status === 'done' ? 'sb-od-permit-task-done' : ''}>{t.note}{t.assignee ? ` · ${t.assignee}` : ''}</span>
+                      <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setDelTask(t)}>×</button>
+                    </div>
+                  ))}
+                  <div className="sb-od-permit-add">
+                    <input className="sb-od-note-input" type="text" value={permitTaskText} placeholder="Add a permit task…"
+                      onChange={e => setPermitTaskText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addPermitTask() }} />
+                    <button type="button" className="sb-od-btn" disabled={!permitTaskText.trim()} onClick={addPermitTask}>Add</button>
+                  </div>
+                </div>
+
                 <div className="sb-od-inline-actions">
                   <button type="button" className="sb-od-link" onClick={openPermitEdit}>Update permit status</button>
                 </div>
@@ -1597,6 +1653,18 @@ const OD_CSS = `
   }
   .sb-od-attach-badge-signed { background: #2e7d3a; color: #fff; }
   .sb-od-attach-badge-draft { background: #e7e2d6; color: #7a756a; }
+  .sb-od-permit-tasks { margin-top: 6px; }
+  .sb-od-permit-task { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+  .sb-od-permit-task span { flex: 1 1 auto; word-break: break-word; }
+  .sb-od-permit-task-toggle { border: none; background: none; cursor: pointer; font-size: 14px; color: #2d7a4f; flex: 0 0 auto; }
+  .sb-od-permit-task-done { text-decoration: line-through; color: #9a958c; }
+  .sb-od-permit-add { display: flex; gap: 6px; margin-top: 6px; }
+  .sb-od-permit-add .sb-od-note-input { flex: 1 1 auto; }
+  .sb-od-design-proof { display: flex; gap: 12px; align-items: flex-start; margin-top: 8px; }
+  .sb-od-design-thumb { flex: 0 0 96px; width: 96px; height: 96px; border: 1px solid #e6e3dd; border-radius: 8px; overflow: hidden; background: #f4f2ee; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .sb-od-design-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .sb-od-design-noimg { font-size: 11px; color: #9a958c; }
+  .sb-od-design-meta { flex: 1 1 auto; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
   .sb-od-act-actions { display: flex; gap: 16px; margin-bottom: 10px; }
   .sb-od-act-form { background: #faf8f3; border: 1px solid #e7e2d6; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   .sb-od-act-input { width: 100%; box-sizing: border-box; border: 1px solid #d8d2c4; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13.5px; resize: vertical; }
