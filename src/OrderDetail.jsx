@@ -20,7 +20,7 @@ import {
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
-  uploadOrderAttachment, listOrderAttachments, listCompletionPhotos, recordOrderPayment,
+  uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   getProofVersions, getProofSignatureSignedUrl,
   getMessageThread, sendShopEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
@@ -172,6 +172,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [approvalSheet, setApprovalSheet] = useState(null)  // { url, doc, filename, version } | null
   // In-app attachment preview (#3) — { url, name, mime, isBlob } | null
   const [preview, setPreview] = useState(null)
+  // Attachment delete confirm (#A) — { path, name } | null
+  const [delAttach, setDelAttach] = useState(null)
+  const [delAttachBusy, setDelAttachBusy] = useState(false)
   // Permit editor
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
@@ -248,6 +251,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
   const toggleTask = async (a) => {
     await setOrderTaskStatus(a.id, a.task_status === 'done' ? 'open' : 'done')
+    refreshActivity()
+  }
+
+  // ── Attachment delete (#A) ──────────────────────────────────────────────────
+  const confirmDeleteAttachment = async () => {
+    if (!delAttach || delAttachBusy) return
+    setDelAttachBusy(true)
+    const res = await deleteOrderAttachment(delAttach.path)
+    setDelAttachBusy(false)
+    if (!res.ok) { setActionNote(`Could not delete attachment — ${res.error}.`); return }
+    const name = delAttach.name
+    setDelAttach(null)
+    await refreshUploads()
+    await logOrderActivity(orderId, { type: 'activity', note: `Attachment deleted: ${name}`, actor: await getCurrentStaffName() })
     refreshActivity()
   }
 
@@ -569,6 +586,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     ...uploads.map((u, i) => ({
       key: `up-${i}`, kind: 'Upload', label: u.name,
       sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
+      path: u.path, deletable: true,
     })),
   ]
 
@@ -830,6 +848,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                       <button type="button" className="sb-od-link sb-od-attach-open" onClick={() => openPreview(a.label, a.href, '', false)}>Preview</button>
                     ) : (
                       <button type="button" className="sb-od-link sb-od-attach-open" onClick={a.onOpen}>Preview</button>
+                    )}
+                    {a.deletable && a.path && (
+                      <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setDelAttach({ path: a.path, name: a.label })}>Delete</button>
                     )}
                   </div>
                 ))}
@@ -1177,6 +1198,21 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         </div>
       )}
 
+      {delAttach && (
+        <div className="sb-od-modal-overlay" onClick={() => { if (!delAttachBusy) setDelAttach(null) }}>
+          <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Confirm delete attachment" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Delete this attachment?</div>
+            <p className="sb-od-danger-summary"><strong>{delAttach.name}</strong> will be permanently removed from this order. This cannot be undone.</p>
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setDelAttach(null)} disabled={delAttachBusy}>Cancel</button>
+              <button type="button" className="sb-od-danger-btn" onClick={confirmDeleteAttachment} disabled={delAttachBusy}>
+                {delAttachBusy ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AttachmentPreviewModal attachment={preview} onClose={closePreview} />
     </div>
   )
@@ -1323,6 +1359,7 @@ const OD_CSS = `
     border: 0.5px solid #e6e3dd; background: #f4f2ee; padding: 0; cursor: pointer; width: 100%;
   }
   .sb-od-completion-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .sb-od-attach-del { color: #b3261e; }
   .sb-od-act-actions { display: flex; gap: 16px; margin-bottom: 10px; }
   .sb-od-act-form { background: #faf8f3; border: 1px solid #e7e2d6; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   .sb-od-act-input { width: 100%; box-sizing: border-box; border: 1px solid #d8d2c4; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13.5px; resize: vertical; }

@@ -533,6 +533,15 @@ export async function uploadOrderAttachment(orderId, file) {
   return { ok: true, url: data.publicUrl, path, name: safe }
 }
 
+// Delete an order attachment object from the public bucket (manual delete, #A).
+// Storage IS the record here, so removing the object removes the attachment.
+export async function deleteOrderAttachment(path) {
+  if (!path) return { ok: false, error: 'Missing path' }
+  const { error } = await supabase.storage.from('orders-attachments-public').remove([path])
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function listOrderAttachments(orderId) {
   if (!orderId) return []
   const dir = `attachments/${orderId}`
