@@ -1705,13 +1705,24 @@ export async function saveOrder(order) {
   const isMissingFoundation = (e) => e && /foundation_type/i.test(e.message || '')
   const isMissingQuotes = (e) => e && /\bquotes\b/i.test(e.message || '')
   const isMissingQuoteTitle = (e) => e && /quote_title/i.test(e.message || '')
+  // Track when the deploy-safety strip actually fires. Stripping `quotes` is
+  // silent DATA LOSS for additional quotes (Quote 1 lives in primary columns and
+  // survives; Quotes 2+ live ONLY in this column). Surface it to the caller so the
+  // UI can warn instead of losing the operator's work without a trace — the
+  // missing-column case means the 20260618/20260619 migrations aren't applied yet.
+  const dropped = { quotes: false }
+  const hadAdditionalQuotes = Array.isArray(order.quotes) && order.quotes.length > 0
   const writeOrder = async (op) => {
     let row = order.id ? orderRow : { ...orderRow, order_number: order.orderNumber || (await generateOrderNumber()) }
     for (let attempt = 0; attempt < 3; attempt++) {
       const res = await op(row)
       if (!res.error) return res
       if (isMissingFoundation(res.error)) { const r = { ...row }; delete r.foundation_type; row = r; continue }
-      if (isMissingQuotes(res.error)) { const r = { ...row }; delete r.quotes; row = r; continue }
+      if (isMissingQuotes(res.error)) {
+        console.warn('[saveOrder] orders.quotes column missing — stripping quotes from the write. Additional quotes will NOT persist until migration 20260618_order_quotes.sql is applied in Supabase Studio.')
+        dropped.quotes = true
+        const r = { ...row }; delete r.quotes; row = r; continue
+      }
       if (isMissingQuoteTitle(res.error)) { const r = { ...row }; delete r.quote_title; row = r; continue }
       return res
     }
@@ -1722,14 +1733,14 @@ export async function saveOrder(order) {
     const { data, error } = await writeOrder((row) => supabase.from('orders').update(row).eq('id', order.id).select().single())
     if (error) { console.error('updateOrder error:', error); return { ok: false, error } }
     await _ensureOrderCustomerLink(data, customerId)
-    return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
+    return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes }
   }
 
   // New order: writeOrder() generates the order number into the row.
   const { data, error } = await writeOrder((row) => supabase.from('orders').insert(row).select().single())
   if (error) { console.error('insertOrder error:', error); return { ok: false, error } }
   await _ensureOrderCustomerLink(data, customerId)
-  return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId }
+  return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes }
 }
 
 // Defensive: if the order somehow landed with a NULL customer_id but we have a
@@ -10399,6 +10410,12 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
       if (wasNewCustomer && result.customerId) {
         showToast(`✓ ${o.customer.lastName?.toUpperCase() || ''}, ${o.customer.firstName} saved to customer list`, 'customer')
       }
+      // Loud warning instead of silent data loss: the additional-quotes column is
+      // missing in the DB, so Quotes 2+ were not saved. (Fix: apply migration
+      // 20260618_order_quotes.sql in Supabase Studio.)
+      if (result.quotesDropped) {
+        showToast('⚠ Additional quotes could NOT be saved — a database update is pending. Tell your admin before relying on these quotes.', 'error')
+      }
 
       markSaved()
     } else {
@@ -16280,6 +16297,7 @@ input[type="date"].sm-textinput {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sm-toast-info     { background: var(--sm-navy); }
+.sm-toast-error    { background: #b3261e; }
 .sm-toast-cemetery {
   background: linear-gradient(135deg, #2d6a4f 0%, #3a8866 100%);
 }
