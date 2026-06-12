@@ -8369,10 +8369,21 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const LIGHT_RULE = [220, 220, 220]
   let y = M
 
-  // Display rule — overrides win over the frozen snapshot.
+  // Display rule — overrides win over the frozen snapshot, which falls back to
+  // LIVE order/job data (Phase 1 fix). Resolution: override → snapshot → live.
+  // The frozen snapshot is empty/sparse on real orders (proofs created before the
+  // snapshot logic, or never populated), which is why the packet rendered nearly
+  // empty. Live fallback fixes it at the source without touching money math.
   const snap = proofVersion?.metadata_snapshot || {}
   const over = proofVersion?.metadata_overrides || {}
   const meta = (k) => (over[k] != null ? over[k] : snap[k])
+  const liveOrder = opts.order || null
+  const liveColor = liveOrder ? (GRANITE_COLORS.find(g => g.code === liveOrder.granite_color)?.label || liveOrder.granite_color || null) : null
+  const liveCemetery = liveOrder?.cemetery?.name || liveOrder?.cemetery_name || null
+  const liveFamily = liveOrder ? (liveOrder.primary_lastname || liveOrder.customer?.last_name || null) : null
+  const familyName = meta('family_name') || liveFamily || meta('order_number') || liveOrder?.order_number || null
+  const colorLabel = meta('stone_color_label') || meta('stone_color') || liveColor || null
+  const cemeteryName = meta('cemetery_name') || liveCemetery || null
 
   // YYYY-MM-DD(...T...) → M/D/YY (no new Date(); avoids TZ drift on the slice).
   const fmtMDY = (iso) => {
@@ -8391,7 +8402,7 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   doc.text('LAYOUT APPROVAL', W - M, y + 5, { align: 'right' })
   // Family name (F/N) top-right — falls back to the order # so it's never blank.
   doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...TEXT)
-  doc.text(`F/N: ${meta('family_name') || meta('order_number') || '—'}`, W - M, y + 10, { align: 'right' })
+  doc.text(`F/N: ${familyName || '—'}`, W - M, y + 10, { align: 'right' })
   y += 13
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.4); doc.line(M, y, W - M, y)
   y += 6
@@ -8411,7 +8422,7 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   // the canvas re-encoder via an <img> element (reuses the browser image cache
   // the version-list thumbnails already warmed, and avoids a cold fetch()
   // CORS race); fall back to fetch()→dataURL only if the direct load is blocked.
-  const heroUrl = proofVersion?.layout_image_url || null
+  const heroUrl = proofVersion?.layout_image_url || opts.fallbackImageUrl || null
   let heroData = heroUrl
     ? await reencodeImageViaCanvas(heroUrl, { mime: 'image/jpeg', quality: 0.92, label: heroUrl })
     : null
@@ -8429,17 +8440,17 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const rightX = M + colW + 2
   const labelW = 26
   const leftRows = [
-    ['ORDER', String(meta('family_name') || '').toUpperCase() || '—'],
+    ['ORDER', String(familyName || '').toUpperCase() || '—'],
     ['VERSION', proofVersion?.version_number != null ? String(proofVersion.version_number) : '—'],
-    ['DESIGN DATE', fmtMDY(meta('snapshot_at') || proofVersion?.uploaded_at)],
+    ['DESIGN DATE', fmtMDY(meta('snapshot_at') || proofVersion?.uploaded_at || liveOrder?.updated_at)],
     ['BALANCE', money(opts.balance)],
   ]
   // DIE/BASE formatted at RENDER time (opts.die / opts.base), snapshot fallback.
   const rightRows = [
     ['DIE', opts.die || meta('die_size') || '—'],
     ['BASE', opts.base || meta('base_size') || '—'],
-    ['STONE COLOR', String(meta('stone_color_label') || meta('stone_color') || '').toUpperCase() || '—'],
-    ['CEMETERY', meta('cemetery_name') || '—'],
+    ['STONE COLOR', String(colorLabel || '').toUpperCase() || '—'],
+    ['CEMETERY', cemeteryName || '—'],
   ]
   doc.setFontSize(9)
   const specRowLines = []

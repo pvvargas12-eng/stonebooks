@@ -692,7 +692,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!v) { setActionNote(job ? 'No proof yet — add a layout in the Design Hub for this job.' : 'No production job yet, so there is no proof to approve.'); return }
     try {
       const signatureImageUrl = (v.approved_at && v.signature_url) ? await getProofSignatureSignedUrl(v.signature_url) : null
-      const { doc, filename } = await generateApprovalSheetPDF(v, { balance: rowBalanceDue(order), signatureImageUrl, returnDoc: true })
+      // Phase 1 — pass the LIVE order (so empty snapshot fields fall back to live
+      // data) + a layout-image fallback (most recent proof image, else an uploaded
+      // image) when the current proof's image is missing/broken.
+      const fallbackImageUrl = proofVers.find(p => p.layout_image_url)?.layout_image_url
+        || uploads.find(u => /\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(u.url || u.name || ''))?.url
+        || null
+      const { doc, filename } = await generateApprovalSheetPDF(v, { order, balance: rowBalanceDue(order), signatureImageUrl, fallbackImageUrl, returnDoc: true })
       const url = URL.createObjectURL(doc.output('blob'))
       setApprovalSheet({ url, doc, filename, version: v })
     } catch (e) {
