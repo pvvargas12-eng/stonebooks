@@ -45,6 +45,7 @@ const ORDERS_BOARD_SELECT =
 const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`
 const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with CustomersTab
 import OrderDetail from './OrderDetail.jsx'
+import LeadsView from './components/LeadsView.jsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 50
@@ -186,6 +187,7 @@ function furthestStage(job) {
 // ── Component ────────────────────────────────────────────────────────────────
 export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, onOpenHub, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
+  const [view, setView] = useState('orders')   // 'orders' | 'leads' — additive Leads pipeline
   // Seed from the cross-mount cache so re-opening Orders renders instantly
   // (default archiveView is 'active'). loading starts false only when both
   // datasets are already cached.
@@ -662,10 +664,35 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const canArchive = archiveView !== 'archived'
   const canRestore = archiveView !== 'active'
 
+  // Large, prominent Orders | Leads toggle (shown in both views).
+  const viewTabs = (
+    <div className="sb-leads-viewtabs">
+      {[['orders', 'Orders'], ['leads', 'Leads']].map(([code, label]) => (
+        <button key={code} type="button" className={`sb-leads-viewtab${view === code ? ' on' : ''}`} onClick={() => setView(code)}>{label}</button>
+      ))}
+    </div>
+  )
+
+  // Leads view — additive; the Orders UI below is untouched.
+  if (view === 'leads') {
+    return (
+      <div className="sb-crm-page">
+        <style>{TW_CSS}</style>
+        <style>{VIEWTABS_CSS}</style>
+        <div className="sb-crm-container">
+          {viewTabs}
+          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="sb-crm-page">
       <style>{TW_CSS}</style>
+      <style>{VIEWTABS_CSS}</style>
       <div className="sb-crm-container">
+        {viewTabs}
 
         <header className="sb-crm-head">
           <div>
@@ -995,6 +1022,13 @@ function jobTypeLabel(jobType, serviceTypes) {
   if (st.includes('ACID_WASH')) return 'Acid wash'
   return 'Order'
 }
+
+const VIEWTABS_CSS = `
+  .sb-leads-viewtabs { display: flex; gap: 4px; background: #ece6d8; border-radius: 11px; padding: 4px; width: fit-content; margin-bottom: 18px; }
+  .sb-leads-viewtab { border: none; cursor: pointer; border-radius: 8px; padding: 10px 26px; font-size: 15px; font-weight: 700; background: transparent; color: #7a756a; transition: background 0.12s, color 0.12s; }
+  .sb-leads-viewtab.on { background: #fff; color: #0f1419; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  .sb-leads-viewtab:hover:not(.on) { color: #4a463f; }
+`
 
 const TW_CSS = `
   /* C1 — clickable sortable column headers. Match the .sb-crm-row-head > div

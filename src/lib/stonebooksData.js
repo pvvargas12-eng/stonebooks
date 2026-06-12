@@ -688,6 +688,23 @@ export async function addOrderActivityNote(orderId, note, actor) {
   return logOrderActivity(orderId, { type: 'activity', note, actor })
 }
 
+// Batch: most-recent 'activity' (note/follow-up) per order — one query for the
+// Leads list's "last touch" column. Returns { [orderId]: latestActivityRow }.
+export async function getRecentFollowupsForOrders(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  if (!ids.length) return {}
+  const { data, error } = await supabase
+    .from('order_activity')
+    .select('order_id, type, field, note, actor, created_at')
+    .in('order_id', ids)
+    .eq('type', 'activity')
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[leads] getRecentFollowupsForOrders:', error.message); return {} }
+  const map = {}
+  for (const row of (data || [])) { if (!map[row.order_id]) map[row.order_id] = row }  // desc → first is latest
+  return map
+}
+
 // Manual task — note + assignee + optional due date; opens as 'open'.
 export async function addOrderTask(orderId, { note, assignee, dueDate, actor } = {}) {
   return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, taskStatus: 'open' })
