@@ -7760,13 +7760,28 @@ export async function generateEstimatePDF(order, opts = {}) {
   // A6 — ONE boxed section: stone specs + design + pricing + totals are wrapped in
   // a single bordered container (drawn after the content, just below). Capture the
   // top here; the bottom + the rect are emitted right after the FINAL TOTAL.
+  // #4 — per-service layout flags (hoisted; also used by the payment terms /
+  // legal block below). Stone/monument keeps the full specs; service work (acid
+  // wash / repair) and inscription get tailored sections with NO new-monument
+  // specs block — no empty white blocks, and "Monument" never appears as a
+  // section header on service work.
+  const STONE_SVC = ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
+  const svcCodes = order.serviceTypes || []
+  const hasStone = svcCodes.some(c => STONE_SVC.includes(c))
+  const hasAcid = svcCodes.includes('ACID_WASH')
+  const hasRepair = svcCodes.includes('REPAIR')
+  const hasInscription = svcCodes.includes('INSCRIPTION')
+  const isServiceWork = !hasStone && (hasAcid || hasRepair)
+  const isInscriptionWork = !hasStone && !isServiceWork && hasInscription
+
   const specBoxStart = y + 1
 
   // ============================ STONE SPECS =============================
   // The Shape + FULL size ALWAYS prints, in feet-inches (the standard notation),
   // on EVERY contract/estimate — even for shapes not in the catalog (bronze,
   // mausoleum, repair, etc.). The size must never be omitted or truncated.
-  {
+  if (hasStone) {
+    // ── NEW STONE / MONUMENT — full monument specs (unchanged) ──────────────
     const shape = SHAPES.find(s => s.code === order.shape)
     const color = GRANITE_COLORS.find(g => g.code === order.graniteColor)
     const top = TOP_SHAPES.find(t => t.code === order.topShape)
@@ -7811,7 +7826,34 @@ export async function generateEstimatePDF(order, opts = {}) {
       }
       y += 2
     }
+  } else if (isServiceWork) {
+    // ── ACID WASH / REPAIR — service layout, NO monument specs. ─────────────
+    ensure(22)
+    sectionHeader('Service')
+    const svcLabels = svcCodes.map(c => SERVICE_TYPES.find(t => t.code === c)?.label).filter(Boolean)
+    if (svcLabels.length) kvRow('Service', svcLabels.join(', '))
+    const sd = []
+    if (hasAcid) sd.push('Acid wash and cleaning of the existing monument')
+    if (hasRepair) sd.push('Repair of the existing monument')
+    const sdText = (sd.length ? sd.join('. ') + '. ' : '') + 'Performed at the cemetery and grave noted above.'
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...TEXT)
+    const sdLines = doc.splitTextToSize(sdText, W - 2 * M)
+    doc.text(sdLines, M, y); y += 4.5 * sdLines.length + 2
+  } else if (isInscriptionWork) {
+    // ── INSCRIPTION — reference the EXISTING stone, no new-monument specs. ───
+    ensure(22)
+    sectionHeader('Existing stone')
+    kvRow('Work', 'Inscription added to the existing monument')
+    // Existing-stone identification, only when set (never the generic fallback).
+    const exShape = SHAPES.find(s => s.code === order.shape)
+    const exColor = GRANITE_COLORS.find(g => g.code === order.graniteColor)
+    const exId = [exShape?.label, exColor?.label].filter(Boolean).join(', ')
+    if (exId) kvRow('Existing stone', exId)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...TEXT)
+    const inLines = doc.splitTextToSize('See the cemetery, grave, and plot above for the stone location; inscription content is listed below.', W - 2 * M)
+    doc.text(inLines, M, y); y += 4.5 * inLines.length + 2
   }
+  // else (other / no defined service) → no specs block at all (no empty block).
 
   // ============================ DESIGN ===================================
   // Sprint 3r.2 — contracts no longer render the design reference (per
@@ -8026,12 +8068,8 @@ export async function generateEstimatePDF(order, opts = {}) {
   // new stone or monument fabrication) are PAID IN FULL before work begins.
   // Orders that include a new stone or monument keep the 50% deposit / balance
   // split.
-  const STONE_SVC = ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
-  const svcCodes = order.serviceTypes || []
-  const hasStone = svcCodes.some(c => STONE_SVC.includes(c))
-  const hasAcid = svcCodes.includes('ACID_WASH')
-  const hasRepair = svcCodes.includes('REPAIR')
-  const hasInscription = svcCodes.includes('INSCRIPTION')
+  // (STONE_SVC / svcCodes / hasStone / hasAcid / hasRepair / hasInscription are
+  //  hoisted above the spec section for the #4 per-service layout.)
 
   if (isContract) {
     y += 2

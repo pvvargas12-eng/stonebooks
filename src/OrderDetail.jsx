@@ -634,6 +634,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     order.plot_grave && `Grave ${order.plot_grave}`,
   ].filter(Boolean).join(' · ')
   const orderType = jobTypeLabel(job?.job_type, order.service_types)
+  // #4 — service orders shouldn't render an empty Monument card; label + scope it.
+  const svcTypes = order.service_types || []
+  const isStoneOrder = svcTypes.some(c => ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM'].includes(c))
+  const isServiceOrder = !isStoneOrder && (svcTypes.includes('ACID_WASH') || svcTypes.includes('REPAIR'))
+  const isInscriptionOrder = !isStoneOrder && !isServiceOrder && svcTypes.includes('INSCRIPTION')
+  const monumentCardTitle = isStoneOrder ? 'Monument' : isInscriptionOrder ? 'Inscription' : isServiceOrder ? 'Service' : 'Service / job'
 
   // Left-rail section nav (Completion photos only when present).
   const railItems = [
@@ -878,13 +884,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 3 — Monument */}
-          <Section id="od-monument" title="Monument">
+          <Section id="od-monument" title={monumentCardTitle}>
             <Field label="Type" value={jobTypeLabel(job?.job_type, order.service_types)} />
-            <Field label="Shape" value={humanize(order.shape)} />
-            <Field label="Die size" value={dims} />
-            <Field label="Base size" value={baseSummary} />
-            <Field label="Stone color" value={humanize(order.granite_color)} />
-            <Field label="Finish / polish" value={finish} />
+            {isStoneOrder && (
+              <>
+                <Field label="Shape" value={humanize(order.shape)} />
+                <Field label="Die size" value={dims} />
+                <Field label="Base size" value={baseSummary} />
+                <Field label="Stone color" value={humanize(order.granite_color)} />
+                <Field label="Finish / polish" value={finish} />
+              </>
+            )}
             <Field label="Inscription" value={[insc.epitaph, insc.customNotes].filter(Boolean).join(' · ')} />
             <Field label="Deceased" value={deceased.length
               ? deceased.map((d, i) => <div key={i}>{deceasedName(d) || '—'}</div>) : null} />
