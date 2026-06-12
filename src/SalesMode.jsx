@@ -7639,8 +7639,22 @@ export async function generateEstimatePDF(order, opts = {}) {
     const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
     // Only the SELECTED grave type prints (plain text); nothing if none set.
     const graveLabel = graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null
+    // #1 — plot details: one compact line, only the filled fields. Nothing prints
+    // if no plot fields are set (no empty labels, no blank row).
+    const p = order.plot || {}
+    const plotParts = []
+    if (p.section) plotParts.push(`Section ${p.section}`)
+    if (p.block)   plotParts.push(`Block ${p.block}`)
+    if (p.lot)     plotParts.push(`Lot ${p.lot}`)
+    if (p.row)     plotParts.push(`Row ${p.row}`)
+    if (p.space)   plotParts.push(`Space ${p.space}`)
+    if (p.grave)   plotParts.push(`Grave ${p.grave}`)
+    if (p.level)   plotParts.push(`Level ${p.level}`)
+    const plotLine = plotParts.length ? plotParts.join(' · ') : null
+    doc.setFontSize(9)
+    const plotWrapped = plotLine ? doc.splitTextToSize(plotLine, colW - 2 * padX) : []
     const hasFoundation = !!order.foundationType
-    const extraRows = (graveLabel ? 1 : 0) + (hasFoundation ? 1 : 0)
+    const extraRows = (graveLabel ? 1 : 0) + plotWrapped.length + (hasFoundation ? 1 : 0)
 
     const headerH = 7
     const leftBodyH = leftLines.length * lineH
@@ -7680,6 +7694,9 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...TEXT)
     if (graveLabel) {
       doc.text(graveLabel, rx + padX, ry); ry += lineH
+    }
+    if (plotWrapped.length) {
+      doc.text(plotWrapped, rx + padX, ry); ry += lineH * plotWrapped.length
     }
     if (hasFoundation) {
       doc.text(`Foundation: ${order.foundationType}`, rx + padX, ry); ry += lineH
