@@ -7425,7 +7425,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     ensure(10)
     y += 2
     doc.setFont('helvetica', 'bold')
-    doc.setFontSize(8)
+    doc.setFontSize(9)          // #2 enlarge — section eyebrow 8 → 9
     doc.setTextColor(...GOLD)
     doc.text(title.toUpperCase(), M, y)
     y += 1.5
@@ -7441,7 +7441,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     ensure(5)
     const labelW = opts.labelW || 38
     doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9)
+    doc.setFontSize(10.5)        // #2 enlarge — 9 → 10.5
     doc.setTextColor(...GREY)
     doc.text(label, M, y)
     doc.setTextColor(...TEXT)
@@ -7449,7 +7449,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     // Word-wrap the value
     const lines = doc.splitTextToSize(text, W - M - M - labelW)
     doc.text(lines, M + labelW, y)
-    y += 4 * lines.length + 1
+    y += 4.5 * lines.length + 1
   }
 
   // Helper: key-value pair (bold value)
@@ -7457,14 +7457,14 @@ export async function generateEstimatePDF(order, opts = {}) {
     if (!value) return
     ensure(5)
     doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9)
+    doc.setFontSize(10.5)        // #2 enlarge — spec rows 9 → 10.5
     doc.setTextColor(...GREY)
     doc.text(label, M, y)
     doc.setFont('helvetica', 'bold')
     doc.setTextColor(...TEXT)
-    const lines = doc.splitTextToSize(String(value), W - M - M - 38)
-    doc.text(lines, M + 38, y)
-    y += 4 * lines.length + 1
+    const lines = doc.splitTextToSize(String(value), W - M - M - 42)
+    doc.text(lines, M + 42, y)
+    y += 4.5 * lines.length + 1
     doc.setFont('helvetica', 'normal')
   }
 
@@ -7888,7 +7888,7 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   // Header row (reserve the whole table so it never orphans).
   const lineRowCount = pricedItems.length
-  ensure(lineRowCount * 5 + 12)
+  ensure(lineRowCount * 5.6 + 12)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(8)
   doc.setTextColor(...GREY)
@@ -7905,7 +7905,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   y += 4
 
   doc.setFont('helvetica', 'normal')
-  doc.setFontSize(9.5)
+  doc.setFontSize(11)           // #2 enlarge — line items 9.5 → 11 (key legibility win)
   doc.setTextColor(...TEXT)
 
   // Draw one row. Mutates y via closure.
@@ -7923,7 +7923,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.text(fmtUSD(rate), rateRightX, y, { align: 'right' })
       doc.text(fmtUSD(amount), totalRightX, y, { align: 'right' })   // Qty × Rate
     }
-    y += 4 * Math.max(descLines.length, 1) + 0.5
+    y += 4.8 * Math.max(descLines.length, 1) + 0.5
   }
 
   // A7 — totals for the LIVE order. Hoisted above the single/multi branch so
@@ -7947,11 +7947,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   const totLabelX = W - M - 80, totValX = W - M
   const totRow = (label, value, o = {}) => {
     doc.setFont('helvetica', o.bold ? 'bold' : 'normal')
-    doc.setFontSize(o.size || 10)
+    doc.setFontSize(o.size || 11)        // #2 enlarge — totals 10 → 11
     doc.setTextColor(...TEXT)
     doc.text(label, totLabelX, y)
     doc.text(value, totValX, y, { align: 'right' })
-    y += o.gap || 5
+    y += o.gap || 5.5
   }
 
   // ESTIMATE multi-quote: Quote 1 = the live order; each additional quote is
@@ -7986,7 +7986,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.line(totLabelX, y, totValX, y)
       y += 5
     }
-    totRow('TOTAL', fmtUSD(finalTotal), { bold: true, size: 12, gap: 6 })
+    totRow('TOTAL', fmtUSD(finalTotal), { bold: true, size: 14, gap: 6.5 })
   } else {
     // One block per quote: "QUOTE N — title", descriptions only, "Quote N Total".
     const renderQuoteBlock = (label, o) => {
@@ -8028,39 +8028,35 @@ export async function generateEstimatePDF(order, opts = {}) {
   const hasAcid = svcCodes.includes('ACID_WASH')
   const hasRepair = svcCodes.includes('REPAIR')
   const hasInscription = svcCodes.includes('INSCRIPTION')
-  const paidInFull = !hasStone
 
   if (isContract) {
     y += 2
-    if (paidInFull) {
-      ensure(12)
-      doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
-      doc.line(M, y, W - M, y)
-      y += 5
-      // Label starts at the LEFT margin (plenty of room) so the long phrase can
-      // never collide with the right-aligned amount.
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
-      doc.text('PAID IN FULL REQUIRED BEFORE WORK BEGINS', M, y)
-      doc.setTextColor(...NAVY)
-      doc.text(fmtUSD(finalTotal), W - M, y, { align: 'right' })
-      y += 7
-    } else {
-      const deposit = finalTotal * 0.5
-      const balance = finalTotal - deposit
-      ensure(18)
-      doc.setDrawColor(...GOLD); doc.setLineWidth(0.4)
-      doc.line(W - M - 90, y, W - M, y)
-      y += 5
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
-      doc.text('DUE TODAY (50% DEPOSIT)', W - M - 90, y)
-      doc.setTextColor(...NAVY)
-      doc.text(fmtUSD(deposit), W - M, y, { align: 'right' })
-      y += 5
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
-      doc.text('BALANCE AT DELIVERY', W - M - 90, y)
-      doc.setTextColor(...TEXT)
-      doc.text(fmtUSD(balance), W - M, y, { align: 'right' })
-      y += 7
+    // #2 — real payment terms from the payments substrate (read-only): total,
+    // payments received to date, balance due. NO 50% deposit line.
+    const paidToDate = (order.payments || [])
+      .filter(pp => pp && (pp.locked ?? true) && !pp.voided)
+      .reduce((s, pp) => s + (Number(pp.amount) || 0), 0)
+    const balanceDue = Math.max(0, finalTotal - paidToDate)
+    ensure(24)
+    const payLabelX = W - M - 90, payValX = W - M
+    doc.setDrawColor(...GOLD); doc.setLineWidth(0.5)
+    doc.line(payLabelX, y, payValX, y)
+    y += 6
+    const payRow = (label, val, o = {}) => {
+      doc.setFont('helvetica', o.bold ? 'bold' : 'normal')
+      doc.setFontSize(o.size || 11)
+      doc.setTextColor(...(o.labelColor || GREY))
+      doc.text(label, payLabelX, y)
+      doc.setTextColor(...(o.valColor || TEXT))
+      doc.text(fmtUSD(val), payValX, y, { align: 'right' })
+      y += o.gap || 6
+    }
+    payRow('Total', finalTotal, { bold: true, size: 12, labelColor: TEXT })
+    if (paidToDate > 0) payRow('Payments received', paidToDate)
+    payRow('Balance due', balanceDue, { bold: true, size: 13.5, labelColor: GOLD, valColor: NAVY, gap: 7 })
+    if (!hasStone) {
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(9.5); doc.setTextColor(...GREY)
+      doc.text('Payment due in full before work begins.', payLabelX, y); y += 5
     }
   }
 
