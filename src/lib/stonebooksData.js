@@ -594,6 +594,53 @@ export async function removeSignedContract(orderId) {
   return { ok: true }
 }
 
+// ── Signed approval packet (Phase 3) — PRIVATE bucket, signed-URL only, pinned
+// override-only. Mirrors the signed-contract pinning exactly. The actual write
+// happens server-side in the approve-submit Edge Function (Phase 4); staff read
+// the pin + can override it here.
+const signedApprovalPath = (orderId) => `${orderId}/approval-signed.pdf`
+
+export async function getApprovalSigned(orderId) {
+  if (!orderId) return null
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .list(String(orderId), { search: 'approval-signed' })
+  if (error) { console.warn('[approval] getApprovalSigned (bucket pending?):', error.message); return null }
+  const f = (data || []).find(x => x && x.name === 'approval-signed.pdf')
+  if (!f) return null
+  return { path: signedApprovalPath(orderId), signedAt: f.created_at || f.updated_at || null }
+}
+
+export async function approvalSignedFileUrl(orderId, seconds = 300) {
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .createSignedUrl(signedApprovalPath(orderId), seconds)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, url: data.signedUrl }
+}
+
+// Pin the signed approval packet (in-shop staff path / fallback). The public
+// remote flow writes this server-side; this client path mirrors markContractSigned.
+export async function markApprovalSigned(orderId, { blob, file } = {}) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const body = file || blob
+  if (!body) return { ok: false, error: 'No file to pin' }
+  const { error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .upload(signedApprovalPath(orderId), body, { upsert: true, contentType: 'application/pdf' })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, path: signedApprovalPath(orderId) }
+}
+
+export async function removeApprovalSigned(orderId) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const { error } = await supabase.storage
+    .from(PRIVATE_ATTACH_BUCKET)
+    .remove([signedApprovalPath(orderId)])
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function listOrderAttachments(orderId) {
   if (!orderId) return []
   const dir = `attachments/${orderId}`

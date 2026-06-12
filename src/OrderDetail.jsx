@@ -22,6 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
+  getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
   ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
   getProofVersions, getProofSignatureSignedUrl,
   getMessageThread, sendShopEmail, aiDraftEmail,
@@ -178,6 +179,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [permitTaskText, setPermitTaskText] = useState('')
   // Signed contract (#C)
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
+  const [signedApproval, setSignedApproval] = useState(null)   // { path, signedAt } | null (Phase 3)
+  const [approvalOverride, setApprovalOverride] = useState(null)  // { reason, busy, error } | null
   const [signModal, setSignModal] = useState(null)             // { file, busy, error } | null
   const [overrideModal, setOverrideModal] = useState(null)     // { reason, busy, error } | null
   // Permit editor
@@ -205,7 +208,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       // Secondary loads (notes + attachment sources + emails) — non-blocking.
       // Email is the CUSTOMER's full thread (same shown in every order of theirs),
       // not order-segregated — keyed by the order's customer_id.
-      const [nts, ups, pvs, ems, cps, acts, sc] = await Promise.all([
+      const [nts, ups, pvs, ems, cps, acts, sc, sa] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
@@ -213,9 +216,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         listCompletionPhotos(orderId),
         getOrderActivity(orderId),
         getSignedContract(orderId),
+        getApprovalSigned(orderId),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc); setSignedApproval(sa)
       // Inject order-content-derived milestones on load (idempotent). If the set
       // changed, re-fetch the job so the rail shows the live milestones.
       if (j?.id) {
@@ -336,6 +340,31 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     await refreshUploads()
     await logOrderActivity(orderId, { type: 'activity', note: `Attachment deleted: ${name}`, actor: await getCurrentStaffName() })
     refreshActivity()
+  }
+
+  // ── Signed approval packet (Phase 3) — pinned, preview via signed URL, override-only.
+  const refreshApprovalSigned = async () => setSignedApproval(await getApprovalSigned(orderId))
+  const previewSignedApproval = async () => {
+    const r = await approvalSignedFileUrl(orderId)
+    if (!r.ok) { setActionNote(`Could not open signed approval — ${r.error}.`); return }
+    openPreview('Approval (signed).pdf', r.url, 'application/pdf', false)
+  }
+  const handleOverrideApproval = async () => {
+    if (!approvalOverride || approvalOverride.busy) return
+    const reason = (approvalOverride.reason || '').trim()
+    if (!reason) { setApprovalOverride(m => ({ ...m, error: 'A reason is required.' })); return }
+    setApprovalOverride(m => ({ ...m, busy: true, error: null }))
+    const res = await removeApprovalSigned(orderId)
+    if (!res.ok) { setApprovalOverride(m => ({ ...m, busy: false, error: res.error })); return }
+    setApprovalOverride(null)
+    await refreshApprovalSigned()
+    await logOrderActivity(orderId, {
+      type: 'change', field: 'Signed approval', oldValue: 'signed', newValue: 'overridden',
+      note: `Signed approval overridden: ${reason}`,
+      actor: await getCurrentStaffName(),
+    })
+    refreshActivity()
+    setActionNote('Signed approval overridden.')
   }
 
   // ── Signed contract (#C) ────────────────────────────────────────────────────
@@ -640,6 +669,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const isServiceOrder = !isStoneOrder && (svcTypes.includes('ACID_WASH') || svcTypes.includes('REPAIR'))
   const isInscriptionOrder = !isStoneOrder && !isServiceOrder && svcTypes.includes('INSCRIPTION')
   const monumentCardTitle = isStoneOrder ? 'Monument' : isInscriptionOrder ? 'Inscription' : isServiceOrder ? 'Service' : 'Service / job'
+  // Re-approval warning (Phase 3): a signed approval is pinned but the current
+  // proof has advanced past the approved version.
+  const approvedProof = proofVers.find(p => p.approved_at)
+  const currentProof = proofVers.find(p => p.is_current) || proofVers[0]
+  const reapprovalText = (signedApproval && approvedProof && currentProof && approvedProof.version_number !== currentProof.version_number)
+    ? `Approved: v${approvedProof.version_number} — current proof is v${currentProof.version_number}, re-approval needed.`
+    : null
 
   // Left-rail section nav (Completion photos only when present).
   const railItems = [
@@ -716,6 +752,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       key: 'signed-contract', kind: 'Contract', label: 'Contract (signed)',
       sub: signedContract.signedAt ? `signed ${fmtDate(signedContract.signedAt)}` : 'signed',
       onOpen: previewSignedContract, signed: true,
+    }] : []),
+    // Pinned signed approval packet (Phase 3) — same private-bucket, override-only model.
+    ...(signedApproval ? [{
+      key: 'signed-approval', kind: 'Approval', label: 'Approval (signed)',
+      sub: signedApproval.signedAt ? `signed ${fmtDate(signedApproval.signedAt)}` : 'signed',
+      onOpen: previewSignedApproval, signedApproval: true,
     }] : []),
     ...proofVers.filter(v => v.layout_image_url).map(v => ({
       key: `proof-${v.id}`, kind: 'Layout proof', label: `Layout v${v.version_number}`,
@@ -911,6 +953,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
           {/* 3b — Design / proof quick-view (item B) */}
           <Section id="od-design" title="Design / proof">
+            {reapprovalText && (
+              <div className="sb-od-reapproval">⚠ {reapprovalText}</div>
+            )}
             <Field label="Shape" value={humanize(order.shape)} />
             <Field label="Stone color" value={humanize(order.granite_color)} />
             <Field label="Die size" value={dims} />
@@ -1049,11 +1094,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             ) : (
               <div className="sb-od-attach-list">
                 {attachmentRows.map(a => (
-                  <div key={a.key} className={`sb-od-attach-row${a.signed ? ' sb-od-attach-row-signed' : ''}${a.draft ? ' sb-od-attach-row-draft' : ''}`}>
+                  <div key={a.key} className={`sb-od-attach-row${(a.signed || a.signedApproval) ? ' sb-od-attach-row-signed' : ''}${a.draft ? ' sb-od-attach-row-draft' : ''}`}>
                     <span className="sb-od-attach-kind">{a.kind}</span>
                     <span className="sb-od-attach-label">
                       {a.label}
-                      {a.signed && <span className="sb-od-attach-badge-signed">SIGNED</span>}
+                      {(a.signed || a.signedApproval) && <span className="sb-od-attach-badge-signed">SIGNED</span>}
                       {a.draft && <span className="sb-od-attach-badge-draft">DRAFT</span>}
                     </span>
                     {a.sub && <span className="sb-od-attach-sub">{a.sub}</span>}
@@ -1064,6 +1109,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     )}
                     {a.signed && (
                       <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setOverrideModal({ reason: '', busy: false, error: null })}>Override</button>
+                    )}
+                    {a.signedApproval && (
+                      <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setApprovalOverride({ reason: '', busy: false, error: null })}>Override</button>
                     )}
                     {a.deletable && a.path && (
                       <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setDelAttach({ path: a.path, name: a.label })}>Delete</button>
@@ -1503,6 +1551,29 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         </div>
       )}
 
+      {approvalOverride && (
+        <div className="sb-od-modal-overlay" onClick={() => { if (!approvalOverride.busy) setApprovalOverride(null) }}>
+          <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Override signed approval" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Override the signed approval?</div>
+            <p className="sb-od-danger-summary">
+              This removes the pinned <strong>Approval (signed)</strong> from this order so the proof can be re-approved. A reason is required and recorded in the activity log. <strong>This cannot be undone.</strong>
+            </p>
+            <label className="sb-od-modal-field"><span>Reason <em className="sb-od-opt">required</em></span>
+              <textarea className="sb-od-note-input" rows={2} value={approvalOverride.reason}
+                onChange={e => setApprovalOverride(m => ({ ...m, reason: e.target.value }))}
+                placeholder="e.g. design changed after approval; re-approval required" />
+            </label>
+            {approvalOverride.error && <div className="sb-msg sb-msg-err" style={{ marginBottom: 8 }}>{approvalOverride.error}</div>}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setApprovalOverride(null)} disabled={approvalOverride.busy}>Cancel</button>
+              <button type="button" className="sb-od-danger-btn" onClick={handleOverrideApproval} disabled={approvalOverride.busy || !approvalOverride.reason.trim()}>
+                {approvalOverride.busy ? 'Overriding…' : 'Override signed approval'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AttachmentPreviewModal attachment={preview} onClose={closePreview} />
     </div>
   )
@@ -1681,6 +1752,7 @@ const OD_CSS = `
   .sb-od-design-thumb img { width: 100%; height: 100%; object-fit: cover; }
   .sb-od-design-noimg { font-size: 11px; color: #9a958c; }
   .sb-od-design-meta { flex: 1 1 auto; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+  .sb-od-reapproval { font-size: 12.5px; font-weight: 600; color: #7a4a12; background: #fdf2e9; border: 1px solid #e0a85f; border-radius: 7px; padding: 7px 10px; margin-bottom: 10px; }
   .sb-od-act-actions { display: flex; gap: 16px; margin-bottom: 10px; }
   .sb-od-act-form { background: #faf8f3; border: 1px solid #e7e2d6; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   .sb-od-act-input { width: 100%; box-sizing: border-box; border: 1px solid #d8d2c4; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13.5px; resize: vertical; }
