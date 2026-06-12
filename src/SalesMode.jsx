@@ -8395,17 +8395,15 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const money = (n) =>
     n == null ? '' : `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-  // ── Header (text title bar; the mountain logo sits bottom-right) ──────────
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(...NAVY)
+  // ── Header — ONE tight line: company (left) · LAYOUT APPROVAL · F/N (right).
+  // Compressed to hand the saved vertical space to the hero image.
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(...NAVY)
   doc.text(COMPANY_INFO.name, M, y + 5)
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...GOLD)
-  doc.text('LAYOUT APPROVAL', W - M, y + 5, { align: 'right' })
-  // Family name (F/N) top-right — falls back to the order # so it's never blank.
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...TEXT)
-  doc.text(`F/N: ${familyName || '—'}`, W - M, y + 10, { align: 'right' })
-  y += 13
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...GOLD)
+  doc.text(`LAYOUT APPROVAL    ·    F/N: ${familyName || '—'}`, W - M, y + 5, { align: 'right' })
+  y += 7.5
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.4); doc.line(M, y, W - M, y)
-  y += 6
+  y += 3.5
 
   // ── DETERMINISTIC ONE-PAGE BUDGET ─────────────────────────────────────────
   // The legal paragraph + logo/contact footer are PINNED to the bottom of the
@@ -8438,7 +8436,7 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const colW = (W - 2 * M) / 2
   const leftX = M
   const rightX = M + colW + 2
-  const labelW = 26
+  const labelW = 23
   // Plot line (Phase 2) — reuse the contract's plot logic; read snake-row OR
   // nested `plot`, only filled fields. Appended under the cemetery name.
   const pget = (snake, nested) => liveOrder?.[snake] || liveOrder?.plot?.[nested]
@@ -8499,7 +8497,8 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
     ]
   }
 
-  doc.setFontSize(9)
+  // Compressed spec grid — small type, tight rows; measured at the render size.
+  doc.setFontSize(7.5)
   const rowCount = Math.max(leftRows.length, rightRows.length)
   const specRowLines = []
   for (let i = 0; i < rowCount; i++) {
@@ -8507,8 +8506,8 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
     const rL = rightRows[i] ? doc.splitTextToSize(String(rightRows[i][1] || '—'), colW - labelW - 2).length : 0
     specRowLines.push(Math.max(lL, rL, 1))
   }
-  const specRowH = (ln) => 4.3 * ln + 2
-  const specGridH = 6 + specRowLines.reduce((s, ln) => s + specRowH(ln), 0)
+  const specRowH = (ln) => 3.4 * ln + 1
+  const specGridH = 4.5 + specRowLines.reduce((s, ln) => s + specRowH(ln), 0)
 
   // TEMP DIAGNOSTIC — exactly what each field reads + which source resolved it.
   // Open the packet on the deploy and copy this [APPROVAL-PACKET] console line.
@@ -8558,10 +8557,10 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   }
   const legalH = measureRichLines() * legalLineH
 
-  // Fixed block heights + gaps.
-  const approvedH = 26
-  const footerH = 24
-  const gHeaderHero = 4, gHeroSpec = 4, gSpecApproved = 4, gApprovedLegal = 5, gLegalFooter = 4
+  // Fixed block heights + gaps — compressed so the hero claims the slack.
+  const approvedH = 23      // legal core; kept readable
+  const footerH = 13        // two small lines (logo dropped)
+  const gHeaderHero = 3.5, gHeroSpec = 3.5, gSpecApproved = 3.5, gApprovedLegal = 4, gLegalFooter = 3
 
   // Pin bottom: footer at the very bottom, legal just above it.
   const footerTop = H - M - footerH
@@ -8592,12 +8591,12 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
 
   // ── 2. SPEC GRID ───────────────────────────────────────────────────────────
   let sy = heroTop + heroBoxH + gHeroSpec
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...GOLD)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(...GOLD)
   doc.text('SPECIFICATIONS', M, sy)
-  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2); doc.line(M, sy + 1.5, W - M, sy + 1.5)
-  sy += 6
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2); doc.line(M, sy + 1.3, W - M, sy + 1.3)
+  sy += 4.5
   const drawCell = (x, label, value, yy) => {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...NAVY)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY)
     doc.text(label, x, yy)
     doc.setFont('helvetica', 'normal'); doc.setTextColor(...TEXT)
     doc.text(doc.splitTextToSize(String(value || '—'), colW - labelW - 2), x + labelW, yy)
@@ -8610,6 +8609,11 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
 
   // ── 3. APPROVED block (signed → signature image + caption; else blank line) ─
   const aTop = heroTop + heroBoxH + gHeroSpec + specGridH + gSpecApproved
+  // SINGLE signature-rect definition (mm, jsPDF top-left origin). Used by the
+  // signed inline stamp below AND returned so approve-create can persist it and
+  // approve-submit can stamp server-side at the SAME coords — one definition,
+  // never duplicated. (approve-submit converts mm→pt + flips origin like signing.)
+  const sigRect = { x: M + 30, y: aTop - 1, w: 72, h: 12 }
   const isSigned = !!(proofVersion?.approved_at && opts.signatureImageUrl)
   if (isSigned) {
     const sigRaw = await urlToDataURL(opts.signatureImageUrl)
@@ -8618,12 +8622,12 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...RED)
     doc.text('APPROVED', M, aTop + 5)
     if (sigData) {
-      let sw = 55, sh = 15
-      try { const sp = doc.getImageProperties(sigData); sh = 15; sw = Math.min(70, sh * (sp.width / sp.height)) } catch { /* defaults */ }
-      doc.addImage(sigData, 'PNG', M + 34, aTop - 2, sw, sh)
+      let sw = sigRect.w, sh = sigRect.h
+      try { const sp = doc.getImageProperties(sigData); sh = sigRect.h; sw = Math.min(sigRect.w, sh * (sp.width / sp.height)) } catch { /* defaults */ }
+      doc.addImage(sigData, 'PNG', sigRect.x, sigRect.y, sw, sh)
     }
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...TEXT)
-    doc.text(`Approved by ${proofVersion.approved_by_name || '—'} on ${fmtMDY(proofVersion.approved_at)}`, M, aTop + 22)
+    doc.text(`Approved by ${proofVersion.approved_by_name || '—'} on ${fmtMDY(proofVersion.approved_at)}`, M, aTop + 20)
   } else {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...RED)
     doc.text('APPROVED:', M, aTop + 5)
@@ -8651,36 +8655,23 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
     }
   }
 
-  // ── 5. LOGO + contact, pinned bottom-right ─────────────────────────────────
-  // Mountain logo from public/shevchenko-logo.png; text-wordmark fallback if
-  // the file is absent. Re-encoded via canvas to baseline PNG.
-  const rightEdge = W - M
-  const logoRaw = await urlToDataURL('/shevchenko-logo.png')
-  const logoData = logoRaw
-    ? await reencodeImageViaCanvas(logoRaw, { mime: 'image/png', label: '/shevchenko-logo.png' })
-    : null
-  const yC = footerTop + 12
-  if (logoData) {
-    let logoH = 14, logoW = 28
-    try { const lp = doc.getImageProperties(logoData); logoH = 14; logoW = logoH * (lp.width / lp.height) } catch { /* defaults */ }
-    doc.addImage(logoData, 'PNG', rightEdge - logoW, yC - logoH, logoW, logoH)
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
-    doc.text(`${COMPANY_INFO.address}, ${COMPANY_INFO.city}`, rightEdge, yC + 4.5, { align: 'right' })
-    doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, rightEdge, yC + 9, { align: 'right' })
-  } else {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...NAVY)
-    doc.text(COMPANY_INFO.name, rightEdge, yC, { align: 'right' })
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY)
-    doc.text(`${COMPANY_INFO.address}, ${COMPANY_INFO.city}`, rightEdge, yC + 4.5, { align: 'right' })
-    doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, rightEdge, yC + 9, { align: 'right' })
-  }
+  // ── 5. Footer — two small lines (logo dropped to maximize the hero) ────────
+  const yC = footerTop + 5.5
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2); doc.line(M, footerTop + 1, W - M, footerTop + 1)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...NAVY)
+  doc.text(COMPANY_INFO.name, M, yC)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...GREY)
+  doc.text(`${COMPANY_INFO.address}, ${COMPANY_INFO.city} · ${COMPANY_INFO.phone}`, W - M, yC, { align: 'right' })
+  if (COMPANY_INFO.established) doc.text(String(COMPANY_INFO.established), M, yC + 4.4)
 
   const fam = String(familyName || 'Approval').replace(/[^a-z0-9]/gi, '_')
   const vn = proofVersion?.version_number ?? 'v'
   const filename = `Shevchenko-ApprovalSheet-v${vn}-${fam}.pdf`
-  if (opts.returnDoc) return { doc, filename }
+  // sigRect returned (mm, top-left origin) — the single source approve-create
+  // persists for approve-submit's server-side signature stamp.
+  if (opts.returnDoc) return { doc, filename, sigRect }
   doc.save(filename)
-  return { doc, filename }
+  return { doc, filename, sigRect }
 }
 
 // Sprint 3j — Receipt PDF. Sprint M2 Phase 2: takes a payment object from
