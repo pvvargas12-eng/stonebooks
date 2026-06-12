@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -8239,6 +8239,9 @@ export async function generateEstimatePDF(order, opts = {}) {
   // or breaks PDF generation; only for saved orders (capture needs an order id).
   if (order.id) {
     captureOrderPdfAttachment(order.id, doc.output('blob'), isContract ? 'Contract' : 'Estimate').catch(() => {})
+    // Lead auto-cadence: first estimate with no next_follow_up → +5 days (manual
+    // wins; only sets when null). Fire-and-forget; estimates only, not contracts.
+    if (!isContract) ensureLeadCadence(order.id).catch(() => {})
   }
   if (opts.returnDoc) return { doc, filename, signFields }
   doc.save(filename)

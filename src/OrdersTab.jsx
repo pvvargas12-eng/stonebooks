@@ -41,6 +41,7 @@ const ORDERS_BOARD_SELECT =
   'target_completion_date, primary_lastname, sales_rep, service_types, shape, granite_color, ' +
   'width_inches, standard_size_code, pricing, add_ons, contract_total, payments, deposit_amount, ' +
   'balance_amount, payment_status, permit_required, permit_status, customer_id, cemetery_id, ' +
+  'next_follow_up, waiting_on, lost_reason, lost_at, ' +
   'customer:customers(id, first_name, last_name, email, phone_primary), cemetery:cemeteries(id, name)'
 const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`
 const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with CustomersTab
@@ -681,7 +682,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         <style>{VIEWTABS_CSS}</style>
         <div className="sb-crm-container">
           {viewTabs}
-          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} />
+          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} onChanged={reload} />
         </div>
       </div>
     )

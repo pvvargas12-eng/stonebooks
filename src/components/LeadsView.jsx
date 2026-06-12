@@ -14,11 +14,16 @@
 // =============================================================================
 
 import { useState, useEffect, useMemo } from 'react'
-import { rowGrandTotal, fmtUSD, fmtDate, logOrderActivity, getRecentFollowupsForOrders, getCurrentStaffName } from '../lib/stonebooksData'
+import { rowGrandTotal, fmtUSD, fmtDate, logOrderActivity, getRecentFollowupsForOrders, getCurrentStaffName, updateOrderLeadFields } from '../lib/stonebooksData'
 import {
   LEAD_STATUSES, LEAD_FILTERS, WAITING_ON_OPTIONS, waitingOnOption,
-  FOLLOWUP_TYPES, followUpUrgency, daysBetween,
+  FOLLOWUP_TYPES, FOLLOWUP_PRESETS, LOST_REASONS, followUpUrgency, daysBetween,
 } from '../lib/leads'
+
+const isoPlusDays = (days) => {
+  const d = new Date(); d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 const pad = (n) => String(n).padStart(2, '0')
 const leadName = (o) => {
@@ -27,11 +32,12 @@ const leadName = (o) => {
   return o.primary_lastname || '(no name)'
 }
 
-export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder }) {
+export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onChanged }) {
   const [todayISO, setTodayISO] = useState('')
   const [lastTouch, setLastTouch] = useState({})
   const [filter, setFilter] = useState('all')
   const [openId, setOpenId] = useState(null)
+  const [touchNonce, setTouchNonce] = useState(0)   // bump to refresh last-touch after a follow-up
 
   useEffect(() => {
     const d = new Date()
@@ -51,7 +57,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder }) {
     if (!ids.length) { setLastTouch({}); return }
     getRecentFollowupsForOrders(ids).then(m => { if (alive) setLastTouch(m) })
     return () => { alive = false }
-  }, [leadIdsKey])
+  }, [leadIdsKey, touchNonce])
 
   const rows = useMemo(() => leads.map(o => {
     const value = rowGrandTotal(o)
@@ -139,7 +145,15 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder }) {
                       : <span className="sb-leads-due-none">—</span>}
                   </div>
                 </button>
-                {isOpen && <LeadActions order={o} onOpenDetail={onOpenDetail} onOpenOrder={onOpenOrder} onClose={() => setOpenId(null)} />}
+                {isOpen && (
+                  <LeadActions
+                    order={o}
+                    onOpenDetail={onOpenDetail}
+                    onOpenOrder={onOpenOrder}
+                    onLogged={() => setTouchNonce(n => n + 1)}
+                    onChanged={onChanged}
+                  />
+                )}
               </div>
             )
           })}
@@ -149,20 +163,57 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder }) {
   )
 }
 
-// ── Inline expanded actions (Phase 1: log follow-up, open, won) ──────────────
-function LeadActions({ order, onOpenDetail, onOpenOrder, onClose }) {
+// ── Inline expanded actions ──────────────────────────────────────────────────
+function LeadActions({ order, onOpenDetail, onOpenOrder, onLogged, onChanged }) {
   const [type, setType] = useState('Call')
   const [note, setNote] = useState('')
+  const [nextPreset, setNextPreset] = useState('')   // '' | '3'|'7'|'14' | 'pick'
+  const [pickDate, setPickDate] = useState('')
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [lostOpen, setLostOpen] = useState(false)
+  const [lostReason, setLostReason] = useState('')
+  const [lostNote, setLostNote] = useState('')
 
+  // Log follow-up → order_activity touch + (optional) next_follow_up date.
   const logFollowup = async () => {
     if (busy) return
     setBusy(true)
     const actor = await getCurrentStaffName()
     await logOrderActivity(order.id, { type: 'activity', field: 'followup', note: `${type} · ${note.trim() || 'follow-up'}`, actor })
+    let nextIso = null
+    if (nextPreset === 'pick') nextIso = pickDate || null
+    else if (nextPreset) nextIso = isoPlusDays(Number(nextPreset))
+    if (nextIso) await updateOrderLeadFields(order.id, { next_follow_up: nextIso })
     setBusy(false); setNote(''); setSaved(true)
-    setTimeout(() => setSaved(false), 1800)
+    onLogged?.()
+    if (nextIso) onChanged?.()
+    setTimeout(() => setSaved(false), 1600)
+  }
+
+  // Set waiting-on (who's holding the ball) + log the change.
+  const setWaiting = async (code) => {
+    if (busy) return
+    setBusy(true)
+    const actor = await getCurrentStaffName()
+    await updateOrderLeadFields(order.id, { waiting_on: code })
+    const label = (WAITING_ON_OPTIONS.find(o => o.code === code)?.label) || code
+    await logOrderActivity(order.id, { type: 'change', field: 'Waiting on', newValue: label, note: `Waiting on: ${label}`, actor })
+    setBusy(false)
+    onChanged?.()
+  }
+
+  // Mark lost → stamp lost_reason + lost_at, log, drop from default view.
+  const markLost = async () => {
+    if (busy || !lostReason) return
+    setBusy(true)
+    const actor = await getCurrentStaffName()
+    const reasonLabel = (LOST_REASONS.find(r => r.code === lostReason)?.label) || lostReason
+    const detail = lostReason === 'other' && lostNote.trim() ? `${reasonLabel}: ${lostNote.trim()}` : reasonLabel
+    await updateOrderLeadFields(order.id, { lost_reason: detail, lost_at: new Date().toISOString() })
+    await logOrderActivity(order.id, { type: 'change', field: 'Lead lost', newValue: detail, note: `Lost — ${detail}`, actor })
+    setBusy(false); setLostOpen(false)
+    onChanged?.()
   }
 
   return (
@@ -174,13 +225,46 @@ function LeadActions({ order, onOpenDetail, onOpenOrder, onClose }) {
         </select>
         <input className="sb-leads-act-input" type="text" value={note} placeholder="One-line note…"
           onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') logFollowup() }} />
+        <select className="sb-leads-act-sel" value={nextPreset} onChange={e => setNextPreset(e.target.value)} title="Next follow-up">
+          <option value="">Next: —</option>
+          {FOLLOWUP_PRESETS.map(p => <option key={p.days} value={String(p.days)}>Next: {p.label}</option>)}
+          <option value="pick">Next: pick date…</option>
+        </select>
+        {nextPreset === 'pick' && (
+          <input className="sb-leads-act-sel" type="date" value={pickDate} onChange={e => setPickDate(e.target.value)} />
+        )}
         <button type="button" className="sb-leads-act-btn" disabled={busy} onClick={logFollowup}>{busy ? '…' : saved ? 'Logged ✓' : 'Log'}</button>
       </div>
+
+      <div className="sb-leads-act-row">
+        <span className="sb-leads-act-lab">Waiting on</span>
+        {WAITING_ON_OPTIONS.map(w => (
+          <button key={w.code} type="button"
+            className={`sb-leads-waitbtn${w.side === 'us' ? ' us' : ''}${order.waiting_on === w.code ? ' on' : ''}`}
+            disabled={busy} onClick={() => setWaiting(w.code)}>{w.label}</button>
+        ))}
+      </div>
+
       <div className="sb-leads-act-row">
         <button type="button" className="sb-leads-act-link" onClick={() => onOpenDetail?.(order.id)}>Open order →</button>
         <button type="button" className="sb-leads-act-won" onClick={() => onOpenOrder?.(order.id)}>Won → contract</button>
-        <span className="sb-leads-act-soon">Set waiting-on & Lost arrive once the leads migration is applied.</span>
+        {!order.lost_at && <button type="button" className="sb-leads-act-lost" onClick={() => setLostOpen(o => !o)}>Lost…</button>}
       </div>
+
+      {lostOpen && (
+        <div className="sb-leads-lost">
+          <span className="sb-leads-act-lab">Reason</span>
+          <select className="sb-leads-act-sel" value={lostReason} onChange={e => setLostReason(e.target.value)}>
+            <option value="">Pick a reason…</option>
+            {LOST_REASONS.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
+          </select>
+          {lostReason === 'other' && (
+            <input className="sb-leads-act-input" type="text" value={lostNote} placeholder="Note…" onChange={e => setLostNote(e.target.value)} />
+          )}
+          <button type="button" className="sb-leads-act-lostconfirm" disabled={busy || !lostReason} onClick={markLost}>Mark lost</button>
+          <button type="button" className="sb-leads-act-link" onClick={() => setLostOpen(false)}>Cancel</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -224,6 +308,15 @@ const CSS = `
 .sb-leads-act-link { border: none; background: none; color: #9a7209; font-weight: 600; cursor: pointer; padding: 0; }
 .sb-leads-act-won { border: 1px solid #2d7a4f; background: #fff; color: #2d7a4f; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
 .sb-leads-act-soon { font-size: 11.5px; color: #a8a294; font-style: italic; margin-left: auto; }
+.sb-leads-waitbtn { border: 1px solid #d8d2c4; background: #fff; color: #5d5d5a; border-radius: 14px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.sb-leads-waitbtn:hover:not(:disabled) { background: #f4f2ee; }
+.sb-leads-waitbtn.us { border-color: #e7b3ad; color: #b3261e; }
+.sb-leads-waitbtn.on { background: #0f1419; color: #fff; border-color: #0f1419; }
+.sb-leads-waitbtn.us.on { background: #b3261e; border-color: #b3261e; color: #fff; }
+.sb-leads-act-lost { border: 1px solid #d8a7a2; background: #fff; color: #b3261e; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; margin-left: auto; }
+.sb-leads-lost { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fbeaea; border: 1px solid #e7b3ad; border-radius: 8px; padding: 8px 12px; }
+.sb-leads-act-lostconfirm { border: 1px solid #b3261e; background: #b3261e; color: #fff; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
+.sb-leads-act-lostconfirm:disabled { opacity: 0.55; cursor: default; }
 @media (max-width: 760px) {
   .sb-leads-rowmain { grid-template-columns: 1fr; gap: 6px; }
 }

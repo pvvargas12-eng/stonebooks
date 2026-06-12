@@ -705,6 +705,39 @@ export async function getRecentFollowupsForOrders(orderIds) {
   return map
 }
 
+// Update lead-working columns on an order (next_follow_up / waiting_on /
+// lost_reason / lost_at). Whitelisted so callers can't write arbitrary columns.
+export async function updateOrderLeadFields(orderId, patch = {}) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const allowed = {}
+  for (const k of ['next_follow_up', 'waiting_on', 'lost_reason', 'lost_at']) {
+    if (k in patch) allowed[k] = patch[k]
+  }
+  if (!Object.keys(allowed).length) return { ok: true }
+  const { error } = await supabase.from('orders').update(allowed).eq('id', orderId)
+  if (error) { console.warn('[leads] updateOrderLeadFields:', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
+// Auto-cadence: on first estimate generation, set next_follow_up = +days if the
+// order is still an uncontracted lead and has no next_follow_up. Manual/existing
+// values always win (only sets when null). Best-effort, never throws.
+export async function ensureLeadCadence(orderId, days = 5) {
+  if (!orderId) return { ok: false }
+  try {
+    const { data, error } = await supabase
+      .from('orders').select('id, status, next_follow_up, signed_at').eq('id', orderId).single()
+    if (error || !data) return { ok: false }
+    if (data.next_follow_up || data.signed_at) return { ok: true, skipped: true }      // manual/contracted wins
+    if (!['draft', 'scoping', 'quoted'].includes(data.status)) return { ok: true, skipped: true }
+    const d = new Date(); d.setDate(d.getDate() + days)
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const { error: upErr } = await supabase.from('orders').update({ next_follow_up: iso }).eq('id', orderId)
+    if (upErr) { console.warn('[leads] ensureLeadCadence:', upErr.message); return { ok: false } }
+    return { ok: true, set: iso }
+  } catch (e) { console.warn('[leads] ensureLeadCadence:', e?.message); return { ok: false } }
+}
+
 // Manual task — note + assignee + optional due date; opens as 'open'.
 export async function addOrderTask(orderId, { note, assignee, dueDate, actor } = {}) {
   return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, taskStatus: 'open' })
