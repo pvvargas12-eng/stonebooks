@@ -731,8 +731,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       // Phase 1 — pass the LIVE order (so empty snapshot fields fall back to live
       // data) + a layout-image fallback (most recent proof image, else an uploaded
       // image) when the current proof's image is missing/broken.
+      const isImg = (s) => /\.(jpe?g|png|webp|gif|avif|bmp|svg)(\?|#|$)/i.test(String(s || ''))
       const fallbackImageUrl = proofVers.find(p => p.layout_image_url)?.layout_image_url
-        || uploads.find(u => /\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(u.url || u.name || ''))?.url
+        || uploads.find(u => isImg(u.url) || isImg(u.name) || isImg(u.path))?.url
+        || completionPhotos[0]?.url
         || null
       const { doc, filename } = await generateApprovalSheetPDF(v, { order, balance: rowBalanceDue(order), signatureImageUrl, fallbackImageUrl, returnDoc: true })
       const url = URL.createObjectURL(doc.output('blob'))

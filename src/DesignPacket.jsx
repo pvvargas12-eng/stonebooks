@@ -1146,7 +1146,12 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
       // Format DIE/BASE live from the order so it's correct even when the
       // version's frozen snapshot predates trade-format capture.
       const { die, base } = computeDieBaseTrade(order)
-      const { doc, filename } = await generateApprovalSheetPDF(v, { balance, die, base, signatureImageUrl, returnDoc: true })
+      // Phase 1 fix — pass the LIVE order (with the cemetery merged in, since it's
+      // a separate job.cemetery here) so the generator's snapshot→live fallback
+      // resolves F/N, stone color, cemetery, plot. Fallback image = any proof
+      // version that has a layout image, when the current version's is missing.
+      const fallbackImageUrl = versions.find(vv => vv.layout_image_url)?.layout_image_url || null
+      const { doc, filename } = await generateApprovalSheetPDF(v, { order: { ...order, cemetery }, balance, die, base, signatureImageUrl, fallbackImageUrl, returnDoc: true })
       const url = URL.createObjectURL(doc.output('blob'))
       setSheet({ open: true, url, err: null, busy: false, doc, filename })
     } catch (e) {
