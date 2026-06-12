@@ -40,6 +40,7 @@ export const CUSTOM_DIE_RATE_PER_SQIN     = 4.55   // custom die: face (L × H) 
 export const CUSTOM_DIE_DEFAULT_THICKNESS = 8      // middle dim default (inches)
 export const POLISH_SIDE_PER_FOOT         = { 8: 100, 10: 115, 12: 125 }  // by die thickness
 export const SAW_BASE_PER_FOOT            = 45     // (base length″ ÷ 12) × this, when finish = SB
+export const ALL_POLISH_BASE_PER_FOOT     = 0      // (base length″ ÷ 12) × this, when finish = AP (All Polish). ← SET the per-foot charge here (0 = no charge, like BRP/RB).
 export const BASE_POLISH_MARGIN_PER_FOOT  = 70     // 2″ polished margin — PER FOOT (corrects old flat $70)
 
 // Additional-inscription base-price tiers (sets the inscription job's base).
@@ -81,6 +82,7 @@ export const liveRates = {
   customDieDefaultThickness: CUSTOM_DIE_DEFAULT_THICKNESS,
   polishSidePerFoot: { ...POLISH_SIDE_PER_FOOT },
   sawBasePerFoot: SAW_BASE_PER_FOOT,
+  allPolishBasePerFoot: ALL_POLISH_BASE_PER_FOOT,
   basePolishMarginPerFoot: BASE_POLISH_MARGIN_PER_FOOT,
   customFontAddon: CUSTOM_FONT_ADDON,
   njTax: NJ_TAX_RATE,
@@ -92,6 +94,7 @@ export const BASE_FINISHES = [
   { code: 'SB',  label: 'SB (sawn)' },
   { code: 'RB',  label: 'RB (rock pitch)' },
   { code: 'BRP', label: 'BRP (balance rock pitch)' },
+  { code: 'AP',  label: 'All Polish' },
 ]
 
 // Monument "Type" → shape filter for the type dropdown (form-facing labels).
@@ -110,6 +113,7 @@ export const RATES = {
   customDieDefaultThickness: CUSTOM_DIE_DEFAULT_THICKNESS,
   polishSidePerFoot: POLISH_SIDE_PER_FOOT,
   sawBasePerFoot: SAW_BASE_PER_FOOT,
+  allPolishBasePerFoot: ALL_POLISH_BASE_PER_FOOT,
   basePolishMarginPerFoot: BASE_POLISH_MARGIN_PER_FOOT,
   inscriptionTiers: INSCRIPTION_TIERS,
   customFontAddon: CUSTOM_FONT_ADDON,
@@ -308,6 +312,14 @@ export function computeFormLineItems(order) {
   if (bc.include && bc.finish === 'SB' && baseW > 0) {
     const rate = liveRates.sawBasePerFoot
     items.push({ code: 'saw-base', label: 'Saw base', amount: Math.round((baseW / 12) * rate), editable: true })
+  }
+
+  // (4b) All Polish base — (base length ÷ 12) × the configurable per-foot rate
+  // when finish = AP. Same mechanism as saw-base; emits a line only when the rate
+  // is set ( > 0 ), so AP is cosmetic-only until allPolishBasePerFoot is set.
+  if (bc.include && bc.finish === 'AP' && baseW > 0) {
+    const rate = liveRates.allPolishBasePerFoot
+    if (rate > 0) items.push({ code: 'all-polish-base', label: 'All polish base', amount: Math.round((baseW / 12) * rate), editable: true })
   }
 
   // (5) Custom rush fee (#7) — a flat NON-taxable service fee tied to the due-date
@@ -538,6 +550,7 @@ function applyConfigValues(config, skipNull) {
     if (ok(u.customDiePerSqIn)) liveRates.customDiePerSqIn = num(u.customDiePerSqIn)
     if (ok(u.customDieDefaultThickness)) liveRates.customDieDefaultThickness = num(u.customDieDefaultThickness)
     if (ok(u.sawBasePerFoot)) liveRates.sawBasePerFoot = num(u.sawBasePerFoot)
+    if (ok(u.allPolishBasePerFoot)) liveRates.allPolishBasePerFoot = num(u.allPolishBasePerFoot)
     if (ok(u.basePolishMarginPerFoot)) liveRates.basePolishMarginPerFoot = num(u.basePolishMarginPerFoot)
     if (u.polishSidePerFoot) for (const k of Object.keys(liveRates.polishSidePerFoot)) {
       if (ok(u.polishSidePerFoot[k])) liveRates.polishSidePerFoot[k] = num(u.polishSidePerFoot[k])

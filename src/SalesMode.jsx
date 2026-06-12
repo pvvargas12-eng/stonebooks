@@ -7796,10 +7796,14 @@ export async function generateEstimatePDF(order, opts = {}) {
       const baseSize = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
       const baseHeight = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
       const baseSides = BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)
+      // #3 — base finish (SB / RB / BRP / All Polish) now prints on the base line.
+      const FINISH_LABELS = { SB: 'SB (sawn)', RB: 'RB (rock pitch)', BRP: 'BRP', AP: 'All Polish' }
+      const finishLabel = FINISH_LABELS[order.baseConfig.finish] || order.baseConfig.finish || ''
       // Only join size and height if both exist; same for the rest
       const sizeAndHeight = [baseSize?.label, baseHeight?.label].filter(Boolean).join(' × ')
       const baseDesc = [
         sizeAndHeight,
+        finishLabel,
         baseSides?.label,
         order.baseConfig.polishMargin2in ? '2" polish margin' : '',
       ].filter(Boolean).join(' · ')
