@@ -8439,25 +8439,73 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const leftX = M
   const rightX = M + colW + 2
   const labelW = 26
+  // Plot line (Phase 2) — reuse the contract's plot logic; read snake-row OR
+  // nested `plot`, only filled fields. Appended under the cemetery name.
+  const pget = (snake, nested) => liveOrder?.[snake] || liveOrder?.plot?.[nested]
+  const plotParts = []
+  if (pget('plot_section', 'section')) plotParts.push(`Section ${pget('plot_section', 'section')}`)
+  if (pget('plot_block', 'block'))     plotParts.push(`Block ${pget('plot_block', 'block')}`)
+  if (pget('plot_lot', 'lot'))         plotParts.push(`Lot ${pget('plot_lot', 'lot')}`)
+  if (pget('plot_row', 'row'))         plotParts.push(`Row ${pget('plot_row', 'row')}`)
+  if (pget('plot_space', 'space'))     plotParts.push(`Space ${pget('plot_space', 'space')}`)
+  if (pget('plot_grave', 'grave'))     plotParts.push(`Grave ${pget('plot_grave', 'grave')}`)
+  if (pget('plot_level', 'level'))     plotParts.push(`Level ${pget('plot_level', 'level')}`)
+  const plotLine = plotParts.length ? plotParts.join(' · ') : null
+  const cemeteryCell = [cemeteryName, plotLine].filter(Boolean).join('\n') || '—'
+
+  // Per-service packet content (Phase 2). Service work (acid/repair) gets NO
+  // monument specs; inscription displays the inscription content being approved;
+  // stone keeps the full monument specs. Defaults to stone when service type is
+  // unknown (back-compat with callers that don't pass the order).
+  const APPROVAL_STONE_SVC = ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
+  const aSvc = liveOrder?.service_types || liveOrder?.serviceTypes || []
+  const aHasStone = aSvc.length === 0 || aSvc.some(c => APPROVAL_STONE_SVC.includes(c))
+  const aIsService = !aHasStone && (aSvc.includes('ACID_WASH') || aSvc.includes('REPAIR'))
+  const aIsInscription = !aHasStone && !aIsService && aSvc.includes('INSCRIPTION')
+
   const leftRows = [
     ['ORDER', String(familyName || '').toUpperCase() || '—'],
     ['VERSION', proofVersion?.version_number != null ? String(proofVersion.version_number) : '—'],
     ['DESIGN DATE', fmtMDY(meta('snapshot_at') || proofVersion?.uploaded_at || liveOrder?.updated_at)],
     ['BALANCE', money(opts.balance)],
   ]
-  // DIE/BASE formatted at RENDER time (opts.die / opts.base), snapshot fallback.
-  const rightRows = [
-    ['DIE', opts.die || meta('die_size') || '—'],
-    ['BASE', opts.base || meta('base_size') || '—'],
-    ['STONE COLOR', String(colorLabel || '').toUpperCase() || '—'],
-    ['CEMETERY', cemeteryName || '—'],
-  ]
+  let rightRows
+  if (aIsService) {
+    const svcLabel = aSvc.map(c => SERVICE_TYPES.find(t => t.code === c)?.label).filter(Boolean).join(', ') || 'Service'
+    rightRows = [
+      ['SERVICE', svcLabel],
+      ['CEMETERY', cemeteryCell],
+    ]
+  } else if (aIsInscription) {
+    const epitaph = meta('inscription_epitaph') || liveOrder?.inscription?.epitaph || null
+    const deceasedNames = Array.isArray(meta('deceased_names')) ? meta('deceased_names').join(', ')
+      : (Array.isArray(liveOrder?.deceased)
+          ? liveOrder.deceased.map(d => [d.firstName, d.lastName].filter(Boolean).join(' ')).filter(Boolean).join(', ')
+          : null)
+    const exStone = GRANITE_COLORS.find(g => g.code === liveOrder?.granite_color)?.label || null
+    rightRows = [
+      ['INSCRIPTION', epitaph || '—'],
+      ['DECEASED', deceasedNames || '—'],
+      ['EXISTING STONE', exStone || '—'],
+      ['CEMETERY', cemeteryCell],
+    ]
+  } else {
+    // DIE/BASE formatted at RENDER time (opts.die / opts.base), snapshot fallback.
+    rightRows = [
+      ['DIE', opts.die || meta('die_size') || '—'],
+      ['BASE', opts.base || meta('base_size') || '—'],
+      ['STONE COLOR', String(colorLabel || '').toUpperCase() || '—'],
+      ['CEMETERY', cemeteryCell],
+    ]
+  }
+
   doc.setFontSize(9)
+  const rowCount = Math.max(leftRows.length, rightRows.length)
   const specRowLines = []
-  for (let i = 0; i < 4; i++) {
-    const lL = doc.splitTextToSize(String(leftRows[i][1] || '—'), colW - labelW - 2).length
-    const rL = doc.splitTextToSize(String(rightRows[i][1] || '—'), colW - labelW - 2).length
-    specRowLines.push(Math.max(lL, rL))
+  for (let i = 0; i < rowCount; i++) {
+    const lL = leftRows[i] ? doc.splitTextToSize(String(leftRows[i][1] || '—'), colW - labelW - 2).length : 0
+    const rL = rightRows[i] ? doc.splitTextToSize(String(rightRows[i][1] || '—'), colW - labelW - 2).length : 0
+    specRowLines.push(Math.max(lL, rL, 1))
   }
   const specRowH = (ln) => 4.3 * ln + 2
   const specGridH = 6 + specRowLines.reduce((s, ln) => s + specRowH(ln), 0)
@@ -8532,9 +8580,9 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
     doc.setFont('helvetica', 'normal'); doc.setTextColor(...TEXT)
     doc.text(doc.splitTextToSize(String(value || '—'), colW - labelW - 2), x + labelW, yy)
   }
-  for (let i = 0; i < 4; i++) {
-    drawCell(leftX, leftRows[i][0], leftRows[i][1], sy)
-    drawCell(rightX, rightRows[i][0], rightRows[i][1], sy)
+  for (let i = 0; i < rowCount; i++) {
+    if (leftRows[i]) drawCell(leftX, leftRows[i][0], leftRows[i][1], sy)
+    if (rightRows[i]) drawCell(rightX, rightRows[i][0], rightRows[i][1], sy)
     sy += specRowH(specRowLines[i])
   }
 
@@ -8605,7 +8653,7 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
     doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.established}`, rightEdge, yC + 9, { align: 'right' })
   }
 
-  const fam = String(meta('family_name') || 'Approval').replace(/[^a-z0-9]/gi, '_')
+  const fam = String(familyName || 'Approval').replace(/[^a-z0-9]/gi, '_')
   const vn = proofVersion?.version_number ?? 'v'
   const filename = `Shevchenko-ApprovalSheet-v${vn}-${fam}.pdf`
   if (opts.returnDoc) return { doc, filename }
