@@ -485,6 +485,55 @@ export async function voidSignatureRequest(requestId) {
   return { ok: true }
 }
 
+// ── Approval links (Phase 4) — staff side. The raw token is returned ONCE at
+// creation (in the URL); only its hash is stored, so it can't be re-displayed —
+// re-sending means generating a new link (which revokes the prior one).
+export async function createApprovalLink({ orderId, proofVersionId, pdfBase64, sigFieldRects }) {
+  if (!orderId) return { ok: false, error: 'Missing order id.' }
+  if (!proofVersionId) return { ok: false, error: 'Missing proof version.' }
+  if (!pdfBase64) return { ok: false, error: 'Approval packet could not be generated.' }
+  const { data, error } = await supabase.functions.invoke('approve-create', {
+    body: { order_id: orderId, proof_version_id: proofVersionId, pdf_base64: pdfBase64, sig_field_rects: sigFieldRects || null },
+  })
+  if (error) {
+    let detail = error.message
+    try { const ctx = await error.context?.json?.(); if (ctx?.error) detail = ctx.detail || ctx.error } catch { /* ignore */ }
+    if (/not.?found|404|Failed to send a request|does not exist|server_not_configured/i.test(detail || '')) {
+      detail = 'Remote approval isn’t set up yet — apply 20260624 + 20260625 and deploy the approve-* Edge Functions (set APPROVE_BASE_URL).'
+    }
+    return { ok: false, error: detail }
+  }
+  if (data?.error) return { ok: false, error: data.detail || data.error }
+  return { ok: true, url: data?.url, linkId: data?.link_id, expiresAt: data?.expires_at }
+}
+
+// Approval links for an order (staff RLS). Deploy-safe: [] if the table is absent.
+// Computes a lazy-expiry display status without writing.
+export async function getApprovalLinksForOrder(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('approval_links')
+    .select('id, order_id, proof_version_id, status, expires_at, viewed_at, signed_at, revoked_at, created_at')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[approval] getApprovalLinksForOrder:', error.message); return [] }
+  const now = Date.now()
+  return (data || []).map((r) => {
+    let displayStatus = r.status
+    if ((r.status === 'pending' || r.status === 'viewed') && r.expires_at && new Date(r.expires_at).getTime() < now) displayStatus = 'expired'
+    return { ...r, displayStatus }
+  })
+}
+
+// Revoke a pending/viewed approval link so its token stops working.
+export async function revokeApprovalLink(linkId) {
+  if (!linkId) return { ok: false, error: 'Missing link id.' }
+  const { error } = await supabase
+    .from('approval_links').update({ status: 'revoked', revoked_at: new Date().toISOString() }).eq('id', linkId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // Short-lived signed URL to a stored signed contract PDF (private bucket; staff
 // storage policy). Returns null on failure.
 export async function getSignedContractUrl(path) {

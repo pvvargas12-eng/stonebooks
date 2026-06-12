@@ -23,6 +23,7 @@ import {
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
+  createApprovalLink, getApprovalLinksForOrder, revokeApprovalLink,
   ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
   getProofVersions, getProofSignatureSignedUrl,
   getMessageThread, sendShopEmail, aiDraftEmail,
@@ -181,6 +182,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
   const [signedApproval, setSignedApproval] = useState(null)   // { path, signedAt } | null (Phase 3)
   const [approvalOverride, setApprovalOverride] = useState(null)  // { reason, busy, error } | null
+  // Remote approval links (Phase 4)
+  const [approvalLinks, setApprovalLinks] = useState([])
+  const [sendBusy, setSendBusy] = useState(false)
+  const [sentLink, setSentLink] = useState(null)
   const [signModal, setSignModal] = useState(null)             // { file, busy, error } | null
   const [overrideModal, setOverrideModal] = useState(null)     // { reason, busy, error } | null
   // Permit editor
@@ -208,7 +213,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       // Secondary loads (notes + attachment sources + emails) — non-blocking.
       // Email is the CUSTOMER's full thread (same shown in every order of theirs),
       // not order-segregated — keyed by the order's customer_id.
-      const [nts, ups, pvs, ems, cps, acts, sc, sa] = await Promise.all([
+      const [nts, ups, pvs, ems, cps, acts, sc, sa, al] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
@@ -217,9 +222,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         getOrderActivity(orderId),
         getSignedContract(orderId),
         getApprovalSigned(orderId),
+        getApprovalLinksForOrder(orderId),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc); setSignedApproval(sa)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc); setSignedApproval(sa); setApprovalLinks(al)
       // Inject order-content-derived milestones on load (idempotent). If the set
       // changed, re-fetch the job so the rail shows the live milestones.
       if (j?.id) {
@@ -348,6 +354,37 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const r = await approvalSignedFileUrl(orderId)
     if (!r.ok) { setActionNote(`Could not open signed approval — ${r.error}.`); return }
     openPreview('Approval (signed).pdf', r.url, 'application/pdf', false)
+  }
+  const refreshApprovalLinks = async () => setApprovalLinks(await getApprovalLinksForOrder(orderId))
+
+  // Generate the UNSIGNED packet client-side + create a token link (server-side).
+  const handleSendForApproval = async () => {
+    const v = proofVers.find(p => p.is_current) || proofVers[0]
+    if (!v) { setActionNote('No proof to send — add a layout in the Design Hub first.'); return }
+    setSendBusy(true); setActionNote(null); setSentLink(null)
+    try {
+      const isImg = (s) => /\.(jpe?g|png|webp|gif|avif|bmp|svg)(\?|#|$)/i.test(String(s || ''))
+      const fallbackImageUrl = proofVers.find(p => p.layout_image_url)?.layout_image_url
+        || uploads.find(u => isImg(u.url) || isImg(u.name) || isImg(u.path))?.url
+        || completionPhotos[0]?.url || null
+      const { doc, sigRect } = await generateApprovalSheetPDF(v, { order, balance: rowBalanceDue(order), fallbackImageUrl, returnDoc: true })
+      const pdfBase64 = doc.output('datauristring').split(',')[1]
+      const res = await createApprovalLink({ orderId, proofVersionId: v.id, pdfBase64, sigFieldRects: sigRect })
+      setSendBusy(false)
+      if (!res.ok) { setActionNote(`Could not create approval link — ${res.error}`); return }
+      setSentLink(res.url)
+      await logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'sent', note: 'Approval link sent', actor: await getCurrentStaffName() })
+      refreshApprovalLinks(); refreshActivity()
+    } catch (e) {
+      setSendBusy(false); setActionNote(`Could not create approval link — ${e?.message || 'error'}`)
+    }
+  }
+  const handleRevokeLink = async (linkId) => {
+    const res = await revokeApprovalLink(linkId)
+    if (!res.ok) { setActionNote(`Could not revoke — ${res.error}`); return }
+    if (sentLink) setSentLink(null)
+    await logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'revoked', note: 'Approval link revoked', actor: await getCurrentStaffName() })
+    refreshApprovalLinks(); refreshActivity()
   }
   const handleOverrideApproval = async () => {
     if (!approvalOverride || approvalOverride.busy) return
@@ -988,6 +1025,37 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 </div>
               )
             })()}
+
+            {/* Send for approval (Phase 4) — token link for the customer. */}
+            <div className="sb-od-approval-send">
+              <button type="button" className="sb-od-btn sb-od-btn-primary" disabled={sendBusy} onClick={handleSendForApproval}>
+                {sendBusy ? 'Generating…' : 'Send for approval'}
+              </button>
+              {sentLink && (
+                <div className="sb-od-approval-link">
+                  <input className="sb-od-note-input" readOnly value={sentLink} onFocus={e => e.target.select()} />
+                  <button type="button" className="sb-od-link" onClick={() => navigator.clipboard?.writeText(sentLink)}>Copy link</button>
+                  <button type="button" className="sb-od-link" onClick={() => navigator.clipboard?.writeText(`Your monument layout is ready for approval: ${sentLink}`)}>Copy message</button>
+                </div>
+              )}
+              {approvalLinks.length > 0 && (
+                <div className="sb-od-approval-status">
+                  {approvalLinks.map(l => {
+                    const lab = { pending: 'Sent', viewed: 'Viewed', signed: 'Signed', expired: 'Expired', revoked: 'Revoked' }[l.displayStatus] || l.displayStatus
+                    const when = l.signed_at || l.viewed_at || l.created_at
+                    return (
+                      <div key={l.id} className="sb-od-approval-row">
+                        <span className={`sb-od-approval-badge sb-od-approval-${l.displayStatus}`}>{lab}</span>
+                        <span className="sb-od-approval-when">{when ? fmtDate(when) : ''}</span>
+                        {(l.displayStatus === 'pending' || l.displayStatus === 'viewed') && (
+                          <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => handleRevokeLink(l.id)}>Revoke</button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </Section>
 
           {/* 4 — Financial */}
@@ -1755,6 +1823,18 @@ const OD_CSS = `
   .sb-od-design-noimg { font-size: 11px; color: #9a958c; }
   .sb-od-design-meta { flex: 1 1 auto; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
   .sb-od-reapproval { font-size: 12.5px; font-weight: 600; color: #7a4a12; background: #fdf2e9; border: 1px solid #e0a85f; border-radius: 7px; padding: 7px 10px; margin-bottom: 10px; }
+  .sb-od-approval-send { margin-top: 14px; padding-top: 12px; border-top: 1px solid #ece8df; }
+  .sb-od-approval-link { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .sb-od-approval-link .sb-od-note-input { flex: 1 1 220px; min-width: 0; font-size: 12.5px; }
+  .sb-od-approval-status { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .sb-od-approval-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .sb-od-approval-when { color: #9a958c; font-size: 12px; flex: 1 1 auto; }
+  .sb-od-approval-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 999px; }
+  .sb-od-approval-pending { background: #fef6e7; color: #8a6308; }
+  .sb-od-approval-viewed { background: #eaf2fb; color: #2a5d9a; }
+  .sb-od-approval-signed { background: #e8f5ea; color: #2d7a4f; }
+  .sb-od-approval-expired { background: #f1efe9; color: #8a857a; }
+  .sb-od-approval-revoked { background: #fcecea; color: #b3261e; }
   .sb-od-act-actions { display: flex; gap: 16px; margin-bottom: 10px; }
   .sb-od-act-form { background: #faf8f3; border: 1px solid #e7e2d6; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   .sb-od-act-input { width: 100%; box-sizing: border-box; border: 1px solid #d8d2c4; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13.5px; resize: vertical; }

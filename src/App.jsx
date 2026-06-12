@@ -5,6 +5,7 @@ import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
 import CatalogTab from './CatalogTab'
 import SignPage from './SignPage'
+import ApprovePage from './ApprovePage'
 
 // ── BUILD MODE ROUTING ───────────────────────────────────────────
 // Two deployments from one repo:
@@ -475,11 +476,22 @@ const getSignToken = () => {
   const m = window.location.pathname.match(/^\/sign\/([^/?#]+)/)
   return m ? decodeURIComponent(m[1]) : null
 }
+// /approve/<token> — PUBLIC customer approval surface. Same posture as /sign:
+// no staff auth; the token is validated by the service-role approve-* functions.
+const getApproveToken = () => {
+  if (typeof window === 'undefined') return null
+  const m = window.location.pathname.match(/^\/approve\/([^/?#]+)/)
+  return m ? decodeURIComponent(m[1]) : null
+}
 
 export default function App() {
   const signToken = getSignToken()
   if (signToken) {
     return <SignPage token={signToken} />
+  }
+  const approveToken = getApproveToken()
+  if (approveToken) {
+    return <ApprovePage token={approveToken} />
   }
   if (isCatalogRoute()) {
     return <CatalogStandalone />

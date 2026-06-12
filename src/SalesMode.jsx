@@ -8509,28 +8509,6 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const specRowH = (ln) => 3.4 * ln + 1
   const specGridH = 4.5 + specRowLines.reduce((s, ln) => s + specRowH(ln), 0)
 
-  // TEMP DIAGNOSTIC — exactly what each field reads + which source resolved it.
-  // Open the packet on the deploy and copy this [APPROVAL-PACKET] console line.
-  console.log('[APPROVAL-PACKET] ' + JSON.stringify({
-    has_opts_order: !!liveOrder,
-    proof_version_number: proofVersion?.version_number ?? null,
-    proof_layout_image_url: proofVersion?.layout_image_url || null,
-    opts_fallbackImageUrl: opts.fallbackImageUrl || null,
-    heroUrl, hero_loaded: !!heroData,
-    opts_balance: opts.balance ?? null,
-    opts_die: opts.die || null, opts_base: opts.base || null,
-    resolved_familyName: familyName,
-    resolved_colorLabel: colorLabel,
-    resolved_cemetery: cemeteryName,
-    resolved_plotLine: plotLine,
-    live_granite_color: liveOrder?.granite_color ?? null,
-    live_cemetery_name: liveOrder?.cemetery?.name ?? liveOrder?.cemetery_name ?? null,
-    live_primary_lastname: liveOrder?.primary_lastname ?? null,
-    live_customer_last: liveOrder?.customer?.last_name ?? null,
-    live_plot_section: liveOrder?.plot_section ?? liveOrder?.plot?.section ?? null,
-    live_service_types: liveOrder?.service_types ?? liveOrder?.serviceTypes ?? null,
-  }))
-
   // Legal paragraph — verbatim, inline bold. Pre-measure its wrapped line count.
   const legalSegments = [
     { text: 'I verify that the above pictured monument is ', bold: false },
