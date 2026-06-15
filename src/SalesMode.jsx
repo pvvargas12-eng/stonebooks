@@ -8035,26 +8035,64 @@ export async function generateEstimatePDF(order, opts = {}) {
   // separate upcharge rows). Display-only — computeFormLineItems / priceOrderTotals
   // are untouched, so the grand total (computeTotals above) is unchanged and the
   // shown rows still sum to it. A baseConfig.baseTextOverride prints verbatim.
+  // Trade top-finish labels for the die line (Paul's vocabulary). Serpentine
+  // variants → "Serp Top"; everything else falls back to its TOP_SHAPES label.
+  const DIE_TOP_TRADE = {
+    'classic-serp': 'Serp Top', 'cathedral-serp': 'Serp Top',
+    'flat-top': 'Flat Top', 'roof-top': 'Roof Top', 'oval-top': 'Oval Top',
+    'cathedral': 'Cathedral', 'gothic': 'Gothic',
+  }
+  const fiTrade = (v) => { const n = Number(v); return n ? `${Math.floor(n / 12)}-${n % 12}` : null }
   const foldBaseForDisplay = (list) => {
-    const baseIdx = list.findIndex(it => String(it.code) === 'base-block')
-    if (baseIdx < 0) return list
-    const heightIt = list.find(it => String(it.code) === 'base-height')
-    const marginIt = list.find(it => String(it.code) === 'base-margin')
+    let out = list
+
+    // DIE line (base-stone) → PHYSICAL SPEC only: dims + top finish + polish level
+    // (e.g. "2-6 × 0-8 × 2-0 Serp Top P2"). No type name, no "(custom — set price)".
+    // Die-family shapes (have a base) get the full spec; other stone lines just
+    // get the pricing-method language stripped (never print it on a contract).
+    const shp = SHAPES.find(s => s.code === order.shape)
+    const dieIdx = out.findIndex(it => String(it.code) === 'base-stone')
+    if (dieIdx >= 0) {
+      let dieLabel = out[dieIdx].label
+      if (shp && (shp.canHaveBase || shp.requiresBase)) {
+        const std = order.standardSizeCode ? shp.standardSizes.find(s => s.code === order.standardSizeCode) : null
+        const dims = std ? std.label : [order.width, order.depth, order.thickness].map(fiTrade).filter(Boolean).join(' × ')
+        const topTrade = order.topShape ? (DIE_TOP_TRADE[order.topShape] || TOP_SHAPES.find(t => t.code === order.topShape)?.label || '') : ''
+        const polishCode = order.polishLevel || ''
+        const spec = [dims, topTrade, polishCode].filter(Boolean).join(' ').trim()
+        if (spec) dieLabel = spec
+      } else {
+        dieLabel = String(dieLabel || '').replace(/\s*\(custom[^)]*\)/i, '').trim()
+      }
+      out = out.map((it, i) => (i === dieIdx ? { ...it, label: dieLabel } : it))
+    }
+
+    // BASE line (base-block) → PHYSICAL SPEC: BASE_SIZES label (carries finish,
+    // e.g. "4-0 × 1-0 × 0-8 polished top") + folded 12" height + 2" margin, no
+    // "Base —" prefix. A baseTextOverride prints verbatim. Display-only fold —
+    // computeFormLineItems / priceOrderTotals untouched, grand total unchanged.
+    const baseIdx = out.findIndex(it => String(it.code) === 'base-block')
+    if (baseIdx < 0) return out
+    const heightIt = out.find(it => String(it.code) === 'base-height')
+    const marginIt = out.find(it => String(it.code) === 'base-margin')
     const override = (order.baseConfig?.baseTextOverride || '').trim()
-    if (!heightIt && !marginIt && !override) return list
-    const base = { ...list[baseIdx] }
+    const base = { ...out[baseIdx] }
     base.amount = (Number(base.amount) || 0) + (Number(heightIt?.amount) || 0) + (Number(marginIt?.amount) || 0)
     if (override) {
       base.label = override
     } else {
+      const baseSizeObj = BASE_SIZES.find(b => b.code === order.baseConfig?.sizeCode)
+      const baseSpec = baseSizeObj
+        ? baseSizeObj.label
+        : String(base.label || '').replace(/^Base\s*—\s*/i, '').replace(/\s*\(custom[^)]*\)/i, '').trim()
       const hOpt = (order.baseConfig?.heightCode != null) ? BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode) : null
       base.label = [
-        base.label,
+        baseSpec,
         (heightIt && hOpt) ? `${hOpt.label} height` : '',
         marginIt ? '2″ polished margin' : '',
       ].filter(Boolean).join(', ')
     }
-    return list
+    return out
       .map((it, i) => i === baseIdx ? base : it)
       .filter(it => String(it.code) !== 'base-height' && String(it.code) !== 'base-margin')
   }
