@@ -47,3 +47,17 @@ jobs:
 
       - name: Deploy ai-draft (default JWT verify)
         run: supabase functions deploy ai-draft --project-ref "$PROJECT_REF"
+
+      # Approval surface (public /approve/<token>). approve-load + approve-submit
+      # are called by the public page with NO Supabase JWT (the token is the
+      # credential), so they MUST deploy with --no-verify-jwt. approve-create is
+      # called by the authenticated staff app and verifies the caller's JWT
+      # itself, so it keeps DEFAULT JWT verification.
+      - name: Deploy approve-load (JWT verify OFF)
+        run: supabase functions deploy approve-load --project-ref "$PROJECT_REF" --no-verify-jwt
+
+      - name: Deploy approve-submit (JWT verify OFF)
+        run: supabase functions deploy approve-submit --project-ref "$PROJECT_REF" --no-verify-jwt
+
+      - name: Deploy approve-create (default JWT verify)
+        run: supabase functions deploy approve-create --project-ref "$PROJECT_REF"
