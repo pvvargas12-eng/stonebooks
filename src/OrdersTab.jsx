@@ -117,9 +117,12 @@ const QUICK_VIEWS = [
   { code: 'archived',        label: 'Archived' },
 ]
 
-// checkbox | customer | job type | payment | design | stone | fdn | total | cemetery | contract | due
-// Even distribution so the row reads edge-to-edge at the widened container width.
-const ROW_GRID = '32px 1.6fr 0.9fr 1fr 1.2fr 1.3fr 1fr 0.9fr 1.3fr 1fr 1fr'
+// checkbox | family | order# | customer name | job type | payment | design | stone | fdn | total | cemetery | contract | due
+// Item 6: Family / Order# / Customer-name are explicit first columns (the old
+// combined "Customer" column cut the customer name off). Widths are draggable —
+// dragging a header handle pins that column to px; the rest stay fractional.
+const DEFAULT_COLS = ['32px', '1.1fr', '0.8fr', '1.3fr', '0.9fr', '1fr', '1.2fr', '1.3fr', '1fr', '0.9fr', '1.3fr', '1fr', '1fr']
+const COL_RESIZE = { position: 'absolute', top: 0, right: 0, width: 7, height: '100%', cursor: 'col-resize', userSelect: 'none', zIndex: 2 }
 
 // +5 months for a new_stone due-date default (the contract+5mo rule). Pure
 // local date math (no UTC drift): returns 'YYYY-MM-DD' or null.
@@ -212,6 +215,26 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
   const [sortKey, setSortKey] = useState('actionPriority')
   const [sortDir, setSortDir] = useState('asc')   // C1 — direction for click-sortable columns
+  // Item 6 — draggable column widths. Each cols[] entry is a grid track; dragging
+  // a header handle pins that column to a px width, others keep their fr ratio.
+  const [cols, setCols] = useState(DEFAULT_COLS)
+  const grid = cols.join(' ')
+  const startColResize = (i) => (e) => {
+    e.preventDefault(); e.stopPropagation()
+    const startX = e.clientX
+    const cell = e.currentTarget.parentElement
+    const startW = cell ? cell.getBoundingClientRect().width : 120
+    const onMove = (ev) => {
+      const w = Math.max(48, Math.round(startW + (ev.clientX - startX)))
+      setCols(prev => prev.map((c, idx) => (idx === i ? `${w}px` : c)))
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
   // C1 — click a column header: same column toggles asc/desc, a new column
   // starts ascending.
   const handleHeaderSort = (key) => {
@@ -806,18 +829,55 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
         {/* Table */}
         <div className="sb-crm-card sb-crm-table">
-          <div className="sb-crm-row sb-crm-row-head sb-tw-row" style={{ gridTemplateColumns: ROW_GRID }}>
+          <div className="sb-crm-row sb-crm-row-head sb-tw-row" style={{ gridTemplateColumns: grid }}>
             <div><input type="checkbox" checked={pageAllSelected} onChange={togglePage} aria-label="Select page" /></div>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'customer' ? 'on' : ''}`} onClick={() => handleHeaderSort('customer')} title="Sort by customer (last name)">Customer{sortCaret('customer')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'jobType' ? 'on' : ''}`} onClick={() => handleHeaderSort('jobType')} title="Sort by job type">Job Type{sortCaret('jobType')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'payment' ? 'on' : ''}`} onClick={() => handleHeaderSort('payment')} title="Sort by payment status">Payment{sortCaret('payment')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone stage">Stone{sortCaret('stone')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'fdn' ? 'on' : ''}`} onClick={() => handleHeaderSort('fdn')} title="Sort by foundation stage">FDN{sortCaret('fdn')}</button>
-            <button type="button" className={`sb-ord-sort-th num ${sortKey === 'total' ? 'on' : ''}`} onClick={() => handleHeaderSort('total')} title="Sort by total">Total{sortCaret('total')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
-            <button type="button" className={`sb-ord-sort-th ${sortKey === 'dueDate' ? 'on' : ''}`} onClick={() => handleHeaderSort('dueDate')} title="Sort by due date">Due date{sortCaret('dueDate')}</button>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'customer' ? 'on' : ''}`} onClick={() => handleHeaderSort('customer')} title="Sort by family (last name)">Family{sortCaret('customer')}</button>
+              <span onMouseDown={startColResize(1)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <span className="sb-ord-sort-th" style={{ cursor: 'default' }}>Order #</span>
+              <span onMouseDown={startColResize(2)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <span className="sb-ord-sort-th" style={{ cursor: 'default' }}>Customer</span>
+              <span onMouseDown={startColResize(3)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'jobType' ? 'on' : ''}`} onClick={() => handleHeaderSort('jobType')} title="Sort by job type">Job Type{sortCaret('jobType')}</button>
+              <span onMouseDown={startColResize(4)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'payment' ? 'on' : ''}`} onClick={() => handleHeaderSort('payment')} title="Sort by payment status">Payment{sortCaret('payment')}</button>
+              <span onMouseDown={startColResize(5)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
+              <span onMouseDown={startColResize(6)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone stage">Stone{sortCaret('stone')}</button>
+              <span onMouseDown={startColResize(7)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'fdn' ? 'on' : ''}`} onClick={() => handleHeaderSort('fdn')} title="Sort by foundation stage">FDN{sortCaret('fdn')}</button>
+              <span onMouseDown={startColResize(8)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th num ${sortKey === 'total' ? 'on' : ''}`} onClick={() => handleHeaderSort('total')} title="Sort by total">Total{sortCaret('total')}</button>
+              <span onMouseDown={startColResize(9)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
+              <span onMouseDown={startColResize(10)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
+              <span onMouseDown={startColResize(11)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'dueDate' ? 'on' : ''}`} onClick={() => handleHeaderSort('dueDate')} title="Sort by due date">Due date{sortCaret('dueDate')}</button>
+            </div>
           </div>
 
           {loading ? (
@@ -826,7 +886,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <div className="sb-crm-empty">No orders match these filters.<div><button type="button" onClick={resetAll}>Reset filters</button></div></div>
           ) : (
             pageRows.map((o) => (
-              <OrderRow key={o.id} order={o} indexInFiltered={filteredIds.indexOf(o.id)}
+              <OrderRow key={o.id} order={o} grid={grid} indexInFiltered={filteredIds.indexOf(o.id)}
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
                 onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
@@ -923,27 +983,36 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
   )
 }
 
-function OrderRow({ order: o, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
+function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
   const hasJob = !!o._job
+  const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
 
   return (
-    <div className={`sb-crm-row sb-tw-row${selected ? ' sb-tw-row-sel' : ''}`} style={{ gridTemplateColumns: ROW_GRID }}>
+    <div className={`sb-crm-row sb-tw-row${selected ? ' sb-tw-row-sel' : ''}`} style={{ gridTemplateColumns: grid }}>
       <div onClick={e => e.stopPropagation()}>
         <input type="checkbox" checked={selected}
           onClick={e => { e.stopPropagation(); onToggle(o.id, indexInFiltered, e.shiftKey) }}
           onChange={() => {}} aria-label="Select order" />
       </div>
 
-      {/* Customer (click → detail) — compact: name + order# on one line, set-gate
-          chip only when present. */}
-      <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)}>
+      {/* Family (click → detail) */}
+      <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
           <span className="sb-crm-primary sb-ord-cust-name">{o._familyName}</span>
-          <span className="sb-crm-secondary sb-crm-mono sb-ord-cust-num">{o.order_number || 'DRAFT'}</span>
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
         {o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
       </button>
+
+      {/* Order # */}
+      <div style={{ minWidth: 0 }}><span className="sb-crm-secondary sb-crm-mono" style={{ fontSize: 12 }}>{o.order_number || 'DRAFT'}</span></div>
+
+      {/* Customer name (full first + last — the old combined column cut this off) */}
+      <div style={{ minWidth: 0 }}>
+        <span className="sb-crm-secondary" style={{ fontSize: 13, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {custName || <span className="sb-crm-muted">—</span>}
+        </span>
+      </div>
 
       {/* Job Type */}
       <div><span className="sb-crm-secondary">{jobTypeLabel(o._jobType, o.service_types)}</span></div>
