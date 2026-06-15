@@ -61,6 +61,7 @@ import {
   addJobEvent,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
+import RevisionThread from './components/RevisionThread'
 
 // ============================================================================
 // LABEL DICTIONARIES
@@ -1806,6 +1807,10 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                 <span className="sb-design-approval-detail"> · {proofSummary.detail}</span>
               )}
             </div>
+            {/* Customer revision thread — same shared component + data as the
+                Design hub. Self-gates: renders only when the order has
+                change-request history; nothing otherwise. */}
+            <RevisionThread order={order} jobId={jobId} />
           </div>
           {/* TODO Phase 5: "Send to customer" button — appears here once a
               layout has been uploaded and approval is not yet recorded. */}
