@@ -1075,6 +1075,12 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
       payload: { version_id: currentVersion.id, version_number: currentVersion.version_number, requested_by: by },
     })
     if (!ev.ok) { setChangeModal(m => ({ ...m, busy: false, error: ev.error })); return }
+    // Fire the same queryable "revision pending" signal the remote-approval path
+    // sets (proof_changes_requested -> in_progress) so internal + customer
+    // rejections light up Today / the pipeline rail / the Design hub identically.
+    // Set it BEFORE the proof_sent revert below so updateMilestone's readiness
+    // gate (proof_changes_requested requires proof_sent done) passes.
+    await updateMilestone(jobId, 'proof_changes_requested', { status: 'in_progress' })
     if (currentVersion.sent_at) {
       const res = await updateProofVersion(currentVersion.id, { sent_at: null })
       if (!res.ok) { setChangeModal(m => ({ ...m, busy: false, error: res.error })); return }

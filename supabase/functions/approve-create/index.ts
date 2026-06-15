@@ -84,6 +84,20 @@ Deno.serve(async (req) => {
   const { data: order } = await admin.from('orders').select('id').eq('id', orderId).maybeSingle()
   if (!order) return json({ error: 'order_not_found' }, 404)
 
+  // 1b. Re-approval block: refuse to mint a link on a version the customer
+  // already rejected. A fresh approval link requires a NEW proof version
+  // (design fixes the layout first, which creates a new version with no link).
+  const { data: rejected } = await admin
+    .from('approval_links').select('id')
+    .eq('proof_version_id', proofVersionId).eq('status', 'changes_requested')
+    .limit(1).maybeSingle()
+  if (rejected) {
+    return json({
+      error: 'version_rejected',
+      detail: 'This layout version had changes requested — upload a new layout version before sending it for approval again.',
+    }, 409)
+  }
+
   // 2. Token + hash + ids.
   const rawToken = base64url(crypto.getRandomValues(new Uint8Array(32)))
   const tokenHash = await sha256Hex(rawToken)

@@ -121,6 +121,8 @@ Deno.serve(async (req) => {
       .from('proof_versions').select('id, job_id, version_number').eq('id', link.proof_version_id).maybeSingle()
     if (pvRow) { versionNumber = pvRow.version_number; jobId = pvRow.job_id }
 
+    const today = nowIso.slice(0, 10)
+
     // Audit event (the notes store) — same event_type the internal flow writes.
     if (jobId) {
       const { data: job } = await admin.from('jobs').select('tenant_id').eq('id', jobId).maybeSingle()
@@ -132,7 +134,23 @@ Deno.serve(async (req) => {
         note: `Customer requested changes${versionNumber ? ` (v${versionNumber})` : ''}: ${changeNotes}`,
         payload: { version_id: link.proof_version_id, version_number: versionNumber, requested_by: signerName || 'Customer', source: 'remote_approval' },
       })
+
+      // Shop-side routing: flip the queryable "revision pending" signal
+      // (proof_changes_requested -> in_progress) and send the proof back to
+      // "not sent" so staff re-send a NEW version. proof_approved is NEVER
+      // touched. Direct updates here intentionally bypass the in-app
+      // updateMilestone readiness gate (this is the system acting on a
+      // validated customer action).
+      await admin.from('job_milestones')
+        .update({ status: 'in_progress', status_date: today, updated_at: nowIso })
+        .eq('job_id', jobId).eq('milestone_key', 'proof_changes_requested')
+      await admin.from('job_milestones')
+        .update({ status: 'not_started', updated_at: nowIso })
+        .eq('job_id', jobId).eq('milestone_key', 'proof_sent')
     }
+
+    // Send the linked proof version back to "not sent" (mirror the internal flow).
+    await admin.from('proof_versions').update({ sent_at: null }).eq('id', link.proof_version_id)
 
     // Order timeline (primary, automatic).
     await admin.from('order_activity').insert({
