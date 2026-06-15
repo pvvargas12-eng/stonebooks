@@ -141,9 +141,28 @@ Deno.serve(async (req) => {
       // touched. Direct updates here intentionally bypass the in-app
       // updateMilestone readiness gate (this is the system acting on a
       // validated customer action).
-      await admin.from('job_milestones')
-        .update({ status: 'in_progress', status_date: today, updated_at: nowIso })
-        .eq('job_id', jobId).eq('milestone_key', 'proof_changes_requested')
+      //
+      // UPSERT, not blind-update: proof_changes_requested was only added to the
+      // new_stone template (20260530); non-new_stone / pre-20260530 jobs never
+      // seeded it, so a bare UPDATE would match zero rows and silently no-op.
+      // No (job_id, milestone_key) unique constraint exists, so do it by hand —
+      // insert inherits tenant/team/group/sort from the proof_sent sibling so it
+      // satisfies job_milestones_team_check and lands in the design phase.
+      const { data: pcr } = await admin.from('job_milestones')
+        .select('id').eq('job_id', jobId).eq('milestone_key', 'proof_changes_requested').maybeSingle()
+      const { data: psib } = await admin.from('job_milestones')
+        .select('*').eq('job_id', jobId).eq('milestone_key', 'proof_sent').maybeSingle()
+      if (pcr) {
+        await admin.from('job_milestones')
+          .update({ status: 'in_progress', status_date: today, updated_at: nowIso }).eq('id', pcr.id)
+      } else {
+        await admin.from('job_milestones').insert({
+          tenant_id: psib?.tenant_id || TENANT_ID, job_id: jobId, milestone_key: 'proof_changes_requested',
+          label: 'Changes requested', group: psib?.group || 'design', team: psib?.team || 'sales',
+          requires: ['proof_sent'], cascades_to: [], is_decision: false,
+          status: 'in_progress', status_date: today, sort_order: psib?.sort_order ?? 5, updated_at: nowIso,
+        })
+      }
       await admin.from('job_milestones')
         .update({ status: 'not_started', updated_at: nowIso })
         .eq('job_id', jobId).eq('milestone_key', 'proof_sent')

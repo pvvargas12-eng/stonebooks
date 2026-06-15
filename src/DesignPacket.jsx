@@ -54,6 +54,7 @@ import {
   getProofVersions,
   getCurrentStaffName,
   updateMilestone,
+  markProofChangesRequested,
   rowBalanceDue,
   uploadProofSignature,
   getProofSignatureSignedUrl,
@@ -1078,9 +1079,8 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     // Fire the same queryable "revision pending" signal the remote-approval path
     // sets (proof_changes_requested -> in_progress) so internal + customer
     // rejections light up Today / the pipeline rail / the Design hub identically.
-    // Set it BEFORE the proof_sent revert below so updateMilestone's readiness
-    // gate (proof_changes_requested requires proof_sent done) passes.
-    await updateMilestone(jobId, 'proof_changes_requested', { status: 'in_progress' })
+    // Upserts the milestone (creates it if this job's template never seeded it).
+    await markProofChangesRequested(jobId)
     if (currentVersion.sent_at) {
       const res = await updateProofVersion(currentVersion.id, { sent_at: null })
       if (!res.ok) { setChangeModal(m => ({ ...m, busy: false, error: res.error })); return }

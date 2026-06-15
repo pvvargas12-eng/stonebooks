@@ -4870,6 +4870,45 @@ export async function addJobEvent(jobId, { eventType, note = null, payload = {},
   return { ok: true }
 }
 
+// Ensure a job has a proof_changes_requested milestone set to in_progress — the
+// single "revision pending" signal Today / the pipeline rail / the Design hub
+// read. proof_changes_requested was only ever added to the new_stone template
+// (20260530); non-new_stone templates never seed it and some jobs predate it, so
+// a blind updateMilestone would no-op. There's no (job_id, milestone_key) unique
+// constraint, so this upserts by hand: update in place if present, else insert a
+// design-group row inheriting tenant/team/group/sort from the proof_sent sibling
+// (so it satisfies job_milestones_team_check). Direct write — no readiness gate.
+// Mirrors the same logic in the approve-submit Edge Function (remote path).
+export async function markProofChangesRequested(jobId) {
+  if (!jobId) return { ok: false, error: 'jobId required' }
+  const nowIso = new Date().toISOString()
+  const today = nowIso.slice(0, 10)
+  const { data: existing, error: selErr } = await supabase
+    .from('job_milestones').select('id')
+    .eq('job_id', jobId).eq('milestone_key', 'proof_changes_requested').maybeSingle()
+  if (selErr) return { ok: false, error: selErr.message }
+  if (existing) {
+    const { error } = await supabase.from('job_milestones')
+      .update({ status: 'in_progress', status_date: today, updated_at: nowIso }).eq('id', existing.id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }
+  const { data: sib } = await supabase
+    .from('job_milestones').select('*')
+    .eq('job_id', jobId).eq('milestone_key', 'proof_sent').maybeSingle()
+  let tenantId = sib?.tenant_id
+  if (!tenantId) {
+    const { data: jr } = await supabase.from('jobs').select('tenant_id').eq('id', jobId).maybeSingle()
+    tenantId = jr?.tenant_id || 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
+  }
+  const { error } = await supabase.from('job_milestones').insert({
+    tenant_id: tenantId, job_id: jobId, milestone_key: 'proof_changes_requested',
+    label: 'Changes requested', group: sib?.group || 'design', team: sib?.team || 'sales',
+    requires: ['proof_sent'], cascades_to: [], is_decision: false,
+    status: 'in_progress', status_date: today, sort_order: sib?.sort_order ?? 5, updated_at: nowIso,
+  })
+  return error ? { ok: false, error: error.message } : { ok: true }
+}
+
 // ── JOBS: event reader ───────────────────────────────────────────────────────
 
 export async function getJobEvents(jobId, { limit = 200, includeVoided = false } = {}) {
