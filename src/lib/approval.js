@@ -29,8 +29,22 @@ export function loadApprovalRequest(token) {
 export function submitApproval({ token, signerName, consent, signatureImage }) {
   return invoke('approve-submit', {
     token,
+    action: 'approve',
     signer_name: signerName,
     consent: !!consent,
     signature_image: signatureImage,
+  })
+}
+
+// Request changes — the customer rejects the layout and describes what needs to
+// change. No signature/consent required. The server records the rejection
+// (job_events + order_activity), stamps the link 'changes_requested', and routes
+// it to the shop's design workflow. Returns { ok, status: 'changes_requested' }.
+export function requestChanges({ token, notes, name }) {
+  return invoke('approve-submit', {
+    token,
+    action: 'request_changes',
+    change_notes: notes,
+    signer_name: name || '',
   })
 }

@@ -15,6 +15,12 @@
 //   5. Write an order_activity entry ("Customer approved & signed").
 //   6. Mark the link 'signed' (audit: ip / user-agent / consent_at).
 //
+// action: 'approve' (default) runs the flow above. action: 'request_changes'
+// records a customer rejection WITHOUT a signed PDF — notes go to job_events
+// (same event_type the internal staff "request changes" flow uses) + the order
+// timeline, and the link is stamped 'changes_requested'. Shop-side milestone
+// routing + the re-approval block land in Phase 2.
+//
 // Deploy WITHOUT JWT:  supabase functions deploy approve-submit --no-verify-jwt
 // =============================================================================
 
@@ -64,15 +70,21 @@ Deno.serve(async (req) => {
   const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
   if (!SUPABASE_URL || !SERVICE_ROLE) return json({ error: 'server_not_configured' }, 500)
 
-  let body: { token?: string; signer_name?: string; consent?: boolean; signature_image?: string }
+  let body: { token?: string; signer_name?: string; consent?: boolean; signature_image?: string; action?: string; change_notes?: string }
   try { body = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
   const token = (body.token || '').trim()
+  const action = body.action === 'request_changes' ? 'request_changes' : 'approve'
   const signerName = (body.signer_name || '').trim()
   const sigImage = body.signature_image || ''
+  const changeNotes = (body.change_notes || '').trim()
   if (!token) return json({ error: 'missing_token' }, 400)
-  if (body.consent !== true) return json({ error: 'consent_required' }, 400)
-  if (!signerName) return json({ error: 'missing_signer_name' }, 400)
-  if (!sigImage) return json({ error: 'missing_signature' }, 400)
+  if (action === 'approve') {
+    if (body.consent !== true) return json({ error: 'consent_required' }, 400)
+    if (!signerName) return json({ error: 'missing_signer_name' }, 400)
+    if (!sigImage) return json({ error: 'missing_signature' }, 400)
+  } else {
+    if (!changeNotes) return json({ error: 'missing_change_notes' }, 400)
+  }
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
   const tokenHash = await sha256Hex(token)
@@ -86,10 +98,56 @@ Deno.serve(async (req) => {
   if (!link) return json({ error: 'not_found' }, 404)
   if (link.status === 'signed') return json({ error: 'already_signed' }, 409)
   if (link.status === 'revoked') return json({ error: 'revoked' }, 409)
+  if (link.status === 'changes_requested') return json({ error: 'changes_requested' }, 409)
   const nowMs = Date.now()
   if (link.status === 'expired' || (link.expires_at && new Date(link.expires_at).getTime() < nowMs)) {
     if (link.status !== 'expired') await admin.from('approval_links').update({ status: 'expired' }).eq('id', link.id)
     return json({ error: 'expired' }, 410)
+  }
+
+  // ── REQUEST CHANGES branch (Phase 1) ────────────────────────────────────────
+  // No PDF, no signature, no signed-bucket write. Record the rejection to the
+  // audit trail (job_events mirrors the internal staff "request changes" flow)
+  // + the order timeline, and stamp the link terminal. Shop-side milestone
+  // routing + the re-approval block land in Phase 2.
+  if (action === 'request_changes') {
+    const nowIso = new Date(nowMs).toISOString()
+    const reqIp = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || null
+    const reqUa = req.headers.get('user-agent') || null
+
+    let versionNumber: number | null = null
+    let jobId: string | null = null
+    const { data: pvRow } = await admin
+      .from('proof_versions').select('id, job_id, version_number').eq('id', link.proof_version_id).maybeSingle()
+    if (pvRow) { versionNumber = pvRow.version_number; jobId = pvRow.job_id }
+
+    // Audit event (the notes store) — same event_type the internal flow writes.
+    if (jobId) {
+      const { data: job } = await admin.from('jobs').select('tenant_id').eq('id', jobId).maybeSingle()
+      await admin.from('job_events').insert({
+        tenant_id: job?.tenant_id || TENANT_ID,
+        job_id: jobId,
+        event_type: 'proof_changes_requested',
+        milestone_key: 'proof_sent',
+        note: `Customer requested changes${versionNumber ? ` (v${versionNumber})` : ''}: ${changeNotes}`,
+        payload: { version_id: link.proof_version_id, version_number: versionNumber, requested_by: signerName || 'Customer', source: 'remote_approval' },
+      })
+    }
+
+    // Order timeline (primary, automatic).
+    await admin.from('order_activity').insert({
+      tenant_id: TENANT_ID, order_id: link.order_id, type: 'change', field: 'Approval',
+      old_value: link.status, new_value: 'changes_requested',
+      note: `Customer requested changes: ${changeNotes}`, actor: signerName || 'Customer',
+    })
+
+    // Stamp the link terminal (audit-complete row).
+    await admin.from('approval_links').update({
+      status: 'changes_requested', changes_requested_at: nowIso, change_notes: changeNotes,
+      signer_name: signerName || null, signer_ip: reqIp, signer_user_agent: reqUa,
+    }).eq('id', link.id)
+
+    return json({ ok: true, status: 'changes_requested' })
   }
 
   const signerIp = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || null
