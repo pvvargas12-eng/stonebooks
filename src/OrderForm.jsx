@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   makeBlankOrder, makeBlankDeceased, saveOrder, rowToOrder, salesModeStyles,
   searchCustomers, searchCemeteries, rowToCustomer, rowToCemetery,
-  fetchMonuments, uploadAttachment,
+  fetchMonuments, uploadAttachment, buildDieSpec,
 } from './SalesMode'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
@@ -754,6 +754,14 @@ export function MonumentCard({ order, update, updatePricing }) {
       <CheckRow checked={order.pricing?.polishDieSides} onChange={v => updatePricing({ polishDieSides: v })}
         label="Polish die sides" hint="adds per-foot polish charge by die height" />
 
+      {/* Live DIE-line preview (same buildDieSpec as Financial line item + contract). */}
+      {(canHaveBase || requiresBase) && (
+        <div style={{ margin: '6px 0 4px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Die line</span>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildDieSpec(order) || '— size · top · sides · color —'}</span>
+        </div>
+      )}
+
       {/* Base */}
       {(canHaveBase || requiresBase) && (
         <div className="of-sub">
@@ -786,6 +794,14 @@ export function MonumentCard({ order, update, updatePricing }) {
                 rows={2} />
             </>
           )}
+        </div>
+      )}
+
+      {/* Live FOUNDATION-line preview (the actual computeFormLineItems foundation row). */}
+      {order.pricing?.foundationCalc !== false && (
+        <div style={{ margin: '6px 0 4px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Foundation line</span>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{lineItems.find(it => String(it.code) === 'foundation')?.label || 'Foundation'}</span>
         </div>
       )}
 

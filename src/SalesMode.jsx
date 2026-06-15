@@ -3574,6 +3574,12 @@ export function ShapeStep({ order, update }) {
       {/* ---- 6. BASE (slants/dies/double-die/bronze) ------------------------- */}
       {shape && shape.canHaveBase && (
         <Section title="Base" eyebrow={shape.requiresBase ? 'Required for this shape' : 'Optional add-on'}>
+          {/* Live DIE-line preview (same buildDieSpec the Financial line item +
+              contract use) — verify the text before picking the base. */}
+          <div style={{ margin: '0 0 14px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Die line</span>
+            <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildDieSpec(order) || '— size · top · sides · color —'}</span>
+          </div>
           {!shape.requiresBase && (
             <ToggleChip
               on={order.baseConfig.include}
@@ -9218,7 +9224,13 @@ function dieSize3(order, shape) {
   const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
   return dimsFromWDT({ w: std?.w ?? order.width, d: std?.d ?? order.depth, t: std?.t ?? order.thickness })
 }
-function buildDieSpec(order) {
+// Exported so OrderForm (Quick Order) renders the SAME die-line preview as the
+// wizard / Financial / contract. Same eslint-disable pattern as buildLineItems —
+// a non-component export from this file is intentional (keeps buildDieSpec the
+// single source; orderRates imports from SalesMode, so it can't live in a lib
+// without a static cycle).
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildDieSpec(order) {
   const shape = SHAPES.find(s => s.code === order.shape)
   if (!shape) return ''
   const size = dieSize3(order, shape)
@@ -9781,6 +9793,14 @@ export function PricingStep({ order, update }) {
 
       {/* Foundation toggle */}
       <Section title="Foundation" eyebrow="Auto-calculated from W × D × rate per sq in">
+        {/* Live FOUNDATION-line preview (the actual buildLineItems foundation row)
+            so the text is visible before toggling foundation. */}
+        {order.pricing.foundationCalc && (
+          <div style={{ margin: '0 0 12px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Foundation line</span>
+            <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildLineItems(order).find(it => String(it.code) === 'foundation')?.label || 'Foundation'}</span>
+          </div>
+        )}
         <ToggleChip
           on={order.pricing.foundationCalc}
           onClick={() => updatePricing({ foundationCalc: !order.pricing.foundationCalc })}
