@@ -160,20 +160,29 @@ export function addonPrice(kind, opts = {}) {
 // with the smallest total overhang (tightest fit above the die) are surfaced
 // first as "recommended"; remaining fitting bases follow by overhang, then any
 // non-fitting bases by width.
+// Options-only helper (NOT part of priceOrderTotals — the total reads the SELECTED
+// base via baseWidthOf/baseDepthOf). HARD RULE: a base must extend beyond the die
+// on BOTH dimensions (strictly larger — no equal/zero-overhang). Smaller-or-equal
+// bases are EXCLUDED entirely, never offered. Recommended = die + 1″/2″/3″ PER SIDE
+// (total +2/+4/+6 width).
 export function rankedBaseSizes(dieWidth, dieDepth) {
   const w = Number(dieWidth) || 0
   const d = Number(dieDepth) || 0
-  const scored = BASE_SIZES.map(b => ({
-    ...b,
-    fits: b.w >= w && b.d >= d,
-    overhang: (b.w - w) + (b.d - d),
-  }))
-  const fitting = scored.filter(s => s.fits).sort((a, b) => a.overhang - b.overhang)
-  const notFitting = scored.filter(s => !s.fits).sort((a, b) => a.w - b.w)
-  return {
-    ordered: [...fitting, ...notFitting],
-    recommendedCodes: fitting.slice(0, 3).map(s => s.code),
+  const fitting = BASE_SIZES
+    .map(b => ({ ...b, overhang: (b.w - w) + (b.d - d) }))
+    .filter(b => (w ? b.w > w : true) && (d ? b.d > d : true))
+    .sort((a, b) => a.overhang - b.overhang)
+  const recommendedCodes = []
+  if (w) {
+    for (const add of [2, 4, 6]) {
+      const target = w + add
+      const best = fitting
+        .filter(b => !recommendedCodes.includes(b.code))
+        .sort((a, b) => Math.abs(a.w - target) - Math.abs(b.w - target) || a.price - b.price)[0]
+      if (best && Math.abs(best.w - target) <= 4) recommendedCodes.push(best.code)
+    }
   }
+  return { ordered: fitting, recommendedCodes }
 }
 
 function baseWidthOf(order) {

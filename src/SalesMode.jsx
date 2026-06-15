@@ -3585,60 +3585,47 @@ export function ShapeStep({ order, update }) {
 
           {(order.baseConfig.include || shape.requiresBase) && (
             <>
-              <Field label="Base size" wide hint="Recommended sizes (3″/2″/1″ wider per side) appear first">
+              <Field label="Base size" wide hint="Only sizes larger than the die · die +1″/2″/3″ per side are starred">
                 <SelectInput
                   value={order.baseConfig.sizeCode || ''}
                   onChange={v => updateBase({ sizeCode: v || null })}
                   placeholder="— pick a base size —"
                   options={(() => {
-                    // Determine the stone's width — from standardSize, then custom
+                    // Die footprint — from standardSize, then custom dims.
                     const shapeRec = SHAPES.find(s => s.code === order.shape)
                     const stdSize = shapeRec && order.standardSizeCode
                       ? shapeRec.standardSizes.find(s => s.code === order.standardSizeCode)
                       : null
                     const stoneW = stdSize?.w ?? order.width ?? null
+                    const stoneD = stdSize?.d ?? order.depth ?? null
 
-                    if (!stoneW) {
-                      // No stone width yet — just show the catalog
-                      return [
-                        ...BASE_SIZES.map(b => ({ value: b.code, label: b.label })),
-                        { value: 'custom', label: 'Custom base size…' },
-                      ]
-                    }
+                    // HARD RULE: never offer a base smaller-or-equal to the die on
+                    // EITHER dimension — a base must extend beyond the die per side.
+                    const fitting = BASE_SIZES
+                      .filter(b => (stoneW ? b.w > stoneW : true) && (stoneD ? b.d > stoneD : true))
+                      .map(b => ({ ...b, overhang: (b.w - (stoneW || 0)) + (b.d - (stoneD || 0)) }))
+                      .sort((a, b) => a.overhang - b.overhang)
 
-                    // Find the closest base for each target (3″, 2″, 1″ wider per side)
-                    // by total added width: 6, 4, 2 inches
-                    const targets = [
-                      { add: 6, badge: '★ Recommended (3″ wider/side)' },
-                      { add: 4, badge: '★ Recommended (2″ wider/side)' },
-                      { add: 2, badge: '★ Recommended (1″ wider/side)' },
-                    ]
+                    // Recommended = die + 1″/2″/3″ PER SIDE (total +2/+4/+6 width).
                     const recCodes = new Set()
                     const recOptions = []
-                    for (const t of targets) {
-                      const targetW = stoneW + t.add
-                      // Closest base by absolute width difference, ties broken by lower price
-                      const candidates = [...BASE_SIZES]
-                        .filter(b => !recCodes.has(b.code))
-                        .sort((a, b) => {
-                          const da = Math.abs(a.w - targetW)
-                          const db = Math.abs(b.w - targetW)
-                          if (da !== db) return da - db
-                          return a.price - b.price
-                        })
-                      const best = candidates[0]
-                      if (best && Math.abs(best.w - targetW) <= 4) {
-                        recCodes.add(best.code)
-                        recOptions.push({ value: best.code, label: `${t.badge} — ${best.label}` })
+                    if (stoneW) {
+                      for (const add of [2, 4, 6]) {
+                        const targetW = stoneW + add
+                        const best = fitting
+                          .filter(b => !recCodes.has(b.code))
+                          .sort((a, b) => Math.abs(a.w - targetW) - Math.abs(b.w - targetW) || a.price - b.price)[0]
+                        if (best && Math.abs(best.w - targetW) <= 4) {
+                          recCodes.add(best.code)
+                          recOptions.push({ value: best.code, label: `★ Recommended (${add / 2}″ wider/side) — ${best.label}` })
+                        }
                       }
                     }
-                    const restOptions = BASE_SIZES
-                      .filter(b => !recCodes.has(b.code))
-                      .map(b => ({ value: b.code, label: b.label }))
+                    const restOptions = fitting.filter(b => !recCodes.has(b.code)).map(b => ({ value: b.code, label: b.label }))
 
                     return [
                       ...recOptions,
-                      ...(recOptions.length && restOptions.length ? [{ value: '', label: '────── all sizes ──────', disabled: true }] : []),
+                      ...(recOptions.length && restOptions.length ? [{ value: '', label: '────── larger sizes ──────', disabled: true }] : []),
                       ...restOptions,
                       { value: 'custom', label: 'Custom base size…' },
                     ]

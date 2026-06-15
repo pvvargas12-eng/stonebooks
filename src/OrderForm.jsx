@@ -668,10 +668,12 @@ export function MonumentCard({ order, update, updatePricing }) {
   const bc = order.baseConfig || {}
   const setBase = (patch) => update({ baseConfig: { ...bc, ...patch } })
   const ranked = useMemo(() => rankedBaseSizes(order.width, order.depth), [order.width, order.depth])
+  // ranked.ordered now contains ONLY bases larger than the die on both dims
+  // (smaller/equal excluded in rankedBaseSizes), so no "(smaller than die)" rows.
   const baseOptions = [
     ...ranked.ordered.map(b => ({
       value: b.code,
-      label: `${b.label}${ranked.recommendedCodes.includes(b.code) ? '  ★ recommended' : (b.fits ? '' : '  (smaller than die)')}`,
+      label: `${b.label}${ranked.recommendedCodes.includes(b.code) ? '  ★ recommended' : ''}`,
     })),
     { value: 'custom', label: 'Custom size…' },
   ]
