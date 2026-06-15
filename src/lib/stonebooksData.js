@@ -4872,41 +4872,35 @@ export async function addJobEvent(jobId, { eventType, note = null, payload = {},
 
 // Ensure a job has a proof_changes_requested milestone set to in_progress — the
 // single "revision pending" signal Today / the pipeline rail / the Design hub
-// read. proof_changes_requested was only ever added to the new_stone template
-// (20260530); non-new_stone templates never seed it and some jobs predate it, so
-// a blind updateMilestone would no-op. There's no (job_id, milestone_key) unique
-// constraint, so this upserts by hand: update in place if present, else insert a
-// design-group row inheriting tenant/team/group/sort from the proof_sent sibling
-// (so it satisfies job_milestones_team_check). Direct write — no readiness gate.
-// Mirrors the same logic in the approve-submit Edge Function (remote path).
+// read. Delegates to the SECURITY DEFINER ensure_proof_changes_requested(uuid)
+// RPC (20260626) which upserts correctly on ANY job: proof_changes_requested was
+// only added to the new_stone template (20260530), so non-new_stone / pre-20260530
+// jobs lack the row and a blind updateMilestone would no-op. The RPC inserts it
+// when absent with a collision-safe sort_order, no dependence on a proof_sent
+// sibling. Same path the approve-submit Edge Function uses (remote rejection).
 export async function markProofChangesRequested(jobId) {
   if (!jobId) return { ok: false, error: 'jobId required' }
-  const nowIso = new Date().toISOString()
-  const today = nowIso.slice(0, 10)
-  const { data: existing, error: selErr } = await supabase
-    .from('job_milestones').select('id')
-    .eq('job_id', jobId).eq('milestone_key', 'proof_changes_requested').maybeSingle()
-  if (selErr) return { ok: false, error: selErr.message }
-  if (existing) {
-    const { error } = await supabase.from('job_milestones')
-      .update({ status: 'in_progress', status_date: today, updated_at: nowIso }).eq('id', existing.id)
-    return error ? { ok: false, error: error.message } : { ok: true }
-  }
-  const { data: sib } = await supabase
-    .from('job_milestones').select('*')
-    .eq('job_id', jobId).eq('milestone_key', 'proof_sent').maybeSingle()
-  let tenantId = sib?.tenant_id
-  if (!tenantId) {
-    const { data: jr } = await supabase.from('jobs').select('tenant_id').eq('id', jobId).maybeSingle()
-    tenantId = jr?.tenant_id || 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
-  }
-  const { error } = await supabase.from('job_milestones').insert({
-    tenant_id: tenantId, job_id: jobId, milestone_key: 'proof_changes_requested',
-    label: 'Changes requested', group: sib?.group || 'design', team: sib?.team || 'sales',
-    requires: ['proof_sent'], cascades_to: [], is_decision: false,
-    status: 'in_progress', status_date: today, sort_order: sib?.sort_order ?? 5, updated_at: nowIso,
-  })
+  const { error } = await supabase.rpc('ensure_proof_changes_requested', { p_job_id: jobId })
   return error ? { ok: false, error: error.message } : { ok: true }
+}
+
+// Latest customer change-request note per job (the proof_changes_requested
+// job_event written on rejection). Returns { [jobId]: note }. Used by Today /
+// the Design hub to preview what the customer asked to change.
+export async function getLatestChangeRequestNotes(jobIds = []) {
+  const ids = (jobIds || []).filter(Boolean)
+  if (!ids.length) return {}
+  const { data, error } = await supabase
+    .from('job_events')
+    .select('job_id, note, created_at')
+    .eq('event_type', 'proof_changes_requested')
+    .eq('voided', false)
+    .in('job_id', ids)
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[approval] getLatestChangeRequestNotes:', error.message); return {} }
+  const map = {}
+  for (const r of (data || [])) { if (!(r.job_id in map)) map[r.job_id] = r.note || '' }
+  return map
 }
 
 // ── JOBS: event reader ───────────────────────────────────────────────────────
