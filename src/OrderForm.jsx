@@ -30,11 +30,14 @@ import {
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
 import {
-  SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
+  SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   MONUMENT_TYPES, BASE_FINISHES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
   computeFormLineItems, computeTotals, rankedBaseSizes, addonPrice, stoneFaceArea,
 } from './lib/orderRates'
+
+// Shapes that carry a monument top — same set the SalesMode wizard gates on.
+const TOP_SHAPE_TYPES = ['slant', 'double-slant', 'die', 'double-die', 'civic', 'custom']
 
 // Feet-inches 3-dimension label for the die size dropdown (the die standardSizes
 // carry w/d/t; their label string drops the middle one). Matches SalesMode.
@@ -720,6 +723,18 @@ export function MonumentCard({ order, update, updatePricing }) {
               { value: 'custom', label: 'Custom size…' },
             ]}
             placeholder="Select size…" />
+        </Grid>
+      )}
+
+      {/* Top shape — ported from the wizard (same TOP_SHAPES source, same gated
+          shape types) so a Quick-Order die can set order.topShape and the
+          contract / die line can show it. */}
+      {shapeObj && TOP_SHAPE_TYPES.includes(order.shape) && (
+        <Grid cols={2}>
+          <SelectField label="Top shape" value={order.topShape || ''}
+            onChange={v => update({ topShape: v || null })}
+            options={TOP_SHAPES.map(t => ({ value: t.code, label: t.label }))}
+            placeholder="Select top…" hint="Serpentine, oval, flat, roof, etc." />
         </Grid>
       )}
 
