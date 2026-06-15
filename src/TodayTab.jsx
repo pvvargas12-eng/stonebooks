@@ -84,10 +84,9 @@ async function loadCommandCenter() {
   if (oRes.error) throw new Error(oRes.error.message)
   // Change-request note previews — only for jobs flagged with an active
   // proof_changes_requested signal (bounded: usually a handful of jobs).
-  const flaggedJobIds = (jobs || [])
+  const flaggedJobs = (jobs || [])
     .filter(j => (j.milestones || []).some(m => m.milestone_key === 'proof_changes_requested' && m.status === 'in_progress'))
-    .map(j => j.id)
-  const changeNotes = await getLatestChangeRequestNotes(flaggedJobIds)
+  const changeNotes = await getLatestChangeRequestNotes(flaggedJobs)
   return { orders: oRes.data || [], jobs: jobs || [], changeNotes }
 }
 
@@ -224,8 +223,7 @@ function computeDecisions({ jobs, orders, today, changeNotes = {} }) {
     const changeReq = byKey.get('proof_changes_requested')
     if (changeReq?.status === 'in_progress') {
       const who = jobLastname(j)
-      const rawNote = changeNotes[j.id] || ''
-      const preview = rawNote.replace(/^Customer requested changes[^:]*:\s*/i, '').trim().slice(0, 90)
+      const preview = (changeNotes[j.id] || '').slice(0, 90)
       out.push({
         severity: 'amber',
         kind: 'layout_changes_requested',

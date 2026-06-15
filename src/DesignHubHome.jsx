@@ -22,7 +22,7 @@
 // =============================================================================
 
 import { useState, useMemo, useEffect } from 'react'
-import { fmtUSD, fmtDate, getJobEvents } from './lib/stonebooksData'
+import { fmtUSD, fmtDate, getLatestChangeRequestNote, getLatestChangeRequestNotes } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 
 // Local short-date — fmtDate is fine but the deadline label in the preview
@@ -52,30 +52,26 @@ function proofStateForItem(item) {
   return 'design_needed'
 }
 
-// Latest customer change-request note for a job, shown in the preview pane when
-// the job is in 'revision'. Self-contained fetch so the queue derivation stays
-// synchronous and note-free.
-function RevisionNote({ jobId }) {
+// Full customer change-request note, shown in the preview pane when a job is in
+// 'revision'. Reads the authoritative approval_links.change_notes (falls back to
+// job_events for internal-staff rejections) via getLatestChangeRequestNote — the
+// helper returns a clean string, so no prefix-stripping here.
+function RevisionNote({ orderId, jobId }) {
   const [note, setNote] = useState(null)
   useEffect(() => {
     let alive = true
-    getJobEvents(jobId, { limit: 20 })
-      .then(evs => {
-        if (!alive) return
-        const ev = (evs || []).find(e => e.event_type === 'proof_changes_requested')
-        setNote(ev ? (ev.note || '') : '')
-      })
+    getLatestChangeRequestNote({ orderId, jobId })
+      .then(n => { if (alive) setNote(n || '') })
       .catch(() => { if (alive) setNote('') })
     return () => { alive = false }
-  }, [jobId])
+  }, [orderId, jobId])
   if (!note) return null
-  const clean = note.replace(/^Customer requested changes[^:]*:\s*/i, '').trim()
   return (
     <div style={{ marginTop: 8, padding: '8px 10px', background: '#fff4ed', border: '1px solid #f0a878', borderRadius: 6 }}>
       <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: '#9a3412', marginBottom: 3 }}>
         ⚠ Customer requested changes
       </div>
-      <div style={{ fontSize: 12.5, color: '#5a4326', lineHeight: 1.45 }}>{clean || '(no detail provided)'}</div>
+      <div style={{ fontSize: 12.5, color: '#5a4326', lineHeight: 1.45 }}>{note}</div>
     </div>
   )
 }
@@ -113,6 +109,22 @@ export default function DesignHubHome({ hubData, onOpenJob }) {
   // item when the queue is non-empty so the preview pane never opens blank.
   const [selectedId, setSelectedId] = useState(() => items[0]?.job?.id || null)
   const [activeFilters, setActiveFilters] = useState(() => new Set())
+
+  // Change-request note previews for revision cards — one batched fetch so the
+  // queue cards show the customer's words while scanning, no per-card round trip.
+  const [changeNotes, setChangeNotes] = useState({})
+  useEffect(() => {
+    const revisionJobs = items
+      .filter(it => proofStateForItem(it) === 'revision')
+      .map(it => ({ id: it.job?.id, order_id: it.job?.order_id || it.order?.id }))
+      .filter(j => j.id)
+    if (!revisionJobs.length) { setChangeNotes({}); return }
+    let alive = true
+    getLatestChangeRequestNotes(revisionJobs)
+      .then(map => { if (alive) setChangeNotes(map) })
+      .catch(() => { if (alive) setChangeNotes({}) })
+    return () => { alive = false }
+  }, [items])
 
   // Apply filter chips. OR-style multi-select within the chip row.
   const filteredItems = useMemo(() => {
@@ -206,6 +218,7 @@ export default function DesignHubHome({ hubData, onOpenJob }) {
                 <QueueCard
                   key={it.job?.id}
                   item={it}
+                  note={changeNotes[it.job?.id]}
                   selected={it.job?.id === effectiveSelectedId}
                   onSelect={() => setSelectedId(it.job?.id)}
                 />
@@ -230,7 +243,7 @@ export default function DesignHubHome({ hubData, onOpenJob }) {
 // =============================================================================
 // QUEUE CARD — one per item in the left rail
 // =============================================================================
-function QueueCard({ item, selected, onSelect }) {
+function QueueCard({ item, note, selected, onSelect }) {
   const job = item.job
   const order = item.order || job.order || null
   const familyName = order?.primary_lastname || order?.customer?.last_name || null
@@ -262,6 +275,14 @@ function QueueCard({ item, selected, onSelect }) {
         <span className="sb-dh-card-foot-spacer" />
         <span className="sb-dh-card-meta sb-crm-tabular">{ageDays}d · {orderNum}</span>
       </div>
+      {ps === 'revision' && note && (
+        <div
+          title={note}
+          style={{ marginTop: 6, fontSize: 11.5, fontWeight: 600, color: '#9a3412', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          ⚠ {note}
+        </div>
+      )}
     </button>
   )
 }
@@ -359,7 +380,7 @@ function PreviewPane({ item, onOpenPacket }) {
       <div className="sb-dh-preview-section">
         <div className="sb-dh-preview-section-eyebrow">Status</div>
         <div className="sb-dh-preview-status-prose">{statusProse}</div>
-        {ps === 'revision' && <RevisionNote jobId={job.id} />}
+        {ps === 'revision' && <RevisionNote orderId={order?.id} jobId={job.id} />}
         {/* Cemetery deadline + rush flag surface here too — operators
             browsing the queue need to see hard external pressure without
             opening the full packet (CRM review 2026-05-29). */}

@@ -4884,23 +4884,85 @@ export async function markProofChangesRequested(jobId) {
   return error ? { ok: false, error: error.message } : { ok: true }
 }
 
-// Latest customer change-request note per job (the proof_changes_requested
-// job_event written on rejection). Returns { [jobId]: note }. Used by Today /
-// the Design hub to preview what the customer asked to change.
-export async function getLatestChangeRequestNotes(jobIds = []) {
-  const ids = (jobIds || []).filter(Boolean)
-  if (!ids.length) return {}
-  const { data, error } = await supabase
-    .from('job_events')
-    .select('job_id, note, created_at')
-    .eq('event_type', 'proof_changes_requested')
-    .eq('voided', false)
-    .in('job_id', ids)
-    .order('created_at', { ascending: false })
-  if (error) { console.warn('[approval] getLatestChangeRequestNotes:', error.message); return {} }
-  const map = {}
-  for (const r of (data || [])) { if (!(r.job_id in map)) map[r.job_id] = r.note || '' }
-  return map
+// Strip the "Customer requested changes (vN): " prefix the job_events note
+// carries, leaving just the customer's words. approval_links.change_notes is
+// stored raw (no prefix), so it passes through unchanged.
+function stripChangePrefix(note) {
+  return String(note || '').replace(/^Customer requested changes[^:]*:\s*/i, '').trim()
+}
+
+// Latest customer change-request note for ONE order/job. Primary source is the
+// authoritative approval_links.change_notes (remote customer rejections — a
+// single field, no limit/voided/ordering fragility); falls back to job_events
+// for internal-staff rejections that have no approval link. The job_events read
+// is filtered by event_type server-side (no limit cutoff) and voided-tolerant.
+// Returns a CLEAN string ('' if none). Used by the Design hub preview pane.
+export async function getLatestChangeRequestNote({ orderId, jobId } = {}) {
+  if (orderId) {
+    const { data } = await supabase
+      .from('approval_links')
+      .select('change_notes, changes_requested_at')
+      .eq('order_id', orderId)
+      .eq('status', 'changes_requested')
+      .order('changes_requested_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (data?.change_notes) return String(data.change_notes).trim()
+  }
+  if (jobId) {
+    const { data } = await supabase
+      .from('job_events')
+      .select('note, created_at')
+      .eq('job_id', jobId)
+      .eq('event_type', 'proof_changes_requested')
+      .or('voided.is.null,voided.eq.false')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (data?.note) return stripChangePrefix(data.note)
+  }
+  return ''
+}
+
+// Batched version for lists (Today decisions, Design hub queue cards). Accepts
+// job rows (each needs id + order_id), returns { [jobId]: cleanNote }. Same
+// source preference as the singular helper: approval_links.change_notes first
+// (voided-safe), then a voided-tolerant job_events fallback for whatever's left.
+export async function getLatestChangeRequestNotes(jobs = []) {
+  const list = (jobs || []).filter(j => j && j.id)
+  if (!list.length) return {}
+  const out = {}
+  const orderIds = [...new Set(list.map(j => j.order_id || j.order?.id).filter(Boolean))]
+  if (orderIds.length) {
+    const { data } = await supabase
+      .from('approval_links')
+      .select('order_id, change_notes, changes_requested_at')
+      .in('order_id', orderIds)
+      .eq('status', 'changes_requested')
+      .order('changes_requested_at', { ascending: false })
+    const byOrder = {}
+    for (const r of (data || [])) {
+      if (!(r.order_id in byOrder) && r.change_notes) byOrder[r.order_id] = String(r.change_notes).trim()
+    }
+    for (const j of list) {
+      const oid = j.order_id || j.order?.id
+      if (oid && byOrder[oid]) out[j.id] = byOrder[oid]
+    }
+  }
+  const missing = list.filter(j => !out[j.id]).map(j => j.id)
+  if (missing.length) {
+    const { data } = await supabase
+      .from('job_events')
+      .select('job_id, note, created_at')
+      .in('job_id', missing)
+      .eq('event_type', 'proof_changes_requested')
+      .or('voided.is.null,voided.eq.false')
+      .order('created_at', { ascending: false })
+    for (const r of (data || [])) {
+      if (!(r.job_id in out) && r.note) out[r.job_id] = stripChangePrefix(r.note)
+    }
+  }
+  return out
 }
 
 // ── JOBS: event reader ───────────────────────────────────────────────────────
