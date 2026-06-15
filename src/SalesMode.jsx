@@ -3434,7 +3434,7 @@ export function ShapeStep({ order, update }) {
                 className={`sm-size-card ${order.standardSizeCode === sz.code ? 'on' : ''}`}
                 onClick={() => pickStandardSize(sz.code)}
               >
-                <div className="sm-size-label">{sz.label}</div>
+                <div className="sm-size-label">{shape.requiresBase ? dimsFromWDT(sz) : sz.label}</div>
                 <div className="sm-size-meta">{sz.w}″ × {sz.d}″ × {sz.t}″</div>
               </button>
             ))}
@@ -8035,31 +8035,19 @@ export async function generateEstimatePDF(order, opts = {}) {
   // separate upcharge rows). Display-only — computeFormLineItems / priceOrderTotals
   // are untouched, so the grand total (computeTotals above) is unchanged and the
   // shown rows still sum to it. A baseConfig.baseTextOverride prints verbatim.
-  // Trade top-finish labels for the die line (Paul's vocabulary). Serpentine
-  // variants → "Serp Top"; everything else falls back to its TOP_SHAPES label.
-  const DIE_TOP_TRADE = {
-    'classic-serp': 'Serp Top', 'cathedral-serp': 'Serp Top',
-    'flat-top': 'Flat Top', 'roof-top': 'Roof Top', 'oval-top': 'Oval Top',
-    'cathedral': 'Cathedral', 'gothic': 'Gothic',
-  }
-  const fiTrade = (v) => { const n = Number(v); return n ? `${Math.floor(n / 12)}-${n % 12}` : null }
   const foldBaseForDisplay = (list) => {
     let out = list
 
-    // DIE line (base-stone) → PHYSICAL SPEC only: dims + top finish + polish level
-    // (e.g. "2-6 × 0-8 × 2-0 Serp Top P2"). No type name, no "(custom — set price)".
-    // Die-family shapes (have a base) get the full spec; other stone lines just
-    // get the pricing-method language stripped (never print it on a contract).
+    // DIE line (base-stone) → PHYSICAL SPEC only, via the shared buildDieSpec:
+    // "L × W × H · Top · Sides · Color". No type name, no "(custom — set price)".
+    // Same builder the Financial line items use, so they never diverge. Non-die
+    // stone lines just get the pricing-method language stripped.
     const shp = SHAPES.find(s => s.code === order.shape)
     const dieIdx = out.findIndex(it => String(it.code) === 'base-stone')
     if (dieIdx >= 0) {
       let dieLabel = out[dieIdx].label
       if (shp && (shp.canHaveBase || shp.requiresBase)) {
-        const std = order.standardSizeCode ? shp.standardSizes.find(s => s.code === order.standardSizeCode) : null
-        const dims = std ? std.label : [order.width, order.depth, order.thickness].map(fiTrade).filter(Boolean).join(' × ')
-        const topTrade = order.topShape ? (DIE_TOP_TRADE[order.topShape] || TOP_SHAPES.find(t => t.code === order.topShape)?.label || '') : ''
-        const polishCode = order.polishLevel || ''
-        const spec = [dims, topTrade, polishCode].filter(Boolean).join(' ').trim()
+        const spec = buildDieSpec(order)
         if (spec) dieLabel = spec
       } else {
         dieLabel = String(dieLabel || '').replace(/\s*\(custom[^)]*\)/i, '').trim()
@@ -9227,6 +9215,32 @@ function ProductionTimelineSection({ order, update, isLocked }) {
   )
 }
 
+// ── Shared DIE spec-string builder ──────────────────────────────────────────
+// The physical spec the way Paul orders a die: "L × W × H · Top · Sides · Color"
+// (e.g. "1-10 × 0-8 × 2-4 · Serp Top · P2 · Cloud Gray"). ONE source used by the
+// Financial / order-form line items (buildLineItems) AND the contract PDF, so
+// they can never diverge. Size is ALWAYS 3 dimensions from w/d/t — the die
+// standardSizes carry all three; only their label string dropped the middle one.
+const DIE_TOP_TRADE = {
+  'classic-serp': 'Serp Top', 'cathedral-serp': 'Serp Top',
+  'flat-top': 'Flat Top', 'roof-top': 'Roof Top', 'oval-top': 'Oval Top',
+  'cathedral': 'Cathedral', 'gothic': 'Gothic',
+}
+const dimsFromWDT = (o) => [ftIn(o?.w), ftIn(o?.d), ftIn(o?.t)].filter(Boolean).join(' × ')
+function dieSize3(order, shape) {
+  const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
+  return dimsFromWDT({ w: std?.w ?? order.width, d: std?.d ?? order.depth, t: std?.t ?? order.thickness })
+}
+function buildDieSpec(order) {
+  const shape = SHAPES.find(s => s.code === order.shape)
+  if (!shape) return ''
+  const size = dieSize3(order, shape)
+  const topTrade = order.topShape ? (DIE_TOP_TRADE[order.topShape] || TOP_SHAPES.find(t => t.code === order.topShape)?.label || '') : ''
+  const polishCode = order.polishLevel || ''
+  const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || ''
+  return [size, topTrade, polishCode, color].filter(Boolean).join(' · ')
+}
+
 // Build the auto-calculated line items from the order state
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildLineItems(order) {
@@ -9274,9 +9288,13 @@ export function buildLineItems(order) {
     // Base stone — from standard size price, or 0 (custom) if no standard picked
     const stdSize = order.standardSizeCode ? shape.standardSizes.find(s => s.code === order.standardSizeCode) : null
     const basePrice = stdSize?.price ?? 0
+    // Die-family lines (have a base) show the physical spec via the shared
+    // builder — size · top · sides · color — never the type name or a pricing
+    // tag. Other stone shapes keep their name (pricing tag stripped).
+    const dieSpec = (shape.canHaveBase || shape.requiresBase) ? buildDieSpec(order) : ''
     items.push({
       code: 'base-stone',
-      label: stdSize ? `${shape.label} — ${stdSize.label}` : `${shape.label} (custom — set price)`,
+      label: dieSpec || (stdSize ? `${shape.label} — ${stdSize.label}` : shape.label),
       amount: basePrice,
       editable: true,
     })

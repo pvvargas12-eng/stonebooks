@@ -36,6 +36,11 @@ import {
   computeFormLineItems, computeTotals, rankedBaseSizes, addonPrice, stoneFaceArea,
 } from './lib/orderRates'
 
+// Feet-inches 3-dimension label for the die size dropdown (the die standardSizes
+// carry w/d/t; their label string drops the middle one). Matches SalesMode.
+const ofFtIn = (n) => { n = Number(n); return n ? `${Math.floor(n / 12)}-${n % 12}` : '' }
+const ofDims3 = (s) => [ofFtIn(s?.w), ofFtIn(s?.d), ofFtIn(s?.t)].filter(Boolean).join(' × ')
+
 // ── Type config — drives which cards render per job type ────────────────────
 const ORDER_TYPES = {
   new_monument: {
@@ -711,7 +716,7 @@ export function MonumentCard({ order, update, updatePricing }) {
         <Grid cols={2}>
           <SelectField label="Die size" value={isCustomSize ? 'custom' : order.standardSizeCode} onChange={onSize}
             options={[
-              ...(shapeObj.standardSizes || []).map(s => ({ value: s.code, label: `${s.label} — ${fmtUSD(s.price)}` })),
+              ...(shapeObj.standardSizes || []).map(s => ({ value: s.code, label: `${shapeObj.requiresBase ? ofDims3(s) : s.label} — ${fmtUSD(s.price)}` })),
               { value: 'custom', label: 'Custom size…' },
             ]}
             placeholder="Select size…" />
