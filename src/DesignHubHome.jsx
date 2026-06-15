@@ -21,8 +21,8 @@
 // JobDetail with the Design Packet tab pre-selected.
 // =============================================================================
 
-import { useState, useMemo } from 'react'
-import { fmtUSD, fmtDate } from './lib/stonebooksData'
+import { useState, useMemo, useEffect } from 'react'
+import { fmtUSD, fmtDate, getJobEvents } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 
 // Local short-date — fmtDate is fine but the deadline label in the preview
@@ -41,10 +41,43 @@ function proofStateForItem(item) {
   const created  = byKey.get('proof_created')  || byKey.get('bronze_proof_created')
   const isDone = (m) => m && m.status === 'done'
   if (isDone(approved)) return 'approved'
+  // Revision: customer (or staff) requested changes — proof_changes_requested
+  // is the live "revision pending" signal (set by markProofChangesRequested /
+  // the approve-submit Edge Function). Checked before awaiting/sending because
+  // a rejection reverts proof_sent, which would otherwise read as 'sending'.
+  const changeReq = byKey.get('proof_changes_requested')
+  if (changeReq && changeReq.status === 'in_progress') return 'revision'
   if (isDone(sent) && approved && !isDone(approved)) return 'awaiting'
   if (isDone(created) && sent && !isDone(sent)) return 'sending'
-  // TODO Phase 5: detect revision_requested events here and return 'revision'
   return 'design_needed'
+}
+
+// Latest customer change-request note for a job, shown in the preview pane when
+// the job is in 'revision'. Self-contained fetch so the queue derivation stays
+// synchronous and note-free.
+function RevisionNote({ jobId }) {
+  const [note, setNote] = useState(null)
+  useEffect(() => {
+    let alive = true
+    getJobEvents(jobId, { limit: 20 })
+      .then(evs => {
+        if (!alive) return
+        const ev = (evs || []).find(e => e.event_type === 'proof_changes_requested')
+        setNote(ev ? (ev.note || '') : '')
+      })
+      .catch(() => { if (alive) setNote('') })
+    return () => { alive = false }
+  }, [jobId])
+  if (!note) return null
+  const clean = note.replace(/^Customer requested changes[^:]*:\s*/i, '').trim()
+  return (
+    <div style={{ marginTop: 8, padding: '8px 10px', background: '#fff4ed', border: '1px solid #f0a878', borderRadius: 6 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: '#9a3412', marginBottom: 3 }}>
+        ⚠ Customer requested changes
+      </div>
+      <div style={{ fontSize: 12.5, color: '#5a4326', lineHeight: 1.45 }}>{clean || '(no detail provided)'}</div>
+    </div>
+  )
 }
 
 // Operator prose sub-line — "{N} layouts in flight · {N} waiting on customer
@@ -326,6 +359,7 @@ function PreviewPane({ item, onOpenPacket }) {
       <div className="sb-dh-preview-section">
         <div className="sb-dh-preview-section-eyebrow">Status</div>
         <div className="sb-dh-preview-status-prose">{statusProse}</div>
+        {ps === 'revision' && <RevisionNote jobId={job.id} />}
         {/* Cemetery deadline + rush flag surface here too — operators
             browsing the queue need to see hard external pressure without
             opening the full packet (CRM review 2026-05-29). */}

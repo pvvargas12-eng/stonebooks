@@ -36,6 +36,7 @@ import {
   customerName,
   fmtUSD,
   SOLD_STATUSES,
+  getLatestChangeRequestNotes,
 } from './lib/stonebooksData'
 import { supabase } from './lib/supabase'
 
@@ -81,7 +82,13 @@ async function loadCommandCenter() {
     getJobs({ includeClosed: false }),
   ])
   if (oRes.error) throw new Error(oRes.error.message)
-  return { orders: oRes.data || [], jobs: jobs || [] }
+  // Change-request note previews — only for jobs flagged with an active
+  // proof_changes_requested signal (bounded: usually a handful of jobs).
+  const flaggedJobIds = (jobs || [])
+    .filter(j => (j.milestones || []).some(m => m.milestone_key === 'proof_changes_requested' && m.status === 'in_progress'))
+    .map(j => j.id)
+  const changeNotes = await getLatestChangeRequestNotes(flaggedJobIds)
+  return { orders: oRes.data || [], jobs: jobs || [], changeNotes }
 }
 
 // ── Money math ──────────────────────────────────────────────────────────────
@@ -180,7 +187,7 @@ function computePace({ collected, today }) {
 // State-based only. Every claim here is backed by a milestone.status flip or
 // a non-zero balance — no date-based heuristics, because the audit proved
 // milestone dates are 2.7% populated.
-function computeDecisions({ jobs, orders, today }) {
+function computeDecisions({ jobs, orders, today, changeNotes = {} }) {
   const out = []
 
   // Order-level: overdue balance (past target_completion_date with money owed).
@@ -211,6 +218,24 @@ function computeDecisions({ jobs, orders, today }) {
   // claim "X days waiting" because status_date isn't.
   for (const j of jobs) {
     const byKey = milestoneIndex(j)
+
+    // Layout changes requested — customer (or staff) rejected the proof. The
+    // proof_changes_requested milestone is the live "revision pending" signal.
+    const changeReq = byKey.get('proof_changes_requested')
+    if (changeReq?.status === 'in_progress') {
+      const who = jobLastname(j)
+      const rawNote = changeNotes[j.id] || ''
+      const preview = rawNote.replace(/^Customer requested changes[^:]*:\s*/i, '').trim().slice(0, 90)
+      out.push({
+        severity: 'amber',
+        kind: 'layout_changes_requested',
+        sentence: `${who} · layout changes requested`,
+        detail: preview || null,
+        prose: `the ${who} layout has changes requested${preview ? `: ${preview}` : ''}`,
+        action: 'Review changes',
+        jobId: j.id,
+      })
+    }
 
     // Proof awaiting family approval — proof_created done, proof_approved not.
     const pCreated  = byKey.get('proof_created')
@@ -403,7 +428,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     if (!data) return null
     const money     = computeMoney({ orders: data.orders, today })
     const pace      = computePace({ collected: money.collectedThisMonth, today })
-    const decisions = computeDecisions({ jobs: data.jobs, orders: data.orders, today })
+    const decisions = computeDecisions({ jobs: data.jobs, orders: data.orders, today, changeNotes: data.changeNotes || {} })
     const briefing  = composeBriefing({ name: firstName, jobs: data.jobs, money, pace, decisions, today })
     return { money, pace, decisions, briefing }
   }, [data, today, firstName])
@@ -620,7 +645,14 @@ function Decisions({ rows, onOpenJob, onOpenOrder }) {
                   style={{ background: r.severity === 'red' ? C_RED : C_BRONZE }}
                   aria-hidden="true"
                 />
-                <span className="sb-today-decision-text">{r.sentence}</span>
+                <span className="sb-today-decision-text">
+                  {r.sentence}
+                  {r.detail && (
+                    <span style={{ display: 'block', fontSize: 12, color: '#8a8472', fontStyle: 'italic', marginTop: 2 }}>
+                      “{r.detail}”
+                    </span>
+                  )}
+                </span>
                 <span className="sb-today-decision-action">{r.action}</span>
               </button>
             </li>

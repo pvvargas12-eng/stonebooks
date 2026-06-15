@@ -21,6 +21,12 @@ const tone = (s) => STATUS_TONE[s] || STATUS_TONE.not_started
 
 export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMilestone, onOpenPhase, onAddTask, onRemoveTask }) {
   const pipe = buildPipeline(order, job)
+  // Customer/staff requested layout changes — read the live signal directly off
+  // the job milestones so the Design-phase flag is independent of where the
+  // proof_changes_requested row's team/group happens to place its row.
+  const changeRequested = (job?.milestones || []).some(
+    m => m.milestone_key === 'proof_changes_requested' && m.status === 'in_progress'
+  )
   const [openKey, setOpenKey] = useState(null)
   const [busyKey, setBusyKey] = useState(null)
   const [addPhase, setAddPhase] = useState('production')
@@ -66,6 +72,10 @@ export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMile
             <span className="sb-opr-phase-count">{phase.done}/{phase.total}</span>
           </div>
           <div className="sb-opr-pbar"><div className="sb-opr-pbar-fill" style={{ width: `${phase.pct}%` }} /></div>
+
+          {phase.code === 'design' && changeRequested && (
+            <div className="sb-opr-change-flag">⚠ Customer requested changes</div>
+          )}
 
           {phase.items.length === 0 && tasksByPhase(phase.code).length === 0 && (
             <div className="sb-opr-empty">—</div>
@@ -140,6 +150,7 @@ const CSS = `
 .sb-opr-pbar { height: 4px; background: #ece6d8; border-radius: 3px; overflow: hidden; margin: 4px 0 6px; }
 .sb-opr-pbar-fill { height: 100%; background: #c8a24a; transition: width 0.3s; }
 .sb-opr-empty { font-size: 11px; color: #c2bdb2; padding: 2px 0 4px; }
+.sb-opr-change-flag { font-size: 11.5px; font-weight: 700; color: #9a3412; background: #fff4ed; border: 1px solid #f0a878; border-radius: 6px; padding: 5px 8px; margin: 2px 0 6px; }
 .sb-opr-row { margin: 1px 0; }
 .sb-opr-row-main { display: flex; align-items: center; gap: 7px; width: 100%; border: none; background: none; text-align: left; padding: 4px 2px; cursor: pointer; font: inherit; border-radius: 4px; }
 .sb-opr-row-main:hover:not(:disabled) { background: #f4f2ee; }
