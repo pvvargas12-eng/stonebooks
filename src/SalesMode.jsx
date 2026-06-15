@@ -1422,6 +1422,7 @@ export function makeBlankOrder() {
       heightCode: null,         // BASE_HEIGHTS[].code (6/8/10/12)
       polishMargin2in: false,   // 2" polished margin add-on
       sides: null,              // BASE_SIDES_OPTIONS[].code
+      baseTextOverride: null,   // optional — verbatim base line text on the contract
     },
 
     // Design pick (Sprint 2)
@@ -3695,6 +3696,16 @@ export function ShapeStep({ order, update }) {
                   {BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)?.blurb}
                 </div>
               )}
+
+              <Field label="Base description override" wide hint="Optional — replaces the base line text on the contract (custom bevels, special notes). Leave blank to auto-build from size + height + margin.">
+                <textarea
+                  value={order.baseConfig.baseTextOverride || ''}
+                  onChange={e => updateBase({ baseTextOverride: e.target.value })}
+                  placeholder={'e.g. Base — 4-0 × 1-0 × 0-8, 12" height, custom bevel top'}
+                  rows={2}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: 8, borderRadius: 6, border: '1px solid #d8d2c4', font: 'inherit', fontSize: 14, resize: 'vertical' }}
+                />
+              </Field>
             </>
           )}
         </Section>
@@ -7623,7 +7634,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     if (street) leftLines.push(street)
     const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
     if (c.city || c.zip) leftLines.push(cityLine)
-    if (phone) leftLines.push('Phone: ' + phone)
+    if (phone) leftLines.push('Phone: ' + formatPhone(phone))
     if (c.email) leftLines.push('Email: ' + c.email)
     if (altEmail) leftLines.push('Alt email: ' + altEmail)
 
@@ -7954,7 +7965,9 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.setFontSize(11)           // #2 enlarge — line items 9.5 → 11 (key legibility win)
   doc.setTextColor(...TEXT)
 
-  // Draw one row. Mutates y via closure.
+  // Draw one row. Mutates y via closure. Item 5 — alternating row shading: a
+  // subtle warm-grey background on every other row so values track to their line.
+  let zebraRow = 0
   const renderLineRow = (label, amount, code) => {
     ensure(5)
     const qty = lineItemQty(code)
@@ -7962,6 +7975,13 @@ export async function generateEstimatePDF(order, opts = {}) {
     // column carries that now.
     const desc = String(code ?? '').startsWith('addon-') ? String(label ?? '').replace(/ × \d+$/, '') : label
     const descLines = doc.splitTextToSize(desc, descWrapW)
+    const rowH = 4.8 * Math.max(descLines.length, 1) + 0.5
+    if (zebraRow % 2 === 1) {
+      doc.setFillColor(247, 245, 240)
+      doc.rect(M - 2, y - 3.4, (W - M) - (M - 2) + 2, rowH, 'F')
+    }
+    zebraRow++
+    doc.setTextColor(...TEXT)
     doc.text(descLines, descX, y)
     if (showLinePrices) {
       doc.text(String(qty), qtyRightX, y, { align: 'right' })
@@ -7969,7 +7989,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.text(fmtUSD(rate), rateRightX, y, { align: 'right' })
       doc.text(fmtUSD(amount), totalRightX, y, { align: 'right' })   // Qty × Rate
     }
-    y += 4.8 * Math.max(descLines.length, 1) + 0.5
+    y += rowH
   }
 
   // A7 — totals for the LIVE order. Hoisted above the single/multi branch so
@@ -8010,8 +8030,38 @@ export async function generateEstimatePDF(order, opts = {}) {
   // ($ discounts, per-line flags, manualTotal all honored, plus pricing.overrides).
   const allInTotalFor = (o) => priceOrderTotals(o).displayed
 
+  // Items 3+4 — fold base-height + base-margin INTO the base-block row for the
+  // CONTRACT display (ONE base line; height + margin in the name AND price; no
+  // separate upcharge rows). Display-only — computeFormLineItems / priceOrderTotals
+  // are untouched, so the grand total (computeTotals above) is unchanged and the
+  // shown rows still sum to it. A baseConfig.baseTextOverride prints verbatim.
+  const foldBaseForDisplay = (list) => {
+    const baseIdx = list.findIndex(it => String(it.code) === 'base-block')
+    if (baseIdx < 0) return list
+    const heightIt = list.find(it => String(it.code) === 'base-height')
+    const marginIt = list.find(it => String(it.code) === 'base-margin')
+    const override = (order.baseConfig?.baseTextOverride || '').trim()
+    if (!heightIt && !marginIt && !override) return list
+    const base = { ...list[baseIdx] }
+    base.amount = (Number(base.amount) || 0) + (Number(heightIt?.amount) || 0) + (Number(marginIt?.amount) || 0)
+    if (override) {
+      base.label = override
+    } else {
+      const hOpt = (order.baseConfig?.heightCode != null) ? BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode) : null
+      base.label = [
+        base.label,
+        (heightIt && hOpt) ? `${hOpt.label} height` : '',
+        marginIt ? '2″ polished margin' : '',
+      ].filter(Boolean).join(', ')
+    }
+    return list
+      .map((it, i) => i === baseIdx ? base : it)
+      .filter(it => String(it.code) !== 'base-height' && String(it.code) !== 'base-margin')
+  }
+  const displayItems = foldBaseForDisplay(pricedItems)
+
   if (additionalQuotes.length === 0) {
-    for (const it of pricedItems) renderLineRow(it.label || '(item)', it.amount, it.code)
+    for (const it of displayItems) renderLineRow(it.label || '(item)', it.amount, it.code)
 
     y += 3
     doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.3)

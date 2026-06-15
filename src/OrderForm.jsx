@@ -758,6 +758,10 @@ export function MonumentCard({ order, update, updatePricing }) {
               )}
               <CheckRow checked={bc.polishMargin2in} onChange={v => setBase({ polishMargin2in: v })}
                 label="2″ polished margin" hint="$70 per foot of base perimeter" />
+              <TextAreaField label="Base description override" value={bc.baseTextOverride}
+                onChange={v => setBase({ baseTextOverride: v })}
+                placeholder={'Optional — replaces the base line on the contract (custom bevels, etc.). Leave blank to auto-build.'}
+                rows={2} />
             </>
           )}
         </div>
