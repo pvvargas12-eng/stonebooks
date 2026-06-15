@@ -4965,6 +4965,88 @@ export async function getLatestChangeRequestNotes(jobs = []) {
   return out
 }
 
+// Full chronological change-request thread for an order — every customer revision
+// (not just latest) plus staff replies, newest first. Sources, de-duplicated:
+//   • remote customer rejections → approval_links (status='changes_requested'),
+//     joined to proof_versions for the version number;
+//   • internal staff rejections  → job_events (event_type='proof_changes_requested'),
+//     EXCLUDING the remote ones (payload.source='remote_approval') already covered
+//     by approval_links, voided-tolerant;
+//   • staff replies              → order_activity (field='revision_reply').
+// Each entry: { id, kind:'revision'|'reply', source, note, versionNumber, at, by }.
+export async function getChangeRequestThread({ orderId, jobId } = {}) {
+  const entries = []
+  if (orderId) {
+    const { data } = await supabase
+      .from('approval_links')
+      .select('id, change_notes, changes_requested_at, proof_version_id, proof:proof_versions(version_number)')
+      .eq('order_id', orderId)
+      .eq('status', 'changes_requested')
+      .order('changes_requested_at', { ascending: false })
+    for (const r of (data || [])) {
+      if (!r.change_notes) continue
+      entries.push({
+        id: `link:${r.id}`, kind: 'revision', source: 'remote',
+        note: String(r.change_notes).trim(),
+        versionNumber: r.proof?.version_number ?? null,
+        at: r.changes_requested_at, by: 'Customer',
+      })
+    }
+  }
+  if (jobId) {
+    const { data } = await supabase
+      .from('job_events')
+      .select('id, note, payload, created_at')
+      .eq('job_id', jobId)
+      .eq('event_type', 'proof_changes_requested')
+      .or('voided.is.null,voided.eq.false')
+      .order('created_at', { ascending: false })
+    for (const r of (data || [])) {
+      if (r.payload?.source === 'remote_approval') continue   // already covered by approval_links
+      entries.push({
+        id: `event:${r.id}`, kind: 'revision', source: 'internal',
+        note: stripChangePrefix(r.note),
+        versionNumber: r.payload?.version_number ?? null,
+        at: r.created_at, by: r.payload?.requested_by || 'Staff',
+      })
+    }
+  }
+  if (orderId) {
+    const { data } = await supabase
+      .from('order_activity')
+      .select('id, note, new_value, actor, created_at')
+      .eq('order_id', orderId)
+      .eq('field', 'revision_reply')
+      .order('created_at', { ascending: false })
+    for (const r of (data || [])) {
+      entries.push({
+        id: `reply:${r.id}`, kind: 'reply',
+        note: r.note || '',
+        versionNumber: r.new_value ? (Number(String(r.new_value).replace(/^v/i, '')) || null) : null,
+        at: r.created_at, by: r.actor || 'Staff',
+      })
+    }
+  }
+  entries.sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime())
+  return entries
+}
+
+// Log a staff reply to a customer revision into the order timeline. Marked
+// field='revision_reply' so getChangeRequestThread surfaces it in the thread;
+// new_value carries the version it replies to ("v4"). Does NOT send email — the
+// caller builds a mailto draft separately (Gmail integration is future work).
+export async function logRevisionReply({ orderId, versionNumber, text, actor }) {
+  const body = (text || '').trim()
+  if (!orderId || !body) return { ok: false, error: 'orderId + text required' }
+  return await logOrderActivity(orderId, {
+    type: 'activity',
+    field: 'revision_reply',
+    newValue: versionNumber != null ? `v${versionNumber}` : null,
+    note: body,
+    actor: actor || 'Staff',
+  })
+}
+
 // ── JOBS: event reader ───────────────────────────────────────────────────────
 
 export async function getJobEvents(jobId, { limit = 200, includeVoided = false } = {}) {
