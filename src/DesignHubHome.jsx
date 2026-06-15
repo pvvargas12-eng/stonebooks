@@ -470,11 +470,15 @@ function PreviewPane({ item, onOpenPacket }) {
       <div className="sb-dh-preview-section">
         <div className="sb-dh-preview-section-eyebrow">Status</div>
         <div className="sb-dh-preview-status-prose">{statusProse}</div>
-        {/* Full revision thread (history + reply) — render once a proof has been
-            sent, so the family's paper trail stays visible even after re-approval. */}
-        {(ps === 'revision' || ps === 'awaiting' || ps === 'approved') && (
-          <RevisionThread order={order} jobId={job.id} />
-        )}
+        {/* Full revision thread (history + reply). Rendered unconditionally — the
+            component self-gates: it shows ONLY when the order actually has
+            change-request history (approval_links rows OR internal request-changes
+            job_events) and returns null otherwise. This is deliberate: revisions
+            are a permanent record across ALL versions, so they must surface
+            regardless of the CURRENT proof's send/draft state (e.g. rejections on
+            v3/v4 still show while v5 is a fresh draft). Zero-revision orders keep
+            showing just "Layout needed". */}
+        <RevisionThread order={order} jobId={job.id} />
         {/* Cemetery deadline + rush flag surface here too — operators
             browsing the queue need to see hard external pressure without
             opening the full packet (CRM review 2026-05-29). */}
