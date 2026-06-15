@@ -1041,12 +1041,22 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               {approvalLinks.length > 0 && (
                 <div className="sb-od-approval-status">
                   {approvalLinks.map(l => {
-                    const lab = { pending: 'Sent', viewed: 'Viewed', signed: 'Signed', expired: 'Expired', revoked: 'Revoked' }[l.displayStatus] || l.displayStatus
-                    const when = l.signed_at || l.viewed_at || l.created_at
+                    const lab = { pending: 'Sent', viewed: 'Viewed', signed: 'Signed', changes_requested: 'Changes requested', expired: 'Expired', revoked: 'Revoked' }[l.displayStatus] || l.displayStatus
+                    const when = l.changes_requested_at || l.signed_at || l.viewed_at || l.created_at
+                    // Copy/re-send the SAME link anytime it's still active (Sent /
+                    // Viewed) — no re-upload. Signed → no re-send (locked); rejected /
+                    // expired / revoked → read-only status only.
+                    const canCopy = (l.displayStatus === 'pending' || l.displayStatus === 'viewed') && !!l.share_url
                     return (
                       <div key={l.id} className="sb-od-approval-row">
                         <span className={`sb-od-approval-badge sb-od-approval-${l.displayStatus}`}>{lab}</span>
                         <span className="sb-od-approval-when">{when ? fmtDate(when) : ''}</span>
+                        {canCopy && (
+                          <>
+                            <button type="button" className="sb-od-link" onClick={() => navigator.clipboard?.writeText(l.share_url)}>Copy link</button>
+                            <button type="button" className="sb-od-link" onClick={() => navigator.clipboard?.writeText(`Your monument layout is ready for approval: ${l.share_url}`)}>Copy message</button>
+                          </>
+                        )}
                         {(l.displayStatus === 'pending' || l.displayStatus === 'viewed') && (
                           <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => handleRevokeLink(l.id)}>Revoke</button>
                         )}

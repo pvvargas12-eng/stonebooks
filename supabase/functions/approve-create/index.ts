@@ -116,6 +116,12 @@ Deno.serve(async (req) => {
     .update({ status: 'revoked', revoked_at: new Date().toISOString() })
     .eq('proof_version_id', proofVersionId).in('status', ['pending', 'viewed'])
 
+  // Public approval URL — raw token only in the URL. Computed BEFORE the insert
+  // so it can be persisted (share_url) for staff to re-copy the SAME link later
+  // without re-uploading a version. (Staff-RLS table; accepted — see 20260627.)
+  const base = (Deno.env.get('APPROVE_BASE_URL') || req.headers.get('Origin') || '').replace(/\/+$/, '')
+  const url = base ? `${base}/approve/${rawToken}` : `/approve/${rawToken}`
+
   // 5. Insert the link row.
   const expiresAt = new Date(Date.now() + EXPIRY_DAYS * 86400_000).toISOString()
   const { error: insErr } = await admin.from('approval_links').insert({
@@ -128,6 +134,7 @@ Deno.serve(async (req) => {
     expires_at: expiresAt,
     unsigned_pdf_path: unsignedPath,
     sig_field_rects: payload.sig_field_rects ?? null,
+    share_url: url,
     created_by: caller.user.id,
   })
   if (insErr) {
@@ -135,8 +142,5 @@ Deno.serve(async (req) => {
     return json({ error: 'insert_failed', detail: insErr.message }, 500)
   }
 
-  // 6. Public approval URL — raw token only in the URL.
-  const base = (Deno.env.get('APPROVE_BASE_URL') || req.headers.get('Origin') || '').replace(/\/+$/, '')
-  const url = base ? `${base}/approve/${rawToken}` : `/approve/${rawToken}`
   return json({ ok: true, link_id: linkId, token: rawToken, url, expires_at: expiresAt })
 })

@@ -513,7 +513,7 @@ export async function getApprovalLinksForOrder(orderId) {
   if (!orderId) return []
   const { data, error } = await supabase
     .from('approval_links')
-    .select('id, order_id, proof_version_id, status, expires_at, viewed_at, signed_at, revoked_at, created_at')
+    .select('id, order_id, proof_version_id, status, expires_at, viewed_at, signed_at, revoked_at, created_at, share_url, changes_requested_at')
     .eq('order_id', orderId)
     .order('created_at', { ascending: false })
   if (error) { console.warn('[approval] getApprovalLinksForOrder:', error.message); return [] }
