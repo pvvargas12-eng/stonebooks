@@ -7671,7 +7671,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   // there is no path that can emit a custom charge twice (this is what fixed the
   // acid-wash double-charge). Dynamic import avoids the SalesMode<->orderRates
   // static circular import.
-  const { computeFormLineItems, computeTotals, priceOrderTotals } = await import('./lib/orderRates')
+  const { computeFormLineItems, computeTotals, priceOrderTotals, foldBaseRows } = await import('./lib/orderRates')
   const allItems = computeFormLineItems(order)
   // ROOT FIX: a line item's `code` can be non-string (e.g. a custom item whose id
   // is numeric/missing). Optional chaining does NOT guard a non-string, so any
@@ -7822,30 +7822,11 @@ export async function generateEstimatePDF(order, opts = {}) {
     // e.g. "4-0 × 1-0 × 0-8 polished top") + folded 12" height + 2" margin, no
     // "Base —" prefix. A baseTextOverride prints verbatim. Display-only fold —
     // computeFormLineItems / priceOrderTotals untouched, grand total unchanged.
-    const baseIdx = out.findIndex(it => String(it.code) === 'base-block')
-    if (baseIdx < 0) return out
-    const heightIt = out.find(it => String(it.code) === 'base-height')
-    const marginIt = out.find(it => String(it.code) === 'base-margin')
-    const override = (order.baseConfig?.baseTextOverride || '').trim()
-    const base = { ...out[baseIdx] }
-    base.amount = (Number(base.amount) || 0) + (Number(heightIt?.amount) || 0) + (Number(marginIt?.amount) || 0)
-    if (override) {
-      base.label = override
-    } else {
-      const baseSizeObj = BASE_SIZES.find(b => b.code === order.baseConfig?.sizeCode)
-      const baseSpec = baseSizeObj
-        ? baseSizeObj.label
-        : String(base.label || '').replace(/^Base\s*—\s*/i, '').replace(/\s*\(custom[^)]*\)/i, '').trim()
-      const hOpt = (order.baseConfig?.heightCode != null) ? BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode) : null
-      base.label = [
-        baseSpec,
-        (heightIt && hOpt) ? `${hOpt.label} height` : '',
-        marginIt ? '2″ polished margin' : '',
-      ].filter(Boolean).join(', ')
-    }
-    return out
-      .map((it, i) => i === baseIdx ? base : it)
-      .filter(it => String(it.code) !== 'base-height' && String(it.code) !== 'base-margin')
+    // BASE consolidation → the shared foldBaseRows (base-height + base-margin +
+    // saw-base + all-polish-base → ONE base-block row, label = buildBaseSpec).
+    // Same helper the Financial editor uses, so the base line matches everywhere.
+    // Display-only — the grand total comes from the un-folded allItems above.
+    return foldBaseRows(out, order)
   }
   const displayItems = foldBaseForDisplay(pricedItems)
 

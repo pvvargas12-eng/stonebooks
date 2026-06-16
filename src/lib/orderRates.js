@@ -15,7 +15,7 @@
 // buildLineItems) still comes from SalesMode.
 import {
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
-  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS,
+  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, buildBaseSpec,
 } from './monumentCatalog'
 import {
   FOUNDATION_RATE, ADD_ONS_CATALOG,
@@ -166,6 +166,27 @@ export function addonPrice(kind, opts = {}) {
 // with the smallest total overhang (tightest fit above the die) are surfaced
 // first as "recommended"; remaining fitting bases follow by overhang, then any
 // non-fitting bases by width.
+// DISPLAY-ONLY base consolidation. Merges base-height + base-margin + saw-base +
+// all-polish-base INTO the base-block row (label = buildBaseSpec, amount = sum of
+// all of them) so the base shows as ONE line in the Financial editor AND the
+// contract. The grand total MUST be computed from the UN-FOLDED items — this only
+// changes how the base is displayed, never the dollars. (Source-level fold that
+// reconciles the dual override maps is deferred to the Phase-4 pricing-engine
+// unification.)
+const BASE_FOLD_CODES = new Set(['base-height', 'base-margin', 'saw-base', 'all-polish-base'])
+export function foldBaseRows(items, order) {
+  const list = items || []
+  const baseIdx = list.findIndex(it => String(it.code) === 'base-block')
+  if (baseIdx < 0) return list
+  const extrasSum = list.reduce((s, it) => s + (BASE_FOLD_CODES.has(String(it.code)) ? (Number(it.amount) || 0) : 0), 0)
+  const folded = { ...list[baseIdx] }
+  folded.amount = (Number(folded.amount) || 0) + extrasSum
+  folded.label = buildBaseSpec(order || {})
+  return list
+    .map((it, i) => (i === baseIdx ? folded : it))
+    .filter(it => !BASE_FOLD_CODES.has(String(it.code)))
+}
+
 // Options-only helper (NOT part of priceOrderTotals — the total reads the SELECTED
 // base via baseWidthOf/baseDepthOf). HARD RULE: a base must extend beyond the die
 // on BOTH dimensions (strictly larger — no equal/zero-overhang). Smaller-or-equal

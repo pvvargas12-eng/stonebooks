@@ -33,7 +33,7 @@ import {
   SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   MONUMENT_TYPES, BASE_FINISHES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
-  computeFormLineItems, computeTotals, rankedBaseSizes, addonPrice, stoneFaceArea,
+  computeFormLineItems, computeTotals, rankedBaseSizes, addonPrice, stoneFaceArea, foldBaseRows,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -1342,9 +1342,16 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
     ? setCustomField(it.code, { [key]: val })
     : updatePricing({ lineItemFlagOverrides: { ...flagOv, [it.code]: { ...(flagOv[it.code] || {}), [key]: val } } })
 
+  // Display-only: show the base as ONE folded line (base-height + saw-base +
+  // margin + all-polish merged into base-block via the shared foldBaseRows — the
+  // same helper the contract uses). Editing the base row sets the base-block
+  // override (the base size); the folded extras stay on top. Totals are computed
+  // by the CALLER from the un-folded lineItems, so the grand total never changes.
+  const displayItems = foldBaseRows(lineItems, order)
+
   return (
     <div className="of-li">
-      {lineItems.map((it, i) => {
+      {displayItems.map((it, i) => {
         const isCustom = !!it.custom
         const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
         return (
@@ -1389,7 +1396,7 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
           </div>
         )
       })}
-      {lineItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
+      {displayItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
       {removed.length > 0 && (
         <div className="of-li-removed" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13 }}>
           <span className="of-muted">Removed:</span>
