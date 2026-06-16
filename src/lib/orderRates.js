@@ -166,13 +166,17 @@ export function addonPrice(kind, opts = {}) {
 // with the smallest total overhang (tightest fit above the die) are surfaced
 // first as "recommended"; remaining fitting bases follow by overhang, then any
 // non-fitting bases by width.
-// DISPLAY-ONLY base consolidation. Merges base-height + base-margin + saw-base +
-// all-polish-base INTO the base-block row (label = buildBaseSpec, amount = sum of
-// all of them) so the base shows as ONE line in the Financial editor AND the
-// contract. The grand total MUST be computed from the UN-FOLDED items — this only
-// changes how the base is displayed, never the dollars. (Source-level fold that
-// reconciles the dual override maps is deferred to the Phase-4 pricing-engine
-// unification.)
+// Base consolidation. Merges base-height + base-margin + saw-base + all-polish-base
+// INTO the base-block row (label = buildBaseSpec) so the base shows as ONE line in
+// every editor AND the contract — and is edited as ONE number.
+// Phase 4 (Option B): a base-block override sets the WHOLE folded-base figure
+// (size + height + saw + margin), REPLACING the natural sum — not just the size.
+// The override is applied HERE (computeFormLineItems deliberately skips base-block)
+// so the single editable base line means "the entire base costs $X". With NO base
+// override the folded amount equals the un-folded sum, so any order that hasn't set
+// a base override totals byte-identically to the pre-fold engine. Callers compute
+// the grand total from THIS folded list (priceOrderTotals does), so the rows a
+// surface shows always sum to the total it shows.
 const BASE_FOLD_CODES = new Set(['base-height', 'base-margin', 'saw-base', 'all-polish-base'])
 export function foldBaseRows(items, order) {
   const list = items || []
@@ -180,11 +184,28 @@ export function foldBaseRows(items, order) {
   if (baseIdx < 0) return list
   const extrasSum = list.reduce((s, it) => s + (BASE_FOLD_CODES.has(String(it.code)) ? (Number(it.amount) || 0) : 0), 0)
   const folded = { ...list[baseIdx] }
-  folded.amount = (Number(folded.amount) || 0) + extrasSum
+  const natural = (Number(list[baseIdx].amount) || 0) + extrasSum
+  const ov = order?.pricing?.lineItemOverrides?.['base-block']
+  folded.amount = (ov != null && ov !== '') ? Number(ov) : natural
   folded.label = buildBaseSpec(order || {})
   return list
     .map((it, i) => (i === baseIdx ? folded : it))
     .filter(it => !BASE_FOLD_CODES.has(String(it.code)))
+}
+
+// Legacy compat (Phase 4): the retired wizard override map (pricing.overrides) is
+// honored as a fallback for NON-base line codes only. Pre-Phase-4 orders that still
+// carry pricing.overrides price identically without a data migration (the active
+// pricing.lineItemOverrides always wins). Base codes (base-block + the folded
+// extras) are EXCLUDED — their meaning changed under Option B, so those orders are
+// migrated explicitly rather than auto-carried.
+function legacyNonBaseOverrides(overrides) {
+  const out = {}
+  for (const [code, val] of Object.entries(overrides || {})) {
+    if (code === 'base-block' || BASE_FOLD_CODES.has(code)) continue
+    out[code] = val
+  }
+  return out
 }
 
 // Options-only helper (NOT part of priceOrderTotals — the total reads the SELECTED
@@ -374,10 +395,15 @@ export function computeFormLineItems(order) {
     if (it.raw?.quotePending) it.quotePending = true
   }
 
-  // Operator amount overrides — the Finance card lets staff edit any computed
-  // line's amount; a non-empty override on that line's code wins.
-  const ov = pr.lineItemOverrides || {}
+  // Operator amount overrides — every editor (wizard + Finance card + QuoteHub)
+  // lets staff edit any computed line's amount. Phase 4: ONE override map,
+  // pricing.lineItemOverrides. The base-block line is intentionally SKIPPED here —
+  // its override is the WHOLE folded-base figure, applied in foldBaseRows (Option
+  // B). The retired wizard map (pricing.overrides) is read as a NON-base fallback
+  // so un-migrated legacy orders price identically (lineItemOverrides wins).
+  const ov = { ...legacyNonBaseOverrides(pr.overrides), ...(pr.lineItemOverrides || {}) }
   for (const it of items) {
+    if (it.code === 'base-block' || BASE_FOLD_CODES.has(it.code)) continue
     if (ov[it.code] != null && ov[it.code] !== '') it.amount = Number(ov[it.code])
   }
 
@@ -473,25 +499,29 @@ export function computeTotals(items, { applyTax = true, applyCCSurcharge = false
   }
 }
 
-// ── priceOrderTotals — THE single entry point for "what is this order's total".
-// Runs the EXACT pipeline the estimate/contract PDF uses so no surface (wizard
-// PricingStep, QuotesManager, PDF) can disagree:
-//   1. computeFormLineItems(order)        — the canonical priced line items
-//   2. overlay pricing.overrides[code]    — the wizard's per-line override map
-//      (computeFormLineItems already honors pricing.lineItemOverrides; the wizard
-//      writes pricing.overrides, which the PDF overlays separately — do the same)
-//   3. computeTotals(...)                 — taxable/discountable-aware, pct OR $ discount
-//   4. manualTotal                        — a manual grand-total override wins
-// Returns { items, totals, manual, displayed }. `displayed` is the number every
-// surface must show. Callers that need the raw breakdown read `totals`.
+// ── priceOrderTotals — THE single entry point for "what is this order's total"
+// AND "what line items does it have". Phase 4: ONE engine, ONE override map, ONE
+// folded list. Every World-A surface (wizard PricingStep, OrderForm, QuoteHub,
+// estimate/contract/receipt PDF, QuotesManager) renders `.items` and shows
+// `.displayed`, so no two screens can disagree and the rows always sum to the
+// total:
+//   1. computeFormLineItems(order)   — canonical priced lines (non-base overrides
+//                                       applied; legacy pricing.overrides honored
+//                                       as a non-base fallback)
+//   2. foldBaseRows(...)             — base → ONE line; whole-base override applied
+//                                       (Option B). Totals come from this folded
+//                                       list, so a base override actually moves the
+//                                       total and the shown base line matches it.
+//   3. computeTotals(...)            — taxable/discountable-aware, pct OR $ discount
+//   4. manualTotal                   — a manual grand-total override wins
+// Returns { items, totals, manual, displayed }. `items` is the folded list.
 export function priceOrderTotals(order) {
   const o = order || {}
   const pr = o.pricing || {}
-  const items = computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') }))
-  const ov = pr.overrides || {}
-  for (const it of items) {
-    if (ov[it.code] != null && ov[it.code] !== '') it.amount = Number(ov[it.code])
-  }
+  const items = foldBaseRows(
+    computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') })),
+    o,
+  )
   const totals = computeTotals(items, {
     applyTax: pr.applyTax !== false,
     applyCCSurcharge: !!pr.applyCCSurcharge,

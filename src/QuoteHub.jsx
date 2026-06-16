@@ -17,7 +17,7 @@ import {
   QUOTE_STATUS_LABEL, QUOTE_STATUS_TONE, NJ_TAX_RATE, CC_SURCHARGE,
 } from './lib/stonebooksData'
 import { rowToOrder, saveOrder, generateEstimatePDF } from './SalesMode'
-import { computeFormLineItems, computeTotals } from './lib/orderRates'
+import { priceOrderTotals } from './lib/orderRates'
 
 const FILTERS = [
   { code: 'pending_review',   label: 'Pending Owner Review' },
@@ -242,14 +242,16 @@ function ReviewDesk({ row, onReload, onEditOrder, onClose }) {
     return () => { cancelled = true }
   }, [orderId])
 
-  const items = useMemo(() => (order ? computeFormLineItems(order) : []), [order])
-  const totals = useMemo(() => computeTotals(items, {
-    applyTax: order?.pricing?.applyTax !== false,
-    applyCCSurcharge: !!order?.pricing?.applyCCSurcharge,
-    discountType: order?.pricing?.discountType,
-    discountValue: order?.pricing?.discountValue,
-    discountPct: Number(order?.pricing?.discountPct) || 0,
-  }), [items, order])
+  // Phase 4 — ONE pipeline (priceOrderTotals): folded base line, one override map
+  // (lineItemOverrides, which this desk already writes), whole-base override honored.
+  const priced = useMemo(
+    () => (order
+      ? priceOrderTotals(order)
+      : { items: [], totals: { subtotalDisc: 0, subtotalPermit: 0, discountAmt: 0, tax: 0, cc: 0, grandTotal: 0 }, displayed: 0 }),
+    [order],
+  )
+  const items = priced.items
+  const totals = priced.totals
 
   const patchPricing = (fn) => { setDirty(true); setOrder(o => ({ ...o, pricing: fn({ ...(o.pricing || {}) }) })) }
   const customById = (id) => (order?.pricing?.customLineItems || []).find(c => c.id === id)

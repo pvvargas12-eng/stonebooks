@@ -7671,20 +7671,13 @@ export async function generateEstimatePDF(order, opts = {}) {
   // there is no path that can emit a custom charge twice (this is what fixed the
   // acid-wash double-charge). Dynamic import avoids the SalesMode<->orderRates
   // static circular import.
-  const { computeFormLineItems, computeTotals, priceOrderTotals, foldBaseRows } = await import('./lib/orderRates')
-  const allItems = computeFormLineItems(order)
-  // ROOT FIX: a line item's `code` can be non-string (e.g. a custom item whose id
-  // is numeric/missing). Optional chaining does NOT guard a non-string, so any
-  // downstream code?.startsWith(...) would throw. Normalize every code to a
-  // string ('' when absent) here, at the assembly point, so no path can crash.
-  for (const it of allItems) it.code = String(it.code ?? '')
-  // Overlay the wizard's override map too — OrderForm overrides are applied
-  // inside computeFormLineItems (pricing.lineItemOverrides); the wizard uses
-  // pricing.overrides, so honor both here.
-  const ovMap = order.pricing?.overrides || {}
-  for (const it of allItems) {
-    if (ovMap[it.code] != null && ovMap[it.code] !== '') it.amount = Number(ovMap[it.code])
-  }
+  const { priceOrderTotals } = await import('./lib/orderRates')
+  // Phase 4 — ONE pipeline. priceOrderTotals returns the folded, override-applied
+  // line items (base as ONE line, whole-base override honored) AND the matching
+  // totals, so the contract/estimate can never disagree with the wizard / OrderForm.
+  // Codes are already string-normalized inside priceOrderTotals.
+  const priced = priceOrderTotals(order)
+  const allItems = priced.items
   // Priced lines only. Quote-pending items carry no agreed price yet, so they are
   // excluded from the priced table and the subtotal.
   const pricedItems = allItems.filter(it => !it.quotePending && it.amount != null)
@@ -7762,15 +7755,11 @@ export async function generateEstimatePDF(order, opts = {}) {
   // single-quote ESTIMATE shows one all-in TOTAL (tax in); a multi-quote ESTIMATE
   // shows one descriptions-only block + all-in total PER quote.
   const prPdf = order.pricing || {}
-  const totals = computeTotals(allItems, {
-    applyTax: prPdf.applyTax !== false,
-    applyCCSurcharge: !!prPdf.applyCCSurcharge,
-    discountType: prPdf.discountType,
-    discountValue: prPdf.discountValue,
-    discountPct: Number(prPdf.discountPct) || 0,
-  })
-  const manualTotalPdf = (prPdf.manualTotal != null && prPdf.manualTotal !== '') ? Number(prPdf.manualTotal) : null
-  const finalTotal = manualTotalPdf != null ? manualTotalPdf : totals.grandTotal
+  // Totals from the SAME priceOrderTotals result as the line items above — folded,
+  // override-applied, manualTotal honored. No second computeTotals pass, so the
+  // rows printed always sum to the TOTAL printed.
+  const totals = priced.totals
+  const finalTotal = priced.displayed
   const subtotalPdf = totals.subtotalDisc + totals.subtotalPermit
 
   const totLabelX = W - M - 80, totValX = W - M
@@ -7790,14 +7779,12 @@ export async function generateEstimatePDF(order, opts = {}) {
   const additionalQuotes = (!isContract && Array.isArray(order.quotes) && order.quotes.length)
     ? order.quotes : []
   // Per-quote all-in total — the SAME unified pipeline as the wizard + quotes
-  // ($ discounts, per-line flags, manualTotal all honored, plus pricing.overrides).
+  // (folded base, one override map, $/% discounts, per-line flags, manualTotal).
   const allInTotalFor = (o) => priceOrderTotals(o).displayed
 
-  // Items 3+4 — fold base-height + base-margin INTO the base-block row for the
-  // CONTRACT display (ONE base line; height + margin in the name AND price; no
-  // separate upcharge rows). Display-only — computeFormLineItems / priceOrderTotals
-  // are untouched, so the grand total (computeTotals above) is unchanged and the
-  // shown rows still sum to it. A baseConfig.baseTextOverride prints verbatim.
+  // DIE-label transform for the printed table. The base rows are ALREADY folded
+  // into one base-block line by priceOrderTotals (Phase 4) — this only rewrites the
+  // DIE (base-stone) label to the physical spec; it does NOT re-fold or re-price.
   const foldBaseForDisplay = (list) => {
     let out = list
 
@@ -7818,15 +7805,10 @@ export async function generateEstimatePDF(order, opts = {}) {
       out = out.map((it, i) => (i === dieIdx ? { ...it, label: dieLabel } : it))
     }
 
-    // BASE line (base-block) → PHYSICAL SPEC: BASE_SIZES label (carries finish,
-    // e.g. "4-0 × 1-0 × 0-8 polished top") + folded 12" height + 2" margin, no
-    // "Base —" prefix. A baseTextOverride prints verbatim. Display-only fold —
-    // computeFormLineItems / priceOrderTotals untouched, grand total unchanged.
-    // BASE consolidation → the shared foldBaseRows (base-height + base-margin +
-    // saw-base + all-polish-base → ONE base-block row, label = buildBaseSpec).
-    // Same helper the Financial editor uses, so the base line matches everywhere.
-    // Display-only — the grand total comes from the un-folded allItems above.
-    return foldBaseRows(out, order)
+    // The BASE line is already one folded base-block row (label = buildBaseSpec,
+    // carrying finish + 12" height + 2" margin) from priceOrderTotals, matching the
+    // wizard + Financial editor exactly. Nothing more to fold here.
+    return out
   }
   const displayItems = foldBaseForDisplay(pricedItems)
 
@@ -7860,7 +7842,7 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...NAVY)
       doc.text(String(label).toUpperCase(), descX, y); y += 4.5
       doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...TEXT)
-      // Items via priceOrderTotals so per-line overrides (pricing.overrides) show.
+      // Items via priceOrderTotals — folded base + per-line overrides applied.
       const items = priceOrderTotals(o).items.filter(it => !it.quotePending && it.amount != null)
       for (const it of items) renderLineRow(it.label || '(item)', it.amount, String(it.code ?? ''))
       y += 1
@@ -8523,25 +8505,11 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     y = ensureBlock(doc, y, need, { pageHeight: H, margin: M, footerReserve: 0 })
   }
 
-  // Compute totals — ONE formula (matches PaymentTrackingSection / contract).
-  // buildLineItems already includes custom line items, so they must NOT be added
-  // again. The cemetery permit is a pass-through and is NOT taxed.
-  const lineItems = buildLineItems(order)
-  let subtotalDisc = 0, subtotalPermit = 0
-  for (const it of lineItems) {
-    if (it.amount == null) continue
-    const ov = order.pricing?.overrides?.[it.code]
-    const amt = ov != null ? Number(ov) : (it.amount || 0)
-    if (it.code === 'addon-permit') subtotalPermit += amt
-    else                            subtotalDisc   += amt
-  }
-  const discountPct = Number(order.pricing?.discountPct) || 0
-  const discountAmount = subtotalDisc * (discountPct / 100)
-  const taxableBase = subtotalDisc - discountAmount
-  const tax = order.pricing?.applyTax ? taxableBase * NJ_TAX_RATE : 0
-  const grandBeforeCC = taxableBase + subtotalPermit + tax
-  const cc  = order.pricing?.applyCCSurcharge ? grandBeforeCC * CC_SURCHARGE : 0
-  const grandTotal = Math.round((grandBeforeCC + cc) * 100) / 100
+  // Grand total — the SAME unified pipeline as the contract / wizard / payments
+  // (priceOrderTotals: folded base, ONE override map, manualTotal honored), so the
+  // receipt's balance math can never disagree with the order screen.
+  const { priceOrderTotals } = await import('./lib/orderRates')
+  const grandTotal = priceOrderTotals(order).displayed
 
   // Sprint M2 Phase 2 — this-payment fields come from the passed payment
   // object; running totals sum the whole non-voided payments[] array (the
@@ -9244,60 +9212,34 @@ function DueDateControl({ order, update, updatePricing, isLocked }) {
 }
 
 export function PricingStep({ order, update }) {
-  const lineItems = useMemo(() => buildLineItems(order), [order])
   const isLocked = !!(order.signedAt || order.pricingLockedAt)
-  // Unified totals (#8) — computed via priceOrderTotals (the SAME pipeline the
-  // estimate/contract PDF + quotes use: $-or-% discounts, per-line taxable/
-  // discountable flags, and manualTotal all honored). Loaded async because
-  // orderRates can't be statically imported here (cycle). Falls back to the
-  // legacy inline ladder for the first render tick only.
+  // Unified totals + folded line items (#8 / Phase 4) — priceOrderTotals is the
+  // SAME pipeline the estimate/contract PDF + OrderForm + quotes use ($-or-%
+  // discounts, per-line taxable/discountable flags, base folded to one line,
+  // whole-base override, manualTotal — all honored). Loaded async because
+  // orderRates can't be statically imported here (cycle); the useEffect below
+  // repopulates it on every order change.
   const [uTotals, setUTotals] = useState(null)
 
-  // Gate all mutations through this — edits are silent no-ops when locked.
-  // Visual feedback comes from the banner + CSS dimming.
+  // Gate all mutations through this — edits are no-ops when locked. The line-item
+  // inputs are ALSO disabled={isLocked}, so a signed order reads as clearly locked
+  // rather than a dead input that silently rejects keystrokes.
   const updatePricing = (patch) => {
     if (isLocked) return
     update({ pricing: { ...order.pricing, ...patch } })
   }
 
-  // Apply override if set, else use computed amount
-  const effectiveAmount = (item) => {
-    const ov = order.pricing.overrides?.[item.code]
-    return ov != null ? Number(ov) : item.amount
-  }
-
+  // Phase 4 — ONE override map. setOverride writes pricing.lineItemOverrides (the
+  // single map computeFormLineItems + foldBaseRows read). The base-block line
+  // carries the WHOLE folded-base figure (Option B); every other line carries its
+  // own amount. (The retired pricing.overrides map is no longer written here.)
   const setOverride = (code, val) => {
     if (isLocked) return
-    const next = { ...order.pricing.overrides }
+    const next = { ...(order.pricing.lineItemOverrides || {}) }
     if (val === '' || val == null) delete next[code]
     else next[code] = Number(val)
-    updatePricing({ overrides: next })
+    updatePricing({ lineItemOverrides: next })
   }
-
-  // Subtotal math, with discount support:
-  //   - Cemetery Permit ALWAYS sits outside the discount-eligible subtotal
-  //     (passed through at cost, never discounted)
-  //   - Discount applies to the rest of the subtotal
-  //   - Tax then applies to (discounted subtotal + permit)
-  //   - CC surcharge applies on top
-  const isPermitItem = (it) => it.code === 'addon-permit'
-
-  const subtotalDiscountable = lineItems.reduce(
-    (sum, it) => sum + (isPermitItem(it) ? 0 : (effectiveAmount(it) || 0)), 0)
-  const subtotalPermit = lineItems.reduce(
-    (sum, it) => sum + (isPermitItem(it) ? (effectiveAmount(it) || 0) : 0), 0)
-
-  const discountPct = Number(order.pricing.discountPct) || 0    // 0-100
-  const discountAmount = Math.round(subtotalDiscountable * (discountPct / 100) * 100) / 100
-  const subtotalAfterDiscount = subtotalDiscountable - discountAmount
-  const subtotal = subtotalDiscountable + subtotalPermit         // pre-discount total (kept for display compat)
-
-  // Tax the monument (discountable) portion only — cemetery permit is a
-  // pass-through and is NOT taxed (matches computeTotals / contract / payments).
-  const taxAmount = order.pricing.applyTax ? Math.round(subtotalAfterDiscount * NJ_TAX_RATE * 100) / 100 : 0
-  const grandBeforeCC = subtotalAfterDiscount + subtotalPermit + taxAmount
-  const ccAmount  = order.pricing.applyCCSurcharge ? Math.round(grandBeforeCC * CC_SURCHARGE * 100) / 100 : 0
-  const total = grandBeforeCC + ccAmount
 
   // Compute the unified totals (priceOrderTotals — the same pipeline the estimate/
   // contract PDF + quotes use). Dynamic import avoids the SalesMode<->orderRates
@@ -9310,8 +9252,8 @@ export function PricingStep({ order, update }) {
     return () => { alive = false }
   }, [order])
 
-  // Displayed totals — prefer the unified priceOrderTotals result; fall back to
-  // the legacy inline ladder only until the async import resolves (first tick).
+  // Displayed totals — straight from priceOrderTotals (no legacy fallback ladder).
+  // Zeros for the first render tick only, until the async import resolves.
   const view = uTotals
     ? {
         subtotal: (uTotals.totals.subtotalDisc || 0) + (uTotals.totals.subtotalPermit || 0),
@@ -9322,10 +9264,21 @@ export function PricingStep({ order, update }) {
         total: uTotals.displayed,
         isManual: uTotals.manual != null,
       }
-    : {
-        subtotal, discountAmount, subtotalAfterDiscount: subtotalAfterDiscount + subtotalPermit,
-        taxAmount, ccAmount, total, isManual: false,
-      }
+    : { subtotal: 0, discountAmount: 0, subtotalAfterDiscount: 0, taxAmount: 0, ccAmount: 0, total: 0, isManual: false }
+
+  // Folded, override-applied line items (base = ONE editable line) — the SAME list
+  // priceOrderTotals returns, so the rows always sum to `view.total`. item.amount is
+  // already the effective amount; ovMap (the sync override map) keeps the inputs
+  // responsive while typing and drives the reset (↺) affordance.
+  const lineItems = uTotals?.items || []
+  const ovMap = order.pricing?.lineItemOverrides || {}
+  const isPermitItem = (it) => it.code === 'addon-permit'
+  const discountPct = Number(order.pricing.discountPct) || 0    // 0-100
+  const subtotalDiscountable = lineItems.reduce(
+    (s, it) => s + (it.quotePending || isPermitItem(it) ? 0 : (Number(it.amount) || 0)), 0)
+  const subtotalPermit = lineItems.reduce(
+    (s, it) => s + (isPermitItem(it) ? (Number(it.amount) || 0) : 0), 0)
+  const discountAmount = Math.round(subtotalDiscountable * (discountPct / 100) * 100) / 100
 
   // Custom line items
   const addCustomLineItem = () => {
@@ -9335,16 +9288,18 @@ export function PricingStep({ order, update }) {
       customLineItems: [...(order.pricing.customLineItems || []), { id, label: '', amount: 0 }],
     })
   }
+  // id-tolerant: priceOrderTotals string-normalizes line codes, so a custom item's
+  // code arrives as String(c.id) — match loosely so a numeric Date.now() id still hits.
   const updateCustomLineItem = (id, patch) => {
     if (isLocked) return
     updatePricing({
-      customLineItems: (order.pricing.customLineItems || []).map(c => c.id === id ? { ...c, ...patch } : c),
+      customLineItems: (order.pricing.customLineItems || []).map(c => String(c.id) === String(id) ? { ...c, ...patch } : c),
     })
   }
   const removeCustomLineItem = (id) => {
     if (isLocked) return
     updatePricing({
-      customLineItems: (order.pricing.customLineItems || []).filter(c => c.id !== id),
+      customLineItems: (order.pricing.customLineItems || []).filter(c => String(c.id) !== String(id)),
     })
   }
 
@@ -9366,6 +9321,12 @@ export function PricingStep({ order, update }) {
     if (!confirm(`Remove "${item.label}" from this order?`)) return
     const code = item.code
 
+    // Custom items now carry their bare id as the code (computeFormLineItems), so
+    // match on item.custom rather than a 'custom-' prefix.
+    if (item.custom) {
+      removeCustomLineItem(code)
+      return
+    }
     if (code === 'base-stone') {
       // Can't remove the stone itself — set override to $0 so it shows zero.
       setOverride(code, 0)
@@ -9375,26 +9336,19 @@ export function PricingStep({ order, update }) {
     if (code.startsWith('addon-')) {
       const addonCode = code.slice('addon-'.length)
       update({ addOns: order.addOns.filter(a => a.code !== addonCode) })
-      // Also clear any override that targeted this line
-      const next = { ...order.pricing.overrides }; delete next[code]
-      updatePricing({ overrides: next })
-      return
-    }
-    if (code.startsWith('custom-')) {
-      const id = Number(code.slice('custom-'.length))
-      removeCustomLineItem(id)
+      // Also clear any override that targeted this line (the one map)
+      const next = { ...(order.pricing.lineItemOverrides || {}) }; delete next[code]
+      updatePricing({ lineItemOverrides: next })
       return
     }
     if (code === 'foundation') {
       updatePricing({ foundationCalc: false })
       return
     }
-    if (code === 'base-block' || code === 'base-height' || code === 'polish-margin') {
-      const patch = { ...(order.baseConfig || {}) }
-      if (code === 'base-block') { patch.include = false; patch.sizeCode = null }
-      if (code === 'base-height') { patch.heightCode = null }
-      if (code === 'polish-margin') { patch.polishMargin2in = false }
-      update({ baseConfig: patch })
+    // The base is ONE folded line now (base-block) — removing it drops the whole
+    // base (size + height + margin + saw) by unsetting baseConfig.include.
+    if (code === 'base-block') {
+      update({ baseConfig: { ...(order.baseConfig || {}), include: false, sizeCode: null } })
       return
     }
     if (code === 'color-premium') {
@@ -9445,34 +9399,42 @@ export function PricingStep({ order, update }) {
             <div className="sm-helper">No line items yet — pick a shape and size to populate.</div>
           )}
           {lineItems.map(item => {
-            if (item.isCustom) {
+            if (item.custom) {
+              // Read the editable values from the SYNC customLineItems entry (not the
+              // async folded item) so typing stays responsive; code === String(c.id).
+              const raw = (order.pricing.customLineItems || []).find(c => String(c.id) === String(item.code)) || {}
               return (
                 <div key={item.code} className="sm-pricing-row sm-pricing-row-custom">
                   <input
                     className="sm-pricing-label-input"
-                    value={item.raw.label}
-                    onChange={e => updateCustomLineItem(item.raw.id, { label: e.target.value })}
+                    value={raw.label ?? ''}
+                    onChange={e => updateCustomLineItem(item.code, { label: e.target.value })}
                     placeholder="Custom line item description"
+                    disabled={isLocked}
                   />
                   <div className="sm-pricing-amount">
                     <span className="sm-pricing-dollar">$</span>
                     <input
                       className="sm-pricing-amount-input"
                       type="number"
-                      value={item.raw.amount}
-                      onChange={e => updateCustomLineItem(item.raw.id, { amount: Number(e.target.value) || 0 })}
+                      value={raw.amount ?? 0}
+                      onChange={e => updateCustomLineItem(item.code, { amount: Number(e.target.value) || 0 })}
+                      disabled={isLocked}
                     />
                   </div>
-                  <button
-                    type="button"
-                    className="sm-pricing-remove"
-                    onClick={() => removeCustomLineItem(item.raw.id)}
-                  >×</button>
+                  {!isLocked && (
+                    <button
+                      type="button"
+                      className="sm-pricing-remove"
+                      onClick={() => removeCustomLineItem(item.code)}
+                    >×</button>
+                  )}
                 </div>
               )
             }
-            const ov = order.pricing.overrides?.[item.code]
-            const eff = effectiveAmount(item)
+            // ovMap = pricing.lineItemOverrides (sync). Read the input value from the
+            // override when set (responsive typing), else the computed item.amount.
+            const ov = ovMap[item.code]
             return (
               <div key={item.code} className="sm-pricing-row">
                 <div className="sm-pricing-label">{item.label}</div>
@@ -9481,10 +9443,11 @@ export function PricingStep({ order, update }) {
                   <input
                     className="sm-pricing-amount-input"
                     type="number"
-                    value={ov != null ? ov : item.amount}
+                    value={ov != null && ov !== '' ? ov : item.amount}
                     onChange={e => setOverride(item.code, e.target.value)}
+                    disabled={isLocked}
                   />
-                  {ov != null && (
+                  {ov != null && !isLocked && (
                     <button
                       type="button"
                       className="sm-pricing-reset"
@@ -10827,15 +10790,17 @@ function ContinueLater({ order, update, onDepositLogged }) {
     return r
   }
 
-  // Compute grand total from current pricing
-  const lineItems = buildLineItems(order)
-  const subtotal = lineItems.reduce((sum, it) => {
-    const ov = order.pricing?.overrides?.[it.code]
-    return sum + (ov != null ? Number(ov) : it.amount)
-  }, 0)
-  const tax = order.pricing?.applyTax ? subtotal * NJ_TAX_RATE : 0
-  const cc  = order.pricing?.applyCCSurcharge ? subtotal * CC_SURCHARGE : 0
-  const total = subtotal + tax + cc
+  // Grand total — the SAME unified pipeline as the wizard / contract / payments
+  // (priceOrderTotals). Loaded async (orderRates can't be statically imported here
+  // — cycle); shows $0 for the first render tick only.
+  const [total, setTotal] = useState(0)
+  useEffect(() => {
+    let alive = true
+    import('./lib/orderRates').then(({ priceOrderTotals }) => {
+      if (alive) setTotal(priceOrderTotals(order).displayed)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [order])
 
   return (
     <div className="sm-step">
@@ -11174,23 +11139,20 @@ function PaymentConfirmModal({ open, type, onConfirm, onCancel }) {
 
 // Sprint 3i — Track deposit + balance payments
 function PaymentTrackingSection({ order, update, onDepositLogged }) {
-  // Current grand total — ONE formula, matching computeTotals / the contract:
-  // buildLineItems ALREADY includes custom line items (code custom-<id>), so they
-  // must NOT be added again (that double-count drove the wrong Payments total).
-  // The cemetery permit is a pass-through and is NOT taxed.
-  const lineItems = buildLineItems(order)
-  const lineAmt = (it) => (order.pricing?.overrides?.[it.code] != null
-    ? Number(order.pricing.overrides[it.code])
-    : (Number(it.amount) || 0))
-  const subtotalDisc = lineItems.reduce((s, it) => s + (it.code === 'addon-permit' ? 0 : lineAmt(it)), 0)
-  const subtotalPermit = lineItems.reduce((s, it) => s + (it.code === 'addon-permit' ? lineAmt(it) : 0), 0)
-  const discountPct = Number(order.pricing?.discountPct) || 0
-  const discountAmt = subtotalDisc * (discountPct / 100)
-  const taxableBase = subtotalDisc - discountAmt
-  const tax = order.pricing?.applyTax ? taxableBase * NJ_TAX_RATE : 0
-  const grandBeforeCC = taxableBase + subtotalPermit + tax
-  const cc  = order.pricing?.applyCCSurcharge ? grandBeforeCC * CC_SURCHARGE : 0
-  const grandTotal = Math.round((grandBeforeCC + cc) * 100) / 100
+  // Current grand total — the SAME unified pipeline as the contract / wizard /
+  // receipt (priceOrderTotals: folded base, ONE override map, manualTotal honored),
+  // so the deposit/balance math can never disagree with the order screen. Loaded
+  // async (orderRates can't be statically imported here — cycle); $0 for the first
+  // render tick only — statusPatchFor's `grandTotal > 0` guard makes that tick a
+  // no-op, and it only runs from user actions (after the total has resolved).
+  const [grandTotal, setGrandTotal] = useState(0)
+  useEffect(() => {
+    let alive = true
+    import('./lib/orderRates').then(({ priceOrderTotals }) => {
+      if (alive) setGrandTotal(priceOrderTotals(order).displayed)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [order])
 
   // Sprint M2 Phase 2 — array-driven. payments[] is authoritative; the UI never
   // touches the legacy depositAmount/balanceAmount fields anymore (orderToRow

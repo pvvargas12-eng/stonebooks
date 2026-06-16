@@ -940,7 +940,13 @@ export async function getJobByOrderId(orderId) {
 export function rowGrandTotal(order) {
   if (!order) return 0
   const pricing = order.pricing || {}
-  const overrides = pricing.overrides || {}
+  // Phase 4 — the editors now write pricing.lineItemOverrides (the one override
+  // map); legacy orders may still carry pricing.overrides. Read the UNION so this
+  // list/report total doesn't go stale after an order is re-priced (the active
+  // lineItemOverrides wins). World-A (computeFormLineItems / priceOrderTotals) and
+  // this World-B estimator are still separate engines — full unification is a
+  // later sprint; this only keeps the override values in sync across both.
+  const overrides = { ...(pricing.overrides || {}), ...(pricing.lineItemOverrides || {}) }
   const addOns = order.add_ons || []
 
   // Subtotal — line items

@@ -25,7 +25,7 @@
 
 import { useState, useRef } from 'react'
 import { MonumentCard, AddOnsCard, LineItemsBox, ADDON_KINDS, OF_CSS } from '../OrderForm'
-import { computeFormLineItems, priceOrderTotals } from '../lib/orderRates'
+import { priceOrderTotals } from '../lib/orderRates'
 import { extractSpecFromOrder, applySpecToOrder } from '../lib/quoteSpec'
 import { logOrderActivity, getSignedContract } from '../lib/stonebooksData'
 
@@ -183,7 +183,9 @@ export default function QuotesManager({ order, update }) {
 
       {quotes.map((q) => {
         const synth = applySpecToOrder(order, q.spec)
-        const lineItems = computeFormLineItems(synth)
+        // Folded, override-applied items (LineItemsBox no longer self-folds) — base
+        // as ONE editable line, matching every other surface (Phase 4).
+        const lineItems = priceOrderTotals(synth).items
         const isOpen = openId === q.id
         // Synthetic-order adapter — route the real cards' edits back into this
         // quote's spec, computed from the quote's CURRENT spec (ref-latest).

@@ -33,7 +33,7 @@ import {
   SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   MONUMENT_TYPES, BASE_FINISHES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
-  computeFormLineItems, computeTotals, rankedBaseSizes, addonPrice, stoneFaceArea, foldBaseRows,
+  computeFormLineItems, priceOrderTotals, rankedBaseSizes, addonPrice, stoneFaceArea,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -192,6 +192,9 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     return { ...o, ...patch }
   })
   const updatePricing = (patch) => setOrder(o => {
+    // Phase 4 lock policy — signed orders lock pricing hard (consistent with the
+    // wizard's updatePricing no-op gate). Unsigned orders stay fully editable.
+    if (o.signedAt || o.pricingLockedAt) return o
     const next = { ...o.pricing, ...patch }
     // Editing any pricing field other than the override itself invalidates it.
     const hasManual = o.pricing?.manualTotal != null && o.pricing?.manualTotal !== ''
@@ -234,17 +237,16 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const cfg = ORDER_TYPES[type]
   const sections = cfg.sections
 
-  // ── Pricing (single source: orderRates) ──────────────────────────────────
-  const lineItems = useMemo(() => computeFormLineItems(order), [order])
-  const totals = useMemo(() => computeTotals(lineItems, {
-    applyTax: order.pricing?.applyTax !== false,
-    applyCCSurcharge: !!order.pricing?.applyCCSurcharge,
-    discountType: order.pricing?.discountType,
-    discountValue: order.pricing?.discountValue,
-    discountPct: Number(order.pricing?.discountPct) || 0,
-  }), [lineItems, order.pricing])
+  // ── Pricing (single source: orderRates / priceOrderTotals) ───────────────
+  // Phase 4 — ONE pipeline. priceOrderTotals returns the folded, override-applied
+  // line items (base = ONE line, whole-base override = Option B), the matching
+  // totals, and the single displayed grand total. The same `items` feed
+  // LineItemsBox, so the editor rows == the wizard rows == the contract rows.
+  const priced = useMemo(() => priceOrderTotals(order), [order])
+  const lineItems = priced.items
+  const totals = priced.totals
+  const displayedTotal = priced.displayed
   const manualTotal = order.pricing?.manualTotal
-  const displayedTotal = (manualTotal != null && manualTotal !== '') ? Number(manualTotal) : totals.grandTotal
 
   const submit = async () => {
     if (busy) return
@@ -1322,7 +1324,7 @@ function AcidWashCard({ order, update, updatePricing }) {
 // Extracted from FinanceCard so the SAME box renders inside each multi-quote
 // panel (QuotesManager) — one implementation, mount-agnostic.
 // =============================================================================
-export function LineItemsBox({ order, lineItems, updatePricing }) {
+export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false }) {
   const p = order.pricing || {}
   const overrides = p.lineItemOverrides || {}
   const customItems = p.customLineItems || []
@@ -1342,15 +1344,18 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
     ? setCustomField(it.code, { [key]: val })
     : updatePricing({ lineItemFlagOverrides: { ...flagOv, [it.code]: { ...(flagOv[it.code] || {}), [key]: val } } })
 
-  // Display-only: show the base as ONE folded line (base-height + saw-base +
-  // margin + all-polish merged into base-block via the shared foldBaseRows — the
-  // same helper the contract uses). Editing the base row sets the base-block
-  // override (the base size); the folded extras stay on top. Totals are computed
-  // by the CALLER from the un-folded lineItems, so the grand total never changes.
-  const displayItems = foldBaseRows(lineItems, order)
+  // Phase 4 — `lineItems` arrives ALREADY folded + override-applied from
+  // priceOrderTotals (base = ONE line; editing it sets the WHOLE base figure via
+  // the base-block override — Option B). No re-fold here.
+  const displayItems = lineItems
 
   return (
     <div className="of-li">
+      {isLocked && (
+        <div className="of-li-locked" style={{ marginBottom: 10, padding: '8px 11px', background: '#fbf6ec', border: '1px solid #e7d9bd', borderRadius: 7, fontSize: 13, color: '#7a6a45' }}>
+          <strong>This order is signed — pricing is locked.</strong> Re-open the order to edit line items.
+        </div>
+      )}
       {displayItems.map((it, i) => {
         const isCustom = !!it.custom
         const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
@@ -1359,7 +1364,7 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
           <div className="of-li-row of-li-edit">
             {isCustom ? (
               <input className="of-input of-li-label-input" value={it.label === 'Custom item' ? '' : it.label}
-                placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} />
+                placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} disabled={isLocked} />
             ) : (
               <span className="of-li-label">{it.label}</span>
             )}
@@ -1369,26 +1374,29 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
               <div className="of-num-wrap of-li-amt-wrap">
                 <span className="of-num-prefix">$</span>
                 <input className="of-input of-li-amt-input" type="number" value={Number(it.amount) || 0}
+                  disabled={isLocked}
                   onChange={e => isCustom
                     ? setCustomField(it.code, { amount: e.target.value === '' ? 0 : Number(e.target.value) })
                     : setOverride(it.code, e.target.value)} />
               </div>
             )}
-            <span style={{ display: 'flex', alignItems: 'center', gap: 2, justifySelf: 'end' }}>
-              {!isCustom && overridden && (
-                <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
-              )}
-              <button type="button" className="of-li-x" title="Remove line item"
-                onClick={() => isCustom ? removeCustom(it.code) : removeDerived(it)}>×</button>
-            </span>
+            {!isLocked && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 2, justifySelf: 'end' }}>
+                {!isCustom && overridden && (
+                  <button type="button" className="of-li-x" title="Reset to calculated amount" onClick={() => clearOverride(it.code)}>↻</button>
+                )}
+                <button type="button" className="of-li-x" title="Remove line item"
+                  onClick={() => isCustom ? removeCustom(it.code) : removeDerived(it)}>×</button>
+              </span>
+            )}
           </div>
           {!it.quotePending && (
             <div style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '1px 2px 7px', fontSize: 12, color: 'var(--sb-text-muted, #8a7f6c)' }}>
-              <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
-                <input type="checkbox" checked={it.taxable !== false} onChange={e => setFlag(it, 'taxable', e.target.checked)} /> Taxable
+              <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: isLocked ? 'default' : 'pointer' }}>
+                <input type="checkbox" checked={it.taxable !== false} disabled={isLocked} onChange={e => setFlag(it, 'taxable', e.target.checked)} /> Taxable
               </label>
-              <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }}>
-                <input type="checkbox" checked={it.discountable !== false} onChange={e => setFlag(it, 'discountable', e.target.checked)} /> Discountable
+              <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: isLocked ? 'default' : 'pointer' }}>
+                <input type="checkbox" checked={it.discountable !== false} disabled={isLocked} onChange={e => setFlag(it, 'discountable', e.target.checked)} /> Discountable
               </label>
               {it.category && <span style={{ opacity: 0.7, textTransform: 'capitalize' }}>{it.category}</span>}
             </div>
@@ -1397,7 +1405,7 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
         )
       })}
       {displayItems.length === 0 && <p className="of-muted">No line items yet — pick a size, add an add-on, or add a line below.</p>}
-      {removed.length > 0 && (
+      {removed.length > 0 && !isLocked && (
         <div className="of-li-removed" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13 }}>
           <span className="of-muted">Removed:</span>
           {removed.map(r => (
@@ -1406,7 +1414,7 @@ export function LineItemsBox({ order, lineItems, updatePricing }) {
           ))}
         </div>
       )}
-      <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>
+      {!isLocked && <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>}
     </div>
   )
 }
@@ -1418,6 +1426,9 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
   const p = order.pricing || {}
   const hasManual = manualTotal != null && manualTotal !== ''
   const ownerQuoteItems = lineItems.filter(it => it.quotePending)
+  // Phase 4 lock policy — signed orders lock pricing hard. updatePricing already
+  // no-ops when locked; the LineItemsBox banner shows the clear locked state.
+  const pricingLocked = !!(order.signedAt || order.pricingLockedAt)
 
   // Discount type (% or $). Reads the new fields with a fall back to legacy discountPct.
   const discType = p.discountType || 'pct'
@@ -1434,7 +1445,7 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
 
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
-      <LineItemsBox order={order} lineItems={lineItems} updatePricing={updatePricing} />
+      <LineItemsBox order={order} lineItems={lineItems} updatePricing={updatePricing} isLocked={pricingLocked} />
 
       <div className="of-toggles">
         <CheckRow checked={p.applyTax !== false} onChange={v => updatePricing({ applyTax: v })} label="Apply NJ sales tax (6.625%)" />
