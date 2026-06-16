@@ -7928,8 +7928,13 @@ export async function generateEstimatePDF(order, opts = {}) {
     }
     payRow('Total', finalTotal, { bold: true, size: 12, labelColor: TEXT })
     if (paidToDate > 0) payRow('Payments received', paidToDate)
-    payRow('Balance due', balanceDue, { bold: true, size: 13.5, labelColor: GOLD, valColor: NAVY, gap: 7 })
-    if (!hasStone) {
+    if (hasStone) {
+      // New stone / monument — 50% deposit before fabrication; NO "Balance due"
+      // line (the order isn't placed until the deposit is in).
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(9.5); doc.setTextColor(...GREY)
+      doc.text('50% deposit due before order is placed.', payLabelX, y); y += 5
+    } else {
+      payRow('Balance due', balanceDue, { bold: true, size: 13.5, labelColor: GOLD, valColor: NAVY, gap: 7 })
       doc.setFont('helvetica', 'italic'); doc.setFontSize(9.5); doc.setTextColor(...GREY)
       doc.text('Payment due in full before work begins.', payLabelX, y); y += 5
     }
