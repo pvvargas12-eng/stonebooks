@@ -271,7 +271,13 @@ export const DIE_TOP_TRADE = {
 export const dimsFromWDT = (o) => [ftIn(o?.w), ftIn(o?.d), ftIn(o?.t)].filter(Boolean).join(' × ')
 export function dieSize3(order, shape) {
   const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
-  return dimsFromWDT({ w: std?.w ?? order.width, d: std?.d ?? order.depth, t: std?.t ?? order.thickness })
+  // Phase 3 — the die's TALL (3rd) dimension is canonically order.thickness (the
+  // wizard's "Height" input writes it there), but OrderForm writes the tall dim to
+  // order.height and leaves thickness null on a CUSTOM die. Read `thickness ?? height`
+  // so the 3rd dim never drops, regardless of which form built the order. LABEL ONLY:
+  // dieSize3 feeds buildDieSpec (a label); the face-area price math reads order.height
+  // directly in computeFormLineItems and is untouched here, so no total moves.
+  return dimsFromWDT({ w: std?.w ?? order.width, d: std?.d ?? order.depth, t: std?.t ?? order.thickness ?? order.height })
 }
 export function buildDieSpec(order) {
   const shape = SHAPES.find(s => s.code === order.shape)

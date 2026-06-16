@@ -7576,7 +7576,9 @@ export async function generateEstimatePDF(order, opts = {}) {
     const fi = (v) => { const n = Number(v); return n ? `${Math.floor(n / 12)}-${n % 12}` : null }
     // standardSize label IS the dimensions (e.g. "2-0 × 1-0 × 1-6"); custom dims
     // render in the same feet-inches notation.
-    const sizeText = stdSize ? stdSize.label : [order.width, order.depth, order.thickness].map(fi).filter(Boolean).join(' × ')
+    // Phase 3 — tall dim is thickness (wizard) ?? height (OrderForm) so a custom die
+    // shows all 3 dims here regardless of form. Label only (no total).
+    const sizeText = stdSize ? stdSize.label : [order.width, order.depth, order.thickness ?? order.height].map(fi).filter(Boolean).join(' × ')
     const titleCase = (s) => String(s || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim()
     const svcName = (order.serviceTypes || []).map(c => SERVICE_TYPES.find(t => t.code === c)?.label).filter(Boolean)[0]
     const shapeName = shape?.label || titleCase(order.shape) || svcName || 'Monument'
@@ -10787,7 +10789,7 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
 function ContinueLater({ order, update, onDepositLogged }) {
   const shape = SHAPES.find(s => s.code === order.shape)
   const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)
-  const dims = [order.width, order.depth, order.thickness].filter(x => x != null).join(' × ')
+  const dims = [order.width, order.depth, order.thickness ?? order.height].filter(x => x != null).join(' × ')
   const inscType = INSCRIPTION_TYPES.find(t => t.code === order.inscription?.type)?.label
 
   // Quote Hub — the wizard's Saved view is where every creation flow lands, so
