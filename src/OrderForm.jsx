@@ -797,11 +797,13 @@ export function MonumentCard({ order, update, updatePricing }) {
         </div>
       )}
 
-      {/* Live FOUNDATION-line preview (the actual computeFormLineItems foundation row). */}
+      {/* Live FOUNDATION-line preview (the actual computeFormLineItems foundation
+          row — computed in-scope here; MonumentCard has `order`, not the parent's
+          lineItems memo). */}
       {order.pricing?.foundationCalc !== false && (
         <div style={{ margin: '6px 0 4px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Foundation line</span>
-          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{lineItems.find(it => String(it.code) === 'foundation')?.label || 'Foundation'}</span>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{computeFormLineItems(order).find(it => String(it.code) === 'foundation')?.label || 'Foundation'}</span>
         </div>
       )}
 
