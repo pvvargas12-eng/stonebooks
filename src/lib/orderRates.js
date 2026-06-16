@@ -10,9 +10,15 @@
 // the custom-die fix + the new per-foot charges.
 // =============================================================================
 
+// Phase 1 — spec catalog now lives in the dependency-free monumentCatalog (no
+// import cycle). Everything else (pricing rates, configurator tables/fns, and
+// buildLineItems) still comes from SalesMode.
 import {
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
-  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, FOUNDATION_RATE, ADD_ONS_CATALOG,
+  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS,
+} from './monumentCatalog'
+import {
+  FOUNDATION_RATE, ADD_ONS_CATALOG,
   NJ_TAX_RATE, CC_SURCHARGE, CUSTOM_FONT_FEE,
   LASER_SIZES, computeLaserPrice, stoneFaceArea,
   BLING_SIZES, computeBlingPrice,
