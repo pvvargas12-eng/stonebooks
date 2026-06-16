@@ -279,11 +279,18 @@ export function dieSize3(order, shape) {
   // directly in computeFormLineItems and is untouched here, so no total moves.
   return dimsFromWDT({ w: std?.w ?? order.width, d: std?.d ?? order.depth, t: std?.t ?? order.thickness ?? order.height })
 }
+// Shared top-shape resolver (Phase 6) — the SAME value the die line item AND the
+// contract's Stone-specifications block both render, so the two paths can't diverge
+// on top shape (trade name vs raw label).
+export function dieTopLabel(order) {
+  if (!order?.topShape) return ''
+  return DIE_TOP_TRADE[order.topShape] || TOP_SHAPES.find(t => t.code === order.topShape)?.label || ''
+}
 export function buildDieSpec(order) {
   const shape = SHAPES.find(s => s.code === order.shape)
   if (!shape) return ''
   const size = dieSize3(order, shape)
-  const topTrade = order.topShape ? (DIE_TOP_TRADE[order.topShape] || TOP_SHAPES.find(t => t.code === order.topShape)?.label || '') : ''
+  const topTrade = dieTopLabel(order)
   const polishCode = order.polishLevel || ''
   const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || ''
   return [size, topTrade, polishCode, color].filter(Boolean).join(' · ')

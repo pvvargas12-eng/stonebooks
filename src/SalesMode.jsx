@@ -22,7 +22,8 @@ import { supabase } from './lib/supabase'
 // were defined here verbatim before; SalesMode now imports + re-exports them.
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
-  POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, buildDieSpec, buildBaseSpec,
+  POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, dieSize3, dieTopLabel,
+  buildDieSpec, buildBaseSpec,
 } from './lib/monumentCatalog'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
@@ -7574,11 +7575,14 @@ export async function generateEstimatePDF(order, opts = {}) {
 
     const stdSize = (shape && order.standardSizeCode) ? shape.standardSizes.find(s => s.code === order.standardSizeCode) : null
     const fi = (v) => { const n = Number(v); return n ? `${Math.floor(n / 12)}-${n % 12}` : null }
-    // standardSize label IS the dimensions (e.g. "2-0 × 1-0 × 1-6"); custom dims
-    // render in the same feet-inches notation.
-    // Phase 3 — tall dim is thickness (wizard) ?? height (OrderForm) so a custom die
-    // shows all 3 dims here regardless of form. Label only (no total).
-    const sizeText = stdSize ? stdSize.label : [order.width, order.depth, order.thickness ?? order.height].map(fi).filter(Boolean).join(' × ')
+    // Phase 6 — for DIE shapes, the Shape dims use the SAME dieSize3 the die LINE ITEM
+    // uses (via buildDieSpec), so the spec block and the pricing line agree exactly on
+    // dimensions (standard + custom). Non-die shapes keep the catalog/custom label.
+    // (Phase 3 thickness ?? height fallback lives in dieSize3 + the non-die path here.)
+    const isDie = !!(shape && (shape.canHaveBase || shape.requiresBase))
+    const sizeText = isDie
+      ? dieSize3(order, shape)
+      : (stdSize ? stdSize.label : [order.width, order.depth, order.thickness ?? order.height].map(fi).filter(Boolean).join(' × '))
     const titleCase = (s) => String(s || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim()
     const svcName = (order.serviceTypes || []).map(c => SERVICE_TYPES.find(t => t.code === c)?.label).filter(Boolean)[0]
     const shapeName = shape?.label || titleCase(order.shape) || svcName || 'Monument'
@@ -7589,25 +7593,17 @@ export async function generateEstimatePDF(order, opts = {}) {
       sectionHeader('Stone specifications')
       kvRow('Shape', shapeLine)
       if (color) kvRow('Granite color', `${color.label} (${getGraniteOrigin(color)})`)
-      if (top) kvRow('Top shape', top.label)
+      // Phase 6 — Top shape uses the SAME dieTopLabel resolution as the die line item
+      // (trade name → label), so the two paths can't show a different top shape.
+      if (top) kvRow('Top shape', dieTopLabel(order))
       if (polish) kvRow('Polish level', polish.label)
       if (sides) kvRow('Sides', sides.label)
 
       if (order.baseConfig?.include) {
-      const baseSize = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
-      const baseHeight = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
-      const baseSides = BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)
-      // #3 — base finish (SB / RB / BRP / All Polish) now prints on the base line.
-      const FINISH_LABELS = { SB: 'SB (sawn)', RB: 'RB (rock pitch)', BRP: 'BRP', AP: 'All Polish' }
-      const finishLabel = FINISH_LABELS[order.baseConfig.finish] || order.baseConfig.finish || ''
-      // Only join size and height if both exist; same for the rest
-      const sizeAndHeight = [baseSize?.label, baseHeight?.label].filter(Boolean).join(' × ')
-      const baseDesc = [
-        sizeAndHeight,
-        finishLabel,
-        baseSides?.label,
-        order.baseConfig.polishMargin2in ? '2" polish margin' : '',
-      ].filter(Boolean).join(' · ')
+        // Phase 6 — the Base row is the SAME buildBaseSpec string the base LINE ITEM
+        // renders (via foldBaseRows), so the spec block and the pricing line can't
+        // disagree on the base (size · top finish · height · margin · back finish).
+        const baseDesc = buildBaseSpec(order)
         if (baseDesc) kvRow('Base', baseDesc)
       }
       y += 2
