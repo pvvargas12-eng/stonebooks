@@ -1186,6 +1186,7 @@ export function makeBlankOrder() {
       heightCode: null,         // BASE_HEIGHTS[].code (6/8/10/12)
       polishMargin2in: false,   // 2" polished margin add-on
       sides: null,              // BASE_SIDES_OPTIONS[].code
+      topFinish: null,          // 'pol' | 'frost' — base TOP finish (display-only, Phase 5)
       baseTextOverride: null,   // optional — verbatim base line text on the contract
     },
 
@@ -3459,6 +3460,15 @@ export function ShapeStep({ order, update }) {
                   {BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)?.blurb}
                 </div>
               )}
+
+              <Field label="Base top" wide hint="Polished or frosted base top — appears in the base line (display only).">
+                <SelectInput
+                  value={order.baseConfig.topFinish || ''}
+                  onChange={v => updateBase({ topFinish: v || null })}
+                  placeholder="— pick base top —"
+                  options={[{ value: 'pol', label: 'POL TOP' }, { value: 'frost', label: 'FROST TOP' }]}
+                />
+              </Field>
 
               <Field label="Base description override" wide hint="Optional — replaces the base line text on the contract (custom bevels, special notes). Leave blank to auto-build from size + height + margin.">
                 <textarea

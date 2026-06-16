@@ -786,6 +786,9 @@ export function MonumentCard({ order, update, updatePricing }) {
                 <SelectField label="Base finish" value={bc.finish} onChange={v => setBase({ finish: v })}
                   options={BASE_FINISHES.map(f => ({ value: f.code, label: f.label }))} placeholder="Select finish…"
                   hint="SB adds a saw-base charge." />
+                <SelectField label="Base top" value={bc.topFinish} onChange={v => setBase({ topFinish: v })}
+                  options={[{ value: 'pol', label: 'POL TOP' }, { value: 'frost', label: 'FROST TOP' }]}
+                  placeholder="Select top…" hint="Display only — appears in the base line." />
               </Grid>
               {bc.sizeCode === 'custom' && (
                 <Grid cols={2}>

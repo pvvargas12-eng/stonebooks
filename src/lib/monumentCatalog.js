@@ -283,10 +283,22 @@ export function buildDieSpec(order) {
   return [size, topTrade, polishCode, color].filter(Boolean).join(' · ')
 }
 
-// The single-line BASE spec the way the base line item reads — size + folded
-// height + folded margin (the finish CHARGE folds into the price, not the label).
-// A baseTextOverride prints verbatim. Used by the form BASE-line preview so it
-// matches the contract's folded base row.
+// The single-line BASE spec the way the base line item reads — size + top finish +
+// folded height + folded margin + back/treatment finish. The finish CHARGE folds
+// into the price (computeFormLineItems), not the label. A baseTextOverride prints
+// verbatim. Used by the form BASE-line preview so it matches the contract's folded
+// base row.
+//
+// Phase 5 — base TOP finish (new, display-only) + BACK/treatment finish in the line.
+// The back finish is stored two ways across the app: OrderForm's BASE_FINISHES
+// (baseConfig.finish: SB/RB/BRP/AP) and the wizard's BASE_SIDES_OPTIONS
+// (baseConfig.sides). We read BOTH so the finish shows no matter which form built the
+// order. LABEL ONLY — the price-bearing saw-base (finish=SB) / all-polish (finish=AP)
+// charges compute separately from baseConfig.finish and are NOT touched here, so no
+// total moves.
+const BASE_TOP_FINISH_LABEL  = { pol: 'POL TOP', frost: 'FROST TOP' }
+const BASE_BACK_FINISH_LABEL = { SB: 'SB', RB: 'RB', BRP: 'BRP', AP: 'ALL POL' }
+
 export function buildBaseSpec(order) {
   const bc = order.baseConfig || {}
   const override = (bc.baseTextOverride || '').trim()
@@ -294,9 +306,15 @@ export function buildBaseSpec(order) {
   const baseSizeObj = BASE_SIZES.find(b => b.code === bc.sizeCode)
   const size = baseSizeObj ? baseSizeObj.label : [ftIn(bc.width), ftIn(bc.depth)].filter(Boolean).join(' × ')
   const hOpt = (bc.heightCode != null) ? BASE_HEIGHTS.find(h => h.code === bc.heightCode) : null
+  const topFinish = BASE_TOP_FINISH_LABEL[bc.topFinish] || ''
+  // Prefer the BASE_FINISHES code (OrderForm); fall back to the wizard's sides label.
+  const backFinish = BASE_BACK_FINISH_LABEL[bc.finish]
+    || (bc.finish || '')
+    || (bc.sides ? (BASE_SIDES_OPTIONS.find(s => s.code === bc.sides)?.label || '') : '')
   return [
-    size,
+    [size, topFinish].filter(Boolean).join(' '),
     (hOpt && hOpt.upcharge > 0) ? `${hOpt.label} height` : '',
     bc.polishMargin2in ? '2″ polished margin' : '',
+    backFinish,
   ].filter(Boolean).join(', ') || 'Base'
 }
