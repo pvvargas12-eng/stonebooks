@@ -30,6 +30,7 @@ import ReportsTab from './ReportsTab'
 import ProfitTab from './ProfitTab'
 import PaymentsTab from './PaymentsTab'
 import VendorsTab from './VendorsTab'
+import InventoryTab from './InventoryTab'
 import PartnerPortal from './PartnerPortal'
 import { getMyPartnerContext, getNewPartnerRequestCount } from './lib/vendorsData'
 import EmailTab from './EmailTab'
@@ -213,6 +214,7 @@ const NAV_PRIMARY = [
   { key: 'email',     label: 'Email' },
   { key: 'payments',  label: 'Payments' },
   { key: 'vendors',   label: 'Vendors' },
+  { key: 'inventory', label: 'Inventory' },
   { key: 'profit',    label: 'Profit' },
   { key: 'reports',   label: 'Reports' },
 ]
@@ -718,6 +720,7 @@ export default function Stonebooks() {
 {tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
+{tab === 'inventory' && <InventoryTab />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}

@@ -6886,6 +6886,63 @@ export function getSalesSummary(orders, { now = new Date(), recentlyWonDays = 7,
 }
 
 // =============================================================================
+// INVENTORY — stock foundation (Phase 1)
+// =============================================================================
+// inventory_stock holds physical yard stock, one row per location+spec (identical
+// stones at one location collapse to a count). All text fields are preserved
+// VERBATIM — color shorthand, exact size strings ("2-6x1-0x0-6"), and locations
+// ("1.2 A", "IN FRONT S2", "Next Big Truck") are never parsed or normalized.
+// Standalone table; touches nothing in orders/jobs/pricing.
+export const INVENTORY_ITEM_TYPES = [
+  'die', 'base', 'slant', 'grass', 'marker', 'hickey', 'bevel', 'bench', 'vase', 'ledger', 'bronze', 'custom',
+]
+export const INVENTORY_STATUSES = [
+  { code: 'available', label: 'Available' },
+  { code: 'allocated', label: 'Allocated' },
+]
+
+// Read all yard stock. Returns { ok, rows, error } and NEVER throws, so the tab
+// opens cleanly even before the migration is applied (error → empty list + note).
+export async function getInventoryStock() {
+  try {
+    const { data, error } = await supabase
+      .from('inventory_stock')
+      .select('*')
+      .order('location', { ascending: true })
+      .order('created_at', { ascending: false })
+    if (error) return { ok: false, rows: [], error: error.message }
+    return { ok: true, rows: data || [], error: null }
+  } catch (e) {
+    return { ok: false, rows: [], error: String(e?.message || e) }
+  }
+}
+
+// Add one stock item. tenant_id / timestamps use DB defaults. Text preserved as-is.
+export async function addInventoryItem(item) {
+  const payload = {
+    item_type:   item.item_type || null,
+    color:       item.color?.trim() || null,
+    size:        item.size?.trim() || null,
+    top:         item.top?.trim() || null,
+    sides:       item.sides?.trim() || null,
+    back:        item.back?.trim() || null,
+    location:    item.location?.trim() || null,
+    quantity:    Math.max(1, Number(item.quantity) || 1),
+    status:      item.status || 'available',
+    assigned_to: item.assigned_to?.trim() || null,
+    notes:       item.notes?.trim() || null,
+    photo_url:   item.photo_url || null,
+  }
+  try {
+    const { data, error } = await supabase.from('inventory_stock').insert(payload).select().single()
+    if (error) return { ok: false, error: error.message }
+    return { ok: true, row: data }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+
+// =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================
 // The Today tab becomes a per-role briefing surface: morning sentence, then
