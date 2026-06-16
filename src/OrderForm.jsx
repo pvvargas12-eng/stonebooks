@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   makeBlankOrder, makeBlankDeceased, saveOrder, rowToOrder, salesModeStyles,
   searchCustomers, searchCemeteries, rowToCustomer, rowToCemetery,
-  fetchMonuments, uploadAttachment, buildDieSpec,
+  fetchMonuments, uploadAttachment, buildDieSpec, buildBaseSpec,
 } from './SalesMode'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
@@ -769,6 +769,11 @@ export function MonumentCard({ order, update, updatePricing }) {
             label={requiresBase ? 'Base (required for this shape)' : 'Add a base'} />
           {(bc.include || requiresBase) && (
             <>
+              {/* Live BASE-line preview (same buildBaseSpec the contract base row reads). */}
+              <div style={{ margin: '2px 0 8px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Base line</span>
+                <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildBaseSpec(order)}</span>
+              </div>
               <Grid cols={2}>
                 <SelectField label="Base size" value={bc.sizeCode} onChange={v => setBase({ sizeCode: v })}
                   options={baseOptions} placeholder="Select base…" hint="Best-fit sizes are starred." />

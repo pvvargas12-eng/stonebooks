@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // were defined here verbatim before; SalesMode now imports + re-exports them.
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
-  POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, buildDieSpec,
+  POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, buildDieSpec, buildBaseSpec,
 } from './lib/monumentCatalog'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
@@ -3344,6 +3344,12 @@ export function ShapeStep({ order, update }) {
             <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Die line</span>
             <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildDieSpec(order) || '— size · top · sides · color —'}</span>
           </div>
+          {(order.baseConfig.include || shape.requiresBase) && (
+            <div style={{ margin: '0 0 14px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Base line</span>
+              <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildBaseSpec(order)}</span>
+            </div>
+          )}
           {!shape.requiresBase && (
             <ToggleChip
               on={order.baseConfig.include}
@@ -16506,7 +16512,7 @@ export {
   // Catalog (now defined in lib/monumentCatalog) — re-exported here so existing
   // `import { SHAPES, … buildDieSpec } from './SalesMode'` call sites keep working.
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
-  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, buildDieSpec,
+  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, buildDieSpec, buildBaseSpec,
   FOUNDATION_RATE, ADD_ONS_CATALOG,
   NJ_TAX_RATE, CC_SURCHARGE, CUSTOM_FONT_FEE,
   LASER_SIZES, computeLaserPrice, stoneFaceArea,

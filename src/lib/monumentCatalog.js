@@ -282,3 +282,21 @@ export function buildDieSpec(order) {
   const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || ''
   return [size, topTrade, polishCode, color].filter(Boolean).join(' · ')
 }
+
+// The single-line BASE spec the way the base line item reads — size + folded
+// height + folded margin (the finish CHARGE folds into the price, not the label).
+// A baseTextOverride prints verbatim. Used by the form BASE-line preview so it
+// matches the contract's folded base row.
+export function buildBaseSpec(order) {
+  const bc = order.baseConfig || {}
+  const override = (bc.baseTextOverride || '').trim()
+  if (override) return override
+  const baseSizeObj = BASE_SIZES.find(b => b.code === bc.sizeCode)
+  const size = baseSizeObj ? baseSizeObj.label : [ftIn(bc.width), ftIn(bc.depth)].filter(Boolean).join(' × ')
+  const hOpt = (bc.heightCode != null) ? BASE_HEIGHTS.find(h => h.code === bc.heightCode) : null
+  return [
+    size,
+    (hOpt && hOpt.upcharge > 0) ? `${hOpt.label} height` : '',
+    bc.polishMargin2in ? '2″ polished margin' : '',
+  ].filter(Boolean).join(', ') || 'Base'
+}
