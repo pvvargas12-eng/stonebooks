@@ -117,12 +117,18 @@ const QUICK_VIEWS = [
   { code: 'archived',        label: 'Archived' },
 ]
 
-// checkbox | family | order# | customer name | job type | payment | design | stone | fdn | total | cemetery | contract | due
-// Item 6: Family / Order# / Customer-name are explicit first columns (the old
-// combined "Customer" column cut the customer name off). Widths are draggable —
-// dragging a header handle pins that column to px; the rest stay fractional.
-const DEFAULT_COLS = ['32px', '1.1fr', '0.8fr', '1.3fr', '0.9fr', '1fr', '1.2fr', '1.3fr', '1fr', '0.9fr', '1.3fr', '1fr', '1fr']
+// checkbox | family | order# | customer name | job type | payment | design | stone | fdn | cemetery | contract | due
+// Family / Order# / Customer-name are explicit first columns. Total column was
+// removed; the freed width goes to Family + Customer (1.7fr each) so full names
+// show without truncation. Widths are draggable — a header handle pins that
+// column to px; the rest stay fractional.
+const DEFAULT_COLS = ['32px', '1.7fr', '0.8fr', '1.7fr', '0.9fr', '1fr', '1.2fr', '1.3fr', '1fr', '1.3fr', '1fr', '1fr']
 const COL_RESIZE = { position: 'absolute', top: 0, right: 0, width: 7, height: '100%', cursor: 'col-resize', userSelect: 'none', zIndex: 2 }
+
+// Display-only title-casing (never alters stored data). Caps the first letter of
+// each word/part — handles spaces, hyphens, apostrophes. "BARRY LEDERMAN" →
+// "Barry Lederman"; "IVANCHENKO" → "Ivanchenko"; "SMITH-JONES" → "Smith-Jones".
+const titleCaseName = (s) => String(s || '').toLowerCase().replace(/(^|[\s'’-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase())
 
 // +5 months for a new_stone due-date default (the contract+5mo rule). Pure
 // local date math (no UTC drift): returns 'YYYY-MM-DD' or null.
@@ -864,16 +870,12 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <span onMouseDown={startColResize(8)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th num ${sortKey === 'total' ? 'on' : ''}`} onClick={() => handleHeaderSort('total')} title="Sort by total">Total{sortCaret('total')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
               <span onMouseDown={startColResize(9)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
-              <span onMouseDown={startColResize(10)} style={COL_RESIZE} />
-            </div>
-            <div style={{ position: 'relative', minWidth: 0 }}>
               <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
-              <span onMouseDown={startColResize(11)} style={COL_RESIZE} />
+              <span onMouseDown={startColResize(10)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
               <button type="button" className={`sb-ord-sort-th ${sortKey === 'dueDate' ? 'on' : ''}`} onClick={() => handleHeaderSort('dueDate')} title="Sort by due date">Due date{sortCaret('dueDate')}</button>
@@ -998,7 +1000,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Family (click → detail) */}
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
-          <span className="sb-crm-primary sb-ord-cust-name">{o._familyName}</span>
+          <span className="sb-crm-primary sb-ord-cust-name">{titleCaseName(o._familyName)}</span>
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
         {o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
@@ -1007,10 +1009,10 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Order # */}
       <div style={{ minWidth: 0 }}><span className="sb-crm-secondary sb-crm-mono" style={{ fontSize: 12 }}>{o.order_number || 'DRAFT'}</span></div>
 
-      {/* Customer name (full first + last — the old combined column cut this off) */}
+      {/* Customer name (full first + last, title-cased, shown in full — no truncation) */}
       <div style={{ minWidth: 0 }}>
-        <span className="sb-crm-secondary" style={{ fontSize: 13, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {custName || <span className="sb-crm-muted">—</span>}
+        <span className="sb-crm-secondary" style={{ fontSize: 13, display: 'block', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+          {custName ? titleCaseName(custName) : <span className="sb-crm-muted">—</span>}
         </span>
       </div>
 
@@ -1051,17 +1053,6 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
         ) : <span className="sb-crm-muted">—</span>}
       </div>
 
-      {/* Total — editable contract_total; blank when null */}
-      <div className="num" onClick={e => e.stopPropagation()}>
-        <input
-          type="text" inputMode="decimal" className="sb-ord-total-input"
-          defaultValue={o._contractTotal != null ? String(o._contractTotal) : ''}
-          placeholder="—" disabled={busy}
-          onBlur={e => { const v = e.target.value.trim(); const cur = o._contractTotal != null ? String(o._contractTotal) : ''; if (v !== cur) onInlineTotal(o, v) }}
-          onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
-          aria-label="Contract total"
-        />
-      </div>
 
       {/* Cemetery */}
       <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>
@@ -1127,7 +1118,7 @@ const TW_CSS = `
 
   /* Orders-redesign cells */
   .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-  .sb-ord-cust-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-ord-cust-name { white-space: normal; overflow-wrap: anywhere; }
   .sb-ord-cust-num { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
   .sb-ord-block { margin-top: 2px; font-size: 11px; font-weight: 600; color: #B54040; }
   .sb-ord-total-input { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; text-align: right; padding: 5px 6px; border: 0.5px solid transparent; border-radius: 6px; background: transparent; color: #222; font-variant-numeric: tabular-nums; }
