@@ -231,7 +231,10 @@ const RELATIONSHIPS = [
 ]
 
 // ---- Sales reps in user's specified frequency order ------------------------
-const SALES_REPS = ['Lonnie', 'Cathy', 'Denise', 'Chelsea', 'Sabina', 'Alex', 'Paul', 'Stephen', 'Collin']
+// Exported (Phase 7) so Quick Order / OrderForm reuses the SAME staff list the
+// wizard uses for the "created by" selector — one source, consistent attribution.
+// eslint-disable-next-line react-refresh/only-export-components
+export const SALES_REPS = ['Lonnie', 'Cathy', 'Denise', 'Chelsea', 'Sabina', 'Alex', 'Paul', 'Stephen', 'Collin']
 
 // "How did you hear about us?" — used on the Customer step. Add/remove
 // freely; the codes are stored on the customer record so reporting can
@@ -12757,7 +12760,10 @@ export const salesModeStyles = `
 }
 .sm-step, .sm-staff-aside { position: relative; z-index: 1; }
 
-.sm-step { max-width: 880px; margin: 0 auto; width: 100%; }
+/* Phase 7 — widen the step container to reduce wasted side margins (consistent with
+   the redesigned Quick Order). Modest 1040px so single fields don't over-stretch; the
+   grid-based steps (shape/color/add-ons) use the extra width. */
+.sm-step { max-width: 1040px; margin: 0 auto; width: 100%; }
 
 /* ---- STEP HEADERS ---------------------------------------------------------- */
 .sm-step-head { margin-bottom: 36px; padding-bottom: 24px; border-bottom: 1px solid var(--sm-border); }

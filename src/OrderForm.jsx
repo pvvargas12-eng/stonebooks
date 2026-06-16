@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   makeBlankOrder, makeBlankDeceased, saveOrder, rowToOrder, salesModeStyles,
   searchCustomers, searchCemeteries, rowToCustomer, rowToCemetery,
-  fetchMonuments, uploadAttachment, buildDieSpec, buildBaseSpec,
+  fetchMonuments, uploadAttachment, buildDieSpec, buildBaseSpec, SALES_REPS,
 } from './SalesMode'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
@@ -358,38 +358,41 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             </div>
           </div>
 
-          {sections.includes('customer') && <CustomerCard order={order} update={update} updatePricing={updatePricing} />}
-          {sections.includes('cemetery') && <CemeteryCard order={order} update={update} />}
-          {sections.includes('monument') && <MonumentCard order={order} update={update} updatePricing={updatePricing} />}
-          {/* Deceased FIRST so its data exists to populate the engraving text. */}
-          {sections.includes('deceased') && <DeceasedCard order={order} update={update} updateInsc={updateInsc} variant={cfg.deceasedVariant} />}
-          {sections.includes('inscription_type') && <InscriptionTypeCard order={order} updateInsc={updateInsc} />}
-          {/* Auto-populated engraving text (same generator as the wizard) — only
-              for inscription orders, right after the type, before engraver notes. */}
-          {sections.includes('inscription_type') && <InscriptionCarveTextCard order={order} updateInsc={updateInsc} />}
-          {sections.includes('inscription') && <InscriptionCard order={order} updateInsc={updateInsc} />}
-          {sections.includes('catalog') && <CatalogPickerCard order={order} update={update} />}
+          {/* Phase 7 — cards flow in a 2-column grid; wide content cards span full. */}
+          <div className="of-cards">
+            {sections.includes('customer') && <CustomerCard order={order} update={update} updatePricing={updatePricing} />}
+            {sections.includes('cemetery') && <CemeteryCard order={order} update={update} />}
+            {sections.includes('monument') && <div className="of-span-2"><MonumentCard order={order} update={update} updatePricing={updatePricing} /></div>}
+            {/* Deceased FIRST so its data exists to populate the engraving text. */}
+            {sections.includes('deceased') && <DeceasedCard order={order} update={update} updateInsc={updateInsc} variant={cfg.deceasedVariant} />}
+            {sections.includes('inscription_type') && <InscriptionTypeCard order={order} updateInsc={updateInsc} />}
+            {/* Auto-populated engraving text (same generator as the wizard) — only
+                for inscription orders, right after the type, before engraver notes. */}
+            {sections.includes('inscription_type') && <InscriptionCarveTextCard order={order} updateInsc={updateInsc} />}
+            {sections.includes('inscription') && <InscriptionCard order={order} updateInsc={updateInsc} />}
+            {sections.includes('catalog') && <CatalogPickerCard order={order} update={update} />}
 
-          {sections.includes('repair_note') && (
-            <NoteCard title="Repair details" value={order.otherServiceDescription || ''}
-              onChange={v => update({ otherServiceDescription: v })}
-              placeholder="Describe the repair (cracks, resetting, re-leveling, lettering touch-up…)." />
-          )}
-          {sections.includes('repair_stone') && <RepairStoneCard order={order} update={update} updatePricing={updatePricing} />}
-          {sections.includes('acidwash') && <AcidWashCard order={order} update={update} updatePricing={updatePricing} />}
+            {sections.includes('repair_note') && (
+              <NoteCard title="Repair details" value={order.otherServiceDescription || ''}
+                onChange={v => update({ otherServiceDescription: v })}
+                placeholder="Describe the repair (cracks, resetting, re-leveling, lettering touch-up…)." />
+            )}
+            {sections.includes('repair_stone') && <RepairStoneCard order={order} update={update} updatePricing={updatePricing} />}
+            {sections.includes('acidwash') && <AcidWashCard order={order} update={update} updatePricing={updatePricing} />}
 
-          {sections.includes('attachments') && <AttachmentsCard order={order} updatePricing={updatePricing} />}
-          {sections.includes('addons') && <AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={ADDON_SETS[type] || []} />}
-          {sections.includes('finance') && (
-            <FinanceCard order={order} lineItems={lineItems} totals={totals} displayedTotal={displayedTotal}
-              updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}
-              deposit={deposit} setDeposit={setDeposit}
-              markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate} />
-          )}
+            {sections.includes('attachments') && <AttachmentsCard order={order} updatePricing={updatePricing} />}
+            {sections.includes('addons') && <div className="of-span-2"><AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={ADDON_SETS[type] || []} /></div>}
+            {sections.includes('finance') && (
+              <div className="of-span-2"><FinanceCard order={order} lineItems={lineItems} totals={totals} displayedTotal={displayedTotal}
+                updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}
+                deposit={deposit} setDeposit={setDeposit}
+                markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate} /></div>
+            )}
 
-          {sections.includes('finance') && <QuotesManager order={order} update={update} />}
+            {sections.includes('finance') && <div className="of-span-2"><QuotesManager order={order} update={update} /></div>}
 
-          <StatusCard isEdit={isEdit} templateMs={templateMs} stageIdx={stageIdx} setStageIdx={setStageIdx} />
+            <div className="of-span-2"><StatusCard isEdit={isEdit} templateMs={templateMs} stageIdx={stageIdx} setStageIdx={setStageIdx} /></div>
+          </div>
         </div>
 
         <footer className="of-footer">
@@ -528,6 +531,8 @@ function CustomerCard({ order, update, updatePricing }) {
 
   return (
     <Card title="Customer & contact" sub="Search to autofill an existing customer, or type a new one.">
+      <SelectField label="Created by" value={order.salesRep} onChange={v => update({ salesRep: v })}
+        options={SALES_REPS.map(r => ({ value: r, label: r }))} placeholder="Who's creating this order…" full />
       <Field label="Find existing customer" full hint="Type a last name or phone — pick to autofill.">
         <AutoComplete
           search={searchCustomers}
@@ -1574,7 +1579,14 @@ export const OF_CSS = `
   .of-title { font-family: var(--font-d, 'Playfair Display'), Georgia, serif; font-size: 18px; font-weight: 600; color: #111; flex: 1 1 auto; }
   .of-headtotal { font-size: 18px; font-weight: 700; color: #1e2d3d; font-variant-numeric: tabular-nums; }
 
-  .of-body { flex: 1 1 auto; overflow-y: auto; padding: 20px 24px 40px; max-width: 880px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+  .of-body { flex: 1 1 auto; overflow-y: auto; padding: 22px 32px 48px; max-width: 1320px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+
+  /* Phase 7 — multi-column card layout: narrow cards pair up, wide cards span full
+     width, so the form uses the horizontal space instead of a cramped 880px column. */
+  .of-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+  .of-cards .of-card { margin-bottom: 0; height: 100%; }
+  .of-span-2 { grid-column: 1 / -1; }
+  @media (max-width: 1040px) { .of-cards { grid-template-columns: 1fr; } .of-body { padding: 20px 20px 44px; } }
 
   .of-typebar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
   .of-typebar-label { font-size: 13px; color: #8a8a85; font-weight: 600; }
