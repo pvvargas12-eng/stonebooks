@@ -28,11 +28,6 @@ import {
 } from '../SalesMode'
 import { supabase } from './supabase'
 
-// Feet-inches dimension string for line-item labels (e.g. 30,14,6 → "2-6 × 1-2 × 0-6").
-// Labels carry product name + SIZE only — never pricing math.
-const ftInch = (n) => { n = Number(n); if (!n) return null; return `${Math.floor(n / 12)}-${n % 12}` }
-const fiDims = (o) => [ftInch(o.width), ftInch(o.depth), ftInch(o.thickness ?? o.height)].filter(Boolean).join(' × ')
-
 // Re-export the existing dropdown lists so the form imports everything from here.
 export {
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
@@ -325,8 +320,12 @@ export function computeFormLineItems(order) {
     if (baseStone && L > 0 && H > 0) {
       const rate = liveRates.customDiePerSqIn
       baseStone.amount = Math.round(L * H * rate * 100) / 100
-      // Label = product name + size only (feet-inches). NO pricing math.
-      baseStone.label = `${shape.label}${fiDims(order) ? ` ${fiDims(order)}` : ''}`
+      // Phase 2 — ONE die-label source. The label is left exactly as buildLineItems
+      // set it (buildDieSpec: "size · top · sides · color" for die shapes), so a
+      // CUSTOM die reads identically in the editor, quotes, estimate, and contract.
+      // We no longer overwrite it with a "${shape.label} ${dims}" variant. Only the
+      // amount is corrected here — the label never enters any total, so this is
+      // byte-identical to before for the grand total.
     }
   }
 
