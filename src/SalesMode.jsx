@@ -7734,7 +7734,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     const descLines = doc.splitTextToSize(desc, descWrapW)
     const rowH = 4.8 * Math.max(descLines.length, 1) + 0.5
     if (zebraRow % 2 === 1) {
-      doc.setFillColor(247, 245, 240)
+      doc.setFillColor(237, 237, 237)   // neutral gray (was warm beige) — clean B&W contract
       doc.rect(M - 2, y - 3.4, (W - M) - (M - 2) + 2, rowH, 'F')
     }
     zebraRow++
