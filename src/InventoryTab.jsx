@@ -16,6 +16,7 @@ import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
 import InventoryDashboard from './components/InventoryDashboard'
 import InventoryProcurement from './components/InventoryProcurement'
+import InventoryPhotoEtching from './components/InventoryPhotoEtching'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -97,7 +98,7 @@ export default function InventoryTab() {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : 'Dashboard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'photos' ? 'Photos & Etching' : 'Dashboard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
@@ -105,6 +106,7 @@ export default function InventoryTab() {
             <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
             <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
             <button type="button" className={`inv-seg-btn${view === 'procurement' ? ' on' : ''}`} onClick={() => setView('procurement')}>Procurement</button>
+            <button type="button" className={`inv-seg-btn${view === 'photos' ? ' on' : ''}`} onClick={() => setView('photos')}>Photos &amp; Etching</button>
           </div>
           {view === 'yard' && (
             <button type="button" className="sb-btn-secondary inv-import-btn" onClick={() => setShowImport(true)}>
@@ -133,6 +135,8 @@ export default function InventoryTab() {
       {view === 'procurement' && (
         <InventoryProcurement autoNew={autoNewPR} onConsumeAutoNew={() => setAutoNewPR(false)} />
       )}
+
+      {view === 'photos' && <InventoryPhotoEtching />}
 
       {view === 'matches' && <InventorySmartMatches />}
 
