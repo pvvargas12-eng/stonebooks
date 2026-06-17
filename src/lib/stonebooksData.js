@@ -7070,6 +7070,112 @@ export async function releaseInventoryItem(row) {
   return { ok: true }
 }
 
+// ── Procurement (Phase 1 — Stone Purchase Requests) ──────────────────────────
+// Suppliers + bulk_order_items are new tables; bulk_orders gains supplier_id +
+// status. Every helper degrades gracefully until 20260617_inventory_procurement.sql
+// runs (missing table/column → empty / clear error, never a crash).
+export const SUPPLIER_KINDS = ['stone', 'photo', 'etching', 'bronze']
+
+export async function listSuppliers() {
+  try {
+    const { data, error } = await supabase.from('suppliers').select('*').order('name', { ascending: true })
+    if (error) return { ok: false, rows: [], error: error.message }
+    return { ok: true, rows: data || [], error: null }
+  } catch (e) { return { ok: false, rows: [], error: String(e?.message || e) } }
+}
+
+export async function createSupplier(input = {}) {
+  const payload = {
+    name: input.name?.trim() || null,
+    contact_name: input.contact_name?.trim() || null,
+    phone: input.phone?.trim() || null,
+    email: input.email?.trim() || null,
+    terms: input.terms?.trim() || null,
+    lead_time_days: (input.lead_time_days != null && input.lead_time_days !== '') ? Number(input.lead_time_days) : null,
+    kinds: Array.isArray(input.kinds) ? input.kinds : [],
+    notes: input.notes?.trim() || null,
+  }
+  if (!payload.name) return { ok: false, error: 'Supplier name is required.' }
+  try {
+    const { data, error } = await supabase.from('suppliers').insert(payload).select().single()
+    if (error) return { ok: false, error: error.message }
+    return { ok: true, row: data }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+function _prNumber() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `PR-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+}
+
+// Create a stone PR: a bulk_orders row (kind=stone, status=draft) + its line items.
+export async function createStonePR({ supplier = {}, placedAt = null, requestedDelivery = null, notes = null, createdBy = null, lines = [] } = {}) {
+  const supplierName = supplier?.name?.trim()
+  if (!supplierName) return { ok: false, error: 'A supplier is required.' }
+  if (!Array.isArray(lines) || lines.length === 0) return { ok: false, error: 'Add at least one line item.' }
+  const poNumber = _prNumber()
+  const orderPayload = {
+    kind: 'stone', supplier_name: supplierName, supplier_id: supplier?.id || null, status: 'draft',
+    po_number: poNumber, supplier_eta: requestedDelivery || null,
+    notes: [notes?.trim() || null, createdBy ? `Created by ${createdBy}` : null].filter(Boolean).join(' · ') || null,
+  }
+  if (placedAt) orderPayload.placed_at = placedAt
+  try {
+    let res = await supabase.from('bulk_orders').insert(orderPayload).select().single()
+    if (res.error && /supplier_id|status|column|could not find/i.test(res.error.message)) {
+      const { supplier_id, status, ...slim } = orderPayload   // eslint-disable-line no-unused-vars
+      res = await supabase.from('bulk_orders').insert(slim).select().single()
+    }
+    if (res.error) return { ok: false, error: res.error.message }
+    const boId = res.data.id
+    const itemRows = lines.map(l => ({
+      bulk_order_id: boId, kind: 'stone',
+      family_name: l.family_name?.trim() || null, order_id: l.order_id || null,
+      color: l.color?.trim() || null, size: l.size?.trim() || null,
+      top: l.top?.trim() || null, sides: l.sides?.trim() || null,
+      quantity: Math.max(1, Number(l.quantity) || 1), notes: l.notes?.trim() || null,
+    }))
+    const { error: itemErr } = await supabase.from('bulk_order_items').insert(itemRows)
+    if (itemErr) return { ok: false, error: `PR header saved but line items failed (run the migration?): ${itemErr.message}`, bulkOrderId: boId }
+    return { ok: true, bulkOrderId: boId, poNumber }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+export async function listStonePRs() {
+  try {
+    const { data, error } = await supabase
+      .from('bulk_orders').select('*, items:bulk_order_items(count)')
+      .eq('kind', 'stone').order('created_at', { ascending: false })
+    if (error) {
+      const r2 = await supabase.from('bulk_orders').select('*').eq('kind', 'stone').order('created_at', { ascending: false })
+      if (r2.error) return { ok: false, rows: [], error: r2.error.message }
+      return { ok: true, rows: r2.data || [], error: null }
+    }
+    return { ok: true, rows: data || [], error: null }
+  } catch (e) { return { ok: false, rows: [], error: String(e?.message || e) } }
+}
+
+export async function getBulkOrderWithItems(id) {
+  try {
+    const [oRes, iRes] = await Promise.all([
+      supabase.from('bulk_orders').select('*').eq('id', id).single(),
+      supabase.from('bulk_order_items').select('*').eq('bulk_order_id', id).order('family_name', { ascending: true }),
+    ])
+    if (oRes.error) return { ok: false, error: oRes.error.message }
+    return { ok: true, order: oRes.data, items: iRes.error ? [] : (iRes.data || []) }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+export async function markBulkOrderStatus(id, status) {
+  try {
+    const { error } = await supabase.from('bulk_orders').update({ status }).eq('id', id)
+    if (error && /status|column|could not find/i.test(error.message)) return { ok: false, error: 'Run the procurement migration to enable PR status.' }
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 // =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================

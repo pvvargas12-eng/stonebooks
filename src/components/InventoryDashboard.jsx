@@ -25,7 +25,7 @@ function familyOf(row) {
   return row.order_number || 'Order'
 }
 
-export default function InventoryDashboard({ onImport, onAddStone, onOpenMatches }) {
+export default function InventoryDashboard({ onImport, onAddStone, onOpenMatches, onBuildPR }) {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState(null)
   const [syncedAt, setSyncedAt] = useState('')
@@ -67,9 +67,10 @@ export default function InventoryDashboard({ onImport, onAddStone, onOpenMatches
     const noMatch = matched.filter(m => !m.best).length
     const locs = new Set(avail.map(s => s.location || '—')).size
     const now = data.nowMs || 0
-    const inTransit = bulk.filter(b => !b.received_at).length
+    const draftN = bulk.filter(b => !b.received_at && b.status === 'draft').length
+    const orderedN = bulk.filter(b => !b.received_at && b.status !== 'draft').length
     const recvRecent = bulk.filter(b => b.received_at && (now - new Date(b.received_at).getTime()) <= 14 * DAY).length
-    return { availQty: qty(avail), availRows: avail.length, allocQty: qty(alloc), allocRows: alloc.length, locs, exact, near, noMatch, matchesFound: exact + near, inTransit, recvRecent }
+    return { availQty: qty(avail), availRows: avail.length, allocQty: qty(alloc), allocRows: alloc.length, locs, exact, near, noMatch, matchesFound: exact + near, draftN, orderedN, inTransit: orderedN, recvRecent }
   }, [data])
 
   const alerts = useMemo(() => {
@@ -107,7 +108,7 @@ export default function InventoryDashboard({ onImport, onAddStone, onOpenMatches
           <div className="invd-actions">
             <button type="button" className="invd-btn" onClick={onImport}>Import</button>
             <button type="button" className="invd-btn" onClick={onAddStone}>Add stone</button>
-            <button type="button" className="invd-btn invd-btn-ghost" disabled title="Purchase requests — coming in the procurement phase">Build PR</button>
+            <button type="button" className="invd-btn" onClick={onBuildPR}>Build PR</button>
           </div>
         </div>
       </header>
@@ -179,12 +180,12 @@ export default function InventoryDashboard({ onImport, onAddStone, onOpenMatches
       <section className="invd-panel">
         <div className="invd-panel-head"><span className="invd-panel-title">Vendor Pipeline</span></div>
         {data.bulk.length === 0 ? (
-          <div className="invd-empty">No purchase requests yet — procurement comes in a later phase.</div>
+          <div className="invd-empty">No purchase requests yet — click <strong>Build PR</strong> above to start one.</div>
         ) : (
           <div className="invd-pipeline">
             {[
-              { code: 'draft',    label: 'Draft',       tone: 'muted',  n: 0 },
-              { code: 'ordered',  label: 'Ordered',     tone: 'purple', n: data.bulk.filter(b => !b.received_at).length },
+              { code: 'draft',    label: 'Draft',       tone: 'muted',  n: data.bulk.filter(b => !b.received_at && b.status === 'draft').length },
+              { code: 'ordered',  label: 'Ordered',     tone: 'purple', n: data.bulk.filter(b => !b.received_at && b.status !== 'draft').length },
               { code: 'shipped',  label: 'Shipped',     tone: 'purple', n: 0 },
               { code: 'received', label: 'Received',    tone: 'green',  n: data.bulk.filter(b => b.received_at).length },
               { code: 'backorder',label: 'Backordered', tone: 'red',    n: 0 },
@@ -199,7 +200,7 @@ export default function InventoryDashboard({ onImport, onAddStone, onOpenMatches
             ))}
           </div>
         )}
-        <div className="invd-pipeline-note">Draft / Shipped / Backordered stages activate with the procurement phase.</div>
+        <div className="invd-pipeline-note">Shipped / Backordered stages activate as the supplier workflow grows.</div>
       </section>
     </div>
   )

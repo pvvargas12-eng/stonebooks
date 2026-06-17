@@ -15,6 +15,7 @@ import {
 import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
 import InventoryDashboard from './components/InventoryDashboard'
+import InventoryProcurement from './components/InventoryProcurement'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -36,7 +37,8 @@ export default function InventoryTab() {
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState(null)
   const [showImport, setShowImport] = useState(false)
-  const [view, setView] = useState('dashboard')   // 'dashboard' | 'yard' | 'matches'
+  const [view, setView] = useState('dashboard')   // 'dashboard' | 'yard' | 'matches' | 'procurement'
+  const [autoNewPR, setAutoNewPR] = useState(false)
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
 
   // Await first (no synchronous setState in the mount effect); `loading` starts true.
@@ -95,13 +97,14 @@ export default function InventoryTab() {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : 'Dashboard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : 'Dashboard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
             <button type="button" className={`inv-seg-btn${view === 'dashboard' ? ' on' : ''}`} onClick={() => setView('dashboard')}>Dashboard</button>
             <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
             <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
+            <button type="button" className={`inv-seg-btn${view === 'procurement' ? ' on' : ''}`} onClick={() => setView('procurement')}>Procurement</button>
           </div>
           {view === 'yard' && (
             <button type="button" className="sb-btn-secondary inv-import-btn" onClick={() => setShowImport(true)}>
@@ -123,7 +126,12 @@ export default function InventoryTab() {
           onImport={() => setShowImport(true)}
           onAddStone={() => setView('yard')}
           onOpenMatches={() => setView('matches')}
+          onBuildPR={() => { setAutoNewPR(true); setView('procurement') }}
         />
+      )}
+
+      {view === 'procurement' && (
+        <InventoryProcurement autoNew={autoNewPR} onConsumeAutoNew={() => setAutoNewPR(false)} />
       )}
 
       {view === 'matches' && <InventorySmartMatches />}
