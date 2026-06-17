@@ -14,6 +14,7 @@ import {
 } from './lib/stonebooksData'
 import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
+import InventoryDashboard from './components/InventoryDashboard'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -35,7 +36,7 @@ export default function InventoryTab() {
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState(null)
   const [showImport, setShowImport] = useState(false)
-  const [view, setView] = useState('yard')   // 'yard' | 'matches'
+  const [view, setView] = useState('dashboard')   // 'dashboard' | 'yard' | 'matches'
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
 
   // Await first (no synchronous setState in the mount effect); `loading` starts true.
@@ -87,10 +88,11 @@ export default function InventoryTab() {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : 'Yard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : 'Dashboard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
+            <button type="button" className={`inv-seg-btn${view === 'dashboard' ? ' on' : ''}`} onClick={() => setView('dashboard')}>Dashboard</button>
             <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
             <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
           </div>
@@ -106,6 +108,14 @@ export default function InventoryTab() {
         <InventoryImportModal
           onClose={() => setShowImport(false)}
           onImported={load}
+        />
+      )}
+
+      {view === 'dashboard' && (
+        <InventoryDashboard
+          onImport={() => setShowImport(true)}
+          onAddStone={() => setView('yard')}
+          onOpenMatches={() => setView('matches')}
         />
       )}
 
