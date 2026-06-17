@@ -170,8 +170,13 @@ function SheetPreview({ sheet, onlyFlagged }) {
         <span className="inv-sheet-name">{sheet.sheetName}</span>
         <span className={`inv-kind inv-kind-${sheet.kind}`}>{sheet.kind === 'customer' ? 'Allocated' : 'Stock'}</span>
         {sheet.skipped
-          ? <span className="inv-sheet-skip">skipped — {sheet.reason}</span>
+          ? <span className="inv-sheet-skip">SKIPPED — {sheet.reason}</span>
           : <span className="inv-sheet-count">{sheet.items.length} rows · {sheetStones} stones</span>}
+      </div>
+      <div className="inv-sheet-diag">
+        {sheet.diag?.headerRow != null
+          ? <>header @ row {sheet.diag.headerRow + 1} · columns: {(sheet.diag.cols || []).join(', ') || '—'} · {sheet.diag.rawRowCount} raw rows → {sheet.diag.rowsYielded} parsed{sheet.diag.rowsAfterCollapse != null ? ` → ${sheet.diag.rowsAfterCollapse} after collapse` : ''}</>
+          : <>⚠ no header detected · {sheet.diag?.rawRowCount ?? 0} raw rows scanned</>}
       </div>
       {!sheet.skipped && items.length > 0 && (
         <table className="inv-prev-table">
@@ -257,7 +262,8 @@ const IMP_CSS = `
   .inv-kind-stock { background: #e7f3ea; color: #1f7a3d; }
   .inv-kind-customer { background: #fbeede; color: #9A7209; }
   .inv-sheet-count { font-size: 12px; color: var(--sb-text-muted, #8a7f6c); }
-  .inv-sheet-skip { font-size: 12px; color: #b3261e; }
+  .inv-sheet-skip { font-size: 12px; color: #b3261e; font-weight: 600; }
+  .inv-sheet-diag { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; color: #a59a86; margin-bottom: 6px; }
   .inv-sheet-empty { font-size: 12.5px; color: var(--sb-text-muted, #8a7f6c); padding: 4px 2px; }
 
   .inv-prev-table { width: 100%; border-collapse: collapse; font-size: 12.5px; border: 1px solid var(--sb-border, #e4e0d4); border-radius: 8px; overflow: hidden; }
