@@ -12,6 +12,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getInventoryStock, addInventoryItem, INVENTORY_ITEM_TYPES, INVENTORY_STATUSES,
 } from './lib/stonebooksData'
+import InventoryImportModal from './components/InventoryImportModal'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -32,6 +33,7 @@ export default function InventoryTab() {
   const [form, setForm] = useState(BLANK)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState(null)
+  const [showImport, setShowImport] = useState(false)
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
 
   // Await first (no synchronous setState in the mount effect); `loading` starts true.
@@ -80,10 +82,22 @@ export default function InventoryTab() {
     <div className="sb-page sb-page-wide">
       <style>{INV_CSS}</style>
 
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">Inventory</div>
-        <h1 className="sb-page-title">Yard</h1>
+      <div className="sb-page-head inv-head">
+        <div>
+          <div className="sb-page-eyebrow">Inventory</div>
+          <h1 className="sb-page-title">Yard</h1>
+        </div>
+        <button type="button" className="sb-btn-secondary inv-import-btn" onClick={() => setShowImport(true)}>
+          Import from Excel
+        </button>
       </div>
+
+      {showImport && (
+        <InventoryImportModal
+          onClose={() => setShowImport(false)}
+          onImported={load}
+        />
+      )}
 
       {/* FAST ADD — always visible, minimal friction */}
       <div className="sb-card inv-add">
@@ -210,6 +224,8 @@ export default function InventoryTab() {
 }
 
 const INV_CSS = `
+  .inv-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .inv-import-btn { white-space: nowrap; flex: 0 0 auto; }
   .inv-add { padding: 16px 18px; margin-bottom: 18px; }
   .inv-add-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px 14px; align-items: end; }
   .inv-f { display: flex; flex-direction: column; gap: 5px; min-width: 0; }

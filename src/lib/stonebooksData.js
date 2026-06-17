@@ -6942,6 +6942,41 @@ export async function addInventoryItem(item) {
   }
 }
 
+// Bulk-insert many stock items (the importer's confirm action). Chunked so a big
+// workbook doesn't hit a single-request limit; returns the count inserted so far
+// even on a mid-run error. Strips any importer-internal fields (_flags/_rawType).
+export async function bulkInsertInventory(items) {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length) return { ok: false, error: 'Nothing to import.', inserted: 0 }
+  const payload = list.map(it => ({
+    item_type:   it.item_type || null,
+    color:       it.color || null,
+    size:        it.size || null,
+    top:         it.top || null,
+    sides:       it.sides || null,
+    back:        it.back || null,
+    location:    it.location || null,
+    quantity:    Math.max(1, Number(it.quantity) || 1),
+    status:      it.status || 'available',
+    assigned_to: it.assigned_to || null,
+    notes:       it.notes || null,
+    photo_url:   it.photo_url || null,
+  }))
+  const CHUNK = 500
+  let inserted = 0
+  try {
+    for (let i = 0; i < payload.length; i += CHUNK) {
+      const slice = payload.slice(i, i + CHUNK)
+      const { data, error } = await supabase.from('inventory_stock').insert(slice).select('id')
+      if (error) return { ok: false, error: error.message, inserted }
+      inserted += data?.length || slice.length
+    }
+    return { ok: true, inserted }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e), inserted }
+  }
+}
+
 // =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================
