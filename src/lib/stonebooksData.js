@@ -6901,6 +6901,20 @@ export const INVENTORY_STATUSES = [
   { code: 'allocated', label: 'Allocated' },
 ]
 
+// Active orders that still physically NEED a stone (pre-install pipeline). Excludes
+// draft (too early) and installed/paid/closed/cancelled/archived (done/dead). Used by
+// Smart Matches to surface stone we may already have in the yard.
+export const NEEDS_STONE_STATUSES = ['scoping', 'quoted', 'contracted', 'in_production']
+export async function getActiveStoneOrders() {
+  try {
+    const { data, error } = await supabase.from('orders').select('*').in('status', NEEDS_STONE_STATUSES)
+    if (error) return { ok: false, rows: [], error: error.message }
+    return { ok: true, rows: data || [], error: null }
+  } catch (e) {
+    return { ok: false, rows: [], error: String(e?.message || e) }
+  }
+}
+
 // Read all yard stock. Returns { ok, rows, error } and NEVER throws, so the tab
 // opens cleanly even before the migration is applied (error → empty list + note).
 export async function getInventoryStock() {

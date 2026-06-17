@@ -13,6 +13,7 @@ import {
   getInventoryStock, addInventoryItem, INVENTORY_ITEM_TYPES, INVENTORY_STATUSES,
 } from './lib/stonebooksData'
 import InventoryImportModal from './components/InventoryImportModal'
+import InventorySmartMatches from './components/InventorySmartMatches'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -34,6 +35,7 @@ export default function InventoryTab() {
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState(null)
   const [showImport, setShowImport] = useState(false)
+  const [view, setView] = useState('yard')   // 'yard' | 'matches'
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
 
   // Await first (no synchronous setState in the mount effect); `loading` starts true.
@@ -85,11 +87,19 @@ export default function InventoryTab() {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">Yard</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : 'Yard'}</h1>
         </div>
-        <button type="button" className="sb-btn-secondary inv-import-btn" onClick={() => setShowImport(true)}>
-          Import from Excel
-        </button>
+        <div className="inv-head-actions">
+          <div className="inv-seg">
+            <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
+            <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
+          </div>
+          {view === 'yard' && (
+            <button type="button" className="sb-btn-secondary inv-import-btn" onClick={() => setShowImport(true)}>
+              Import from Excel
+            </button>
+          )}
+        </div>
       </div>
 
       {showImport && (
@@ -99,6 +109,9 @@ export default function InventoryTab() {
         />
       )}
 
+      {view === 'matches' && <InventorySmartMatches />}
+
+      {view === 'yard' && (<>
       {/* FAST ADD — always visible, minimal friction */}
       <div className="sb-card inv-add">
         <div className="inv-add-grid">
@@ -219,13 +232,18 @@ export default function InventoryTab() {
           </table>
         </div>
       )}
+      </>)}
     </div>
   )
 }
 
 const INV_CSS = `
   .inv-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .inv-head-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
   .inv-import-btn { white-space: nowrap; flex: 0 0 auto; }
+  .inv-seg { display: inline-flex; gap: 3px; background: #ece9e3; border-radius: 9px; padding: 3px; }
+  .inv-seg-btn { font: inherit; font-size: 13px; font-weight: 500; padding: 6px 14px; border: none; border-radius: 6px; background: none; color: #6b6256; cursor: pointer; white-space: nowrap; }
+  .inv-seg-btn.on { background: #fff; color: #9A7209; font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
   .inv-add { padding: 16px 18px; margin-bottom: 18px; }
   .inv-add-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px 14px; align-items: end; }
   .inv-f { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
