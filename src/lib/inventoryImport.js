@@ -80,10 +80,13 @@ const HEADER_MAP = [
   { key: 'loc',      syn: ['location', 'loc', 'yard'] },
 ]
 function matchHeaderCell(v) {
-  const s = String(v ?? '').trim().toLowerCase()
+  let s = String(v ?? '').trim().toLowerCase()
   if (!s || s.length > 24) return null   // header labels are short; skip long prose
+  s = s.replace(/[\s:.\-#]+$/, '').trim() // strip trailing punctuation ("Top:" → "top")
   for (const h of HEADER_MAP) {
-    if (h.syn.some(syn => s === syn || s.includes(syn))) return h.key
+    // EXACT match only — a data value like "polished top" or "2 sides" must NOT be
+    // mistaken for a header (that mis-detected the header row → column misalignment).
+    if (h.syn.includes(s)) return h.key
   }
   return null
 }
@@ -132,18 +135,21 @@ function parseSheet(name, rows) {
     const sizeV = cellAt(row, cols.size)
     const colorV = cellAt(row, cols.color)
     const typeV = cellAt(row, cols.type)
-    const locV = cellAt(row, cols.loc)   // per-row location column, if the sheet has one
 
     // LOCATION HEADER — a label row: no stone data AND <=2 filled cells. Count-based
     // so a mis-mapped size/color column can't eat a real stone row (which has >=3).
-    if (!sizeV && !colorV && !typeV && !locV && ne <= 2) {
+    // The single label cell (e.g. "1.2 A") becomes curLocation and CARRIES DOWN to
+    // every stone beneath it until the next header. The shop writes locations as
+    // header ROWS only — we do NOT treat any column as a per-row location (that
+    // regression turned "1.2 A" into a stone and broke the carry-down).
+    if (!sizeV && !colorV && !typeV && ne <= 2) {
       curLocation = firstNonEmpty(row)
       continue
     }
 
-    // STONE ROW.
+    // STONE ROW — inherits the carried location.
     const flags = []
-    const loc = locV || curLocation || null   // a per-row Location column wins, else carried
+    const loc = curLocation || null
     if (!loc) flags.push('no-location')
     if (!sizeV) flags.push('no-size')
     const it = inferItemType(typeV, typeHint)
@@ -203,6 +209,13 @@ export async function parseInventoryWorkbook(arrayBuffer) {
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name]
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' })
+    // RAW DUMP (diagnostic) — first 20 rows exactly as the parser sees them, so we
+    // can see where the header is, which column holds the location label, and how
+    // many cells a real stone row has. Paste these back from the console (F12).
+    try {
+      console.log(`%c[Inventory Import] RAW — "${name}" (first 20 of ${rows.length} rows)`, 'font-weight:bold;color:#2563eb;font-size:12px')
+      for (let i = 0; i < Math.min(rows.length, 20); i++) console.log(`  [${i}]`, JSON.stringify(rows[i]))
+    } catch { /* diagnostics must never break the parse */ }
     const parsed = parseSheet(name, rows)
     if (parsed.ok) {
       const collapsed = collapse(parsed.items)
