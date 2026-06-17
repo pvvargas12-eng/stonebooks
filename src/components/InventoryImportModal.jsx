@@ -106,12 +106,13 @@ export default function InventoryImportModal({ onClose, onImported }) {
                 <div className="inv-breakdown-title">Per-sheet breakdown <span className="inv-breakdown-hint">(also dumped to the browser console — F12)</span></div>
                 <table className="inv-bd-table">
                   <thead>
-                    <tr><th>Sheet</th><th>Kind</th><th>Header row</th><th>Columns mapped</th><th className="inv-num">Raw</th><th className="inv-num">Parsed</th><th className="inv-num">Collapsed</th><th>Status</th></tr>
+                    <tr><th>Sheet</th><th>Family</th><th>Kind</th><th>Header row</th><th>Columns mapped</th><th className="inv-num">Raw</th><th className="inv-num">Parsed</th><th className="inv-num">Collapsed</th><th>Status</th></tr>
                   </thead>
                   <tbody>
                     {parsed.sheets.map(sh => (
                       <tr key={sh.sheetName} className={sh.skipped ? 'inv-bd-skip' : ''}>
                         <td className="inv-bd-name">{sh.sheetName}</td>
+                        <td className="inv-mono">{sh.family === 'B' ? 'B · per-row' : sh.family === 'A' ? 'A · carry-down' : '—'}</td>
                         <td>{sh.kind === 'customer' ? 'Allocated' : 'Stock'}</td>
                         <td className="inv-num">{sh.diag?.headerRow != null ? sh.diag.headerRow + 1 : '—'}</td>
                         <td className="inv-mono">{(sh.diag?.cols || []).join(', ') || '—'}</td>

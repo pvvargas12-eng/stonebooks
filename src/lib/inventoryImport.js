@@ -1,26 +1,23 @@
 // =============================================================================
-// inventoryImport.js — parse Leo's Inventory workbook (6 sheets) for Phase 2.
+// inventoryImport.js — parse Leo's Inventory workbook (6 sheets, 2 families).
 // =============================================================================
-// PREVIEW-FIRST: this module ONLY parses + structures. Nothing writes to the DB
-// here — the UI shows a preview and the operator clicks confirm before any insert.
+// PREVIEW-FIRST: parses + structures only. Nothing writes — the UI shows a preview
+// and the operator confirms before any insert.
 //
-// The hard parts, handled here:
-//  • Location is a HEADER ROW, not a column — carried DOWN to every stone beneath
-//    it until the next header. (If a sheet DOES use a per-row Location column, that
-//    value wins for the row.) Location strings preserved VERBATIM (no normalize).
-//  • Header row is found by SCORING the first 30 rows (skips title rows like
-//    "SHEVCHENKO MONUMENTS" and junk columns) — the best-matching row wins.
-//  • Location-vs-stone detection is CELL-COUNT based (mapping-robust): a label row
-//    has <=2 filled cells; a stone row has several. So a mis-mapped size/color
-//    column can NOT silently swallow stone rows.
-//  • Type blank per-row (the slant sheet) → item_type inferred from the SHEET
-//    (slant→slant, bronze→bronze, base→base) instead of dropping the row.
-//  • Identical stones at one location collapse to a single row + summed quantity.
-//  • Nothing is dropped: uncertain rows are FLAGGED so they surface in the preview.
-//  • Per-sheet DIAGNOSTICS (header row index, mapped columns, rows yielded) ride
-//    on every sheet so the preview shows exactly what each sheet detected.
+// TWO STRUCTURAL FAMILIES, detected DETERMINISTICALLY from the header row:
+//   • FAMILY B — header contains "Assigned to"  → location is a PER-ROW column,
+//     each row also carries its family; status = allocated. (Customer, Base Customer)
+//     "Base Customer" has a junk col-0 ("ƒtan") that shifts columns right by one;
+//     handled automatically because columns are mapped by matching header text.
+//   • FAMILY A — header has NO "Assigned to"     → location is a HEADER ROW (value
+//     only in the Location column, rest empty) carried DOWN to every stone beneath;
+//     status = available. (Base Stones, Stones slant, Bronze Stone, Courtyard)
 //
-// SheetJS (xlsx) is CDN-lazy-loaded (no npm dep), same pattern as jsPDF.
+// The header row is found by SCORING (exact header-word matches) across the first 30
+// rows — so a header at row 2 (Family A) or row 4 (Family B, under title rows) is
+// found the same way, and column indices come from the header (junk columns ignored).
+// All text preserved VERBATIM. Identical stones at one location collapse + sum qty.
+// SheetJS (xlsx) CDN-lazy-loaded (no npm dep), same pattern as jsPDF.
 // =============================================================================
 
 let _xlsxPromise = null
@@ -38,7 +35,7 @@ export function loadXLSX() {
   return _xlsxPromise
 }
 
-// ── Type inference (Type cell → our enum, with a sheet-based fallback) ─────────
+// Type cell → our item_type, with a sheet-based fallback (DIE→die, SLANTS→slant, etc.).
 function inferItemType(rawType, sheetHint) {
   const t = String(rawType || '').toLowerCase()
   const has = (k) => t.includes(k)
@@ -53,22 +50,22 @@ function inferItemType(rawType, sheetHint) {
   if (has('marker')) return 'marker'
   if (has('die'))    return 'die'
   if (has('base'))   return 'base'
-  return sheetHint || null   // null → caller flags 'unknown-type' + stores 'custom'
+  return sheetHint || null
 }
 
-// Classify a sheet by name → { kind: 'stock'|'customer', typeHint }
-function classifySheet(name) {
+// Sheet-name → type hint (used when the Type cell is blank).
+function sheetTypeHint(name) {
   const n = String(name || '').toLowerCase()
-  const kind = n.includes('customer') ? 'customer' : 'stock'
-  let typeHint = null
-  if (n.includes('bronze')) typeHint = 'bronze'
-  else if (n.includes('slant')) typeHint = 'slant'   // slant sheet: dies/slants/hickeys, type implied
-  else if (n.includes('base')) typeHint = 'base'
-  return { kind, typeHint }
+  if (n.includes('bronze')) return 'bronze'
+  if (n.includes('slant'))  return 'slant'
+  if (n.includes('base'))   return 'base'
+  return null
 }
 
-// ── Column-header detection ──────────────────────────────────────────────────
+// ── Header detection (exact word match; junk/title rows score ~0) ─────────────
 const HEADER_MAP = [
+  { key: 'assigned', syn: ['assigned to', 'assigned', 'family', 'sold to'] },
+  { key: 'loc',      syn: ['location', 'loc', 'yard'] },
   { key: 'type',     syn: ['type', 'item'] },
   { key: 'color',    syn: ['color', 'colour', 'granite', 'clr'] },
   { key: 'size',     syn: ['size', 'dimension', 'dimensions', 'dim', 'dims', 'sz'] },
@@ -76,22 +73,14 @@ const HEADER_MAP = [
   { key: 'sides',    syn: ['sides', 'side'] },
   { key: 'back',     syn: ['back'] },
   { key: 'quantity', syn: ['amount', 'amt', 'qty', 'quantity', 'count', 'number'] },
-  { key: 'assigned', syn: ['assigned to', 'assigned', 'family', 'sold to'] },
-  { key: 'loc',      syn: ['location', 'loc', 'yard'] },
 ]
 function matchHeaderCell(v) {
   let s = String(v ?? '').trim().toLowerCase()
-  if (!s || s.length > 24) return null   // header labels are short; skip long prose
-  s = s.replace(/[\s:.\-#]+$/, '').trim() // strip trailing punctuation ("Top:" → "top")
-  for (const h of HEADER_MAP) {
-    // EXACT match only — a data value like "polished top" or "2 sides" must NOT be
-    // mistaken for a header (that mis-detected the header row → column misalignment).
-    if (h.syn.includes(s)) return h.key
-  }
+  if (!s || s.length > 24) return null
+  s = s.replace(/[\s:.\-#]+$/, '').trim()
+  for (const h of HEADER_MAP) if (h.syn.includes(s)) return h.key
   return null
 }
-// Score the first 30 rows; the row with the MOST distinct header matches (>=2, and
-// at least one stone-ish column) wins. Naturally skips title rows / junk above it.
 function findHeaderRow(rows) {
   let best = null
   for (let i = 0; i < Math.min(rows.length, 30); i++) {
@@ -110,77 +99,81 @@ function findHeaderRow(rows) {
 
 const cellAt = (row, idx) => (idx == null ? '' : String((row && row[idx]) ?? '').trim())
 const nonEmptyCount = (row) => (row || []).reduce((n, c) => n + (String(c ?? '').trim() ? 1 : 0), 0)
-const firstNonEmpty = (row) => { const c = (row || []).find(x => String(x ?? '').trim()); return c == null ? '' : String(c).trim() }
 
-// ── Per-sheet parse ──────────────────────────────────────────────────────────
+// Build one stock item (shared by both families).
+function buildItem({ location, typeV, colorV, sizeV, topV, sidesV, backV, amtV, typeHint, allocated, assigned }) {
+  const flags = []
+  if (!location) flags.push('no-location')
+  if (!sizeV) flags.push('no-size')
+  const it = inferItemType(typeV, typeHint)
+  if (!it) flags.push('unknown-type')
+  let qty = parseInt(String(amtV).replace(/[^\d-]/g, ''), 10)
+  if (!Number.isFinite(qty) || qty < 1) qty = 1
+  const fam = allocated ? (assigned || null) : null
+  if (allocated && !fam) flags.push('no-assignee')
+  return {
+    location: location || null,
+    item_type: it || 'custom',
+    color: colorV || null, size: sizeV || null, top: topV || null, sides: sidesV || null, back: backV || null,
+    quantity: qty,
+    status: allocated ? 'allocated' : 'available',
+    assigned_to: fam,
+    notes: null,
+    _flags: flags,
+    _rawType: typeV || null,
+  }
+}
+
+// ── Per-sheet parse (branches on family) ─────────────────────────────────────
 function parseSheet(name, rows) {
-  const { kind, typeHint } = classifySheet(name)
+  const typeHint = sheetTypeHint(name)
   const header = findHeaderRow(rows)
   if (!header) {
-    return {
-      sheetName: name, kind, ok: false, items: [],
+    return { sheetName: name, kind: 'stock', family: '?', ok: false, items: [],
       reason: 'No recognizable column headers found (scanned first 30 rows).',
-      diag: { headerRow: null, cols: [], rowsYielded: 0 },
-    }
+      diag: { headerRow: null, cols: [], rowsYielded: 0 } }
   }
   const { cols } = header
+  const family = cols.assigned != null ? 'B' : 'A'
+  const kind = family === 'B' ? 'customer' : 'stock'
   const items = []
-  let curLocation = null
 
-  for (let i = header.rowIdx + 1; i < rows.length; i++) {
-    const row = rows[i] || []
-    const ne = nonEmptyCount(row)
-    if (ne === 0) continue
+  const C = (row, key) => cellAt(row, cols[key])
 
-    const sizeV = cellAt(row, cols.size)
-    const colorV = cellAt(row, cols.color)
-    const typeV = cellAt(row, cols.type)
-
-    // LOCATION HEADER — a label row: no stone data AND <=2 filled cells. Count-based
-    // so a mis-mapped size/color column can't eat a real stone row (which has >=3).
-    // The single label cell (e.g. "1.2 A") becomes curLocation and CARRIES DOWN to
-    // every stone beneath it until the next header. The shop writes locations as
-    // header ROWS only — we do NOT treat any column as a per-row location (that
-    // regression turned "1.2 A" into a stone and broke the carry-down).
-    if (!sizeV && !colorV && !typeV && ne <= 2) {
-      curLocation = firstNonEmpty(row)
-      continue
+  if (family === 'A') {
+    // Location is a header row (value only in the Location column) → carry down.
+    let curLocation = null
+    for (let i = header.rowIdx + 1; i < rows.length; i++) {
+      const row = rows[i] || []
+      if (nonEmptyCount(row) === 0) continue
+      const locVal = C(row, 'loc')
+      const typeV = C(row, 'type'), colorV = C(row, 'color'), sizeV = C(row, 'size')
+      const topV = C(row, 'top'), sidesV = C(row, 'sides'), backV = C(row, 'back'), amtV = C(row, 'quantity')
+      // LOCATION row — value ONLY in the Location column.
+      if (locVal && !typeV && !colorV && !sizeV && !topV && !sidesV && !backV && !amtV) {
+        curLocation = locVal
+        continue
+      }
+      // STONE row — must carry some stone data; location comes from carry-down.
+      if (!(typeV || colorV || sizeV || topV || sidesV || amtV)) continue
+      items.push(buildItem({ location: curLocation, typeV, colorV, sizeV, topV, sidesV, backV, amtV, typeHint, allocated: false }))
     }
-
-    // STONE ROW — inherits the carried location.
-    const flags = []
-    const loc = curLocation || null
-    if (!loc) flags.push('no-location')
-    if (!sizeV) flags.push('no-size')
-    const it = inferItemType(typeV, typeHint)
-    if (!it) flags.push('unknown-type')
-
-    let qty = parseInt(String(cellAt(row, cols.quantity)).replace(/[^\d-]/g, ''), 10)
-    if (!Number.isFinite(qty) || qty < 1) qty = 1
-
-    const assigned = kind === 'customer' ? (cellAt(row, cols.assigned) || null) : null
-    if (kind === 'customer' && !assigned) flags.push('no-assignee')
-
-    items.push({
-      location:    loc,
-      item_type:   it || 'custom',
-      color:       colorV || null,
-      size:        sizeV || null,
-      top:         cellAt(row, cols.top) || null,
-      sides:       cellAt(row, cols.sides) || null,
-      back:        cellAt(row, cols.back) || null,
-      quantity:    qty,
-      status:      kind === 'customer' ? 'allocated' : 'available',
-      assigned_to: assigned,
-      notes:       null,
-      _flags:      flags,
-      _rawType:    typeV || null,
-    })
+  } else {
+    // Location + family are per-row columns; every data row is a self-contained stone.
+    for (let i = header.rowIdx + 1; i < rows.length; i++) {
+      const row = rows[i] || []
+      if (nonEmptyCount(row) === 0) continue
+      const typeV = C(row, 'type'), colorV = C(row, 'color'), sizeV = C(row, 'size')
+      if (!(typeV || colorV || sizeV)) continue   // skip stray/title rows
+      items.push(buildItem({
+        location: C(row, 'loc'), typeV, colorV, sizeV,
+        topV: C(row, 'top'), sidesV: C(row, 'sides'), backV: C(row, 'back'), amtV: C(row, 'quantity'),
+        typeHint, allocated: true, assigned: C(row, 'assigned'),
+      }))
+    }
   }
-  return {
-    sheetName: name, kind, ok: true, items,
-    diag: { headerRow: header.rowIdx, cols: Object.keys(cols), rowsYielded: items.length },
-  }
+  return { sheetName: name, kind, family, ok: true, items,
+    diag: { headerRow: header.rowIdx, cols: Object.keys(cols), rowsYielded: items.length } }
 }
 
 // Collapse identical stones at the same location → one row, summed quantity.
@@ -193,9 +186,7 @@ function collapse(items) {
     if (ex) {
       ex.quantity += it.quantity
       for (const f of it._flags) if (!ex._flags.includes(f)) ex._flags.push(f)
-    } else {
-      map.set(key, { ...it, _flags: [...it._flags] })
-    }
+    } else map.set(key, { ...it, _flags: [...it._flags] })
   }
   return [...map.values()]
 }
@@ -209,60 +200,44 @@ export async function parseInventoryWorkbook(arrayBuffer) {
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name]
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' })
-    // RAW DUMP (diagnostic) — first 20 rows exactly as the parser sees them, so we
-    // can see where the header is, which column holds the location label, and how
-    // many cells a real stone row has. Paste these back from the console (F12).
     try {
       console.log(`%c[Inventory Import] RAW — "${name}" (first 20 of ${rows.length} rows)`, 'font-weight:bold;color:#2563eb;font-size:12px')
       for (let i = 0; i < Math.min(rows.length, 20); i++) console.log(`  [${i}]`, JSON.stringify(rows[i]))
-    } catch { /* diagnostics must never break the parse */ }
+    } catch { /* */ }
     const parsed = parseSheet(name, rows)
     if (parsed.ok) {
       const collapsed = collapse(parsed.items)
-      sheets.push({
-        sheetName: name, kind: parsed.kind, items: collapsed, skipped: false,
-        diag: { ...parsed.diag, rowsAfterCollapse: collapsed.length, rawRowCount: rows.length },
-      })
+      sheets.push({ sheetName: name, kind: parsed.kind, family: parsed.family, items: collapsed, skipped: false,
+        diag: { ...parsed.diag, rowsAfterCollapse: collapsed.length, rawRowCount: rows.length } })
       allItems = allItems.concat(collapsed)
     } else {
-      sheets.push({
-        sheetName: name, kind: parsed.kind, items: [], skipped: true, reason: parsed.reason,
-        diag: { ...parsed.diag, rawRowCount: rows.length },
-      })
+      sheets.push({ sheetName: name, kind: parsed.kind, family: parsed.family, items: [], skipped: true, reason: parsed.reason,
+        diag: { ...parsed.diag, rawRowCount: rows.length } })
     }
   }
-  const locations = new Set(allItems.map(i => i.location || '(no location)'))
-  const flaggedCount = allItems.filter(i => i._flags.length).length
-  const totalStones = allItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0)
 
-  // DIAGNOSTIC DUMP — per-sheet breakdown to the browser console (F12). Lets Paul
-  // paste back exactly which sheets parse and which drop to 0. Never throws.
   try {
     const diagRows = sheets.map(s => ({
-      sheet:      s.sheetName,
-      kind:       s.kind,
-      headerRow:  s.diag?.headerRow != null ? (s.diag.headerRow + 1) : 'NONE',
-      columns:    (s.diag?.cols || []).join(',') || '—',
-      rawRows:    s.diag?.rawRowCount ?? 0,
-      parsed:     s.diag?.rowsYielded ?? 0,
-      collapsed:  s.items?.length ?? 0,
+      sheet: s.sheetName, family: s.family, kind: s.kind,
+      headerRow: s.diag?.headerRow != null ? (s.diag.headerRow + 1) : 'NONE',
+      columns: (s.diag?.cols || []).join(','),
+      rawRows: s.diag?.rawRowCount ?? 0, parsed: s.diag?.rowsYielded ?? 0, collapsed: s.items?.length ?? 0,
       skipReason: s.skipped ? (s.reason || 'skipped') : '',
     }))
     console.log('%c[Inventory Import] per-sheet breakdown', 'font-weight:bold;color:#9A7209;font-size:13px')
     if (console.table) console.table(diagRows); else console.log(JSON.stringify(diagRows, null, 2))
-    console.log('[Inventory Import] totals →', { sheets: sheets.length, rows: allItems.length, stones: totalStones, locations: locations.size, flagged: flaggedCount })
-  } catch { /* diagnostics must never break the parse */ }
+  } catch { /* */ }
 
+  const locations = new Set(allItems.map(i => i.location || '(no location)'))
   return {
-    sheets,
-    allItems,
+    sheets, allItems,
     summary: {
       sheetCount: wb.SheetNames.length,
       skippedSheets: sheets.filter(s => s.skipped).length,
       rowCount: allItems.length,
-      totalStones,
+      totalStones: allItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0),
       locationCount: locations.size,
-      flaggedCount,
+      flaggedCount: allItems.filter(i => i._flags.length).length,
     },
   }
 }
