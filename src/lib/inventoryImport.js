@@ -135,44 +135,36 @@ function parseSheet(name, rows) {
   }
   const { cols } = header
   const family = cols.assigned != null ? 'B' : 'A'
-  const kind = family === 'B' ? 'customer' : 'stock'
-  const items = []
 
-  const C = (row, key) => cellAt(row, cols[key])
-
-  if (family === 'A') {
-    // Location is a header row (value only in the Location column) → carry down.
-    let curLocation = null
-    for (let i = header.rowIdx + 1; i < rows.length; i++) {
-      const row = rows[i] || []
-      if (nonEmptyCount(row) === 0) continue
-      const locVal = C(row, 'loc')
-      const typeV = C(row, 'type'), colorV = C(row, 'color'), sizeV = C(row, 'size')
-      const topV = C(row, 'top'), sidesV = C(row, 'sides'), backV = C(row, 'back'), amtV = C(row, 'quantity')
-      // LOCATION row — value ONLY in the Location column.
-      if (locVal && !typeV && !colorV && !sizeV && !topV && !sidesV && !backV && !amtV) {
-        curLocation = locVal
-        continue
-      }
-      // STONE row — must carry some stone data; location comes from carry-down.
-      if (!(typeV || colorV || sizeV || topV || sidesV || amtV)) continue
-      items.push(buildItem({ location: curLocation, typeV, colorV, sizeV, topV, sidesV, backV, amtV, typeHint, allocated: false }))
-    }
-  } else {
-    // Location + family are per-row columns; every data row is a self-contained stone.
-    for (let i = header.rowIdx + 1; i < rows.length; i++) {
-      const row = rows[i] || []
-      if (nonEmptyCount(row) === 0) continue
-      const typeV = C(row, 'type'), colorV = C(row, 'color'), sizeV = C(row, 'size')
-      if (!(typeV || colorV || sizeV)) continue   // skip stray/title rows
-      items.push(buildItem({
-        location: C(row, 'loc'), typeV, colorV, sizeV,
-        topV: C(row, 'top'), sidesV: C(row, 'sides'), backV: C(row, 'back'), amtV: C(row, 'quantity'),
-        typeHint, allocated: true, assigned: C(row, 'assigned'),
-      }))
-    }
+  // Family B (Customer / Base Customer) = historical fulfilled ORDERS, not current
+  // yard stock — they carry an "Assigned to" column. Skip them entirely; only the
+  // 4 Family-A stock sheets import.
+  if (family === 'B') {
+    return { sheetName: name, kind: 'customer', family: 'B', ok: false, items: [],
+      reason: 'customer / historical orders — not yard stock',
+      diag: { headerRow: header.rowIdx, cols: Object.keys(cols), rowsYielded: 0 } }
   }
-  return { sheetName: name, kind, family, ok: true, items,
+
+  // Family A — location is a header row (value only in the Location column) → carry down.
+  const items = []
+  const C = (row, key) => cellAt(row, cols[key])
+  let curLocation = null
+  for (let i = header.rowIdx + 1; i < rows.length; i++) {
+    const row = rows[i] || []
+    if (nonEmptyCount(row) === 0) continue
+    const locVal = C(row, 'loc')
+    const typeV = C(row, 'type'), colorV = C(row, 'color'), sizeV = C(row, 'size')
+    const topV = C(row, 'top'), sidesV = C(row, 'sides'), backV = C(row, 'back'), amtV = C(row, 'quantity')
+    // LOCATION row — value ONLY in the Location column.
+    if (locVal && !typeV && !colorV && !sizeV && !topV && !sidesV && !backV && !amtV) {
+      curLocation = locVal
+      continue
+    }
+    // STONE row — must carry some stone data; location comes from carry-down.
+    if (!(typeV || colorV || sizeV || topV || sidesV || amtV)) continue
+    items.push(buildItem({ location: curLocation, typeV, colorV, sizeV, topV, sidesV, backV, amtV, typeHint, allocated: false }))
+  }
+  return { sheetName: name, kind: 'stock', family: 'A', ok: true, items,
     diag: { headerRow: header.rowIdx, cols: Object.keys(cols), rowsYielded: items.length } }
 }
 
