@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  getInventoryStock, addInventoryItem, INVENTORY_ITEM_TYPES, INVENTORY_STATUSES,
+  getInventoryStock, addInventoryItem, releaseInventoryItem, INVENTORY_ITEM_TYPES, INVENTORY_STATUSES,
 } from './lib/stonebooksData'
 import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
@@ -64,6 +64,13 @@ export default function InventoryTab() {
     load()
   }
   const onAddKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } }
+
+  const release = async (row) => {
+    if (!window.confirm(`Release this ${row.item_type || 'stone'}${row.location ? ` at ${row.location}` : ''} back to available?`)) return
+    const res = await releaseInventoryItem(row)
+    if (res.ok) load()
+    else window.alert(`Couldn’t release: ${res.error}`)
+  }
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
@@ -235,7 +242,14 @@ export default function InventoryTab() {
                       {(r.status || 'available') === 'allocated' ? 'Allocated' : 'Available'}
                     </span>
                   </td>
-                  <td>{r.assigned_to || (r.status === 'allocated' ? '—' : '')}</td>
+                  <td>
+                    {r.status === 'allocated' ? (
+                      <span className="inv-assigned">
+                        <span>{r.assigned_to || '—'}</span>
+                        <button type="button" className="inv-release" onClick={() => release(r)}>Release</button>
+                      </span>
+                    ) : ''}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -279,6 +293,9 @@ const INV_CSS = `
   .inv-mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; }
   .inv-num { text-align: right; font-variant-numeric: tabular-nums; }
 
+  .inv-assigned { display: inline-flex; align-items: center; gap: 8px; }
+  .inv-release { font: inherit; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 6px; border: 1px solid var(--sb-border, #d8d2c4); background: var(--sb-surface, #fff); color: #8a5a00; cursor: pointer; }
+  .inv-release:hover { background: #fbf1df; border-color: #d9b873; }
   .inv-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
   .inv-pill-available { background: #e7f3ea; color: #1f7a3d; }
   .inv-pill-allocated { background: #fbeede; color: #9A7209; }

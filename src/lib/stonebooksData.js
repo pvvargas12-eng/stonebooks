@@ -6991,6 +6991,85 @@ export async function bulkInsertInventory(items) {
   }
 }
 
+// ── Allocation (the first inventory WRITE) ───────────────────────────────────
+// allocated_order_id (uuid) links an allocated stone back to its order. The column
+// is added by 20260617_inventory_allocated_order.sql; until that runs, these helpers
+// gracefully retry WITHOUT the field so allocation still works (family link only).
+const _MISSING_COL = (msg) => /allocated_order_id|could not find|column/i.test(String(msg || ''))
+const _stripLink = ({ allocated_order_id, ...rest }) => rest
+
+async function _invUpdate(id, patch) {
+  let { error } = await supabase.from('inventory_stock').update(patch).eq('id', id)
+  if (error && ('allocated_order_id' in patch) && _MISSING_COL(error.message)) {
+    ;({ error } = await supabase.from('inventory_stock').update(_stripLink(patch)).eq('id', id))
+  }
+  return error
+}
+async function _invInsert(payload) {
+  let res = await supabase.from('inventory_stock').insert(payload).select().single()
+  if (res.error && ('allocated_order_id' in payload) && _MISSING_COL(res.error.message)) {
+    res = await supabase.from('inventory_stock').insert(_stripLink(payload)).select().single()
+  }
+  return res
+}
+// Find an existing allocated row for the same family + spec + location to merge into.
+async function _findAllocatedMatch(row, family) {
+  if (!family) return null
+  const { data, error } = await supabase.from('inventory_stock').select('*').eq('status', 'allocated').eq('assigned_to', family)
+  if (error || !data) return null
+  const same = (a, b) => String(a ?? '') === String(b ?? '')
+  return data.find(d =>
+    same(d.item_type, row.item_type) && same(d.color, row.color) && same(d.size, row.size) &&
+    same(d.top, row.top) && same(d.sides, row.sides) && same(d.back, row.back) && same(d.location, row.location)
+  ) || null
+}
+
+// Allocate ONE unit of a yard stock row to an order/family.
+//  • quantity <= 1 → flip the row in place to allocated.
+//  • quantity  > 1 → decrement the available row by 1 and add (or increment an
+//    existing) allocated row of qty 1 for that family — so 4 available → 3 + 1.
+// On a partial failure the available decrement is compensated (no lost/created stone).
+export async function allocateInventoryItem(row, { orderId = null, family = null } = {}) {
+  if (!row?.id) return { ok: false, error: 'No stock row to allocate.' }
+  const fam = family || null
+  const qty = Math.max(1, Number(row.quantity) || 1)
+  try {
+    if (qty <= 1) {
+      const err = await _invUpdate(row.id, { status: 'allocated', assigned_to: fam, allocated_order_id: orderId })
+      if (err) return { ok: false, error: err.message }
+      return { ok: true, mode: 'flip' }
+    }
+    // qty > 1 — split.
+    const errDec = await _invUpdate(row.id, { quantity: qty - 1 })
+    if (errDec) return { ok: false, error: errDec.message }
+
+    const match = await _findAllocatedMatch(row, fam)
+    if (match) {
+      const errMerge = await _invUpdate(match.id, { quantity: (Number(match.quantity) || 0) + 1 })
+      if (errMerge) { await _invUpdate(row.id, { quantity: qty }); return { ok: false, error: errMerge.message } }
+      return { ok: true, mode: 'split-merge' }
+    }
+    const { error: errIns } = await _invInsert({
+      item_type: row.item_type, color: row.color, size: row.size, top: row.top, sides: row.sides, back: row.back,
+      location: row.location, quantity: 1, status: 'allocated', assigned_to: fam, allocated_order_id: orderId, notes: row.notes || null,
+    })
+    if (errIns) { await _invUpdate(row.id, { quantity: qty }); return { ok: false, error: errIns.message } }
+    return { ok: true, mode: 'split-new' }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+
+// Release an allocated row back to the available pool (no hard delete). The whole
+// row flips to available; assigned_to + order link cleared. Count is restored (the
+// released row rejoins Available; same-spec rows can be consolidated in a later tool).
+export async function releaseInventoryItem(row) {
+  if (!row?.id) return { ok: false, error: 'No stock row to release.' }
+  const err = await _invUpdate(row.id, { status: 'available', assigned_to: null, allocated_order_id: null })
+  if (err) return { ok: false, error: err.message }
+  return { ok: true }
+}
+
 // =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================

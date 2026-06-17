@@ -127,9 +127,25 @@ function sizeReason(d) {
 
 // ── Matcher ──────────────────────────────────────────────────────────────────
 const RANK = { exact: 2, near: 1 }
+const sameName = (a, b) => {
+  const na = String(a ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const nb = String(b ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return !!na && na === nb
+}
 export function matchNeedsToStock(needs, stock) {
-  const available = (stock || []).filter(s => (s.status || 'available') === 'available')
+  const all = stock || []
+  const available = all.filter(s => (s.status || 'available') === 'available')
+  const allocated = all.filter(s => s.status === 'allocated')
   return (needs || []).map(need => {
+    // FULFILLED — a stone is already allocated to THIS order. Linked precisely by
+    // allocated_order_id when present; before that column exists, fall back to
+    // family + same type + comparable size. Fulfilled needs are NOT "needs ordering".
+    const fulfilledBy = allocated.find(s =>
+      (s.allocated_order_id && need.orderId && s.allocated_order_id === need.orderId) ||
+      (sameName(s.assigned_to, need.family) && normType(s.item_type) === normType(need.itemType) && compareSize(need.size, s.size).strength !== 'far')
+    )
+    if (fulfilledBy) return { need, best: { stock: fulfilledBy, strength: 'fulfilled', why: [] }, candidateCount: 1, fulfilled: true }
+
     let best = null
     let candidateCount = 0
     for (const s of available) {
