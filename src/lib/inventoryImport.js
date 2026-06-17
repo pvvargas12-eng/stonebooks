@@ -221,6 +221,25 @@ export async function parseInventoryWorkbook(arrayBuffer) {
   const locations = new Set(allItems.map(i => i.location || '(no location)'))
   const flaggedCount = allItems.filter(i => i._flags.length).length
   const totalStones = allItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0)
+
+  // DIAGNOSTIC DUMP — per-sheet breakdown to the browser console (F12). Lets Paul
+  // paste back exactly which sheets parse and which drop to 0. Never throws.
+  try {
+    const diagRows = sheets.map(s => ({
+      sheet:      s.sheetName,
+      kind:       s.kind,
+      headerRow:  s.diag?.headerRow != null ? (s.diag.headerRow + 1) : 'NONE',
+      columns:    (s.diag?.cols || []).join(',') || '—',
+      rawRows:    s.diag?.rawRowCount ?? 0,
+      parsed:     s.diag?.rowsYielded ?? 0,
+      collapsed:  s.items?.length ?? 0,
+      skipReason: s.skipped ? (s.reason || 'skipped') : '',
+    }))
+    console.log('%c[Inventory Import] per-sheet breakdown', 'font-weight:bold;color:#9A7209;font-size:13px')
+    if (console.table) console.table(diagRows); else console.log(JSON.stringify(diagRows, null, 2))
+    console.log('[Inventory Import] totals →', { sheets: sheets.length, rows: allItems.length, stones: totalStones, locations: locations.size, flagged: flaggedCount })
+  } catch { /* diagnostics must never break the parse */ }
+
   return {
     sheets,
     allItems,

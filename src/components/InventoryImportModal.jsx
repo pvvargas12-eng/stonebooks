@@ -101,6 +101,30 @@ export default function InventoryImportModal({ onClose, onImported }) {
                 <div className="inv-summary-file">from {fileName}</div>
               </div>
 
+              {/* PROMINENT per-sheet breakdown — exactly which sheets parse vs drop. */}
+              <div className="inv-breakdown">
+                <div className="inv-breakdown-title">Per-sheet breakdown <span className="inv-breakdown-hint">(also dumped to the browser console — F12)</span></div>
+                <table className="inv-bd-table">
+                  <thead>
+                    <tr><th>Sheet</th><th>Kind</th><th>Header row</th><th>Columns mapped</th><th className="inv-num">Raw</th><th className="inv-num">Parsed</th><th className="inv-num">Collapsed</th><th>Status</th></tr>
+                  </thead>
+                  <tbody>
+                    {parsed.sheets.map(sh => (
+                      <tr key={sh.sheetName} className={sh.skipped ? 'inv-bd-skip' : ''}>
+                        <td className="inv-bd-name">{sh.sheetName}</td>
+                        <td>{sh.kind === 'customer' ? 'Allocated' : 'Stock'}</td>
+                        <td className="inv-num">{sh.diag?.headerRow != null ? sh.diag.headerRow + 1 : '—'}</td>
+                        <td className="inv-mono">{(sh.diag?.cols || []).join(', ') || '—'}</td>
+                        <td className="inv-num">{sh.diag?.rawRowCount ?? 0}</td>
+                        <td className="inv-num">{sh.diag?.rowsYielded ?? 0}</td>
+                        <td className="inv-num">{sh.items?.length ?? 0}</td>
+                        <td className={sh.skipped ? 'inv-bd-skipcell' : ''}>{sh.skipped ? `SKIPPED — ${sh.reason}` : 'ok'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
               <div className="inv-prev-controls">
                 <label className="inv-check"><input type="checkbox" checked={onlyFlagged} onChange={e => setOnlyFlagged(e.target.checked)} /> Show only flagged</label>
                 <label className="inv-check"><input type="checkbox" checked={skipFlagged} onChange={e => setSkipFlagged(e.target.checked)} /> Skip flagged rows on import</label>
@@ -250,6 +274,17 @@ const IMP_CSS = `
   .inv-stat-l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sb-text-muted, #8a7f6c); }
   .inv-stat-warn .inv-stat-n { color: #9A7209; }
   .inv-summary-file { margin-left: auto; font-size: 12px; color: var(--sb-text-muted, #8a7f6c); }
+
+  .inv-breakdown { margin: 4px 0 16px; border: 1px solid var(--sb-border, #e4e0d4); border-radius: 10px; overflow: hidden; }
+  .inv-breakdown-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #6b5d3a; background: #f4efe4; padding: 8px 12px; }
+  .inv-breakdown-hint { font-weight: 500; text-transform: none; letter-spacing: 0; color: #9a8f78; }
+  .inv-bd-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .inv-bd-table th { text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sb-text-muted, #8a7f6c); padding: 7px 12px; border-bottom: 1px solid var(--sb-border, #e4e0d4); }
+  .inv-bd-table td { padding: 7px 12px; border-bottom: 1px solid var(--sb-border-soft, #f0ece2); color: var(--sb-text, #2a2a2a); }
+  .inv-bd-table tr:last-child td { border-bottom: 0; }
+  .inv-bd-name { font-weight: 700; }
+  .inv-bd-skip td { background: #fdeced; }
+  .inv-bd-skipcell { color: #b3261e; font-weight: 600; }
 
   .inv-prev-controls { display: flex; gap: 18px; padding: 10px 0 14px; border-top: 1px solid var(--sb-border-soft, #f0ece2); }
   .inv-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--sb-text, #2a2a2a); cursor: pointer; }
