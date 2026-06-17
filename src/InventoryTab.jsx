@@ -16,6 +16,7 @@ import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
 import InventoryDashboard from './components/InventoryDashboard'
 import InventoryProcurement from './components/InventoryProcurement'
+import InventoryReceiving from './components/InventoryReceiving'
 import InventoryPhotoEtching from './components/InventoryPhotoEtching'
 
 const BLANK = {
@@ -98,7 +99,7 @@ export default function InventoryTab() {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'photos' ? 'Photos & Etching' : 'Dashboard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'photos' ? 'Photos & Etching' : 'Dashboard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
@@ -106,6 +107,7 @@ export default function InventoryTab() {
             <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
             <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
             <button type="button" className={`inv-seg-btn${view === 'procurement' ? ' on' : ''}`} onClick={() => setView('procurement')}>Procurement</button>
+            <button type="button" className={`inv-seg-btn${view === 'receiving' ? ' on' : ''}`} onClick={() => setView('receiving')}>Receiving</button>
             <button type="button" className={`inv-seg-btn${view === 'photos' ? ' on' : ''}`} onClick={() => setView('photos')}>Photos &amp; Etching</button>
           </div>
           {view === 'yard' && (
@@ -135,6 +137,8 @@ export default function InventoryTab() {
       {view === 'procurement' && (
         <InventoryProcurement autoNew={autoNewPR} onConsumeAutoNew={() => setAutoNewPR(false)} />
       )}
+
+      {view === 'receiving' && <InventoryReceiving />}
 
       {view === 'photos' && <InventoryPhotoEtching />}
 
@@ -277,7 +281,7 @@ const INV_CSS = `
   .inv-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
   .inv-head-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
   .inv-import-btn { white-space: nowrap; flex: 0 0 auto; }
-  .inv-seg { display: inline-flex; gap: 3px; background: #ece9e3; border-radius: 9px; padding: 3px; }
+  .inv-seg { display: inline-flex; flex-wrap: wrap; gap: 3px; background: #ece9e3; border-radius: 9px; padding: 3px; }
   .inv-seg-btn { font: inherit; font-size: 13px; font-weight: 500; padding: 6px 14px; border: none; border-radius: 6px; background: none; color: #6b6256; cursor: pointer; white-space: nowrap; }
   .inv-seg-btn.on { background: #fff; color: #9A7209; font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
   .inv-add { padding: 16px 18px; margin-bottom: 18px; }

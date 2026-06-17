@@ -7176,6 +7176,96 @@ export async function markBulkOrderStatus(id, status) {
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+// ── Receiving (lands PR items into the yard; closes the procurement loop) ─────
+// Insert yard rows; strip the optional link columns (source_bulk_order_id /
+// allocated_order_id) on a missing-column error so landing works pre-migration.
+async function _landStock(rows) {
+  let { error } = await supabase.from('inventory_stock').insert(rows)
+  if (error && /source_bulk_order_id|allocated_order_id|column|could not find/i.test(error.message)) {
+    const slim = rows.map(({ source_bulk_order_id, allocated_order_id, ...rest }) => rest)   // eslint-disable-line no-unused-vars
+    ;({ error } = await supabase.from('inventory_stock').insert(slim))
+  }
+  return error ? error.message : null
+}
+async function _bulkOrderUpdate(id, patch) {
+  let { error } = await supabase.from('bulk_orders').update(patch).eq('id', id)
+  if (error && ('status' in patch) && /status|column|could not find/i.test(error.message)) {
+    const { status, ...rest } = patch   // eslint-disable-line no-unused-vars
+    if (Object.keys(rest).length) ({ error } = await supabase.from('bulk_orders').update(rest).eq('id', id))
+  }
+  return error
+}
+
+// Receive (full or partial) a Stone PR: set each line's received_qty, LAND each
+// received line into the yard as inventory_stock (available, or allocated-to-order
+// when the line carries an order_id), and flip the PR to received when every line
+// is fully received. Does NOT touch job_milestones (the scheduler cascade is
+// independent — it keys off bulk_orders.received_at, which we only set on full).
+export async function receivePR({ bulkOrderId, lines = [] } = {}) {
+  if (!bulkOrderId) return { ok: false, error: 'No PR specified.' }
+  const active = (lines || []).filter(l => (Number(l.receivedQty) || 0) > 0)
+  if (!active.length) return { ok: false, error: 'Nothing to receive — set a received quantity.' }
+  let uid = null
+  try { const { data } = await supabase.auth.getUser(); uid = data?.user?.id || null } catch { /* */ }
+  const today = (() => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` })()
+  try {
+    const landed = []
+    for (const l of active) {
+      const recv = Math.max(0, Number(l.receivedQty) || 0)
+      const already = Number(l.alreadyReceived) || 0
+      const cap = Number(l.quantity) || recv
+      if (l.itemId) await supabase.from('bulk_order_items').update({ received_qty: Math.min(cap, already + recv) }).eq('id', l.itemId)
+      const landAs = (l.landAs === 'allocated' && l.orderId) ? 'allocated' : 'available'
+      landed.push({
+        item_type: l.item_type || 'custom', color: l.color || null, size: l.size || null, top: l.top || null, sides: l.sides || null,
+        location: (l.location || 'Receiving').trim() || 'Receiving', quantity: recv, status: landAs,
+        assigned_to: landAs === 'allocated' ? (l.family || null) : null,
+        allocated_order_id: landAs === 'allocated' ? (l.orderId || null) : null,
+        source_bulk_order_id: bulkOrderId,
+      })
+      if (landAs === 'allocated' && l.orderId) {
+        try { await logOrderActivity(l.orderId, { type: 'activity', note: `Stone received & allocated from PR (${[l.color, l.size].filter(Boolean).join(' ')})` }) } catch { /* */ }
+      }
+    }
+    const insErr = await _landStock(landed)
+    if (insErr) return { ok: false, error: `Stock landing failed: ${insErr}` }
+
+    // Fully received? → flip the PR. Otherwise mark partial (received_at stays null).
+    const { data: items } = await supabase.from('bulk_order_items').select('quantity, received_qty').eq('bulk_order_id', bulkOrderId)
+    const fully = Array.isArray(items) && items.length > 0 && items.every(it => (Number(it.received_qty) || 0) >= (Number(it.quantity) || 0))
+    const patch = fully ? { status: 'received', received_at: today, received_by: uid } : { status: 'partial' }
+    const upErr = await _bulkOrderUpdate(bulkOrderId, patch)
+    if (upErr) return { ok: true, landed: landed.length, fully, warning: `Stock landed but PR status update failed: ${upErr.message}` }
+    return { ok: true, landed: landed.length, fully }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+// Un-receive: reverse a received PR. Deletes the AVAILABLE stock it landed (clean,
+// no orphans), KEEPS any that has since been allocated (it's spoken for) and reports
+// the count, resets received_qty, and flips the PR back to ordered.
+export async function unreceivePR(bulkOrderId) {
+  if (!bulkOrderId) return { ok: false, error: 'No PR specified.' }
+  try {
+    const sel = await supabase.from('inventory_stock').select('id, status').eq('source_bulk_order_id', bulkOrderId)
+    if (sel.error && /source_bulk_order_id|column|could not find/i.test(sel.error.message)) {
+      await supabase.from('bulk_order_items').update({ received_qty: 0 }).eq('bulk_order_id', bulkOrderId)
+      await _bulkOrderUpdate(bulkOrderId, { status: 'ordered', received_at: null, received_by: null })
+      return { ok: true, removed: 0, keptAllocated: 0, warning: 'Landed stock isn’t linked yet (run the source-link migration) — remove any received yard rows manually.' }
+    }
+    const landed = sel.data || []
+    const avail = landed.filter(r => (r.status || 'available') === 'available')
+    const keptAllocated = landed.filter(r => r.status === 'allocated').length
+    if (avail.length) {
+      const { error: delErr } = await supabase.from('inventory_stock').delete().in('id', avail.map(r => r.id))
+      if (delErr) return { ok: false, error: delErr.message }
+    }
+    await supabase.from('bulk_order_items').update({ received_qty: 0 }).eq('bulk_order_id', bulkOrderId)
+    const upErr = await _bulkOrderUpdate(bulkOrderId, { status: 'ordered', received_at: null, received_by: null })
+    if (upErr) return { ok: false, error: upErr.message }
+    return { ok: true, removed: avail.length, keptAllocated }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 // =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================
