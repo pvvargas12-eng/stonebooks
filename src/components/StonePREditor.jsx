@@ -1,36 +1,36 @@
 // =============================================================================
-// StonePREditor — edit a Stone PR's line items: add / remove / change quantity /
-// override the Item wording. Wording overrides persist to bulk_order_items.spec_text
-// (the print view shows the override when set, else the live-resolved spec).
+// StonePREditor — edit a PR's line items (Stone / Photo / Etching, by `kind`):
+// add / remove / change quantity / override the Item wording. Wording overrides
+// persist to bulk_order_items.spec_text (print shows the override when set, else
+// the resolved/composed spec). A pull-from-needs panel adds new lines.
 // =============================================================================
 
 import { useState, useEffect, useCallback } from 'react'
-import {
-  getBulkOrderWithItems, addBulkOrderItem, updateBulkOrderItem, deleteBulkOrderItem,
-  getActiveStoneOrders, getInventoryStock,
-} from '../lib/stonebooksData'
-import { resolvePRLineSpecs, isBaseSpec } from '../lib/prSpec'
-import { rowToOrder } from '../SalesMode'
-import { resolveStoneNeeds, matchNeedsToStock } from '../lib/inventoryMatch'
+import { getBulkOrderWithItems, addBulkOrderItem, updateBulkOrderItem, deleteBulkOrderItem } from '../lib/stonebooksData'
+import { resolveSpecsForPR, loadPRNeeds, prLineFromNeed, prKind } from '../lib/prKinds'
+import { isBaseSpec } from '../lib/prSpec'
 
 let _tmp = 0
 const tmpId = () => `new-${++_tmp}`
+const norm = (v) => String(v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
-function familyOf(row) {
-  if (row.primary_lastname && String(row.primary_lastname).trim()) return String(row.primary_lastname).trim()
-  if (Array.isArray(row.deceased)) {
-    const d = row.deceased.find(x => x && !x.isReserved && (x.lastName || x.firstName))
-    if (d) return [d.lastName, d.firstName].filter(Boolean).join(', ')
-  }
-  return row.order_number || 'Order'
+// Signature used to hide a need that's already a line (per kind).
+function rowSig(kind, r) {
+  if (!r.order_id) return null
+  if (kind === 'photo') return `${r.order_id}|${norm(r.size)}|${norm(r.top)}`
+  if (kind === 'etching') return `${r.order_id}|${norm(r.size)}`
+  return `${r.order_id}:${isBaseSpec(r.spec_text || r.live) ? 'base' : 'stone'}`
 }
-const specFromNeed = (n) => (n.kind === 'base' ? `Base: ${n.spec}${n.color ? ` · ${n.color}` : ''}` : `Die: ${n.spec}`)
-// Stable per-need key matching resolveStoneNeeds: "<orderId>:stone" (die) / ":base".
-const needKeyForRow = (r) => (r.need_key || (r.order_id ? `${r.order_id}:${r.kind === 'base' ? 'base' : 'stone'}` : null))
+function needSig(kind, n) {
+  if (kind === 'photo') return `${n.orderId}|${norm(n.size)}|${norm(n.type)}`
+  if (kind === 'etching') return `${n.orderId}|${norm(n.size)}`
+  return `${n.orderId}:${n.kind === 'base' ? 'base' : 'stone'}`
+}
 
-export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
+export default function StonePREditor({ bulkOrderId, onClose, onSaved, kind = 'stone' }) {
+  const K = prKind(kind)
   const [rows, setRows] = useState([])
-  const [orig, setOrig] = useState({})        // id → { family_name, quantity, spec_text }
+  const [orig, setOrig] = useState({})
   const [poNumber, setPoNumber] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState(null)
@@ -44,67 +44,57 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
     if (!r.ok) { setLoadErr(r.error); setLoading(false); return }
     setPoNumber(r.order?.po_number || '')
     const items = r.items || []
-    const { liveSpec } = await resolvePRLineSpecs(items)
+    const { liveSpec } = await resolveSpecsForPR(kind, items)
     const mapped = items.map(it => {
       const live = liveSpec[it.id] || '—'
       return {
         id: it.id, family_name: it.family_name || '', quantity: it.quantity ?? 1,
-        // The field holds REAL editable text: the override if set, else the resolved
-        // spec. dbOverride remembers what was actually stored (for change detection).
         spec_text: it.spec_text || live, live, dbOverride: it.spec_text || '', isNew: false,
-        order_id: it.order_id || null, kind: isBaseSpec(live) ? 'base' : 'die',
+        order_id: it.order_id || null, size: it.size || '', top: it.top || '',
       }
     })
     setRows(mapped)
     setOrig(Object.fromEntries(mapped.map(m => [m.id, { family_name: m.family_name, quantity: m.quantity, spec_text: m.dbOverride }])))
     setLoading(false)
-  }, [bulkOrderId])
+  }, [bulkOrderId, kind])
   useEffect(() => { load() }, [load])
 
-  // Open-order stone needs with no available yard match (same source as the builder).
   useEffect(() => {
     let alive = true
-    Promise.all([getActiveStoneOrders(), getInventoryStock()]).then(([ordRes, stockRes]) => {
-      if (!alive) return
-      const stock = stockRes.rows || []
-      const orders = (ordRes.rows || []).map(row => { const o = rowToOrder(row, null, null); o.family = familyOf(row); return o })
-      const matched = matchNeedsToStock(resolveStoneNeeds(orders), stock)
-      setNeeds(matched.filter(m => !m.best && !m.fulfilled).map(m => m.need))
-    }).catch(() => {})
+    loadPRNeeds(kind).then(ns => { if (alive) setNeeds(ns) }).catch(() => {})
     return () => { alive = false }
-  }, [])
+  }, [kind])
 
   const setRow = (id, patch) => setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r))
   const removeRow = (id) => setRows(rs => rs.filter(r => r.id !== id))
-  const addRow = () => setRows(rs => [...rs, { id: tmpId(), family_name: '', quantity: 1, spec_text: '', live: '—', isNew: true, order_id: null, kind: 'die' }])
-  const addNeed = (n) => setRows(rs => [...rs, {
-    id: tmpId(), family_name: n.family || '', quantity: 1, spec_text: specFromNeed(n), live: specFromNeed(n), isNew: true,
-    order_id: n.orderId || null, kind: n.kind === 'base' ? 'base' : 'die', need_key: n.key,
-    color: n.color || '', size: n.size || '', top: n.top || '', sides: n.sides || '',
-  }])
-  const addedKeys = new Set(rows.map(needKeyForRow).filter(Boolean))
+  const addRow = () => setRows(rs => [...rs, { id: tmpId(), family_name: '', quantity: 1, spec_text: '', live: '—', isNew: true, order_id: null, size: '', top: '' }])
+  const addNeed = (n) => {
+    const lf = prLineFromNeed(kind, n)
+    setRows(rs => [...rs, {
+      id: tmpId(), family_name: n.family || '', quantity: 1, spec_text: n.spec || '', live: n.spec || '—', isNew: true,
+      order_id: n.orderId || null, size: lf.size || '', top: lf.top || '',
+      color: lf.color || '', sides: lf.sides || '',
+    }])
+  }
+  const addedSigs = new Set(rows.map(r => rowSig(kind, r)).filter(Boolean))
 
   const save = async () => {
     if (saving) return
     setSaving(true); setErr(null)
     try {
       const liveIds = new Set(rows.map(r => r.id))
-      // deletes: in orig, gone from rows
       for (const id of Object.keys(orig)) {
         if (!liveIds.has(id)) { const d = await deleteBulkOrderItem(id); if (!d.ok) throw new Error(d.error) }
       }
       for (const r of rows) {
-        // The field is prefilled with the live spec. Only persist an override when
-        // the text actually DIFFERS from the live spec (and isn't blank); otherwise
-        // store '' so the line keeps live-resolving (no frozen string).
         const val = (r.spec_text || '').trim()
         const ov = (val === '' || val === (r.live || '').trim()) ? '' : val
         if (r.isNew) {
-          if (!r.family_name.trim() && !ov && !r.order_id) continue   // skip blank new rows
+          if (!r.family_name.trim() && !ov && !r.order_id) continue
           const a = await addBulkOrderItem(bulkOrderId, {
             family_name: r.family_name, quantity: r.quantity, spec_text: ov,
             order_id: r.order_id || null, color: r.color, size: r.size, top: r.top, sides: r.sides,
-          })
+          }, kind)
           if (!a.ok) throw new Error(a.error)
         } else {
           const o = orig[r.id]
@@ -124,7 +114,7 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
       <style>{PRE_CSS}</style>
       <div className="pre-modal" onClick={e => e.stopPropagation()}>
         <div className="pre-head">
-          <div><div className="pre-eyebrow">Edit purchase request</div><h2 className="pre-title">{poNumber || 'PR'}</h2></div>
+          <div><div className="pre-eyebrow">Edit {K.label} request</div><h2 className="pre-title">{poNumber || 'PR'}</h2></div>
           <button type="button" className="pre-x" onClick={onClose}>×</button>
         </div>
 
@@ -133,9 +123,9 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
             : loadErr ? <div className="sb-empty">Couldn’t load the PR.<br /><span className="pre-muted">{loadErr}</span></div>
             : (
               <>
-                <div className="pre-hint">Each Item field is pre-filled with the resolved spec — edit the wording to override it. Clear it to fall back to the auto-resolved spec.</div>
+                <div className="pre-hint">Each {K.itemHeader} field is pre-filled with the resolved spec — edit the wording to override it. Clear it to fall back to the auto-resolved spec.</div>
                 <table className="pre-table">
-                  <thead><tr><th>Family</th><th>Item wording</th><th className="pre-qty-h">Qty</th><th /></tr></thead>
+                  <thead><tr><th>Family</th><th>{K.itemHeader} wording</th><th className="pre-qty-h">Qty</th><th /></tr></thead>
                   <tbody>
                     {rows.length === 0 && <tr><td colSpan={4} className="pre-empty">No lines. Add one below.</td></tr>}
                     {rows.map(r => (
@@ -148,6 +138,7 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
                     ))}
                   </tbody>
                 </table>
+
                 <div className="pre-add-row">
                   <button type="button" className="pre-add" onClick={addRow}>+ Add blank line</button>
                   {needs.length > 0 && (
@@ -159,16 +150,18 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
 
                 {showNeeds && needs.length > 0 && (
                   <div className="pre-needs">
-                    {needs.map(n => (
-                      <div key={n.key} className="pre-need">
-                        <span className="pre-need-fam">{n.family}</span>
-                        <span className="pre-need-kind">{n.kind === 'base' ? 'Base' : 'Die'}</span>
-                        <span className="pre-need-spec">{n.spec}</span>
-                        <button type="button" className="pre-need-add" disabled={addedKeys.has(n.key)} onClick={() => addNeed(n)}>
-                          {addedKeys.has(n.key) ? 'Added' : 'Add'}
-                        </button>
-                      </div>
-                    ))}
+                    {needs.map(n => {
+                      const added = addedSigs.has(needSig(kind, n))
+                      return (
+                        <div key={n.key} className="pre-need">
+                          <span className="pre-need-fam">{n.family}</span>
+                          {kind === 'stone' && <span className="pre-need-kind">{n.kind === 'base' ? 'Base' : 'Die'}</span>}
+                          {kind === 'photo' && <span className={`pre-need-kind ${n.hasImage ? '' : 'pre-need-warn'}`}>{n.hasImage ? 'photo' : 'no photo'}</span>}
+                          <span className="pre-need-spec">{n.spec}</span>
+                          <button type="button" className="pre-need-add" disabled={added} onClick={() => addNeed(n)}>{added ? 'Added' : 'Add'}</button>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
                 {err && <div className="pre-err">{err}</div>}
@@ -215,6 +208,7 @@ const PRE_CSS = `
   .pre-need:last-child { border-bottom: 0; }
   .pre-need-fam { font-weight: 700; font-size: 13px; min-width: 120px; }
   .pre-need-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #6b5d3a; background: #f4efe4; border-radius: 4px; padding: 1px 6px; }
+  .pre-need-warn { color: #b3261e; background: #fae3e0; }
   .pre-need-spec { flex: 1; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; color: #6b6256; }
   .pre-need-add { font: inherit; font-size: 12px; font-weight: 600; padding: 3px 12px; border-radius: 6px; border: 1px solid #1f7a3d; background: #1f7a3d; color: #fff; cursor: pointer; }
   .pre-need-add:disabled { background: #e7f3ea; color: #1f7a3d; cursor: default; }

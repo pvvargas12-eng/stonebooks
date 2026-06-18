@@ -1,9 +1,12 @@
 // =============================================================================
-// InventoryProcurement — Stone Purchase Requests list + builder + print (Phase 1).
+// InventoryProcurement — purchase requests (Stone / Photo / Etching) list +
+// builder + editor + print. One kind-tabbed surface; each kind pulls from its own
+// needs + suppliers. Only Stone PRs touch an order milestone on submit.
 // =============================================================================
 
 import { useState, useEffect, useCallback } from 'react'
-import { listStonePRs, markBulkOrderStatus, submitStonePR, cancelStonePR, deleteStonePR } from '../lib/stonebooksData'
+import { listPRs, markBulkOrderStatus, submitPR, cancelPR, deletePR } from '../lib/stonebooksData'
+import { PR_KIND_LIST, prKind } from '../lib/prKinds'
 import StonePRBuilder from './StonePRBuilder'
 import StonePRPrint from './StonePRPrint'
 import StonePREditor from './StonePREditor'
@@ -23,6 +26,8 @@ function statusOf(pr) {
 const STATUS_LABEL = { draft: 'Draft', submitted: 'Submitted', ordered: 'Ordered', received: 'Received', cancelled: 'Cancelled' }
 
 export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew }) {
+  const [kind, setKind] = useState('stone')
+  const K = prKind(kind)
   const [prs, setPrs] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState(null)
@@ -33,14 +38,15 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [busyId, setBusyId] = useState(null)
 
   const load = useCallback(async () => {
-    const r = await listStonePRs()
+    setLoading(true)
+    const r = await listPRs(kind)
     setLoadErr(r.ok ? null : r.error)
     setPrs(r.rows || [])
     setLoading(false)
-  }, [])
+  }, [kind])
   useEffect(() => { load() }, [load])
 
-  // Opened via the Dashboard "Build PR" button → auto-open the builder once.
+  // Opened via the Dashboard "Build PR" button → auto-open the (stone) builder once.
   useEffect(() => {
     if (autoNew) { setShowBuilder(true); onConsumeAutoNew?.() }
   }, [autoNew, onConsumeAutoNew])
@@ -51,41 +57,67 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   }
 
   const doSubmit = async (pr) => {
-    if (!window.confirm(`Submit ${pr.po_number || 'this PR'}?\n\nThis marks every order on it as “stone ordered.”`)) return
+    const msg = kind === 'stone'
+      ? `Submit ${pr.po_number || 'this PR'}?\n\nThis marks every order on it as “stone ordered.”`
+      : `Submit ${pr.po_number || 'this PR'} to the ${K.label.toLowerCase()} supplier?`
+    if (!window.confirm(msg)) return
     setBusyId(pr.id); setBanner(null)
-    const r = await submitStonePR(pr.id)
+    const r = await submitPR(pr.id, kind)
     setBusyId(null)
     if (!r.ok) { setBanner({ kind: 'err', text: `Couldn’t submit: ${r.error}` }); return }
-    setBanner({ kind: 'ok', text: `${pr.po_number || 'PR'} submitted — marked ${r.marked} of ${r.orderCount} order${r.orderCount === 1 ? '' : 's'} as stone ordered.${r.milestoneError ? ` (Note: ${r.milestoneError})` : ''}` })
+    const text = kind === 'stone'
+      ? `${pr.po_number || 'PR'} submitted — marked ${r.marked} of ${r.orderCount} order${r.orderCount === 1 ? '' : 's'} as stone ordered.${r.milestoneError ? ` (Note: ${r.milestoneError})` : ''}`
+      : `${pr.po_number || 'PR'} submitted to the supplier.`
+    setBanner({ kind: 'ok', text })
     load()
   }
   const doCancel = async (pr) => {
-    if (!window.confirm(`Cancel ${pr.po_number || 'this PR'}?\n\nIt stays on record as cancelled, and every order on it reverts to NOT stone-ordered.`)) return
+    const msg = kind === 'stone'
+      ? `Cancel ${pr.po_number || 'this PR'}?\n\nIt stays on record as cancelled, and every order on it reverts to NOT stone-ordered.`
+      : `Cancel ${pr.po_number || 'this PR'}?\n\nIt stays on record as cancelled.`
+    if (!window.confirm(msg)) return
     setBusyId(pr.id); setBanner(null)
-    const r = await cancelStonePR(pr.id)
+    const r = await cancelPR(pr.id, kind)
     setBusyId(null)
     if (!r.ok) { setBanner({ kind: 'err', text: `Couldn’t cancel: ${r.error}` }); return }
-    setBanner({ kind: 'ok', text: `${pr.po_number || 'PR'} cancelled — reverted ${r.reverted} order${r.reverted === 1 ? '' : 's'} to not-ordered.` })
+    const text = kind === 'stone'
+      ? `${pr.po_number || 'PR'} cancelled — reverted ${r.reverted} order${r.reverted === 1 ? '' : 's'} to not-ordered.`
+      : `${pr.po_number || 'PR'} cancelled.`
+    setBanner({ kind: 'ok', text })
     load()
   }
   const doDelete = async (pr) => {
-    if (!window.confirm(`Delete ${pr.po_number || 'this PR'} permanently?\n\nThis removes the PR and its line items. Any order it marked “stone ordered” reverts to not-ordered. This cannot be undone.`)) return
+    const tail = kind === 'stone' ? ' Any order it marked “stone ordered” reverts to not-ordered.' : ''
+    if (!window.confirm(`Delete ${pr.po_number || 'this PR'} permanently?\n\nThis removes the PR and its line items.${tail} This cannot be undone.`)) return
     setBusyId(pr.id); setBanner(null)
-    const r = await deleteStonePR(pr.id)
+    const r = await deletePR(pr.id, kind)
     setBusyId(null)
     if (!r.ok) { setBanner({ kind: 'err', text: `Couldn’t delete: ${r.error}` }); return }
-    setBanner({ kind: 'ok', text: `${pr.po_number || 'PR'} deleted${r.reverted ? ` — reverted ${r.reverted} order${r.reverted === 1 ? '' : 's'} to not-ordered.` : '.'}` })
+    const text = (kind === 'stone' && r.reverted) ? `${pr.po_number || 'PR'} deleted — reverted ${r.reverted} order${r.reverted === 1 ? '' : 's'} to not-ordered.` : `${pr.po_number || 'PR'} deleted.`
+    setBanner({ kind: 'ok', text })
     load()
   }
 
   const itemCount = (pr) => (Array.isArray(pr.items) ? (pr.items[0]?.count ?? pr.items.length) : null)
+  const switchKind = (k) => { if (k !== kind) { setKind(k); setBanner(null) } }
 
   return (
     <div className="ipr">
       <style>{IPR_CSS}</style>
+
+      <div className="ipr-tabs">
+        {PR_KIND_LIST.map(k => (
+          <button key={k} type="button" className={`ipr-tab${k === kind ? ' on' : ''}`} onClick={() => switchKind(k)}>{prKind(k).label}</button>
+        ))}
+      </div>
+
       <div className="ipr-head">
-        <span className="ipr-sub">Stone purchase requests — print + send to a supplier, then Submit to mark its orders “stone ordered.”</span>
-        <button type="button" className="sb-btn-primary" onClick={() => setShowBuilder(true)}>+ New Stone PR</button>
+        <span className="ipr-sub">
+          {kind === 'stone'
+            ? 'Stone purchase requests — print + send to a supplier, then Submit to mark its orders “stone ordered.”'
+            : `${K.noun} purchase requests — print + send to your ${K.label.toLowerCase()} supplier.`}
+        </span>
+        <button type="button" className="sb-btn-primary" onClick={() => setShowBuilder(true)}>+ New {K.noun} PR</button>
       </div>
 
       {banner && <div className={`ipr-banner ipr-banner-${banner.kind}`}>{banner.text}<button type="button" className="ipr-banner-x" onClick={() => setBanner(null)}>×</button></div>}
@@ -95,7 +127,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
       ) : loadErr ? (
         <div className="sb-empty">Procurement isn’t available yet.<br /><span className="ipr-muted">Run the procurement migration (suppliers + bulk_order_items) in Studio, then refresh.</span></div>
       ) : prs.length === 0 ? (
-        <div className="sb-empty">No purchase requests yet.<br /><span className="ipr-muted">Click <strong>+ New Stone PR</strong> to build one (Peerless will be your first stone supplier).</span></div>
+        <div className="sb-empty">No {K.label.toLowerCase()} purchase requests yet.<br /><span className="ipr-muted">Click <strong>+ New {K.noun} PR</strong> to build one.</span></div>
       ) : (
         <div className="ipr-table-wrap">
           <table className="ipr-table">
@@ -129,17 +161,21 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
 
       {showBuilder && (
         <StonePRBuilder
+          kind={kind}
           onClose={() => setShowBuilder(false)}
           onSaved={(id) => { setShowBuilder(false); load(); if (id) setPrintId(id) }}
         />
       )}
-      {printId && <StonePRPrint bulkOrderId={printId} onClose={() => setPrintId(null)} />}
-      {editId && <StonePREditor bulkOrderId={editId} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); setBanner({ kind: 'ok', text: 'PR lines updated.' }); load() }} />}
+      {printId && <StonePRPrint bulkOrderId={printId} kind={kind} onClose={() => setPrintId(null)} />}
+      {editId && <StonePREditor bulkOrderId={editId} kind={kind} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); setBanner({ kind: 'ok', text: 'PR lines updated.' }); load() }} />}
     </div>
   )
 }
 
 const IPR_CSS = `
+  .ipr-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--sb-border, #e4e0d4); }
+  .ipr-tab { background: none; border: none; border-bottom: 2px solid transparent; font: inherit; font-size: 14px; font-weight: 600; color: var(--sb-text-muted, #8a7f6c); padding: 8px 16px; cursor: pointer; margin-bottom: -1px; }
+  .ipr-tab.on { color: #6b5d3a; border-bottom-color: #9A7209; }
   .ipr-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
   .ipr-sub { font-size: 13.5px; color: var(--sb-text-muted, #6b6256); }
   .ipr-muted { color: var(--sb-text-muted, #8a7f6c); font-size: 13px; }

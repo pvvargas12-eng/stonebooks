@@ -12,7 +12,8 @@
 
 import { useState, useEffect } from 'react'
 import { getBulkOrderWithItems } from '../lib/stonebooksData'
-import { resolvePRLineSpecs, isBaseSpec } from '../lib/prSpec'
+import { isBaseSpec } from '../lib/prSpec'
+import { resolveSpecsForPR, prKind } from '../lib/prKinds'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -67,7 +68,8 @@ function parseCreatedBy(notes) {
 }
 
 // ── Real PDF (letter, jsPDF manual layout, single Helvetica face) ─────────────
-async function generatePRPdf(o, items, lineSpec) {
+async function generatePRPdf(o, items, lineSpec, kind = 'stone', attach = {}) {
+  const K = prKind(kind)
   const JsPDF = await loadJsPDF()
   const doc = new JsPDF({ unit: 'pt', format: 'letter' })   // 612 × 792 pt
   const PW = 612, PH = 792, M = 54
@@ -106,7 +108,7 @@ async function generatePRPdf(o, items, lineSpec) {
   const itemW = qtyCX - 40 - itemX
   const drawHeader = () => {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(60)
-    doc.text('FAMILY NAME', famX, y); doc.text('ITEM', itemX, y)
+    doc.text('FAMILY NAME', famX, y); doc.text(K.itemHeader.toUpperCase(), itemX, y)
     doc.text('QTY', qtyCX, y, { align: 'center' })
     y += 6
     doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(M, y, RIGHT, y)
@@ -117,8 +119,9 @@ async function generatePRPdf(o, items, lineSpec) {
   const LH = 13
   rowsArr.forEach((it, idx) => {
     const itemLines = doc.splitTextToSize(pdfSafe(lineSpec[it.id] || '—'), itemW)
+    const att = attach[it.id] || ''
     const famLines = doc.splitTextToSize(pdfSafe(it.family_name || '—'), itemX - famX - 8)
-    const rows = Math.max(itemLines.length, famLines.length, 1)
+    const rows = Math.max(itemLines.length + (att ? 1 : 0), famLines.length, 1)
     const rowH = rows * LH + 8
     if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
     if (idx % 2 === 1) { doc.setFillColor(245, 245, 245); doc.rect(M - 6, y - 2, (RIGHT - M) + 12, rowH, 'F') }
@@ -127,7 +130,13 @@ async function generatePRPdf(o, items, lineSpec) {
     famLines.forEach((ln, k) => doc.text(ln, famX, ty + 8 + k * LH))
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
     itemLines.forEach((ln, k) => doc.text(ln, itemX, ty + 8 + k * LH))
-    doc.setFont('helvetica', 'bold'); doc.setTextColor(20)
+    if (att) {
+      const awaiting = /awaiting/i.test(att)
+      doc.setFont('helvetica', awaiting ? 'bold' : 'normal'); doc.setFontSize(8.5)
+      doc.setTextColor(awaiting ? 179 : 110, awaiting ? 38 : 110, awaiting ? 30 : 110)
+      doc.text(pdfSafe(att), itemX, ty + 8 + itemLines.length * LH)
+    }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
     doc.text(String(it.quantity ?? 1), qtyCX, ty + 8, { align: 'center' })
     y += rowH
     doc.setDrawColor(228); doc.setLineWidth(0.5); doc.line(M, y, RIGHT, y)
@@ -161,7 +170,8 @@ async function generatePRPdf(o, items, lineSpec) {
   doc.save(`${o.po_number || 'purchase-request'}.pdf`)
 }
 
-export default function StonePRPrint({ bulkOrderId, onClose }) {
+export default function StonePRPrint({ bulkOrderId, onClose, kind = 'stone' }) {
+  const K = prKind(kind)
   const [state, setState] = useState({ loading: true })
   const [pdfBusy, setPdfBusy] = useState(false)
 
@@ -172,16 +182,16 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
       if (!alive) return
       if (!r.ok) { setState({ loading: false, ok: false, error: r.error }); return }
       const items = r.items || []
-      const { lineSpec } = await resolvePRLineSpecs(items)
-      if (alive) setState({ loading: false, ok: true, order: r.order, items, lineSpec })
+      const { lineSpec, attach } = await resolveSpecsForPR(kind, items)
+      if (alive) setState({ loading: false, ok: true, order: r.order, items, lineSpec, attach })
     })().catch(e => { if (alive) setState({ loading: false, ok: false, error: String(e?.message || e) }) })
     return () => { alive = false }
-  }, [bulkOrderId])
+  }, [bulkOrderId, kind])
 
   const downloadPdf = async () => {
     if (pdfBusy || !state.ok) return
     setPdfBusy(true)
-    try { await generatePRPdf(state.order || {}, state.items || [], state.lineSpec || {}) }
+    try { await generatePRPdf(state.order || {}, state.items || [], state.lineSpec || {}, kind, state.attach || {}) }
     catch (e) { window.alert(`Couldn’t make the PDF: ${e?.message || e}`) }
     setPdfBusy(false)
   }
@@ -196,6 +206,7 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
   const o = state.order || {}
   const items = state.items || []
   const lineSpec = state.lineSpec || {}
+  const attach = state.attach || {}
   const { createdBy, prNotes } = parseCreatedBy(o.notes)
   const rowsArr = orderedRowsOf(items, lineSpec)
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0)
@@ -235,7 +246,7 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
             <thead>
               <tr>
                 <th className="prp-c-fam">Family Name</th>
-                <th className="prp-c-item">Item</th>
+                <th className="prp-c-item">{K.itemHeader}</th>
                 <th className="prp-c-qty">Qty</th>
               </tr>
             </thead>
@@ -244,7 +255,10 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
               {rowsArr.map((it, idx) => (
                 <tr key={it.id || idx} className={idx % 2 === 1 ? 'prp-zebra' : ''}>
                   <td className="prp-c-fam">{it.family_name || '—'}</td>
-                  <td className="prp-c-item">{lineSpec[it.id] || '—'}</td>
+                  <td className="prp-c-item">
+                    {lineSpec[it.id] || '—'}
+                    {attach[it.id] && <div className={`prp-attach ${/awaiting/i.test(attach[it.id]) ? 'prp-attach-warn' : ''}`}>{attach[it.id]}</div>}
+                  </td>
                   <td className="prp-c-qty">{it.quantity ?? 1}</td>
                 </tr>
               ))}
@@ -314,6 +328,8 @@ const PRP_CSS = `
   .prp-zebra { background: #f5f5f5; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .prp-c-fam { font-weight: 700; font-size: 13.5px; width: 30%; }
   .prp-c-item { width: 58%; line-height: 1.5; }
+  .prp-attach { font-size: 10.5px; color: #777; margin-top: 2px; }
+  .prp-attach-warn { color: #b3261e; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
   .prp-c-qty { text-align: center; width: 56px; }
   .prp-empty-row { text-align: center; color: #999; padding: 22px; }
   .prp-total-l { text-align: right; font-weight: 700; border-top: 2px solid #1a1a1a; padding-top: 9px; }

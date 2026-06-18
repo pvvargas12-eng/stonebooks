@@ -7109,55 +7109,30 @@ function _prNumber() {
   return `PR-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
 }
 
-// Create a stone PR: a bulk_orders row (kind=stone, status=draft) + its line items.
-export async function createStonePR({ supplier = {}, placedAt = null, requestedDelivery = null, notes = null, createdBy = null, lines = [] } = {}) {
+// Create a purchase request of any kind ('stone' | 'photo' | 'etching'): a
+// bulk_orders row (status=draft) + its line items. Stone/photo/etching all share
+// this path — the kind flows onto the header AND each item row.
+export async function createPR({ kind = 'stone', supplier = {}, placedAt = null, requestedDelivery = null, notes = null, createdBy = null, lines = [] } = {}) {
   const supplierName = supplier?.name?.trim()
   if (!supplierName) return { ok: false, error: 'A supplier is required.' }
   if (!Array.isArray(lines) || lines.length === 0) return { ok: false, error: 'Add at least one line item.' }
   const poNumber = _prNumber()
   const orderPayload = {
-    kind: 'stone', supplier_name: supplierName, supplier_id: supplier?.id || null, status: 'draft',
+    kind, supplier_name: supplierName, supplier_id: supplier?.id || null, status: 'draft',
     po_number: poNumber, supplier_eta: requestedDelivery || null,
     notes: [notes?.trim() || null, createdBy ? `Created by ${createdBy}` : null].filter(Boolean).join(' · ') || null,
   }
   if (placedAt) orderPayload.placed_at = placedAt
-
-  // ── TEMP DEBUG INSTRUMENTATION (remove once the RLS-at-call-time question is
-  //    answered). The manual SQL-editor insert bypasses RLS (runs as table
-  //    owner), so it can't tell us what is_staff() returns for THIS browser
-  //    session. with check on every bulk_orders policy is is_staff() — which
-  //    references no column, so no payload VALUE can fail it; only a false
-  //    session can. So we log the live session + the DB's is_staff() for this
-  //    exact request, then label which insert throws with its full error object.
-  try {
-    const [sessRes, userRes, staffRes] = await Promise.all([
-      supabase.auth.getSession(),
-      supabase.auth.getUser(),
-      supabase.rpc('is_staff'),
-    ])
-    const sess = sessRes?.data?.session
-    console.log('%c[createStonePR] DEBUG ─────────────────────────', 'color:#9A7209;font-weight:bold')
-    console.log('[createStonePR] auth.getUser().id    :', userRes?.data?.user?.id ?? '(NULL — no authenticated user!)')
-    console.log('[createStonePR] session present?      :', !!sess, '| access_token attached?', !!sess?.access_token, '| expires_at:', sess?.expires_at)
-    console.log('[createStonePR] DB is_staff() (RPC)   :', staffRes?.error ? `RPC ERROR: ${staffRes.error.message}` : staffRes?.data, ' <-- if false/null, RLS WILL deny the insert')
-    console.log('[createStonePR] bulk_orders payload   :', JSON.stringify(orderPayload))
-  } catch (dbg) { console.warn('[createStonePR] debug probe failed (continuing):', dbg) }
-
   try {
     let res = await supabase.from('bulk_orders').insert(orderPayload).select().single()
     if (res.error && /supplier_id|status|column|could not find/i.test(res.error.message)) {
-      console.warn('[createStonePR] bulk_orders retry (stripping supplier_id/status). First error:', JSON.stringify(res.error))
       const { supplier_id, status, ...slim } = orderPayload   // eslint-disable-line no-unused-vars
       res = await supabase.from('bulk_orders').insert(slim).select().single()
     }
-    if (res.error) {
-      console.error('[createStonePR] ✗ INSERT #1 (bulk_orders header) FAILED. Full error:', res.error, '| serialized:', JSON.stringify(res.error))
-      return { ok: false, error: `bulk_orders header insert: ${res.error.message}`, stage: 'bulk_orders', dbError: res.error }
-    }
+    if (res.error) return { ok: false, error: `bulk_orders header insert: ${res.error.message}`, stage: 'bulk_orders', dbError: res.error }
     const boId = res.data.id
-    console.log('[createStonePR] ✓ INSERT #1 ok — bulk_orders id =', boId)
     const itemRows = lines.map(l => ({
-      bulk_order_id: boId, kind: 'stone',
+      bulk_order_id: boId, kind,
       family_name: l.family_name?.trim() || null, order_id: l.order_id || null,
       color: l.color?.trim() || null, size: l.size?.trim() || null,
       top: l.top?.trim() || null, sides: l.sides?.trim() || null,
@@ -7166,35 +7141,30 @@ export async function createStonePR({ supplier = {}, placedAt = null, requestedD
     }))
     let itemErr = (await supabase.from('bulk_order_items').insert(itemRows)).error
     if (itemErr && /spec_text|column|could not find/i.test(itemErr.message)) {
-      // spec_text migration not run yet → strip it and retry (graceful degrade).
       const slim = itemRows.map(({ spec_text, ...rest }) => rest)   // eslint-disable-line no-unused-vars
       itemErr = (await supabase.from('bulk_order_items').insert(slim)).error
     }
-    if (itemErr) {
-      console.error('[createStonePR] ✗ INSERT #2 (bulk_order_items) FAILED. Full error:', itemErr, '| serialized:', JSON.stringify(itemErr))
-      return { ok: false, error: `bulk_order_items insert (header ${poNumber} saved): ${itemErr.message}`, stage: 'bulk_order_items', dbError: itemErr, bulkOrderId: boId }
-    }
-    console.log('[createStonePR] ✓ INSERT #2 ok — PR', poNumber, 'fully persisted')
+    if (itemErr) return { ok: false, error: `bulk_order_items insert (header ${poNumber} saved): ${itemErr.message}`, stage: 'bulk_order_items', dbError: itemErr, bulkOrderId: boId }
     return { ok: true, bulkOrderId: boId, poNumber }
-  } catch (e) {
-    console.error('[createStonePR] ✗ threw (network / unexpected):', e)
-    return { ok: false, error: String(e?.message || e) }
-  }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
+// Back-compat alias.
+export const createStonePR = (opts) => createPR({ ...opts, kind: 'stone' })
 
-export async function listStonePRs() {
+export async function listPRs(kind = 'stone') {
   try {
     const { data, error } = await supabase
       .from('bulk_orders').select('*, items:bulk_order_items(count)')
-      .eq('kind', 'stone').order('created_at', { ascending: false })
+      .eq('kind', kind).order('created_at', { ascending: false })
     if (error) {
-      const r2 = await supabase.from('bulk_orders').select('*').eq('kind', 'stone').order('created_at', { ascending: false })
+      const r2 = await supabase.from('bulk_orders').select('*').eq('kind', kind).order('created_at', { ascending: false })
       if (r2.error) return { ok: false, rows: [], error: r2.error.message }
       return { ok: true, rows: r2.data || [], error: null }
     }
     return { ok: true, rows: data || [], error: null }
   } catch (e) { return { ok: false, rows: [], error: String(e?.message || e) } }
 }
+export const listStonePRs = () => listPRs('stone')
 
 export async function getBulkOrderWithItems(id) {
   try {
@@ -7211,10 +7181,10 @@ export async function getBulkOrderWithItems(id) {
 // spec_text holds a MANUAL wording override only; the print view prefers it when
 // set, else resolves the spec live from the order. Inserts/updates strip spec_text
 // on a missing-column error so editing works pre-migration.
-export async function addBulkOrderItem(bulkOrderId, line = {}) {
+export async function addBulkOrderItem(bulkOrderId, line = {}, kind = 'stone') {
   try {
     const row = {
-      bulk_order_id: bulkOrderId, kind: 'stone',
+      bulk_order_id: bulkOrderId, kind,
       family_name: line.family_name?.trim() || null, order_id: line.order_id || null,
       color: line.color?.trim() || null, size: line.size?.trim() || null,
       top: line.top?.trim() || null, sides: line.sides?.trim() || null,
@@ -7300,35 +7270,38 @@ async function _setStoneOrderedForPR(bulkOrderId, target, { actorUserId = null, 
   return { marked, orderCount: orderIds.length, error: milestoneError }
 }
 
-// SUBMIT — flip PR to 'submitted' and mark every linked order as stone-ordered.
-export async function submitStonePR(bulkOrderId, { actorUserId = null } = {}) {
+// SUBMIT / CANCEL / DELETE for any PR kind. ONLY 'stone' has an order milestone
+// (stone_ordered); photo/etching have NO equivalent "ordered" milestone in any job
+// template, so for those kinds these just change/remove the PR — no milestone is
+// touched (we don't fake one). Stone behavior is unchanged.
+export async function submitPR(bulkOrderId, kind = 'stone', { actorUserId = null } = {}) {
   try {
-    const { data: bo } = await supabase.from('bulk_orders').select('po_number').eq('id', bulkOrderId).single()
-    const reason = `Stone PR ${bo?.po_number || ''} submitted to supplier`.trim()
-    const res = await _setStoneOrderedForPR(bulkOrderId, 'done', { actorUserId, reason })
+    let res = { marked: 0, orderCount: 0, error: null }
+    if (kind === 'stone') {
+      const { data: bo } = await supabase.from('bulk_orders').select('po_number').eq('id', bulkOrderId).single()
+      const reason = `Stone PR ${bo?.po_number || ''} submitted to supplier`.trim()
+      res = await _setStoneOrderedForPR(bulkOrderId, 'done', { actorUserId, reason })
+    }
     const upErr = await _bulkOrderUpdate(bulkOrderId, { status: 'submitted' })
     if (upErr) return { ok: false, error: upErr.message || String(upErr) }
     return { ok: true, marked: res.marked, orderCount: res.orderCount, milestoneError: res.error }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
-// CANCEL — keep the PR record (status 'cancelled') but revert every linked order's
-// stone_ordered milestone back to not_started. The reverse of submit.
-export async function cancelStonePR(bulkOrderId, { actorUserId = null } = {}) {
+export async function cancelPR(bulkOrderId, kind = 'stone', { actorUserId = null } = {}) {
   try {
-    const res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
+    let res = { marked: 0, orderCount: 0, error: null }
+    if (kind === 'stone') res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
     const upErr = await _bulkOrderUpdate(bulkOrderId, { status: 'cancelled' })
     if (upErr) return { ok: false, error: upErr.message || String(upErr) }
     return { ok: true, reverted: res.marked, orderCount: res.orderCount, milestoneError: res.error }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
-// DELETE — revert linked orders' stone_ordered (BEFORE removing items, which the
-// revert reads), then hard-delete the items + the PR header. Hard delete is fine:
-// this is a PR, not order data.
-export async function deleteStonePR(bulkOrderId, { actorUserId = null } = {}) {
+export async function deletePR(bulkOrderId, kind = 'stone', { actorUserId = null } = {}) {
   try {
-    const res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
+    let res = { marked: 0, orderCount: 0, error: null }
+    if (kind === 'stone') res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
     const delItems = await supabase.from('bulk_order_items').delete().eq('bulk_order_id', bulkOrderId)
     if (delItems.error) return { ok: false, error: `Couldn’t remove line items: ${delItems.error.message}` }
     const delHdr = await supabase.from('bulk_orders').delete().eq('id', bulkOrderId)
@@ -7336,6 +7309,11 @@ export async function deleteStonePR(bulkOrderId, { actorUserId = null } = {}) {
     return { ok: true, reverted: res.marked, orderCount: res.orderCount }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
+
+// Back-compat stone aliases.
+export const submitStonePR = (id, opts) => submitPR(id, 'stone', opts)
+export const cancelStonePR = (id, opts) => cancelPR(id, 'stone', opts)
+export const deleteStonePR = (id, opts) => deletePR(id, 'stone', opts)
 
 // ── Receiving (lands PR items into the yard; closes the procurement loop) ─────
 // Insert yard rows; strip the optional link columns (source_bulk_order_id /
