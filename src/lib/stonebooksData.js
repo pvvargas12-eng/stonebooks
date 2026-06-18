@@ -7161,9 +7161,15 @@ export async function createStonePR({ supplier = {}, placedAt = null, requestedD
       family_name: l.family_name?.trim() || null, order_id: l.order_id || null,
       color: l.color?.trim() || null, size: l.size?.trim() || null,
       top: l.top?.trim() || null, sides: l.sides?.trim() || null,
+      spec_text: l.spec_text?.trim() || null,
       quantity: Math.max(1, Number(l.quantity) || 1), notes: l.notes?.trim() || null,
     }))
-    const { error: itemErr } = await supabase.from('bulk_order_items').insert(itemRows)
+    let itemErr = (await supabase.from('bulk_order_items').insert(itemRows)).error
+    if (itemErr && /spec_text|column|could not find/i.test(itemErr.message)) {
+      // spec_text migration not run yet → strip it and retry (graceful degrade).
+      const slim = itemRows.map(({ spec_text, ...rest }) => rest)   // eslint-disable-line no-unused-vars
+      itemErr = (await supabase.from('bulk_order_items').insert(slim)).error
+    }
     if (itemErr) {
       console.error('[createStonePR] ✗ INSERT #2 (bulk_order_items) FAILED. Full error:', itemErr, '| serialized:', JSON.stringify(itemErr))
       return { ok: false, error: `bulk_order_items insert (header ${poNumber} saved): ${itemErr.message}`, stage: 'bulk_order_items', dbError: itemErr, bulkOrderId: boId }
@@ -7207,6 +7213,76 @@ export async function markBulkOrderStatus(id, status) {
     if (error && /status|column|could not find/i.test(error.message)) return { ok: false, error: 'Run the procurement migration to enable PR status.' }
     if (error) return { ok: false, error: error.message }
     return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+// ── Stone PR ↔ order "stone ordered" milestone (Submit / Cancel / Delete) ─────
+// A Stone PR's lines link back to customer orders via bulk_order_items.order_id.
+// Submitting a PR SETS each linked order's `stone_ordered` milestone (the existing
+// milestone the rest of the app reads); cancel/delete UNSET it. We reuse the
+// established milestone mutators (updateMilestone / updateMilestoneWithOverride) —
+// never raw job_milestones writes — so events/gating behave exactly as elsewhere.
+// stone_ordered requires proof_approved, so SET uses the override path (a PR going
+// to the vendor is authoritative); UNSET (back to not_started) isn't gated.
+async function _setStoneOrderedForPR(bulkOrderId, target, { actorUserId = null, reason = null } = {}) {
+  const { data: items, error } = await supabase.from('bulk_order_items').select('order_id').eq('bulk_order_id', bulkOrderId)
+  if (error) return { marked: 0, orderCount: 0, error: error.message }
+  const orderIds = [...new Set((items || []).map(i => i.order_id).filter(Boolean))]
+  let marked = 0, milestoneError = null
+  for (const orderId of orderIds) {
+    try {
+      const job = await getJobByOrderId(orderId)
+      if (!job || !Array.isArray(job.milestones)) continue
+      const ms = job.milestones.find(m => m.milestone_key === 'stone_ordered')
+      if (!ms) continue
+      if (target === 'done') {
+        if (ms.status === 'done') continue
+        const r = await updateMilestoneWithOverride(job.id, 'stone_ordered', { status: 'done' }, reason || 'Stone PR submitted to supplier', { actorUserId })
+        if (r?.ok) marked++; else milestoneError = r?.error || milestoneError
+      } else {
+        if (ms.status === 'not_started') continue
+        const r = await updateMilestone(job.id, 'stone_ordered', { status: 'not_started' }, { actorUserId })
+        if (r?.ok) marked++; else milestoneError = r?.error || milestoneError
+      }
+    } catch (e) { milestoneError = String(e?.message || e) }
+  }
+  return { marked, orderCount: orderIds.length, error: milestoneError }
+}
+
+// SUBMIT — flip PR to 'submitted' and mark every linked order as stone-ordered.
+export async function submitStonePR(bulkOrderId, { actorUserId = null } = {}) {
+  try {
+    const { data: bo } = await supabase.from('bulk_orders').select('po_number').eq('id', bulkOrderId).single()
+    const reason = `Stone PR ${bo?.po_number || ''} submitted to supplier`.trim()
+    const res = await _setStoneOrderedForPR(bulkOrderId, 'done', { actorUserId, reason })
+    const upErr = await _bulkOrderUpdate(bulkOrderId, { status: 'submitted' })
+    if (upErr) return { ok: false, error: upErr.message || String(upErr) }
+    return { ok: true, marked: res.marked, orderCount: res.orderCount, milestoneError: res.error }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+// CANCEL — keep the PR record (status 'cancelled') but revert every linked order's
+// stone_ordered milestone back to not_started. The reverse of submit.
+export async function cancelStonePR(bulkOrderId, { actorUserId = null } = {}) {
+  try {
+    const res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
+    const upErr = await _bulkOrderUpdate(bulkOrderId, { status: 'cancelled' })
+    if (upErr) return { ok: false, error: upErr.message || String(upErr) }
+    return { ok: true, reverted: res.marked, orderCount: res.orderCount, milestoneError: res.error }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+// DELETE — revert linked orders' stone_ordered (BEFORE removing items, which the
+// revert reads), then hard-delete the items + the PR header. Hard delete is fine:
+// this is a PR, not order data.
+export async function deleteStonePR(bulkOrderId, { actorUserId = null } = {}) {
+  try {
+    const res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
+    const delItems = await supabase.from('bulk_order_items').delete().eq('bulk_order_id', bulkOrderId)
+    if (delItems.error) return { ok: false, error: `Couldn’t remove line items: ${delItems.error.message}` }
+    const delHdr = await supabase.from('bulk_orders').delete().eq('id', bulkOrderId)
+    if (delHdr.error) return { ok: false, error: `Couldn’t remove the PR: ${delHdr.error.message}` }
+    return { ok: true, reverted: res.marked, orderCount: res.orderCount }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 

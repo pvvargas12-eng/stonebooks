@@ -1,8 +1,11 @@
 // =============================================================================
 // StonePRPrint — print-ready vendor sheet for a Stone Purchase Request.
 // =============================================================================
-// Modeled on a real vendor sheet (Peerless-style): letterhead, PR meta, a clean
-// line-item table grouped by family, and a signature footer. Browser print (v1).
+// Professional vendor document: letterhead, PR meta, and a clean line table whose
+// single "Item" column carries the FULL contract-format spec string (buildDieSpec /
+// buildBaseSpec output, persisted as spec_text at PR creation) — so each line reads
+// identically to the order's contract line item. Manual lines with no spec_text
+// compose the same-format string from the stored fields. Browser print.
 // =============================================================================
 
 import { useState, useEffect } from 'react'
@@ -11,7 +14,16 @@ import { getBulkOrderWithItems } from '../lib/stonebooksData'
 const fmtDate = (d) => {
   if (!d) return '—'
   const dt = new Date(String(d).slice(0, 10) + 'T00:00:00')
-  return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+  return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+}
+
+// The line's display spec: prefer the stored contract-format string; otherwise
+// compose from whatever fields were entered manually (same dotted style).
+function itemSpec(it) {
+  const stored = (it.spec_text || '').trim()
+  if (stored) return stored
+  const composed = [it.color, it.size, it.top, it.sides].map(v => (v || '').trim()).filter(Boolean).join(' · ')
+  return composed || '—'
 }
 
 export default function StonePRPrint({ bulkOrderId, onClose }) {
@@ -38,7 +50,8 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
   const createdBy = m ? m[1].trim() : null
   const prNotes = createdBy ? rawNotes.replace(/\s*·?\s*Created by .+$/, '').trim() : rawNotes
 
-  // Group lines by family (preserve first-seen order).
+  // Group lines by family (preserve first-seen order) so the family name reads once
+  // per group, prominently, with its piece(s) listed beneath.
   const groups = []
   const byFam = new Map()
   for (const it of items) {
@@ -61,7 +74,7 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
           <div className="prp-head">
             <div className="prp-letterhead">
               <div className="prp-co">SHEVCHENKO MONUMENTS LLC</div>
-              <div className="prp-co-sub">Perth Amboy, New Jersey · Est. 1919</div>
+              <div className="prp-co-sub">Perth Amboy, New Jersey · Established 1919</div>
             </div>
             <div className="prp-doctype">
               <div className="prp-doctype-main">PURCHASE REQUEST</div>
@@ -74,37 +87,30 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
             <Meta label="Date" value={fmtDate(o.placed_at)} />
             <Meta label="Requested Delivery" value={fmtDate(o.supplier_eta)} />
             <Meta label="Created By" value={createdBy || '—'} />
-            <Meta label="Status" value={(o.status || 'ordered').toUpperCase()} />
           </div>
 
           <table className="prp-table">
             <thead>
               <tr>
                 <th className="prp-c-fam">Family Name</th>
-                <th>Color</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Specs</th>
+                <th className="prp-c-item">Item</th>
                 <th className="prp-c-qty">Qty</th>
-                <th>Notes</th>
+                <th className="prp-c-notes">Notes</th>
               </tr>
             </thead>
             <tbody>
-              {groups.length === 0 && <tr><td colSpan={7} className="prp-empty-row">No line items.</td></tr>}
+              {groups.length === 0 && <tr><td colSpan={4} className="prp-empty-row">No line items.</td></tr>}
               {groups.map(fam => byFam.get(fam).map((it, i) => (
-                <tr key={it.id || `${fam}-${i}`}>
+                <tr key={it.id || `${fam}-${i}`} className={i === 0 ? 'prp-fam-first' : ''}>
                   <td className="prp-c-fam">{i === 0 ? fam : ''}</td>
-                  <td>{it.color || ''}</td>
-                  <td>{it.kind ? it.kind[0].toUpperCase() + it.kind.slice(1) : 'Stone'}</td>
-                  <td className="prp-mono">{it.size || ''}</td>
-                  <td>{[it.top, it.sides].filter(Boolean).join(' · ')}</td>
+                  <td className="prp-c-item">{itemSpec(it)}</td>
                   <td className="prp-c-qty">{it.quantity ?? 1}</td>
-                  <td className="prp-notes-cell">{it.notes || ''}</td>
+                  <td className="prp-c-notes">{it.notes || ''}</td>
                 </tr>
               )))}
             </tbody>
             <tfoot>
-              <tr><td colSpan={5} className="prp-total-l">Total pieces</td><td className="prp-c-qty">{totalQty}</td><td /></tr>
+              <tr><td className="prp-total-l" colSpan={2}>Total pieces</td><td className="prp-c-qty">{totalQty}</td><td /></tr>
             </tfoot>
           </table>
 
@@ -112,11 +118,15 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
             <div className="prp-notesblock"><span className="prp-notesblock-l">Notes:</span> {prNotes}</div>
           )}
 
-          <div className="prp-sign">
-            <div className="prp-sign-line"><span>Authorized by</span></div>
-            <div className="prp-sign-line"><span>Date</span></div>
+          <div className="prp-auth">
+            <div className="prp-auth-row">
+              <span className="prp-auth-l">Authorized by:</span>
+              <span className="prp-auth-name">Lionel P. Vargas</span>
+            </div>
+            <div className="prp-auth-date">{fmtDate(o.created_at || o.placed_at)}</div>
           </div>
-          <div className="prp-footer">Shevchenko Monuments LLC · Purchase Request {o.po_number || ''} · generated {fmtDate(o.created_at)}</div>
+
+          <div className="prp-footer">Shevchenko Monuments LLC · Purchase Request {o.po_number || ''}</div>
         </div>
       </div>
     </div>
@@ -140,36 +150,44 @@ const PRP_CSS = `
   .prp-btn { font: inherit; font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #d8d2c4; background: #fff; color: #2a2a2a; cursor: pointer; }
   .prp-btn-primary { background: #1e2d3d; border-color: #1e2d3d; color: #fff; }
 
-  .prp-sheet { background: #fff; color: #1a1a1a; padding: 44px 48px; border-radius: 6px; font-family: Georgia, 'Times New Roman', serif; }
+  .prp-sheet { background: #fff; color: #1a1a1a; padding: 48px 52px; border-radius: 6px; font-family: Georgia, 'Times New Roman', serif; }
   .prp-err { padding: 40px; text-align: center; color: #b3261e; font-family: sans-serif; }
-  .prp-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #1a1a1a; padding-bottom: 14px; margin-bottom: 18px; }
-  .prp-co { font-size: 22px; font-weight: 700; letter-spacing: 0.02em; }
-  .prp-co-sub { font-size: 12px; color: #555; margin-top: 3px; font-family: Arial, sans-serif; }
+  .prp-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2.5px solid #1a1a1a; padding-bottom: 16px; margin-bottom: 22px; }
+  .prp-co { font-size: 23px; font-weight: 700; letter-spacing: 0.03em; }
+  .prp-co-sub { font-size: 12px; color: #555; margin-top: 4px; font-family: Arial, sans-serif; letter-spacing: 0.02em; }
   .prp-doctype { text-align: right; }
-  .prp-doctype-main { font-size: 16px; font-weight: 700; letter-spacing: 0.08em; }
-  .prp-prnum { font-family: 'Courier New', monospace; font-size: 13px; color: #444; margin-top: 4px; }
+  .prp-doctype-main { font-size: 15px; font-weight: 700; letter-spacing: 0.12em; }
+  .prp-prnum { font-family: 'Courier New', monospace; font-size: 13px; color: #444; margin-top: 5px; letter-spacing: 0.04em; }
 
-  .prp-meta { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-bottom: 20px; font-family: Arial, sans-serif; }
+  .prp-meta { display: flex; flex-wrap: wrap; gap: 12px 36px; margin-bottom: 26px; font-family: Arial, sans-serif; }
   .prp-metaitem-wide { flex: 1 1 100%; }
-  .prp-meta-l { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #888; }
-  .prp-meta-v { font-size: 14px; font-weight: 600; color: #1a1a1a; }
+  .prp-meta-l { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: #999; margin-bottom: 2px; }
+  .prp-meta-v { font-size: 14px; font-weight: 700; color: #1a1a1a; }
 
-  .prp-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12.5px; }
-  .prp-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #444; border-bottom: 1.5px solid #1a1a1a; padding: 7px 8px; }
-  .prp-table td { padding: 8px; border-bottom: 1px solid #ddd; vertical-align: top; }
-  .prp-c-fam { font-weight: 700; }
-  .prp-c-qty { text-align: center; width: 44px; }
-  .prp-mono { font-family: 'Courier New', monospace; }
-  .prp-notes-cell { color: #555; font-size: 11.5px; }
-  .prp-empty-row { text-align: center; color: #999; padding: 20px; }
-  .prp-total-l { text-align: right; font-weight: 700; border-top: 1.5px solid #1a1a1a; padding-top: 8px; }
+  .prp-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 13px; }
+  .prp-table th { text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.07em; color: #444; border-bottom: 2px solid #1a1a1a; padding: 8px 10px; }
+  .prp-table td { padding: 10px; border-bottom: 1px solid #e2e2e2; vertical-align: top; }
+  .prp-fam-first td { border-top: 1px solid #cfcfcf; }
+  .prp-table tbody tr:first-child td { border-top: none; }
+  .prp-c-fam { font-weight: 700; font-size: 13.5px; white-space: nowrap; width: 22%; }
+  .prp-c-item { width: 56%; line-height: 1.45; }
+  .prp-c-qty { text-align: center; width: 50px; }
+  .prp-c-notes { color: #555; font-size: 12px; }
+  .prp-empty-row { text-align: center; color: #999; padding: 22px; }
+  .prp-total-l { text-align: right; font-weight: 700; border-top: 2px solid #1a1a1a; padding-top: 9px; }
   .prp-table tfoot td { border-bottom: none; }
+  .prp-table tfoot .prp-c-qty { border-top: 2px solid #1a1a1a; padding-top: 9px; font-weight: 700; }
 
-  .prp-notesblock { margin-top: 18px; font-family: Arial, sans-serif; font-size: 12.5px; color: #333; }
+  .prp-notesblock { margin-top: 20px; font-family: Arial, sans-serif; font-size: 12.5px; color: #333; line-height: 1.5; }
   .prp-notesblock-l { font-weight: 700; }
-  .prp-sign { display: flex; gap: 50px; margin-top: 48px; }
-  .prp-sign-line { flex: 1; border-top: 1px solid #1a1a1a; padding-top: 5px; font-family: Arial, sans-serif; font-size: 11px; color: #666; }
-  .prp-footer { margin-top: 30px; text-align: center; font-family: Arial, sans-serif; font-size: 10px; color: #999; }
+
+  .prp-auth { margin-top: 56px; padding-top: 10px; border-top: 1px solid #1a1a1a; width: 320px; }
+  .prp-auth-row { display: flex; align-items: baseline; gap: 8px; font-family: Arial, sans-serif; }
+  .prp-auth-l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #888; }
+  .prp-auth-name { font-family: Georgia, serif; font-size: 16px; font-weight: 700; color: #1a1a1a; }
+  .prp-auth-date { font-family: Arial, sans-serif; font-size: 12px; color: #666; margin-top: 3px; }
+
+  .prp-footer { margin-top: 34px; text-align: center; font-family: Arial, sans-serif; font-size: 10px; color: #aaa; letter-spacing: 0.03em; }
 
   @media print {
     .prp-overlay { position: static; background: #fff; padding: 0; display: block; }

@@ -22,7 +22,8 @@ function familyOf(row) {
   return row.order_number || 'Order'
 }
 
-const BLANK_LINE = { family_name: '', color: '', size: '', top: '', sides: '', quantity: 1, notes: '', order_id: null }
+const BLANK_LINE = { family_name: '', color: '', size: '', top: '', sides: '', quantity: 1, notes: '', order_id: null, spec_text: null }
+const specTextFromNeed = (n) => (n.spec ? `${n.kind === 'base' ? 'Base ' : 'Die: '}${n.spec}` : null)
 
 export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }) {
   const [suppliers, setSuppliers] = useState([])
@@ -89,6 +90,7 @@ export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }
     setLines(ls => [...ls, {
       family_name: need.family || '', order_id: need.orderId || null,
       color: need.color || '', size: need.size || '', top: need.top || '', sides: need.sides || '',
+      spec_text: specTextFromNeed(need),
       quantity: 1, notes: '',
     }])
   }

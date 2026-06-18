@@ -3,7 +3,7 @@
 // =============================================================================
 
 import { useState, useEffect, useCallback } from 'react'
-import { listStonePRs, markBulkOrderStatus } from '../lib/stonebooksData'
+import { listStonePRs, markBulkOrderStatus, submitStonePR, cancelStonePR, deleteStonePR } from '../lib/stonebooksData'
 import StonePRBuilder from './StonePRBuilder'
 import StonePRPrint from './StonePRPrint'
 
@@ -13,10 +13,13 @@ const fmtDate = (d) => {
   return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 function statusOf(pr) {
+  if (pr.status === 'cancelled') return 'cancelled'
   if (pr.received_at) return 'received'
-  return pr.status === 'draft' ? 'draft' : 'ordered'
+  if (pr.status === 'submitted') return 'submitted'
+  if (pr.status === 'draft') return 'draft'
+  return 'ordered'
 }
-const STATUS_LABEL = { draft: 'Draft', ordered: 'Ordered', received: 'Received' }
+const STATUS_LABEL = { draft: 'Draft', submitted: 'Submitted', ordered: 'Ordered', received: 'Received', cancelled: 'Cancelled' }
 
 export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew }) {
   const [prs, setPrs] = useState([])
@@ -24,6 +27,8 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [loadErr, setLoadErr] = useState(null)
   const [showBuilder, setShowBuilder] = useState(false)
   const [printId, setPrintId] = useState(null)
+  const [banner, setBanner] = useState(null)
+  const [busyId, setBusyId] = useState(null)
 
   const load = useCallback(async () => {
     const r = await listStonePRs()
@@ -43,15 +48,45 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
     if (r.ok) load(); else window.alert(`Couldn’t update: ${r.error}`)
   }
 
+  const doSubmit = async (pr) => {
+    if (!window.confirm(`Submit ${pr.po_number || 'this PR'}?\n\nThis marks every order on it as “stone ordered.”`)) return
+    setBusyId(pr.id); setBanner(null)
+    const r = await submitStonePR(pr.id)
+    setBusyId(null)
+    if (!r.ok) { setBanner({ kind: 'err', text: `Couldn’t submit: ${r.error}` }); return }
+    setBanner({ kind: 'ok', text: `${pr.po_number || 'PR'} submitted — marked ${r.marked} of ${r.orderCount} order${r.orderCount === 1 ? '' : 's'} as stone ordered.${r.milestoneError ? ` (Note: ${r.milestoneError})` : ''}` })
+    load()
+  }
+  const doCancel = async (pr) => {
+    if (!window.confirm(`Cancel ${pr.po_number || 'this PR'}?\n\nIt stays on record as cancelled, and every order on it reverts to NOT stone-ordered.`)) return
+    setBusyId(pr.id); setBanner(null)
+    const r = await cancelStonePR(pr.id)
+    setBusyId(null)
+    if (!r.ok) { setBanner({ kind: 'err', text: `Couldn’t cancel: ${r.error}` }); return }
+    setBanner({ kind: 'ok', text: `${pr.po_number || 'PR'} cancelled — reverted ${r.reverted} order${r.reverted === 1 ? '' : 's'} to not-ordered.` })
+    load()
+  }
+  const doDelete = async (pr) => {
+    if (!window.confirm(`Delete ${pr.po_number || 'this PR'} permanently?\n\nThis removes the PR and its line items. Any order it marked “stone ordered” reverts to not-ordered. This cannot be undone.`)) return
+    setBusyId(pr.id); setBanner(null)
+    const r = await deleteStonePR(pr.id)
+    setBusyId(null)
+    if (!r.ok) { setBanner({ kind: 'err', text: `Couldn’t delete: ${r.error}` }); return }
+    setBanner({ kind: 'ok', text: `${pr.po_number || 'PR'} deleted${r.reverted ? ` — reverted ${r.reverted} order${r.reverted === 1 ? '' : 's'} to not-ordered.` : '.'}` })
+    load()
+  }
+
   const itemCount = (pr) => (Array.isArray(pr.items) ? (pr.items[0]?.count ?? pr.items.length) : null)
 
   return (
     <div className="ipr">
       <style>{IPR_CSS}</style>
       <div className="ipr-head">
-        <span className="ipr-sub">Stone purchase requests — drafts you can print + send to a supplier.</span>
+        <span className="ipr-sub">Stone purchase requests — print + send to a supplier, then Submit to mark its orders “stone ordered.”</span>
         <button type="button" className="sb-btn-primary" onClick={() => setShowBuilder(true)}>+ New Stone PR</button>
       </div>
+
+      {banner && <div className={`ipr-banner ipr-banner-${banner.kind}`}>{banner.text}<button type="button" className="ipr-banner-x" onClick={() => setBanner(null)}>×</button></div>}
 
       {loading ? (
         <div className="sb-empty">Loading purchase requests…</div>
@@ -75,8 +110,11 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
                     <td className="ipr-num">{itemCount(pr) ?? '—'}</td>
                     <td><span className={`ipr-pill ipr-pill-${st}`}>{STATUS_LABEL[st]}</span></td>
                     <td className="ipr-actions">
-                      <button type="button" className="ipr-link" onClick={() => setPrintId(pr.id)}>Print</button>
-                      {st === 'draft' && <button type="button" className="ipr-link" onClick={() => markOrdered(pr)}>Mark ordered</button>}
+                      <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setPrintId(pr.id)}>Print</button>
+                      {(st === 'draft' || st === 'ordered') && <button type="button" className="ipr-link ipr-link-go" disabled={busyId === pr.id} onClick={() => doSubmit(pr)}>Submit</button>}
+                      {st === 'draft' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => markOrdered(pr)}>Mark ordered</button>}
+                      {st === 'submitted' && <button type="button" className="ipr-link ipr-link-warn" disabled={busyId === pr.id} onClick={() => doCancel(pr)}>Cancel</button>}
+                      <button type="button" className="ipr-link ipr-link-del" disabled={busyId === pr.id} onClick={() => doDelete(pr)}>Delete</button>
                     </td>
                   </tr>
                 )
@@ -111,9 +149,19 @@ const IPR_CSS = `
   .ipr-num { text-align: center; }
   .ipr-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
   .ipr-pill-draft { background: #ece9e3; color: #6b6256; }
+  .ipr-pill-submitted { background: #e4eefb; color: #2563a8; }
   .ipr-pill-ordered { background: #ede8f7; color: #6d49b8; }
   .ipr-pill-received { background: #e7f3ea; color: #1f7a3d; }
-  .ipr-actions { display: flex; gap: 12px; }
+  .ipr-pill-cancelled { background: #f3e6e5; color: #b3261e; }
+  .ipr-actions { display: flex; gap: 12px; flex-wrap: wrap; }
   .ipr-link { background: none; border: none; font: inherit; font-size: 13px; font-weight: 600; color: #9A7209; cursor: pointer; padding: 0; }
   .ipr-link:hover { text-decoration: underline; }
+  .ipr-link:disabled { opacity: 0.45; cursor: default; text-decoration: none; }
+  .ipr-link-go { color: #1f7a3d; }
+  .ipr-link-warn { color: #b3261e; }
+  .ipr-link-del { color: #b3261e; }
+  .ipr-banner { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 9px; font-size: 13.5px; font-weight: 600; margin-bottom: 16px; }
+  .ipr-banner-ok { background: #e7f3ea; color: #1f7a3d; }
+  .ipr-banner-err { background: #fdeced; color: #b3261e; }
+  .ipr-banner-x { margin-left: auto; background: none; border: none; font-size: 18px; line-height: 1; color: inherit; opacity: 0.6; cursor: pointer; }
 `

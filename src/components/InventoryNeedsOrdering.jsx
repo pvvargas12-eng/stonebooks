@@ -33,7 +33,8 @@ function coveredByPR(need, prItems) {
   m = prItems.find(it => normTxt(it.family_name) && normTxt(it.family_name) === normTxt(need.family) && normTxt(it.color) === normTxt(need.color) && normTxt(it.size) === normTxt(need.size))
   return m ? (m.po_number || 'a PR') : null
 }
-const lineFromNeed = (n) => ({ family_name: n.family, order_id: n.orderId, color: n.color, size: n.size, top: n.top, sides: n.sides, quantity: 1 })
+const specTextFromNeed = (n) => (n.spec ? `${n.kind === 'base' ? 'Base ' : 'Die: '}${n.spec}` : null)
+const lineFromNeed = (n) => ({ family_name: n.family, order_id: n.orderId, color: n.color, size: n.size, top: n.top, sides: n.sides, spec_text: specTextFromNeed(n), quantity: 1 })
 const sortNeeds = (arr) => arr.slice().sort((a, b) =>
   (b.rush ? 1 : 0) - (a.rush ? 1 : 0) ||
   String(a.neededBy || '9999-99-99').localeCompare(String(b.neededBy || '9999-99-99')) ||
