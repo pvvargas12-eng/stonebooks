@@ -36,9 +36,10 @@ function loadJsPDF() {
   return _jsPDFPromise
 }
 
-// Build the family-grouped, die-before-base ordered render model shared by the
-// on-screen sheet and the PDF.
-function buildModel(items, lineSpec) {
+// Flat ordered rows: grouped by family (first-seen order), die before base within a
+// family. Family shows on EVERY row. Shared by the on-screen sheet and the PDF, so
+// zebra striping is a simple alternating row index.
+function orderedRowsOf(items, lineSpec) {
   const groups = []
   const byFam = new Map()
   for (const it of items) {
@@ -47,7 +48,7 @@ function buildModel(items, lineSpec) {
     byFam.get(f).push(it)
   }
   for (const f of groups) byFam.get(f).sort((a, b) => (isBaseSpec(lineSpec[a.id]) ? 1 : 0) - (isBaseSpec(lineSpec[b.id]) ? 1 : 0))
-  return { groups, byFam }
+  return groups.flatMap(f => byFam.get(f))
 }
 
 function parseCreatedBy(notes) {
@@ -65,7 +66,7 @@ async function generatePRPdf(o, items, lineSpec) {
   const PW = 612, PH = 792, M = 54
   const RIGHT = PW - M
   const { createdBy, prNotes } = parseCreatedBy(o.notes)
-  const { groups, byFam } = buildModel(items, lineSpec)
+  const rowsArr = orderedRowsOf(items, lineSpec)
 
   let y = M
   // Letterhead
@@ -93,13 +94,13 @@ async function generatePRPdf(o, items, lineSpec) {
   }
   y += 34
 
-  // Table columns
-  const famX = M, itemX = 168, qtyX = 432, notesX = 470
-  const itemW = qtyX - itemX - 12, notesW = RIGHT - notesX
+  // Table columns — Family · Item · Qty (no Notes)
+  const famX = M, itemX = 188, qtyCX = 536
+  const itemW = qtyCX - 40 - itemX
   const drawHeader = () => {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(60)
     doc.text('FAMILY NAME', famX, y); doc.text('ITEM', itemX, y)
-    doc.text('QTY', qtyX + 8, y, { align: 'center' }); doc.text('NOTES', notesX, y)
+    doc.text('QTY', qtyCX, y, { align: 'center' })
     y += 6
     doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(M, y, RIGHT, y)
     y += 12
@@ -107,33 +108,31 @@ async function generatePRPdf(o, items, lineSpec) {
   drawHeader()
 
   const LH = 13
-  for (const fam of groups) {
-    const lines = byFam.get(fam)
-    lines.forEach((it, i) => {
-      const itemLines = doc.splitTextToSize(lineSpec[it.id] || '—', itemW)
-      const noteLines = it.notes ? doc.splitTextToSize(String(it.notes), notesW) : []
-      const rows = Math.max(itemLines.length, noteLines.length, 1)
-      const rowH = rows * LH + 8
-      if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
-      let ty = y + 4
-      if (i === 0) { doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(20); doc.text(fam, famX, ty + 8) }
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
-      itemLines.forEach((ln, k) => doc.text(ln, itemX, ty + 8 + k * LH))
-      doc.text(String(it.quantity ?? 1), qtyX + 8, ty + 8, { align: 'center' })
-      doc.setFontSize(9); doc.setTextColor(90)
-      noteLines.forEach((ln, k) => doc.text(ln, notesX, ty + 8 + k * LH))
-      y += rowH
-      doc.setDrawColor(225); doc.setLineWidth(0.6); doc.line(M, y, RIGHT, y)
-    })
-  }
+  rowsArr.forEach((it, idx) => {
+    const itemLines = doc.splitTextToSize(lineSpec[it.id] || '—', itemW)
+    const famLines = doc.splitTextToSize(it.family_name || '—', itemX - famX - 8)
+    const rows = Math.max(itemLines.length, famLines.length, 1)
+    const rowH = rows * LH + 8
+    if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
+    if (idx % 2 === 1) { doc.setFillColor(245, 245, 245); doc.rect(M - 6, y - 2, (RIGHT - M) + 12, rowH, 'F') }
+    const ty = y + 4
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(20)
+    famLines.forEach((ln, k) => doc.text(ln, famX, ty + 8 + k * LH))
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
+    itemLines.forEach((ln, k) => doc.text(ln, itemX, ty + 8 + k * LH))
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(20)
+    doc.text(String(it.quantity ?? 1), qtyCX, ty + 8, { align: 'center' })
+    y += rowH
+    doc.setDrawColor(228); doc.setLineWidth(0.5); doc.line(M, y, RIGHT, y)
+  })
 
   // Total
   y += 16
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0)
-  doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(qtyX - 60, y - 8, RIGHT, y - 8)
+  doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(qtyCX - 110, y - 8, RIGHT, y - 8)
   doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
-  doc.text('Total pieces', qtyX - 12, y + 4, { align: 'right' })
-  doc.text(String(totalQty), qtyX + 8, y + 4, { align: 'center' })
+  doc.text('Total pieces', qtyCX - 30, y + 4, { align: 'right' })
+  doc.text(String(totalQty), qtyCX, y + 4, { align: 'center' })
   y += 26
 
   if (prNotes) {
@@ -191,7 +190,7 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
   const items = state.items || []
   const lineSpec = state.lineSpec || {}
   const { createdBy, prNotes } = parseCreatedBy(o.notes)
-  const { groups, byFam } = buildModel(items, lineSpec)
+  const rowsArr = orderedRowsOf(items, lineSpec)
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0)
 
   return (
@@ -231,22 +230,20 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
                 <th className="prp-c-fam">Family Name</th>
                 <th className="prp-c-item">Item</th>
                 <th className="prp-c-qty">Qty</th>
-                <th className="prp-c-notes">Notes</th>
               </tr>
             </thead>
             <tbody>
-              {groups.length === 0 && <tr><td colSpan={4} className="prp-empty-row">No line items.</td></tr>}
-              {groups.map(fam => byFam.get(fam).map((it, i) => (
-                <tr key={it.id || `${fam}-${i}`} className={i === 0 ? 'prp-fam-first' : ''}>
-                  <td className="prp-c-fam">{i === 0 ? fam : ''}</td>
+              {rowsArr.length === 0 && <tr><td colSpan={3} className="prp-empty-row">No line items.</td></tr>}
+              {rowsArr.map((it, idx) => (
+                <tr key={it.id || idx} className={idx % 2 === 1 ? 'prp-zebra' : ''}>
+                  <td className="prp-c-fam">{it.family_name || '—'}</td>
                   <td className="prp-c-item">{lineSpec[it.id] || '—'}</td>
                   <td className="prp-c-qty">{it.quantity ?? 1}</td>
-                  <td className="prp-c-notes">{it.notes || ''}</td>
                 </tr>
-              )))}
+              ))}
             </tbody>
             <tfoot>
-              <tr><td className="prp-total-l" colSpan={2}>Total pieces</td><td className="prp-c-qty">{totalQty}</td><td /></tr>
+              <tr><td className="prp-total-l">Total pieces</td><td /><td className="prp-c-qty">{totalQty}</td></tr>
             </tfoot>
           </table>
 
@@ -290,7 +287,7 @@ const PRP_CSS = `
   .prp-btn:disabled { opacity: 0.5; cursor: default; }
   .prp-btn-primary { background: #1e2d3d; border-color: #1e2d3d; color: #fff; }
 
-  .prp-sheet { background: #fff; color: #1a1a1a; padding: 0.75in; border-radius: 6px; font-family: Helvetica, Arial, sans-serif; }
+  .prp-sheet { background: #fff; color: #1a1a1a; padding: 0.75in; border-radius: 6px; font-family: Helvetica, Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .prp-err { padding: 40px; text-align: center; color: #b3261e; }
   .prp-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2.5px solid #1a1a1a; padding-bottom: 16px; margin-bottom: 22px; }
   .prp-co { font-size: 22px; font-weight: 700; letter-spacing: 0.02em; }
@@ -306,13 +303,11 @@ const PRP_CSS = `
 
   .prp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .prp-table th { text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.07em; color: #444; border-bottom: 2px solid #1a1a1a; padding: 8px 10px; }
-  .prp-table td { padding: 11px 10px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
-  .prp-fam-first td { border-top: 1px solid #cfcfcf; }
-  .prp-table tbody tr:first-child td { border-top: none; }
-  .prp-c-fam { font-weight: 700; font-size: 13.5px; white-space: nowrap; width: 22%; }
-  .prp-c-item { width: 56%; line-height: 1.5; }
-  .prp-c-qty { text-align: center; width: 50px; }
-  .prp-c-notes { color: #555; font-size: 12px; }
+  .prp-table td { padding: 10px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
+  .prp-zebra { background: #f5f5f5; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .prp-c-fam { font-weight: 700; font-size: 13.5px; width: 30%; }
+  .prp-c-item { width: 58%; line-height: 1.5; }
+  .prp-c-qty { text-align: center; width: 56px; }
   .prp-empty-row { text-align: center; color: #999; padding: 22px; }
   .prp-total-l { text-align: right; font-weight: 700; border-top: 2px solid #1a1a1a; padding-top: 9px; }
   .prp-table tfoot td { border-bottom: none; }
