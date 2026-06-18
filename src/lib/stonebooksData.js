@@ -7121,14 +7121,41 @@ export async function createStonePR({ supplier = {}, placedAt = null, requestedD
     notes: [notes?.trim() || null, createdBy ? `Created by ${createdBy}` : null].filter(Boolean).join(' · ') || null,
   }
   if (placedAt) orderPayload.placed_at = placedAt
+
+  // ── TEMP DEBUG INSTRUMENTATION (remove once the RLS-at-call-time question is
+  //    answered). The manual SQL-editor insert bypasses RLS (runs as table
+  //    owner), so it can't tell us what is_staff() returns for THIS browser
+  //    session. with check on every bulk_orders policy is is_staff() — which
+  //    references no column, so no payload VALUE can fail it; only a false
+  //    session can. So we log the live session + the DB's is_staff() for this
+  //    exact request, then label which insert throws with its full error object.
+  try {
+    const [sessRes, userRes, staffRes] = await Promise.all([
+      supabase.auth.getSession(),
+      supabase.auth.getUser(),
+      supabase.rpc('is_staff'),
+    ])
+    const sess = sessRes?.data?.session
+    console.log('%c[createStonePR] DEBUG ─────────────────────────', 'color:#9A7209;font-weight:bold')
+    console.log('[createStonePR] auth.getUser().id    :', userRes?.data?.user?.id ?? '(NULL — no authenticated user!)')
+    console.log('[createStonePR] session present?      :', !!sess, '| access_token attached?', !!sess?.access_token, '| expires_at:', sess?.expires_at)
+    console.log('[createStonePR] DB is_staff() (RPC)   :', staffRes?.error ? `RPC ERROR: ${staffRes.error.message}` : staffRes?.data, ' <-- if false/null, RLS WILL deny the insert')
+    console.log('[createStonePR] bulk_orders payload   :', JSON.stringify(orderPayload))
+  } catch (dbg) { console.warn('[createStonePR] debug probe failed (continuing):', dbg) }
+
   try {
     let res = await supabase.from('bulk_orders').insert(orderPayload).select().single()
     if (res.error && /supplier_id|status|column|could not find/i.test(res.error.message)) {
+      console.warn('[createStonePR] bulk_orders retry (stripping supplier_id/status). First error:', JSON.stringify(res.error))
       const { supplier_id, status, ...slim } = orderPayload   // eslint-disable-line no-unused-vars
       res = await supabase.from('bulk_orders').insert(slim).select().single()
     }
-    if (res.error) return { ok: false, error: res.error.message }
+    if (res.error) {
+      console.error('[createStonePR] ✗ INSERT #1 (bulk_orders header) FAILED. Full error:', res.error, '| serialized:', JSON.stringify(res.error))
+      return { ok: false, error: `bulk_orders header insert: ${res.error.message}`, stage: 'bulk_orders', dbError: res.error }
+    }
     const boId = res.data.id
+    console.log('[createStonePR] ✓ INSERT #1 ok — bulk_orders id =', boId)
     const itemRows = lines.map(l => ({
       bulk_order_id: boId, kind: 'stone',
       family_name: l.family_name?.trim() || null, order_id: l.order_id || null,
@@ -7137,9 +7164,16 @@ export async function createStonePR({ supplier = {}, placedAt = null, requestedD
       quantity: Math.max(1, Number(l.quantity) || 1), notes: l.notes?.trim() || null,
     }))
     const { error: itemErr } = await supabase.from('bulk_order_items').insert(itemRows)
-    if (itemErr) return { ok: false, error: `PR header saved but line items failed (run the migration?): ${itemErr.message}`, bulkOrderId: boId }
+    if (itemErr) {
+      console.error('[createStonePR] ✗ INSERT #2 (bulk_order_items) FAILED. Full error:', itemErr, '| serialized:', JSON.stringify(itemErr))
+      return { ok: false, error: `bulk_order_items insert (header ${poNumber} saved): ${itemErr.message}`, stage: 'bulk_order_items', dbError: itemErr, bulkOrderId: boId }
+    }
+    console.log('[createStonePR] ✓ INSERT #2 ok — PR', poNumber, 'fully persisted')
     return { ok: true, bulkOrderId: boId, poNumber }
-  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  } catch (e) {
+    console.error('[createStonePR] ✗ threw (network / unexpected):', e)
+    return { ok: false, error: String(e?.message || e) }
+  }
 }
 
 export async function listStonePRs() {
