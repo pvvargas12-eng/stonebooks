@@ -9,7 +9,9 @@
 // =============================================================================
 
 import { useState, useEffect } from 'react'
-import { getBulkOrderWithItems } from '../lib/stonebooksData'
+import { getBulkOrderWithItems, getOrderById } from '../lib/stonebooksData'
+import { rowToOrder } from '../SalesMode'
+import { resolveStoneNeeds } from '../lib/inventoryMatch'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -17,21 +19,71 @@ const fmtDate = (d) => {
   return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-// The line's display spec: prefer the stored contract-format string; otherwise
-// compose from whatever fields were entered manually (same dotted style).
-function itemSpec(it) {
+const normSize = (v) => String(v ?? '').toLowerCase().replace(/×/g, 'x').replace(/[^a-z0-9x]/g, '')
+
+// Is this PR line the order's DIE or its BASE? Prefer the explicit spec_text
+// prefix; else match the stored size to the resolved die/base size; else fall back
+// to top-presence (base lines have no top shape).
+function lineKind(it, resolved) {
+  const st = (it.spec_text || '').trim().toLowerCase()
+  if (st.startsWith('base')) return 'base'
+  if (st.startsWith('die')) return 'die'
+  const ls = normSize(it.size)
+  if (ls && resolved.base && normSize(resolved.base.size) === ls) return 'base'
+  if (ls && resolved.die && normSize(resolved.die.size) === ls) return 'die'
+  if (resolved.base && !(it.top && it.top.trim())) return 'base'
+  return 'die'
+}
+
+// The Item column string. For an order-linked line we resolve LIVE from the order
+// via the SAME resolver the contract uses (resolveStoneNeeds → buildDieSpec /
+// buildBaseSpec), so it reads identically to the contract line item — even for old
+// PRs created before spec_text existed. Manual / unresolved lines fall back to the
+// stored spec_text, then to a composed color+size string.
+function resolveLineSpec(it, resolved) {
+  if (resolved && (resolved.die || resolved.base)) {
+    const kind = lineKind(it, resolved)
+    const need = kind === 'base' ? resolved.base : resolved.die
+    if (need && need.spec) return `${kind === 'base' ? 'Base: ' : 'Die: '}${need.spec}`
+    if (resolved.die && resolved.die.spec) return `Die: ${resolved.die.spec}`
+    if (resolved.base && resolved.base.spec) return `Base: ${resolved.base.spec}`
+  }
   const stored = (it.spec_text || '').trim()
   if (stored) return stored
   const composed = [it.color, it.size, it.top, it.sides].map(v => (v || '').trim()).filter(Boolean).join(' · ')
   return composed || '—'
 }
+const isBaseSpec = (s) => /^base/i.test(String(s || '').trim())
 
 export default function StonePRPrint({ bulkOrderId, onClose }) {
   const [state, setState] = useState({ loading: true })
 
   useEffect(() => {
     let alive = true
-    getBulkOrderWithItems(bulkOrderId).then(r => { if (alive) setState({ loading: false, ...r }) }).catch(e => { if (alive) setState({ loading: false, ok: false, error: String(e?.message || e) }) })
+    ;(async () => {
+      const r = await getBulkOrderWithItems(bulkOrderId)
+      if (!alive) return
+      if (!r.ok) { setState({ loading: false, ok: false, error: r.error }); return }
+      const items = r.items || []
+      // Load each linked order ONCE and resolve its die-need + base-need live.
+      const orderIds = [...new Set(items.map(i => i.order_id).filter(Boolean))]
+      const resolvedByOrder = {}
+      await Promise.all(orderIds.map(async (oid) => {
+        try {
+          const row = await getOrderById(oid)
+          if (!row) return
+          const order = rowToOrder(row, null, null)
+          const needs = resolveStoneNeeds([order])
+          resolvedByOrder[oid] = {
+            die: needs.find(n => n.kind !== 'base') || null,
+            base: needs.find(n => n.kind === 'base') || null,
+          }
+        } catch { /* leave unresolved → fallback path */ }
+      }))
+      const lineSpec = {}
+      for (const it of items) lineSpec[it.id] = resolveLineSpec(it, resolvedByOrder[it.order_id])
+      if (alive) setState({ loading: false, ok: true, order: r.order, items, lineSpec })
+    })().catch(e => { if (alive) setState({ loading: false, ok: false, error: String(e?.message || e) }) })
     return () => { alive = false }
   }, [bulkOrderId])
 
@@ -44,6 +96,7 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
 
   const o = state.order || {}
   const items = state.items || []
+  const lineSpec = state.lineSpec || {}
   // createdBy was stored in notes as "… · Created by X". Split it back out.
   const rawNotes = o.notes || ''
   const m = rawNotes.match(/(?:^|·\s*)Created by (.+)$/)
@@ -59,6 +112,8 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
     if (!byFam.has(f)) { byFam.set(f, []); groups.push(f) }
     byFam.get(f).push(it)
   }
+  // Within a family, die line(s) before base line(s).
+  for (const f of groups) byFam.get(f).sort((a, b) => (isBaseSpec(lineSpec[a.id]) ? 1 : 0) - (isBaseSpec(lineSpec[b.id]) ? 1 : 0))
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0)
 
   return (
@@ -103,7 +158,7 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
               {groups.map(fam => byFam.get(fam).map((it, i) => (
                 <tr key={it.id || `${fam}-${i}`} className={i === 0 ? 'prp-fam-first' : ''}>
                   <td className="prp-c-fam">{i === 0 ? fam : ''}</td>
-                  <td className="prp-c-item">{itemSpec(it)}</td>
+                  <td className="prp-c-item">{lineSpec[it.id] || '—'}</td>
                   <td className="prp-c-qty">{it.quantity ?? 1}</td>
                   <td className="prp-c-notes">{it.notes || ''}</td>
                 </tr>
