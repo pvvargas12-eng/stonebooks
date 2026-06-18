@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { rowToOrder } from '../SalesMode'
 import { getActiveStoneOrders, getInventoryStock, listOpenPRCoverage } from '../lib/stonebooksData'
 import { resolveStoneNeeds, matchNeedsToStock } from '../lib/inventoryMatch'
+import { prLineFromNeed } from '../lib/prKinds'
 import StonePRBuilder from './StonePRBuilder'
 
 const titleCase = (s) => String(s || '').replace(/\b\w/g, c => c.toUpperCase())
@@ -48,6 +49,8 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
   const [err, setErr] = useState(null)
   const [data, setData] = useState(null)
   const [builderLines, setBuilderLines] = useState(null)
+  const [builderKind, setBuilderKind] = useState('stone')
+  const openBuilder = (kind, lines) => { setBuilderKind(kind); setBuilderLines(lines) }
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +78,14 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
         ;(need.itemType === 'bronze' ? bronze : stones).push(row)
       }
 
+      // A photo/etching need is covered when an OPEN PR of THAT kind already carries
+      // a line for the same order + size (+ photo type). Drops it off the list after
+      // a PR is built, the same way stone needs fall off when on a PR.
+      const onKindPR = (need, kind, withType) => prItems.some(it =>
+        it.pr_kind === kind && it.order_id && need.orderId && it.order_id === need.orderId
+        && normTxt(it.size) === normTxt(need.size)
+        && (!withType || normTxt(it.top) === normTxt(need.type)))
+
       const photos = [], etchings = []
       for (const o of orders) {
         const meta = orderMeta[o.id] || {}
@@ -82,10 +93,12 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
           const code = String(a.code || '')
           if (code.startsWith('photo-')) {
             const p = code.split('-')
-            photos.push({ key: `${o.id}:${code}`, orderId: o.id, orderNumber: o.orderNumber, family: o.family, neededBy: meta.neededBy, rush: meta.rush, spec: a.label || code, type: a.type || p[1] || 'photo', size: a.size || p[2] || '', qty: Math.max(1, Number(a.qty) || 1), hasImage: !!(a.customerPhotoUrl || a.customerPhotoPath) })
+            const need = { key: `${o.id}:${code}`, orderId: o.id, orderNumber: o.orderNumber, family: o.family, neededBy: meta.neededBy, rush: meta.rush, spec: a.label || code, type: a.type || p[1] || 'photo', size: a.size || p[2] || '', qty: Math.max(1, Number(a.qty) || 1), hasImage: !!(a.customerPhotoUrl || a.customerPhotoPath) }
+            if (onKindPR(need, 'photo', true)) coveredPR++; else photos.push(need)
           } else if (code.startsWith('laser-')) {
             const p = code.split('-')
-            etchings.push({ key: `${o.id}:${code}`, orderId: o.id, orderNumber: o.orderNumber, family: o.family, neededBy: meta.neededBy, rush: meta.rush, spec: a.label || code, size: a.size || p[1] || '', qty: Math.max(1, Number(a.qty) || 1) })
+            const need = { key: `${o.id}:${code}`, orderId: o.id, orderNumber: o.orderNumber, family: o.family, neededBy: meta.neededBy, rush: meta.rush, spec: a.label || code, size: a.size || p[1] || '', qty: Math.max(1, Number(a.qty) || 1) }
+            if (onKindPR(need, 'etching', false)) coveredPR++; else etchings.push(need)
           }
         }
       }
@@ -123,22 +136,26 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
       ) : (
         <>
           <Group title="Stones" tone="stone" rows={data.stones}
-            onBuildAll={data.stones.length ? () => setBuilderLines(data.stones.map(lineFromNeed)) : null}
-            onBuildRow={(r) => setBuilderLines([lineFromNeed(r)])}
+            onBuildAll={data.stones.length ? () => openBuilder('stone', data.stones.map(lineFromNeed)) : null}
+            onBuildRow={(r) => openBuilder('stone', [lineFromNeed(r)])}
             onAllocate={onOpenMatches} onOpenOrder={onOpenOrder} />
 
           <Group title="Bronze" tone="bronze" rows={data.bronze}
             buildDisabledLabel="Bronze PR — coming soon" onAllocate={onOpenMatches} onOpenOrder={onOpenOrder} />
 
-          <PhotoGroup rows={data.photos} onOpenOrder={onOpenOrder} />
+          <PhotoGroup rows={data.photos} onOpenOrder={onOpenOrder}
+            onBuildAll={data.photos.length ? () => openBuilder('photo', data.photos.map(n => prLineFromNeed('photo', n))) : null}
+            onBuildRow={(r) => openBuilder('photo', [prLineFromNeed('photo', r)])} />
 
           <SimpleGroup title="Etchings" tone="etch" rows={data.etchings} specOf={(r) => `${r.spec}${r.size ? ` · ${String(r.size).toUpperCase()}` : ''}`}
-            buildDisabledLabel="Etching PR — coming soon" onOpenOrder={onOpenOrder} />
+            onOpenOrder={onOpenOrder}
+            onBuildAll={data.etchings.length ? () => openBuilder('etching', data.etchings.map(n => prLineFromNeed('etching', n))) : null}
+            onBuildRow={(r) => openBuilder('etching', [prLineFromNeed('etching', r)])} />
         </>
       )}
 
       {builderLines && (
-        <StonePRBuilder prefillLines={builderLines} onClose={() => setBuilderLines(null)} onSaved={() => { setBuilderLines(null); load() }} />
+        <StonePRBuilder kind={builderKind} prefillLines={builderLines} onClose={() => setBuilderLines(null)} onSaved={() => { setBuilderLines(null); load() }} />
       )}
     </div>
   )
@@ -185,14 +202,14 @@ function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOr
   )
 }
 
-function PhotoGroup({ rows, onOpenOrder }) {
+function PhotoGroup({ rows, onOpenOrder, onBuildAll, onBuildRow }) {
   if (!rows.length) return null
   return (
     <section className="ino-group">
       <div className="ino-group-head ino-head-photo">
         <span className="ino-group-title">Photos</span>
         <span className="ino-group-count">{rows.length}</span>
-        <span className="ino-soon">Photo PR — coming soon</span>
+        {onBuildAll && <button type="button" className="ino-build-all" onClick={onBuildAll}>Build PR for all {rows.length} →</button>}
       </div>
       <div className="ino-rows">
         {rows.map(r => (
@@ -206,6 +223,7 @@ function PhotoGroup({ rows, onOpenOrder }) {
                 : <span className="ino-warn">missing photo — needed before ordering</span>}
             </div>
             <div className="ino-row-actions">
+              {onBuildRow && <button type="button" className="ino-act ino-act-go" onClick={() => onBuildRow(r)}>Build PR</button>}
               {onOpenOrder && r.orderId && <button type="button" className="ino-act ino-act-link" onClick={() => onOpenOrder(r.orderId)}>Open order</button>}
             </div>
           </div>
@@ -215,13 +233,14 @@ function PhotoGroup({ rows, onOpenOrder }) {
   )
 }
 
-function SimpleGroup({ title, tone, rows, specOf, buildDisabledLabel, onOpenOrder }) {
+function SimpleGroup({ title, tone, rows, specOf, buildDisabledLabel, onOpenOrder, onBuildAll, onBuildRow }) {
   if (!rows.length) return null
   return (
     <section className="ino-group">
       <div className={`ino-group-head ino-head-${tone}`}>
         <span className="ino-group-title">{title}</span>
         <span className="ino-group-count">{rows.length}</span>
+        {onBuildAll && <button type="button" className="ino-build-all" onClick={onBuildAll}>Build PR for all {rows.length} →</button>}
         {buildDisabledLabel && <span className="ino-soon">{buildDisabledLabel}</span>}
       </div>
       <div className="ino-rows">
@@ -233,6 +252,7 @@ function SimpleGroup({ title, tone, rows, specOf, buildDisabledLabel, onOpenOrde
               <span className="ino-spec">{specOf(r)}</span>
             </div>
             <div className="ino-row-actions">
+              {onBuildRow && <button type="button" className="ino-act ino-act-go" onClick={() => onBuildRow(r)}>Build PR</button>}
               {onOpenOrder && r.orderId && <button type="button" className="ino-act ino-act-link" onClick={() => onOpenOrder(r.orderId)}>Open order</button>}
             </div>
           </div>
