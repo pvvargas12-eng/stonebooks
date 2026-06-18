@@ -18,6 +18,7 @@ import InventoryDashboard from './components/InventoryDashboard'
 import InventoryProcurement from './components/InventoryProcurement'
 import InventoryReceiving from './components/InventoryReceiving'
 import InventoryPhotoEtching from './components/InventoryPhotoEtching'
+import InventoryNeedsOrdering from './components/InventoryNeedsOrdering'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -26,7 +27,7 @@ const BLANK = {
 
 const titleCase = (s) => String(s || '').replace(/\b\w/g, c => c.toUpperCase())
 
-export default function InventoryTab() {
+export default function InventoryTab({ onOpenOrder }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState(null)
@@ -99,13 +100,14 @@ export default function InventoryTab() {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'photos' ? 'Photos & Etching' : 'Dashboard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'needs' ? 'Needs Ordering' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'photos' ? 'Photos & Etching' : 'Dashboard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
             <button type="button" className={`inv-seg-btn${view === 'dashboard' ? ' on' : ''}`} onClick={() => setView('dashboard')}>Dashboard</button>
             <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
             <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
+            <button type="button" className={`inv-seg-btn${view === 'needs' ? ' on' : ''}`} onClick={() => setView('needs')}>Needs Ordering</button>
             <button type="button" className={`inv-seg-btn${view === 'procurement' ? ' on' : ''}`} onClick={() => setView('procurement')}>Procurement</button>
             <button type="button" className={`inv-seg-btn${view === 'receiving' ? ' on' : ''}`} onClick={() => setView('receiving')}>Receiving</button>
             <button type="button" className={`inv-seg-btn${view === 'photos' ? ' on' : ''}`} onClick={() => setView('photos')}>Photos &amp; Etching</button>
@@ -143,6 +145,8 @@ export default function InventoryTab() {
       {view === 'photos' && <InventoryPhotoEtching />}
 
       {view === 'matches' && <InventorySmartMatches />}
+
+      {view === 'needs' && <InventoryNeedsOrdering onOpenMatches={() => setView('matches')} onOpenOrder={onOpenOrder} />}
 
       {view === 'yard' && (<>
       {/* FAST ADD — always visible, minimal friction */}

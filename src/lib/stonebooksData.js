@@ -7266,6 +7266,21 @@ export async function unreceivePR(bulkOrderId) {
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+// Line items on NOT-yet-received PRs (draft/ordered/partial) — so a need can be
+// marked "already on PR-XXXX". Each item carries its PR's po_number + kind.
+export async function listOpenPRCoverage() {
+  try {
+    const { data: orders, error } = await supabase.from('bulk_orders').select('id, po_number, kind, status, received_at').is('received_at', null)
+    if (error) return { ok: false, items: [], error: error.message }
+    const open = orders || []
+    if (!open.length) return { ok: true, items: [] }
+    const meta = Object.fromEntries(open.map(o => [o.id, { po_number: o.po_number, kind: o.kind, status: o.status }]))
+    const { data: items, error: e2 } = await supabase.from('bulk_order_items').select('*').in('bulk_order_id', open.map(o => o.id))
+    if (e2) return { ok: false, items: [], error: e2.message }
+    return { ok: true, items: (items || []).map(it => ({ ...it, po_number: meta[it.bulk_order_id]?.po_number || null, pr_kind: meta[it.bulk_order_id]?.kind || null, pr_status: meta[it.bulk_order_id]?.status || null })) }
+  } catch (e) { return { ok: false, items: [], error: String(e?.message || e) } }
+}
+
 // =============================================================================
 // TODAY — role-aware operational page
 // =============================================================================

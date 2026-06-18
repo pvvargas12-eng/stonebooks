@@ -720,7 +720,7 @@ export default function Stonebooks() {
 {tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
-{tab === 'inventory' && <InventoryTab />}
+{tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}

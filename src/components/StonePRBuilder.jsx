@@ -24,14 +24,14 @@ function familyOf(row) {
 
 const BLANK_LINE = { family_name: '', color: '', size: '', top: '', sides: '', quantity: 1, notes: '', order_id: null }
 
-export default function StonePRBuilder({ onClose, onSaved }) {
+export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }) {
   const [suppliers, setSuppliers] = useState([])
   const [supplierId, setSupplierId] = useState('')
   const [showNewSup, setShowNewSup] = useState(false)
   const [newSup, setNewSup] = useState({ name: '', contact_name: '', phone: '', email: '', terms: '', lead_time_days: '', kinds: ['stone'], notes: '' })
   const [supBusy, setSupBusy] = useState(false)
 
-  const [lines, setLines] = useState([])
+  const [lines, setLines] = useState(() => Array.isArray(prefillLines) ? prefillLines.map(l => ({ ...BLANK_LINE, ...l })) : [])
   const [draft, setDraft] = useState(BLANK_LINE)
   const [needs, setNeeds] = useState([])
   const [showNeeds, setShowNeeds] = useState(false)
