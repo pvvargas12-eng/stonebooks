@@ -45,13 +45,18 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
     setPoNumber(r.order?.po_number || '')
     const items = r.items || []
     const { liveSpec } = await resolvePRLineSpecs(items)
-    const mapped = items.map(it => ({
-      id: it.id, family_name: it.family_name || '', quantity: it.quantity ?? 1,
-      spec_text: it.spec_text || '', live: liveSpec[it.id] || '—', isNew: false,
-      order_id: it.order_id || null, kind: isBaseSpec(liveSpec[it.id]) ? 'base' : 'die',
-    }))
+    const mapped = items.map(it => {
+      const live = liveSpec[it.id] || '—'
+      return {
+        id: it.id, family_name: it.family_name || '', quantity: it.quantity ?? 1,
+        // The field holds REAL editable text: the override if set, else the resolved
+        // spec. dbOverride remembers what was actually stored (for change detection).
+        spec_text: it.spec_text || live, live, dbOverride: it.spec_text || '', isNew: false,
+        order_id: it.order_id || null, kind: isBaseSpec(live) ? 'base' : 'die',
+      }
+    })
     setRows(mapped)
-    setOrig(Object.fromEntries(mapped.map(m => [m.id, { family_name: m.family_name, quantity: m.quantity, spec_text: m.spec_text }])))
+    setOrig(Object.fromEntries(mapped.map(m => [m.id, { family_name: m.family_name, quantity: m.quantity, spec_text: m.dbOverride }])))
     setLoading(false)
   }, [bulkOrderId])
   useEffect(() => { load() }, [load])
@@ -73,7 +78,7 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
   const removeRow = (id) => setRows(rs => rs.filter(r => r.id !== id))
   const addRow = () => setRows(rs => [...rs, { id: tmpId(), family_name: '', quantity: 1, spec_text: '', live: '—', isNew: true, order_id: null, kind: 'die' }])
   const addNeed = (n) => setRows(rs => [...rs, {
-    id: tmpId(), family_name: n.family || '', quantity: 1, spec_text: '', live: specFromNeed(n), isNew: true,
+    id: tmpId(), family_name: n.family || '', quantity: 1, spec_text: specFromNeed(n), live: specFromNeed(n), isNew: true,
     order_id: n.orderId || null, kind: n.kind === 'base' ? 'base' : 'die', need_key: n.key,
     color: n.color || '', size: n.size || '', top: n.top || '', sides: n.sides || '',
   }])
@@ -89,17 +94,22 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
         if (!liveIds.has(id)) { const d = await deleteBulkOrderItem(id); if (!d.ok) throw new Error(d.error) }
       }
       for (const r of rows) {
+        // The field is prefilled with the live spec. Only persist an override when
+        // the text actually DIFFERS from the live spec (and isn't blank); otherwise
+        // store '' so the line keeps live-resolving (no frozen string).
+        const val = (r.spec_text || '').trim()
+        const ov = (val === '' || val === (r.live || '').trim()) ? '' : val
         if (r.isNew) {
-          if (!r.family_name.trim() && !r.spec_text.trim() && !r.order_id) continue   // skip blank new rows
+          if (!r.family_name.trim() && !ov && !r.order_id) continue   // skip blank new rows
           const a = await addBulkOrderItem(bulkOrderId, {
-            family_name: r.family_name, quantity: r.quantity, spec_text: r.spec_text,
+            family_name: r.family_name, quantity: r.quantity, spec_text: ov,
             order_id: r.order_id || null, color: r.color, size: r.size, top: r.top, sides: r.sides,
           })
           if (!a.ok) throw new Error(a.error)
         } else {
           const o = orig[r.id]
-          if (o && (o.family_name !== r.family_name || Number(o.quantity) !== Number(r.quantity) || (o.spec_text || '') !== (r.spec_text || ''))) {
-            const u = await updateBulkOrderItem(r.id, { family_name: r.family_name, quantity: r.quantity, spec_text: r.spec_text })
+          if (o && (o.family_name !== r.family_name || Number(o.quantity) !== Number(r.quantity) || (o.spec_text || '') !== ov)) {
+            const u = await updateBulkOrderItem(r.id, { family_name: r.family_name, quantity: r.quantity, spec_text: ov })
             if (!u.ok) throw new Error(u.error)
           }
         }
@@ -123,7 +133,7 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
             : loadErr ? <div className="sb-empty">Couldn’t load the PR.<br /><span className="pre-muted">{loadErr}</span></div>
             : (
               <>
-                <div className="pre-hint">Edit the wording to override what prints on the Item line. Leave it blank to use the auto-resolved spec (shown as the placeholder).</div>
+                <div className="pre-hint">Each Item field is pre-filled with the resolved spec — edit the wording to override it. Clear it to fall back to the auto-resolved spec.</div>
                 <table className="pre-table">
                   <thead><tr><th>Family</th><th>Item wording</th><th className="pre-qty-h">Qty</th><th /></tr></thead>
                   <tbody>
@@ -131,7 +141,7 @@ export default function StonePREditor({ bulkOrderId, onClose, onSaved }) {
                     {rows.map(r => (
                       <tr key={r.id} className={r.isNew ? 'pre-row-new' : ''}>
                         <td><input className="sb-input" value={r.family_name} onChange={e => setRow(r.id, { family_name: e.target.value })} placeholder="Family" /></td>
-                        <td><input className="sb-input pre-spec" value={r.spec_text} onChange={e => setRow(r.id, { spec_text: e.target.value })} placeholder={r.live} /></td>
+                        <td><input className="sb-input pre-spec" value={r.spec_text} onChange={e => setRow(r.id, { spec_text: e.target.value })} placeholder="Type the item spec…" /></td>
                         <td><input className="sb-input pre-qty" type="number" min="1" value={r.quantity} onChange={e => setRow(r.id, { quantity: e.target.value })} /></td>
                         <td><button type="button" className="pre-rm" title="Remove line" onClick={() => removeRow(r.id)}>×</button></td>
                       </tr>

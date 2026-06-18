@@ -311,23 +311,38 @@ export function buildDieSpec(order) {
 // total moves.
 const BASE_TOP_FINISH_LABEL  = { pol: 'POL TOP', frost: 'FROST TOP' }
 const BASE_BACK_FINISH_LABEL = { SB: 'SB', RB: 'RB', BRP: 'BRP', AP: 'ALL POL' }
+// The wizard's combo sides bundle a TOP + BACK finish into one label ("Polish Top
+// BRP"). Split them so the top finish isn't printed twice and the back reads as a
+// clean code (matches the contract's intended "… · POL TOP, BRP").
+const BASE_SIDES_SPLIT = {
+  'polish-top-brp': { top: 'POL TOP', back: 'BRP' },
+  'all-polish':     { top: '',        back: 'ALL POL' },
+  'brp-sawback':    { top: '',        back: 'BRP, SAW BACK' },
+}
 
 export function buildBaseSpec(order) {
   const bc = order.baseConfig || {}
   const override = (bc.baseTextOverride || '').trim()
   if (override) return override
   const baseSizeObj = BASE_SIZES.find(b => b.code === bc.sizeCode)
-  const size = baseSizeObj ? baseSizeObj.label : [ftIn(bc.width), ftIn(bc.depth)].filter(Boolean).join(' × ')
+  // DIMENSIONS ONLY — some BASE_SIZES labels embed " polished top"; strip it so the
+  // top finish below isn't doubled (was "… polished top POL TOP").
+  const size = baseSizeObj
+    ? baseSizeObj.label.replace(/\s*polished\s+top\s*$/i, '').trim()
+    : [ftIn(bc.width), ftIn(bc.depth)].filter(Boolean).join(' × ')
+  const sidesSplit = bc.sides ? BASE_SIDES_SPLIT[bc.sides] : null
   const hOpt = (bc.heightCode != null) ? BASE_HEIGHTS.find(h => h.code === bc.heightCode) : null
-  const topFinish = BASE_TOP_FINISH_LABEL[bc.topFinish] || ''
-  // Prefer the BASE_FINISHES code (OrderForm); fall back to the wizard's sides label.
+  const topFinish = BASE_TOP_FINISH_LABEL[bc.topFinish] || (sidesSplit ? sidesSplit.top : '')
+  // Prefer the OrderForm finish code, then a raw finish, then the split wizard back.
   const backFinish = BASE_BACK_FINISH_LABEL[bc.finish]
-    || (bc.finish || '')
-    || (bc.sides ? (BASE_SIDES_OPTIONS.find(s => s.code === bc.sides)?.label || '') : '')
-  return [
-    [size, topFinish].filter(Boolean).join(' '),
+    || (bc.finish ? String(bc.finish) : '')
+    || (sidesSplit ? sidesSplit.back : (bc.sides ? (BASE_SIDES_OPTIONS.find(s => s.code === bc.sides)?.label || '') : ''))
+  const finishes = [
+    topFinish,
     (hOpt && hOpt.upcharge > 0) ? `${hOpt.label} height` : '',
-    bc.polishMargin2in ? '2″ polished margin' : '',
+    bc.polishMargin2in ? '2" polished margin' : '',
     backFinish,
-  ].filter(Boolean).join(', ') || 'Base'
+  ].filter(Boolean)
+  if (!size) return finishes.join(', ') || 'Base'
+  return finishes.length ? `${size} · ${finishes.join(', ')}` : size
 }

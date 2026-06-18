@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // StonePRPrint — vendor sheet for a Stone Purchase Request (print + PDF).
 // =============================================================================
 // One clean typeface throughout. The "Item" column reads identically to the
@@ -19,6 +19,13 @@ const fmtDate = (d) => {
   const dt = new Date(String(d).slice(0, 10) + 'T00:00:00')
   return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 }
+
+// jsPDF Helvetica is WinAnsi — map prime/smart-quote/dash/nbsp glyphs to ASCII so
+// text measures + wraps correctly (× and · are WinAnsi-safe, left as-is).
+const pdfSafe = (s) => String(s ?? '')
+  .replace(/[″“”]/g, '"')
+  .replace(/[′‘’]/g, "'")
+  .replace(/[–—]/g, '-')
 
 // Lazy-load jsPDF from CDN (no npm dep — same pattern as the SalesMode PDFs).
 let _jsPDFPromise = null
@@ -109,8 +116,8 @@ async function generatePRPdf(o, items, lineSpec) {
 
   const LH = 13
   rowsArr.forEach((it, idx) => {
-    const itemLines = doc.splitTextToSize(lineSpec[it.id] || '—', itemW)
-    const famLines = doc.splitTextToSize(it.family_name || '—', itemX - famX - 8)
+    const itemLines = doc.splitTextToSize(pdfSafe(lineSpec[it.id] || '—'), itemW)
+    const famLines = doc.splitTextToSize(pdfSafe(it.family_name || '—'), itemX - famX - 8)
     const rows = Math.max(itemLines.length, famLines.length, 1)
     const rowH = rows * LH + 8
     if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
@@ -136,7 +143,7 @@ async function generatePRPdf(o, items, lineSpec) {
   y += 26
 
   if (prNotes) {
-    const nl = doc.splitTextToSize(`Notes: ${prNotes}`, RIGHT - M)
+    const nl = doc.splitTextToSize(pdfSafe(`Notes: ${prNotes}`), RIGHT - M)
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(60)
     nl.forEach((ln, k) => doc.text(ln, M, y + k * 13)); y += nl.length * 13 + 8
   }
