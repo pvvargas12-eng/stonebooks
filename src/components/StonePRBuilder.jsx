@@ -22,8 +22,7 @@ function familyOf(row) {
   return row.order_number || 'Order'
 }
 
-const BLANK_LINE = { family_name: '', color: '', size: '', top: '', sides: '', quantity: 1, notes: '', order_id: null, spec_text: null }
-const specTextFromNeed = (n) => (n.spec ? `${n.kind === 'base' ? 'Base ' : 'Die: '}${n.spec}` : null)
+const BLANK_LINE = { family_name: '', color: '', size: '', top: '', sides: '', quantity: 1, notes: '', order_id: null, spec_text: null, need_key: null }
 
 export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }) {
   const [suppliers, setSuppliers] = useState([])
@@ -88,9 +87,8 @@ export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }
   }
   const addNeed = (need) => {
     setLines(ls => [...ls, {
-      family_name: need.family || '', order_id: need.orderId || null,
+      family_name: need.family || '', order_id: need.orderId || null, need_key: need.key || null,
       color: need.color || '', size: need.size || '', top: need.top || '', sides: need.sides || '',
-      spec_text: specTextFromNeed(need),
       quantity: 1, notes: '',
     }])
   }
@@ -112,7 +110,9 @@ export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }
   }
 
   const setD = (patch) => setDraft(d => ({ ...d, ...patch }))
-  const addedOrderIds = new Set(lines.map(l => l.order_id).filter(Boolean))
+  // Dedup by NEED key (orderId:stone / orderId:base) — NOT order_id — so an order's
+  // die AND base can both be pulled in as separate lines.
+  const addedKeys = new Set(lines.map(l => l.need_key).filter(Boolean))
 
   return (
     <div className="prb-overlay" onClick={onClose}>
@@ -182,9 +182,10 @@ export default function StonePRBuilder({ onClose, onSaved, prefillLines = null }
                     {needs.map(n => (
                       <div key={n.key} className="prb-need">
                         <span className="prb-need-fam">{n.family}</span>
+                        <span className="prb-need-kind">{n.kind === 'base' ? 'Base' : 'Die'}</span>
                         <span className="prb-need-spec">{n.spec}</span>
-                        <button type="button" className="prb-need-add" disabled={addedOrderIds.has(n.orderId)} onClick={() => addNeed(n)}>
-                          {addedOrderIds.has(n.orderId) ? 'Added' : 'Add'}
+                        <button type="button" className="prb-need-add" disabled={addedKeys.has(n.key)} onClick={() => addNeed(n)}>
+                          {addedKeys.has(n.key) ? 'Added' : 'Add'}
                         </button>
                       </div>
                     ))}
@@ -272,6 +273,7 @@ const PRB_CSS = `
   .prb-need { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--sb-border-soft, #f0ece2); }
   .prb-need:last-child { border-bottom: 0; }
   .prb-need-fam { font-weight: 700; font-size: 13px; min-width: 120px; }
+  .prb-need-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #6b5d3a; background: #f4efe4; border-radius: 4px; padding: 1px 6px; }
   .prb-need-spec { flex: 1; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; color: #6b6256; }
   .prb-need-add { font: inherit; font-size: 12px; font-weight: 600; padding: 3px 12px; border-radius: 6px; border: 1px solid #1f7a3d; background: #1f7a3d; color: #fff; cursor: pointer; }
   .prb-need-add:disabled { background: #e7f3ea; color: #1f7a3d; cursor: default; }

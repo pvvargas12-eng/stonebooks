@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { listStonePRs, markBulkOrderStatus, submitStonePR, cancelStonePR, deleteStonePR } from '../lib/stonebooksData'
 import StonePRBuilder from './StonePRBuilder'
 import StonePRPrint from './StonePRPrint'
+import StonePREditor from './StonePREditor'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -27,6 +28,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [loadErr, setLoadErr] = useState(null)
   const [showBuilder, setShowBuilder] = useState(false)
   const [printId, setPrintId] = useState(null)
+  const [editId, setEditId] = useState(null)
   const [banner, setBanner] = useState(null)
   const [busyId, setBusyId] = useState(null)
 
@@ -111,6 +113,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
                     <td><span className={`ipr-pill ipr-pill-${st}`}>{STATUS_LABEL[st]}</span></td>
                     <td className="ipr-actions">
                       <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setPrintId(pr.id)}>Print</button>
+                      {st !== 'received' && st !== 'cancelled' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setEditId(pr.id)}>Edit</button>}
                       {(st === 'draft' || st === 'ordered') && <button type="button" className="ipr-link ipr-link-go" disabled={busyId === pr.id} onClick={() => doSubmit(pr)}>Submit</button>}
                       {st === 'draft' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => markOrdered(pr)}>Mark ordered</button>}
                       {st === 'submitted' && <button type="button" className="ipr-link ipr-link-warn" disabled={busyId === pr.id} onClick={() => doCancel(pr)}>Cancel</button>}
@@ -131,6 +134,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
         />
       )}
       {printId && <StonePRPrint bulkOrderId={printId} onClose={() => setPrintId(null)} />}
+      {editId && <StonePREditor bulkOrderId={editId} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); setBanner({ kind: 'ok', text: 'PR lines updated.' }); load() }} />}
     </div>
   )
 }

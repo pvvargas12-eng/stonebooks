@@ -1,17 +1,18 @@
 // =============================================================================
-// StonePRPrint — print-ready vendor sheet for a Stone Purchase Request.
+// StonePRPrint — vendor sheet for a Stone Purchase Request (print + PDF).
 // =============================================================================
-// Professional vendor document: letterhead, PR meta, and a clean line table whose
-// single "Item" column carries the FULL contract-format spec string (buildDieSpec /
-// buildBaseSpec output, persisted as spec_text at PR creation) — so each line reads
-// identically to the order's contract line item. Manual lines with no spec_text
-// compose the same-format string from the stored fields. Browser print.
+// One clean typeface throughout. The "Item" column reads identically to the
+// order's contract line item: a manual wording override (spec_text) wins; else the
+// spec is resolved LIVE from the linked order via the SAME resolver the contract
+// uses (resolveStoneNeeds → buildDieSpec / buildBaseSpec); else a composed
+// color+size fallback. Each order shows its die line AND a separate base line.
+// Letter-size browser print + a real jsPDF download (same CDN pattern as the
+// contract/estimate PDFs).
 // =============================================================================
 
 import { useState, useEffect } from 'react'
-import { getBulkOrderWithItems, getOrderById } from '../lib/stonebooksData'
-import { rowToOrder } from '../SalesMode'
-import { resolveStoneNeeds } from '../lib/inventoryMatch'
+import { getBulkOrderWithItems } from '../lib/stonebooksData'
+import { resolvePRLineSpecs, isBaseSpec } from '../lib/prSpec'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -19,44 +20,144 @@ const fmtDate = (d) => {
   return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-const normSize = (v) => String(v ?? '').toLowerCase().replace(/×/g, 'x').replace(/[^a-z0-9x]/g, '')
-
-// Is this PR line the order's DIE or its BASE? Prefer the explicit spec_text
-// prefix; else match the stored size to the resolved die/base size; else fall back
-// to top-presence (base lines have no top shape).
-function lineKind(it, resolved) {
-  const st = (it.spec_text || '').trim().toLowerCase()
-  if (st.startsWith('base')) return 'base'
-  if (st.startsWith('die')) return 'die'
-  const ls = normSize(it.size)
-  if (ls && resolved.base && normSize(resolved.base.size) === ls) return 'base'
-  if (ls && resolved.die && normSize(resolved.die.size) === ls) return 'die'
-  if (resolved.base && !(it.top && it.top.trim())) return 'base'
-  return 'die'
+// Lazy-load jsPDF from CDN (no npm dep — same pattern as the SalesMode PDFs).
+let _jsPDFPromise = null
+function loadJsPDF() {
+  if (window.jspdf?.jsPDF) return Promise.resolve(window.jspdf.jsPDF)
+  if (_jsPDFPromise) return _jsPDFPromise
+  _jsPDFPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+    script.async = true
+    script.onload = () => { window.jspdf?.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('jsPDF global missing')) }
+    script.onerror = () => { _jsPDFPromise = null; reject(new Error('Failed to load jsPDF from CDN')) }
+    document.head.appendChild(script)
+  })
+  return _jsPDFPromise
 }
 
-// The Item column string. For an order-linked line we resolve LIVE from the order
-// via the SAME resolver the contract uses (resolveStoneNeeds → buildDieSpec /
-// buildBaseSpec), so it reads identically to the contract line item — even for old
-// PRs created before spec_text existed. Manual / unresolved lines fall back to the
-// stored spec_text, then to a composed color+size string.
-function resolveLineSpec(it, resolved) {
-  if (resolved && (resolved.die || resolved.base)) {
-    const kind = lineKind(it, resolved)
-    const need = kind === 'base' ? resolved.base : resolved.die
-    if (need && need.spec) return `${kind === 'base' ? 'Base: ' : 'Die: '}${need.spec}`
-    if (resolved.die && resolved.die.spec) return `Die: ${resolved.die.spec}`
-    if (resolved.base && resolved.base.spec) return `Base: ${resolved.base.spec}`
+// Build the family-grouped, die-before-base ordered render model shared by the
+// on-screen sheet and the PDF.
+function buildModel(items, lineSpec) {
+  const groups = []
+  const byFam = new Map()
+  for (const it of items) {
+    const f = it.family_name || '—'
+    if (!byFam.has(f)) { byFam.set(f, []); groups.push(f) }
+    byFam.get(f).push(it)
   }
-  const stored = (it.spec_text || '').trim()
-  if (stored) return stored
-  const composed = [it.color, it.size, it.top, it.sides].map(v => (v || '').trim()).filter(Boolean).join(' · ')
-  return composed || '—'
+  for (const f of groups) byFam.get(f).sort((a, b) => (isBaseSpec(lineSpec[a.id]) ? 1 : 0) - (isBaseSpec(lineSpec[b.id]) ? 1 : 0))
+  return { groups, byFam }
 }
-const isBaseSpec = (s) => /^base/i.test(String(s || '').trim())
+
+function parseCreatedBy(notes) {
+  const raw = notes || ''
+  const m = raw.match(/(?:^|·\s*)Created by (.+)$/)
+  const createdBy = m ? m[1].trim() : null
+  const prNotes = createdBy ? raw.replace(/\s*·?\s*Created by .+$/, '').trim() : raw
+  return { createdBy, prNotes }
+}
+
+// ── Real PDF (letter, jsPDF manual layout, single Helvetica face) ─────────────
+async function generatePRPdf(o, items, lineSpec) {
+  const JsPDF = await loadJsPDF()
+  const doc = new JsPDF({ unit: 'pt', format: 'letter' })   // 612 × 792 pt
+  const PW = 612, PH = 792, M = 54
+  const RIGHT = PW - M
+  const { createdBy, prNotes } = parseCreatedBy(o.notes)
+  const { groups, byFam } = buildModel(items, lineSpec)
+
+  let y = M
+  // Letterhead
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(20)
+  doc.text('SHEVCHENKO MONUMENTS LLC', M, y + 4)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110)
+  doc.text('Perth Amboy, New Jersey · Established 1919', M, y + 18)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(20)
+  doc.text('PURCHASE REQUEST', RIGHT, y + 2, { align: 'right' })
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(70)
+  doc.text(o.po_number || '', RIGHT, y + 16, { align: 'right' })
+  y += 30
+  doc.setDrawColor(20); doc.setLineWidth(1.4); doc.line(M, y, RIGHT, y)
+  y += 22
+
+  // Meta
+  const meta = [['Vendor', o.supplier_name || '—'], ['Date', fmtDate(o.placed_at)], ['Requested Delivery', fmtDate(o.supplier_eta)], ['Created By', createdBy || '—']]
+  let mx = M
+  for (const [lab, val] of meta) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(150)
+    doc.text(lab.toUpperCase(), mx, y)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(20)
+    doc.text(String(val), mx, y + 13)
+    mx += lab === 'Vendor' ? 150 : 130
+  }
+  y += 34
+
+  // Table columns
+  const famX = M, itemX = 168, qtyX = 432, notesX = 470
+  const itemW = qtyX - itemX - 12, notesW = RIGHT - notesX
+  const drawHeader = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(60)
+    doc.text('FAMILY NAME', famX, y); doc.text('ITEM', itemX, y)
+    doc.text('QTY', qtyX + 8, y, { align: 'center' }); doc.text('NOTES', notesX, y)
+    y += 6
+    doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(M, y, RIGHT, y)
+    y += 12
+  }
+  drawHeader()
+
+  const LH = 13
+  for (const fam of groups) {
+    const lines = byFam.get(fam)
+    lines.forEach((it, i) => {
+      const itemLines = doc.splitTextToSize(lineSpec[it.id] || '—', itemW)
+      const noteLines = it.notes ? doc.splitTextToSize(String(it.notes), notesW) : []
+      const rows = Math.max(itemLines.length, noteLines.length, 1)
+      const rowH = rows * LH + 8
+      if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
+      let ty = y + 4
+      if (i === 0) { doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(20); doc.text(fam, famX, ty + 8) }
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
+      itemLines.forEach((ln, k) => doc.text(ln, itemX, ty + 8 + k * LH))
+      doc.text(String(it.quantity ?? 1), qtyX + 8, ty + 8, { align: 'center' })
+      doc.setFontSize(9); doc.setTextColor(90)
+      noteLines.forEach((ln, k) => doc.text(ln, notesX, ty + 8 + k * LH))
+      y += rowH
+      doc.setDrawColor(225); doc.setLineWidth(0.6); doc.line(M, y, RIGHT, y)
+    })
+  }
+
+  // Total
+  y += 16
+  const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0)
+  doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(qtyX - 60, y - 8, RIGHT, y - 8)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
+  doc.text('Total pieces', qtyX - 12, y + 4, { align: 'right' })
+  doc.text(String(totalQty), qtyX + 8, y + 4, { align: 'center' })
+  y += 26
+
+  if (prNotes) {
+    const nl = doc.splitTextToSize(`Notes: ${prNotes}`, RIGHT - M)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(60)
+    nl.forEach((ln, k) => doc.text(ln, M, y + k * 13)); y += nl.length * 13 + 8
+  }
+
+  // Authorized
+  y = Math.max(y + 30, PH - M - 56)
+  doc.setDrawColor(20); doc.setLineWidth(0.8); doc.line(M, y, M + 240, y)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(140)
+  doc.text('AUTHORIZED BY', M, y + 14)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(20)
+  doc.text('Lionel P. Vargas', M + 96, y + 15)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(110)
+  doc.text(fmtDate(o.created_at || o.placed_at), M, y + 30)
+
+  doc.save(`${o.po_number || 'purchase-request'}.pdf`)
+}
 
 export default function StonePRPrint({ bulkOrderId, onClose }) {
   const [state, setState] = useState({ loading: true })
+  const [pdfBusy, setPdfBusy] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -65,27 +166,19 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
       if (!alive) return
       if (!r.ok) { setState({ loading: false, ok: false, error: r.error }); return }
       const items = r.items || []
-      // Load each linked order ONCE and resolve its die-need + base-need live.
-      const orderIds = [...new Set(items.map(i => i.order_id).filter(Boolean))]
-      const resolvedByOrder = {}
-      await Promise.all(orderIds.map(async (oid) => {
-        try {
-          const row = await getOrderById(oid)
-          if (!row) return
-          const order = rowToOrder(row, null, null)
-          const needs = resolveStoneNeeds([order])
-          resolvedByOrder[oid] = {
-            die: needs.find(n => n.kind !== 'base') || null,
-            base: needs.find(n => n.kind === 'base') || null,
-          }
-        } catch { /* leave unresolved → fallback path */ }
-      }))
-      const lineSpec = {}
-      for (const it of items) lineSpec[it.id] = resolveLineSpec(it, resolvedByOrder[it.order_id])
+      const { lineSpec } = await resolvePRLineSpecs(items)
       if (alive) setState({ loading: false, ok: true, order: r.order, items, lineSpec })
     })().catch(e => { if (alive) setState({ loading: false, ok: false, error: String(e?.message || e) }) })
     return () => { alive = false }
   }, [bulkOrderId])
+
+  const downloadPdf = async () => {
+    if (pdfBusy || !state.ok) return
+    setPdfBusy(true)
+    try { await generatePRPdf(state.order || {}, state.items || [], state.lineSpec || {}) }
+    catch (e) { window.alert(`Couldn’t make the PDF: ${e?.message || e}`) }
+    setPdfBusy(false)
+  }
 
   if (state.loading) return <div className="prp-overlay"><div className="prp-loading">Loading purchase request…</div></div>
   if (!state.ok) return (
@@ -97,23 +190,8 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
   const o = state.order || {}
   const items = state.items || []
   const lineSpec = state.lineSpec || {}
-  // createdBy was stored in notes as "… · Created by X". Split it back out.
-  const rawNotes = o.notes || ''
-  const m = rawNotes.match(/(?:^|·\s*)Created by (.+)$/)
-  const createdBy = m ? m[1].trim() : null
-  const prNotes = createdBy ? rawNotes.replace(/\s*·?\s*Created by .+$/, '').trim() : rawNotes
-
-  // Group lines by family (preserve first-seen order) so the family name reads once
-  // per group, prominently, with its piece(s) listed beneath.
-  const groups = []
-  const byFam = new Map()
-  for (const it of items) {
-    const f = it.family_name || '—'
-    if (!byFam.has(f)) { byFam.set(f, []); groups.push(f) }
-    byFam.get(f).push(it)
-  }
-  // Within a family, die line(s) before base line(s).
-  for (const f of groups) byFam.get(f).sort((a, b) => (isBaseSpec(lineSpec[a.id]) ? 1 : 0) - (isBaseSpec(lineSpec[b.id]) ? 1 : 0))
+  const { createdBy, prNotes } = parseCreatedBy(o.notes)
+  const { groups, byFam } = buildModel(items, lineSpec)
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0)
 
   return (
@@ -122,7 +200,10 @@ export default function StonePRPrint({ bulkOrderId, onClose }) {
       <div className="prp-shell" onClick={e => e.stopPropagation()}>
         <div className="prp-toolbar">
           <button type="button" className="prp-btn" onClick={onClose}>← Close</button>
-          <button type="button" className="prp-btn prp-btn-primary" onClick={() => window.print()}>Print</button>
+          <div className="prp-toolbar-r">
+            <button type="button" className="prp-btn" disabled={pdfBusy} onClick={downloadPdf}>{pdfBusy ? 'Building…' : 'Download PDF'}</button>
+            <button type="button" className="prp-btn prp-btn-primary" onClick={() => window.print()}>Print</button>
+          </div>
         </div>
 
         <div className="prp-sheet">
@@ -197,35 +278,39 @@ function Meta({ label, value, wide }) {
   )
 }
 
+// ONE typeface throughout: Helvetica/Arial. Letter-size sheet (8.5in = 816px @96dpi)
+// with @page letter + 0.75in margins for print.
 const PRP_CSS = `
-  .prp-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(20,18,14,0.5); display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 24px; }
+  .prp-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(20,18,14,0.5); display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 24px; font-family: Helvetica, Arial, sans-serif; }
   .prp-loading { color: #fff; margin: auto; }
-  .prp-shell { width: min(820px, 96vw); }
+  .prp-shell { width: min(816px, 96vw); }
   .prp-toolbar { display: flex; justify-content: space-between; margin-bottom: 12px; }
+  .prp-toolbar-r { display: flex; gap: 10px; }
   .prp-btn { font: inherit; font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #d8d2c4; background: #fff; color: #2a2a2a; cursor: pointer; }
+  .prp-btn:disabled { opacity: 0.5; cursor: default; }
   .prp-btn-primary { background: #1e2d3d; border-color: #1e2d3d; color: #fff; }
 
-  .prp-sheet { background: #fff; color: #1a1a1a; padding: 48px 52px; border-radius: 6px; font-family: Georgia, 'Times New Roman', serif; }
-  .prp-err { padding: 40px; text-align: center; color: #b3261e; font-family: sans-serif; }
+  .prp-sheet { background: #fff; color: #1a1a1a; padding: 0.75in; border-radius: 6px; font-family: Helvetica, Arial, sans-serif; }
+  .prp-err { padding: 40px; text-align: center; color: #b3261e; }
   .prp-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2.5px solid #1a1a1a; padding-bottom: 16px; margin-bottom: 22px; }
-  .prp-co { font-size: 23px; font-weight: 700; letter-spacing: 0.03em; }
-  .prp-co-sub { font-size: 12px; color: #555; margin-top: 4px; font-family: Arial, sans-serif; letter-spacing: 0.02em; }
+  .prp-co { font-size: 22px; font-weight: 700; letter-spacing: 0.02em; }
+  .prp-co-sub { font-size: 12px; color: #666; margin-top: 5px; letter-spacing: 0.01em; }
   .prp-doctype { text-align: right; }
-  .prp-doctype-main { font-size: 15px; font-weight: 700; letter-spacing: 0.12em; }
-  .prp-prnum { font-family: 'Courier New', monospace; font-size: 13px; color: #444; margin-top: 5px; letter-spacing: 0.04em; }
+  .prp-doctype-main { font-size: 14px; font-weight: 700; letter-spacing: 0.12em; }
+  .prp-prnum { font-size: 13px; color: #555; margin-top: 6px; letter-spacing: 0.03em; }
 
-  .prp-meta { display: flex; flex-wrap: wrap; gap: 12px 36px; margin-bottom: 26px; font-family: Arial, sans-serif; }
+  .prp-meta { display: flex; flex-wrap: wrap; gap: 14px 40px; margin-bottom: 26px; }
   .prp-metaitem-wide { flex: 1 1 100%; }
-  .prp-meta-l { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: #999; margin-bottom: 2px; }
+  .prp-meta-l { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: #999; margin-bottom: 3px; }
   .prp-meta-v { font-size: 14px; font-weight: 700; color: #1a1a1a; }
 
-  .prp-table { width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 13px; }
+  .prp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .prp-table th { text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.07em; color: #444; border-bottom: 2px solid #1a1a1a; padding: 8px 10px; }
-  .prp-table td { padding: 10px; border-bottom: 1px solid #e2e2e2; vertical-align: top; }
+  .prp-table td { padding: 11px 10px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
   .prp-fam-first td { border-top: 1px solid #cfcfcf; }
   .prp-table tbody tr:first-child td { border-top: none; }
   .prp-c-fam { font-weight: 700; font-size: 13.5px; white-space: nowrap; width: 22%; }
-  .prp-c-item { width: 56%; line-height: 1.45; }
+  .prp-c-item { width: 56%; line-height: 1.5; }
   .prp-c-qty { text-align: center; width: 50px; }
   .prp-c-notes { color: #555; font-size: 12px; }
   .prp-empty-row { text-align: center; color: #999; padding: 22px; }
@@ -233,18 +318,19 @@ const PRP_CSS = `
   .prp-table tfoot td { border-bottom: none; }
   .prp-table tfoot .prp-c-qty { border-top: 2px solid #1a1a1a; padding-top: 9px; font-weight: 700; }
 
-  .prp-notesblock { margin-top: 20px; font-family: Arial, sans-serif; font-size: 12.5px; color: #333; line-height: 1.5; }
+  .prp-notesblock { margin-top: 20px; font-size: 12.5px; color: #333; line-height: 1.5; }
   .prp-notesblock-l { font-weight: 700; }
 
   .prp-auth { margin-top: 56px; padding-top: 10px; border-top: 1px solid #1a1a1a; width: 320px; }
-  .prp-auth-row { display: flex; align-items: baseline; gap: 8px; font-family: Arial, sans-serif; }
+  .prp-auth-row { display: flex; align-items: baseline; gap: 8px; }
   .prp-auth-l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #888; }
-  .prp-auth-name { font-family: Georgia, serif; font-size: 16px; font-weight: 700; color: #1a1a1a; }
-  .prp-auth-date { font-family: Arial, sans-serif; font-size: 12px; color: #666; margin-top: 3px; }
+  .prp-auth-name { font-size: 17px; font-weight: 700; color: #1a1a1a; }
+  .prp-auth-date { font-size: 12px; color: #666; margin-top: 4px; }
 
-  .prp-footer { margin-top: 34px; text-align: center; font-family: Arial, sans-serif; font-size: 10px; color: #aaa; letter-spacing: 0.03em; }
+  .prp-footer { margin-top: 34px; text-align: center; font-size: 10px; color: #aaa; letter-spacing: 0.03em; }
 
   @media print {
+    @page { size: letter; margin: 0.75in; }
     .prp-overlay { position: static; background: #fff; padding: 0; display: block; }
     .prp-shell { width: 100%; }
     .prp-toolbar { display: none; }

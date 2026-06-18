@@ -7207,6 +7207,57 @@ export async function getBulkOrderWithItems(id) {
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+// ── Edit a PR's line items (add / update qty + wording override / remove) ─────
+// spec_text holds a MANUAL wording override only; the print view prefers it when
+// set, else resolves the spec live from the order. Inserts/updates strip spec_text
+// on a missing-column error so editing works pre-migration.
+export async function addBulkOrderItem(bulkOrderId, line = {}) {
+  try {
+    const row = {
+      bulk_order_id: bulkOrderId, kind: 'stone',
+      family_name: line.family_name?.trim() || null, order_id: line.order_id || null,
+      color: line.color?.trim() || null, size: line.size?.trim() || null,
+      top: line.top?.trim() || null, sides: line.sides?.trim() || null,
+      spec_text: line.spec_text?.trim() || null,
+      quantity: Math.max(1, Number(line.quantity) || 1), notes: line.notes?.trim() || null,
+    }
+    let res = await supabase.from('bulk_order_items').insert(row).select().single()
+    if (res.error && /spec_text|column|could not find/i.test(res.error.message)) {
+      const { spec_text, ...slim } = row   // eslint-disable-line no-unused-vars
+      res = await supabase.from('bulk_order_items').insert(slim).select().single()
+    }
+    if (res.error) return { ok: false, error: res.error.message }
+    return { ok: true, row: res.data }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+export async function updateBulkOrderItem(itemId, patch = {}) {
+  try {
+    const row = {}
+    if (patch.quantity !== undefined) row.quantity = Math.max(1, Number(patch.quantity) || 1)
+    if (patch.spec_text !== undefined) row.spec_text = (patch.spec_text || '').trim() || null
+    if (patch.family_name !== undefined) row.family_name = (patch.family_name || '').trim() || null
+    if (patch.notes !== undefined) row.notes = (patch.notes || '').trim() || null
+    if (Object.keys(row).length === 0) return { ok: true }
+    let { error } = await supabase.from('bulk_order_items').update(row).eq('id', itemId)
+    if (error && ('spec_text' in row) && /spec_text|column|could not find/i.test(error.message)) {
+      const { spec_text, ...rest } = row   // eslint-disable-line no-unused-vars
+      if (Object.keys(rest).length) ({ error } = await supabase.from('bulk_order_items').update(rest).eq('id', itemId))
+      else error = null
+    }
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+export async function deleteBulkOrderItem(itemId) {
+  try {
+    const { error } = await supabase.from('bulk_order_items').delete().eq('id', itemId)
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 export async function markBulkOrderStatus(id, status) {
   try {
     const { error } = await supabase.from('bulk_orders').update({ status }).eq('id', id)
