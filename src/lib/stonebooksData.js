@@ -7103,6 +7103,46 @@ export async function createSupplier(input = {}) {
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+// Update any supplier field (same RLS-safe path as createSupplier). Only the keys
+// present in `patch` are written, so a simple active-toggle is just { active }.
+export async function updateSupplier(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing supplier id.' }
+  const row = { updated_at: new Date().toISOString() }
+  if (patch.name !== undefined) { const n = (patch.name || '').trim(); if (!n) return { ok: false, error: 'Supplier name is required.' }; row.name = n }
+  if (patch.contact_name !== undefined) row.contact_name = (patch.contact_name || '').trim() || null
+  if (patch.phone !== undefined) row.phone = (patch.phone || '').trim() || null
+  if (patch.email !== undefined) row.email = (patch.email || '').trim() || null
+  if (patch.terms !== undefined) row.terms = (patch.terms || '').trim() || null
+  if (patch.lead_time_days !== undefined) row.lead_time_days = (patch.lead_time_days != null && patch.lead_time_days !== '') ? Number(patch.lead_time_days) : null
+  if (patch.kinds !== undefined) row.kinds = Array.isArray(patch.kinds) ? patch.kinds : []
+  if (patch.notes !== undefined) row.notes = (patch.notes || '').trim() || null
+  if (patch.active !== undefined) row.active = !!patch.active
+  try {
+    let { data, error } = await supabase.from('suppliers').update(row).eq('id', id).select().single()
+    // Older schemas may lack updated_at — retry without it.
+    if (error && /updated_at|column|could not find/i.test(error.message)) {
+      const { updated_at, ...rest } = row   // eslint-disable-line no-unused-vars
+      ;({ data, error } = await supabase.from('suppliers').update(rest).eq('id', id).select().single())
+    }
+    if (error) return { ok: false, error: error.message }
+    return { ok: true, row: data }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+// Hard-delete a supplier ONLY when no purchase request references it; otherwise tell
+// the caller to deactivate instead (so existing PRs never break).
+export async function deleteSupplier(id) {
+  if (!id) return { ok: false, error: 'Missing supplier id.' }
+  try {
+    const { count, error: cErr } = await supabase.from('bulk_orders').select('id', { count: 'exact', head: true }).eq('supplier_id', id)
+    if (cErr) return { ok: false, error: cErr.message }
+    if ((count || 0) > 0) return { ok: false, error: `In use by ${count} purchase request${count === 1 ? '' : 's'} — deactivate instead.`, inUse: true }
+    const { error } = await supabase.from('suppliers').delete().eq('id', id)
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 function _prNumber() {
   const d = new Date()
   const p = (n) => String(n).padStart(2, '0')

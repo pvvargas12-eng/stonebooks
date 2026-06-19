@@ -46,8 +46,8 @@ export default function StonePRBuilder({ onClose, onSaved, prefillLines = null, 
     return () => { alive = false }
   }, [loadSuppliers, kind])
 
-  // Suppliers for this PR kind (or kind-less suppliers, shown everywhere).
-  const kindSuppliers = suppliers.filter(s => !Array.isArray(s.kinds) || s.kinds.length === 0 || s.kinds.includes(K.supplierKind))
+  // Active suppliers for this PR kind (or kind-less suppliers, shown everywhere).
+  const kindSuppliers = suppliers.filter(s => s.active !== false && (!Array.isArray(s.kinds) || s.kinds.length === 0 || s.kinds.includes(K.supplierKind)))
   const supplier = suppliers.find(s => s.id === supplierId) || null
   const isStone = kind === 'stone'
 
