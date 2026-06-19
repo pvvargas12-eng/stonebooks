@@ -7564,7 +7564,20 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   const specBoxStart = y + 1
 
-  // ============================ STONE SPECS =============================
+  // Forward-only gate: orders signed BEFORE the deploy keep the legacy spec box so
+  // their already-issued contracts/estimates re-render identically (PDFs are
+  // on-demand — there's no cached blob, so the cutoff is what protects old signed
+  // contracts). Everything else (new estimates, unsigned contract previews, and
+  // orders signed from the cutoff onward) gets the new layout: NO spec box for
+  // stone / service / other (pricing becomes the first box); an INSCRIPTION
+  // PREVIEW for inscription-only orders so the customer can verify the carved
+  // wording. Pricing, totals, and line items are untouched either way.
+  const SPEC_BOX_LEGACY_CUTOFF = '2026-06-19'
+  const _signedDate = order.signedAt ? String(order.signedAt).slice(0, 10) : null
+  const keepLegacySpecBox = !!_signedDate && _signedDate < SPEC_BOX_LEGACY_CUTOFF
+
+  if (keepLegacySpecBox) {
+  // ===================== STONE SPECS (legacy, pre-cutoff) ===============
   // The Shape + FULL size ALWAYS prints, in feet-inches (the standard notation),
   // on EVERY contract/estimate — even for shapes not in the catalog (bronze,
   // mausoleum, repair, etc.). The size must never be omitted or truncated.
@@ -7639,6 +7652,25 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.text(inLines, M, y); y += 4.5 * inLines.length + 2
   }
   // else (other / no defined service) → no specs block at all (no empty block).
+  } else if (isInscriptionWork) {
+    // ===== NEW LAYOUT — INSCRIPTION PREVIEW (verify the carved wording) =====
+    // Inscriptions often skip a formal proof, so the customer verifies wording on
+    // the contract/estimate itself. Reuses the same carved-name / title / date
+    // helpers the PDF's "In Memory Of" block uses — display only, no new data.
+    ensure(28)
+    sectionHeader('Inscription — please verify the wording')
+    if (order.inscription?.familyName) kvRow('Family name', order.inscription.familyName)
+    for (const ln of pdfDeceasedLines(order)) {
+      if (ln.kind === 'reserved') { kvRow('Reserved', '— Reserved space —'); continue }
+      if (ln.kind === 'title') { kvRow('Title', ln.text); continue }
+      kvRow('Name as carved', ln.name)
+      if (ln.dates) kvRow('Dates', ln.dates)
+    }
+    const _epi = (order.inscription?.epitaph || '').trim()
+    if (_epi) kvRow('Epitaph', _epi)
+    y += 2
+  }
+  // else (new layout, non-inscription) → NO spec box; pricing is the first box.
 
   // ============================ DESIGN ===================================
   // Sprint 3r.2 — contracts no longer render the design reference (per
