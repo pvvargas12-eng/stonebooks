@@ -10604,6 +10604,15 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
   const next = () => safeStepIdx < steps.length - 1 && setStepIdx(safeStepIdx + 1)
   const back = () => safeStepIdx > 0 && setStepIdx(safeStepIdx - 1)
 
+  // Every step transition (Next / Back / progress-dot) must land at the TOP. The
+  // wizard scrolls inside .sm-body (overflow-y:auto), so reset THAT container's
+  // scrollTop — plus the window, defensively. Fires on every stepIdx change.
+  const bodyRef = useRef(null)
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0
+    if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0)
+  }, [stepIdx])
+
   // If selected services change in a way that shortens the wizard, snap stepIdx back
   useEffect(() => {
     if (stepIdx > steps.length - 1) setStepIdx(steps.length - 1)
@@ -10705,7 +10714,7 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
       </div>
 
       {/* BODY */}
-      <div className="sm-body">
+      <div className="sm-body" ref={bodyRef}>
         <step.Component
           order={order}
           update={update}
