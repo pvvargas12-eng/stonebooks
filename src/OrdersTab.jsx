@@ -144,6 +144,8 @@ function plusFiveMonthsISO(contractISO) {
 }
 // Timestamp/date column → 'YYYY-MM-DD' for the inline date input.
 function toDateInput(v) { return v ? String(v).slice(0, 10) : '' }
+// Today as YYYY-MM-DD. Call only in handlers (never during render — purity).
+function _todayInput() { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
 
 const humanizeKey = (s) => s == null ? '' : String(s).replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
@@ -641,6 +643,24 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     const r = await bulkUpdateOrders([o.id], patch)
     if (!r.ok) reload()
   }
+  // Contract-signed status — settable on EVERY order (order-level, not job-gated).
+  // Marking signed writes signed_at (today if no date yet, keeping an existing one)
+  // and advances a pre-contract pipeline status to 'contracted' (a real status
+  // change). Unsigning just clears signed_at; the status is left as-is.
+  const inlineSigned = async (o, signed) => {
+    const patch = {}
+    if (signed) {
+      const d = o.signed_at ? toDateInput(o.signed_at) : _todayInput()
+      patch.signed_at = `${d}T00:00:00`
+      if (['draft', 'scoping', 'quoted'].includes(o.status)) patch.status = 'contracted'
+      if (o._isNewStone && !o.target_completion_date) { const due = plusFiveMonthsISO(d); if (due) patch.target_completion_date = due }
+    } else {
+      patch.signed_at = null
+    }
+    patchOrderLocal(o.id, patch)
+    const r = await bulkUpdateOrders([o.id], patch)
+    if (!r.ok) reload()
+  }
   const inlineTotal = async (o, raw) => {
     const trimmed = String(raw ?? '').trim()
     const val = trimmed === '' ? null : Number(trimmed)
@@ -892,7 +912,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
                 onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
-                onInlineDate={inlineDate} onInlineTotal={inlineTotal} busy={false} />
+                onInlineDate={inlineDate} onInlineSigned={inlineSigned} onInlineTotal={inlineTotal} busy={false} />
             ))
           )}
 
@@ -985,7 +1005,7 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
   )
 }
 
-function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineTotal, busy }) {
+function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineSigned, onInlineTotal, busy }) {
   const hasJob = !!o._job
   const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
 
@@ -1057,8 +1077,14 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Cemetery */}
       <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>
 
-      {/* Contract date (signed_at) — commits on blur/Enter only, never per keystroke */}
-      <div onClick={e => e.stopPropagation()}>
+      {/* Contract (signed_at) — an explicit signed/not-signed status (settable on
+          EVERY order) + the exact date. Commits on blur/Enter only. */}
+      <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+        <select className="sb-tw-inline" value={o.signed_at ? 'signed' : 'unsigned'} disabled={busy}
+          onChange={e => onInlineSigned(o, e.target.value === 'signed')}>
+          <option value="unsigned">Not signed</option>
+          <option value="signed">Contract signed</option>
+        </select>
         <InlineDateField value={toDateInput(o.signed_at)} disabled={busy}
           onCommit={v => onInlineDate(o, 'signed_at', v)} ariaLabel="Contract date" />
       </div>
