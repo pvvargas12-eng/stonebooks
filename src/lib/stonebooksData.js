@@ -6956,6 +6956,41 @@ export async function addInventoryItem(item) {
   }
 }
 
+// Edit an existing yard row. Writes ONLY the fields present in `patch` (so a quick
+// location fix is just { location }). Text preserved verbatim — no normalization.
+// When status is moved off 'allocated', the allocation links are cleared so the row
+// is genuinely released. RLS-safe (same client); retries without updated_at /
+// allocated_order_id on older schemas.
+export async function updateInventoryItem(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing stock id.' }
+  const row = { updated_at: new Date().toISOString() }
+  const txt = (v) => (v == null ? null : (String(v).trim() || null))
+  if (patch.item_type !== undefined) row.item_type = patch.item_type || null
+  if (patch.color !== undefined) row.color = txt(patch.color)
+  if (patch.size !== undefined) row.size = txt(patch.size)
+  if (patch.top !== undefined) row.top = txt(patch.top)
+  if (patch.sides !== undefined) row.sides = txt(patch.sides)
+  if (patch.back !== undefined) row.back = txt(patch.back)
+  // Location is preserved verbatim apart from trimming the outer whitespace.
+  if (patch.location !== undefined) row.location = txt(patch.location)
+  if (patch.quantity !== undefined) row.quantity = Math.max(1, Number(patch.quantity) || 1)
+  if (patch.notes !== undefined) row.notes = txt(patch.notes)
+  if (patch.assigned_to !== undefined) row.assigned_to = txt(patch.assigned_to)
+  if (patch.status !== undefined) {
+    row.status = patch.status || 'available'
+    if (row.status !== 'allocated') { row.assigned_to = null; row.allocated_order_id = null }
+  }
+  try {
+    let { error } = await supabase.from('inventory_stock').update(row).eq('id', id)
+    if (error && /updated_at|allocated_order_id|could not find|column/i.test(error.message)) {
+      const { updated_at, allocated_order_id, ...rest } = row   // eslint-disable-line no-unused-vars
+      ;({ error } = await supabase.from('inventory_stock').update(rest).eq('id', id))
+    }
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 // Bulk-insert many stock items (the importer's confirm action). Chunked so a big
 // workbook doesn't hit a single-request limit; returns the count inserted so far
 // even on a mid-run error. Strips any importer-internal fields (_flags/_rawType).

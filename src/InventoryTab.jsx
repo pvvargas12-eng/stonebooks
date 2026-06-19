@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  getInventoryStock, addInventoryItem, releaseInventoryItem, INVENTORY_ITEM_TYPES, INVENTORY_STATUSES,
+  getInventoryStock, addInventoryItem, updateInventoryItem, releaseInventoryItem, INVENTORY_ITEM_TYPES, INVENTORY_STATUSES,
 } from './lib/stonebooksData'
 import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
@@ -44,6 +44,33 @@ export default function InventoryTab({ onOpenOrder }) {
   const [view, setView] = useState('dashboard')   // 'dashboard' | 'yard' | 'matches' | 'procurement'
   const [autoNewPR, setAutoNewPR] = useState(false)
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
+
+  // Inline row editing (fix locations + any field, fast, no modal).
+  const [editingId, setEditingId] = useState(null)
+  const [editDraft, setEditDraft] = useState(null)
+  const [editBusy, setEditBusy] = useState(false)
+  const [editErr, setEditErr] = useState(null)
+  const setE = (patch) => setEditDraft(d => ({ ...d, ...patch }))
+  const startEdit = (r) => {
+    setEditErr(null)
+    setEditDraft({
+      item_type: r.item_type || '', color: r.color || '', size: r.size || '', top: r.top || '',
+      sides: r.sides || '', back: r.back || '', location: r.location || '',
+      quantity: r.quantity ?? 1, status: r.status || 'available', assigned_to: r.assigned_to || '', notes: r.notes || '',
+    })
+    setEditingId(r.id)
+  }
+  const cancelEdit = () => { setEditingId(null); setEditDraft(null); setEditErr(null) }
+  const saveEdit = async () => {
+    if (editBusy || !editingId) return
+    setEditBusy(true); setEditErr(null)
+    const r = await updateInventoryItem(editingId, editDraft)
+    setEditBusy(false)
+    if (!r.ok) { setEditErr(r.error); return }
+    cancelEdit()
+    load()
+  }
+  const onEditKey = (e) => { if (e.key === 'Enter') { e.preventDefault(); saveEdit() } else if (e.key === 'Escape') cancelEdit() }
 
   // Await first (no synchronous setState in the mount effect); `loading` starts true.
   // Reloads after Add just swap the list in — no loading flash.
@@ -248,11 +275,14 @@ export default function InventoryTab({ onOpenOrder }) {
             <thead>
               <tr>
                 <th>Location</th><th>Type</th><th>Color</th><th>Size</th>
-                <th>Top</th><th>Sides</th><th className="inv-num">Qty</th><th>Status</th><th>Assigned to</th>
+                <th>Top</th><th>Sides</th><th className="inv-num">Qty</th><th>Status</th><th>Assigned to</th><th />
               </tr>
             </thead>
             <tbody>
-              {filtered.map(r => (
+              {filtered.map(r => (editingId === r.id ? (
+                <EditRows key={r.id} draft={editDraft} setE={setE} onKey={onEditKey}
+                  onSave={saveEdit} onCancel={cancelEdit} busy={editBusy} err={editErr} />
+              ) : (
                 <tr key={r.id}>
                   <td className="inv-loc">{r.location || '—'}</td>
                   <td>{r.item_type ? titleCase(r.item_type) : '—'}</td>
@@ -274,8 +304,11 @@ export default function InventoryTab({ onOpenOrder }) {
                       </span>
                     ) : ''}
                   </td>
+                  <td className="inv-actions-cell">
+                    <button type="button" className="inv-edit-btn" onClick={() => startEdit(r)}>Edit</button>
+                  </td>
                 </tr>
-              ))}
+              )))}
             </tbody>
           </table>
         </div>
@@ -285,7 +318,58 @@ export default function InventoryTab({ onOpenOrder }) {
   )
 }
 
+// Inline edit: the main row of inputs (aligned to the columns) + a sub-row for the
+// fields with no column (Back, Notes) and the save error. Location is verbatim.
+function EditRows({ draft, setE, onKey, onSave, onCancel, busy, err }) {
+  return (
+    <>
+      <tr className="inv-edit-row">
+        <td><input className="sb-input inv-ei" value={draft.location} onChange={e => setE({ location: e.target.value })} onKeyDown={onKey} autoFocus placeholder="Location" /></td>
+        <td><select className="sb-input inv-ei" value={draft.item_type} onChange={e => setE({ item_type: e.target.value })}><option value="">—</option>{INVENTORY_ITEM_TYPES.map(t => <option key={t} value={t}>{titleCase(t)}</option>)}</select></td>
+        <td><input className="sb-input inv-ei" value={draft.color} onChange={e => setE({ color: e.target.value })} onKeyDown={onKey} placeholder="Color" /></td>
+        <td><input className="sb-input inv-ei" value={draft.size} onChange={e => setE({ size: e.target.value })} onKeyDown={onKey} placeholder="Size" /></td>
+        <td><input className="sb-input inv-ei" value={draft.top} onChange={e => setE({ top: e.target.value })} onKeyDown={onKey} placeholder="Top" /></td>
+        <td><input className="sb-input inv-ei" value={draft.sides} onChange={e => setE({ sides: e.target.value })} onKeyDown={onKey} placeholder="Sides" /></td>
+        <td><input className="sb-input inv-ei inv-ei-qty" type="number" min="1" value={draft.quantity} onChange={e => setE({ quantity: e.target.value })} onKeyDown={onKey} /></td>
+        <td><select className="sb-input inv-ei" value={draft.status} onChange={e => setE({ status: e.target.value })}>{INVENTORY_STATUSES.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}</select></td>
+        <td><input className="sb-input inv-ei" value={draft.assigned_to} onChange={e => setE({ assigned_to: e.target.value })} onKeyDown={onKey} placeholder="Assigned to" /></td>
+        <td className="inv-actions-cell">
+          <div className="inv-edit-actions">
+            <button type="button" className="inv-save-btn" onClick={onSave} disabled={busy}>{busy ? '…' : 'Save'}</button>
+            <button type="button" className="inv-cancel-btn" onClick={onCancel}>Cancel</button>
+          </div>
+        </td>
+      </tr>
+      <tr className="inv-edit-subrow">
+        <td colSpan={10}>
+          <div className="inv-edit-sub">
+            <label className="inv-ei-f"><span>Back</span><input className="sb-input inv-ei" value={draft.back} onChange={e => setE({ back: e.target.value })} onKeyDown={onKey} placeholder="Back finish" /></label>
+            <label className="inv-ei-f inv-ei-f-grow"><span>Notes</span><input className="sb-input inv-ei" value={draft.notes} onChange={e => setE({ notes: e.target.value })} onKeyDown={onKey} placeholder="Notes" /></label>
+            {err && <span className="inv-edit-err">Couldn’t save: {err}</span>}
+          </div>
+        </td>
+      </tr>
+    </>
+  )
+}
+
 const INV_CSS = `
+  .inv-actions-cell { white-space: nowrap; text-align: right; }
+  .inv-edit-btn { background: none; border: 1px solid var(--sb-border, #d8d2c4); border-radius: 6px; font: inherit; font-size: 12px; font-weight: 600; color: #6b5d3a; padding: 3px 11px; cursor: pointer; }
+  .inv-edit-btn:hover { background: var(--sb-surface-muted, #faf8f3); }
+  .inv-edit-row td { background: #fbf7ec; padding: 6px 8px; vertical-align: middle; }
+  .inv-ei { font-size: 12.5px; padding: 5px 7px; width: 100%; min-width: 70px; }
+  .inv-ei-qty { text-align: center; min-width: 48px; }
+  .inv-edit-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .inv-save-btn { background: #1f7a3d; border: none; color: #fff; font: inherit; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+  .inv-save-btn:disabled { opacity: 0.5; cursor: default; }
+  .inv-cancel-btn { background: none; border: 1px solid var(--sb-border, #d8d2c4); font: inherit; font-size: 12px; font-weight: 600; color: #6b6256; padding: 5px 11px; border-radius: 6px; cursor: pointer; }
+  .inv-edit-subrow td { background: #fbf7ec; border-bottom: 2px solid var(--sb-border, #e4e0d4); padding: 0 8px 8px; }
+  .inv-edit-sub { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+  .inv-ei-f { display: flex; flex-direction: column; gap: 3px; }
+  .inv-ei-f-grow { flex: 1 1 240px; }
+  .inv-ei-f > span { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sb-text-muted, #8a7f6c); }
+  .inv-edit-err { color: #b3261e; font-size: 12.5px; font-weight: 600; align-self: center; }
   .inv-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
   .inv-head-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
   .inv-import-btn { white-space: nowrap; flex: 0 0 auto; }
