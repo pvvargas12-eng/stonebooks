@@ -47,6 +47,7 @@ const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`
 const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with CustomersTab
 import OrderDetail from './OrderDetail.jsx'
 import LeadsView from './components/LeadsView.jsx'
+import NewLeadModal from './components/NewLeadModal.jsx'
 import { LEAD_STATUSES } from './lib/leads'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -253,6 +254,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }
   const sortCaret = (key) => (sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓')
   const [search, setSearch] = useState('')
+  const [newLeadOpen, setNewLeadOpen] = useState(false)   // first-call lead intake modal
 
   // Selection + pagination
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -286,6 +288,16 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }, [archiveView, reloadNonce])
 
   const reload = useCallback(() => { invalidateCache('orders:board'); invalidateCache(JOBS_KEY); setReloadNonce(n => n + 1) }, [])
+
+  // Convert a lead → real order on the SAME row: promote out of the lead-status
+  // range (draft/scoping/quoted) to 'contracted' so it leaves Leads and lands in
+  // Orders, then open the full OrderForm pre-filled on that row. deriveStatus in
+  // OrderForm never downgrades, so saving keeps it ≥ contracted. No new record.
+  const convertLead = useCallback(async (id) => {
+    await bulkSetOrderStatus([id], 'contracted')
+    invalidateCache('orders:board')
+    onEditOrder?.(id)
+  }, [onEditOrder])
 
   // Consume an incoming queue selection from the Queues dashboard: clear other
   // filters, force the active view, apply the queue, and tell the parent it's
@@ -749,9 +761,19 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         <style>{TW_CSS}</style>
         <style>{VIEWTABS_CSS}</style>
         <div className="sb-crm-container">
-          <div className="sb-sales-toolbar">{viewTabs}{searchInput}</div>
-          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} onChanged={reload} />
+          <div className="sb-sales-toolbar">
+            {viewTabs}
+            <div className="sb-sales-toolbar-right">
+              {searchInput}
+              <button type="button" className="sb-crm-btn-primary" onClick={() => setNewLeadOpen(true)}>+ New Lead</button>
+            </div>
+          </div>
+          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} onConvert={convertLead} onChanged={reload} />
         </div>
+        {newLeadOpen && (
+          <NewLeadModal onClose={() => setNewLeadOpen(false)}
+            onSaved={() => { setNewLeadOpen(false); reload() }} />
+        )}
       </div>
     )
   }
@@ -1137,6 +1159,7 @@ const VIEWTABS_CSS = `
   .sb-sales-toolbar { display: flex; align-items: center; gap: 16px; justify-content: space-between; flex-wrap: wrap; margin-bottom: 18px; }
   .sb-sales-toolbar .sb-leads-viewtabs { margin-bottom: 0; }
   .sb-sales-toolbar .sb-crm-search { min-width: 240px; }
+  .sb-sales-toolbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 `
 
 const TW_CSS = `

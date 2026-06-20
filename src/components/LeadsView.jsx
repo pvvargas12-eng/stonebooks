@@ -32,7 +32,7 @@ const leadName = (o) => {
   return o.primary_lastname || '(no name)'
 }
 
-export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onChanged }) {
+export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onConvert, onChanged }) {
   const [todayISO, setTodayISO] = useState('')
   const [lastTouch, setLastTouch] = useState({})
   const [filter, setFilter] = useState('all')
@@ -150,6 +150,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCh
                     order={o}
                     onOpenDetail={onOpenDetail}
                     onOpenOrder={onOpenOrder}
+                    onConvert={onConvert}
                     onLogged={() => setTouchNonce(n => n + 1)}
                     onChanged={onChanged}
                   />
@@ -164,7 +165,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCh
 }
 
 // ── Inline expanded actions ──────────────────────────────────────────────────
-function LeadActions({ order, onOpenDetail, onOpenOrder, onLogged, onChanged }) {
+function LeadActions({ order, onOpenDetail, onOpenOrder, onConvert, onLogged, onChanged }) {
   const [type, setType] = useState('Call')
   const [note, setNote] = useState('')
   const [nextPreset, setNextPreset] = useState('')   // '' | '3'|'7'|'14' | 'pick'
@@ -246,8 +247,9 @@ function LeadActions({ order, onOpenDetail, onOpenOrder, onLogged, onChanged }) 
       </div>
 
       <div className="sb-leads-act-row">
+        <button type="button" className="sb-leads-act-convert" onClick={() => onConvert?.(order.id)}>Convert to Order →</button>
         <button type="button" className="sb-leads-act-link" onClick={() => onOpenDetail?.(order.id)}>Open order →</button>
-        <button type="button" className="sb-leads-act-won" onClick={() => onOpenOrder?.(order.id)}>Won → contract</button>
+        <button type="button" className="sb-leads-act-won" onClick={() => onOpenOrder?.(order.id)}>Won → contract (wizard)</button>
         {!order.lost_at && <button type="button" className="sb-leads-act-lost" onClick={() => setLostOpen(o => !o)}>Lost…</button>}
       </div>
 
@@ -306,6 +308,8 @@ const CSS = `
 .sb-leads-act-btn { border: 1px solid #9a7209; background: #9a7209; color: #fff; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
 .sb-leads-act-btn:disabled { opacity: 0.6; }
 .sb-leads-act-link { border: none; background: none; color: #9a7209; font-weight: 600; cursor: pointer; padding: 0; }
+.sb-leads-act-convert { border: 1px solid #0f1419; background: #0f1419; color: #fff; border-radius: 6px; padding: 5px 14px; font-weight: 700; cursor: pointer; }
+.sb-leads-act-convert:hover { background: #1e2d3d; border-color: #1e2d3d; }
 .sb-leads-act-won { border: 1px solid #2d7a4f; background: #fff; color: #2d7a4f; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
 .sb-leads-act-soon { font-size: 11.5px; color: #a8a294; font-style: italic; margin-left: auto; }
 .sb-leads-waitbtn { border: 1px solid #d8d2c4; background: #fff; color: #5d5d5a; border-radius: 14px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
