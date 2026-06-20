@@ -47,6 +47,7 @@ const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`
 const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with CustomersTab
 import OrderDetail from './OrderDetail.jsx'
 import LeadsView from './components/LeadsView.jsx'
+import { LEAD_STATUSES } from './lib/leads'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 50
@@ -101,6 +102,7 @@ const NEW_STONE_STAGES = [
   'production_started', 'production_completed', 'foundation_poured', 'ready_to_install', 'installed',
 ]
 const SORT_OPTIONS = [
+  { code: 'createdDesc',    label: 'Sort: Newest first' },
   { code: 'actionPriority', label: 'Sort: Action priority' },
   { code: 'lastActivity',   label: 'Sort: Recent activity' },
   { code: 'ageDesc',        label: 'Sort: Age oldest first' },
@@ -221,7 +223,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const [cemeteryFilter, setCemeteryFilter] = useState('')
   const [quickView, setQuickView] = useState(null)
   const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
-  const [sortKey, setSortKey] = useState('actionPriority')
+  const [sortKey, setSortKey] = useState('createdDesc')   // default: newest by creation date
   const [sortDir, setSortDir] = useState('asc')   // C1 — direction for click-sortable columns
   // Item 6 — draggable column widths. Each cols[] entry is a grid track; dragging
   // a header handle pins that column to a px width, others keep their fr ratio.
@@ -361,6 +363,13 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // ── Filter + sort ───────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = enriched
+    // Sub-tab partition (Orders · Leads · All). Leads are not a separate table —
+    // they're the draft/scoping/quoted statuses of the same orders set. The table
+    // surface renders the Orders tab (actual orders only) and the All tab
+    // (everything). A non-empty search ALWAYS shows the combined set so a name
+    // match surfaces whether it's a lead or an order, in every sub-tab.
+    const showAll = search.trim().length > 0 || view === 'all'
+    if (!showAll) list = list.filter(o => !LEAD_STATUSES.includes(o.status))
     // Workflow / permit queue (from a hub dashboard) — uses the shared classifiers.
     if (queueFilter) list = list.filter(o => {
       if (queueFilter.startsWith('permit_')) return permitBuckets(o, o._job).includes(queueFilter)
@@ -400,6 +409,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     ].filter(Boolean).join(' ').toLowerCase().includes(needle))
 
     const sorters = {
+      createdDesc: (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
       actionPriority: (a, b) => {
         const bd = recencyBand(a.updated_at) - recencyBand(b.updated_at); if (bd) return bd
         const sd = severityRank(a._pressure.blocker) - severityRank(b._pressure.blocker); if (sd) return sd
@@ -429,11 +439,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     // sorters carry their own fixed direction.
     if (CLICK_SORT_KEYS.has(sortKey) && sortDir === 'desc') sorted.reverse()
     return sorted
-  }, [enriched, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters, serviceTypeFilters,
+  }, [enriched, view, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters, serviceTypeFilters,
       cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search, sortKey, sortDir])
 
   // Reset page + clear stale selection when the filtered set changes shape.
-  useEffect(() => { setPage(0) }, [archiveView, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters,
+  useEffect(() => { setPage(0) }, [view, archiveView, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters,
     serviceTypeFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -714,23 +724,32 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const canArchive = archiveView !== 'archived'
   const canRestore = archiveView !== 'active'
 
-  // Large, prominent Orders | Leads toggle (shown in both views).
+  // Large, prominent Orders · Leads · All toggle (shown in every view).
   const viewTabs = (
     <div className="sb-leads-viewtabs">
-      {[['orders', 'Orders'], ['leads', 'Leads']].map(([code, label]) => (
+      {[['orders', 'Orders'], ['leads', 'Leads'], ['all', 'All']].map(([code, label]) => (
         <button key={code} type="button" className={`sb-leads-viewtab${view === code ? ' on' : ''}`} onClick={() => setView(code)}>{label}</button>
       ))}
     </div>
   )
+  // One search input, reused on the table surface and the Leads surface so the
+  // search scope is identical everywhere. A non-empty term forces the combined
+  // table (see `searching` below) so a match surfaces whether lead or order.
+  const searchInput = (
+    <input type="search" className="sb-crm-search" placeholder="Search name, order #, cemetery, rep…"
+      value={search} onChange={e => setSearch(e.target.value)} />
+  )
+  const searching = search.trim().length > 0
 
-  // Leads view — additive; the Orders UI below is untouched.
-  if (view === 'leads') {
+  // Leads view — additive; the Orders UI below is untouched. While searching, the
+  // combined table takes over (handled below) so search spans leads + orders.
+  if (view === 'leads' && !searching) {
     return (
       <div className="sb-crm-page">
         <style>{TW_CSS}</style>
         <style>{VIEWTABS_CSS}</style>
         <div className="sb-crm-container">
-          {viewTabs}
+          <div className="sb-sales-toolbar">{viewTabs}{searchInput}</div>
           <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} onChanged={reload} />
         </div>
       </div>
@@ -746,15 +765,15 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
         <header className="sb-crm-head">
           <div>
-            <h1 className="sb-crm-head-title">Orders</h1>
+            <h1 className="sb-crm-head-title">Sales</h1>
             <div className="sb-crm-head-count">
               <strong>{loading ? '—' : filtered.length}</strong> {filtered.length === 1 ? 'order' : 'orders'}
-              {archiveView !== 'active' && <> · {ARCHIVE_VIEWS.find(v => v.code === archiveView)?.label}</>}
+              {searching && <> · matching “{search.trim()}” (leads + orders)</>}
+              {!searching && archiveView !== 'active' && <> · {ARCHIVE_VIEWS.find(v => v.code === archiveView)?.label}</>}
             </div>
           </div>
           <div className="sb-crm-head-actions">
-            <input type="search" className="sb-crm-search" placeholder="Search name, order #, cemetery, rep…"
-              value={search} onChange={e => setSearch(e.target.value)} />
+            {searchInput}
             <select className="sb-crm-sort" value={sortKey} onChange={e => setSortKey(e.target.value)}>
               {SORT_OPTIONS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
             </select>
@@ -1115,6 +1134,9 @@ const VIEWTABS_CSS = `
   .sb-leads-viewtab { border: none; cursor: pointer; border-radius: 8px; padding: 10px 26px; font-size: 15px; font-weight: 700; background: transparent; color: #7a756a; transition: background 0.12s, color 0.12s; }
   .sb-leads-viewtab.on { background: #fff; color: #0f1419; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
   .sb-leads-viewtab:hover:not(.on) { color: #4a463f; }
+  .sb-sales-toolbar { display: flex; align-items: center; gap: 16px; justify-content: space-between; flex-wrap: wrap; margin-bottom: 18px; }
+  .sb-sales-toolbar .sb-leads-viewtabs { margin-bottom: 0; }
+  .sb-sales-toolbar .sb-crm-search { min-width: 240px; }
 `
 
 const TW_CSS = `

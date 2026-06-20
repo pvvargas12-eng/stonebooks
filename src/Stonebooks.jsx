@@ -206,7 +206,7 @@ function LoginScreen() {
 const NAV_PRIMARY = [
   { key: 'today',     label: 'Today' },
   { key: 'customers', label: 'Customers' },
-  { key: 'orders',    label: 'Orders' },
+  { key: 'orders',    label: 'Sales' },
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
   { key: 'scheduler', label: 'Scheduler' },
