@@ -30,6 +30,7 @@ import {
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
 } from './lib/stonebooksData'
+import { dimsFromWDT } from './lib/monumentCatalog'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -728,9 +729,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     { id: 'od-email', label: 'Email traffic' },
   ]
 
-  // Monument
-  const dims = [order.width_inches, order.depth_inches, order.thickness_inches, order.height_inches]
-    .filter(v => v != null && v !== '').map(v => `${v}"`).join(' × ')
+  // Monument die size — ALWAYS three values, L × W × H (feet-inches via the shared
+  // dimsFromWDT). L = width, W (front-to-back) = depth when set else thickness (custom
+  // dies store the front-to-back in thickness with depth null), H = height. Never a 4th.
+  const dims = dimsFromWDT({
+    w: order.width_inches,
+    d: order.depth_inches ?? order.thickness_inches,
+    t: order.height_inches,
+  })
   const baseSummary = !baseConfig.include ? 'Not included'
     : [humanize(baseConfig.sizeCode), baseConfig.heightCode ? `${baseConfig.heightCode}" tall` : null].filter(Boolean).join(' · ') || 'Included'
   const finish = [order.polish_level, humanize(order.sides)].filter(Boolean).join(' · ')

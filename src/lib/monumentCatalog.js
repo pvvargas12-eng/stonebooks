@@ -271,13 +271,18 @@ export const DIE_TOP_TRADE = {
 export const dimsFromWDT = (o) => [ftIn(o?.w), ftIn(o?.d), ftIn(o?.t)].filter(Boolean).join(' × ')
 export function dieSize3(order, shape) {
   const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
-  // Phase 3 — the die's TALL (3rd) dimension is canonically order.thickness (the
-  // wizard's "Height" input writes it there), but OrderForm writes the tall dim to
-  // order.height and leaves thickness null on a CUSTOM die. Read `thickness ?? height`
-  // so the 3rd dim never drops, regardless of which form built the order. LABEL ONLY:
-  // dieSize3 feeds buildDieSpec (a label); the face-area price math reads order.height
-  // directly in computeFormLineItems and is untouched here, so no total moves.
-  return dimsFromWDT({ w: std?.w ?? order.width, d: std?.d ?? order.depth, t: std?.t ?? order.thickness ?? order.height })
+  // A die is ALWAYS three explicit dims — L × W × H — never a collapsed pair, never a
+  // 4th. Standard sizes carry catalog w/d/t. Custom dies read the order columns:
+  // L = width, W (front-to-back) = thickness (depth is null on these orders; fall back
+  // to depth only if thickness is absent), H = height. The old `thickness ?? height`
+  // collapse (which dropped the real height) is removed — W and H stay distinct.
+  // LABEL ONLY: dieSize3 feeds buildDieSpec (a label); face-area pricing reads
+  // order.height directly in computeFormLineItems, so this change moves NO total.
+  return dimsFromWDT({
+    w: std?.w ?? order.width,
+    d: std?.d ?? order.thickness ?? order.depth,
+    t: std?.t ?? order.height,
+  })
 }
 // Shared top-shape resolver (Phase 6) — the SAME value the die line item AND the
 // contract's Stone-specifications block both render, so the two paths can't diverge

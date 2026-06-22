@@ -210,9 +210,10 @@ const BASE_SIDES_TRADE = {
 //   BASE = "F-I X F-I X F-I FINISH[, 2\" POL]"        or "Not included"
 function computeDieBaseTrade(order) {
   const o = order || {}
-  // All four dimension columns, nulls skipped — orders populate a varying 3 of
-  // the 4 (e.g. width/thickness/height with depth null) — F-I, joined " X ".
-  const dieDims = [o.width_inches, o.depth_inches, o.thickness_inches, o.height_inches]
+  // A die is ALWAYS three values — L × W × H, never four. L = width, W (front-to-back)
+  // = depth when set else thickness (custom dies store the front-to-back in thickness
+  // with depth null), H = height. Same formatter (F-I, joined " X ").
+  const dieDims = [o.width_inches, o.depth_inches ?? o.thickness_inches, o.height_inches]
     .map(inchesToFI).filter(Boolean).join(' X ')
   const dieShape = o.top_shape ? (TOP_SHAPE_TRADE[o.top_shape] || humanizeCode(o.top_shape).toUpperCase()) : null
   const dieSides = o.sides ? (DIE_SIDES_TRADE[o.sides] || humanizeCode(o.sides).toUpperCase()) : null
