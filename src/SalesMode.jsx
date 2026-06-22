@@ -23,7 +23,7 @@ import { supabase } from './lib/supabase'
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
   POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, dieSize3, dieTopLabel,
-  buildDieSpec, buildBaseSpec,
+  buildDieSpec, buildBaseSpec, displayGraniteColor,
 } from './lib/monumentCatalog'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
@@ -4092,7 +4092,7 @@ function DesignStep({ order, update }) {
               checked={matchColor}
               onChange={e => setMatchColor(e.target.checked)}
             />
-            <span>Also match my granite color ({GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || order.graniteColor})</span>
+            <span>Also match my granite color ({displayGraniteColor(order)})</span>
           </label>
         )}
       </Section>
@@ -7628,7 +7628,10 @@ export async function generateEstimatePDF(order, opts = {}) {
       ensure(40)
       sectionHeader('Stone specifications')
       kvRow('Shape', shapeLine)
-      if (color) kvRow('Granite color', `${color.label} (${getGraniteOrigin(color)})`)
+      // Show the row even for a custom color (catalog lookup misses) — the resolver
+      // returns the entered name ("Morning Rose"); named colors keep their origin suffix.
+      const colorName = displayGraniteColor(order)
+      if (colorName) kvRow('Granite color', color ? `${color.label} (${getGraniteOrigin(color)})` : colorName)
       // Phase 6 — Top shape uses the SAME dieTopLabel resolution as the die line item
       // (trade name → label), so the two paths can't show a different top shape.
       if (top) kvRow('Top shape', dieTopLabel(order))
@@ -8248,11 +8251,14 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const over = proofVersion?.metadata_overrides || {}
   const meta = (k) => (over[k] != null ? over[k] : snap[k])
   const liveOrder = opts.order || null
-  const liveColor = liveOrder ? (GRANITE_COLORS.find(g => g.code === liveOrder.granite_color)?.label || liveOrder.granite_color || null) : null
+  const liveColor = liveOrder ? displayGraniteColor(liveOrder) : null   // custom → entered name
   const liveCemetery = liveOrder?.cemetery?.name || liveOrder?.cemetery_name || null
   const liveFamily = liveOrder ? (liveOrder.primary_lastname || liveOrder.customer?.last_name || null) : null
   const familyName = meta('family_name') || liveFamily || meta('order_number') || liveOrder?.order_number || null
-  const colorLabel = meta('stone_color_label') || meta('stone_color') || liveColor || null
+  // LIVE-first (Paul's decision) so existing proofs with a baked "Custom" self-heal on
+  // re-open — matches how BASE already resolves (opts.base || meta). Falls back to the
+  // frozen snapshot only when there's no live order.
+  const colorLabel = liveColor || meta('stone_color_label') || meta('stone_color') || null
   const cemeteryName = meta('cemetery_name') || liveCemetery || null
 
   // YYYY-MM-DD(...T...) → M/D/YY (no new Date(); avoids TZ drift on the slice).
@@ -10965,7 +10971,7 @@ function ContinueLater({ order, update, onDepositLogged }) {
               <div>
                 <div className="sm-summary-lab">Granite</div>
                 <div className="sm-summary-val">
-                  {color ? `${color.label} (${getGraniteOrigin(color)})` : '—'}
+                  {color ? `${color.label} (${getGraniteOrigin(color)})` : (displayGraniteColor(order) || '—')}
                 </div>
               </div>
             </>

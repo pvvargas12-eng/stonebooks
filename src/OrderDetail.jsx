@@ -30,7 +30,7 @@ import {
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
 } from './lib/stonebooksData'
-import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, SHAPES } from './lib/monumentCatalog'
+import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -985,7 +985,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 <Field label="Shape" value={humanize(order.shape)} />
                 <Field label="Die size" value={dims} />
                 <Field label="Base size" value={baseSummary} />
-                <Field label="Stone color" value={humanize(order.granite_color)} />
+                <Field label="Stone color" value={displayGraniteColor(order) || humanize(order.granite_color)} />
                 <Field label="Finish / polish" value={finish} />
               </>
             )}
@@ -1003,7 +1003,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <div className="sb-od-reapproval">⚠ {reapprovalText}</div>
             )}
             <Field label="Shape" value={humanize(order.shape)} />
-            <Field label="Stone color" value={humanize(order.granite_color)} />
+            <Field label="Stone color" value={displayGraniteColor(order) || humanize(order.granite_color)} />
             <Field label="Die size" value={dims} />
             <Field label="Inscription" value={[insc.epitaph, insc.customNotes].filter(Boolean).join(' · ')} />
             {(() => {

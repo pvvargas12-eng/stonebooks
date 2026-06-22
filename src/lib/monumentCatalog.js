@@ -314,6 +314,18 @@ export function standardSizeCodeLabel(code) {
   return null
 }
 
+// SINGLE SOURCE for the granite color DISPLAY name. A custom color shows its
+// entered name (pricing.customColorName), never the generic "Custom"; named catalog
+// colors show their label. Handles camelCase (graniteColor / pricing) and snake_case
+// (granite_color) order shapes. DISPLAY only — the color premium derives from
+// pricing.customColorPct (the %), NOT this name, so this never affects a total.
+export function displayGraniteColor(order) {
+  if (!order) return null
+  const code = order.graniteColor ?? order.granite_color
+  if (code === 'custom') return (order.pricing?.customColorName || '').trim() || 'Custom color'
+  return GRANITE_COLORS.find(c => c.code === code)?.label || code || null
+}
+
 export function dieSize3(order, shape) {
   const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
   // A die is ALWAYS three explicit dims — L × W × H — never a collapsed pair, never a
@@ -342,7 +354,7 @@ export function buildDieSpec(order) {
   const size = dieSize3(order, shape)
   const topTrade = dieTopLabel(order)
   const polishCode = order.polishLevel || ''
-  const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || ''
+  const color = displayGraniteColor(order) || ''   // custom → its name, never dropped
   return [size, topTrade, polishCode, color].filter(Boolean).join(' · ')
 }
 

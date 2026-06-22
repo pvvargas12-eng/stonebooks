@@ -61,7 +61,7 @@ import {
   addJobEvent,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
-import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, SHAPES } from './lib/monumentCatalog'
+import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
 import RevisionThread from './components/RevisionThread'
 
 // ============================================================================
@@ -197,11 +197,6 @@ const DIE_SIDES_TRADE = {
   'saw-back':            'SB',
   'rough-back':          'RB',
 }
-const BASE_SIDES_TRADE = {
-  'polish-top-brp': 'POL TOP, BRP',
-  'all-polish':     'ALL POL',
-  'brp-sawback':    'BRP, SB',
-}
 
 // Trade-format DIE/BASE strings from an order's STRUCTURED fields. Used both to
 // freeze into the snapshot at upload AND at approval-sheet render time — so a
@@ -220,26 +215,16 @@ function computeDieBaseTrade(order) {
   const dieTail = [o.polish_level || null, dieSides].filter(Boolean).join(', ')
   const die = [dieHead, dieTail].filter(Boolean).join(', ') || null
 
+  // BASE — delegate to the canonical buildBaseSpec so the FULL finish wording
+  // (baseTextOverride verbatim, e.g. "3-6×1-4×0-10 POL TOP, SAWN BACK", or the
+  // composed size + top/back finish) shows on the approval sheet + snapshot. The
+  // old hand-rolled trade string dropped baseTextOverride/topFinish/finish. The DIE
+  // half above is unchanged.
   const bc = o.base_config || {}
   const baseShape = SHAPES.find(s => s.code === o.shape)
-  let base
-  if (!orderHasBase(bc, baseShape)) {
-    base = 'Not included'
-  } else {
-    let bw = null, bd = null
-    if (bc.sizeCode === 'custom') {
-      bw = inchesToFI(bc.width); bd = inchesToFI(bc.depth)
-    } else if (bc.sizeCode) {
-      const m = String(bc.sizeCode).replace(/^base-/, '').split('x')
-      if (m.length === 2) { bw = m[0]; bd = m[1] }   // already F-I in the code
-    }
-    const bh = inchesToFI(bc.heightCode)
-    const baseDims = [bw, bd, bh].filter(Boolean).join(' X ')
-    const fin = []
-    if (bc.sides) fin.push(BASE_SIDES_TRADE[bc.sides] || humanizeCode(bc.sides).toUpperCase())
-    if (bc.polishMargin2in) fin.push('2" POL')
-    base = [baseDims, fin.join(', ') || null].filter(Boolean).join(' ') || 'Included'
-  }
+  const base = orderHasBase(bc, baseShape)
+    ? (buildBaseSpec({ baseConfig: bc }) || 'Included')
+    : 'Not included'
   return { die, base }
 }
 
@@ -810,7 +795,9 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   })()
 
   // ── Stone spec card data ─────────────────────────────────────────────────
-  const graniteLabel = labelFor(GRANITE_LABELS, order.granite_color)
+  // Custom colors show their entered name ("Morning Rose"), never "Custom" — via the
+  // single-source resolver. Also baked into the snapshot (stone_color_label) below.
+  const graniteLabel = displayGraniteColor(order) || labelFor(GRANITE_LABELS, order.granite_color)
   const shapeLabel   = labelFor(SHAPE_LABELS,   order.shape)
   // Real catalog size label ("3-0 × 2-4") for the DIE chip — never the garbled
   // humanizeCode("die-3-0") → "Die 3 0". Falls back to humanize for unknown codes.

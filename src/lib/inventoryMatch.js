@@ -15,8 +15,8 @@
 // =============================================================================
 
 import {
-  SHAPES, GRANITE_COLORS, BASE_SIZES, BASE_HEIGHTS,
-  buildDieSpec, buildBaseSpec, dieSize3, dieTopLabel, dimsFromWDT, orderHasBase,
+  SHAPES, BASE_SIZES, BASE_HEIGHTS,
+  buildDieSpec, buildBaseSpec, dieSize3, dieTopLabel, dimsFromWDT, orderHasBase, displayGraniteColor,
 } from './monumentCatalog'
 
 // Map a monument shape code → an inventory item_type.
@@ -37,9 +37,8 @@ export function resolveStoneNeeds(orders) {
     if (!shape) continue
     const dieSpec = buildDieSpec(o)
     if (!dieSpec) continue
-    const color = GRANITE_COLORS.find(c => c.code === o.graniteColor)
     const family = o.family || o.orderNumber || 'Order'
-    const colorLabel = color?.label || o.graniteColor || null
+    const colorLabel = displayGraniteColor(o)   // custom → entered name, never "Custom"/blank
 
     needs.push({
       key: `${o.id}:stone`,
