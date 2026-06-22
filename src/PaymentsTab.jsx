@@ -24,6 +24,7 @@ import {
   fmtUSD, fmtDate, customerName, getCurrentStaffName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
 } from './lib/stonebooksData'
+import { ReceiptActions, rowToOrder } from './SalesMode'
 
 // Customer-payment methods + method-specific reference label.
 const IN_METHODS = [
@@ -480,6 +481,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [confirm, setConfirm] = useState(false)
+  const [saved, setSaved] = useState(null)        // { payment, receiptOrder } → post-save receipt offer
 
   const matches = useMemo(() => {
     const needle = orderSearch.trim().toLowerCase()
@@ -500,14 +502,30 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
     const res = await recordOrderPayment(pick.id, { amount: amt, method, ref: ref.trim() || null, receivedAt: date, createdBy })
     setBusy(false)
     if (!res.ok) { setError(res.error || 'Could not record the payment.'); setConfirm(false); return }
-    onLogged()
+    // ⭐ Keep the modal open and offer Print + Email + Download right after save.
+    // Build the receipt order WITH the new payment appended so the receipt's
+    // running totals are correct (pick is the pre-save row).
+    const withNew = [...(Array.isArray(pick.payments) ? pick.payments : []), res.payment]
+    const receiptOrder = rowToOrder({ ...pick, payments: withNew }, pick.customer, undefined)
+    setSaved({ payment: res.payment, receiptOrder })
   }
 
   return (
     <div className="sb-pay-backdrop" onClick={() => { if (!busy) onClose() }}>
       <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Log incoming payment" onClick={e => e.stopPropagation()}>
-        <h3 className="sb-pay-modal-title">Log an incoming payment</h3>
+        <h3 className="sb-pay-modal-title">{saved ? 'Payment recorded' : 'Log an incoming payment'}</h3>
 
+        {saved ? (
+          <>
+            <div className="sb-pay-confirm-note" style={{ background: '#e6f4ec', borderColor: '#2d7a4f', color: '#2d7a4f' }}>
+              Recorded {fmtUSD(Number(saved.payment.amount) || 0)} ({inMethodLabel(saved.payment.method)}){pick ? ` against ${orderName(pick)}` : ''}.
+            </div>
+            <ReceiptActions order={saved.receiptOrder} payment={saved.payment} />
+            <div className="sb-pay-modal-actions">
+              <button type="button" className="sb-pay-confirm" onClick={onLogged}>Done</button>
+            </div>
+          </>
+        ) : (<>
         {!pick ? (
           <div className="sb-pay-field">
             <label>Order</label>
@@ -566,6 +584,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
             {busy ? 'Recording…' : confirm ? 'Confirm — record payment' : 'Log payment'}
           </button>
         </div>
+        </>)}
       </div>
     </div>
   )

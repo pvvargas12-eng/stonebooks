@@ -22,6 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
+  updateOrderPayment, voidOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
   createApprovalLink, getApprovalLinksForOrder, revokeApprovalLink,
@@ -39,7 +40,7 @@ import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
 import { TEAM_ROSTER } from './lib/team'
-import { generateContractPDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
+import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions } from './SalesMode'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 const humanize = (s) =>
@@ -164,6 +165,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
+  const [lastReceiptPayment, setLastReceiptPayment] = useState(null)  // just-saved payment → post-save receipt offer
+  const [editPay, setEditPay] = useState(null)        // { id, amount, method, receivedAt, ref } inline editor
+  const [payRowBusy, setPayRowBusy] = useState(null)  // payment id mid edit/void
+  const [payRowErr, setPayRowErr] = useState(null)
   // Customer Profile sheet
   const [profileOpen, setProfileOpen] = useState(false)
   // D2 — permanent delete (archived only)
@@ -643,6 +648,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!res.ok) { setPayModal(m => ({ ...m, busy: false, confirm: false, error: res.error || 'Could not record the payment.' })); return }
     const method = payModal.method
     setPayModal(null)
+    if (res.payment) setLastReceiptPayment(res.payment)   // ⭐ offer Print + Email right after save
     await refreshOrder()
     await logOrderActivity(orderId, {
       type: 'activity',
@@ -651,6 +657,35 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     })
     refreshActivity()
     setActionNote(`Payment of ${fmtUSD(amount)} recorded.`)
+  }
+
+  // ── Edit / void an existing payment (incl. locked amount — NO edit-trail) ───
+  const startEditPay = (p) => {
+    setPayRowErr(null)
+    setEditPay({ id: p.id, amount: String(p.amount ?? ''), method: p.method || 'check', receivedAt: (p.receivedAt || p.createdAt || '').slice(0, 10), ref: p.ref || '' })
+  }
+  const saveEditPay = async () => {
+    if (!editPay) return
+    setPayRowBusy(editPay.id); setPayRowErr(null)
+    const res = await updateOrderPayment(orderId, editPay.id, {
+      amount: Number(editPay.amount), method: editPay.method,
+      receivedAt: editPay.receivedAt || null, ref: editPay.ref.trim() || null,
+    })
+    setPayRowBusy(null)
+    if (!res.ok) { setPayRowErr(res.error || 'Could not save the edit.'); return }
+    setEditPay(null)
+    await refreshOrder()
+  }
+  const voidPay = async (p) => {
+    const reason = window.prompt('Void this payment? Enter a reason (kept for the record):')
+    if (reason == null) return
+    if (!reason.trim()) { setPayRowErr('A reason is required to void a payment.'); return }
+    setPayRowBusy(p.id); setPayRowErr(null)
+    const actor = await getCurrentStaffName().catch(() => null)
+    const res = await voidOrderPayment(orderId, p.id, { reason: reason.trim(), actor })
+    setPayRowBusy(null)
+    if (!res.ok) { setPayRowErr(res.error || 'Could not void the payment.'); return }
+    await refreshOrder()
   }
 
   if (loading) {
@@ -690,19 +725,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     customerName(cust) || '—'
   const primaryDeceased = deceasedName(deceased[0])
 
-  // Payments (read-only) — non-voided, sorted by createdAt; fall back to legacy
-  // deposit/balance columns when the payments[] array is empty.
-  const payments = (() => {
-    const arr = Array.isArray(order.payments) ? order.payments.filter(p => p && !p.voided) : []
-    if (arr.length) {
-      return [...arr].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
-        .map(p => ({ amount: p.amount, method: p.method, at: p.receivedAt || p.createdAt, locked: p.locked ?? true }))
-    }
-    const out = []
-    if (order.deposit_amount != null) out.push({ amount: order.deposit_amount, method: order.deposit_method, at: order.deposit_received_at, locked: true })
-    if (order.balance_amount != null) out.push({ amount: order.balance_amount, method: order.balance_method, at: order.balance_received_at, locked: true })
-    return out
-  })()
+
+  // Receipt needs the camelCase wizard shape — adapt the raw row via the canonical
+  // rowToOrder (real fields only; no faked mapping). Raw non-voided payments power
+  // the editable history + per-row receipts.
+  const receiptOrder = rowToOrder(order, order.customer, order.cemetery)
+  const rawPayments = (Array.isArray(order.payments) ? order.payments.filter(p => p && !p.voided) : [])
+    .slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
 
   // Address blocks
   const custAddr = [cust.address_line1, cust.address_line2, [cust.city, cust.state, cust.zip].filter(Boolean).join(', ')].filter(Boolean)
@@ -1095,12 +1124,50 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           <Section id="od-financial" title="Financial">
             <Field label="Contract total" value={total > 0 ? fmtUSD(total) : null} />
             <Field label="Collected" value={fmtUSD(paid)} />
-            <Field label="Payments made" value={payments.length
-              ? payments.map((p, i) => (
-                <div key={i}>{fmtUSD(p.amount)} · {humanize(p.method) || '—'}{p.at ? ` · ${fmtDate(p.at)}` : ''}{p.locked ? '' : ' (draft)'}</div>
-              )) : null} />
             <Field label="Balance due" value={fmtUSD(balance)} />
-            <div className="sb-od-inline-actions">
+
+            {/* ⭐ Just-saved payment — Print + Email + Download right after save. */}
+            {lastReceiptPayment && (
+              <div style={{ margin: '8px 0', padding: '10px 12px', background: '#f1f7f2', border: '1px solid #cfe6d4', borderRadius: 8 }}>
+                <div className="sb-od-field-label" style={{ color: '#2d7a4f' }}>Payment recorded — receipt</div>
+                <ReceiptActions order={receiptOrder} payment={lastReceiptPayment} />
+                <button type="button" className="sb-od-link" onClick={() => setLastReceiptPayment(null)}>Dismiss</button>
+              </div>
+            )}
+
+            {/* Editable payment history — edit ANY field incl. locked amount (no trail); void; per-row receipt. */}
+            <div style={{ marginTop: 6 }}>
+              <div className="sb-od-field-label">Payments made</div>
+              {rawPayments.length === 0 && <div className="sb-od-empty-inline">No payments yet.</div>}
+              {rawPayments.map(p => (editPay?.id === p.id ? (
+                <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '8px 0', borderTop: '1px solid #f0ece1' }}>
+                  <input type="number" className="sb-od-note-input" value={editPay.amount} onChange={e => setEditPay(s => ({ ...s, amount: e.target.value }))} placeholder="Amount" />
+                  <select className="sb-od-note-input" value={editPay.method} onChange={e => setEditPay(s => ({ ...s, method: e.target.value }))}>
+                    {PAY_METHODS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+                  </select>
+                  <input type="date" className="sb-od-note-input" value={editPay.receivedAt} onChange={e => setEditPay(s => ({ ...s, receivedAt: e.target.value }))} />
+                  <input type="text" className="sb-od-note-input" value={editPay.ref} onChange={e => setEditPay(s => ({ ...s, ref: e.target.value }))} placeholder={editPay.method === 'zelle' ? 'Zelle confirmation #' : 'Reference / check #'} />
+                  <div className="sb-od-inline-actions" style={{ gridColumn: '1 / -1' }}>
+                    <button type="button" className="sb-od-btn sb-od-btn-primary" disabled={payRowBusy === p.id} onClick={saveEditPay}>{payRowBusy === p.id ? 'Saving…' : 'Save'}</button>
+                    <button type="button" className="sb-od-link" onClick={() => setEditPay(null)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div key={p.id} style={{ padding: '8px 0', borderTop: '1px solid #f0ece1' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <span>{fmtUSD(p.amount)} · {humanize(p.method) || '—'}{p.receivedAt ? ` · ${fmtDate(p.receivedAt)}` : ''}{p.ref ? ` · #${p.ref}` : ''}{p.locked ? '' : ' (draft)'}</span>
+                    <span className="sb-od-inline-actions">
+                      <button type="button" className="sb-od-link" onClick={() => startEditPay(p)}>Edit</button>
+                      <button type="button" className="sb-od-link" onClick={() => voidPay(p)}>Void</button>
+                    </span>
+                  </div>
+                  <ReceiptActions order={receiptOrder} payment={p} />
+                </div>
+              )))}
+              {payRowErr && <div className="sb-msg sb-msg-err" style={{ marginTop: 6 }}>{payRowErr}</div>}
+            </div>
+
+            <div className="sb-od-inline-actions" style={{ marginTop: 8 }}>
               <button type="button" className="sb-od-link" onClick={handleOpenContract}>Open contract PDF</button>
             </div>
 

@@ -29,7 +29,7 @@ import {
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -8531,7 +8531,8 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
 // Sprint 3j — Receipt PDF. Sprint M2 Phase 2: takes a payment object from
 // order.payments[] (was paymentType 'deposit'|'balance'). Renders that single
 // payment's receipt; running totals sum the whole non-voided payments[] array.
-async function generateReceiptPDF(order, payment, opts = {}) {
+// eslint-disable-next-line react-refresh/only-export-components
+export async function generateReceiptPDF(order, payment, opts = {}) {
   // Phase 4 — defensive guard. ReceiptActions UI is gated to hide receipts on
   // voided payments, but if generateReceiptPDF is somehow called with a voided
   // payment (stale reference, future agent call), fail loudly via the existing
@@ -8613,7 +8614,10 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   doc.setTextColor(...GREY)
   doc.text(`${COMPANY_INFO.address} · ${COMPANY_INFO.city}`, M, y + 4)
   y += 4
-  doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.email}`, M, y + 4)
+  // Phone parenthesized for the customer-facing receipt: (732) 442-1286.
+  const _dg = String(COMPANY_INFO.phone).replace(/\D/g, '')
+  const prettyPhone = _dg.length === 10 ? `(${_dg.slice(0, 3)}) ${_dg.slice(3, 6)}-${_dg.slice(6)}` : COMPANY_INFO.phone
+  doc.text(`${prettyPhone} · ${COMPANY_INFO.email}`, M, y + 4)
   y += 6
 
   doc.setDrawColor(...GOLD)
@@ -8636,7 +8640,12 @@ async function generateReceiptPDF(order, payment, opts = {}) {
 
   doc.setFontSize(9)
   doc.text(`For Contract #${order.orderNumber || 'DRAFT'}${order.signedAt ? ` (signed ${fmtDate(order.signedAt)})` : ''}`, M, y)
-  y += 8
+  y += 5
+  // Deceased line — the memorial this payment is for (real names only; skip if none).
+  const _deceasedNames = (Array.isArray(order.deceased) ? order.deceased : [])
+    .map(d => [d.firstName, d.lastName].filter(Boolean).join(' ').trim()).filter(Boolean).join(', ')
+  if (_deceasedNames) { doc.setFontSize(9); doc.setTextColor(...GREY); doc.text(`In memory of: ${_deceasedNames}`, M, y); doc.setTextColor(...TEXT); y += 5 }
+  y += 3
 
   // ============================ CUSTOMER ================================
   doc.setFont('helvetica', 'bold')
@@ -8710,6 +8719,7 @@ async function generateReceiptPDF(order, payment, opts = {}) {
     ['Method', methodLabels[paymentMethod] || paymentMethod || '—'],
     ['Reference', paymentRef || '—'],
     ['Date received', fmtDate(paymentDate)],
+    ['Received by', payment?.createdBy || '—'],
   ]
   // Sprint 3u Part D — reserve the whole payment-details table at once.
   ensure(rows.length * 5 + 8)
@@ -8803,7 +8813,7 @@ async function generateReceiptPDF(order, payment, opts = {}) {
   doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.2)
   doc.line(M, yF - 3, W - M, yF - 3)
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...GREY)
-  doc.text(`${COMPANY_INFO.legalName} · ${COMPANY_INFO.phone}`, M, yF)
+  doc.text(`${COMPANY_INFO.legalName} · ${prettyPhone}`, M, yF)
   doc.text(`Page 1`, W - M, yF, { align: 'right' })
   doc.text(`Receipt #${receiptNo}`, W / 2, yF, { align: 'center' })
 
@@ -11413,10 +11423,11 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
     }
   }
 
-  // Phase 2.1 — Edit on a LOCKED payment requires confirmation; the row stays
-  // collapsed/locked-looking until the user confirms.
+  // Paul's locked decision — edit ANY field incl. amount even when locked, NO
+  // edit-trail and NO unlock dance: open the editor directly in place. The payment
+  // stays locked so `collected` (and the balance everywhere) reflects edits live.
   const handleEditClick = (paymentId) => {
-    setConfirmModal({ type: 'edit', paymentId })
+    setEditingId(paymentId)
   }
   const handleEditConfirm = () => {
     if (!confirmModal) return
@@ -11598,9 +11609,10 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
 
 // Sprint 3j — Receipt action toolbar (Preview / Download / Email / Print).
 // Sprint M2 Phase 2: takes a specific payment object (was paymentType).
-function ReceiptActions({ order, payment }) {
+export function ReceiptActions({ order, payment }) {
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
+  const [sent, setSent] = useState(false)
   const [previewUrl, setPreviewUrl] = useState(null)
   const [previewFilename, setPreviewFilename] = useState('')
 
@@ -11632,24 +11644,27 @@ function ReceiptActions({ order, payment }) {
       if (w) { setTimeout(() => { try { w.print() } catch {} }, 500) }
     } catch (e) { setErr(e.message || 'Print failed') } finally { setBusy(null) }
   }
+  // REAL send through the shop Gmail (sendShopEmail) with the receipt PDF attached
+  // as base64 — not mailto. Surfaces the true send error if the backend isn't ready.
   const handleEmail = async () => {
-    setBusy('email'); setErr(null)
+    setBusy('email'); setErr(null); setSent(false)
     try {
-      const { doc, filename } = await buildDoc(); doc.save(filename)
       const to = order.customer?.email || ''
+      if (!to) { setErr('No customer email on file for this order.'); return }
+      const { doc, filename } = await buildDoc()
+      const contentBase64 = (doc.output('datauristring').split('base64,')[1]) || ''
       const firstName = order.customer?.firstName || 'there'
       const orderNum = order.orderNumber || 'DRAFT'
-      const repName = order.salesRep || 'the Shevchenko team'
       const subject = `Payment receipt — ${orderNum}`
-      const body = [
-        `Hello ${firstName},`, '',
-        `Attached is your payment receipt for order ${orderNum} — file: ${filename}`,
-        '',
-        `Thank you for your business.`,
-        '',
-        `— ${repName}`, `Shevchenko Monuments`, `732-442-1286`,
-      ].join('\n')
-      window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+      const text = `Hello ${firstName},\n\nAttached is your payment receipt for order ${orderNum}.\n\nThank you for your business.`
+      const html = `<p>Hello ${firstName},</p><p>Attached is your payment receipt for order ${orderNum}.</p><p>Thank you for your business.</p>`
+      const res = await sendShopEmail({
+        to, subject, text, html,
+        attachments: [{ filename, contentBase64, contentType: 'application/pdf' }],
+        orderId: order.id || null, customerId: order.customer?.id || null,
+      })
+      if (res?.ok) setSent(true)
+      else setErr(res?.error || 'Email send failed.')
     } catch (e) { setErr(e.message || 'Email failed') } finally { setBusy(null) }
   }
   const closePreview = () => {
@@ -11677,6 +11692,7 @@ function ReceiptActions({ order, payment }) {
         </button>
       </div>
       {err && <div className="sm-pdf-err">⚠ {err}</div>}
+      {sent && <div className="sm-helper" style={{ color: '#2d7a4f', marginTop: 6 }}>Receipt emailed to {order.customer?.email}.</div>}
 
       {previewUrl && (
         <div className="sm-pdf-preview-overlay" onClick={closePreview}>

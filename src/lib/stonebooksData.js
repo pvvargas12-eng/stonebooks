@@ -1374,6 +1374,86 @@ export async function recordOrderPayment(orderId, input = {}) {
   return { ok: true, payment, paid: lockedSum, balance: Math.max(0, grand - Math.round(lockedSum)) }
 }
 
+// Shared: from a payments[] array + the order row, derive the legacy deposit_/
+// balance_ mirror columns (first two locked non-voided, matches orderToRow) AND a
+// FULLY-REACTIVE status (flip to paid_in_full when the locked non-voided sum meets
+// the grand total; revert to the prior status when an edit/void drops it below).
+// Returns the column patch plus _paid/_balance for the caller's response.
+function _paymentsColumnPatch(payments, row) {
+  const lockedNV = payments.filter(p => p.locked && !p.voided)
+  const p0 = lockedNV[0] || null, p1 = lockedNV[1] || null
+  const grand = rowGrandTotal(row)
+  const lockedSum = lockedNV.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  const fullyPaid = grand > 0 && Math.round(lockedSum) >= grand
+  let status = row.status
+  let statusBefore = row.status_before_paid_in_full
+  if (fullyPaid && status !== 'paid_in_full' && status !== 'closed') {
+    statusBefore = status; status = 'paid_in_full'
+  } else if (!fullyPaid && status === 'paid_in_full') {
+    status = statusBefore || 'contracted'; statusBefore = null   // reactive revert on edit/void
+  } else if (status !== 'paid_in_full' && statusBefore) {
+    statusBefore = null   // clear a stale snapshot
+  }
+  return {
+    payments,
+    deposit_amount: p0 ? p0.amount : null, deposit_method: p0 ? p0.method : null,
+    deposit_ref: p0 ? p0.ref : null, deposit_received_at: p0 ? p0.receivedAt : null,
+    balance_amount: p1 ? p1.amount : null, balance_method: p1 ? p1.method : null,
+    balance_ref: p1 ? p1.ref : null, balance_received_at: p1 ? p1.receivedAt : null,
+    status, status_before_paid_in_full: statusBefore,
+    _paid: lockedSum, _balance: Math.max(0, grand - Math.round(lockedSum)),
+  }
+}
+
+// Edit ANY field on an existing payment (incl. amount, even when locked) — NO
+// edit-trail (Paul's explicit choice). Reuses the payments[] array + the same
+// legacy mirror + reactive status as recordOrderPayment; balance everywhere stays
+// derived from the live sum (no stored-balance drift). Whitelisted fields only.
+export async function updateOrderPayment(orderId, paymentId, patch = {}) {
+  if (!orderId || !paymentId) return { ok: false, error: 'Missing order or payment id' }
+  const { data: row, error } = await supabase.from('orders').select('*').eq('id', orderId).single()
+  if (error || !row) return { ok: false, error: error?.message || 'Order not found' }
+  const existing = Array.isArray(row.payments) ? row.payments : []
+  if (!existing.some(p => p.id === paymentId)) return { ok: false, error: 'Payment not found on this order' }
+  const allowed = {}
+  for (const k of ['amount', 'method', 'ref', 'receivedAt', 'note']) if (k in patch) allowed[k] = patch[k]
+  if ('amount' in allowed) {
+    const a = Number(allowed.amount)
+    if (!Number.isFinite(a) || a <= 0) return { ok: false, error: 'Amount must be greater than zero.' }
+    allowed.amount = a
+  }
+  const payments = existing.map(p => p.id === paymentId ? { ...p, ...allowed } : p)
+  const { _paid, _balance, ...colPatch } = _paymentsColumnPatch(payments, row)
+  const nowIso = new Date().toISOString()
+  let q = supabase.from('orders').update({ ...colPatch, updated_at: nowIso }).eq('id', orderId)
+  if (row.updated_at != null) q = q.eq('updated_at', row.updated_at)
+  const { data: updated, error: upErr } = await q.select('id')
+  if (upErr) return { ok: false, error: upErr.message }
+  if (!updated || updated.length === 0) return { ok: false, error: 'This order changed while you were editing the payment. Reopen and try again.' }
+  return { ok: true, paid: _paid, balance: _balance }
+}
+
+// Void (soft-delete) a payment — keeps it in payments[] for history; drops it from
+// every live sum. Reuses the same mirror + reactive status path.
+export async function voidOrderPayment(orderId, paymentId, { reason, actor } = {}) {
+  if (!orderId || !paymentId) return { ok: false, error: 'Missing order or payment id' }
+  const { data: row, error } = await supabase.from('orders').select('*').eq('id', orderId).single()
+  if (error || !row) return { ok: false, error: error?.message || 'Order not found' }
+  const existing = Array.isArray(row.payments) ? row.payments : []
+  if (!existing.some(p => p.id === paymentId)) return { ok: false, error: 'Payment not found on this order' }
+  const payments = existing.map(p => p.id === paymentId
+    ? { ...p, voided: true, voidedReason: reason || null, voidedAt: new Date().toISOString(), voidedBy: actor || null }
+    : p)
+  const { _paid, _balance, ...colPatch } = _paymentsColumnPatch(payments, row)
+  const nowIso = new Date().toISOString()
+  let q = supabase.from('orders').update({ ...colPatch, updated_at: nowIso }).eq('id', orderId)
+  if (row.updated_at != null) q = q.eq('updated_at', row.updated_at)
+  const { data: updated, error: upErr } = await q.select('id')
+  if (upErr) return { ok: false, error: upErr.message }
+  if (!updated || updated.length === 0) return { ok: false, error: 'This order changed while you were voiding the payment. Reopen and try again.' }
+  return { ok: true, paid: _paid, balance: _balance }
+}
+
 // ── A6 — deposit auto-completes the pre-deposit checklist ───────────────────
 // Logging a deposit means the contract + deposit steps are obviously done, so
 // auto-complete `contract_signed` + `deposit_received` on the order's job —
