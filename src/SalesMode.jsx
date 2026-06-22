@@ -8578,8 +8578,15 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   // Grand total — the SAME unified pipeline as the contract / wizard / payments
   // (priceOrderTotals: folded base, ONE override map, manualTotal honored), so the
   // receipt's balance math can never disagree with the order screen.
-  const { priceOrderTotals } = await import('./lib/orderRates')
-  const grandTotal = priceOrderTotals(order).displayed
+  // Family orders price via priceOrderTotals; a cemetery order passes its flat
+  // total_amount through opts.grandTotalOverride (priceOrderTotals doesn't apply there).
+  let grandTotal
+  if (opts.grandTotalOverride != null) {
+    grandTotal = Number(opts.grandTotalOverride) || 0
+  } else {
+    const { priceOrderTotals } = await import('./lib/orderRates')
+    grandTotal = priceOrderTotals(order).displayed
+  }
 
   // Sprint M2 Phase 2 — this-payment fields come from the passed payment
   // object; running totals sum the whole non-voided payments[] array (the
@@ -11609,7 +11616,7 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
 
 // Sprint 3j — Receipt action toolbar (Preview / Download / Email / Print).
 // Sprint M2 Phase 2: takes a specific payment object (was paymentType).
-export function ReceiptActions({ order, payment }) {
+export function ReceiptActions({ order, payment, grandTotalOverride }) {
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
   const [sent, setSent] = useState(false)
@@ -11617,7 +11624,7 @@ export function ReceiptActions({ order, payment }) {
   const [previewFilename, setPreviewFilename] = useState('')
 
   const buildDoc = async () => {
-    return await generateReceiptPDF(order, payment, { returnDoc: true })
+    return await generateReceiptPDF(order, payment, { returnDoc: true, grandTotalOverride })
   }
 
   const handlePreview = async () => {

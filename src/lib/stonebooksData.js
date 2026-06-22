@@ -3304,6 +3304,35 @@ export async function recordPayment({ amount, paymentMethod, paymentReference, o
   return { ok: true, record: data }
 }
 
+// Edit a financial_records payment — any field incl. amount, NO edit-trail (mirrors
+// updateOrderPayment for the cemetery ledger). Balance stays the live ledger sum, so
+// an edited amount recomputes paid/balance everywhere it's summed (no stored balance).
+export async function updateFinancialRecord(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing record id' }
+  const allowed = {}
+  for (const k of ['amount', 'payment_method', 'payment_reference', 'occurred_at']) if (k in patch) allowed[k] = patch[k]
+  if ('amount' in allowed) {
+    const a = Math.round(Number(allowed.amount) * 100) / 100
+    if (!Number.isFinite(a) || a === 0) return { ok: false, error: 'Amount must be a non-zero number.' }
+    allowed.amount = a
+  }
+  if (!Object.keys(allowed).length) return { ok: true }
+  const { error } = await supabase.from('financial_records').update(allowed).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Soft-delete (void) a financial_records payment — kept for audit, excluded from the
+// live paid/balance sum (callers filter !voided). Uses the voided_* columns.
+export async function voidFinancialRecord(id, { reason, by } = {}) {
+  if (!id) return { ok: false, error: 'Missing record id' }
+  const { error } = await supabase.from('financial_records')
+    .update({ voided: true, voided_reason: reason || null, voided_at: new Date().toISOString(), voided_by: by || null })
+    .eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function recordExpense({ amount, category, vendor, description, occurredAt, jobId, orderId, cemeteryOrderId, receiptStoragePath, notes, createdBy } = {}) {
   const amt = Math.round(Number(amount) * 100) / 100
   if (!Number.isFinite(amt) || amt === 0) return { ok: false, error: 'Expense amount must be a non-zero number' }

@@ -16,7 +16,7 @@ import {
   getDoorPrice,
   getCemeteryPacketSignedUrl,
   getFinancialRecords,
-  recordPayment,
+  recordPayment, updateFinancialRecord, voidFinancialRecord,
   setCemeteryOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName,
   PAYMENT_METHODS,
   paymentMethodLabel,
@@ -24,6 +24,7 @@ import {
   fmtDate,
   fmtRelative,
 } from './lib/stonebooksData'
+import { ReceiptActions } from './SalesMode'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -55,6 +56,10 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const [payOpen, setPayOpen] = useState(false)
   const [pay, setPay] = useState({ amount: '', method: 'check', reference: '', date: todayISO(), notes: '' })
   const [savingPay, setSavingPay] = useState(false)
+  const [lastReceiptId, setLastReceiptId] = useState(null)   // just-saved financial_record id → post-save receipt
+  const [editPay, setEditPay] = useState(null)               // { id, amount, method, date, reference } inline editor
+  const [payRowBusy, setPayRowBusy] = useState(null)
+  const [payRowErr, setPayRowErr] = useState(null)
 
   const reload = useCallback(async () => {
     const [o, js, pays] = await Promise.all([
@@ -83,11 +88,28 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const st = CO_STATUS[order.status] || { label: order.status, color: '#8b8f95' }
   const doors = order.doors || []
 
-  // ── live payment state from the ledger ──────────────────────────────────
+  // ── live payment state from the ledger (voided rows EXCLUDED) ────────────
   const total = Number(order.total_amount || 0)
-  const paidTotal = payments.reduce((s, p) => s + Number(p.amount || 0), 0)
+  const livePayments = payments.filter(p => !p.voided)
+  const paidTotal = livePayments.reduce((s, p) => s + Number(p.amount || 0), 0)
   const balance = Math.max(0, total - paidTotal)
   const payState = total > 0 && paidTotal >= total ? 'paid' : (paidTotal > 0 ? 'partial' : 'unpaid')
+
+  // ── cemetery → receipt adapter (real fields only; cemetery orders carry no
+  // billing street address and no deceased, so those are omitted, not faked).
+  const frToPayment = (fr) => ({
+    id: fr.id, amount: fr.amount, method: fr.payment_method, ref: fr.payment_reference,
+    receivedAt: (fr.occurred_at || '').slice(0, 10), createdBy: fr.created_by, locked: true, voided: false,
+  })
+  const receiptOrder = {
+    orderNumber: order.order_number,
+    signedAt: order.submitted_at || null,
+    targetCompletionDate: null,
+    customer: { firstName: '', lastName: order.cemetery_name || 'Cemetery', email: order.cemetery_contact_email || '', phonePrimary: order.cemetery_contact_phone || '' },
+    deceased: [],
+    payments: livePayments.map(frToPayment),
+  }
+  const lastReceiptPayment = lastReceiptId ? receiptOrder.payments.find(p => p.id === lastReceiptId) : null
   const payPill = PAY_PILL[payState]
   const isCancelled = order.status === 'cancelled'
   const canRecordPayment = !isCancelled && total > 0 && balance > 0
@@ -122,16 +144,48 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const submitPay = async () => {
     if (!payValid) return
     setSavingPay(true)
-    await recordPayment({
+    const createdBy = await getCurrentStaffName().catch(() => null)
+    const res = await recordPayment({
       amount: payAmt,
       paymentMethod: pay.method,
       paymentReference: pay.reference.trim() || null,
       occurredAt: pay.date ? new Date(`${pay.date}T12:00:00`).toISOString() : undefined,
       cemeteryOrderId: order.id,
       notes: pay.notes.trim() || null,
+      createdBy,
     })
     await reload()
     setSavingPay(false); setPayOpen(false)
+    if (res?.ok && res.record) setLastReceiptId(res.record.id)   // ⭐ offer Print + Email right after save
+  }
+
+  // ── Edit / void a cemetery payment (incl. amount; NO edit-trail) ─────────
+  const startEditPay = (p) => {
+    setPayRowErr(null)
+    setEditPay({ id: p.id, amount: String(p.amount ?? ''), method: p.payment_method || 'check', date: (p.occurred_at || '').slice(0, 10), reference: p.payment_reference || '' })
+  }
+  const saveEditPay = async () => {
+    if (!editPay) return
+    setPayRowBusy(editPay.id); setPayRowErr(null)
+    const res = await updateFinancialRecord(editPay.id, {
+      amount: Number(editPay.amount), payment_method: editPay.method,
+      payment_reference: editPay.reference.trim() || null,
+      occurred_at: editPay.date ? new Date(`${editPay.date}T12:00:00`).toISOString() : undefined,
+    })
+    setPayRowBusy(null)
+    if (!res.ok) { setPayRowErr(res.error || 'Could not save the edit.'); return }
+    setEditPay(null); await reload()
+  }
+  const voidPay = async (p) => {
+    const reason = window.prompt('Void this payment? Enter a reason (kept for the record):')
+    if (reason == null) return
+    if (!reason.trim()) { setPayRowErr('A reason is required to void a payment.'); return }
+    setPayRowBusy(p.id); setPayRowErr(null)
+    const by = await getCurrentStaffName().catch(() => null)
+    const res = await voidFinancialRecord(p.id, { reason: reason.trim(), by })
+    setPayRowBusy(null)
+    if (!res.ok) { setPayRowErr(res.error || 'Could not void the payment.'); return }
+    await reload()
   }
 
   return (
@@ -218,23 +272,58 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
       />
 
       {/* Payments */}
-      <h2 className="cod-h2">Payments ({payments.length})</h2>
+      <h2 className="cod-h2">Payments ({livePayments.length})</h2>
+
+      {/* ⭐ Just-recorded payment — Print + Email + Download right after save. */}
+      {lastReceiptPayment && (
+        <div style={{ margin: '8px 0', padding: '10px 12px', background: '#e6f4ec', border: '0.5px solid #2d7a4f', borderRadius: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#2d7a4f', marginBottom: 4 }}>Payment recorded — receipt</div>
+          <ReceiptActions order={receiptOrder} payment={lastReceiptPayment} grandTotalOverride={total} />
+          <button type="button" className="cod-btn" style={{ marginTop: 6 }} onClick={() => setLastReceiptId(null)}>Dismiss</button>
+        </div>
+      )}
+
       {payments.length === 0 ? (
         <div className="sb-empty">No payments recorded yet.{canRecordPayment ? ' Use “Record payment” above.' : ''}</div>
       ) : (
         <div className="cod-pays">
-          {payments.map(p => (
-            <div key={p.id} className="cod-payrow">
-              <div className="cod-pay-l">
-                <span className="cod-pay-amt sb-mono">{fmtUSD(p.amount)}</span>
-                <span className="cod-pay-method">{paymentMethodLabel(p.payment_method)}</span>
-                {p.payment_reference && <span className="cod-pay-ref">#{p.payment_reference}</span>}
-              </div>
-              <div className="cod-pay-r">
-                {fmtDate(p.occurred_at)}{p.notes ? <span className="cod-pay-note"> — {p.notes}</span> : null}
+          {payments.map(p => (editPay?.id === p.id ? (
+            <div key={p.id} className="cod-payrow" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <input type="number" className="cod-input" value={editPay.amount} onChange={e => setEditPay(s => ({ ...s, amount: e.target.value }))} placeholder="Amount" />
+              <select className="cod-input" value={editPay.method} onChange={e => setEditPay(s => ({ ...s, method: e.target.value }))}>
+                {PAYMENT_METHODS.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+              </select>
+              <input type="date" className="cod-input" value={editPay.date} onChange={e => setEditPay(s => ({ ...s, date: e.target.value }))} />
+              <input type="text" className="cod-input" value={editPay.reference} onChange={e => setEditPay(s => ({ ...s, reference: e.target.value }))} placeholder={editPay.method === 'zelle' ? 'Zelle confirmation #' : 'Reference / check #'} />
+              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
+                <button type="button" className="cod-btn cod-btn-primary" disabled={payRowBusy === p.id} onClick={saveEditPay}>{payRowBusy === p.id ? 'Saving…' : 'Save'}</button>
+                <button type="button" className="cod-btn" onClick={() => setEditPay(null)}>Cancel</button>
               </div>
             </div>
-          ))}
+          ) : (
+            <div key={p.id} className="cod-payrow" style={p.voided ? { opacity: 0.55 } : undefined}>
+              <div style={{ width: '100%' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                  <span className="cod-pay-l">
+                    <span className="cod-pay-amt sb-mono" style={p.voided ? { textDecoration: 'line-through' } : undefined}>{fmtUSD(p.amount)}</span>
+                    <span className="cod-pay-method">{paymentMethodLabel(p.payment_method)}</span>
+                    {p.payment_reference && <span className="cod-pay-ref">#{p.payment_reference}</span>}
+                    {p.voided && <span style={{ color: '#b54040', fontWeight: 700, fontSize: 11 }}>VOIDED</span>}
+                  </span>
+                  <span className="cod-pay-r">
+                    {fmtDate(p.occurred_at)}
+                    {!p.voided && <>
+                      {' · '}<button type="button" className="cod-linkbtn" onClick={() => startEditPay(p)}>Edit</button>
+                      {' · '}<button type="button" className="cod-linkbtn" onClick={() => voidPay(p)}>Void</button>
+                    </>}
+                  </span>
+                </div>
+                {p.voided && p.voided_reason && <div className="cod-pay-note">Voided{p.voided_by ? ` by ${p.voided_by}` : ''}: {p.voided_reason}</div>}
+                {!p.voided && <ReceiptActions order={receiptOrder} payment={frToPayment(p)} grandTotalOverride={total} />}
+              </div>
+            </div>
+          )))}
+          {payRowErr && <div className="sb-empty" style={{ color: '#b54040', padding: '6px 16px' }}>{payRowErr}</div>}
           <div className="cod-payrow cod-paytotal">
             <div className="cod-pay-l"><span className="cod-pay-amt sb-mono">{fmtUSD(paidTotal)}</span><span className="cod-pay-method">received of {fmtUSD(total)}</span></div>
             <div className="cod-pay-r">{balance > 0 ? `${fmtUSD(balance)} outstanding` : 'Paid in full'}</div>
@@ -366,6 +455,9 @@ const styles = `
   .cod-btn:disabled{ opacity:.5; cursor:not-allowed; }
   .cod-btn-primary{ background:var(--sb-text); color:var(--sb-bg); border-color:transparent; }
   .cod-btn-primary:hover{ opacity:.88; background:var(--sb-text); }
+  .cod-input{ border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text); border-radius:6px; padding:7px 10px; font:inherit; font-size:13px; width:100%; box-sizing:border-box; }
+  .cod-linkbtn{ border:none; background:none; padding:0; font:inherit; font-size:12px; color:#9A7209; cursor:pointer; }
+  .cod-linkbtn:hover{ text-decoration:underline; }
   .cod-h2{ font-size:16px; font-weight:600; margin:24px 0 10px; }
   .cod-door{ border:.5px solid var(--sb-border); border-radius:8px; padding:14px 16px; margin-bottom:10px; background:var(--sb-surface); }
   .cod-door-head{ display:flex; align-items:center; gap:10px; }
