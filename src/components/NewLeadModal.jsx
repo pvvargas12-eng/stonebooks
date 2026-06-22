@@ -15,7 +15,10 @@
 
 import { useState } from 'react'
 import { makeBlankOrder, saveOrder } from '../SalesMode'
-import { phoneDigits } from '../lib/stonebooksData'
+import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName } from '../lib/stonebooksData'
+
+// Today as YYYY-MM-DD. Call only in event handlers (never during render — purity).
+const todayISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
 
 // Service types match orders.service_types codes (same set as the Orders filter).
 const SERVICE_TYPE_OPTIONS = [
@@ -44,10 +47,29 @@ export default function NewLeadModal({ onClose, onSaved }) {
   const [cemetery, setCemetery] = useState('')
   const [serviceType, setServiceType] = useState('')
   const [notes, setNotes] = useState('')
+  // Follow-up task (real order_activity task + next_follow_up). Off by default.
+  const [taskOn, setTaskOn] = useState(false)
+  const [taskLabel, setTaskLabel] = useState('')
+  const [taskLabelTouched, setTaskLabelTouched] = useState(false)
+  const [taskDue, setTaskDue] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
 
   const canSave = name.trim().length > 0 && !busy
+
+  // Enabling the task prefills its label from the notes (until the user edits it)
+  // and defaults the due date to today. Date/label computed in this handler only.
+  const toggleTask = (on) => {
+    setTaskOn(on)
+    if (on) {
+      if (!taskLabelTouched) setTaskLabel(notes.trim() || taskLabel)
+      if (!taskDue) setTaskDue(todayISO())
+    }
+  }
+  const onNotesChange = (v) => {
+    setNotes(v)
+    if (taskOn && !taskLabelTouched) setTaskLabel(v.trim())   // keep label mirrored until edited
+  }
 
   const save = async () => {
     if (!canSave) return
@@ -67,12 +89,25 @@ export default function NewLeadModal({ onClose, onSaved }) {
       cemetery: cemetery.trim()
         ? { ...blank.cemetery, name: cemetery.trim() }
         : blank.cemetery,
-      inscription: { ...blank.inscription, customNotes: notes.trim() },
+      // Inscription stays empty — the note belongs in order NOTES, not on the stone.
     }
     const res = await saveOrder(leadOrder)
+    if (!res?.ok) { setBusy(false); setErr(res?.error?.message || res?.reason || 'Could not save the lead'); return }
+    const orderId = res.order?.id || null
+    // Post-save side writes (best-effort; the lead is already saved). Notes →
+    // order_notes (the Notes section), NOT inscription. Task → order_activity +
+    // next_follow_up so it surfaces in the Leads queue's due bucket.
+    if (orderId) {
+      const actor = await getCurrentStaffName().catch(() => null)
+      if (notes.trim()) await addOrderNote({ orderId, body: notes.trim(), author: actor })
+      if (taskOn && taskLabel.trim()) {
+        const due = taskDue || todayISO()
+        await addOrderTask(orderId, { note: taskLabel.trim(), dueDate: due, actor })
+        await updateOrderLeadFields(orderId, { next_follow_up: due })
+      }
+    }
     setBusy(false)
-    if (!res?.ok) { setErr(res?.error?.message || res?.reason || 'Could not save the lead'); return }
-    onSaved?.(res.order?.id || null)
+    onSaved?.(orderId)
   }
 
   return (
@@ -124,8 +159,32 @@ export default function NewLeadModal({ onClose, onSaved }) {
             <span className="nl-label">Notes</span>
             <textarea className="nl-input nl-textarea" rows={3} value={notes}
               placeholder="What they want, that they want to come in, anything else…"
-              onChange={e => setNotes(e.target.value)} />
+              onChange={e => onNotesChange(e.target.value)} />
           </label>
+
+          {/* Follow-up task — real order_activity task + next_follow_up so it
+              surfaces in the Leads work-queue's due bucket. */}
+          <div className="nl-task">
+            <label className="nl-task-toggle">
+              <input type="checkbox" checked={taskOn} onChange={e => toggleTask(e.target.checked)} />
+              <span>+ Add a follow-up task</span>
+            </label>
+            {taskOn && (
+              <div className="nl-task-fields">
+                <label className="nl-field">
+                  <span className="nl-label">Task</span>
+                  <input className="nl-input" type="text" value={taskLabel}
+                    placeholder="e.g. Coming in today at noon — have estimate ready"
+                    onChange={e => { setTaskLabel(e.target.value); setTaskLabelTouched(true) }} />
+                </label>
+                <label className="nl-field">
+                  <span className="nl-label">Due</span>
+                  <input className="nl-input" type="date" value={taskDue}
+                    onChange={e => setTaskDue(e.target.value)} />
+                </label>
+              </div>
+            )}
+          </div>
         </div>
 
         {err && <div className="nl-err">{err}</div>}
@@ -156,6 +215,11 @@ const CSS = `
 .nl-input:focus { outline: none; border-color: #9A7209; box-shadow: 0 0 0 2px rgba(154,114,9,0.12); }
 .nl-select { -webkit-appearance: menulist; appearance: auto; cursor: pointer; }
 .nl-textarea { resize: vertical; line-height: 1.45; }
+.nl-task { border: 1px dashed #d8d2c4; border-radius: 10px; padding: 11px 13px; background: #faf8f3; }
+.nl-task-toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13.5px; font-weight: 600; color: #5d5d5a; }
+.nl-task-toggle input { width: 16px; height: 16px; accent-color: #9A7209; cursor: pointer; }
+.nl-task-fields { display: grid; grid-template-columns: 1fr 150px; gap: 11px; margin-top: 11px; }
+@media (max-width: 520px) { .nl-task-fields { grid-template-columns: 1fr; } }
 .nl-err { margin: 0 22px 12px; background: #fbeaea; border: 1px solid #e7b3ad; color: #b3261e; border-radius: 8px; padding: 9px 12px; font-size: 13px; }
 .nl-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px 20px; border-top: 1px solid #f0ece1; }
 .nl-btn { font: inherit; font-size: 14px; font-weight: 600; padding: 9px 18px; border-radius: 8px; border: 1px solid #d8d2c4; background: #fff; color: #444; cursor: pointer; }

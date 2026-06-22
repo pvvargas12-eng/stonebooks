@@ -801,6 +801,25 @@ export async function getRecentFollowupsForOrders(orderIds) {
   return map
 }
 
+// Batch: soonest-due OPEN task per order — one query for the Leads queue's
+// task label. Returns { [orderId]: nextOpenTaskRow }. due_date ASC puts dated
+// tasks first (Postgres NULLS LAST on ASC), so a lead's nearest task wins.
+export async function getOpenTasksForOrders(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  if (!ids.length) return {}
+  const { data, error } = await supabase
+    .from('order_activity')
+    .select('order_id, note, due_date, task_status, created_at')
+    .in('order_id', ids)
+    .eq('type', 'task')
+    .eq('task_status', 'open')
+    .order('due_date', { ascending: true })
+  if (error) { console.warn('[leads] getOpenTasksForOrders:', error.message); return {} }
+  const map = {}
+  for (const row of (data || [])) { if (!map[row.order_id]) map[row.order_id] = row }  // asc → first is soonest
+  return map
+}
+
 // Update lead-working columns on an order (next_follow_up / waiting_on /
 // lost_reason / lost_at). Whitelisted so callers can't write arbitrary columns.
 export async function updateOrderLeadFields(orderId, patch = {}) {
