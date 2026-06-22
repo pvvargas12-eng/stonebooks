@@ -13,7 +13,7 @@
 // (JSONB; also the note field the compact OrderForm surfaces at conversion).
 // =============================================================================
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { makeBlankOrder, saveOrder } from '../SalesMode'
 import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName } from '../lib/stonebooksData'
 
@@ -47,29 +47,18 @@ export default function NewLeadModal({ onClose, onSaved }) {
   const [cemetery, setCemetery] = useState('')
   const [serviceType, setServiceType] = useState('')
   const [notes, setNotes] = useState('')
-  // Follow-up task (real order_activity task + next_follow_up). Off by default.
-  const [taskOn, setTaskOn] = useState(false)
+  // Reminder is first-class — a real order_activity task + next_follow_up.
   const [taskLabel, setTaskLabel] = useState('')
-  const [taskLabelTouched, setTaskLabelTouched] = useState(false)
   const [taskDue, setTaskDue] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
 
+  // Due defaults to today (computed off-render to respect React purity).
+  useEffect(() => { setTaskDue(todayISO()) }, [])
+
   const canSave = name.trim().length > 0 && !busy
 
-  // Enabling the task prefills its label from the notes (until the user edits it)
-  // and defaults the due date to today. Date/label computed in this handler only.
-  const toggleTask = (on) => {
-    setTaskOn(on)
-    if (on) {
-      if (!taskLabelTouched) setTaskLabel(notes.trim() || taskLabel)
-      if (!taskDue) setTaskDue(todayISO())
-    }
-  }
-  const onNotesChange = (v) => {
-    setNotes(v)
-    if (taskOn && !taskLabelTouched) setTaskLabel(v.trim())   // keep label mirrored until edited
-  }
+  const onNotesChange = (v) => setNotes(v)
 
   const save = async () => {
     if (!canSave) return
@@ -100,7 +89,7 @@ export default function NewLeadModal({ onClose, onSaved }) {
     if (orderId) {
       const actor = await getCurrentStaffName().catch(() => null)
       if (notes.trim()) await addOrderNote({ orderId, body: notes.trim(), author: actor })
-      if (taskOn && taskLabel.trim()) {
+      if (taskLabel.trim()) {
         const due = taskDue || todayISO()
         await addOrderTask(orderId, { note: taskLabel.trim(), dueDate: due, actor })
         await updateOrderLeadFields(orderId, { next_follow_up: due })
@@ -162,28 +151,23 @@ export default function NewLeadModal({ onClose, onSaved }) {
               onChange={e => onNotesChange(e.target.value)} />
           </label>
 
-          {/* Follow-up task — real order_activity task + next_follow_up so it
-              surfaces in the Leads work-queue's due bucket. */}
+          {/* Reminder — first-class. Becomes a real order_activity task + sets
+              next_follow_up so the lead surfaces in the Leads task table. */}
           <div className="nl-task">
-            <label className="nl-task-toggle">
-              <input type="checkbox" checked={taskOn} onChange={e => toggleTask(e.target.checked)} />
-              <span>+ Add a follow-up task</span>
-            </label>
-            {taskOn && (
-              <div className="nl-task-fields">
-                <label className="nl-field">
-                  <span className="nl-label">Task</span>
-                  <input className="nl-input" type="text" value={taskLabel}
-                    placeholder="e.g. Coming in today at noon — have estimate ready"
-                    onChange={e => { setTaskLabel(e.target.value); setTaskLabelTouched(true) }} />
-                </label>
-                <label className="nl-field">
-                  <span className="nl-label">Due</span>
-                  <input className="nl-input" type="date" value={taskDue}
-                    onChange={e => setTaskDue(e.target.value)} />
-                </label>
-              </div>
-            )}
+            <div className="nl-task-head">Reminder — what to do next</div>
+            <div className="nl-task-fields">
+              <label className="nl-field">
+                <span className="nl-label">Reminder</span>
+                <input className="nl-input" type="text" value={taskLabel}
+                  placeholder="e.g. Coming in today at noon · Call back · Send quote"
+                  onChange={e => setTaskLabel(e.target.value)} />
+              </label>
+              <label className="nl-field">
+                <span className="nl-label">Due</span>
+                <input className="nl-input" type="date" value={taskDue}
+                  onChange={e => setTaskDue(e.target.value)} />
+              </label>
+            </div>
           </div>
         </div>
 
@@ -215,10 +199,9 @@ const CSS = `
 .nl-input:focus { outline: none; border-color: #9A7209; box-shadow: 0 0 0 2px rgba(154,114,9,0.12); }
 .nl-select { -webkit-appearance: menulist; appearance: auto; cursor: pointer; }
 .nl-textarea { resize: vertical; line-height: 1.45; }
-.nl-task { border: 1px dashed #d8d2c4; border-radius: 10px; padding: 11px 13px; background: #faf8f3; }
-.nl-task-toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13.5px; font-weight: 600; color: #5d5d5a; }
-.nl-task-toggle input { width: 16px; height: 16px; accent-color: #9A7209; cursor: pointer; }
-.nl-task-fields { display: grid; grid-template-columns: 1fr 150px; gap: 11px; margin-top: 11px; }
+.nl-task { border: 1px solid #ece6d8; border-radius: 10px; padding: 12px 13px; background: #faf8f3; }
+.nl-task-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #8a8472; margin-bottom: 10px; }
+.nl-task-fields { display: grid; grid-template-columns: 1fr 150px; gap: 11px; }
 @media (max-width: 520px) { .nl-task-fields { grid-template-columns: 1fr; } }
 .nl-err { margin: 0 22px 12px; background: #fbeaea; border: 1px solid #e7b3ad; color: #b3261e; border-radius: 8px; padding: 9px 12px; font-size: 13px; }
 .nl-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px 20px; border-top: 1px solid #f0ece1; }

@@ -1,210 +1,157 @@
 // =============================================================================
-// LeadsView — revenue-recovery pipeline for uncontracted orders.
+// LeadsView — the leads work as a compact TASK TABLE.
 // =============================================================================
-// A lead is any order with an estimate status (draft/scoping/quoted) — derived
-// live from order status, never a separate record. When an order is contracted
-// it leaves this view automatically. Strictly additive to OrdersTab.
+// A lead is any uncontracted order (draft/scoping/quoted) — derived live, never
+// a separate record. This view is a dense table of open reminders/to-dos, one row
+// per task (a lead can carry several). Tasks are real order_activity rows
+// (type 'task'); "done" persists via setOrderTaskStatus. Leads with no open task
+// drop to a lighter "No reminder set" list with a quick inline reminder add.
 //
-// PHASE 1 (this build): read-only rows (name, est#, age, owner, estimate value,
-// last touch) + summary + filter chips + sort + Log-follow-up (writes
-// order_activity, appears in the order timeline) + Open order + Won → contract.
-// The four new order columns (next_follow_up / waiting_on / lost_reason /
-// lost_at) are NOT written yet — that persistence lands in Phase 2 once the
-// 20260623 migration is confirmed. Their display cells render gracefully empty.
+// The ⋯ row menu reuses the EXISTING order paths: open (onOpenDetail), convert
+// (onConvert), archive (bulkArchiveOrders), delete (archive-gated hardDeleteOrder
+// with confirm). No parallel systems, no faked done-state. Notes never touch
+// inscription — the New Lead form routes them to order_notes.
 // =============================================================================
 
 import { useState, useEffect, useMemo } from 'react'
-import { rowGrandTotal, fmtUSD, fmtDate, logOrderActivity, getRecentFollowupsForOrders, getOpenTasksForOrders, getCurrentStaffName, updateOrderLeadFields } from '../lib/stonebooksData'
 import {
-  LEAD_STATUSES, WAITING_ON_OPTIONS, waitingOnOption,
-  FOLLOWUP_TYPES, FOLLOWUP_PRESETS, LOST_REASONS, followUpUrgency, daysBetween,
-} from '../lib/leads'
-
-const isoPlusDays = (days) => {
-  const d = new Date(); d.setDate(d.getDate() + days)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
+  rowGrandTotal, fmtUSD, fmtDate, fmtPhone,
+  getOpenTasksList, addOrderTask, setOrderTaskStatus,
+  updateOrderLeadFields, getCurrentStaffName,
+  bulkArchiveOrders, hardDeleteOrder,
+} from '../lib/stonebooksData'
+import { LEAD_STATUSES, followUpUrgency } from '../lib/leads'
 
 const pad = (n) => String(n).padStart(2, '0')
+// today as YYYY-MM-DD — call only in event handlers / effects (never in render).
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` }
 const leadName = (o) => {
   const c = o.customer
   if (c && (c.last_name || c.first_name)) return `${c.last_name || ''}${c.first_name ? `, ${c.first_name}` : ''}`.trim()
   return o.primary_lastname || '(no name)'
 }
 
-// ── Work-queue sections (top→bottom by urgency) ──────────────────────────────
-// Only buckets backed by REAL data exist here. "Coming in today" is intentionally
-// absent — there is no appointment/visit-date field on a lead (see investigation
-// B). Every non-lost lead lands in exactly one bucket via bucketOf()'s precedence;
-// "Waiting on them" is the catch-all so nothing ever disappears.
-// "New" age cutoff (days since created) — genuinely-fresh leads only.
-const NEW_MAX_AGE_DAYS = 2
-
-const SECTIONS = [
-  { code: 'new',            label: 'New — needs first contact',     tone: 'amber',   hint: 'Just came in — reach out now' },
-  { code: 'overdue',        label: 'Follow-up overdue',             tone: 'red',     hint: 'Past their follow-up date' },
-  { code: 'today',          label: 'Follow-up due today',           tone: 'amber',   hint: 'Reach out today' },
-  { code: 'needs_followup', label: 'Needs follow-up — no contact yet', tone: 'red',  hint: 'Older leads never contacted — oldest first' },
-  { code: 'quote',          label: 'Waiting on quote',              tone: 'blue',    hint: 'We owe them an estimate' },
-  { code: 'layout',         label: 'Waiting on layout',             tone: 'blue',    hint: 'They\'re deciding on the design' },
-  { code: 'them',           label: 'Waiting on them',               tone: 'neutral', hint: 'Ball is in their court' },
-  { code: 'lost',           label: 'Lost',                          tone: 'neutral', collapsible: true, hint: '' },
-]
-
 const SORT_OPTIONS = [
-  { code: 'newest',   label: 'Newest first' },
-  { code: 'oldest',   label: 'Oldest first' },
-  { code: 'followup', label: 'Follow-up due (soonest)' },
-  { code: 'value',    label: 'Highest $ first' },
+  { code: 'due',    label: 'Due date (overdue first)' },
+  { code: 'newest', label: 'Newest lead' },
+  { code: 'oldest', label: 'Oldest lead' },
+  { code: 'value',  label: 'Highest $ first' },
 ]
+// Due-date sort rank: overdue → today → upcoming → no-due.
+const urgRank = (u) => (u === 'overdue' ? 0 : u === 'today' ? 1 : u === 'future' ? 2 : 3)
 
-// Assign a lead row (x = enriched { o, value, urgency, noContact, ... }) to its
-// single work-queue bucket. Precedence top→bottom = urgency. Explicit operator
-// signals (waiting_on, follow-up date) beat the value proxy. See investigation C:
-// "quote" = no priced estimate yet (value 0) OR an "our court" waiting_on flag;
-// "layout" = the customer is reviewing the layout we sent.
-function bucketOf(x) {
-  const o = x.o
-  const w = o.waiting_on
-  if (o.lost_at) return 'lost'
-  // Untriaged + never contacted → split by age: genuinely fresh vs. neglected.
-  if (x.noContact && !o.next_follow_up && !w && !(x.value > 0)) {
-    return (x.age != null && x.age <= NEW_MAX_AGE_DAYS) ? 'new' : 'needs_followup'
-  }
-  if (x.urgency === 'overdue') return 'overdue'
-  if (x.urgency === 'today') return 'today'
-  if (w === 'reviewing_layout') return 'layout'
-  if (w === 'owes_layout' || w === 'never_followed_up') return 'quote'
-  if (!(x.value > 0)) return 'quote'
-  return 'them'   // thinking / comparing / waiting_cemetery, or estimate-out awaiting decision
-}
-
-// Within-section comparator for the Sort dropdown.
-function makeSorter(sortKey) {
-  const cmpCreated = (a, b) => {
-    const ca = a.o.created_at || '', cb = b.o.created_at || ''
-    return ca < cb ? -1 : ca > cb ? 1 : 0
-  }
-  if (sortKey === 'oldest')   return cmpCreated
-  if (sortKey === 'value')    return (a, b) => (b.value || 0) - (a.value || 0)
-  if (sortKey === 'followup') return (a, b) => {
-    const na = a.o.next_follow_up || '9999-12-31', nb = b.o.next_follow_up || '9999-12-31'
-    return na < nb ? -1 : na > nb ? 1 : cmpCreated(b, a)
-  }
-  return (a, b) => cmpCreated(b, a)   // newest (default)
-}
-
-export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onConvert, onChanged }) {
+export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChanged }) {
   const [todayISO, setTodayISO] = useState('')
-  const [lastTouch, setLastTouch] = useState({})
-  const [openTasks, setOpenTasks] = useState({})   // soonest open task per lead (order_activity)
-  const [sortKey, setSortKey] = useState('newest')   // default: newest-created first (a new lead never sinks)
-  const [lostOpen, setLostOpen] = useState(false)    // Lost section collapsed by default
-  const [openId, setOpenId] = useState(null)
-  const [touchNonce, setTouchNonce] = useState(0)   // bump to refresh last-touch after a follow-up
+  const [tasks, setTasks] = useState([])              // all open tasks across leads
+  const [sortKey, setSortKey] = useState('due')
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const [menuKey, setMenuKey] = useState(null)        // open ⋯ menu key
+  const [reminderFor, setReminderFor] = useState(null)// leadId for the inline reminder editor
+  const [reminderDue, setReminderDue] = useState('')  // default due, computed when opening (off-render)
+  const [busyId, setBusyId] = useState(null)
 
-  useEffect(() => {
-    const d = new Date()
-    setTodayISO(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
-  }, [])
+  useEffect(() => { setTodayISO(todayStr()) }, [])
 
-  // Leads = uncontracted, not archived. (lost_at filtering lands in Phase 2.)
   const leads = useMemo(
-    () => (orders || []).filter(o => LEAD_STATUSES.includes(o.status) && !o.archived),
+    () => (orders || []).filter(o => LEAD_STATUSES.includes(o.status) && !o.archived && !o.lost_at),
     [orders])
-
-  // Batch the last-touch (most recent activity) for the visible leads.
+  const leadById = useMemo(() => { const m = {}; for (const l of leads) m[l.id] = l; return m }, [leads])
   const leadIdsKey = leads.map(o => o.id).join(',')
+
   useEffect(() => {
     let alive = true
     const ids = leadIdsKey ? leadIdsKey.split(',') : []
-    if (!ids.length) { setLastTouch({}); setOpenTasks({}); return }
-    getRecentFollowupsForOrders(ids).then(m => { if (alive) setLastTouch(m) })
-    getOpenTasksForOrders(ids).then(m => { if (alive) setOpenTasks(m) })
+    if (!ids.length) { setTasks([]); return }
+    getOpenTasksList(ids).then(list => { if (alive) setTasks(list) })
     return () => { alive = false }
-  }, [leadIdsKey, touchNonce])
+  }, [leadIdsKey, refreshNonce])
 
-  const rows = useMemo(() => leads.map(o => {
-    const value = rowGrandTotal(o)
-    const age = todayISO ? daysBetween(o.created_at, todayISO) : null
-    const touch = lastTouch[o.id] || null
-    const touchAge = touch && todayISO ? daysBetween(touch.created_at, todayISO) : null
-    const noContact = !touch
-    const urgency = followUpUrgency(o.next_follow_up, todayISO)
-    const wait = waitingOnOption(o.waiting_on)
-    const task = openTasks[o.id] || null
-    return { o, value, age, touch, touchAge, noContact, urgency, wait, task }
-  }), [leads, lastTouch, openTasks, todayISO])
+  const refresh = () => setRefreshNonce(n => n + 1)
 
-  // Group every lead into its work-queue section, then sort WITHIN each section
-  // by the chosen Sort option (default newest-first).
-  const grouped = useMemo(() => {
-    const map = { new: [], overdue: [], today: [], needs_followup: [], quote: [], layout: [], them: [], lost: [] }
-    for (const x of rows) map[bucketOf(x)].push(x)
-    const cmp = makeSorter(sortKey)
-    const oldestCmp = makeSorter('oldest')
-    // The neglected "no contact yet" pile always surfaces oldest-first, regardless
-    // of the global Sort — that's its whole purpose. Every other section follows it.
-    for (const k of Object.keys(map)) map[k].sort(k === 'needs_followup' ? oldestCmp : cmp)
-    return map
-  }, [rows, sortKey])
-
-  const totalVisible = rows.length
-
-  // Summary across all (non-lost) leads.
-  const summary = useMemo(() => {
-    const active = rows.filter(x => !x.o.lost_at)
-    return {
-      total: active.reduce((s, x) => s + (x.value || 0), 0),
-      overdue: active.filter(x => x.urgency === 'overdue').length,
-      count: active.length,
+  // Open task rows, joined to their lead and sorted.
+  const taskRows = useMemo(() => {
+    const rows = tasks
+      .map(t => { const lead = leadById[t.order_id]; return lead ? { task: t, lead } : null })
+      .filter(Boolean)
+      .map(r => ({ ...r, urgency: followUpUrgency(r.task.due_date, todayISO), value: rowGrandTotal(r.lead) }))
+    const byDue = (a, b) => {
+      const ur = urgRank(a.urgency) - urgRank(b.urgency); if (ur) return ur
+      const da = a.task.due_date || '9999-12-31', db = b.task.due_date || '9999-12-31'
+      return da < db ? -1 : da > db ? 1 : 0
     }
-  }, [rows])
+    const cmp =
+      sortKey === 'newest' ? (a, b) => (b.lead.created_at || '').localeCompare(a.lead.created_at || '')
+        : sortKey === 'oldest' ? (a, b) => (a.lead.created_at || '').localeCompare(b.lead.created_at || '')
+          : sortKey === 'value' ? (a, b) => (b.value || 0) - (a.value || 0)
+            : byDue
+    return [...rows].sort(cmp)
+  }, [tasks, leadById, todayISO, sortKey])
 
-  // One row — identical markup across every section. The body opens the lead
-  // detail (same path the Orders table uses); the ⋯ button opens quick actions.
-  const renderRow = ({ o, value, age, touch, touchAge, noContact, urgency, wait, task }) => {
-    const isOpen = openId === o.id
-    return (
-      <div key={o.id} className={`sb-leads-row${o.lost_at ? ' sb-leads-row-lost' : ''}`}>
-        <div className="sb-leads-rowtop">
-          <button type="button" className="sb-leads-rowmain" onClick={() => onOpenDetail?.(o.id)} title="Open this lead">
-            <div className="sb-leads-c-name">
-              <span className="sb-leads-name">{leadName(o)}</span>
-              <span className="sb-leads-sub">{o.order_number || 'EST'} · {age != null ? `${age}d old` : ''}{o.sales_rep ? ` · ${o.sales_rep}` : ''}</span>
-            </div>
-            <div className="sb-leads-c-val">{fmtUSD(value)}</div>
-            <div className="sb-leads-c-touch">
-              {task
-                ? <span className="sb-leads-taskchip">Task · {task.note}</span>
-                : noContact
-                  ? <span className="sb-leads-nocontact">No contact since estimate{age != null ? ` — ${age}d` : ''}</span>
-                  : <span className="sb-leads-touch">{touch.note || 'Contact'}{touchAge != null ? ` · ${touchAge}d ago` : ''}</span>}
-            </div>
-            <div className="sb-leads-c-wait">
-              {wait && <span className={`sb-leads-waitchip${wait.side === 'us' ? ' us' : ''}`}>{wait.label}</span>}
-            </div>
-            <div className="sb-leads-c-next">
-              {o.next_follow_up
-                ? <span className={`sb-leads-due sb-leads-due-${urgency}`}>{fmtDate(o.next_follow_up)}</span>
-                : <span className="sb-leads-due-none">—</span>}
-            </div>
-          </button>
-          <button type="button" className="sb-leads-rowexpand" title="Quick actions"
-            onClick={() => setOpenId(isOpen ? null : o.id)}>{isOpen ? '▾' : '⋯'}</button>
-        </div>
-        {isOpen && (
-          <LeadActions
-            order={o}
-            onOpenDetail={onOpenDetail}
-            onOpenOrder={onOpenOrder}
-            onConvert={onConvert}
-            onLogged={() => setTouchNonce(n => n + 1)}
-            onChanged={onChanged}
-          />
-        )}
-      </div>
-    )
+  // Leads with no open task → the lighter "No reminder set" list.
+  const taskedLeadIds = useMemo(() => new Set(tasks.map(t => t.order_id)), [tasks])
+  const noTaskLeads = useMemo(() => {
+    const list = leads.filter(l => !taskedLeadIds.has(l.id))
+    return list.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))   // oldest-neglected first
+  }, [leads, taskedLeadIds])
+
+  const summary = useMemo(() => ({
+    total: leads.reduce((s, l) => s + rowGrandTotal(l), 0),
+    overdue: taskRows.filter(r => r.urgency === 'overdue').length,
+    count: leads.length,
+  }), [leads, taskRows])
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+  const openReminder = (leadId) => { setMenuKey(null); setReminderDue(todayStr()); setReminderFor(leadId) }
+
+  const markDone = async (task) => {
+    setBusyId(task.id); setMenuKey(null)
+    const res = await setOrderTaskStatus(task.id, 'done')
+    if (res?.ok !== false) setTasks(prev => prev.filter(t => t.id !== task.id))   // optimistic; leaves open list
+    setBusyId(null)
+  }
+
+  const saveReminder = async (leadId, label, due) => {
+    const text = (label || '').trim()
+    if (!text) return
+    const dueDate = due || todayStr()
+    const actor = await getCurrentStaffName().catch(() => null)
+    await addOrderTask(leadId, { note: text, dueDate, actor })
+    await updateOrderLeadFields(leadId, { next_follow_up: dueDate })   // mirror for the rest of the app
+    setReminderFor(null)
+    refresh()
+  }
+
+  const archiveLead = async (leadId) => {
+    setBusyId(leadId); setMenuKey(null)
+    const res = await bulkArchiveOrders([leadId])
+    setBusyId(null)
+    if (res?.ok === false) { window.alert('Could not archive the lead.'); return }
+    onChanged?.()   // reload drops it from the active board
+  }
+
+  const deleteLead = async (leadId, name) => {
+    setMenuKey(null)
+    if (!window.confirm(`Permanently delete this lead${name ? ` — ${name}` : ''}? This cannot be undone.`)) return
+    setBusyId(leadId)
+    await bulkArchiveOrders([leadId])              // hardDeleteOrder is archive-gated
+    const res = await hardDeleteOrder(leadId)
+    setBusyId(null)
+    if (!res?.ok) window.alert(res?.error || 'Could not delete the lead.')
+    onChanged?.()
+  }
+
+  // Shared ⋯ menu item set for a lead (task optional).
+  const menuItems = (lead, task) => {
+    const name = leadName(lead)
+    const items = [
+      { label: 'Open lead', onClick: () => { setMenuKey(null); onOpenDetail?.(lead.id) } },
+      { label: task ? 'Add another reminder' : 'Set reminder', onClick: () => openReminder(lead.id) },
+    ]
+    if (task) items.push({ label: 'Mark done', onClick: () => markDone(task) })
+    items.push({ label: 'Convert to order →', onClick: () => { setMenuKey(null); onConvert?.(lead.id) } })
+    items.push({ label: 'Archive lead', onClick: () => archiveLead(lead.id) })
+    items.push({ label: 'Delete lead', danger: true, onClick: () => deleteLead(lead.id, name) })
+    return items
   }
 
   return (
@@ -213,7 +160,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCo
 
       <div className="sb-leads-summary">
         <div className="sb-leads-stat"><span className="sb-leads-stat-num">{fmtUSD(summary.total)}</span><span className="sb-leads-stat-lab">open estimates</span></div>
-        <div className="sb-leads-stat"><span className={`sb-leads-stat-num${summary.overdue > 0 ? ' sb-leads-red' : ''}`}>{summary.overdue}</span><span className="sb-leads-stat-lab">overdue follow-ups</span></div>
+        <div className="sb-leads-stat"><span className={`sb-leads-stat-num${summary.overdue > 0 ? ' sb-leads-red' : ''}`}>{summary.overdue}</span><span className="sb-leads-stat-lab">overdue reminders</span></div>
         <div className="sb-leads-stat"><span className="sb-leads-stat-num">{summary.count}</span><span className="sb-leads-stat-lab">{summary.count === 1 ? 'lead' : 'leads'}</span></div>
       </div>
 
@@ -224,143 +171,123 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCo
         </select>
       </div>
 
-      {totalVisible === 0 ? (
-        <div className="sb-leads-empty">No leads yet. Use “+ New Lead” to capture one.</div>
+      {reminderFor && (
+        <ReminderEditor key={reminderFor} lead={leadById[reminderFor]} defaultDue={reminderDue}
+          onSave={(label, due) => saveReminder(reminderFor, label, due)}
+          onCancel={() => setReminderFor(null)} />
+      )}
+
+      {/* Task table */}
+      {taskRows.length === 0 ? (
+        <div className="sb-lt-empty">No open reminders. Add one from a lead below, or in “+ New Lead”.</div>
       ) : (
-        SECTIONS.map(sec => {
-          const list = grouped[sec.code]
-          if (!list || list.length === 0) return null
-          if (sec.collapsible) {
-            return (
-              <div key={sec.code} className="sb-leads-section">
-                <button type="button" className={`sb-leads-section-head sb-leads-tone-${sec.tone} sb-leads-section-toggle`}
-                  onClick={() => setLostOpen(v => !v)}>
-                  <span className="sb-leads-section-title">{sec.label}</span>
-                  <span className="sb-leads-count">{list.length}</span>
-                  <span className="sb-leads-caret">{lostOpen ? '▾' : '▸'}</span>
-                </button>
-                {lostOpen && <div className="sb-leads-list">{list.map(renderRow)}</div>}
-              </div>
-            )
-          }
-          return (
-            <div key={sec.code} className="sb-leads-section">
-              <div className={`sb-leads-section-head sb-leads-tone-${sec.tone}`}>
-                <span className="sb-leads-section-title">{sec.label}</span>
-                <span className="sb-leads-count">{list.length}</span>
-                {sec.hint && <span className="sb-leads-section-hint">{sec.hint}</span>}
-              </div>
-              <div className="sb-leads-list">{list.map(renderRow)}</div>
-            </div>
-          )
-        })
+        <table className="sb-lt">
+          <thead>
+            <tr>
+              <th className="sb-lt-c-check" />
+              <th>Reminder / task</th>
+              <th>Lead</th>
+              <th>Due</th>
+              <th>Contact</th>
+              <th className="sb-lt-c-act" />
+            </tr>
+          </thead>
+          <tbody>
+            {taskRows.map(({ task, lead, urgency }) => {
+              const key = `t:${task.id}`
+              return (
+                <tr key={task.id} className="sb-lt-row">
+                  <td className="sb-lt-c-check">
+                    <input type="checkbox" disabled={busyId === task.id} onChange={() => markDone(task)} title="Mark done" />
+                  </td>
+                  <td className="sb-lt-c-rem">
+                    <button type="button" className="sb-lt-link sb-lt-rem" onClick={() => onOpenDetail?.(lead.id)}>{task.note}</button>
+                  </td>
+                  <td className="sb-lt-c-lead">
+                    <button type="button" className="sb-lt-link sb-lt-leadname" onClick={() => onOpenDetail?.(lead.id)}>{leadName(lead)}</button>
+                  </td>
+                  <td className="sb-lt-c-due">
+                    {task.due_date
+                      ? <span className={`sb-lt-due sb-lt-due-${urgency}`}>{fmtDate(task.due_date)}</span>
+                      : <span className="sb-lt-due-none">—</span>}
+                  </td>
+                  <td className="sb-lt-c-contact">{lead.customer?.phone_primary ? fmtPhone(lead.customer.phone_primary) : '—'}</td>
+                  <td className="sb-lt-c-act">
+                    <RowMenu open={menuKey === key} onToggle={() => setMenuKey(menuKey === key ? null : key)} items={menuItems(lead, task)} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {/* Leads with no reminder yet — don't let them vanish. */}
+      {noTaskLeads.length > 0 && (
+        <div className="sb-lt-noset">
+          <div className="sb-lt-noset-head">No reminder set ({noTaskLeads.length})</div>
+          <table className="sb-lt sb-lt-light">
+            <tbody>
+              {noTaskLeads.map(lead => {
+                const key = `l:${lead.id}`
+                return (
+                  <tr key={lead.id} className="sb-lt-row">
+                    <td className="sb-lt-c-lead">
+                      <button type="button" className="sb-lt-link sb-lt-leadname" onClick={() => onOpenDetail?.(lead.id)}>{leadName(lead)}</button>
+                      <span className="sb-lt-sub">{lead.order_number || 'EST'}{lead.sales_rep ? ` · ${lead.sales_rep}` : ''}</span>
+                    </td>
+                    <td className="sb-lt-c-contact">{lead.customer?.phone_primary ? fmtPhone(lead.customer.phone_primary) : '—'}</td>
+                    <td className="sb-lt-c-setrem">
+                      <button type="button" className="sb-lt-setbtn" onClick={() => openReminder(lead.id)}>+ Set reminder</button>
+                    </td>
+                    <td className="sb-lt-c-act">
+                      <RowMenu open={menuKey === key} onToggle={() => setMenuKey(menuKey === key ? null : key)} items={menuItems(lead, null)} />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )
 }
 
-// ── Inline expanded actions ──────────────────────────────────────────────────
-function LeadActions({ order, onOpenDetail, onOpenOrder, onConvert, onLogged, onChanged }) {
-  const [type, setType] = useState('Call')
-  const [note, setNote] = useState('')
-  const [nextPreset, setNextPreset] = useState('')   // '' | '3'|'7'|'14' | 'pick'
-  const [pickDate, setPickDate] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [lostOpen, setLostOpen] = useState(false)
-  const [lostReason, setLostReason] = useState('')
-  const [lostNote, setLostNote] = useState('')
-
-  // Log follow-up → order_activity touch + (optional) next_follow_up date.
-  const logFollowup = async () => {
-    if (busy) return
-    setBusy(true)
-    const actor = await getCurrentStaffName()
-    await logOrderActivity(order.id, { type: 'activity', field: 'followup', note: `${type} · ${note.trim() || 'follow-up'}`, actor })
-    let nextIso = null
-    if (nextPreset === 'pick') nextIso = pickDate || null
-    else if (nextPreset) nextIso = isoPlusDays(Number(nextPreset))
-    if (nextIso) await updateOrderLeadFields(order.id, { next_follow_up: nextIso })
-    setBusy(false); setNote(''); setSaved(true)
-    onLogged?.()
-    if (nextIso) onChanged?.()
-    setTimeout(() => setSaved(false), 1600)
-  }
-
-  // Set waiting-on (who's holding the ball) + log the change.
-  const setWaiting = async (code) => {
-    if (busy) return
-    setBusy(true)
-    const actor = await getCurrentStaffName()
-    await updateOrderLeadFields(order.id, { waiting_on: code })
-    const label = (WAITING_ON_OPTIONS.find(o => o.code === code)?.label) || code
-    await logOrderActivity(order.id, { type: 'change', field: 'Waiting on', newValue: label, note: `Waiting on: ${label}`, actor })
-    setBusy(false)
-    onChanged?.()
-  }
-
-  // Mark lost → stamp lost_reason + lost_at, log, drop from default view.
-  const markLost = async () => {
-    if (busy || !lostReason) return
-    setBusy(true)
-    const actor = await getCurrentStaffName()
-    const reasonLabel = (LOST_REASONS.find(r => r.code === lostReason)?.label) || lostReason
-    const detail = lostReason === 'other' && lostNote.trim() ? `${reasonLabel}: ${lostNote.trim()}` : reasonLabel
-    await updateOrderLeadFields(order.id, { lost_reason: detail, lost_at: new Date().toISOString() })
-    await logOrderActivity(order.id, { type: 'change', field: 'Lead lost', newValue: detail, note: `Lost — ${detail}`, actor })
-    setBusy(false); setLostOpen(false)
-    onChanged?.()
-  }
-
+// ── Inline reminder editor ──────────────────────────────────────────────────
+function ReminderEditor({ lead, defaultDue, onSave, onCancel }) {
+  const [label, setLabel] = useState('')
+  const [due, setDue] = useState(defaultDue || '')
+  const name = lead ? leadName(lead) : 'this lead'
   return (
-    <div className="sb-leads-actions">
-      <div className="sb-leads-act-row">
-        <span className="sb-leads-act-lab">Log follow-up</span>
-        <select className="sb-leads-act-sel" value={type} onChange={e => setType(e.target.value)}>
-          {FOLLOWUP_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <input className="sb-leads-act-input" type="text" value={note} placeholder="One-line note…"
-          onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') logFollowup() }} />
-        <select className="sb-leads-act-sel" value={nextPreset} onChange={e => setNextPreset(e.target.value)} title="Next follow-up">
-          <option value="">Next: —</option>
-          {FOLLOWUP_PRESETS.map(p => <option key={p.days} value={String(p.days)}>Next: {p.label}</option>)}
-          <option value="pick">Next: pick date…</option>
-        </select>
-        {nextPreset === 'pick' && (
-          <input className="sb-leads-act-sel" type="date" value={pickDate} onChange={e => setPickDate(e.target.value)} />
-        )}
-        <button type="button" className="sb-leads-act-btn" disabled={busy} onClick={logFollowup}>{busy ? '…' : saved ? 'Logged ✓' : 'Log'}</button>
-      </div>
+    <div className="sb-lt-remedit">
+      <span className="sb-lt-remedit-lab">Reminder for {name}</span>
+      <input className="sb-lt-input" type="text" autoFocus value={label}
+        placeholder="What to do — Call back · Coming in Tue noon · Send quote"
+        onChange={e => setLabel(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && label.trim()) onSave(label, due) }} />
+      <input className="sb-lt-input sb-lt-input-date" type="date" value={due} onChange={e => setDue(e.target.value)} />
+      <button type="button" className="sb-lt-savebtn" disabled={!label.trim()} onClick={() => onSave(label, due)}>Add</button>
+      <button type="button" className="sb-lt-cancelbtn" onClick={onCancel}>Cancel</button>
+    </div>
+  )
+}
 
-      <div className="sb-leads-act-row">
-        <span className="sb-leads-act-lab">Waiting on</span>
-        {WAITING_ON_OPTIONS.map(w => (
-          <button key={w.code} type="button"
-            className={`sb-leads-waitbtn${w.side === 'us' ? ' us' : ''}${order.waiting_on === w.code ? ' on' : ''}`}
-            disabled={busy} onClick={() => setWaiting(w.code)}>{w.label}</button>
-        ))}
-      </div>
-
-      <div className="sb-leads-act-row">
-        <button type="button" className="sb-leads-act-convert" onClick={() => onConvert?.(order.id)}>Convert to Order →</button>
-        <button type="button" className="sb-leads-act-link" onClick={() => onOpenDetail?.(order.id)}>Open order →</button>
-        <button type="button" className="sb-leads-act-won" onClick={() => onOpenOrder?.(order.id)}>Won → contract (wizard)</button>
-        {!order.lost_at && <button type="button" className="sb-leads-act-lost" onClick={() => setLostOpen(o => !o)}>Lost…</button>}
-      </div>
-
-      {lostOpen && (
-        <div className="sb-leads-lost">
-          <span className="sb-leads-act-lab">Reason</span>
-          <select className="sb-leads-act-sel" value={lostReason} onChange={e => setLostReason(e.target.value)}>
-            <option value="">Pick a reason…</option>
-            {LOST_REASONS.map(r => <option key={r.code} value={r.code}>{r.label}</option>)}
-          </select>
-          {lostReason === 'other' && (
-            <input className="sb-leads-act-input" type="text" value={lostNote} placeholder="Note…" onChange={e => setLostNote(e.target.value)} />
-          )}
-          <button type="button" className="sb-leads-act-lostconfirm" disabled={busy || !lostReason} onClick={markLost}>Mark lost</button>
-          <button type="button" className="sb-leads-act-link" onClick={() => setLostOpen(false)}>Cancel</button>
-        </div>
+// ── ⋯ row action menu ───────────────────────────────────────────────────────
+function RowMenu({ open, onToggle, items }) {
+  return (
+    <div className="sb-lt-menuwrap">
+      <button type="button" className="sb-lt-menubtn" title="Actions" onClick={onToggle}>⋯</button>
+      {open && (
+        <>
+          <div className="sb-lt-menuback" onClick={onToggle} />
+          <div className="sb-lt-menu">
+            {items.map((it, i) => (
+              <button key={i} type="button" className={`sb-lt-menuitem${it.danger ? ' danger' : ''}`}
+                disabled={it.disabled} onClick={it.onClick}>{it.label}</button>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
@@ -373,71 +300,66 @@ const CSS = `
 .sb-leads-stat-num { font-size: 22px; font-weight: 700; color: #1a1a1a; }
 .sb-leads-stat-lab { font-size: 12px; color: #8a8472; }
 .sb-leads-red { color: #b3261e; }
-.sb-leads-sortbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.sb-leads-sortbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .sb-leads-sortlab { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #8a8472; }
 .sb-leads-sortsel { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid #d8d2c4; border-radius: 8px; background: #fff; color: #1a1a1a; cursor: pointer; }
 .sb-leads-sortsel:focus { outline: none; border-color: #9A7209; }
-.sb-leads-empty { padding: 40px; text-align: center; color: #8a8472; }
 
-/* Work-queue sections */
-.sb-leads-section { margin-bottom: 18px; }
-.sb-leads-section-head { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #c2bdb2; background: #f4f2ec; }
-.sb-leads-section-toggle { width: 100%; border: none; border-left: 4px solid #c2bdb2; font: inherit; text-align: left; cursor: pointer; }
-.sb-leads-section-title { font-size: 14px; font-weight: 700; color: #1a1a1a; }
-.sb-leads-count { font-size: 12px; font-weight: 700; color: #fff; background: #8a8472; border-radius: 20px; min-width: 20px; height: 20px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; }
-.sb-leads-section-hint { font-size: 12px; color: #8a8472; }
-.sb-leads-caret { margin-left: auto; font-size: 12px; color: #8a8472; }
-.sb-leads-tone-red { background: #fbeaea; border-left-color: #b3261e; }
-.sb-leads-tone-red .sb-leads-count { background: #b3261e; }
-.sb-leads-tone-amber { background: #fdf2e9; border-left-color: #c8821f; }
-.sb-leads-tone-amber .sb-leads-count { background: #c8821f; }
-.sb-leads-tone-blue { background: #eef2fb; border-left-color: #2c5cc5; }
-.sb-leads-tone-blue .sb-leads-count { background: #2c5cc5; }
-.sb-leads-tone-neutral { background: #f4f2ec; border-left-color: #c2bdb2; }
-.sb-leads-list { display: flex; flex-direction: column; gap: 6px; }
-.sb-leads-row { background: #fff; border: 1px solid #ece6d8; border-radius: 9px; overflow: hidden; }
-.sb-leads-row-lost { opacity: 0.6; }
-.sb-leads-rowtop { display: flex; align-items: stretch; }
-.sb-leads-rowmain { flex: 1; min-width: 0; display: grid; grid-template-columns: 2fr 0.9fr 1.8fr 1.3fr 1fr; gap: 14px; align-items: center; text-align: left; background: none; border: none; padding: 11px 16px; cursor: pointer; font: inherit; }
-.sb-leads-rowmain:hover { background: #faf8f3; }
-.sb-leads-rowexpand { flex: 0 0 auto; width: 40px; border: none; border-left: 1px solid #f1efeb; background: #fcfbf8; color: #8a8472; font-size: 17px; cursor: pointer; }
-.sb-leads-rowexpand:hover { background: #f1ede3; color: #5d5d5a; }
-.sb-leads-taskchip { font-size: 12.5px; font-weight: 600; color: #7a4a12; background: #fdf2e9; border: 1px solid #f0d9bf; border-radius: 6px; padding: 2px 8px; display: inline-block; }
-.sb-leads-c-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.sb-leads-name { font-weight: 600; color: #1a1a1a; }
-.sb-leads-sub { font-size: 12px; color: #8a8472; }
-.sb-leads-c-val { font-weight: 700; color: #1a1a1a; }
-.sb-leads-touch { font-size: 13px; color: #555; }
-.sb-leads-nocontact { font-size: 12.5px; font-weight: 700; color: #b3261e; background: #fbeaea; border-radius: 6px; padding: 3px 8px; display: inline-block; }
-.sb-leads-waitchip { font-size: 11.5px; font-weight: 600; color: #5d5d5a; background: #f1efe9; border: 1px solid #e0dccf; border-radius: 6px; padding: 2px 8px; }
-.sb-leads-waitchip.us { color: #b3261e; background: #fbeaea; border-color: #e7b3ad; }
-.sb-leads-due { font-size: 13px; font-weight: 600; border-radius: 6px; padding: 2px 8px; }
-.sb-leads-due-overdue { color: #b3261e; background: #fbeaea; }
-.sb-leads-due-today { color: #7a4a12; background: #fdf2e9; }
-.sb-leads-due-future { color: #555; }
-.sb-leads-due-none { color: #c2bdb2; }
-.sb-leads-actions { border-top: 1px solid #f1efeb; padding: 12px 16px; background: #fcfbf8; display: flex; flex-direction: column; gap: 10px; }
-.sb-leads-act-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sb-leads-act-lab { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #8a8472; }
-.sb-leads-act-sel { border: 1px solid #d8d2c4; border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 13px; }
-.sb-leads-act-input { flex: 1 1 220px; min-width: 160px; border: 1px solid #d8d2c4; border-radius: 6px; padding: 5px 9px; font: inherit; font-size: 13px; }
-.sb-leads-act-btn { border: 1px solid #9a7209; background: #9a7209; color: #fff; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
-.sb-leads-act-btn:disabled { opacity: 0.6; }
-.sb-leads-act-link { border: none; background: none; color: #9a7209; font-weight: 600; cursor: pointer; padding: 0; }
-.sb-leads-act-convert { border: 1px solid #0f1419; background: #0f1419; color: #fff; border-radius: 6px; padding: 5px 14px; font-weight: 700; cursor: pointer; }
-.sb-leads-act-convert:hover { background: #1e2d3d; border-color: #1e2d3d; }
-.sb-leads-act-won { border: 1px solid #2d7a4f; background: #fff; color: #2d7a4f; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
-.sb-leads-act-soon { font-size: 11.5px; color: #a8a294; font-style: italic; margin-left: auto; }
-.sb-leads-waitbtn { border: 1px solid #d8d2c4; background: #fff; color: #5d5d5a; border-radius: 14px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.sb-leads-waitbtn:hover:not(:disabled) { background: #f4f2ee; }
-.sb-leads-waitbtn.us { border-color: #e7b3ad; color: #b3261e; }
-.sb-leads-waitbtn.on { background: #0f1419; color: #fff; border-color: #0f1419; }
-.sb-leads-waitbtn.us.on { background: #b3261e; border-color: #b3261e; color: #fff; }
-.sb-leads-act-lost { border: 1px solid #d8a7a2; background: #fff; color: #b3261e; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; margin-left: auto; }
-.sb-leads-lost { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fbeaea; border: 1px solid #e7b3ad; border-radius: 8px; padding: 8px 12px; }
-.sb-leads-act-lostconfirm { border: 1px solid #b3261e; background: #b3261e; color: #fff; border-radius: 6px; padding: 5px 13px; font-weight: 600; cursor: pointer; }
-.sb-leads-act-lostconfirm:disabled { opacity: 0.55; cursor: default; }
+/* Reminder editor */
+.sb-lt-remedit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fdf8ec; border: 1px solid #e8d9a8; border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; }
+.sb-lt-remedit-lab { font-size: 12px; font-weight: 700; color: #7a5d12; }
+.sb-lt-input { flex: 1 1 240px; min-width: 160px; font: inherit; font-size: 13px; padding: 6px 9px; border: 1px solid #d8d2c4; border-radius: 6px; background: #fff; }
+.sb-lt-input-date { flex: 0 0 auto; }
+.sb-lt-input:focus { outline: none; border-color: #9A7209; }
+.sb-lt-savebtn { border: 1px solid #9a7209; background: #9a7209; color: #fff; border-radius: 6px; padding: 6px 14px; font-weight: 600; cursor: pointer; }
+.sb-lt-savebtn:disabled { opacity: 0.5; cursor: default; }
+.sb-lt-cancelbtn { border: none; background: none; color: #8a8472; font-weight: 600; cursor: pointer; }
+
+/* Task table */
+.sb-lt-empty { padding: 30px; text-align: center; color: #8a8472; background: #fff; border: 1px solid #ece6d8; border-radius: 10px; }
+.sb-lt { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ece6d8; border-radius: 10px; overflow: hidden; }
+.sb-lt thead th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #9a9486; font-weight: 700; padding: 9px 12px; background: #faf8f3; border-bottom: 1px solid #ece6d8; }
+.sb-lt tbody td { padding: 9px 12px; border-bottom: 1px solid #f3f0e8; font-size: 13.5px; color: #2a2a2a; vertical-align: middle; }
+.sb-lt tbody tr:last-child td { border-bottom: none; }
+.sb-lt-row:hover td { background: #faf8f3; }
+.sb-lt-c-check { width: 34px; text-align: center; }
+.sb-lt-c-check input { width: 16px; height: 16px; accent-color: #2d7a4f; cursor: pointer; }
+.sb-lt-c-due { width: 116px; white-space: nowrap; }
+.sb-lt-c-contact { width: 140px; white-space: nowrap; color: #555; font-variant-numeric: tabular-nums; }
+.sb-lt-c-act { width: 44px; text-align: right; }
+.sb-lt-link { background: none; border: none; padding: 0; font: inherit; text-align: left; cursor: pointer; color: #2a2a2a; }
+.sb-lt-rem { font-weight: 600; color: #1a1a1a; }
+.sb-lt-link:hover { color: #9A7209; text-decoration: underline; }
+.sb-lt-leadname { color: #1d4ed8; font-weight: 600; }
+.sb-lt-sub { display: block; font-size: 11.5px; color: #8a8472; }
+.sb-lt-due { font-size: 12.5px; font-weight: 600; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+.sb-lt-due-overdue { color: #b3261e; background: #fbeaea; }
+.sb-lt-due-today { color: #7a4a12; background: #fdf2e9; }
+.sb-lt-due-future { color: #555; }
+.sb-lt-due-none { color: #c2bdb2; }
+
+/* No-reminder list (lighter) */
+.sb-lt-noset { margin-top: 18px; }
+.sb-lt-noset-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #9a9486; margin-bottom: 7px; }
+.sb-lt-light { background: #fcfbf8; }
+.sb-lt-light tbody td { color: #5d5d5a; }
+.sb-lt-c-setrem { width: 130px; }
+.sb-lt-setbtn { border: 1px solid #d8c89a; background: #fdf8ec; color: #7a5d12; border-radius: 6px; padding: 4px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.sb-lt-setbtn:hover { background: #f7eccb; }
+
+/* ⋯ menu */
+.sb-lt-menuwrap { position: relative; display: inline-block; }
+.sb-lt-menubtn { border: none; background: none; font-size: 18px; line-height: 1; color: #8a8472; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.sb-lt-menubtn:hover { background: #f1ede3; color: #5d5d5a; }
+.sb-lt-menuback { position: fixed; inset: 0; z-index: 40; }
+.sb-lt-menu { position: absolute; right: 0; top: 100%; z-index: 41; background: #fff; border: 1px solid #e0dccf; border-radius: 9px; box-shadow: 0 10px 30px rgba(0,0,0,0.16); padding: 5px; min-width: 178px; display: flex; flex-direction: column; }
+.sb-lt-menuitem { text-align: left; background: none; border: none; font: inherit; font-size: 13.5px; color: #2a2a2a; padding: 8px 11px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.sb-lt-menuitem:hover:not(:disabled) { background: #f4f2ec; }
+.sb-lt-menuitem:disabled { opacity: 0.45; cursor: default; }
+.sb-lt-menuitem.danger { color: #b3261e; }
+.sb-lt-menuitem.danger:hover { background: #fbeaea; }
+
 @media (max-width: 760px) {
-  .sb-leads-rowmain { grid-template-columns: 1fr; gap: 6px; }
+  .sb-lt-c-contact { display: none; }
 }
 `

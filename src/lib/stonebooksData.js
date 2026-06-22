@@ -820,6 +820,22 @@ export async function getOpenTasksForOrders(orderIds) {
   return map
 }
 
+// All OPEN tasks across a set of orders — one row per task (a lead may carry
+// several). Powers the Leads task table. Returns a flat array; the caller joins
+// each task to its lead by order_id.
+export async function getOpenTasksList(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  if (!ids.length) return []
+  const { data, error } = await supabase
+    .from('order_activity')
+    .select('id, order_id, note, due_date, task_status, created_at')
+    .in('order_id', ids)
+    .eq('type', 'task')
+    .eq('task_status', 'open')
+  if (error) { console.warn('[leads] getOpenTasksList:', error.message); return [] }
+  return data || []
+}
+
 // Update lead-working columns on an order (next_follow_up / waiting_on /
 // lost_reason / lost_at). Whitelisted so callers can't write arbitrary columns.
 export async function updateOrderLeadFields(orderId, patch = {}) {
