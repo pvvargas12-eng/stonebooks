@@ -16,7 +16,7 @@
 
 import {
   SHAPES, GRANITE_COLORS, BASE_SIZES, BASE_HEIGHTS,
-  buildDieSpec, buildBaseSpec, dieSize3, dieTopLabel, dimsFromWDT,
+  buildDieSpec, buildBaseSpec, dieSize3, dieTopLabel, dimsFromWDT, orderHasBase,
 } from './monumentCatalog'
 
 // Map a monument shape code → an inventory item_type.
@@ -56,7 +56,10 @@ export function resolveStoneNeeds(orders) {
     })
 
     const bc = o.baseConfig || {}
-    if (bc.include) {
+    // Single-source base presence — a required-base die (or any populated base) must
+    // produce a base NEED even when the include flag was never persisted, else its
+    // base stone is never pulled/ordered. (The w||d guard below still skips sizeless bases.)
+    if (orderHasBase(bc, shape)) {
       const bs = BASE_SIZES.find(b => b.code === bc.sizeCode)
       const w = bs ? bs.w : bc.width
       const d = bs ? bs.d : bc.depth

@@ -281,6 +281,26 @@ export const dieDisplayInches = (row) => {
   const r = row || {}
   return [r.width_inches, r.depth_inches ?? r.thickness_inches, r.height_inches]
 }
+
+// Any concrete base spec data present on a base config (either camelCase order
+// .baseConfig or the raw base_config JSONB — same keys).
+const hasBaseData = (bc) => {
+  if (!bc) return false
+  return !!(
+    bc.sizeCode || bc.width != null || bc.depth != null || bc.heightCode != null ||
+    bc.finish || bc.topFinish || bc.polishMargin2in ||
+    (bc.baseTextOverride && String(bc.baseTextOverride).trim())
+  )
+}
+
+// SINGLE SOURCE for "does this order have a base". A base exists when the include
+// flag is set, OR the shape requires one (die / double-die), OR any base spec data
+// is populated. The last clause is what makes this robust against the OrderForm
+// write defect (base fields filled but include never persisted true). `shape` is
+// the resolved SHAPES entry (optional — pass it when available for requiresBase).
+export function orderHasBase(baseConfig, shape) {
+  return baseConfig?.include === true || !!shape?.requiresBase || hasBaseData(baseConfig)
+}
 // Real catalog label for a standard_size_code (e.g. 'die-3-0' → "3-0 × 2-4"),
 // searched across every shape's standardSizes. Null when the code isn't a known
 // standard size (caller falls back to a humanized code). Used by the Design

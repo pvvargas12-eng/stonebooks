@@ -61,7 +61,7 @@ import {
   addJobEvent,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
-import { dieDisplayInches, standardSizeCodeLabel } from './lib/monumentCatalog'
+import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, SHAPES } from './lib/monumentCatalog'
 import RevisionThread from './components/RevisionThread'
 
 // ============================================================================
@@ -221,8 +221,9 @@ function computeDieBaseTrade(order) {
   const die = [dieHead, dieTail].filter(Boolean).join(', ') || null
 
   const bc = o.base_config || {}
+  const baseShape = SHAPES.find(s => s.code === o.shape)
   let base
-  if (!bc.include) {
+  if (!orderHasBase(bc, baseShape)) {
     base = 'Not included'
   } else {
     let bw = null, bd = null
@@ -819,12 +820,19 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   // Single-source 3-value die size (L × W × H) — same column-picker everywhere.
   const dimsLine = dimensionLine(dieDisplayInches(order))
 
-  const baseSummary = !baseConfig.include
+  // Base presence via the single-source orderHasBase (include flag OR required-base
+  // shape OR populated base data) — never the include-only check that dropped a
+  // configured base. When present, render the real spec (buildBaseSpec prefers the
+  // base text override). baseConfig is the raw base_config; wrap it for buildBaseSpec.
+  const baseShape = SHAPES.find(s => s.code === order.shape)
+  const baseSummary = !orderHasBase(baseConfig, baseShape)
     ? 'Not included'
-    : [
-        baseConfig.sizeCode ? humanizeCode(baseConfig.sizeCode) : null,
-        baseConfig.heightCode ? `${baseConfig.heightCode}″ tall` : null,
-      ].filter(Boolean).join(' · ') || 'Included'
+    : (buildBaseSpec({ baseConfig })
+        || [
+          baseConfig.sizeCode ? humanizeCode(baseConfig.sizeCode) : null,
+          baseConfig.heightCode ? `${baseConfig.heightCode}″ tall` : null,
+        ].filter(Boolean).join(' · ')
+        || 'Included')
 
   // ── Missing-info detection ───────────────────────────────────────────────
   const missingItems = detectMissingInfo(job)

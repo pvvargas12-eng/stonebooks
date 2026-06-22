@@ -30,7 +30,7 @@ import {
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
 } from './lib/stonebooksData'
-import { dimsFromWDT, dieDisplayInches } from './lib/monumentCatalog'
+import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, SHAPES } from './lib/monumentCatalog'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -733,8 +733,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // column-pick via dieDisplayInches so this can never drift from the other surfaces.
   const _die = dieDisplayInches(order)
   const dims = dimsFromWDT({ w: _die[0], d: _die[1], t: _die[2] })
-  const baseSummary = !baseConfig.include ? 'Not included'
-    : [humanize(baseConfig.sizeCode), baseConfig.heightCode ? `${baseConfig.heightCode}" tall` : null].filter(Boolean).join(' · ') || 'Included'
+  // Base presence via single-source orderHasBase (not the include-only check that
+  // dropped a configured base). Render the real spec via buildBaseSpec when present.
+  const _baseShape = SHAPES.find(s => s.code === order.shape)
+  const baseSummary = !orderHasBase(baseConfig, _baseShape) ? 'Not included'
+    : (buildBaseSpec({ baseConfig })
+        || [humanize(baseConfig.sizeCode), baseConfig.heightCode ? `${baseConfig.heightCode}" tall` : null].filter(Boolean).join(' · ')
+        || 'Included')
   const finish = [order.polish_level, humanize(order.sides)].filter(Boolean).join(' · ')
 
   // Derived statuses from the related job's milestones (read-only)
