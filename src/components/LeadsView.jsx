@@ -21,7 +21,7 @@ import {
   rowGrandTotal, fmtUSD, fmtDate, fmtPhone, statusInfo,
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
-  bulkArchiveOrders, hardDeleteOrder,
+  bulkArchiveOrders, hardDeleteOrder, TASK_KINDS,
 } from '../lib/stonebooksData'
 import { SALES_REPS } from '../SalesMode'
 import { LEAD_STATUSES, followUpUrgency } from '../lib/leads'
@@ -58,9 +58,8 @@ const jobTypeLabel = (o) => {
   return st.map(c => SERVICE_LABELS[c] || titleCase(c)).join(' · ')
 }
 
-// Design = waiting on layout. Heuristic: an OPEN task whose note mentions layout/
-// design/proof (freeform notes — no task tag exists; flagged in the report).
-const LAYOUT_RE = /\b(layout|design|proof)\b/i
+// Design = waiting on layout — RELIABLE structured signal: an OPEN task with
+// kind='layout', OR orders.waiting_on === 'reviewing_layout'. No keyword matching.
 
 const SORT_OPTIONS = [
   { code: 'due',    label: 'Due date (overdue first)' },
@@ -137,7 +136,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   // Per-lead signals derived from the open tasks.
   const layoutByLead = useMemo(() => {
     const s = new Set()
-    for (const t of tasks) if (LAYOUT_RE.test(t.note || '')) s.add(t.order_id)
+    for (const t of tasks) if (t.kind === 'layout') s.add(t.order_id)
     return s
   }, [tasks])
   const assigneeByLead = useMemo(() => {
@@ -181,7 +180,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
       customer: customerDisplay(o),
       jobType: jobTypeLabel(o),
       status: statusInfo(o.status),
-      design: layoutByLead.has(o.id),
+      design: layoutByLead.has(o.id) || o.waiting_on === 'reviewing_layout',
       value: rowGrandTotal(o),
       cemetery: o.cemetery?.name || '—',
       started: o.created_at || null,
@@ -213,7 +212,20 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   const markDone = async (task) => {
     setBusyId(task.id); setMenuKey(null)
     const res = await setOrderTaskStatus(task.id, 'done')
-    if (res?.ok !== false) { setTasks(prev => prev.filter(t => t.id !== task.id)); refresh() }
+    if (res?.ok !== false) {
+      // Completing the LAST open Layout task on this order clears the structured
+      // signal — but only when it currently === 'reviewing_layout' (never stomp a
+      // manually-set waiting_on). "Last layout" = no other open kind='layout' task
+      // for this order remains in the live list (minus the one just completed).
+      const remaining = tasks.filter(t => t.id !== task.id)
+      if (task.kind === 'layout'
+        && !remaining.some(t => t.order_id === task.order_id && t.kind === 'layout')
+        && leadById[task.order_id]?.waiting_on === 'reviewing_layout') {
+        await updateOrderLeadFields(task.order_id, { waiting_on: null })
+        onChanged?.()   // re-pull orders so the lead's waiting_on / Design refreshes
+      }
+      setTasks(remaining); refresh()
+    }
     setBusyId(null)
   }
   const reopenTask = async (task) => {
@@ -222,14 +234,18 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     if (res?.ok !== false) { setCompletedTasks(prev => prev.filter(t => t.id !== task.id)); refresh() }
     setBusyId(null)
   }
-  const saveReminder = async (leadId, label, due, assignee) => {
+  const saveReminder = async (leadId, label, due, assignee, kind) => {
     const text = (label || '').trim()
     if (!text) return
     const dueDate = due || todayStr()
+    const layout = kind === 'layout'
     const actor = await getCurrentStaffName().catch(() => null)
-    await addOrderTask(leadId, { note: text, dueDate, assignee: assignee || null, actor })
-    await updateOrderLeadFields(leadId, { next_follow_up: dueDate })
+    await addOrderTask(leadId, { note: text, dueDate, assignee: assignee || null, actor, kind: layout ? 'layout' : null })
+    const patch = { next_follow_up: dueDate }
+    if (layout) patch.waiting_on = 'reviewing_layout'   // structured Design signal
+    await updateOrderLeadFields(leadId, patch)
     setReminderFor(null)
+    onChanged?.()   // refresh orders so a layout task's waiting_on surfaces in Design
     refresh()
   }
   const archiveLead = async (leadId) => {
@@ -293,7 +309,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
 
       {reminderFor && (
         <ReminderEditor key={reminderFor} lead={leadById[reminderFor]} defaultDue={reminderDue}
-          onSave={(label, due, assignee) => saveReminder(reminderFor, label, due, assignee)}
+          onSave={(label, due, assignee, kind) => saveReminder(reminderFor, label, due, assignee, kind)}
           onCancel={() => setReminderFor(null)} />
       )}
 
@@ -326,6 +342,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                       title={completed ? 'Re-open' : 'Mark done'} />
                   </td>
                   <td className="sb-lt-c-rem">
+                    {task.kind === 'layout' && <span className="sb-lt-kindchip">Layout</span>}
                     <button type="button" className="sb-lt-link sb-lt-rem" onClick={() => onOpenDetail?.(lead.id)}>{task.note}</button>
                     {task.assignee && <span className="sb-lt-assignee"> · {task.assignee}</span>}
                     {completed && <span className="sb-lt-donetag">Completed ✓</span>}
@@ -405,20 +422,24 @@ function ReminderEditor({ lead, defaultDue, onSave, onCancel }) {
   const [label, setLabel] = useState('')
   const [due, setDue] = useState(defaultDue || '')
   const [assignee, setAssignee] = useState('')
+  const [kind, setKind] = useState('general')
   const name = lead ? leadName(lead) : 'this lead'
   return (
     <div className="sb-lt-remedit">
       <span className="sb-lt-remedit-lab">Reminder for {name}</span>
       <input className="sb-lt-input" type="text" autoFocus value={label}
-        placeholder="What to do — Call back · Coming in Tue noon · Send layout"
+        placeholder="What to do — Call back · Coming in Tue noon · Create a layout"
         onChange={e => setLabel(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter' && label.trim()) onSave(label, due, assignee) }} />
+        onKeyDown={e => { if (e.key === 'Enter' && label.trim()) onSave(label, due, assignee, kind) }} />
+      <select className="sb-lt-input sb-lt-input-sel" value={kind} onChange={e => setKind(e.target.value)} title="Type">
+        {TASK_KINDS.map(t => <option key={t.code} value={t.code}>{t.label}</option>)}
+      </select>
       <input className="sb-lt-input sb-lt-input-date" type="date" value={due} onChange={e => setDue(e.target.value)} />
       <select className="sb-lt-input sb-lt-input-sel" value={assignee} onChange={e => setAssignee(e.target.value)} title="Assign to">
         <option value="">Unassigned</option>
         {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
       </select>
-      <button type="button" className="sb-lt-savebtn" disabled={!label.trim()} onClick={() => onSave(label, due, assignee)}>Add</button>
+      <button type="button" className="sb-lt-savebtn" disabled={!label.trim()} onClick={() => onSave(label, due, assignee, kind)}>Add</button>
       <button type="button" className="sb-lt-cancelbtn" onClick={onCancel}>Cancel</button>
     </div>
   )
@@ -503,6 +524,7 @@ const CSS = `
 .sb-lt-link:hover { color: #9A7209; text-decoration: underline; }
 .sb-lt-leadname { color: #1d4ed8; font-weight: 600; }
 .sb-lt-assignee { font-size: 12.5px; color: #8a8472; font-weight: 600; }
+.sb-lt-kindchip { font-size: 10.5px; font-weight: 700; color: #1d4ed8; background: #e7edfd; border-radius: 5px; padding: 1px 6px; margin-right: 7px; text-transform: uppercase; letter-spacing: 0.03em; vertical-align: middle; }
 .sb-lt-donetag { margin-left: 8px; font-size: 11px; font-weight: 700; color: #2d7a4f; }
 .sb-lt-due { font-size: 12.5px; font-weight: 600; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
 .sb-lt-due-overdue { color: #b3261e; background: #fbeaea; }

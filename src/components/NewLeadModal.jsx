@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { makeBlankOrder, saveOrder, searchCemeteries, rowToCemetery, SALES_REPS } from '../SalesMode'
-import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName } from '../lib/stonebooksData'
+import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName, TASK_KINDS } from '../lib/stonebooksData'
 
 // Today as YYYY-MM-DD. Call only in event handlers / effects (never in render).
 const todayISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
@@ -53,6 +53,7 @@ export default function NewLeadModal({ onClose, onSaved }) {
   const [taskLabel, setTaskLabel] = useState('')
   const [taskDue, setTaskDue] = useState('')
   const [assignee, setAssignee] = useState('')
+  const [taskKind, setTaskKind] = useState('general')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const cemTimer = useRef(null)
@@ -108,8 +109,11 @@ export default function NewLeadModal({ onClose, onSaved }) {
       if (notes.trim()) await addOrderNote({ orderId, body: notes.trim(), author: actor })
       if (taskLabel.trim()) {
         const due = taskDue || todayISO()
-        await addOrderTask(orderId, { note: taskLabel.trim(), dueDate: due, assignee: assignee || null, actor })
-        await updateOrderLeadFields(orderId, { next_follow_up: due })
+        const layout = taskKind === 'layout'
+        await addOrderTask(orderId, { note: taskLabel.trim(), dueDate: due, assignee: assignee || null, actor, kind: layout ? 'layout' : null })
+        const patch = { next_follow_up: due }
+        if (layout) patch.waiting_on = 'reviewing_layout'   // structured Design signal
+        await updateOrderLeadFields(orderId, patch)
       }
     }
     setBusy(false)
@@ -193,6 +197,12 @@ export default function NewLeadModal({ onClose, onSaved }) {
             </label>
             <div className="nl-task-fields">
               <label className="nl-field">
+                <span className="nl-label">Type</span>
+                <select className="nl-input nl-select" value={taskKind} onChange={e => setTaskKind(e.target.value)}>
+                  {TASK_KINDS.map(t => <option key={t.code} value={t.code}>{t.label}</option>)}
+                </select>
+              </label>
+              <label className="nl-field">
                 <span className="nl-label">Due</span>
                 <input className="nl-input" type="date" value={taskDue}
                   onChange={e => setTaskDue(e.target.value)} />
@@ -245,7 +255,7 @@ const CSS = `
 .nl-ac-meta { color: #8a8472; }
 .nl-task { border: 1px solid #ece6d8; border-radius: 10px; padding: 11px 13px; background: #faf8f3; display: flex; flex-direction: column; gap: 10px; }
 .nl-task-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #8a8472; }
-.nl-task-fields { display: grid; grid-template-columns: 150px 1fr; gap: 11px; }
+.nl-task-fields { display: grid; grid-template-columns: 1fr 130px 1fr; gap: 11px; }
 @media (max-width: 520px) { .nl-task-fields { grid-template-columns: 1fr; } }
 .nl-err { margin: 0 22px 12px; background: #fbeaea; border: 1px solid #e7b3ad; color: #b3261e; border-radius: 8px; padding: 9px 12px; font-size: 13px; }
 .nl-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 13px 22px 18px; border-top: 1px solid #f0ece1; }

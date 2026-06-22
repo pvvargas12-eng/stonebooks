@@ -762,6 +762,7 @@ export async function logOrderActivity(orderId, entry = {}) {
     assignee: entry.assignee ?? null,
     task_status: entry.taskStatus ?? (entry.type === 'task' ? 'open' : null),
     due_date: entry.dueDate || null,
+    kind: entry.kind ?? null,   // task type (null = General; 'layout' = Layout). NOT `field` (that's the pipeline phase).
   }
   const { data, error } = await supabase.from('order_activity').insert(row).select().single()
   if (error) { console.warn('[order_activity] log failed (migration pending?):', error.message); return { ok: false, error: error.message } }
@@ -828,7 +829,7 @@ export async function getOpenTasksList(orderIds) {
   if (!ids.length) return []
   const { data, error } = await supabase
     .from('order_activity')
-    .select('id, order_id, note, due_date, task_status, assignee, created_at')
+    .select('id, order_id, note, due_date, task_status, assignee, kind, created_at')
     .in('order_id', ids)
     .eq('type', 'task')
     .eq('task_status', 'open')
@@ -845,7 +846,7 @@ export async function getCompletedTasksList(orderIds) {
   if (!ids.length) return []
   const { data, error } = await supabase
     .from('order_activity')
-    .select('id, order_id, note, due_date, task_status, assignee, created_at')
+    .select('id, order_id, note, due_date, task_status, assignee, kind, created_at')
     .in('order_id', ids)
     .eq('type', 'task')
     .eq('task_status', 'done')
@@ -900,9 +901,17 @@ export async function ensureLeadCadence(orderId, days = 5) {
   } catch (e) { console.warn('[leads] ensureLeadCadence:', e?.message); return { ok: false } }
 }
 
-// Manual task — note + assignee + optional due date; opens as 'open'.
-export async function addOrderTask(orderId, { note, assignee, dueDate, actor } = {}) {
-  return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, taskStatus: 'open' })
+// Task types (order_activity.kind). null = General (legacy + default); 'layout' is
+// the structured "create a layout" task that also drives the Leads Design signal.
+// Extensible — add codes here and they flow through every task-create dropdown.
+export const TASK_KINDS = [
+  { code: 'general', label: 'General' },
+  { code: 'layout',  label: 'Layout' },
+]
+
+// Manual task — note + assignee + optional due date + kind; opens as 'open'.
+export async function addOrderTask(orderId, { note, assignee, dueDate, actor, kind } = {}) {
+  return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, kind, taskStatus: 'open' })
 }
 
 // Remove an activity/task row (used by the rail's task × and confirm).

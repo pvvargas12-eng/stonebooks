@@ -20,6 +20,7 @@ import {
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
+  updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
@@ -196,7 +197,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Activity log (#4)
   const [activity, setActivity] = useState([])
   const [actNote, setActNote] = useState('')
-  const [taskForm, setTaskForm] = useState({ note: '', assignee: '', dueDate: '' })
+  const [taskForm, setTaskForm] = useState({ note: '', assignee: '', dueDate: '', kind: 'general' })
   const [actBusy, setActBusy] = useState(false)
   const [actOpen, setActOpen] = useState(null)   // 'activity' | 'task' | null
 
@@ -326,12 +327,27 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!note || actBusy) return
     setActBusy(true)
     const actor = await getCurrentStaffName()
-    await addOrderTask(orderId, { note, assignee: taskForm.assignee || null, dueDate: taskForm.dueDate || null, actor })
-    setActBusy(false); setTaskForm({ note: '', assignee: '', dueDate: '' }); setActOpen(null)
+    const layout = taskForm.kind === 'layout'
+    await addOrderTask(orderId, { note, assignee: taskForm.assignee || null, dueDate: taskForm.dueDate || null, actor, kind: layout ? 'layout' : null })
+    // A Layout task sets the structured Design signal (reuses the lead-fields path).
+    if (layout) await updateOrderLeadFields(orderId, { waiting_on: 'reviewing_layout' })
+    setActBusy(false); setTaskForm({ note: '', assignee: '', dueDate: '', kind: 'general' }); setActOpen(null)
     refreshActivity()
   }
   const toggleTask = async (a) => {
-    await setOrderTaskStatus(a.id, a.task_status === 'done' ? 'open' : 'done')
+    const becomingDone = a.task_status !== 'done'
+    await setOrderTaskStatus(a.id, becomingDone ? 'done' : 'open')
+    // Keep the structured layout signal in sync: completing the last open Layout
+    // task clears waiting_on (only if it was 'reviewing_layout' — never stomp a
+    // manual value); re-opening a Layout task restores it. Reuses the lead-fields path.
+    if (a.kind === 'layout') {
+      if (becomingDone) {
+        const otherOpenLayout = activity.some(t => t.type === 'task' && t.id !== a.id && t.kind === 'layout' && t.task_status === 'open')
+        if (!otherOpenLayout && order?.waiting_on === 'reviewing_layout') await updateOrderLeadFields(orderId, { waiting_on: null })
+      } else {
+        await updateOrderLeadFields(orderId, { waiting_on: 'reviewing_layout' })
+      }
+    }
     refreshActivity()
   }
 
@@ -1254,6 +1270,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <div className="sb-od-act-form">
                 <textarea className="sb-od-act-input" rows={2} placeholder="Task description" value={taskForm.note} onChange={e => setTaskForm(f => ({ ...f, note: e.target.value }))} />
                 <div className="sb-od-act-form-row">
+                  <select className="sb-od-act-select" value={taskForm.kind} onChange={e => setTaskForm(f => ({ ...f, kind: e.target.value }))} title="Type">
+                    {TASK_KINDS.map(t => <option key={t.code} value={t.code}>{t.label}</option>)}
+                  </select>
                   <select className="sb-od-act-select" value={taskForm.assignee} onChange={e => setTaskForm(f => ({ ...f, assignee: e.target.value }))}>
                     <option value="">Assign to…</option>
                     {TEAM_ROSTER.map(n => <option key={n} value={n}>{n}</option>)}
@@ -1262,7 +1281,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 </div>
                 <div className="sb-od-act-form-actions">
                   <button type="button" className="sb-od-btn" disabled={actBusy || !taskForm.note.trim()} onClick={handleAddTask}>{actBusy ? 'Saving…' : 'Add task'}</button>
-                  <button type="button" className="sb-od-link" onClick={() => { setActOpen(null); setTaskForm({ note: '', assignee: '', dueDate: '' }) }}>Cancel</button>
+                  <button type="button" className="sb-od-link" onClick={() => { setActOpen(null); setTaskForm({ note: '', assignee: '', dueDate: '', kind: 'general' }) }}>Cancel</button>
                 </div>
               </div>
             )}
