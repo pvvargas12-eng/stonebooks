@@ -25,6 +25,7 @@ import {
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
 } from './lib/stonebooksData'
 import { ReceiptActions, rowToOrder } from './SalesMode'
+import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 
 // Customer-payment methods + method-specific reference label.
 const IN_METHODS = [
@@ -117,6 +118,20 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [addOutgoing, setAddOutgoing] = useState(false)
   const [addBill, setAddBill] = useState(false)
   const [payBill, setPayBill] = useState(null)   // a bill instance pending "Update & pay"
+  const [preview, setPreview] = useState(null)   // { order, payment } → receipt preview modal
+
+  // Open the receipt preview for an incoming row (family orders only — cemetery
+  // payments aren't in this list; they live on CemeteryOrderDetail). Looks the
+  // order up by id from the already-loaded set and the payment by id from r.key.
+  const openReceipt = (r) => {
+    const ord = (orders || []).find(o => o.id === r.orderId)
+    if (!ord) return
+    const receiptOrder = rowToOrder(ord, ord.customer)
+    const pid = r.key.slice(r.key.indexOf(':') + 1)
+    const payment = (receiptOrder.payments || []).find(p => p.id === pid)
+      || { id: pid, amount: r.amount, method: r.method, ref: r.ref, receivedAt: r.dateISO, createdBy: null, locked: true, voided: false }
+    setPreview({ order: receiptOrder, payment })
+  }
 
   // Stable "now" anchors (lazy init — no Date()/Date.now() in the render body).
   const [monthPrefix] = useState(() => {
@@ -224,7 +239,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       {view === 'incoming' && (
         <IncomingView
           loading={loading} rows={incomingFiltered} search={search} setSearch={setSearch}
-          openBalances={openBalances} onOpenOrder={onOpenOrder}
+          openBalances={openBalances} onOpenOrder={onOpenOrder} onOpenReceipt={openReceipt}
           onLog={() => setLogIn({})} onLogFor={(order) => setLogIn({ prefill: order })}
         />
       )}
@@ -267,6 +282,9 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
           onPaid={() => { setPayBill(null); loadOutgoing() }}
         />
       )}
+      {preview && (
+        <ReceiptPreviewModal order={preview.order} payment={preview.payment} onClose={() => setPreview(null)} />
+      )}
     </div>
   )
 }
@@ -282,7 +300,7 @@ function SummaryCard({ label, value, sub, tone }) {
 }
 
 // ── Incoming view ────────────────────────────────────────────────────────────
-function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOrder, onLog, onLogFor }) {
+function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOrder, onOpenReceipt, onLog, onLogFor }) {
   const total = rows.reduce((s, r) => s + r.amount, 0)
   return (
     <>
@@ -304,14 +322,17 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
         {loading ? <div className="sb-pay-empty">Loading…</div>
           : rows.length === 0 ? <div className="sb-pay-empty">No payments {search ? 'match your search' : 'logged yet'}.</div>
           : rows.map(r => (
-            <button type="button" key={r.key} className="sb-pay-row sb-pay-row-data" onClick={() => onOpenOrder?.(r.orderId)} title="Open order">
+            <div role="button" tabIndex={0} key={r.key} className="sb-pay-row sb-pay-row-data" onClick={() => onOpenOrder?.(r.orderId)} onKeyDown={e => { if (e.key === 'Enter') onOpenOrder?.(r.orderId) }} title="Open order">
               <div>{r.dateISO ? fmtDate(r.dateISO) : '—'}</div>
               <div className="sb-pay-name">{r.name}</div>
               <div className="sb-pay-mono">{r.orderNumber || '—'}</div>
               <div>{inMethodLabel(r.method)}</div>
               <div className="num sb-pay-amt">{fmtUSD(r.amount)}</div>
-              <div className="sb-pay-ref">{r.ref || '—'}</div>
-            </button>
+              <div className="sb-pay-ref" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.ref || '—'}</span>
+                <button type="button" className="sb-pay-receiptbtn" onClick={e => { e.stopPropagation(); onOpenReceipt?.(r) }}>Receipt</button>
+              </div>
+            </div>
           ))}
       </div>
 
@@ -912,6 +933,8 @@ const PAY_CSS = `
   .sb-pay-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #6b6b66; }
   .sb-pay-amt { font-weight: 600; color: #1e2d3d; }
   .sb-pay-ref { color: #6b6b66; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-pay-receiptbtn { flex: 0 0 auto; font: inherit; font-size: 11px; font-weight: 600; color: #9A7209; border: 0.5px solid #d8c89a; background: #fdf8ec; border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  .sb-pay-receiptbtn:hover { background: #f7efd8; }
   .sb-pay-age { color: #6b6b66; }
   .sb-pay-age.stale { color: #b54040; font-weight: 600; }
   .sb-pay-empty { padding: 28px 16px; text-align: center; color: #8a8a85; font-size: 14px; }

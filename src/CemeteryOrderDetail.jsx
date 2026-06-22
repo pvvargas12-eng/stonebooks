@@ -25,6 +25,7 @@ import {
   fmtRelative,
 } from './lib/stonebooksData'
 import { ReceiptActions } from './SalesMode'
+import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -57,6 +58,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const [pay, setPay] = useState({ amount: '', method: 'check', reference: '', date: todayISO(), notes: '' })
   const [savingPay, setSavingPay] = useState(false)
   const [lastReceiptId, setLastReceiptId] = useState(null)   // just-saved financial_record id → post-save receipt
+  const [receiptPreview, setReceiptPreview] = useState(null) // { payment } → click-to-preview modal
   const [editPay, setEditPay] = useState(null)               // { id, amount, method, date, reference } inline editor
   const [payRowBusy, setPayRowBusy] = useState(null)
   const [payRowErr, setPayRowErr] = useState(null)
@@ -301,7 +303,9 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
               </div>
             </div>
           ) : (
-            <div key={p.id} className="cod-payrow" style={p.voided ? { opacity: 0.55 } : undefined}>
+            <div key={p.id} className="cod-payrow" style={{ cursor: 'pointer', ...(p.voided ? { opacity: 0.55 } : {}) }}
+              title="View receipt"
+              onClick={() => setReceiptPreview({ payment: p.voided ? { ...frToPayment(p), voided: true, voidedBy: p.voided_by, voidedReason: p.voided_reason } : frToPayment(p) })}>
               <div style={{ width: '100%' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
                   <span className="cod-pay-l">
@@ -313,13 +317,13 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
                   <span className="cod-pay-r">
                     {fmtDate(p.occurred_at)}
                     {!p.voided && <>
-                      {' · '}<button type="button" className="cod-linkbtn" onClick={() => startEditPay(p)}>Edit</button>
-                      {' · '}<button type="button" className="cod-linkbtn" onClick={() => voidPay(p)}>Void</button>
+                      {' · '}<button type="button" className="cod-linkbtn" onClick={e => { e.stopPropagation(); startEditPay(p) }}>Edit</button>
+                      {' · '}<button type="button" className="cod-linkbtn" onClick={e => { e.stopPropagation(); voidPay(p) }}>Void</button>
                     </>}
                   </span>
                 </div>
                 {p.voided && p.voided_reason && <div className="cod-pay-note">Voided{p.voided_by ? ` by ${p.voided_by}` : ''}: {p.voided_reason}</div>}
-                {!p.voided && <ReceiptActions order={receiptOrder} payment={frToPayment(p)} grandTotalOverride={total} />}
+                {!p.voided && <div onClick={e => e.stopPropagation()}><ReceiptActions order={receiptOrder} payment={frToPayment(p)} grandTotalOverride={total} /></div>}
               </div>
             </div>
           )))}
@@ -398,6 +402,10 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
             </div>
           </div>
         </div>
+      )}
+
+      {receiptPreview && (
+        <ReceiptPreviewModal order={receiptOrder} payment={receiptPreview.payment} grandTotalOverride={total} onClose={() => setReceiptPreview(null)} />
       )}
 
       {/* print-only PO */}

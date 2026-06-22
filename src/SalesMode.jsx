@@ -11616,7 +11616,7 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
 
 // Sprint 3j — Receipt action toolbar (Preview / Download / Email / Print).
 // Sprint M2 Phase 2: takes a specific payment object (was paymentType).
-export function ReceiptActions({ order, payment, grandTotalOverride }) {
+export function ReceiptActions({ order, payment, grandTotalOverride, hidePreview }) {
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
   const [sent, setSent] = useState(false)
@@ -11685,9 +11685,11 @@ export function ReceiptActions({ order, payment, grandTotalOverride }) {
         <strong>Receipt:</strong> for this payment
       </div>
       <div className="sm-pdf-actions">
+        {!hidePreview && (
         <button type="button" className="sm-btn sm-btn-ghost sm-pdf-btn" onClick={handlePreview} disabled={busy !== null}>
           {busy === 'preview' ? 'Building…' : 'Preview'}
         </button>
+        )}
         <button type="button" className="sm-btn sm-btn-navy sm-pdf-btn" onClick={handleDownload} disabled={busy !== null}>
           {busy === 'download' ? 'Building…' : 'Download receipt'}
         </button>

@@ -41,6 +41,7 @@ import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
 import { TEAM_ROSTER } from './lib/team'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions } from './SalesMode'
+import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 const humanize = (s) =>
@@ -166,6 +167,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
   const [lastReceiptPayment, setLastReceiptPayment] = useState(null)  // just-saved payment → post-save receipt offer
+  const [receiptPreview, setReceiptPreview] = useState(null)          // { payment } → click-to-preview modal
   const [editPay, setEditPay] = useState(null)        // { id, amount, method, receivedAt, ref } inline editor
   const [payRowBusy, setPayRowBusy] = useState(null)  // payment id mid edit/void
   const [payRowErr, setPayRowErr] = useState(null)
@@ -1153,15 +1155,18 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   </div>
                 </div>
               ) : (
-                <div key={p.id} style={{ padding: '8px 0', borderTop: '1px solid #f0ece1' }}>
+                <div key={p.id} style={{ padding: '8px 0', borderTop: '1px solid #f0ece1', cursor: 'pointer' }}
+                  onClick={() => setReceiptPreview({ payment: p })} title="View receipt">
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <span>{fmtUSD(p.amount)} · {humanize(p.method) || '—'}{p.receivedAt ? ` · ${fmtDate(p.receivedAt)}` : ''}{p.ref ? ` · #${p.ref}` : ''}{p.locked ? '' : ' (draft)'}</span>
                     <span className="sb-od-inline-actions">
-                      <button type="button" className="sb-od-link" onClick={() => startEditPay(p)}>Edit</button>
-                      <button type="button" className="sb-od-link" onClick={() => voidPay(p)}>Void</button>
+                      <button type="button" className="sb-od-link" onClick={e => { e.stopPropagation(); startEditPay(p) }}>Edit</button>
+                      <button type="button" className="sb-od-link" onClick={e => { e.stopPropagation(); voidPay(p) }}>Void</button>
                     </span>
                   </div>
-                  <ReceiptActions order={receiptOrder} payment={p} />
+                  <div onClick={e => e.stopPropagation()}>
+                    <ReceiptActions order={receiptOrder} payment={p} />
+                  </div>
                 </div>
               )))}
               {payRowErr && <div className="sb-msg sb-msg-err" style={{ marginTop: 6 }}>{payRowErr}</div>}
@@ -1644,6 +1649,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       )}
 
       {/* Approval packet — customer-facing approval sheet for the current proof. */}
+      {receiptPreview && (
+        <ReceiptPreviewModal order={receiptOrder} payment={receiptPreview.payment} onClose={() => setReceiptPreview(null)} />
+      )}
+
       {approvalSheet && (
         <div className="sb-od-modal-overlay" onClick={closeApprovalSheet}>
           <div className="sb-od-modal sb-od-sheet-modal" onClick={e => e.stopPropagation()}>
