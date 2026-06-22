@@ -828,12 +828,43 @@ export async function getOpenTasksList(orderIds) {
   if (!ids.length) return []
   const { data, error } = await supabase
     .from('order_activity')
-    .select('id, order_id, note, due_date, task_status, created_at')
+    .select('id, order_id, note, due_date, task_status, assignee, created_at')
     .in('order_id', ids)
     .eq('type', 'task')
     .eq('task_status', 'open')
   if (error) { console.warn('[leads] getOpenTasksList:', error.message); return [] }
   return data || []
+}
+
+// All COMPLETED (done) tasks across a set of orders — mirror of getOpenTasksList.
+// Newest-created first. NOTE: order_activity has no completed_at column, so the
+// list can't carry a true completion timestamp (the row's due_date is shown
+// instead); add a completed_at column + write it in setOrderTaskStatus to get one.
+export async function getCompletedTasksList(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  if (!ids.length) return []
+  const { data, error } = await supabase
+    .from('order_activity')
+    .select('id, order_id, note, due_date, task_status, assignee, created_at')
+    .in('order_id', ids)
+    .eq('type', 'task')
+    .eq('task_status', 'done')
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[leads] getCompletedTasksList:', error.message); return [] }
+  return data || []
+}
+
+// Count of OPEN tasks due today-or-overdue — powers the "work to do" nav badge.
+// Counts across all orders (tasks are primarily a leads feature); head-only count.
+export async function getDueOpenTaskCount(todayISO) {
+  if (!todayISO) return 0
+  const { count, error } = await supabase
+    .from('order_activity')
+    .select('id', { count: 'exact', head: true })
+    .eq('type', 'task').eq('task_status', 'open')
+    .lte('due_date', todayISO)
+  if (error) { console.warn('[leads] getDueOpenTaskCount:', error.message); return 0 }
+  return count || 0
 }
 
 // Update lead-working columns on an order (next_follow_up / waiting_on /

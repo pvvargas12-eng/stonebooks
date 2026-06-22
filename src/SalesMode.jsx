@@ -1412,12 +1412,32 @@ async function upsertCemetery(cem) {
     if (error) console.error('updateCemetery error:', error)
     return { data, error }
   }
+  // LOOKUP-OR-CREATE: a cemetery without an id but with a name must not blindly
+  // INSERT — a name that already exists violates cemeteries_name_unique_idx and
+  // aborts the whole order save (the New Lead "(no name)" crash). Reuse the
+  // existing row's id when the name already exists (case-insensitive); only
+  // insert a genuinely new one.
+  const name = (cem.name || '').trim()
+  if (name) {
+    const { data: existing } = await supabase
+      .from('cemeteries').select('*').ilike('name', name).limit(1).maybeSingle()
+    if (existing?.id) return { data: existing, error: null }
+  }
   const { data, error } = await supabase
     .from('cemeteries')
     .insert(cemeteryToRow(cem))
     .select()
     .single()
-  if (error) console.error('insertCemetery error:', error)
+  if (error) {
+    // Unique-violation (race or space/case normalization the ilike missed) → the
+    // row exists now; fetch and reuse it instead of failing the order save.
+    if (error.code === '23505' && name) {
+      const { data: found } = await supabase
+        .from('cemeteries').select('*').ilike('name', name).limit(1).maybeSingle()
+      if (found?.id) return { data: found, error: null }
+    }
+    console.error('insertCemetery error:', error)
+  }
   return { data, error }
 }
 

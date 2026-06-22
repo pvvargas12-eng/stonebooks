@@ -15,7 +15,7 @@ import {
   onAuthStateChange, updatePassword,
 } from './lib/auth'
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
-import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature } from './lib/stonebooksData'
+import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount } from './lib/stonebooksData'
 import { loadPricingConfig } from './lib/orderRates'
 import { setSelectedHub } from './lib/workspaceState'
 import PricingSettings from './components/PricingSettings'
@@ -269,6 +269,8 @@ export default function Stonebooks() {
   // Staff signal: count of partner-submitted vendor requests awaiting triage,
   // shown as a badge on the Vendors nav item (visible from any tab).
   const [vendorAlertCount, setVendorAlertCount] = useState(0)
+  // Lead work signal: open tasks due-today-or-overdue, badged on the Sales nav item.
+  const [leadTaskCount, setLeadTaskCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
   const [tab, setTab] = useState('today')
   const [salesOpen, setSalesOpen] = useState(false)
@@ -378,6 +380,21 @@ export default function Stonebooks() {
     let cancelled = false
     const load = () => getNewPartnerRequestCount()
       .then(n => { if (!cancelled) setVendorAlertCount(n) })
+      .catch(() => {})
+    load()
+    const id = setInterval(load, 60000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [user?.id, portal, tab])
+
+  // Staff-only: open-task "work to do" badge on the Sales nav item (due today or
+  // overdue). Refreshes on tab change + every 60s, mirroring the Vendors badge.
+  useEffect(() => {
+    if (!user?.id || portal !== null) return
+    let cancelled = false
+    const d = new Date(); const p = (n) => String(n).padStart(2, '0')
+    const todayISO = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    const load = () => getDueOpenTaskCount(todayISO)
+      .then(n => { if (!cancelled) setLeadTaskCount(n) })
       .catch(() => {})
     load()
     const id = setInterval(load, 60000)
@@ -661,6 +678,9 @@ export default function Stonebooks() {
                 <span>{item.label}</span>
                 {item.key === 'vendors' && vendorAlertCount > 0 && (
                   <span className="sb-nav-badge" title={`${vendorAlertCount} new partner request${vendorAlertCount === 1 ? '' : 's'} awaiting triage`}>{vendorAlertCount}</span>
+                )}
+                {item.key === 'orders' && leadTaskCount > 0 && (
+                  <span className="sb-nav-badge" title={`${leadTaskCount} lead task${leadTaskCount === 1 ? '' : 's'} due today or overdue`}>{leadTaskCount}</span>
                 )}
               </button>
             ))}
