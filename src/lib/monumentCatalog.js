@@ -269,6 +269,31 @@ export const DIE_TOP_TRADE = {
   'cathedral': 'Cathedral', 'gothic': 'Gothic',
 }
 export const dimsFromWDT = (o) => [ftIn(o?.w), ftIn(o?.d), ftIn(o?.t)].filter(Boolean).join(' × ')
+
+// SINGLE SOURCE for "which three columns are a die's L × W × H" from a RAW DB
+// order row (snake_case columns). A die is ALWAYS three values:
+//   L = width_inches, W (front-to-back) = depth_inches ?? thickness_inches
+//   (the front-to-back lives in depth when set, else in thickness on custom dies),
+//   H = height_inches.
+// Returns the raw numeric inches [L, W, H] — callers format (raw inches or F-I)
+// however their surface needs. LABEL/DISPLAY only; never feeds pricing.
+export const dieDisplayInches = (row) => {
+  const r = row || {}
+  return [r.width_inches, r.depth_inches ?? r.thickness_inches, r.height_inches]
+}
+// Real catalog label for a standard_size_code (e.g. 'die-3-0' → "3-0 × 2-4"),
+// searched across every shape's standardSizes. Null when the code isn't a known
+// standard size (caller falls back to a humanized code). Used by the Design
+// Packet "DIE" chip so it reads as a real monument size, not "Die 3 0".
+export function standardSizeCodeLabel(code) {
+  if (!code) return null
+  for (const sh of SHAPES) {
+    const m = sh.standardSizes?.find(s => s.code === code)
+    if (m) return m.label || null
+  }
+  return null
+}
+
 export function dieSize3(order, shape) {
   const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
   // A die is ALWAYS three explicit dims — L × W × H — never a collapsed pair, never a

@@ -7618,7 +7618,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     const isDie = !!(shape && (shape.canHaveBase || shape.requiresBase))
     const sizeText = isDie
       ? dieSize3(order, shape)
-      : (stdSize ? stdSize.label : [order.width, order.depth, order.thickness ?? order.height].map(fi).filter(Boolean).join(' × '))
+      : (stdSize ? stdSize.label : [order.width, order.depth, order.thickness].map(fi).filter(Boolean).join(' × '))
     const titleCase = (s) => String(s || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).trim()
     const svcName = (order.serviceTypes || []).map(c => SERVICE_TYPES.find(t => t.code === c)?.label).filter(Boolean)[0]
     const shapeName = shape?.label || titleCase(order.shape) || svcName || 'Monument'
@@ -10849,7 +10849,12 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
 function ContinueLater({ order, update, onDepositLogged }) {
   const shape = SHAPES.find(s => s.code === order.shape)
   const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)
-  const dims = [order.width, order.depth, order.thickness ?? order.height].filter(x => x != null).join(' × ')
+  // Die shapes → canonical 3-value dieSize3 (never the thickness??height collapse);
+  // non-die shapes → L × W × thickness (their real 3 dims, height not used).
+  const _isDie = !!(shape && (shape.canHaveBase || shape.requiresBase))
+  const dims = _isDie
+    ? dieSize3(order, shape)
+    : [order.width, order.depth, order.thickness].filter(x => x != null).join(' × ')
   const inscType = INSCRIPTION_TYPES.find(t => t.code === order.inscription?.type)?.label
 
   // Quote Hub — the wizard's Saved view is where every creation flow lands, so

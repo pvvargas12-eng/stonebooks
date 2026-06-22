@@ -61,6 +61,7 @@ import {
   addJobEvent,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
+import { dieDisplayInches, standardSizeCodeLabel } from './lib/monumentCatalog'
 import RevisionThread from './components/RevisionThread'
 
 // ============================================================================
@@ -210,11 +211,9 @@ const BASE_SIDES_TRADE = {
 //   BASE = "F-I X F-I X F-I FINISH[, 2\" POL]"        or "Not included"
 function computeDieBaseTrade(order) {
   const o = order || {}
-  // A die is ALWAYS three values — L × W × H, never four. L = width, W (front-to-back)
-  // = depth when set else thickness (custom dies store the front-to-back in thickness
-  // with depth null), H = height. Same formatter (F-I, joined " X ").
-  const dieDims = [o.width_inches, o.depth_inches ?? o.thickness_inches, o.height_inches]
-    .map(inchesToFI).filter(Boolean).join(' X ')
+  // A die is ALWAYS three values — L × W × H, never four. Same column-picker
+  // (dieDisplayInches) the on-screen packet uses, so snapshot ≡ screen. F-I, " X ".
+  const dieDims = dieDisplayInches(o).map(inchesToFI).filter(Boolean).join(' X ')
   const dieShape = o.top_shape ? (TOP_SHAPE_TRADE[o.top_shape] || humanizeCode(o.top_shape).toUpperCase()) : null
   const dieSides = o.sides ? (DIE_SIDES_TRADE[o.sides] || humanizeCode(o.sides).toUpperCase()) : null
   const dieHead = [dieDims, dieShape].filter(Boolean).join(' ')
@@ -314,13 +313,12 @@ function inchesDisplay(inches) {
   return String(n)
 }
 
-// Multi-dimension joiner — "W × D × T × H" with raw inches per Phase 2A.3.
-// Missing values render as "—" so the operator sees the shape of the gap
-// rather than a collapsed line.
-function dimensionLine(w, d, t, h) {
-  const parts = [w, d, t, h].map(inchesDisplay)
-  if (parts.every(p => p == null)) return null
-  return parts.map(p => p ?? '—').join(' × ')
+// Die dimension joiner — ALWAYS three values L × W × H (raw inches), fed by the
+// shared dieDisplayInches column-picker so every surface agrees. No 4th value,
+// no collapse. Genuinely-missing values are dropped (a complete die shows 3).
+function dimensionLine(values) {
+  const parts = (values || []).map(inchesDisplay).filter(Boolean)
+  return parts.length ? parts.join(' × ') : null
 }
 
 function assembledTitle(person) {
@@ -813,8 +811,13 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   // ── Stone spec card data ─────────────────────────────────────────────────
   const graniteLabel = labelFor(GRANITE_LABELS, order.granite_color)
   const shapeLabel   = labelFor(SHAPE_LABELS,   order.shape)
-  const standardSizeLabel = order.standard_size_code ? humanizeCode(order.standard_size_code) : null
-  const dimsLine = dimensionLine(order.width_inches, order.depth_inches, order.thickness_inches, order.height_inches)
+  // Real catalog size label ("3-0 × 2-4") for the DIE chip — never the garbled
+  // humanizeCode("die-3-0") → "Die 3 0". Falls back to humanize for unknown codes.
+  const standardSizeLabel = order.standard_size_code
+    ? (standardSizeCodeLabel(order.standard_size_code) || humanizeCode(order.standard_size_code))
+    : null
+  // Single-source 3-value die size (L × W × H) — same column-picker everywhere.
+  const dimsLine = dimensionLine(dieDisplayInches(order))
 
   const baseSummary = !baseConfig.include
     ? 'Not included'
