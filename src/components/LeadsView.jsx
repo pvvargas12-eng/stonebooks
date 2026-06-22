@@ -16,7 +16,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { rowGrandTotal, fmtUSD, fmtDate, logOrderActivity, getRecentFollowupsForOrders, getCurrentStaffName, updateOrderLeadFields } from '../lib/stonebooksData'
 import {
-  LEAD_STATUSES, LEAD_FILTERS, WAITING_ON_OPTIONS, waitingOnOption,
+  LEAD_STATUSES, WAITING_ON_OPTIONS, waitingOnOption,
   FOLLOWUP_TYPES, FOLLOWUP_PRESETS, LOST_REASONS, followUpUrgency, daysBetween,
 } from '../lib/leads'
 
@@ -32,10 +32,66 @@ const leadName = (o) => {
   return o.primary_lastname || '(no name)'
 }
 
+// ── Work-queue sections (top→bottom by urgency) ──────────────────────────────
+// Only buckets backed by REAL data exist here. "Coming in today" is intentionally
+// absent — there is no appointment/visit-date field on a lead (see investigation
+// B). Every non-lost lead lands in exactly one bucket via bucketOf()'s precedence;
+// "Waiting on them" is the catch-all so nothing ever disappears.
+const SECTIONS = [
+  { code: 'new',     label: 'New — needs first contact', tone: 'amber', hint: 'Fresh leads, no contact yet' },
+  { code: 'overdue', label: 'Follow-up overdue',         tone: 'red',   hint: 'Past their follow-up date' },
+  { code: 'today',   label: 'Follow-up due today',       tone: 'amber', hint: 'Reach out today' },
+  { code: 'quote',   label: 'Waiting on quote',          tone: 'blue',  hint: 'We owe them an estimate' },
+  { code: 'layout',  label: 'Waiting on layout',         tone: 'blue',  hint: 'They\'re deciding on the design' },
+  { code: 'them',    label: 'Waiting on them',           tone: 'neutral', hint: 'Ball is in their court' },
+  { code: 'lost',    label: 'Lost',                      tone: 'neutral', collapsible: true, hint: '' },
+]
+
+const SORT_OPTIONS = [
+  { code: 'newest',   label: 'Newest first' },
+  { code: 'oldest',   label: 'Oldest first' },
+  { code: 'followup', label: 'Follow-up due (soonest)' },
+  { code: 'value',    label: 'Highest $ first' },
+]
+
+// Assign a lead row (x = enriched { o, value, urgency, noContact, ... }) to its
+// single work-queue bucket. Precedence top→bottom = urgency. Explicit operator
+// signals (waiting_on, follow-up date) beat the value proxy. See investigation C:
+// "quote" = no priced estimate yet (value 0) OR an "our court" waiting_on flag;
+// "layout" = the customer is reviewing the layout we sent.
+function bucketOf(x) {
+  const o = x.o
+  const w = o.waiting_on
+  if (o.lost_at) return 'lost'
+  if (x.noContact && !o.next_follow_up && !w && !(x.value > 0)) return 'new'
+  if (x.urgency === 'overdue') return 'overdue'
+  if (x.urgency === 'today') return 'today'
+  if (w === 'reviewing_layout') return 'layout'
+  if (w === 'owes_layout' || w === 'never_followed_up') return 'quote'
+  if (!(x.value > 0)) return 'quote'
+  return 'them'   // thinking / comparing / waiting_cemetery, or estimate-out awaiting decision
+}
+
+// Within-section comparator for the Sort dropdown.
+function makeSorter(sortKey) {
+  const cmpCreated = (a, b) => {
+    const ca = a.o.created_at || '', cb = b.o.created_at || ''
+    return ca < cb ? -1 : ca > cb ? 1 : 0
+  }
+  if (sortKey === 'oldest')   return cmpCreated
+  if (sortKey === 'value')    return (a, b) => (b.value || 0) - (a.value || 0)
+  if (sortKey === 'followup') return (a, b) => {
+    const na = a.o.next_follow_up || '9999-12-31', nb = b.o.next_follow_up || '9999-12-31'
+    return na < nb ? -1 : na > nb ? 1 : cmpCreated(b, a)
+  }
+  return (a, b) => cmpCreated(b, a)   // newest (default)
+}
+
 export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onConvert, onChanged }) {
   const [todayISO, setTodayISO] = useState('')
   const [lastTouch, setLastTouch] = useState({})
-  const [filter, setFilter] = useState('all')
+  const [sortKey, setSortKey] = useState('newest')   // default: newest-created first (a new lead never sinks)
+  const [lostOpen, setLostOpen] = useState(false)    // Lost section collapsed by default
   const [openId, setOpenId] = useState(null)
   const [touchNonce, setTouchNonce] = useState(0)   // bump to refresh last-touch after a follow-up
 
@@ -70,26 +126,17 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCo
     return { o, value, age, touch, touchAge, noContact, urgency, wait }
   }), [leads, lastTouch, todayISO])
 
-  const visible = useMemo(() => {
-    let r = rows
-    if (filter === 'overdue') r = r.filter(x => x.urgency === 'overdue')
-    else if (filter === 'today') r = r.filter(x => x.urgency === 'today')
-    else if (filter === 'us') r = r.filter(x => x.wait?.side === 'us')
-    else if (filter === 'them') r = r.filter(x => x.wait?.side === 'them')
-    else if (filter === 'lost') r = r.filter(x => !!x.o.lost_at)
-    else r = r.filter(x => !x.o.lost_at)   // default view excludes lost
-    // Sort: overdue first → next_follow_up asc → oldest estimate.
-    const urgRank = { overdue: 0, today: 1, future: 2 }
-    return [...r].sort((a, b) => {
-      const ua = a.urgency ? urgRank[a.urgency] : 3
-      const ub = b.urgency ? urgRank[b.urgency] : 3
-      if (ua !== ub) return ua - ub
-      const na = a.o.next_follow_up || '9999-12-31'
-      const nb = b.o.next_follow_up || '9999-12-31'
-      if (na !== nb) return na < nb ? -1 : 1
-      return (a.o.created_at || '') < (b.o.created_at || '') ? -1 : 1   // oldest estimate first
-    })
-  }, [rows, filter])
+  // Group every lead into its work-queue section, then sort WITHIN each section
+  // by the chosen Sort option (default newest-first).
+  const grouped = useMemo(() => {
+    const map = { new: [], overdue: [], today: [], quote: [], layout: [], them: [], lost: [] }
+    for (const x of rows) map[bucketOf(x)].push(x)
+    const cmp = makeSorter(sortKey)
+    for (const k of Object.keys(map)) map[k].sort(cmp)
+    return map
+  }, [rows, sortKey])
+
+  const totalVisible = rows.length
 
   // Summary across all (non-lost) leads.
   const summary = useMemo(() => {
@@ -101,6 +148,45 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCo
     }
   }, [rows])
 
+  // One row — identical markup across every section.
+  const renderRow = ({ o, value, age, touch, touchAge, noContact, urgency, wait }) => {
+    const isOpen = openId === o.id
+    return (
+      <div key={o.id} className={`sb-leads-row${o.lost_at ? ' sb-leads-row-lost' : ''}`}>
+        <button type="button" className="sb-leads-rowmain" onClick={() => setOpenId(isOpen ? null : o.id)}>
+          <div className="sb-leads-c-name">
+            <span className="sb-leads-name">{leadName(o)}</span>
+            <span className="sb-leads-sub">{o.order_number || 'EST'} · {age != null ? `${age}d old` : ''}{o.sales_rep ? ` · ${o.sales_rep}` : ''}</span>
+          </div>
+          <div className="sb-leads-c-val">{fmtUSD(value)}</div>
+          <div className="sb-leads-c-touch">
+            {noContact
+              ? <span className="sb-leads-nocontact">No contact since estimate{age != null ? ` — ${age}d` : ''}</span>
+              : <span className="sb-leads-touch">{touch.note || 'Contact'}{touchAge != null ? ` · ${touchAge}d ago` : ''}</span>}
+          </div>
+          <div className="sb-leads-c-wait">
+            {wait && <span className={`sb-leads-waitchip${wait.side === 'us' ? ' us' : ''}`}>{wait.label}</span>}
+          </div>
+          <div className="sb-leads-c-next">
+            {o.next_follow_up
+              ? <span className={`sb-leads-due sb-leads-due-${urgency}`}>{fmtDate(o.next_follow_up)}</span>
+              : <span className="sb-leads-due-none">—</span>}
+          </div>
+        </button>
+        {isOpen && (
+          <LeadActions
+            order={o}
+            onOpenDetail={onOpenDetail}
+            onOpenOrder={onOpenOrder}
+            onConvert={onConvert}
+            onLogged={() => setTouchNonce(n => n + 1)}
+            onChanged={onChanged}
+          />
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="sb-leads">
       <style>{CSS}</style>
@@ -111,54 +197,43 @@ export default function LeadsView({ orders = [], onOpenDetail, onOpenOrder, onCo
         <div className="sb-leads-stat"><span className="sb-leads-stat-num">{summary.count}</span><span className="sb-leads-stat-lab">{summary.count === 1 ? 'lead' : 'leads'}</span></div>
       </div>
 
-      <div className="sb-leads-chips">
-        {LEAD_FILTERS.map(f => (
-          <button key={f.code} type="button" className={`sb-leads-chip${filter === f.code ? ' on' : ''}`} onClick={() => setFilter(f.code)}>{f.label}</button>
-        ))}
+      <div className="sb-leads-sortbar">
+        <span className="sb-leads-sortlab">Sort</span>
+        <select className="sb-leads-sortsel" value={sortKey} onChange={e => setSortKey(e.target.value)}>
+          {SORT_OPTIONS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+        </select>
       </div>
 
-      {visible.length === 0 ? (
-        <div className="sb-leads-empty">No leads in this view.</div>
+      {totalVisible === 0 ? (
+        <div className="sb-leads-empty">No leads yet. Use “+ New Lead” to capture one.</div>
       ) : (
-        <div className="sb-leads-list">
-          {visible.map(({ o, value, age, touch, touchAge, noContact, urgency, wait }) => {
-            const isOpen = openId === o.id
+        SECTIONS.map(sec => {
+          const list = grouped[sec.code]
+          if (!list || list.length === 0) return null
+          if (sec.collapsible) {
             return (
-              <div key={o.id} className={`sb-leads-row${o.lost_at ? ' sb-leads-row-lost' : ''}`}>
-                <button type="button" className="sb-leads-rowmain" onClick={() => setOpenId(isOpen ? null : o.id)}>
-                  <div className="sb-leads-c-name">
-                    <span className="sb-leads-name">{leadName(o)}</span>
-                    <span className="sb-leads-sub">{o.order_number || 'EST'} · {age != null ? `${age}d old` : ''}{o.sales_rep ? ` · ${o.sales_rep}` : ''}</span>
-                  </div>
-                  <div className="sb-leads-c-val">{fmtUSD(value)}</div>
-                  <div className="sb-leads-c-touch">
-                    {noContact
-                      ? <span className="sb-leads-nocontact">No contact since estimate{age != null ? ` — ${age}d` : ''}</span>
-                      : <span className="sb-leads-touch">{touch.note || 'Contact'}{touchAge != null ? ` · ${touchAge}d ago` : ''}</span>}
-                  </div>
-                  <div className="sb-leads-c-wait">
-                    {wait && <span className={`sb-leads-waitchip${wait.side === 'us' ? ' us' : ''}`}>{wait.label}</span>}
-                  </div>
-                  <div className="sb-leads-c-next">
-                    {o.next_follow_up
-                      ? <span className={`sb-leads-due sb-leads-due-${urgency}`}>{fmtDate(o.next_follow_up)}</span>
-                      : <span className="sb-leads-due-none">—</span>}
-                  </div>
+              <div key={sec.code} className="sb-leads-section">
+                <button type="button" className={`sb-leads-section-head sb-leads-tone-${sec.tone} sb-leads-section-toggle`}
+                  onClick={() => setLostOpen(v => !v)}>
+                  <span className="sb-leads-section-title">{sec.label}</span>
+                  <span className="sb-leads-count">{list.length}</span>
+                  <span className="sb-leads-caret">{lostOpen ? '▾' : '▸'}</span>
                 </button>
-                {isOpen && (
-                  <LeadActions
-                    order={o}
-                    onOpenDetail={onOpenDetail}
-                    onOpenOrder={onOpenOrder}
-                    onConvert={onConvert}
-                    onLogged={() => setTouchNonce(n => n + 1)}
-                    onChanged={onChanged}
-                  />
-                )}
+                {lostOpen && <div className="sb-leads-list">{list.map(renderRow)}</div>}
               </div>
             )
-          })}
-        </div>
+          }
+          return (
+            <div key={sec.code} className="sb-leads-section">
+              <div className={`sb-leads-section-head sb-leads-tone-${sec.tone}`}>
+                <span className="sb-leads-section-title">{sec.label}</span>
+                <span className="sb-leads-count">{list.length}</span>
+                {sec.hint && <span className="sb-leads-section-hint">{sec.hint}</span>}
+              </div>
+              <div className="sb-leads-list">{list.map(renderRow)}</div>
+            </div>
+          )
+        })
       )}
     </div>
   )
@@ -278,10 +353,27 @@ const CSS = `
 .sb-leads-stat-num { font-size: 22px; font-weight: 700; color: #1a1a1a; }
 .sb-leads-stat-lab { font-size: 12px; color: #8a8472; }
 .sb-leads-red { color: #b3261e; }
-.sb-leads-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-.sb-leads-chip { border: 1px solid #d8d2c4; background: #fff; border-radius: 16px; padding: 5px 13px; font-size: 13px; font-weight: 600; color: #5d5d5a; cursor: pointer; }
-.sb-leads-chip.on { background: #0f1419; color: #fff; border-color: #0f1419; }
+.sb-leads-sortbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.sb-leads-sortlab { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #8a8472; }
+.sb-leads-sortsel { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid #d8d2c4; border-radius: 8px; background: #fff; color: #1a1a1a; cursor: pointer; }
+.sb-leads-sortsel:focus { outline: none; border-color: #9A7209; }
 .sb-leads-empty { padding: 40px; text-align: center; color: #8a8472; }
+
+/* Work-queue sections */
+.sb-leads-section { margin-bottom: 18px; }
+.sb-leads-section-head { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #c2bdb2; background: #f4f2ec; }
+.sb-leads-section-toggle { width: 100%; border: none; border-left: 4px solid #c2bdb2; font: inherit; text-align: left; cursor: pointer; }
+.sb-leads-section-title { font-size: 14px; font-weight: 700; color: #1a1a1a; }
+.sb-leads-count { font-size: 12px; font-weight: 700; color: #fff; background: #8a8472; border-radius: 20px; min-width: 20px; height: 20px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; }
+.sb-leads-section-hint { font-size: 12px; color: #8a8472; }
+.sb-leads-caret { margin-left: auto; font-size: 12px; color: #8a8472; }
+.sb-leads-tone-red { background: #fbeaea; border-left-color: #b3261e; }
+.sb-leads-tone-red .sb-leads-count { background: #b3261e; }
+.sb-leads-tone-amber { background: #fdf2e9; border-left-color: #c8821f; }
+.sb-leads-tone-amber .sb-leads-count { background: #c8821f; }
+.sb-leads-tone-blue { background: #eef2fb; border-left-color: #2c5cc5; }
+.sb-leads-tone-blue .sb-leads-count { background: #2c5cc5; }
+.sb-leads-tone-neutral { background: #f4f2ec; border-left-color: #c2bdb2; }
 .sb-leads-list { display: flex; flex-direction: column; gap: 6px; }
 .sb-leads-row { background: #fff; border: 1px solid #ece6d8; border-radius: 9px; overflow: hidden; }
 .sb-leads-row-lost { opacity: 0.6; }
