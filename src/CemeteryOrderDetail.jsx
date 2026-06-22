@@ -24,7 +24,7 @@ import {
   fmtDate,
   fmtRelative,
 } from './lib/stonebooksData'
-import { ReceiptActions } from './SalesMode'
+import { ReceiptActions, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
@@ -55,7 +55,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const [loading, setLoading] = useState(true)
 
   const [payOpen, setPayOpen] = useState(false)
-  const [pay, setPay] = useState({ amount: '', method: 'check', reference: '', date: todayISO(), notes: '' })
+  const [pay, setPay] = useState({ amount: '', method: 'check', reference: '', date: todayISO(), notes: '', collectedBy: '' })
   const [savingPay, setSavingPay] = useState(false)
   const [lastReceiptId, setLastReceiptId] = useState(null)   // just-saved financial_record id → post-save receipt
   const [receiptPreview, setReceiptPreview] = useState(null) // { payment } → click-to-preview modal
@@ -135,8 +135,9 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   }
 
   // ── record payment ──────────────────────────────────────────────────────
-  const openPay = () => {
-    setPay({ amount: balance > 0 ? balance.toFixed(2) : '', method: 'check', reference: '', date: todayISO(), notes: '' })
+  const openPay = async () => {
+    const me = await getCurrentStaffName().catch(() => '')
+    setPay({ amount: balance > 0 ? balance.toFixed(2) : '', method: 'check', reference: '', date: todayISO(), notes: '', collectedBy: me || '' })
     setPayOpen(true)
   }
   const payAmt = Number(pay.amount)
@@ -146,7 +147,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const submitPay = async () => {
     if (!payValid) return
     setSavingPay(true)
-    const createdBy = await getCurrentStaffName().catch(() => null)
+    const createdBy = pay.collectedBy || await getCurrentStaffName().catch(() => null)
     const res = await recordPayment({
       amount: payAmt,
       paymentMethod: pay.method,
@@ -378,6 +379,13 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
             <label className="cod-modal-field">Method
               <select value={pay.method} onChange={e => setPay(p => ({ ...p, method: e.target.value }))}>
                 {PAYMENT_METHODS.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+              </select>
+            </label>
+            <label className="cod-modal-field">Payment collected by
+              <select value={pay.collectedBy} onChange={e => setPay(p => ({ ...p, collectedBy: e.target.value }))}>
+                {(pay.collectedBy && !SALES_REPS.includes(pay.collectedBy)) && <option value={pay.collectedBy}>{pay.collectedBy}</option>}
+                <option value="">— select —</option>
+                {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
             </label>
             <label className="cod-modal-field">Reference (optional)

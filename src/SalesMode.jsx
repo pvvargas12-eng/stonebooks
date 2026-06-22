@@ -8646,131 +8646,70 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   y += 5
 
   doc.setFontSize(9)
-  doc.text(`For Contract #${order.orderNumber || 'DRAFT'}${order.signedAt ? ` (signed ${fmtDate(order.signedAt)})` : ''}`, M, y)
-  y += 5
-  // Deceased line — the memorial this payment is for (real names only; skip if none).
-  const _deceasedNames = (Array.isArray(order.deceased) ? order.deceased : [])
-    .map(d => [d.firstName, d.lastName].filter(Boolean).join(' ').trim()).filter(Boolean).join(', ')
-  if (_deceasedNames) { doc.setFontSize(9); doc.setTextColor(...GREY); doc.text(`In memory of: ${_deceasedNames}`, M, y); doc.setTextColor(...TEXT); y += 5 }
-  y += 3
+  doc.setTextColor(...GREY)
+  doc.text(`For Contract #${order.orderNumber || 'DRAFT'}`, M, y)
+  y += 9
 
-  // ============================ CUSTOMER ================================
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(10)
-  doc.setTextColor(...NAVY)
-  doc.text('Received from', M, y)
-  y += 5
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(10)
-  doc.setTextColor(...TEXT)
-  const c = order.customer || {}
-  const name = `${c.firstName || ''} ${c.lastName || ''}`.trim()
-  doc.text(name || '—', M, y)
-  y += 4
-  if (c.addressLine1) { doc.setFontSize(9); doc.text(c.addressLine1, M, y); y += 4 }
-  if (c.city || c.state || c.zip) {
-    doc.setFontSize(9)
-    doc.text([c.city, c.state, c.zip].filter(Boolean).join(', '), M, y); y += 4
-  }
-  if (c.phonePrimary) { doc.setFontSize(9); doc.setTextColor(...GREY); doc.text(maskPhoneInput(c.phonePrimary) || c.phonePrimary, M, y); y += 4 }
-  y += 4
-
-  // ============================ PAYMENT BLOCK ===========================
-  doc.setDrawColor(...LIGHT_RULE)
-  doc.setLineWidth(0.3)
-  doc.line(M, y, W - M, y)
-  y += 6
-
-  // Sprint M2 Phase 3 — label derived from this payment's position in the
-  // chronological non-voided locked sequence + whether the order is fully paid
-  // as of now. Receipts regenerate on demand and carry no historical state, so
-  // the label always reflects the current ledger: if a "final" payment is
-  // later voided/removed, a fresh receipt for the new last payment re-derives.
-  const sortedPayments = [...nonVoidedPayments].sort((a, b) =>
-    (a.createdAt || '').localeCompare(b.createdAt || '')
-  )
+  // ============================ HERO — this payment is the headline =====
+  const methodLabels = { check: 'Check', cash: 'Cash', card: 'Credit / Debit Card', zelle: 'Zelle', other: 'Other' }
+  // Label from this payment's chronological position + current fully-paid state.
+  const sortedPayments = [...nonVoidedPayments].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
   const thisIndex = sortedPayments.findIndex(p => p.id === payment?.id)
   const isFirst = thisIndex === 0
   const isLast = thisIndex === sortedPayments.length - 1
   const isFullyPaidNow = totalPaidToDate >= grandTotal && grandTotal > 0
-  // "Final" = chronologically last locked payment AND the order is fully paid
-  // right now. A multi-payment order still short of grandTotal has no FINAL —
-  // its last payment is a PARTIAL, because more is still expected.
   const isFinalPayment = isLast && isFullyPaidNow
-
   let receiptLabel
-  if (isFirst && isFinalPayment && sortedPayments.length === 1) {
-    receiptLabel = 'DEPOSIT & FINAL PAYMENT — PAID IN FULL'
-  } else if (isFirst) {
-    receiptLabel = 'DEPOSIT RECEIPT'
-  } else if (isFinalPayment) {
-    receiptLabel = 'FINAL PAYMENT RECEIPT — PAID IN FULL'
-  } else {
-    // Middle payment. Index 0 is always the deposit, so a payment at index N
-    // is "Partial Payment Receipt #N" (1-indexed among non-deposit payments).
-    receiptLabel = `PARTIAL PAYMENT RECEIPT #${thisIndex}`
-  }
+  if (isFirst && isFinalPayment && sortedPayments.length === 1) receiptLabel = 'DEPOSIT & FINAL PAYMENT — PAID IN FULL'
+  else if (isFirst) receiptLabel = 'DEPOSIT RECEIPT'
+  else if (isFinalPayment) receiptLabel = 'FINAL PAYMENT RECEIPT — PAID IN FULL'
+  else receiptLabel = `PARTIAL PAYMENT RECEIPT #${thisIndex}`
 
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(11)
-  doc.setTextColor(...GOLD)
-  // Sprint M2 Phase 3 — label derived from payment position + fully-paid state.
-  // Regenerated on demand; reflects current ledger state.
-  doc.text(receiptLabel, M, y)
-  y += 7
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(...GOLD)
+  doc.text(receiptLabel, M, y); y += 11
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(30); doc.setTextColor(...NAVY)
+  doc.text(fmtUSD(paymentAmount), M, y); y += 8
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+  const heroMeta = [methodLabels[paymentMethod] || paymentMethod || '—', paymentRef ? `Ref ${paymentRef}` : null, fmtDate(paymentDate)].filter(Boolean).join('   ·   ')
+  doc.text(heroMeta, M, y); y += 5
+  doc.text(`Collected by ${payment?.createdBy || '—'}`, M, y); y += 9
 
-  // Payment details table
-  const methodLabels = { check: 'Check', cash: 'Cash', card: 'Credit / Debit Card', zelle: 'Zelle', other: 'Other' }
-  const rows = [
-    ['Amount paid', fmtUSD(paymentAmount)],
-    ['Method', methodLabels[paymentMethod] || paymentMethod || '—'],
-    ['Reference', paymentRef || '—'],
-    ['Date received', fmtDate(paymentDate)],
-    ['Received by', payment?.createdBy || '—'],
-  ]
-  // Sprint 3u Part D — reserve the whole payment-details table at once.
-  ensure(rows.length * 5 + 8)
-  for (const [k, v] of rows) {
-    ensure(6)
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(10)
-    doc.setTextColor(...GREY)
-    doc.text(k, M, y)
-    doc.setFont('helvetica', 'bold')
-    doc.setTextColor(...TEXT)
-    doc.text(String(v), M + 50, y)
-    y += 5
-  }
+  // ============================ RECEIVED FROM ==========================
+  doc.setDrawColor(...LIGHT_RULE); doc.setLineWidth(0.3); doc.line(M, y, W - M, y); y += 6
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...NAVY)
+  doc.text('Received from', M, y); y += 5
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...TEXT)
+  const c = order.customer || {}
+  const custName = `${c.firstName || ''} ${c.lastName || ''}`.trim()
+  doc.text(custName || '—', M, y); y += 4
+  if (c.addressLine1) { doc.setFontSize(9); doc.text(c.addressLine1, M, y); y += 4 }
+  if (c.city || c.state || c.zip) { doc.setFontSize(9); doc.text([c.city, c.state, c.zip].filter(Boolean).join(', '), M, y); y += 4 }
+  if (c.phonePrimary) { doc.setFontSize(9); doc.setTextColor(...GREY); doc.text(maskPhoneInput(c.phonePrimary) || c.phonePrimary, M, y); y += 4 }
   y += 4
 
-  // ============================ RUNNING TOTALS ==========================
+  // ============================ PAYMENT HISTORY ========================
+  doc.setDrawColor(...LIGHT_RULE); doc.line(M, y, W - M, y); y += 6
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...NAVY)
+  doc.text('Payment history', M, y); y += 6
+  ensure(sortedPayments.length * 5 + 26)
+  for (const p of sortedPayments) {
+    const isThis = p.id === payment?.id
+    const left = [fmtDate(p.receivedAt || p.createdAt), methodLabels[p.method] || p.method || null, p.ref ? `#${p.ref}` : null].filter(Boolean).join('  ·  ')
+    doc.setFont('helvetica', isThis ? 'bold' : 'normal'); doc.setFontSize(9.5); doc.setTextColor(...(isThis ? NAVY : GREY))
+    doc.text(left + (isThis ? '   (this payment)' : ''), M, y)
+    doc.setTextColor(...(isThis ? NAVY : TEXT))
+    doc.text(fmtUSD(p.amount), W - M, y, { align: 'right' })
+    y += 5
+  }
   doc.setDrawColor(...LIGHT_RULE); doc.line(M, y, W - M, y); y += 5
 
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(10)
-  doc.setTextColor(...NAVY)
-  doc.text('Running totals', M, y); y += 5
-
-  const totRows = [
-    ['Total contract amount', fmtUSD(grandTotal), false],
-    ['Paid to date (incl. this payment)', fmtUSD(totalPaidToDate), false],
-    [isFullyPaid ? 'Balance — PAID IN FULL' : 'Balance remaining',
-     isFullyPaid ? fmtUSD(0) : fmtUSD(balanceRemaining), true],
-  ]
-  // Sprint 3u Part D — reserve the whole running-totals block at once.
-  ensure(totRows.length * 6 + 8)
-  for (const [k, v, big] of totRows) {
-    ensure(6)
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(big ? 12 : 10)
-    doc.setTextColor(...(big ? NAVY : GREY))
-    doc.text(k, M, y)
-    doc.setFont('helvetica', 'bold')
-    doc.setTextColor(...(big ? (isFullyPaid ? [45, 138, 79] : NAVY) : TEXT))
-    doc.text(String(v), W - M, y, { align: 'right' })
-    y += big ? 7 : 5
-  }
-  y += 6
+  // Totals — AMOUNT only, NO due date.
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+  doc.text('Total contract amount', M, y); doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT); doc.text(fmtUSD(grandTotal), W - M, y, { align: 'right' }); y += 5
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(...GREY); doc.text('Paid to date', M, y); doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT); doc.text(fmtUSD(totalPaidToDate), W - M, y, { align: 'right' }); y += 6
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...(isFullyPaid ? [45, 138, 79] : NAVY))
+  doc.text(isFullyPaid ? 'Balance — PAID IN FULL' : 'Balance remaining before carving', M, y)
+  doc.text(isFullyPaid ? fmtUSD(0) : fmtUSD(balanceRemaining), W - M, y, { align: 'right' }); y += 7
 
   // ============================ PAY BY ZELLE ============================
   // Sprint M2 Phase 4 — Zelle pay-by instructions. Renders only when a balance
@@ -8811,7 +8750,7 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   doc.setTextColor(...GREY)
   const note = isFullyPaid
     ? 'Thank you for your business. This receipt confirms your contract is paid in full.'
-    : `Thank you for your payment. Balance of ${fmtUSD(balanceRemaining)} is due ${order.targetCompletionDate ? `by ${fmtDate(order.targetCompletionDate)}` : 'at delivery / installation'}.`
+    : `Thank you for your payment. The remaining balance of ${fmtUSD(balanceRemaining)} is due before carving work begins.`
   const wrapped = doc.splitTextToSize(note, W - M - M)
   doc.text(wrapped, M, y); y += 4 * wrapped.length + 8
 
@@ -11552,6 +11491,17 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
                       className="sm-textinput"
                       value={(payment.receivedAt || '').slice(0, 10)}
                       onChange={e => updatePayment(payment.id, { receivedAt: e.target.value || null })}
+                    />
+                  </Field>
+                  <Field label="Payment collected by">
+                    <SelectInput
+                      value={payment.createdBy || ''}
+                      onChange={v => updatePayment(payment.id, { createdBy: v || null })}
+                      options={[
+                        ...((payment.createdBy && !SALES_REPS.includes(payment.createdBy)) ? [{ value: payment.createdBy, label: payment.createdBy }] : []),
+                        { value: '', label: '— select —' },
+                        ...SALES_REPS.map(r => ({ value: r, label: r })),
+                      ]}
                     />
                   </Field>
                 </div>

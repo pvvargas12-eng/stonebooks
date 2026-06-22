@@ -40,7 +40,7 @@ import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
 import { TEAM_ROSTER } from './lib/team'
-import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions } from './SalesMode'
+import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -629,9 +629,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
 
   // ── Record payment ─────────────────────────────────────────────────────────
-  const openPayment = () => {
+  const openPayment = async () => {
     setActionNote(null)
-    setPayModal({ amount: '', method: 'check', type: 'deposit', receivedAt: todayISO(), ref: '', note: '', busy: false, error: null, confirm: false })
+    const me = await getCurrentStaffName().catch(() => '')
+    setPayModal({ amount: '', method: 'check', type: 'deposit', receivedAt: todayISO(), ref: '', note: '', collectedBy: me || '', busy: false, error: null, confirm: false })
   }
   const closePayment = () => setPayModal(m => (m && m.busy ? m : null))
   const handleRecordPayment = async () => {
@@ -641,7 +642,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     // Money safety — explicit confirm step before the record is written.
     if (!payModal.confirm) { setPayModal(m => ({ ...m, confirm: true, error: null })); return }
     setPayModal(m => ({ ...m, busy: true, error: null }))
-    const createdBy = await getCurrentStaffName()
+    const createdBy = payModal.collectedBy || await getCurrentStaffName()
     const res = await recordOrderPayment(orderId, {
       amount, method: payModal.method, type: payModal.type,
       receivedAt: payModal.receivedAt, ref: payModal.ref.trim() || null,
@@ -1620,6 +1621,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 </select>
               </label>
             </div>
+            <label className="sb-od-modal-field">
+              <span>Payment collected by</span>
+              <select className="sb-od-note-input" value={payModal.collectedBy} disabled={payModal.confirm}
+                onChange={e => setPayModal(m => ({ ...m, collectedBy: e.target.value }))}>
+                {(payModal.collectedBy && !SALES_REPS.includes(payModal.collectedBy)) && <option value={payModal.collectedBy}>{payModal.collectedBy}</option>}
+                <option value="">— select —</option>
+                {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </label>
             <label className="sb-od-modal-field">
               <span>{payModal.method === 'zelle' ? 'Zelle confirmation #' : 'Reference / check #'} <em className="sb-od-opt">optional</em></span>
               <input type="text" className="sb-od-note-input" value={payModal.ref} disabled={payModal.confirm}

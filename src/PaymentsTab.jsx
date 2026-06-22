@@ -24,7 +24,7 @@ import {
   fmtUSD, fmtDate, customerName, getCurrentStaffName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
 } from './lib/stonebooksData'
-import { ReceiptActions, rowToOrder } from './SalesMode'
+import { ReceiptActions, rowToOrder, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 
 // Customer-payment methods + method-specific reference label.
@@ -503,6 +503,8 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
   const [error, setError] = useState(null)
   const [confirm, setConfirm] = useState(false)
   const [saved, setSaved] = useState(null)        // { payment, receiptOrder } → post-save receipt offer
+  const [collectedBy, setCollectedBy] = useState('')   // staff who collected — defaults to current user
+  useEffect(() => { let alive = true; getCurrentStaffName().then(n => { if (alive) setCollectedBy(n || '') }).catch(() => {}); return () => { alive = false } }, [])
 
   const matches = useMemo(() => {
     const needle = orderSearch.trim().toLowerCase()
@@ -519,7 +521,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
     if (!Number.isFinite(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
     if (!confirm) { setConfirm(true); setError(null); return }
     setBusy(true); setError(null)
-    const createdBy = await getCurrentStaffName()
+    const createdBy = collectedBy || await getCurrentStaffName()
     const res = await recordOrderPayment(pick.id, { amount: amt, method, ref: ref.trim() || null, receivedAt: date, createdBy })
     setBusy(false)
     if (!res.ok) { setError(res.error || 'Could not record the payment.'); setConfirm(false); return }
@@ -593,6 +595,14 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
               <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
             </div>
           ) : <div className="sb-pay-field" />}
+          <div className="sb-pay-field">
+            <label>Payment collected by</label>
+            <select className="sb-pay-input" value={collectedBy} onChange={e => setCollectedBy(e.target.value)}>
+              {(collectedBy && !SALES_REPS.includes(collectedBy)) && <option value={collectedBy}>{collectedBy}</option>}
+              <option value="">— select —</option>
+              {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
         </div>
 
         {error && <div className="sb-pay-error">{error}</div>}
