@@ -1538,6 +1538,10 @@ export async function recordOutgoingPayment(input = {}) {
     recurring_bill_id: input.recurringBillId || null,
     order_id:          input.orderId || null,
   }
+  // Permit-sync back-link (20260612 migration). Only attached when supplied so
+  // ordinary outgoing payments never reference the column — keeps the normal
+  // add-payment flow working even before the source_permit_key migration lands.
+  if (input.sourcePermitKey) row.source_permit_key = String(input.sourcePermitKey)
   const { data, error } = await supabase.from('outgoing_payments').insert(row).select().single()
   if (error) {
     if (/relation .*outgoing_payments.* does not exist|could not find the table/i.test(error.message)) {
@@ -1553,6 +1557,80 @@ export async function deleteOutgoingPayment(id) {
   const { error } = await supabase.from('outgoing_payments').delete().eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+}
+
+// ── Permit → outgoing-payment sync (payee = cemetery) ───────────────────────
+// A filed permit (orders.permit[] = {type,amount,method,ck,date_filed,name})
+// is also money paid OUT to the cemetery, so it should appear in Payments →
+// Outgoing. createPermitOutgoingPayment is THE single seam that keeps the two in
+// sync — any future permit-entry UI calls it, and the one-time backfill uses the
+// same logic. It reuses recordOutgoingPayment (no parallel writer).
+
+// Normalize a permit's free-text method to an OUT_METHODS code.
+//   'ck#…'/'ck …'/'check' → check · 'cc'/card → card · zelle → zelle ·
+//   pre-paid / blank / anything else → other
+export function normalizePermitMethod(raw) {
+  const m = String(raw || '').toLowerCase().trim()
+  if (/ck\s*#?|check/.test(m)) return 'check'
+  if (/^cc$|card|credit/.test(m)) return 'card'
+  if (/zelle/.test(m)) return 'zelle'
+  return 'other'
+}
+
+// Deterministic dedup key tying an outgoing payment to the permit that spawned
+// it: '{order_id}:{ck}' when a check# exists (most stable), else
+// '{order_id}:{type}|{amount}|{date_filed}'. Stored in source_permit_key, whose
+// partial UNIQUE index makes a re-run physically unable to double.
+export function permitOutgoingKey(orderId, permit) {
+  const ck = permit?.ck != null && String(permit.ck).trim() !== '' ? String(permit.ck).trim() : null
+  if (ck) return `${orderId}:${ck}`
+  return `${orderId}:${permit?.type || ''}|${permit?.amount}|${permit?.date_filed || ''}`
+}
+
+// Create the outgoing payment for one filed permit. Reuses recordOutgoingPayment.
+// Decisions (Paul): payee = cemetery name, else 'Unknown cemetery — permit' +
+// flagged; SKIP amount<=0 and null/blank date_filed (caller reports for hand
+// entry — never default the date to today); dedup is DB-enforced via the UNIQUE
+// source_permit_key, so a duplicate comes back as a caught no-op, not an error.
+// Pass opts.cemeteryName to avoid a lookup when the caller already has it.
+// Returns { status: 'created'|'skipped'|'duplicate', reason?, flagged?, payment? }.
+export async function createPermitOutgoingPayment(order, permit, opts = {}) {
+  if (!order?.id) return { status: 'skipped', reason: 'no order id' }
+  const amount = Number(permit?.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return { status: 'skipped', reason: 'amount <= 0' }
+  const date = (permit?.date_filed && String(permit.date_filed).trim())
+    ? String(permit.date_filed).slice(0, 10) : null
+  if (!date) return { status: 'skipped', reason: 'null/blank date_filed' }
+
+  // payee = cemetery name; placeholder + flag when the order's cemetery is unlinked.
+  let payee = opts.cemeteryName || order.cemetery?.name || null
+  let flagged = false
+  if (!payee && order.cemetery_id) {
+    const { data } = await supabase.from('cemeteries').select('name').eq('id', order.cemetery_id).maybeSingle()
+    payee = data?.name || null
+  }
+  if (!payee) { payee = 'Unknown cemetery — permit'; flagged = true }
+
+  const ref = permit?.ck != null && String(permit.ck).trim() !== '' ? String(permit.ck).trim() : null
+  const res = await recordOutgoingPayment({
+    payee,
+    category: 'Permits',
+    method: normalizePermitMethod(permit?.method),
+    reference: ref,
+    amount,
+    paidDate: date,
+    orderId: order.id,
+    sourcePermitKey: permitOutgoingKey(order.id, permit),
+    createdBy: opts.createdBy || 'system: permit sync',
+  })
+  if (!res.ok) {
+    // UNIQUE(source_permit_key) violation → already created on a prior run.
+    if (/duplicate key|23505|ux_outpay_permit_key|source_permit_key/i.test(res.error || '')) {
+      return { status: 'duplicate', reason: 'already exists (source_permit_key)', flagged }
+    }
+    return { status: 'skipped', reason: res.error, flagged }
+  }
+  return { status: 'created', flagged, payment: res.payment }
 }
 
 // Shared outgoing category taxonomy (also the Profit spend-by-category buckets).
