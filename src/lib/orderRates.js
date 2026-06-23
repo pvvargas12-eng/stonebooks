@@ -172,7 +172,7 @@ export function addonPrice(kind, opts = {}) {
 // a base override totals byte-identically to the pre-fold engine. Callers compute
 // the grand total from THIS folded list (priceOrderTotals does), so the rows a
 // surface shows always sum to the total it shows.
-const BASE_FOLD_CODES = new Set(['base-height', 'base-margin', 'saw-base', 'all-polish-base'])
+const BASE_FOLD_CODES = new Set(['base-height', 'base-margin', 'saw-base', 'all-polish-base', 'base-color-premium'])
 export function foldBaseRows(items, order) {
   const list = items || []
   const baseIdx = list.findIndex(it => String(it.code) === 'base-block')

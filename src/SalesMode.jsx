@@ -9040,6 +9040,21 @@ export function buildLineItems(order) {
         editable: true,
       })
 
+      // Base color premium — the base STONE gets the same per-color uplift the
+      // die does (reuses the `color` resolved above; one color rule per order).
+      // Scales ONLY baseBasePrice (the stone) — never height/margin/saw, which
+      // are dimensional/labor add-ons. Folds into the single base line via
+      // BASE_FOLD_CODES. Custom bases price baseBasePrice=0 today, so ×premium=0
+      // until custom base pricing lands.
+      if (color && color.premium > 0 && baseBasePrice > 0) {
+        items.push({
+          code: 'base-color-premium',
+          label: `Base ${color.label} premium (+${Math.round(color.premium * 100)}%)`,
+          amount: Math.round(baseBasePrice * color.premium),
+          editable: true,
+        })
+      }
+
       // Base height upcharge per pricing sheet (Die + Base 6/8/10/12 line)
       const heightOpt = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
       if (heightOpt && heightOpt.upcharge > 0) {
