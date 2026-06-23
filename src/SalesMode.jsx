@@ -23,8 +23,9 @@ import { supabase } from './lib/supabase'
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
   POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, dieSize3, dieTopLabel,
-  buildDieSpec, buildBaseSpec, displayGraniteColor,
+  buildDieSpec, buildBaseSpec, displayGraniteColor, nearestFittingBaseSize,
 } from './lib/monumentCatalog'
+import BaseSection from './components/BaseSection'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
@@ -1187,11 +1188,14 @@ export function makeBlankOrder() {
       sizeCode: null,           // BASE_SIZES[].code
       width: null,              // inches (custom override)
       depth: null,
-      heightCode: null,         // BASE_HEIGHTS[].code (6/8/10/12)
+      heightCode: null,         // BASE_HEIGHTS[].code (6/8/10/12) — CUSTOM mode only (snapped tier)
+      heightInches: null,       // typed custom height (display) — snaps to heightCode for price
       polishMargin2in: false,   // 2" polished margin add-on
-      sides: null,              // BASE_SIDES_OPTIONS[].code
+      sides: null,              // BASE_SIDES_OPTIONS[].code (legacy wizard field; read-only now)
+      finish: null,             // BASE_FINISHES[].code (SB/RB/BRP/AP) — SB/AP carry per-foot charges
       topFinish: null,          // 'pol' | 'frost' — base TOP finish (display-only, Phase 5)
       baseTextOverride: null,   // optional — verbatim base line text on the contract
+      dieTextOverride: null,    // optional — verbatim DIE line text (display only, no price effect)
     },
 
     // Design pick (Sprint 2)
@@ -3363,148 +3367,7 @@ export function ShapeStep({ order, update }) {
       {/* ---- 6. BASE (slants/dies/double-die/bronze) ------------------------- */}
       {shape && shape.canHaveBase && (
         <Section title="Base" eyebrow={shape.requiresBase ? 'Required for this shape' : 'Optional add-on'}>
-          {/* Live DIE-line preview (same buildDieSpec the Financial line item +
-              contract use) — verify the text before picking the base. */}
-          <div style={{ margin: '0 0 14px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Die line</span>
-            <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildDieSpec(order) || '— size · top · sides · color —'}</span>
-          </div>
-          {(order.baseConfig.include || shape.requiresBase) && (
-            <div style={{ margin: '0 0 14px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Base line</span>
-              <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildBaseSpec(order)}</span>
-            </div>
-          )}
-          {!shape.requiresBase && (
-            <ToggleChip
-              on={order.baseConfig.include}
-              onClick={() => updateBase({ include: !order.baseConfig.include })}
-            >
-              {order.baseConfig.include ? '✓ Add a base to this stone' : 'Add a base to this stone'}
-            </ToggleChip>
-          )}
-
-          {(order.baseConfig.include || shape.requiresBase) && (
-            <>
-              <Field label="Base size" wide hint="Only sizes larger than the die · die +1″/2″/3″ per side are starred">
-                <SelectInput
-                  value={order.baseConfig.sizeCode || ''}
-                  onChange={v => updateBase({ sizeCode: v || null })}
-                  placeholder="— pick a base size —"
-                  options={(() => {
-                    // Die footprint — from standardSize, then custom dims.
-                    const shapeRec = SHAPES.find(s => s.code === order.shape)
-                    const stdSize = shapeRec && order.standardSizeCode
-                      ? shapeRec.standardSizes.find(s => s.code === order.standardSizeCode)
-                      : null
-                    const stoneW = stdSize?.w ?? order.width ?? null
-                    const stoneD = stdSize?.d ?? order.depth ?? null
-
-                    // HARD RULE: never offer a base smaller-or-equal to the die on
-                    // EITHER dimension — a base must extend beyond the die per side.
-                    const fitting = BASE_SIZES
-                      .filter(b => (stoneW ? b.w > stoneW : true) && (stoneD ? b.d > stoneD : true))
-                      .map(b => ({ ...b, overhang: (b.w - (stoneW || 0)) + (b.d - (stoneD || 0)) }))
-                      .sort((a, b) => a.overhang - b.overhang)
-
-                    // Recommended = die + 1″/2″/3″ PER SIDE (total +2/+4/+6 width).
-                    const recCodes = new Set()
-                    const recOptions = []
-                    if (stoneW) {
-                      for (const add of [2, 4, 6]) {
-                        const targetW = stoneW + add
-                        const best = fitting
-                          .filter(b => !recCodes.has(b.code))
-                          .sort((a, b) => Math.abs(a.w - targetW) - Math.abs(b.w - targetW) || a.price - b.price)[0]
-                        if (best && Math.abs(best.w - targetW) <= 4) {
-                          recCodes.add(best.code)
-                          recOptions.push({ value: best.code, label: `★ Recommended (${add / 2}″ wider/side) — ${best.label}` })
-                        }
-                      }
-                    }
-                    const restOptions = fitting.filter(b => !recCodes.has(b.code)).map(b => ({ value: b.code, label: b.label }))
-
-                    return [
-                      ...recOptions,
-                      ...(recOptions.length && restOptions.length ? [{ value: '', label: '────── larger sizes ──────', disabled: true }] : []),
-                      ...restOptions,
-                      { value: 'custom', label: 'Custom base size…' },
-                    ]
-                  })()}
-                />
-              </Field>
-
-              {order.baseConfig.sizeCode === 'custom' && (
-                <div className="sm-grid-2">
-                  <Field label="Base width (inches)">
-                    <TextInput type="number" value={order.baseConfig.width ?? ''}
-                      onChange={v => updateBase({ width: v === '' ? null : Number(v) })} />
-                  </Field>
-                  <Field label="Base depth (inches)">
-                    <TextInput type="number" value={order.baseConfig.depth ?? ''}
-                      onChange={v => updateBase({ depth: v === '' ? null : Number(v) })} />
-                  </Field>
-                </div>
-              )}
-
-              <Field label="Base height" hint="Per pricing sheet — adds to die+base upcharge">
-                <div className="sm-base-height-grid">
-                  {BASE_HEIGHTS.map(h => (
-                    <button
-                      key={h.code}
-                      type="button"
-                      className={`sm-chip-btn ${order.baseConfig.heightCode === h.code ? 'on' : ''}`}
-                      onClick={() => updateBase({ heightCode: h.code })}
-                    >
-                      <div className="sm-chip-btn-label">{h.label}</div>
-                      <div className="sm-chip-btn-blurb">+${h.upcharge}</div>
-                    </button>
-                  ))}
-                </div>
-              </Field>
-
-              <ToggleChip
-                on={order.baseConfig.polishMargin2in}
-                onClick={() => updateBase({ polishMargin2in: !order.baseConfig.polishMargin2in })}
-              >
-                {order.baseConfig.polishMargin2in ? '✓ Add 2″ polished margin' : 'Add 2″ polished margin'}
-              </ToggleChip>
-
-              <Field label="Base sides" wide hint="Surface treatment for the base block">
-                <SelectInput
-                  value={order.baseConfig.sides || ''}
-                  onChange={v => updateBase({ sides: v || null })}
-                  placeholder="— pick base sides —"
-                  options={BASE_SIDES_OPTIONS.map(s => ({ value: s.code, label: s.label }))}
-                />
-              </Field>
-              {order.baseConfig.sides && (
-                <div className="sm-helper">
-                  <strong>{BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)?.label}:</strong>{' '}
-                  {BASE_SIDES_OPTIONS.find(s => s.code === order.baseConfig.sides)?.blurb}
-                </div>
-              )}
-
-              <Field label="Base top" wide hint="Polished or frosted base top — appears in the base line (display only).">
-                <SelectInput
-                  value={order.baseConfig.topFinish || ''}
-                  onChange={v => updateBase({ topFinish: v || null })}
-                  placeholder="— pick base top —"
-                  options={[{ value: 'pol', label: 'POL TOP' }, { value: 'frost', label: 'FROST TOP' }]}
-                />
-              </Field>
-
-              <Field label="Base description override" wide hint="Optional — replaces the base line text on the contract (custom bevels, special notes). Leave blank to auto-build from size + height + margin.">
-                <textarea
-                  value={order.baseConfig.baseTextOverride || ''}
-                  onChange={e => updateBase({ baseTextOverride: e.target.value })}
-                  placeholder={'e.g. Base — 4-0 × 1-0 × 0-8, 12" height, custom bevel top'}
-                  rows={2}
-                  style={{ width: '100%', boxSizing: 'border-box', padding: 8, borderRadius: 6, border: '1px solid #d8d2c4', font: 'inherit', fontSize: 14, resize: 'vertical' }}
-                />
-              </Field>
-            </>
-          )}
+          <BaseSection order={order} onChange={updateBase} dieLineText={buildDieSpec(order)} />
         </Section>
       )}
     </div>
@@ -9011,9 +8874,12 @@ export function buildLineItems(order) {
     // builder — size · top · sides · color — never the type name or a pricing
     // tag. Other stone shapes keep their name (pricing tag stripped).
     const dieSpec = (shape.canHaveBase || shape.requiresBase) ? buildDieSpec(order) : ''
+    // Die description override — DISPLAY ONLY (mirrors baseTextOverride). Replaces
+    // the die line text; never changes the die price (basePrice below is unchanged).
+    const dieOverride = (order.baseConfig?.dieTextOverride || '').trim()
     items.push({
       code: 'base-stone',
-      label: dieSpec || (stdSize ? `${shape.label} — ${stdSize.label}` : shape.label),
+      label: dieOverride || dieSpec || (stdSize ? `${shape.label} — ${stdSize.label}` : shape.label),
       amount: basePrice,
       editable: true,
     })
@@ -9031,11 +8897,29 @@ export function buildLineItems(order) {
 
     // Base block (if included or required)
     if (order.baseConfig.include || shape.requiresBase) {
-      const baseSize = BASE_SIZES.find(b => b.code === order.baseConfig.sizeCode)
-      const baseBasePrice = baseSize?.price ?? 0
+      const bc = order.baseConfig || {}
+      const isCustomBase = bc.sizeCode === 'custom'
+      // Custom base prices via the NEAREST STANDARD base that FITS the die
+      // footprint (reuses the catalog price — no new rate). Standard sizes price by
+      // their own catalog entry. No fitting size → $0 + "set price" (BaseSection
+      // shows the no-fit warning so an unpriced base can't ship silently).
+      let baseSize = null, baseBasePrice = 0, baseLabel = 'Base block (custom — set price)'
+      if (isCustomBase) {
+        const dieW = stdSize?.w ?? order.width ?? 0
+        const dieD = stdSize?.d ?? order.depth ?? 0
+        const fit = nearestFittingBaseSize(dieW, dieD)
+        if (fit) {
+          baseBasePrice = fit.price
+          baseLabel = `Base — custom${bc.width && bc.depth ? ` ${bc.width}×${bc.depth}` : ''} (priced as ${fit.label})`
+        }
+      } else {
+        baseSize = BASE_SIZES.find(b => b.code === bc.sizeCode)
+        baseBasePrice = baseSize?.price ?? 0
+        if (baseSize) baseLabel = `Base — ${baseSize.label}`
+      }
       items.push({
         code: 'base-block',
-        label: baseSize ? `Base — ${baseSize.label}` : 'Base block (custom — set price)',
+        label: baseLabel,
         amount: baseBasePrice,
         editable: true,
       })
@@ -9055,15 +8939,20 @@ export function buildLineItems(order) {
         })
       }
 
-      // Base height upcharge per pricing sheet (Die + Base 6/8/10/12 line)
-      const heightOpt = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
-      if (heightOpt && heightOpt.upcharge > 0) {
-        items.push({
-          code: 'base-height',
-          label: `Base height upcharge (${heightOpt.label})`,
-          amount: heightOpt.upcharge,
-          editable: true,
-        })
+      // Base height upcharge — ONLY in custom mode. Standard catalog prices already
+      // include the base's physical height (labels carry 0-6/0-8), so a separate
+      // tier on a standard size double-charges. Custom adds the snapped tier
+      // (heightCode set by BaseSection from the typed inches via snapHeightToTier).
+      if (isCustomBase) {
+        const heightOpt = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
+        if (heightOpt && heightOpt.upcharge > 0) {
+          items.push({
+            code: 'base-height',
+            label: `Base height upcharge (${order.baseConfig.heightInches ? `${order.baseConfig.heightInches}″ → ` : ''}${heightOpt.label} tier)`,
+            amount: heightOpt.upcharge,
+            editable: true,
+          })
+        }
       }
 
       // 2" polished margin add-on

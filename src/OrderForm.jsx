@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   makeBlankOrder, makeBlankDeceased, saveOrder, rowToOrder, salesModeStyles,
   searchCustomers, searchCemeteries, rowToCustomer, rowToCemetery,
-  fetchMonuments, uploadAttachment, buildDieSpec, buildBaseSpec, SALES_REPS,
+  fetchMonuments, uploadAttachment, buildDieSpec, SALES_REPS,
 } from './SalesMode'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder,
@@ -29,11 +29,12 @@ import {
 } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
+import BaseSection from './components/BaseSection'
 import {
-  SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS, BASE_HEIGHTS,
+  SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
-  MONUMENT_TYPES, BASE_FINISHES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
-  computeFormLineItems, priceOrderTotals, rankedBaseSizes, addonPrice, stoneFaceArea,
+  MONUMENT_TYPES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
+  computeFormLineItems, priceOrderTotals, addonPrice, stoneFaceArea,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -671,21 +672,9 @@ export function MonumentCard({ order, update, updatePricing }) {
     update({ standardSizeCode: code, width: std.w, depth: std.d, thickness: std.t, height: std.t })
   }
 
-  // Base
+  // Base — the shared <BaseSection> owns size/custom/fit/height/finish/overrides.
   const bc = order.baseConfig || {}
   const setBase = (patch) => update({ baseConfig: { ...bc, ...patch } })
-  const ranked = useMemo(() => rankedBaseSizes(order.width, order.depth), [order.width, order.depth])
-  // ranked.ordered now contains ONLY bases larger than the die on both dims
-  // (smaller/equal excluded in rankedBaseSizes), so no "(smaller than die)" rows.
-  const baseOptions = [
-    ...ranked.ordered.map(b => ({
-      value: b.code,
-      label: `${b.label}${ranked.recommendedCodes.includes(b.code) ? '  ★ recommended' : ''}`,
-    })),
-    { value: 'custom', label: 'Custom size…' },
-  ]
-  const canHaveBase = shapeObj?.canHaveBase
-  const requiresBase = shapeObj?.requiresBase
 
   return (
     <Card title="Monument" sub="Type, size, finish, color, and base.">
@@ -761,56 +750,10 @@ export function MonumentCard({ order, update, updatePricing }) {
       <CheckRow checked={order.pricing?.polishDieSides} onChange={v => updatePricing({ polishDieSides: v })}
         label="Polish die sides" hint="adds per-foot polish charge by die height" />
 
-      {/* Live DIE-line preview (same buildDieSpec as Financial line item + contract). */}
-      {(canHaveBase || requiresBase) && (
-        <div style={{ margin: '6px 0 4px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Die line</span>
-          <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildDieSpec(order) || '— size · top · sides · color —'}</span>
-        </div>
-      )}
-
-      {/* Base */}
-      {(canHaveBase || requiresBase) && (
-        <div className="of-sub">
-          <CheckRow checked={bc.include || requiresBase} onChange={v => setBase({ include: v })}
-            label={requiresBase ? 'Base (required for this shape)' : 'Add a base'} />
-          {(bc.include || requiresBase) && (
-            <>
-              {/* Live BASE-line preview (same buildBaseSpec the contract base row reads). */}
-              <div style={{ margin: '2px 0 8px', padding: '8px 11px', background: '#f6f4ef', border: '1px solid #e4e0d4', borderRadius: 7, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#9a8f78' }}>Base line</span>
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: '#2a2a2a' }}>{buildBaseSpec(order)}</span>
-              </div>
-              <Grid cols={2}>
-                <SelectField label="Base size" value={bc.sizeCode} onChange={v => setBase({ sizeCode: v })}
-                  options={baseOptions} placeholder="Select base…" hint="Best-fit sizes are starred." />
-                <SelectField label="Base height" value={bc.heightCode != null ? String(bc.heightCode) : ''}
-                  onChange={v => setBase({ heightCode: v ? Number(v) : null })}
-                  options={BASE_HEIGHTS.map(h => ({ value: String(h.code), label: `${h.label} (+${fmtUSD(h.upcharge)})` }))}
-                  placeholder="Select height…" />
-                <SelectField label="Base finish" value={bc.finish} onChange={v => setBase({ finish: v })}
-                  options={BASE_FINISHES.map(f => ({ value: f.code, label: f.label }))} placeholder="Select finish…"
-                  hint="SB adds a saw-base charge." />
-                <SelectField label="Base top" value={bc.topFinish} onChange={v => setBase({ topFinish: v })}
-                  options={[{ value: 'pol', label: 'POL TOP' }, { value: 'frost', label: 'FROST TOP' }]}
-                  placeholder="Select top…" hint="Display only — appears in the base line." />
-              </Grid>
-              {bc.sizeCode === 'custom' && (
-                <Grid cols={2}>
-                  <NumberField label="Base width" value={bc.width} onChange={v => setBase({ width: v })} suffix="in" />
-                  <NumberField label="Base depth" value={bc.depth} onChange={v => setBase({ depth: v })} suffix="in" />
-                </Grid>
-              )}
-              <CheckRow checked={bc.polishMargin2in} onChange={v => setBase({ polishMargin2in: v })}
-                label="2″ polished margin" hint="$70 per foot of base perimeter" />
-              <TextAreaField label="Base description override" value={bc.baseTextOverride}
-                onChange={v => setBase({ baseTextOverride: v })}
-                placeholder={'Optional — replaces the base line on the contract (custom bevels, etc.). Leave blank to auto-build.'}
-                rows={2} />
-            </>
-          )}
-        </div>
-      )}
+      {/* Base + die line — shared <BaseSection> (the wizard uses the same one). */}
+      <div className="of-sub">
+        <BaseSection order={order} onChange={setBase} dieLineText={buildDieSpec(order)} />
+      </div>
 
       {/* Live FOUNDATION-line preview (the actual computeFormLineItems foundation
           row — computed in-scope here; MonumentCard has `order`, not the parent's

@@ -220,6 +220,34 @@ export const BASE_HEIGHTS = [
   { code: 12, label: '12″', upcharge: 200 },
 ]
 
+// Nearest STANDARD base that fully fits a die footprint — the SAME hard rule as
+// rankedBaseSizes (strictly larger than the die on BOTH dims, smallest overhang
+// first). Returns the fitting size, or null when NO standard base is large enough
+// (caller flags + leaves the custom base price unset rather than snapping small).
+// Lives here (not orderRates) so buildLineItems + BaseSection can use it without
+// an orderRates↔SalesMode import cycle.
+export function nearestFittingBaseSize(dieWidth, dieDepth) {
+  const w = Number(dieWidth) || 0
+  const d = Number(dieDepth) || 0
+  const fitting = BASE_SIZES
+    .filter(b => (w ? b.w > w : true) && (d ? b.d > d : true))
+    .map(b => ({ b, overhang: (b.w - w) + (b.d - d) }))
+    .sort((a, z) => a.overhang - z.overhang)
+  return fitting.length ? fitting[0].b : null
+}
+
+// Snap a typed custom base height (inches) DOWN to the nearest priced tier
+// (6/8/10/12). Below 6″ → null (no tier; caller flags). The typed inches still
+// DISPLAY on the line — only the price uses the snapped tier.
+export function snapHeightToTier(inches) {
+  const n = Number(inches)
+  if (!Number.isFinite(n) || n < 6) return null
+  if (n >= 12) return 12
+  if (n >= 10) return 10
+  if (n >= 8) return 8
+  return 6
+}
+
 // ---- Granite colors -------------------------------------------------------
 export const GRANITE_COLORS = [
   // Gray family
@@ -401,7 +429,11 @@ export function buildBaseSpec(order) {
     || (sidesSplit ? sidesSplit.back : (bc.sides ? (BASE_SIDES_OPTIONS.find(s => s.code === bc.sides)?.label || '') : ''))
   const finishes = [
     topFinish,
-    (hOpt && hOpt.upcharge > 0) ? `${hOpt.label} height` : '',
+    // Custom bases show the TYPED inches (priced via the snapped tier); standard
+    // sizes embed their height in the catalog label, so no separate height token.
+    bc.heightInches
+      ? `${bc.heightInches}″ height`
+      : (hOpt && hOpt.upcharge > 0) ? `${hOpt.label} height` : '',
     bc.polishMargin2in ? '2" polished margin' : '',
     backFinish,
   ].filter(Boolean)
