@@ -2005,6 +2005,11 @@ export const PERMIT_QUEUES = [
   { code: 'permit_approved',  label: 'Permits approved' },
   { code: 'permit_missing',   label: 'Permits missing' },
   { code: 'permit_blocking',  label: 'Permits blocking install' },
+  // Filed-but-unclassified — an order carrying real permit records (orders.permit)
+  // that was never permit-status-classified (status 'unknown', requirement unset).
+  // permitBuckets() can't see it (it keys off status only); PermitHub's enriched
+  // step adds this bucket so a filed permit on an unclassified order stays visible.
+  { code: 'permit_filed',     label: 'Filed' },
 ]
 
 const _QUEUE_LABELS = Object.fromEntries([...PRODUCTION_QUEUES, ...OVERLAY_QUEUES, ...PERMIT_QUEUES].map(q => [q.code, q.label]))

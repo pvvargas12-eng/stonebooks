@@ -94,7 +94,7 @@ function jobStageLabels(job) {
   return { foundation, install }
 }
 // Worklist sort priority — most urgent first.
-const BUCKET_PRIORITY = { permit_blocking: 0, permit_required: 1, permit_missing: 2, permit_submitted: 3, permit_approved: 4 }
+const BUCKET_PRIORITY = { permit_blocking: 0, permit_required: 1, permit_missing: 2, permit_submitted: 3, permit_approved: 4, permit_filed: 5 }
 
 export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenCustomer }) {
   const [orders, setOrders] = useState([])
@@ -140,6 +140,15 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
         st !== 'submitted' && st !== 'approved' && st !== 'not_required'
       if (!terminal && needsPermit && recs.length === 0 && !buckets.includes('permit_missing')) {
         buckets.push('permit_missing')
+      }
+      // FILED fix — an order can carry real permit records (orders.permit) while
+      // never being permit-status-classified (status 'unknown', requirement unset,
+      // not ready-to-install). permitBuckets() keys off status only, so it returns
+      // no bucket and the order is filtered out of the worklist — its filed permits
+      // become invisible. If it has filings but no other classification, surface it
+      // under its own 'permit_filed' bucket so the log table renders the records.
+      if (!terminal && recs.length > 0 && buckets.length === 0) {
+        buckets.push('permit_filed')
       }
       const paid = recs.some(pm => Number(pm.amount) > 0)
       return {
@@ -380,6 +389,10 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
               <PermitCard label="Permits submitted" count={counts.permit_submitted} loading={loading} onClick={() => onOpenQueue?.('permit_submitted')} />
               <PermitCard label="Permits approved"  count={counts.permit_approved}  loading={loading} onClick={() => onOpenQueue?.('permit_approved')} />
               <PermitCard label="Permits missing"   count={counts.permit_missing}   loading={loading} onClick={() => onOpenQueue?.('permit_missing')} />
+              {/* Filed — recorded permit filings on otherwise-unclassified orders.
+                  Hub-local concept (not an OrdersTab queue), so it filters the
+                  worklist in place rather than routing to the Orders board. */}
+              <PermitCard label="Filed"             count={counts.permit_filed}     loading={loading} onClick={() => setTableFilter('permit_filed')} />
             </div>
 
             {/* In-hub bucket filter for the worklist table */}
