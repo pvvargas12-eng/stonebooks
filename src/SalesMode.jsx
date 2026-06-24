@@ -8464,11 +8464,28 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   // Family orders price via priceOrderTotals; a cemetery order passes its flat
   // total_amount through opts.grandTotalOverride (priceOrderTotals doesn't apply there).
   let grandTotal
+  // hasEstablishedTotal — TRUE only when the order carries a REAL total: an
+  // explicit contract_total, a manual-total override, OR a priced line-item total
+  // on an order that has actually reached contract (signed / contracted+) — NOT a
+  // pre-contract 'scoping'/'draft'/'quoted' placeholder. This guards the receipt's
+  // "PAID IN FULL" label from firing when a deposit lands before the price is
+  // finalized (Burton E-26-0286: $2,408.42 deposit on a scoping order with no
+  // total). Display-only — priceOrderTotals and all pricing math are untouched.
+  let hasEstablishedTotal
   if (opts.grandTotalOverride != null) {
+    // Cemetery orders pass a flat total_amount — a real total iff it's > 0.
     grandTotal = Number(opts.grandTotalOverride) || 0
+    hasEstablishedTotal = grandTotal > 0
   } else {
     const { priceOrderTotals } = await import('./lib/orderRates')
-    grandTotal = priceOrderTotals(order).displayed
+    const priced = priceOrderTotals(order)
+    grandTotal = priced.displayed
+    const ct = order.contractTotal ?? order.contract_total
+    const hasContractTotal = ct != null && Number(ct) > 0
+    const hasManualTotal = priced.manual != null && Number(priced.manual) > 0
+    const CONTRACTED = ['contracted', 'in_production', 'installed', 'paid_in_full', 'closed']
+    const isRealContract = !!(order.signedAt || order.signed_at) || CONTRACTED.includes(order.status)
+    hasEstablishedTotal = hasContractTotal || hasManualTotal || (Number(grandTotal) > 0 && isRealContract)
   }
 
   // Sprint M2 Phase 2 — this-payment fields come from the passed payment
@@ -8486,7 +8503,9 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
     : []
   const totalPaidToDate = nonVoidedPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
   const balanceRemaining = Math.max(0, grandTotal - totalPaidToDate)
-  const isFullyPaid = balanceRemaining < 0.01
+  // "Paid in full" may ONLY assert when a real total is established (guard above) —
+  // otherwise a deposit on a not-yet-priced order would read as fully paid.
+  const isFullyPaid = hasEstablishedTotal && grandTotal > 0 && balanceRemaining < 0.01
 
   // ============================ LETTERHEAD ===============================
   doc.setFont('helvetica', 'bold')
@@ -8540,7 +8559,7 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   const thisIndex = sortedPayments.findIndex(p => p.id === payment?.id)
   const isFirst = thisIndex === 0
   const isLast = thisIndex === sortedPayments.length - 1
-  const isFullyPaidNow = totalPaidToDate >= grandTotal && grandTotal > 0
+  const isFullyPaidNow = isFullyPaid   // gated by hasEstablishedTotal (see above)
   const isFinalPayment = isLast && isFullyPaidNow
   let receiptLabel
   if (isFirst && isFinalPayment && sortedPayments.length === 1) receiptLabel = 'DEPOSIT & FINAL PAYMENT — PAID IN FULL'
@@ -8588,11 +8607,20 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
 
   // Totals — AMOUNT only, NO due date.
   doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
-  doc.text('Total contract amount', M, y); doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT); doc.text(fmtUSD(grandTotal), W - M, y, { align: 'right' }); y += 5
+  doc.text('Total contract amount', M, y); doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT)
+  doc.text(hasEstablishedTotal ? fmtUSD(grandTotal) : 'Pending', W - M, y, { align: 'right' }); y += 5
   doc.setFont('helvetica', 'normal'); doc.setTextColor(...GREY); doc.text('Paid to date', M, y); doc.setFont('helvetica', 'bold'); doc.setTextColor(...TEXT); doc.text(fmtUSD(totalPaidToDate), W - M, y, { align: 'right' }); y += 6
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...(isFullyPaid ? [45, 138, 79] : NAVY))
-  doc.text(isFullyPaid ? 'Balance — PAID IN FULL' : 'Balance remaining before carving', M, y)
-  doc.text(isFullyPaid ? fmtUSD(0) : fmtUSD(balanceRemaining), W - M, y, { align: 'right' }); y += 7
+  if (!hasEstablishedTotal) {
+    // No established total yet → never a $0 balance or "paid in full".
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...NAVY)
+    doc.text('Balance', M, y)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...GREY)
+    doc.text('Pending — total not yet finalized', W - M, y, { align: 'right' }); y += 7
+  } else {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...(isFullyPaid ? [45, 138, 79] : NAVY))
+    doc.text(isFullyPaid ? 'Balance — PAID IN FULL' : 'Balance remaining before carving', M, y)
+    doc.text(isFullyPaid ? fmtUSD(0) : fmtUSD(balanceRemaining), W - M, y, { align: 'right' }); y += 7
+  }
 
   // ============================ PAY BY ZELLE ============================
   // Sprint M2 Phase 4 — Zelle pay-by instructions. Renders only when a balance
@@ -8631,9 +8659,11 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
   doc.setTextColor(...GREY)
-  const note = isFullyPaid
-    ? 'Thank you for your business. This receipt confirms your contract is paid in full.'
-    : `Thank you for your payment. The remaining balance of ${fmtUSD(balanceRemaining)} is due before carving work begins.`
+  const note = !hasEstablishedTotal
+    ? 'Thank you for your payment. Your contract total is being finalized; the remaining balance will be confirmed on your contract.'
+    : isFullyPaid
+      ? 'Thank you for your business. This receipt confirms your contract is paid in full.'
+      : `Thank you for your payment. The remaining balance of ${fmtUSD(balanceRemaining)} is due before carving work begins.`
   const wrapped = doc.splitTextToSize(note, W - M - M)
   doc.text(wrapped, M, y); y += 4 * wrapped.length + 8
 

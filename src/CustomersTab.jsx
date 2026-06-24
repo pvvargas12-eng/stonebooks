@@ -21,6 +21,7 @@ import {
   computeOrderPressure,
   ACTIVE_STATUSES, SOLD_STATUSES,
   bulkArchiveCustomers, bulkRestoreCustomers,
+  orderTypeLabel,
 } from './lib/stonebooksData'
 import { CRM, paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
@@ -725,7 +726,7 @@ function CustomerRow({ customer: c, indexInFiltered, selected, onToggle, onOpen 
         <div className="sb-crm-mono">{c._primary?.order_number || '—'}</div>
         {c._primary && (
           <div style={{ marginTop: 4 }}>
-            <Pill severity="bronze">{jobTypeLabel(c._primaryJob?.job_type, c._primary?.service_types)}</Pill>
+            <Pill severity="bronze">{orderTypeLabel(c._primary, c._primaryJob)}</Pill>
           </div>
         )}
       </div>
@@ -783,16 +784,6 @@ function CustomerRow({ customer: c, indexInFiltered, selected, onToggle, onOpen 
       </div>
     </div>
   )
-}
-
-function jobTypeLabel(jobType, serviceTypes) {
-  if (jobType === 'new_stone')       return 'New stone'
-  if (jobType === 'mausoleum_door')  return 'Crypt door'
-  if (jobType === 'cleaning_repair') return 'Cleaning/Repair'
-  const st = (serviceTypes || []).map(s => String(s).toUpperCase())
-  if (st.includes('INSCRIPTION') || st.includes('INSCRIPTIONS')) return 'Inscription'
-  if (st.includes('ACID_WASH')) return 'Acid wash'
-  return 'Order'
 }
 
 // =============================================================================

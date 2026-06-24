@@ -27,6 +27,7 @@ import {
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
+  orderTypeLabel,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
@@ -436,7 +437,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       // Clickable column sorts (ascending base; sortDir flips them). Each falls
       // back to family name so ties have a stable, readable secondary order.
       customer:      (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
-      jobType:       (a, b) => jobTypeLabel(a._jobType, a.service_types).localeCompare(jobTypeLabel(b._jobType, b.service_types)) || (a._familyName || '').localeCompare(b._familyName || ''),
+      jobType:       (a, b) => orderTypeLabel(a).localeCompare(orderTypeLabel(b)) || (a._familyName || '').localeCompare(b._familyName || ''),
       payment:       (a, b) => dimRank(_PAY_DIM_RANK, a._payment) - dimRank(_PAY_DIM_RANK, b._payment) || (a._familyName || '').localeCompare(b._familyName || ''),
       design:        (a, b) => dimRank(_DESIGN_DIM_RANK, a._design) - dimRank(_DESIGN_DIM_RANK, b._design) || (a._familyName || '').localeCompare(b._familyName || ''),
       stone:         (a, b) => dimRank(_STONE_DIM_RANK, a._stone) - dimRank(_STONE_DIM_RANK, b._stone) || (a._familyName || '').localeCompare(b._familyName || ''),
@@ -699,7 +700,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       { label: 'Customer', get: o => o._familyName },
       { label: 'Order #', get: o => o.order_number || '' },
       { label: 'Status', get: o => statusInfo(o.status).label },
-      { label: 'Job type', get: o => jobTypeLabel(o._jobType, o.service_types) },
+      { label: 'Job type', get: o => orderTypeLabel(o) },
       { label: 'Stage', get: o => o._stageLabel || statusInfo(o.status).label },  // furthest-done milestone, fallback status
       { label: 'Deposit', get: o => o._paid },
       { label: 'Balance', get: o => o._balance },
@@ -1078,7 +1079,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       </div>
 
       {/* Job Type */}
-      <div><span className="sb-crm-secondary">{jobTypeLabel(o._jobType, o.service_types)}</span></div>
+      <div><span className="sb-crm-secondary">{orderTypeLabel(o)}</span></div>
 
       {/* Payment — editable manual override (orders.payment_status) */}
       <div onClick={e => e.stopPropagation()}>
@@ -1137,18 +1138,6 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       </div>
     </div>
   )
-}
-
-function jobTypeLabel(jobType, serviceTypes) {
-  if (jobType === 'new_stone') return 'New stone'
-  if (jobType === 'mausoleum_door') return 'Crypt door'
-  if (jobType === 'cleaning_repair') return 'Cleaning / repair'
-  if (jobType === 'inscription') return 'Inscription'
-  if (jobType === 'bronze') return 'Bronze'
-  const st = (serviceTypes || []).map(s => String(s).toUpperCase())
-  if (st.includes('INSCRIPTION')) return 'Inscription'
-  if (st.includes('ACID_WASH')) return 'Acid wash'
-  return 'Order'
 }
 
 const VIEWTABS_CSS = `

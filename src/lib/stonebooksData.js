@@ -2842,7 +2842,12 @@ const SERVICE_TYPE_TO_JOB_TYPE = {
   BRONZE:          'bronze',
   ACID_WASH:       'cleaning_repair',
   REPAIR:          'cleaning_repair',
-  OTHER:           'new_stone',
+  // OTHER is its OWN bucket now (was 'new_stone' — which silently mislabeled every
+  // citrus-wash / misc order as "New stone"). It has no dedicated milestone
+  // template, so buildMilestoneListForOrder falls the WORKFLOW back to new_stone
+  // while the job is stamped job_type='other'. The label comes from orderTypeLabel
+  // (OTHER wins there regardless), so this is purely forward-looking hygiene.
+  OTHER:           'other',
 }
 
 export function jobTypeForServiceTypes(serviceTypes) {
@@ -2852,6 +2857,50 @@ export function jobTypeForServiceTypes(serviceTypes) {
     if (t) return t
   }
   return 'new_stone' // unknown codes fall through to new_stone
+}
+
+// ── SINGLE SOURCE for an order's TYPE LABEL (Orders / Customers / Jobs / detail)
+// Unifies the two previously-divergent label systems (job-type-first vs
+// service-type-direct) so every surface agrees. Precedence:
+//   a. service_types includes OTHER → "Other[ — <description>]". OTHER WINS over
+//      any linked job's job_type (the old OTHER→new_stone map stamped 'new_stone'
+//      on these jobs, which mislabeled them "New stone").
+//   b. a linked job with a real job_type → humanized job-type label.
+//   c. service_types has codes → service-type-direct label (NEW_STONE→"New stone").
+//   d. nothing → "Order".
+// Tolerant of BOTH the camelCase order model (rowToOrder) AND raw snake_case rows;
+// `job` is optional (its job_type, else order._jobType/job_type, drives (b)).
+const _SERVICE_TYPE_LABEL = {
+  NEW_STONE: 'New stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze',
+  ACID_WASH: 'Acid wash', REPAIR: 'Repair', CIVIC_MEMORIAL: 'Civic memorial',
+  MAUSOLEUM: 'Mausoleum', MAUSOLEUM_DOOR: 'Crypt door', ADD_PHOTO: 'Add photo',
+  OTHER: 'Other',
+}
+const _JOB_TYPE_LABEL = {
+  new_stone: 'New stone', mausoleum_door: 'Crypt door',
+  cleaning_repair: 'Cleaning / repair', inscription: 'Inscription',
+  bronze: 'Bronze', civic_memorial: 'Civic memorial', other: 'Other',
+}
+const _humanizeType = (s) =>
+  (s == null || s === '') ? null : String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+export function orderTypeLabel(order, job) {
+  const o = order || {}
+  const svc = o.service_types ?? o.serviceTypes ?? []
+  const codes = Array.isArray(svc) ? svc.map(s => String(s).toUpperCase()) : []
+  // (a) OTHER wins — carry the free-text descriptor when present.
+  if (codes.includes('OTHER')) {
+    const desc = String(o.other_service_description ?? o.otherServiceDescription ?? '').trim()
+    return desc ? `Other — ${desc}` : 'Other'
+  }
+  // (b) a linked job with a real job_type.
+  const jt = job?.job_type ?? job?.jobType ?? o._jobType ?? o.job_type ?? null
+  if (jt) return _JOB_TYPE_LABEL[jt] || _humanizeType(jt)
+  // (c) service-type-direct mapping.
+  for (const c of codes) { if (_SERVICE_TYPE_LABEL[c]) return _SERVICE_TYPE_LABEL[c] }
+  if (codes.length) return _humanizeType(codes[0])
+  // (d)
+  return 'Order'
 }
 
 // ── MAUSOLEUM DOOR PRICING ───────────────────────────────────────────────────
@@ -3012,10 +3061,17 @@ async function buildMilestoneListForOrder(serviceTypes) {
   if (types.length === 0) return { primaryTemplate: null, allMilestones: [] }
 
   const primaryJobType = jobTypeForServiceTypes(types)
-  if (!primaryJobType) return { primaryTemplate: null, allMilestones: [] }
+  if (!primaryJobType) return { primaryTemplate: null, allMilestones: [], jobType: null }
 
-  const primaryTemplate = await fetchActiveTemplateByJobType(primaryJobType)
-  if (!primaryTemplate) return { primaryTemplate: null, allMilestones: [] }
+  // Non-stone buckets (notably OTHER → 'other') have no dedicated milestone
+  // template. Fall the WORKFLOW back to the new_stone template so the job still
+  // seeds milestones, while the job is STAMPED with the intended job_type
+  // (returned as `jobType` below) — so OTHER no longer masquerades as new_stone.
+  let primaryTemplate = await fetchActiveTemplateByJobType(primaryJobType)
+  if (!primaryTemplate && primaryJobType !== 'new_stone') {
+    primaryTemplate = await fetchActiveTemplateByJobType('new_stone')
+  }
+  if (!primaryTemplate) return { primaryTemplate: null, allMilestones: [], jobType: null }
 
   const seenKeys = new Set()
   const merged = []
@@ -3044,7 +3100,7 @@ async function buildMilestoneListForOrder(serviceTypes) {
     }
   }
 
-  return { primaryTemplate, allMilestones: merged }
+  return { primaryTemplate, allMilestones: merged, jobType: primaryJobType }
 }
 
 // ── JOBS: createJobFromOrder ─────────────────────────────────────────────────
@@ -3079,7 +3135,7 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   if (!allowUnsigned && !order.signed_at) return { ok: false, error: 'Order is not signed yet — no job created' }
 
   // 3. Resolve template + milestone list.
-  const { primaryTemplate, allMilestones } = await buildMilestoneListForOrder(order.service_types)
+  const { primaryTemplate, allMilestones, jobType } = await buildMilestoneListForOrder(order.service_types)
   if (!primaryTemplate) return { ok: false, error: 'No active template matches this order\'s service types' }
 
   // 4. Insert the job.
@@ -3099,7 +3155,9 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
     tenant_id: order.tenant_id,
     order_id: order.id,
     template_id: primaryTemplate.id,
-    job_type: primaryTemplate.job_type,
+    // Intended job_type (e.g. 'other' for OTHER orders) — NOT the fallback
+    // template's job_type, so OTHER jobs are no longer stamped 'new_stone'.
+    job_type: jobType || primaryTemplate.job_type,
     service_kind: serviceKind,
     overall_status: 'active',
     last_update_at: new Date().toISOString(),

@@ -44,6 +44,7 @@ import {
   // JobsListView dependencies (computeOrderPressure consumed inside
   // enrichJob in ./lib/jobsRow, no longer imported here directly).
   getJobs,
+  orderTypeLabel,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
@@ -1031,7 +1032,15 @@ function JobDetailHero({
   const serviceParts = []
   const serviceTypes = order?.service_types || []
   if (serviceTypes.length > 0) {
-    serviceParts.push(formatServiceTypes(serviceTypes))
+    // Single-type (or any OTHER) → the shared orderTypeLabel so it matches every
+    // other surface and carries the "Other — <description>" descriptor. True
+    // multi-type orders keep the "A + B" chip via formatServiceTypes.
+    const codes = serviceTypes.map(s => String(s).toUpperCase())
+    serviceParts.push(
+      (serviceTypes.length === 1 || codes.includes('OTHER'))
+        ? orderTypeLabel(order)
+        : formatServiceTypes(serviceTypes)
+    )
   }
   if (cemetery?.name) serviceParts.push(cemetery.name)
 

@@ -31,6 +31,7 @@ import {
   getMessageThread, sendShopEmail, aiDraftEmail,
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
+  orderTypeLabel,
 } from './lib/stonebooksData'
 import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -69,16 +70,6 @@ const stageTone = (status) => {
     case 'cancelled': case 'archived': return 'red'
     default: return 'bronze'
   }
-}
-
-const jobTypeLabel = (jobType, serviceTypes) => {
-  if (jobType === 'new_stone') return 'New stone'
-  if (jobType === 'mausoleum_door') return 'Crypt door'
-  if (jobType === 'cleaning_repair') return 'Cleaning / repair'
-  const st = (serviceTypes || []).map(s => String(s).toUpperCase())
-  if (st.includes('INSCRIPTION') || st.includes('INSCRIPTIONS')) return 'Inscription'
-  if (st.includes('ACID_WASH')) return 'Acid wash'
-  return jobType ? humanize(jobType) : 'Order'
 }
 
 // Derive a status string from a job's milestones for a key set (read-only).
@@ -748,7 +739,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     order.plot_lot && `Lot ${order.plot_lot}`,
     order.plot_grave && `Grave ${order.plot_grave}`,
   ].filter(Boolean).join(' · ')
-  const orderType = jobTypeLabel(job?.job_type, order.service_types)
+  const orderType = orderTypeLabel(order, job)
   // #4 — service orders shouldn't render an empty Monument card; label + scope it.
   const svcTypes = order.service_types || []
   const isStoneOrder = svcTypes.some(c => ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM'].includes(c))
@@ -1027,7 +1018,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
           {/* 3 — Monument */}
           <Section id="od-monument" title={monumentCardTitle}>
-            <Field label="Type" value={jobTypeLabel(job?.job_type, order.service_types)} />
+            <Field label="Type" value={orderTypeLabel(order, job)} />
             {isStoneOrder && (
               <>
                 <Field label="Shape" value={humanize(order.shape)} />
