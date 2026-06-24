@@ -7546,11 +7546,32 @@ export async function generateEstimatePDF(order, opts = {}) {
     ensure(28)
     sectionHeader('Inscription — please verify the wording')
     if (order.inscription?.familyName) kvRow('Family name', order.inscription.familyName)
-    for (const ln of pdfDeceasedLines(order)) {
-      if (ln.kind === 'reserved') { kvRow('Reserved', '— Reserved space —'); continue }
-      if (ln.kind === 'title') { kvRow('Title', ln.text); continue }
-      kvRow('Name as carved', ln.name)
-      if (ln.dates) kvRow('Dates', ln.dates)
+    // VERBATIM engraving text — the exact value of the order form's "Engraving
+    // text" textarea (order.inscription.carveText), INCLUDING any manual override.
+    // That typed text is what actually gets carved, so that's what the customer
+    // must verify — not the reconstructed name/dates. Rendered line-by-line,
+    // preserving the typed line breaks. Display only; reused as-is (no re-derive).
+    // GUARDRAIL: if it's blank, fall back to the derived name/dates rows so the
+    // section never prints empty.
+    const _carve = (order.inscription?.carveText || '').trim()
+    if (_carve) {
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(10.5)
+      doc.setTextColor(...TEXT)
+      for (const cl of _carve.split(/\r?\n/)) {
+        ensure(5)
+        const wrapped = doc.splitTextToSize(cl, W - 2 * M)
+        doc.text(wrapped, M, y)
+        y += 4.5 * wrapped.length + 1
+      }
+      doc.setFont('helvetica', 'normal')
+    } else {
+      for (const ln of pdfDeceasedLines(order)) {
+        if (ln.kind === 'reserved') { kvRow('Reserved', '— Reserved space —'); continue }
+        if (ln.kind === 'title') { kvRow('Title', ln.text); continue }
+        kvRow('Name as carved', ln.name)
+        if (ln.dates) kvRow('Dates', ln.dates)
+      }
     }
     const _epi = (order.inscription?.epitaph || '').trim()
     if (_epi) kvRow('Epitaph', _epi)
