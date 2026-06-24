@@ -7377,52 +7377,24 @@ export async function generateEstimatePDF(order, opts = {}) {
   }
 
   // ============================ DECEASED INFORMATION ====================
+  // The black bar is the HEADER CAP of the bordered spec/pricing box below: it
+  // shares the box's left x (M-2) and full width (W-2M+4) so its right edge lines
+  // up with the box, and sits FLUSH on the box's top border (no gap). The deceased
+  // name/date line(s) are captured here and rendered INSIDE the box, just under
+  // the bar (emitted right after specBoxStart, below). Visual only — same draws.
+  let deceasedBarLines = null
   if (order.deceased?.length) {
     // Black banner bar with reversed (white) centered title.
-    ensure(12)
+    ensure(18)
     y += 2
     const barH = 6.5
     doc.setFillColor(0, 0, 0)
-    doc.rect(M, y, W - 2 * M, barH, 'F')
+    doc.rect(M - 2, y, (W - 2 * M) + 4, barH, 'F')
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255)
     doc.text('DECEASED INFORMATION', W / 2, y + 4.5, { align: 'center' })
     doc.setTextColor(...TEXT)
-    y += barH + 5
-    const lines = pdfDeceasedLines(order)
-    for (const ln of lines) {
-      ensure(6)
-      if (ln.kind === 'title') {
-        // Sprint L2 Phase 4 — wrap title line for 3+ relations
-        // (e.g. "Beloved Father, Husband, Grandfather, Brother, & Uncle"
-        // overflows at letter width without splitTextToSize).
-        doc.setFont('helvetica', 'italic')
-        doc.setFontSize(11)
-        doc.setTextColor(...GOLD)
-        const titleLines = doc.splitTextToSize(ln.text, W - M - M)
-        for (const wrappedLine of titleLines) {
-          doc.text(wrappedLine, M, y)
-          y += 5
-        }
-      } else if (ln.kind === 'reserved') {
-        doc.setFont('helvetica', 'italic')
-        doc.setFontSize(9.5)
-        doc.setTextColor(...GREY)
-        doc.text(ln.text, M + 4, y)
-        y += 4.5
-      } else {
-        doc.setFont('helvetica', 'bold')
-        doc.setFontSize(11)
-        doc.setTextColor(...TEXT)
-        doc.text(ln.name, M + 4, y)
-        if (ln.dates) {
-          doc.setFont('helvetica', 'normal')
-          doc.setTextColor(...GREY)
-          doc.text(ln.dates, W - M, y, { align: 'right' })
-        }
-        y += 5
-      }
-    }
-    y += 2
+    y += barH                 // box top border begins immediately at the bar's bottom (flush)
+    deceasedBarLines = pdfDeceasedLines(order)
   }
 
   // SERVICE section removed (round 2) — the line-item descriptions already make
@@ -7445,7 +7417,34 @@ export async function generateEstimatePDF(order, opts = {}) {
   const isServiceWork = !hasStone && (hasAcid || hasRepair)
   const isInscriptionWork = !hasStone && !isServiceWork && hasInscription
 
-  const specBoxStart = y + 1
+  // Box top: flush under the DECEASED bar when present (specBoxStart-2 == the bar's
+  // bottom, so the bar reads as the box's header cap), else the original offset.
+  const specBoxStart = deceasedBarLines ? y + 2 : y + 1
+  // Deceased name/date line(s) — now the FIRST content INSIDE the box, top-inset
+  // from the border, just below the bar. Relocated from above the box; same draws.
+  if (deceasedBarLines) {
+    y = specBoxStart + 3      // top padding under the bar / inside the top border
+    for (const ln of deceasedBarLines) {
+      ensure(6)
+      if (ln.kind === 'title') {
+        doc.setFont('helvetica', 'italic'); doc.setFontSize(11); doc.setTextColor(...GOLD)
+        const titleLines = doc.splitTextToSize(ln.text, W - M - M)
+        for (const wrappedLine of titleLines) { doc.text(wrappedLine, M, y); y += 5 }
+      } else if (ln.kind === 'reserved') {
+        doc.setFont('helvetica', 'italic'); doc.setFontSize(9.5); doc.setTextColor(...GREY)
+        doc.text(ln.text, M + 4, y); y += 4.5
+      } else {
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...TEXT)
+        doc.text(ln.name, M + 4, y)
+        if (ln.dates) {
+          doc.setFont('helvetica', 'normal'); doc.setTextColor(...GREY)
+          doc.text(ln.dates, W - M, y, { align: 'right' })
+        }
+        y += 5
+      }
+    }
+    y += 3                    // separation before the first in-box section header
+  }
 
   // Forward-only gate: orders signed BEFORE the deploy keep the legacy spec box so
   // their already-issued contracts/estimates re-render identically (PDFs are
