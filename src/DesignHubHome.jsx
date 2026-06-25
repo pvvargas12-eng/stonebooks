@@ -77,6 +77,7 @@ const SORTS = [
   { code: 'newest',  label: 'Newest first' },
   { code: 'status',  label: 'By status' },
 ]
+const TASK_CAP = 10   // visible manual-task cap; overflow shows "+N more"
 
 export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJob, onOpenJob, onOpenOrder, onReload }) {
   const [todayISO, setTodayISO] = useState('')
@@ -123,34 +124,9 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revisionKey])
 
-  // ── AUTO tasks (computed from the 4 states — not stored) ───────────────────
-  const autoTasks = useMemo(() => {
-    const out = []
-    for (const r of layoutRows) {
-      const fam = familyOf(r.order)
-      if (r.state === 'due' && r.urgency === 'urgent') {
-        out.push({ id: `auto-overdue-${r.job.id}`, tone: 'red', kindLabel: 'Overdue',
-          label: `Start layout — ${fam} · ${r.ageDays}d, past 2-week target`, row: r })
-      } else if (r.state === 'due' && r.urgency === 'soon') {
-        out.push({ id: `auto-soon-${r.job.id}`, tone: 'amber', kindLabel: 'Due soon',
-          label: `Start layout — ${fam} · due soon`, row: r })
-      } else if (r.state === 'revision') {
-        const note = changeNotes[r.job.id]
-        out.push({ id: `auto-rev-${r.job.id}`, tone: 'amber', kindLabel: 'Revision',
-          label: `Revise layout — ${fam}${note ? ` · ${note}` : ''}`, row: r })
-      } else if (r.state === 'need_approval') {
-        const sentMs = msFrom(currentProofsByJob?.get(r.job.id)?.sent_at)
-        if (sentMs && nowMs && (nowMs - sentMs) / 86400000 > 7) {
-          out.push({ id: `auto-nudge-${r.job.id}`, tone: 'neutral', kindLabel: 'Nudge',
-            label: `Nudge customer — ${fam}`, row: r })
-        }
-      }
-    }
-    const rank = { red: 0, amber: 1, neutral: 2 }
-    return out.sort((a, b) => rank[a.tone] - rank[b.tone])
-  }, [layoutRows, changeNotes, currentProofsByJob, nowMs])
-
-  // ── MANUAL tasks (persisted via the SAME order_activity store as Leads) ────
+  // ── MANUAL tasks ONLY (persisted via the SAME order_activity store as Leads) ──
+  // Auto-generated tasks were dropped — the work is already visible in the rows,
+  // so the panel shows only user-added tasks. Capped at 10 in the render (TASK_CAP).
   const scopeIds = useMemo(() => layoutRows.map(r => r.order?.id).filter(Boolean), [layoutRows])
   const scopeKey = scopeIds.join(',')
   const [manualTasks, setManualTasks] = useState([])
@@ -163,6 +139,17 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     }).catch(() => { if (alive) setManualTasks([]) })
     return () => { alive = false }
   }, [scopeKey, taskNonce])
+
+  // Soonest-due first (NULLS LAST), then newest-created; cap the visible list.
+  const sortedTasks = useMemo(() => {
+    return [...manualTasks].sort((a, b) => {
+      const da = a.due_date || '9999-12-31', db = b.due_date || '9999-12-31'
+      if (da !== db) return da < db ? -1 : 1
+      return (b.created_at || '').localeCompare(a.created_at || '')
+    })
+  }, [manualTasks])
+  const visibleTasks = sortedTasks.slice(0, TASK_CAP)
+  const moreTasks = Math.max(0, sortedTasks.length - TASK_CAP)
 
   const familyById = useMemo(() => {
     const m = {}; for (const r of layoutRows) if (r.order?.id) m[r.order.id] = familyOf(r.order); return m
@@ -264,25 +251,21 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 <button type="button" className="sb-dh2-savebtn" onClick={saveTask} disabled={!addNote.trim() || !addOrderId}>Save</button>
               </div>
             )}
-            {autoTasks.length === 0 && manualTasks.length === 0 ? (
-              <div className="sb-dh2-tasks-empty">No layout tasks right now.</div>
+            {manualTasks.length === 0 ? (
+              <div className="sb-dh2-tasks-empty">No tasks yet. Use “+ Add task”.</div>
             ) : (
-              <ul className="sb-dh2-tasklist">
-                {autoTasks.map(t => (
-                  <li key={t.id} className="sb-dh2-taskitem" onClick={() => onOpenJob?.(t.row.job.id, 'design')}>
-                    <span className={`sb-dh2-taskdot sb-dh2-dot-${t.tone}`} />
-                    <span className="sb-dh2-tasktext">{t.label}</span>
-                    <span className={`sb-dh2-taskkind sb-dh2-kind-${t.tone}`}>{t.kindLabel}</span>
-                  </li>
-                ))}
-                {manualTasks.map(t => (
-                  <li key={t.id} className="sb-dh2-taskitem sb-dh2-taskitem-manual">
-                    <input type="checkbox" className="sb-dh2-taskcheck" onChange={() => completeTask(t.id)} aria-label="Complete task" />
-                    <span className="sb-dh2-tasktext">{t.note} <span className="sb-dh2-taskfam">· {familyById[t.order_id] || ''}</span></span>
-                    <span className="sb-dh2-taskkind sb-dh2-kind-neutral">Manual</span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="sb-dh2-tasklist">
+                  {visibleTasks.map(t => (
+                    <li key={t.id} className="sb-dh2-taskitem sb-dh2-taskitem-manual">
+                      <input type="checkbox" className="sb-dh2-taskcheck" onChange={() => completeTask(t.id)} aria-label="Complete task" />
+                      <span className="sb-dh2-tasktext">{t.note} <span className="sb-dh2-taskfam">· {familyById[t.order_id] || ''}</span></span>
+                      <span className="sb-dh2-taskkind sb-dh2-kind-neutral">Manual</span>
+                    </li>
+                  ))}
+                </ul>
+                {moreTasks > 0 && <div className="sb-dh2-taskmore">+{moreTasks} more</div>}
+              </>
             )}
           </div>
 
@@ -386,6 +369,7 @@ const CSS = `
   .sb-dh2-inp, .sb-dh2-sel, .sb-dh2-search { font: inherit; font-size: 13.5px; padding: 8px 10px; border: 0.5px solid #d8d2c4; border-radius: 7px; background: #fff; color: #2a2a2a; }
   .sb-dh2-inp { flex: 1; min-width: 180px; }
   .sb-dh2-tasks-empty { font-size: 13px; color: #8a8a85; padding: 6px 2px; }
+  .sb-dh2-taskmore { font-size: 12px; color: #8a8a85; padding: 8px 4px 2px; font-style: italic; }
   .sb-dh2-tasklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
   .sb-dh2-taskitem { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-top: 0.5px solid #f1efeb; cursor: pointer; font-size: 13.5px; color: #2a2a2a; }
   .sb-dh2-taskitem:first-child { border-top: none; }

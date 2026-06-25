@@ -8206,17 +8206,35 @@ export async function getCurrentProofsByJob() {
 // currentProofsByJob Map (getCurrentProofsByJob); no per-row read.
 export function designStateFor(order, job, currentProofsByJob) {
   if (!order || !job) return null
-  const contracted = SOLD_STATUSES.includes(order.status) || order.signed_at != null
-  if (!contracted) return null
+  // ACTIVE-status gate (NOT the broad SOLD_STATUSES): only contracted work still
+  // in flight. FINISHED orders (installed / paid_in_full / closed) are EXCLUDED —
+  // they never need a layout, and being older than proof_versions they'd otherwise
+  // read as 'due'. Dropping these (and the signed_at fallback) kills the inflation.
+  if (!DESIGN_ACTIVE_STATUSES.has(order.status)) return null
   const types = order.service_types || []
   if (!types.some(t => LAYOUT_SERVICE_TYPES.has(t))) return null
   const proof = currentProofsByJob ? currentProofsByJob.get(job.id) : null
-  if (!proof) return 'due'                                          // no real layout yet
-  if (proof.approved_at || _msDone(job, 'proof_approved')) return 'approved'
-  const cr = (job.milestones || []).find(m => m.milestone_key === 'proof_changes_requested')
-  if (cr && cr.status === 'in_progress') return 'revision'
-  return 'need_approval'
+  if (proof) {
+    // A current proof exists → classify off it (unchanged).
+    if (proof.approved_at || _msDone(job, 'proof_approved')) return 'approved'
+    const cr = (job.milestones || []).find(m => m.milestone_key === 'proof_changes_requested')
+    if (cr && cr.status === 'in_progress') return 'revision'
+    return 'need_approval'
+  }
+  // No current proof. DESIGN-ALREADY-DONE guard: an order that predates the
+  // proof_versions table but has already cleared design (proof_approved, or a
+  // downstream stage that can only follow a finished layout) is NOT 'due' — it was
+  // designed before the table existed. Resolve to 'approved' so it leaves the queue.
+  if (DESIGN_DONE_MILESTONES.some(k => _msDone(job, k))) return 'approved'
+  return 'due'                                                      // genuinely needs a layout
 }
+
+// Active design-phase order statuses — the ONLY statuses this hub classifies.
+const DESIGN_ACTIVE_STATUSES = new Set(['contracted', 'in_production'])
+// Milestones whose completion means the design is already done — used to keep a
+// no-current-proof legacy order out of 'due'. proof_approved is primary; the
+// downstream stage keys (stencil/blast/production) can only happen after a layout.
+const DESIGN_DONE_MILESTONES = ['proof_approved', 'stencil_created', 'stencil_cut', 'sandblast', 'production_started', 'production_completed']
 
 // PRE-CONTRACT sibling for the "Estimate layouts" tab: same 3 layout-bearing
 // types, but the order is still an estimate/lead (status draft/scoping/quoted and
