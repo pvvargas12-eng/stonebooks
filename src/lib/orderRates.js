@@ -263,6 +263,46 @@ export function classifyLineItem(code) {
 // and must never appear in the line-item list (B2). Guard by code OR label.
 const _isPaymentRow = (it) => /\b(payment|deposit|balance)\b/i.test(`${it.code || ''} ${it.label || ''}`)
 
+// ── Bronze Marker — a stripped order flow (no die / base / monument complexity) ──
+// FLAT plate prices per the pricing sheet; Custom lets the operator type a price.
+// A unitized backer is a flat $489 add. The bronze line label can be overridden
+// (display-only, mirrors dieTextOverride). Pricing data lives on pricing.bronze =
+// { size, customPrice, customSizeText, backer, descOverride }.
+export const BRONZE_SIZES = [
+  { code: '24x12', label: '24″ × 12″', price: 2873 },
+  { code: '24x14', label: '24″ × 14″', price: 3089 },
+  { code: '44x14', label: '44″ × 14″', price: 4965 },
+]
+export const BRONZE_BACKER_PRICE = 489
+
+// A bronze marker is the NEW stripped flow — discriminated by BRONZE service type
+// AND the presence of pricing.bronze (set only by the New Order "Bronze Marker"
+// card). The `pricing.bronze` guard keeps any legacy wizard bronze-SHAPE order
+// (which prices via the bronze standardSizes, no pricing.bronze) on the old path.
+export function isBronzeMarker(order) {
+  return (order?.serviceTypes || []).includes('BRONZE') && !!order?.pricing?.bronze
+}
+
+// The bronze plate line (+ optional unitized backer). No base/die/foundation.
+function bronzeBaseItems(order) {
+  const b = order?.pricing?.bronze || {}
+  const isCustom = b.size === 'custom'
+  const sizeRow = BRONZE_SIZES.find(s => s.code === b.size)
+  const sizeLabel = isCustom ? (String(b.customSizeText || '').trim() || 'Custom') : (sizeRow?.label || '—')
+  const price = isCustom ? (Number(b.customPrice) || 0) : (sizeRow?.price || 0)
+  const override = String(b.descOverride || '').trim()
+  const items = [{
+    code: 'bronze-marker',
+    label: override || `Bronze Marker — ${sizeLabel}`,
+    amount: price,
+    editable: true,
+  }]
+  if (b.backer) {
+    items.push({ code: 'bronze-backer', label: 'Unitized Backer', amount: BRONZE_BACKER_PRICE, editable: true })
+  }
+  return items
+}
+
 // ── Line items — reconcile the existing engine with this build's pricing ────
 // Keep everything buildLineItems already gets right (standard die, color %,
 // base block, base-height, foundation, add-ons, lettering, veteran, permit).
@@ -276,11 +316,19 @@ export function computeFormLineItems(order) {
   // counted twice — once by the engine, once here — which surfaced as the
   // acid-wash double-charge (two non-removable engine rows + two removable
   // form rows, all summing) on E-26-0245. Single source of truth = this loop.
-  const items = buildLineItems(order).filter(it => it.code !== 'polish-margin' && !it.isCustom)
+  // Bronze Marker — a stripped flow: bronze plate line + optional unitized backer.
+  // No die/base/foundation/add-on logic. Still routed through priceOrderTotals so
+  // totals/PDF/receipt work; the shared tail (rush, custom lines, tax flags,
+  // overrides, removal) below applies to bronze lines too.
+  const bronze = isBronzeMarker(order)
+  const items = bronze
+    ? bronzeBaseItems(order)
+    : buildLineItems(order).filter(it => it.code !== 'polish-margin' && !it.isCustom)
   const shape = SHAPES.find(s => s.code === order.shape)
   const svc = order.serviceTypes || []
   const pr = order.pricing || {}
 
+  if (!bronze) {
   // (0a) Additional-inscription base — tier-driven (Full / MDY / Year).
   if (svc.includes('INSCRIPTION')) {
     const tier = INSCRIPTION_TIERS.find(t => t.code === order.inscription?.tier)
@@ -312,20 +360,28 @@ export function computeFormLineItems(order) {
     items.unshift({ code: 'repair-base', label: 'Repair', amount: amt, editable: true, quotePending: !!pr.repairQuote || !priced })
   }
 
-  // (1) Custom die: face = L × H × $4.55 (L = order.width, H = order.height).
+  // (1) Custom die: face = L × H × $4.55 (L = order.width, H = the vertical).
+  // 3B — the vertical lives in order.height (OrderForm) OR order.thickness (the
+  // SalesMode wizard custom-die input), so fall back to thickness; otherwise a
+  // wizard custom die reads H=0 and the die stays at $0 (undercharge).
   if (shape && !order.standardSizeCode) {
     const L = Number(order.width) || 0
-    const H = Number(order.height) || 0
+    const H = Number(order.height) || Number(order.thickness) || 0
     const baseStone = items.find(it => it.code === 'base-stone')
     if (baseStone && L > 0 && H > 0) {
       const rate = liveRates.customDiePerSqIn
       baseStone.amount = Math.round(L * H * rate * 100) / 100
       // Phase 2 — ONE die-label source. The label is left exactly as buildLineItems
-      // set it (buildDieSpec: "size · top · sides · color" for die shapes), so a
-      // CUSTOM die reads identically in the editor, quotes, estimate, and contract.
-      // We no longer overwrite it with a "${shape.label} ${dims}" variant. Only the
-      // amount is corrected here — the label never enters any total, so this is
-      // byte-identical to before for the grand total.
+      // set it (buildDieSpec / dieTextOverride), so a CUSTOM die reads identically
+      // in the editor, quotes, estimate, and contract. Only the amount is corrected.
+      // 3A — the catalog color-premium line was computed in buildLineItems from
+      // basePrice ($0 for a custom die). Recompute it from the CORRECTED die amount
+      // so a premium granite (Jet Black +25%, Bahama +30%, …) is no longer $0.
+      const colorPrem = items.find(it => it.code === 'color-premium')
+      if (colorPrem) {
+        const c = GRANITE_COLORS.find(g => g.code === order.graniteColor)
+        colorPrem.amount = Math.round(baseStone.amount * (c?.premium || 0))
+      }
     }
   }
 
@@ -377,6 +433,7 @@ export function computeFormLineItems(order) {
     const rate = liveRates.allPolishBasePerFoot
     if (rate > 0) items.push({ code: 'all-polish-base', label: 'All polish base', amount: Math.round((baseW / 12) * rate), editable: true })
   }
+  } // end if (!bronze) — bronze markers skip all die/base/foundation/monument lines
 
   // (5) Custom rush fee (#7) — a flat NON-taxable service fee tied to the due-date
   // control. classifyLineItem('rush-fee') stamps it taxable:false. The internal

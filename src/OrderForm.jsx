@@ -30,11 +30,13 @@ import {
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
 import BaseSection from './components/BaseSection'
+import DieOverrideField from './components/DieOverrideField'
 import {
   SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   MONUMENT_TYPES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
   computeFormLineItems, priceOrderTotals, addonPrice, stoneFaceArea,
+  BRONZE_SIZES,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -50,6 +52,11 @@ const ORDER_TYPES = {
   new_monument: {
     label: 'New monument', jobType: 'new_stone', serviceTypes: ['NEW_STONE'], deceasedVariant: 'monument',
     sections: ['customer', 'cemetery', 'monument', 'deceased', 'inscription', 'catalog', 'attachments', 'addons', 'finance'],
+  },
+  bronze: {
+    label: 'Bronze Marker', jobType: 'bronze', serviceTypes: ['BRONZE'], deceasedVariant: 'monument',
+    // Stripped flow — NO monument/size/base/add-ons; just the bronze card + people.
+    sections: ['customer', 'cemetery', 'bronze', 'deceased', 'attachments', 'finance'],
   },
   additional_inscription: {
     label: 'Additional inscription', jobType: 'inscription', serviceTypes: ['INSCRIPTION'], deceasedVariant: 'inscription',
@@ -104,11 +111,13 @@ const ADDON_SETS = {
 function inferType(job, order) {
   if (job?.job_type === 'cleaning_repair') return job.service_kind === 'acid_wash' ? 'acid_wash' : 'repair'
   if (job?.job_type === 'inscription') return 'additional_inscription'
+  if (job?.job_type === 'bronze') return 'bronze'
   if (job?.job_type === 'new_stone') return 'new_monument'
   const st = (order?.serviceTypes || []).map(s => String(s).toUpperCase())
   if (st.includes('INSCRIPTION')) return 'additional_inscription'
   if (st.includes('REPAIR')) return 'repair'
   if (st.includes('ACID_WASH')) return 'acid_wash'
+  if (st.includes('BRONZE')) return 'bronze'
   return 'new_monument'
 }
 
@@ -208,6 +217,9 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     if (k === type || isEdit) return
     setType(k)
     update({ serviceTypes: ORDER_TYPES[k].serviceTypes })
+    // Bronze marker is discriminated by pricing.bronze — seed it so the bronze
+    // line shows immediately (and isBronzeMarker is true) before a size is picked.
+    if (k === 'bronze') updatePricing({ bronze: order.pricing?.bronze || {} })
   }
 
   // Edit load — fetch order + job, convert to wizard shape, infer type.
@@ -364,6 +376,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             {sections.includes('customer') && <CustomerCard order={order} update={update} updatePricing={updatePricing} />}
             {sections.includes('cemetery') && <CemeteryCard order={order} update={update} />}
             {sections.includes('monument') && <div className="of-span-2"><MonumentCard order={order} update={update} updatePricing={updatePricing} /></div>}
+            {sections.includes('bronze') && <div className="of-span-2"><BronzeCard order={order} updatePricing={updatePricing} /></div>}
             {/* Deceased FIRST so its data exists to populate the engraving text. */}
             {sections.includes('deceased') && <DeceasedCard order={order} update={update} updateInsc={updateInsc} variant={cfg.deceasedVariant} />}
             {sections.includes('inscription_type') && <InscriptionTypeCard order={order} updateInsc={updateInsc} />}
@@ -648,6 +661,37 @@ function CemeteryCard({ order, update }) {
 // =============================================================================
 // MONUMENT (new-stone)
 // =============================================================================
+// Bronze Marker — the stripped New-Order card: size (flat price) + optional
+// unitized backer + a description override. NO shape/base/add-ons. Writes
+// pricing.bronze; orderRates.bronzeBaseItems turns it into the line items.
+function BronzeCard({ order, updatePricing }) {
+  const b = order.pricing?.bronze || {}
+  const setB = (patch) => updatePricing({ bronze: { ...b, ...patch } })
+  const isCustom = b.size === 'custom'
+  return (
+    <Card title="Bronze Marker" sub="Bronze plate — size, optional unitized backer, description.">
+      <Grid cols={2}>
+        <SelectField label="Bronze size" value={b.size || ''} onChange={v => setB({ size: v })}
+          options={[
+            ...BRONZE_SIZES.map(s => ({ value: s.code, label: `${s.label} — ${fmtUSD(s.price)}` })),
+            { value: 'custom', label: 'Custom size…' },
+          ]} placeholder="Select bronze size…" />
+      </Grid>
+      {isCustom && (
+        <Grid cols={2}>
+          <TextField label="Custom size" value={b.customSizeText || ''} onChange={v => setB({ customSizeText: v })} placeholder="e.g. 30 × 16" />
+          <NumberField label="Price ($)" value={b.customPrice} onChange={v => setB({ customPrice: v })} placeholder="e.g. 3500" />
+        </Grid>
+      )}
+      <CheckRow checked={!!b.backer} onChange={v => setB({ backer: v })}
+        label="Add unitized backer (+$489)" hint="Flat $489, regardless of size." />
+      <TextAreaField label="Bronze description override" value={b.descOverride || ''}
+        onChange={v => setB({ descOverride: v })} rows={2}
+        placeholder="Optional — becomes the bronze line label. Blank → “Bronze Marker — {size}”." />
+    </Card>
+  )
+}
+
 export function MonumentCard({ order, update, updatePricing }) {
   const shapeObj = SHAPES.find(s => s.code === order.shape) || null
   const typeCode = MONUMENT_TYPES.find(t => t.shapeCodes.includes(order.shape))?.code || ''
@@ -749,6 +793,13 @@ export function MonumentCard({ order, update, updatePricing }) {
 
       <CheckRow checked={order.pricing?.polishDieSides} onChange={v => updatePricing({ polishDieSides: v })}
         label="Polish die sides" hint="adds per-foot polish charge by die height" />
+
+      {/* Die description override — available for ANY die shape, independent of
+          base inclusion (writes baseConfig.dieTextOverride). */}
+      {shapeObj && (
+        <DieOverrideField value={order.baseConfig?.dieTextOverride}
+          onChange={v => setBase({ dieTextOverride: v })} />
+      )}
 
       {/* Base + die line — shared <BaseSection> (the wizard uses the same one). */}
       <div className="of-sub">

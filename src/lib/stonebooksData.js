@@ -2871,7 +2871,7 @@ export function jobTypeForServiceTypes(serviceTypes) {
 // Tolerant of BOTH the camelCase order model (rowToOrder) AND raw snake_case rows;
 // `job` is optional (its job_type, else order._jobType/job_type, drives (b)).
 const _SERVICE_TYPE_LABEL = {
-  NEW_STONE: 'New stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze',
+  NEW_STONE: 'New stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze Marker',
   ACID_WASH: 'Acid wash', REPAIR: 'Repair', CIVIC_MEMORIAL: 'Civic memorial',
   MAUSOLEUM: 'Mausoleum', MAUSOLEUM_DOOR: 'Crypt door', ADD_PHOTO: 'Add photo',
   OTHER: 'Other',
@@ -2879,7 +2879,7 @@ const _SERVICE_TYPE_LABEL = {
 const _JOB_TYPE_LABEL = {
   new_stone: 'New stone', mausoleum_door: 'Crypt door',
   cleaning_repair: 'Cleaning / repair', inscription: 'Inscription',
-  bronze: 'Bronze', civic_memorial: 'Civic memorial', other: 'Other',
+  bronze: 'Bronze Marker', civic_memorial: 'Civic memorial', other: 'Other',
 }
 const _humanizeType = (s) =>
   (s == null || s === '') ? null : String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())

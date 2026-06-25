@@ -153,10 +153,8 @@ export default function BaseSection({ order, onChange, dieLineText = '' }) {
             <span>2″ polished margin <em>$70 / ft of base perimeter</em></span>
           </label>
 
-          <label className="bsx-field"><span>Die description override <em>display only — replaces the die line text</em></span>
-            <textarea rows={2} value={bc.dieTextOverride || ''} onChange={e => set({ dieTextOverride: e.target.value })}
-              placeholder="Optional — leave blank to auto-build the die line." /></label>
-
+          {/* Die description override moved OUT of BaseSection → DieOverrideField,
+              rendered from the die section so it's available even with no base. */}
           <label className="bsx-field"><span>Base description override <em>display only — replaces the base line text</em></span>
             <textarea rows={2} value={bc.baseTextOverride || ''} onChange={e => set({ baseTextOverride: e.target.value })}
               placeholder="Optional — custom bevels, special notes. Leave blank to auto-build." /></label>

@@ -26,6 +26,7 @@ import {
   buildDieSpec, buildBaseSpec, displayGraniteColor, nearestFittingBaseSize,
 } from './lib/monumentCatalog'
 import BaseSection from './components/BaseSection'
+import DieOverrideField from './components/DieOverrideField'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
@@ -3361,6 +3362,14 @@ export function ShapeStep({ order, update }) {
               {SIDES_OPTIONS.find(s => s.code === order.sides)?.blurb}
             </div>
           )}
+        </Section>
+      )}
+
+      {/* ---- Die description override — ANY die shape, independent of base ---- */}
+      {shape && !['bronze', 'mausoleum'].includes(shape.code) && (
+        <Section title="Die description" eyebrow="Override the die line text (optional)">
+          <DieOverrideField value={order.baseConfig?.dieTextOverride}
+            onChange={v => updateBase({ dieTextOverride: v })} />
         </Section>
       )}
 
