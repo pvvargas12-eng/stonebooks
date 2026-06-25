@@ -34,7 +34,7 @@ import {
   listAllOrders,
   HUB_DEFS,
   getHubWorkItems,
-  getJobsWithCurrentProof,
+  getCurrentProofsByJob,
 } from './lib/stonebooksData'
 import {
   getSelectedHub, setSelectedHub,
@@ -106,9 +106,9 @@ export default function JobsDepartmentView({
   const [hub, setHub] = useState(() => getSelectedHub(userId))
   const [jobs, setJobs] = useState(null)
   const [orders, setOrders] = useState(null)             // consumed by the Quote Hub section
-  // Job ids that already have a CURRENT proof_versions layout — the real
-  // source of truth behind the Design hub's "Layout needed" predicate.
-  const [currentProofJobIds, setCurrentProofJobIds] = useState(() => new Set())
+  // The CURRENT proof_versions row per job (Map job_id → {sent_at, approved_at}) —
+  // the real source of truth behind the Design hub's four-state machine.
+  const [currentProofsByJob, setCurrentProofsByJob] = useState(() => new Map())
   const [loadErr, setLoadErr] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -126,12 +126,12 @@ export default function JobsDepartmentView({
     setLoadErr(null)
     setLoading(true)
     try {
-      const [jobData, orderData, proofJobIds] = await Promise.all([
+      const [jobData, orderData, proofMap] = await Promise.all([
         getJobs({ includeClosed: false, limit: 1000 }),
         listAllOrders({ limit: 500 }),
-        getJobsWithCurrentProof(),
+        getCurrentProofsByJob(),
       ])
-      setCurrentProofJobIds(proofJobIds)
+      setCurrentProofsByJob(proofMap)
       // Match JOBS-RESKIN-PASS guard: getJobs({includeClosed:false}) excludes
       // only overall_status='closed'; 'cancelled' jobs leak in unless we
       // filter them. Cancelled is operationally a dead state, not an active
@@ -335,7 +335,14 @@ export default function JobsDepartmentView({
             <div className="sb-crm-empty">Loading hub work…</div>
           </div>
         ) : isDesignHub ? (
-          <DesignHubHome hubData={currentData} onOpenJob={onOpenJob} currentProofJobIds={currentProofJobIds} />
+          <DesignHubHome
+            jobs={jobs || []}
+            orders={orders || []}
+            currentProofsByJob={currentProofsByJob}
+            onOpenJob={onOpenJob}
+            onOpenOrder={onOpenOrderDetail}
+            onReload={loadJobs}
+          />
         ) : (
           <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS[hub]} />
         )

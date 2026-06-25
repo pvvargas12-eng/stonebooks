@@ -8174,6 +8174,61 @@ export async function getJobsWithCurrentProof() {
   return new Set((data || []).map(r => r.job_id).filter(Boolean))
 }
 
+// Richer sibling of getJobsWithCurrentProof: the CURRENT proof PER job
+// (is_current=true) as a Map(job_id → { sent_at, approved_at, uploaded_at }).
+// ONE query, no per-row read. Carries sent_at + approved_at so the Design hub can
+// split the need-approval / approved states without extra fetches. Fails SOFT to
+// an empty Map (staff session reads proof_versions; anon is RLS-locked).
+export async function getCurrentProofsByJob() {
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .select('job_id, sent_at, approved_at, uploaded_at')
+    .eq('is_current', true)
+  if (error) { console.warn('[proof] getCurrentProofsByJob:', error.message); return new Map() }
+  const m = new Map()
+  for (const r of (data || [])) if (r.job_id) m.set(r.job_id, r)
+  return m
+}
+
+// THE Design-hub state machine — ONE predicate behind every tile, list, task, and
+// status box so they can NEVER diverge. For a CONTRACTED order of a layout-bearing
+// type (New Stone / Inscription / Bronze), returns exactly one of:
+//   'due'           — no current proof_versions layout (orderNeedsLayout): owed.
+//   'approved'      — current proof approved (proof.approved_at OR the proof_approved
+//                     milestone — the SAME indicator OrderDetail / the approval
+//                     sheet use).
+//   'revision'      — current proof + proof_changes_requested in_progress (the same
+//                     revision signal proofStateForItem reads).
+//   'need_approval' — current proof, not approved, not in revision (awaiting the
+//                     customer's signature). Maps to the box's "Sent to customer".
+// Returns null when the order is OUT of scope (not contracted, or not one of the 3
+// types) — so it never contributes to any count. Takes the batched
+// currentProofsByJob Map (getCurrentProofsByJob); no per-row read.
+export function designStateFor(order, job, currentProofsByJob) {
+  if (!order || !job) return null
+  const contracted = SOLD_STATUSES.includes(order.status) || order.signed_at != null
+  if (!contracted) return null
+  const types = order.service_types || []
+  if (!types.some(t => LAYOUT_SERVICE_TYPES.has(t))) return null
+  const proof = currentProofsByJob ? currentProofsByJob.get(job.id) : null
+  if (!proof) return 'due'                                          // no real layout yet
+  if (proof.approved_at || _msDone(job, 'proof_approved')) return 'approved'
+  const cr = (job.milestones || []).find(m => m.milestone_key === 'proof_changes_requested')
+  if (cr && cr.status === 'in_progress') return 'revision'
+  return 'need_approval'
+}
+
+// PRE-CONTRACT sibling for the "Estimate layouts" tab: same 3 layout-bearing
+// types, but the order is still an estimate/lead (status draft/scoping/quoted and
+// not signed). No proof/job gate — leads don't have jobs yet.
+const PRE_CONTRACT_STATUSES = new Set(['draft', 'scoping', 'quoted'])
+export function orderIsEstimateLayout(order) {
+  if (!order || order.signed_at != null) return false
+  if (!PRE_CONTRACT_STATUSES.has(order.status)) return false
+  const types = order.service_types || []
+  return types.some(t => LAYOUT_SERVICE_TYPES.has(t))
+}
+
 // Next-action verb-phrase map. Each entry is a pair of phrase-builders —
 // `notStarted` for `status='not_started'`, and an optional `inProgress` for
 // `status='in_progress'`. Each builder takes the customer surname (already
