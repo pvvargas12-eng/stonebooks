@@ -354,12 +354,29 @@ const styles = `
     font-variant-numeric: tabular-nums;
   }
 
+  /* Grid cells default to min-width:auto and won't shrink below their content —
+     so a long name forces its track wide and the rest crush. Let every cell
+     shrink so text ellipsises instead of crushing. */
+  .sb-crm-row > *, .sb-crm-row-head > * { min-width: 0; }
+
+  /* Reusable single-line truncation for name/text cells (clean ellipsis instead
+     of per-character wrapping). Apply to any cell that should never wrap. */
+  .sb-crm-truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
   .sb-crm-primary {
     font-size: 14px;
     font-weight: 600;
     color: ${CRM.ink};
     letter-spacing: -0.003em;
     line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .sb-crm-secondary {
     font-size: 11px;
@@ -436,6 +453,22 @@ const styles = `
      told the dense table layout is desktop-first. Phase 6 work for a
      proper mobile card-list. */
   .sb-crm-min-width-banner { display: none; }
+
+  /* Row collapse — bumped 900 → 1180 so smaller laptops drop the crushed
+     multi-column grid for a clean single-column stacked row. The dense
+     multi-column table stays for genuine desktop widths (> 1180px). */
+  @media (max-width: 1180px) {
+    .sb-crm-row, .sb-crm-row-head {
+      grid-template-columns: 1fr !important;
+      gap: 6px;
+      padding: 16px 20px;
+    }
+    .sb-crm-row-head { display: none; }
+    .sb-crm-row .num { text-align: left; }
+  }
+
+  /* The "desktop-first" advisory banner stays at the genuinely-narrow width so
+     it doesn't nag laptop users who already have the clean stacked layout. */
   @media (max-width: 900px) {
     .sb-crm-min-width-banner {
       display: block;
@@ -447,13 +480,6 @@ const styles = `
       font-size: 13px;
       line-height: 1.45;
     }
-    .sb-crm-row, .sb-crm-row-head {
-      grid-template-columns: 1fr !important;
-      gap: 6px;
-      padding: 16px 20px;
-    }
-    .sb-crm-row-head { display: none; }
-    .sb-crm-row .num { text-align: left; }
   }
 `
 

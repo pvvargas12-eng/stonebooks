@@ -1152,6 +1152,13 @@ const shellStyles = `
     font-size: 15px;
     line-height: 1.55;
   }
+  /* Smaller laptops (≤1100px): narrow the fixed sidebar so MAIN reclaims width.
+     Nav labels are text-only (no icons), so we narrow to a still-readable 180px
+     rather than a 64px icon rail. Large monitors are unchanged. */
+  @media (max-width: 1100px) {
+    .sb-root { grid-template-columns: 180px 1fr; }
+    .sb-sidebar { padding: 20px 12px; }
+  }
 
   .sb-loading {
     min-height: 100vh;
@@ -1271,6 +1278,8 @@ const shellStyles = `
      balloons (was 64/80px, which wasted the screen on wide monitors). */
   .sb-main {
     overflow-y: auto;
+    overflow-x: hidden;   /* contain wide children — no whole-page horizontal scroll */
+    min-width: 0;          /* let the 1fr grid track shrink below child content */
     padding: 32px 32px;
   }
   @media (min-width: 1600px) { .sb-main { padding: 36px 40px; } }
