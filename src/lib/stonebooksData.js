@@ -8135,6 +8135,45 @@ export function getHubWorkItems(hubCode, jobs, orders = null, opts = {}) { // es
   }
 }
 
+// ── Design hub: "needs a layout" — the REAL predicate ───────────────────────
+// ONE shared predicate behind the Design hub's "Layout needed" count, chip, AND
+// queue list, so the three can never diverge. A job needs a layout ONLY when ALL
+// hold:
+//   (a) CONTRACTED — SOLD_STATUSES (or signed_at set). Estimates/leads
+//       (draft/scoping/quoted) are EXCLUDED.
+//   (b) layout-bearing TYPE — New Stone / Inscription / Bronze. ADD_PHOTO is a
+//       separate photo service and is EXCLUDED.
+//   (c) NO current layout — the REAL source of truth is a proof_versions row with
+//       is_current=true (NOT the proof_created milestone, which drifts). The
+//       caller passes `currentProofJobIds`: a Set of job ids that already have an
+//       is_current proof, batched ONCE via getJobsWithCurrentProof().
+const LAYOUT_SERVICE_TYPES = new Set(['NEW_STONE', 'INSCRIPTION', 'BRONZE'])
+export function orderNeedsLayout(order, job, currentProofJobIds) {
+  if (!order || !job) return false
+  // (a) contracted / signed — exclude pre-contract estimates + leads.
+  const contracted = SOLD_STATUSES.includes(order.status) || order.signed_at != null
+  if (!contracted) return false
+  // (b) layout-bearing service type (New Stone / Inscription / Bronze).
+  const types = order.service_types || []
+  if (!types.some(t => LAYOUT_SERVICE_TYPES.has(t))) return false
+  // (c) no current proof_versions layout for this job → it still needs one.
+  if (currentProofJobIds && currentProofJobIds.has(job.id)) return false
+  return true
+}
+
+// Batched read of which jobs already have a CURRENT layout
+// (proof_versions.is_current = true). ONE query → a Set of job ids; never
+// per-row. Runs in the staff session (anon is locked out of proof_versions) and
+// fails SOFT to an empty Set so the hub still renders if the read is blocked.
+export async function getJobsWithCurrentProof() {
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .select('job_id')
+    .eq('is_current', true)
+  if (error) { console.warn('[proof] getJobsWithCurrentProof:', error.message); return new Set() }
+  return new Set((data || []).map(r => r.job_id).filter(Boolean))
+}
+
 // Next-action verb-phrase map. Each entry is a pair of phrase-builders —
 // `notStarted` for `status='not_started'`, and an optional `inProgress` for
 // `status='in_progress'`. Each builder takes the customer surname (already

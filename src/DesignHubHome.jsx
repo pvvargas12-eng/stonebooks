@@ -21,8 +21,8 @@
 // JobDetail with the Design Packet tab pre-selected.
 // =============================================================================
 
-import { useState, useMemo, useEffect } from 'react'
-import { fmtUSD, fmtDate, getLatestChangeRequestNotes } from './lib/stonebooksData'
+import { useState, useMemo, useEffect, useCallback } from 'react'
+import { fmtUSD, fmtDate, getLatestChangeRequestNotes, orderNeedsLayout } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import RevisionThread from './components/RevisionThread'
 
@@ -71,16 +71,34 @@ function makeSubline({ total, waiting, needsDesign, approved }) {
 
 const FILTER_CHIPS = [
   { code: 'attention',     label: 'Needs attention',  match: (it) => it.urgent === true },
+  // 'layout' is OVERRIDDEN at the component via matchChip → orderNeedsLayout (the
+  // real proof_versions predicate). This module proxy is a harmless fallback; the
+  // component never calls it for 'layout', so the milestone heuristic is dead here.
   { code: 'layout',        label: 'Layout needed',    match: (it) => proofStateForItem(it) === 'design_needed' },
   { code: 'awaiting',      label: 'Awaiting customer',match: (it) => proofStateForItem(it) === 'awaiting' },
   { code: 'revision',      label: 'Revision',         match: (it) => proofStateForItem(it) === 'revision' },
   { code: 'approved',      label: 'Approved',         match: (it) => proofStateForItem(it) === 'approved' },
 ]
 
-export default function DesignHubHome({ hubData, onOpenJob }) {
+export default function DesignHubHome({ hubData, onOpenJob, currentProofJobIds }) {
   // Memoize so the array identity is stable across renders — feeds the
   // useMemo hooks below without re-firing them on every parent render.
   const items = useMemo(() => hubData?.items || [], [hubData])
+
+  // ONE shared "needs a layout" predicate (orderNeedsLayout) drives the
+  // Layout-needed chip, its count, the headline "need design", AND the queue
+  // list — all off the REAL proof_versions source of truth, so they can never
+  // diverge: contracted + (New Stone / Inscription / Bronze) + no current proof.
+  const needsLayout = useCallback(
+    (it) => orderNeedsLayout(it.order || it.job?.order, it.job, currentProofJobIds),
+    [currentProofJobIds],
+  )
+  // Route chip matching through here so the 'layout' chip uses orderNeedsLayout
+  // (which needs runtime proof data) instead of the module-level milestone proxy.
+  const matchChip = useCallback(
+    (chip, it) => (chip.code === 'layout' ? needsLayout(it) : chip.match(it)),
+    [needsLayout],
+  )
 
   // Selected job id (local UI state — not persisted). Defaults to the first
   // item when the queue is non-empty so the preview pane never opens blank.
@@ -109,11 +127,11 @@ export default function DesignHubHome({ hubData, onOpenJob }) {
     return items.filter(it => {
       for (const code of activeFilters) {
         const chip = FILTER_CHIPS.find(c => c.code === code)
-        if (chip && chip.match(it)) return true
+        if (chip && matchChip(chip, it)) return true
       }
       return false
     })
-  }, [items, activeFilters])
+  }, [items, activeFilters, matchChip])
 
   // Counts for the operator-prose sub-line. Computed across ALL items
   // (not the filtered view) so the prose reads as the hub's current truth,
@@ -123,21 +141,24 @@ export default function DesignHubHome({ hubData, onOpenJob }) {
     for (const it of items) {
       const ps = proofStateForItem(it)
       if (ps === 'awaiting') waiting++
-      else if (ps === 'design_needed') needsDesign++
       else if (ps === 'approved') approved++
+      // "need design" = the truthful Layout-needed set (real proof source) so the
+      // headline matches the chip and the queue list exactly — NOT the old
+      // milestone proxy that over-counted.
+      if (needsLayout(it)) needsDesign++
     }
     return { total: items.length, waiting, needsDesign, approved }
-  }, [items])
+  }, [items, needsLayout])
 
   // Chip-level counts inside the FilterChip badge. Reads from full item set
   // so the badge represents reality, not post-filter residue.
   const chipCounts = useMemo(() => {
     const c = {}
     for (const chip of FILTER_CHIPS) {
-      c[chip.code] = items.filter(it => chip.match(it)).length
+      c[chip.code] = items.filter(it => matchChip(chip, it)).length
     }
     return c
-  }, [items])
+  }, [items, matchChip])
 
   // Auto-pick a sensible selection when the filter changes and the current
   // selection drops out of the visible queue.
