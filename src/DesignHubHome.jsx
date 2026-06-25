@@ -28,6 +28,7 @@ import {
   designStateFor, orderIsEstimateLayout,
   setOrderDesignStatus, addOrderTask, setOrderTaskStatus, getOpenTasksList,
   getCurrentStaffName,
+  getProofVersionsByOrder, uploadProofLayout, createProofVersion,
 } from './lib/stonebooksData'
 
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
@@ -79,7 +80,7 @@ const SORTS = [
 ]
 const TASK_CAP = 10   // visible manual-task cap; overflow shows "+N more"
 
-export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJob, onOpenJob, onOpenOrder, onReload }) {
+export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJob, currentProofOrderIds, onOpenJob, onOpenOrder, onReload }) {
   const [todayISO, setTodayISO] = useState('')
   useEffect(() => { setTodayISO(todayStr()) }, [])
   const nowMs = todayISO ? msFrom(todayISO) : null
@@ -208,6 +209,34 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
 
   const toggleTile = (code) => setActiveTile(t => (t === code ? null : code))
 
+  // ── Estimate-layout uploader (order-scoped; reuses uploadProofLayout +
+  // createProofVersion with an orderId — NOT the job-scoped DesignPacket). ──────
+  const [uploadFor, setUploadFor] = useState(null)   // the lead order | null
+  const [uploadBusy, setUploadBusy] = useState(false)
+  const [uploadErr, setUploadErr] = useState(null)
+  const [orderProof, setOrderProof] = useState(null) // current order-scoped proof
+  const openUploader = useCallback(async (order) => {
+    setUploadFor(order); setUploadErr(null); setOrderProof(null)
+    const vers = await getProofVersionsByOrder(order.id).catch(() => [])
+    setOrderProof(vers.find(v => v.is_current) || vers[0] || null)
+  }, [])
+  const closeUploader = () => { if (!uploadBusy) { setUploadFor(null); setUploadErr(null); setOrderProof(null) } }
+  const onPickLayout = useCallback(async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || !uploadFor) return
+    setUploadBusy(true); setUploadErr(null)
+    const up = await uploadProofLayout(uploadFor.id, file, { scope: 'order' })
+    if (!up.ok) { setUploadErr(up.error || 'Upload failed.'); setUploadBusy(false); return }
+    const me = await getCurrentStaffName().catch(() => null)
+    const { error } = await createProofVersion({ orderId: uploadFor.id, layoutImageUrl: up.url, uploadedBy: me })
+    setUploadBusy(false)
+    if (error) { setUploadErr(error.message || 'Could not save the layout.'); return }
+    setUploadFor(null); setOrderProof(null)
+    await onReload?.()
+  }, [uploadFor, onReload])
+  const hasLayout = (orderId) => !!(currentProofOrderIds && currentProofOrderIds.has(orderId))
+
   return (
     <div className="sb-dh2">
       <style>{CSS}</style>
@@ -329,13 +358,38 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 <div key={o.id} className="sb-dh2-row" onClick={() => onOpenOrder?.(o.id)} role="button" tabIndex={0}>
                   <span className="sb-dh2-fam">{familyOf(o)}</span>
                   <span className="sb-dh2-est-meta">{o.order_number || 'estimate'}</span>
+                  {hasLayout(o.id) && <span className="sb-dh2-pill sb-dh2-pill-green">Layout ✓</span>}
                   <span className="sb-dh2-row-spacer" />
-                  <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); onOpenOrder?.(o.id) }}>Create estimate layout</button>
+                  <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); openUploader(o) }}>
+                    {hasLayout(o.id) ? 'Update layout' : 'Create estimate layout'}
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </>
+      )}
+
+      {/* Order-scoped layout uploader (estimate leads) — reuses the proof plumbing */}
+      {uploadFor && (
+        <div className="sb-dh2-modal-overlay" onClick={closeUploader}>
+          <div className="sb-dh2-modal" onClick={e => e.stopPropagation()}>
+            <div className="sb-dh2-modal-title">Estimate layout · {familyOf(uploadFor)}</div>
+            <div className="sb-dh2-modal-sub">Attach a layout to this estimate. It carries onto the job when the contract is signed.</div>
+            {orderProof?.layout_image_url && (
+              <div className="sb-dh2-modal-thumbwrap">
+                <img src={orderProof.layout_image_url} alt="Current layout" className="sb-dh2-modal-thumb" />
+                <div className="sb-dh2-modal-cur">Current — v{orderProof.version_number}</div>
+              </div>
+            )}
+            {uploadErr && <div className="sb-dh2-modal-err">{uploadErr}</div>}
+            <label className="sb-dh2-modal-uplabel">
+              <input type="file" accept="image/jpeg,image/png" onChange={onPickLayout} disabled={uploadBusy} style={{ display: 'none' }} />
+              <span className="sb-dh2-createbtn">{uploadBusy ? 'Uploading…' : (orderProof ? 'Upload a new version' : 'Upload layout (JPG / PNG)')}</span>
+            </label>
+            <button type="button" className="sb-dh2-modal-cancel" onClick={closeUploader} disabled={uploadBusy}>Close</button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -403,6 +457,20 @@ const CSS = `
   .sb-dh2-age-soon { color: #8b6418; background: rgba(184,132,42,.16); }
   .sb-dh2-pill { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
   .sb-dh2-pill-amber { color: #8b6418; background: rgba(184,132,42,.16); }
+  .sb-dh2-pill-green { color: #38704f; background: rgba(56,122,79,.12); }
+
+  .sb-dh2-modal-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(15,20,25,.5); display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .sb-dh2-modal { background: #fff; border-radius: 14px; width: min(440px, 94vw); padding: 22px; box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  .sb-dh2-modal-title { font-size: 16px; font-weight: 700; color: #1e2d3d; }
+  .sb-dh2-modal-sub { font-size: 12.5px; color: #8a8a85; margin: 4px 0 14px; line-height: 1.45; }
+  .sb-dh2-modal-thumbwrap { margin-bottom: 14px; }
+  .sb-dh2-modal-thumb { width: 100%; max-height: 240px; object-fit: contain; border: 0.5px solid #e4e0d4; border-radius: 8px; background: #faf8f4; }
+  .sb-dh2-modal-cur { font-size: 11.5px; color: #8a8a85; margin-top: 4px; }
+  .sb-dh2-modal-err { font-size: 12.5px; color: #b3261e; background: rgba(179,38,30,.06); border: 0.5px solid rgba(179,38,30,.3); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
+  .sb-dh2-modal-uplabel { display: block; cursor: pointer; margin-bottom: 10px; }
+  .sb-dh2-modal-uplabel .sb-dh2-createbtn { display: block; text-align: center; padding: 10px; }
+  .sb-dh2-modal-cancel { width: 100%; font: inherit; font-size: 13px; font-weight: 600; padding: 9px; border-radius: 8px; border: 0.5px solid #d8d2c4; background: #fff; color: #6a6a62; cursor: pointer; }
+  .sb-dh2-modal-cancel:disabled { opacity: .5; }
   .sb-dh2-statusbox { font: inherit; font-size: 13px; padding: 6px 10px; border: 0.5px solid #d8d2c4; border-radius: 8px; background: #fff; color: #2a2a2a; cursor: pointer; min-width: 150px; }
   .sb-dh2-statusbox:disabled { opacity: .5; }
   .sb-dh2-est-meta { font-size: 12.5px; color: #8a8a85; font-variant-numeric: tabular-nums; }

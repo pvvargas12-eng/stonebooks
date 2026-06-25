@@ -35,6 +35,7 @@ import {
   HUB_DEFS,
   getHubWorkItems,
   getCurrentProofsByJob,
+  getOrdersWithCurrentProof,
 } from './lib/stonebooksData'
 import {
   getSelectedHub, setSelectedHub,
@@ -109,6 +110,9 @@ export default function JobsDepartmentView({
   // The CURRENT proof_versions row per job (Map job_id → {sent_at, approved_at}) —
   // the real source of truth behind the Design hub's four-state machine.
   const [currentProofsByJob, setCurrentProofsByJob] = useState(() => new Map())
+  // Order ids (leads) that already have a CURRENT order-scoped layout — drives the
+  // Estimate-layouts tab's "has a layout" indicator.
+  const [currentProofOrderIds, setCurrentProofOrderIds] = useState(() => new Set())
   const [loadErr, setLoadErr] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -126,12 +130,14 @@ export default function JobsDepartmentView({
     setLoadErr(null)
     setLoading(true)
     try {
-      const [jobData, orderData, proofMap] = await Promise.all([
+      const [jobData, orderData, proofMap, proofOrderIds] = await Promise.all([
         getJobs({ includeClosed: false, limit: 1000 }),
         listAllOrders({ limit: 500 }),
         getCurrentProofsByJob(),
+        getOrdersWithCurrentProof(),
       ])
       setCurrentProofsByJob(proofMap)
+      setCurrentProofOrderIds(proofOrderIds)
       // Match JOBS-RESKIN-PASS guard: getJobs({includeClosed:false}) excludes
       // only overall_status='closed'; 'cancelled' jobs leak in unless we
       // filter them. Cancelled is operationally a dead state, not an active
@@ -339,6 +345,7 @@ export default function JobsDepartmentView({
             jobs={jobs || []}
             orders={orders || []}
             currentProofsByJob={currentProofsByJob}
+            currentProofOrderIds={currentProofOrderIds}
             onOpenJob={onOpenJob}
             onOpenOrder={onOpenOrderDetail}
             onReload={loadJobs}

@@ -3195,6 +3195,24 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
     }
   }
 
+  // 5b. CARRYOVER (Option A) — re-link a lead's order-scoped layout onto the new
+  // job so the estimate layout becomes the contract's first proof version. Placed
+  // AFTER milestone seeding on purpose: the milestone-failure path above deletes
+  // the job, and proof_versions.job_id is ON DELETE CASCADE — re-linking earlier
+  // would let a rolled-back job CASCADE-delete the lead's layout. Past this point
+  // the job is durable. Runs only on FIRST creation (the alreadyExisted branch
+  // early-returns above). The new job has no other proofs, so the per-job current
+  // index holds and the is_current row carries cleanly. order_id is nulled to keep
+  // the XOR owner. Best-effort: a re-link miss must not fail job creation.
+  try {
+    const { error: relinkErr } = await supabase
+      .from('proof_versions')
+      .update({ job_id: job.id, order_id: null })
+      .eq('order_id', order.id)
+      .is('job_id', null)
+    if (relinkErr) console.warn('[proof] lead-layout re-link failed:', relinkErr.message)
+  } catch (e) { console.warn('[proof] lead-layout re-link failed:', e?.message) }
+
   // 6. Write job_created event.
   const eventPayload = {
     service_types: order.service_types,
@@ -10068,9 +10086,13 @@ export function computeTripMileage(batch) {
 // create_proof_version Postgres function (20260601_create_proof_version_fn.sql)
 // so the one-current-per-job invariant holds atomically. Returns the raw
 // supabase.rpc shape ({ data, error }); data is the inserted proof_versions row.
-export async function createProofVersion({ jobId, layoutImageUrl, metadataSnapshot, uploadedBy }) {
+// Owner-aware (Option A): pass EITHER jobId OR orderId (lead). The owner-aware
+// create_proof_version RPC (20260625) branches demote/version/insert on whichever
+// is set and raises if both/neither are passed.
+export async function createProofVersion({ jobId, orderId, layoutImageUrl, metadataSnapshot, uploadedBy }) {
   return await supabase.rpc('create_proof_version', {
-    p_job_id:            jobId,
+    p_job_id:            jobId ?? null,
+    p_order_id:          orderId ?? null,
     p_layout_image_url:  layoutImageUrl,
     p_metadata_snapshot: metadataSnapshot ?? {},
     p_uploaded_by:       uploadedBy ?? null,
@@ -10082,14 +10104,18 @@ export async function createProofVersion({ jobId, layoutImageUrl, metadataSnapsh
 // (no overwrite) and side-steps filename collisions. JPG/PNG only — the public
 // bucket exists so jsPDF's urlToDataURL() can fetch the image without signed-URL
 // gymnastics; restricting to web-image types keeps that path simple.
-export async function uploadProofLayout(jobId, file) {
-  if (!jobId || !file) return { ok: false, error: 'Missing jobId or file' }
+// `scope` selects the storage prefix: 'job' (default — back-compat with the
+// packet caller) writes proofs/<id>/…; 'order' writes proofs/order/<id>/… so a
+// lead's pre-contract layout has a home before any job exists. Same public
+// bucket, same JPG/PNG gate.
+export async function uploadProofLayout(ownerId, file, { scope = 'job' } = {}) {
+  if (!ownerId || !file) return { ok: false, error: 'Missing owner id or file' }
   const okTypes = ['image/jpeg', 'image/png']
   if (!okTypes.includes(file.type)) {
     return { ok: false, error: 'Layout image must be a JPG or PNG.' }
   }
   const ext = file.type === 'image/png' ? 'png' : 'jpg'
-  const path = `proofs/${jobId}/${crypto.randomUUID()}.${ext}`
+  const path = `proofs/${scope === 'order' ? `order/${ownerId}` : ownerId}/${crypto.randomUUID()}.${ext}`
   const { error: upErr } = await supabase.storage
     .from('orders-attachments-public')
     .upload(path, file, { upsert: false, contentType: file.type })
@@ -10112,6 +10138,32 @@ export async function getProofVersions(jobId) {
     .order('version_number', { ascending: false })
   if (error) { console.warn('[proof] getProofVersions:', error.message); return [] }
   return data || []
+}
+
+// Order-scoped sibling (Option A): a lead's pre-contract layout stack, newest
+// first. Mirrors getProofVersions but keys on order_id (job_id is NULL on these).
+export async function getProofVersionsByOrder(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('version_number', { ascending: false })
+  if (error) { console.warn('[proof] getProofVersionsByOrder:', error.message); return [] }
+  return data || []
+}
+
+// Batched: which ORDERS (leads) already have a CURRENT order-scoped layout. ONE
+// query → a Set of order_ids; mirrors getJobsWithCurrentProof for the Estimate
+// tab's "has a layout" indicator. Fails SOFT to an empty Set.
+export async function getOrdersWithCurrentProof() {
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .select('order_id')
+    .eq('is_current', true)
+    .not('order_id', 'is', null)
+  if (error) { console.warn('[proof] getOrdersWithCurrentProof:', error.message); return new Set() }
+  return new Set((data || []).map(r => r.order_id).filter(Boolean))
 }
 
 // Stage 2 Commit 2 — proof lifecycle stamps (sent / approved). Whitelisted
