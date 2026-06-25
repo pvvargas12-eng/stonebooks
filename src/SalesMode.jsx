@@ -12671,7 +12671,10 @@ export const salesModeStyles = `
 }
 
 /* ---- PROGRESS -------------------------------------------------------------- */
-.sm-progress { display: flex; align-items: center; gap: 0; justify-content: center; }
+/* Wrap to multiple centered rows instead of clipping off the right edge when a
+   full order has 10+ steps. row-gap gives wrapped rows breathing room; all steps
+   stay reachable at any width. */
+.sm-progress { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0; row-gap: 12px; justify-content: center; }
 .sm-progress-step {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   background: none; border: none; cursor: pointer;

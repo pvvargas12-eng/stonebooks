@@ -1813,7 +1813,7 @@ const OD_CSS = `
     border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 7px 12px; margin: 10px 0 0; }
 
   /* Quick-glance strip — the three things to read the instant the order opens. */
-  .sb-od-glance { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0 4px; }
+  .sb-od-glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0 4px; }
   @media (max-width: 720px) { .sb-od-glance { grid-template-columns: 1fr; } }
   .sb-od-glance-item {
     display: flex; align-items: center; gap: 12px;
@@ -1821,7 +1821,7 @@ const OD_CSS = `
   }
   .sb-od-glance-text { min-width: 0; }
   .sb-od-glance-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: #9a8a5e; font-weight: 700; }
-  .sb-od-glance-value { font-size: 16px; font-weight: 700; color: #1a1a17; margin-top: 2px; line-height: 1.25; word-break: break-word; }
+  .sb-od-glance-value { font-size: 16px; font-weight: 700; color: #1a1a17; margin-top: 2px; line-height: 1.25; overflow-wrap: break-word; word-break: normal; min-width: 0; }
   .sb-od-glance-sub { font-size: 14px; font-weight: 500; color: #6b6b66; }
 
   /* Section layout: sticky left rail + the card grid. */

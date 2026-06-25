@@ -126,7 +126,11 @@ const QUICK_VIEWS = [
 // removed; the freed width goes to Family + Customer (1.7fr each) so full names
 // show without truncation. Widths are draggable — a header handle pins that
 // column to px; the rest stay fractional.
-const DEFAULT_COLS = ['32px', '1.7fr', '0.8fr', '1.7fr', '0.9fr', '1fr', '1.2fr', '1.3fr', '1fr', '1.3fr', '1fr', '1fr']
+// minmax(floor, fr) — same fr proportions as before, plus a px floor per column so
+// columns can't crush below readability on 1180–1440px laptops. When the 12 floors
+// exceed the available width the .sb-crm-table wrapper scrolls horizontally (it has
+// overflow-x:auto) instead of clipping; ≤1180px the Wave-1 collapse stacks the row.
+const DEFAULT_COLS = ['32px', 'minmax(96px, 1.7fr)', 'minmax(70px, 0.8fr)', 'minmax(96px, 1.7fr)', 'minmax(80px, 0.9fr)', 'minmax(84px, 1fr)', 'minmax(92px, 1.2fr)', 'minmax(92px, 1.3fr)', 'minmax(70px, 1fr)', 'minmax(96px, 1.3fr)', 'minmax(82px, 1fr)', 'minmax(80px, 1fr)']
 const COL_RESIZE = { position: 'absolute', top: 0, right: 0, width: 7, height: '100%', cursor: 'col-resize', userSelect: 'none', zIndex: 2 }
 
 // Display-only title-casing (never alters stored data). Caps the first letter of
@@ -1178,7 +1182,7 @@ const TW_CSS = `
 
   /* Orders-redesign cells */
   .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-  .sb-ord-cust-name { white-space: normal; overflow-wrap: anywhere; }
+  .sb-ord-cust-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sb-ord-cust-num { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
   .sb-ord-block { margin-top: 2px; font-size: 11px; font-weight: 600; color: #B54040; }
   .sb-ord-total-input { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; text-align: right; padding: 5px 6px; border: 0.5px solid transparent; border-radius: 6px; background: transparent; color: #222; font-variant-numeric: tabular-nums; }

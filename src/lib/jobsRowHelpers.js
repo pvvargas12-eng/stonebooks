@@ -26,7 +26,9 @@ import {
 // UX rebalance from JOBS-RESKIN-PASS: CEMETERY 1.0→1.1 (real names like
 // "Mountainview Cemetery" were tight); BLOCKER 1.2→1.1 (longest current
 // label "Awaiting proof approval" still fits ~150px in 1.1fr).
-export const ROW_GRID = '1.4fr 0.75fr 1.1fr 0.85fr 1.05fr 1.1fr 0.45fr 0.6fr'
+// minmax(floor, fr) — same proportions, px floors so columns stay readable on
+// 1180–1440px laptops (no crush). Family cell truncates via .sb-crm-primary (Wave 1).
+export const ROW_GRID = 'minmax(120px, 1.4fr) minmax(72px, 0.75fr) minmax(96px, 1.1fr) minmax(78px, 0.85fr) minmax(92px, 1.05fr) minmax(96px, 1.1fr) minmax(48px, 0.45fr) minmax(56px, 0.6fr)'
 
 // Milestone group display label + canonical render order. JobDetail's
 // per-group milestone cards iterate GROUP_ORDER to land the design / permit /

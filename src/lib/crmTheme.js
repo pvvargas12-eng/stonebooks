@@ -315,7 +315,11 @@ const styles = `
     .sb-crm-metric-value { font-size: 22px; }
   }
 
-  .sb-crm-table { padding: 6px 0; }
+  /* Horizontal scroll when minmax-floored columns can't all fit (e.g. the 12-col
+     Orders grid at 1180–1440px): the table scrolls instead of clipping (the page
+     itself never scrolls — .sb-main is overflow-x:hidden). Below 1180px the Wave-1
+     single-column collapse fits, so no scrollbar appears there. */
+  .sb-crm-table { padding: 6px 0; overflow-x: auto; }
   .sb-crm-row {
     display: grid;
     align-items: center;

@@ -581,7 +581,9 @@ const localStyles = `
      (1fr each); at tablet they wrap 2×2; at phone they stack. */
   .sb-hub-strip {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    /* auto-fit: as many ≥180px cards per row as fit, reflowing by width (was a
+       fixed 6-up). The narrow-width media steps below stay as explicit fallbacks. */
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 12px;
     margin: 0 32px 24px 32px;
   }

@@ -84,7 +84,9 @@ function severityRank(blocker) {
 }
 
 // Grid template: SELECT | FAMILY | ORDER# | CONTACT | PAYMENT | AGE | BLOCKER | UPDATED
-const ROW_GRID = '34px 1.4fr 0.9fr 1.1fr 1.1fr 0.7fr 1.2fr 0.7fr'
+// minmax(floor, fr) — same proportions, px floors so columns stay readable on
+// 1180–1440px laptops (no crush). Name cell truncates via .sb-crm-primary (Wave 1).
+const ROW_GRID = '34px minmax(110px, 1.4fr) minmax(80px, 0.9fr) minmax(96px, 1.1fr) minmax(96px, 1.1fr) minmax(64px, 0.7fr) minmax(100px, 1.2fr) minmax(64px, 0.7fr)'
 
 // ── Component ────────────────────────────────────────────────────────────────
 

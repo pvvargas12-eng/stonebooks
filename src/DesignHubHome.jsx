@@ -402,7 +402,7 @@ const CSS = `
   .sb-dh2-tab.on { background: #fff; color: #0f1419; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
   .sb-dh2-tab:hover:not(.on) { color: #4a463f; }
 
-  .sb-dh2-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
+  .sb-dh2-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 20px; }
   .sb-dh2-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; cursor: pointer; font: inherit;
     background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-left: 4px solid #cfcabb; border-radius: 12px; padding: 16px 18px; transition: box-shadow .12s, transform .12s; }
   .sb-dh2-tile:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(15,20,25,.08); }
