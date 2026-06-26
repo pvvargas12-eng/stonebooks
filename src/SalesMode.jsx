@@ -6832,6 +6832,19 @@ function pdfDeceasedLines(order) {
   const orderDateFormat = 'month_day_year'
   const orderDateFormatCustom = null
 
+  // Display-only fallback name (no stored-data change): when a person's own name
+  // is blank, resolve a real name so the contract never prints "(name pending)"
+  // while a name exists elsewhere on the order. Precedence: inscription family
+  // name → any deceased lastName → the customer's full name. Inscription-only
+  // orders hide the Memorial first/last inputs, so the deceased record can be
+  // nameless while the name lives on inscription.familyName or the customer.
+  const fallbackName = (
+    (order.inscription?.familyName || '').trim() ||
+    (order.deceased || []).map(p => (p?.lastName || '').trim()).find(Boolean) ||
+    [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ').trim() ||
+    ''
+  )
+
   for (const d of order.deceased || []) {
     if (d.isReserved) {
       out.push({ kind: 'reserved', text: '— Reserved space —' })
@@ -6868,7 +6881,7 @@ function pdfDeceasedLines(order) {
       format: orderDateFormat,
       customText: orderDateFormatCustom,
     })
-    out.push({ kind: 'person', name: name || '(name pending)', dates })
+    out.push({ kind: 'person', name: name || fallbackName || '(name pending)', dates })
   }
   return out
 }
@@ -7853,7 +7866,11 @@ export async function generateEstimatePDF(order, opts = {}) {
       doc.text(fmtUSD(val), payValX, y, { align: 'right' })
       y += o.gap || 6
     }
-    payRow('Total', finalTotal, { bold: true, size: 12, labelColor: TEXT })
+    // Standalone "Total" only when there's a payment context (stone deposit flow
+    // or any payments received) — otherwise it duplicates the pricing-box TOTAL
+    // and the Balance due on service contracts (inscription/acid/repair with no
+    // payments). Stone + partial-payment displays are unchanged.
+    if (hasStone || paidToDate > 0) payRow('Total', finalTotal, { bold: true, size: 12, labelColor: TEXT })
     if (paidToDate > 0) payRow('Payments received', paidToDate)
     if (hasStone) {
       // New stone / monument — 50% deposit before fabrication; NO "Balance due"
