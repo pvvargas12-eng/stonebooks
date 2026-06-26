@@ -7,6 +7,7 @@
 
 import { supabase } from './supabase'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
+import { engineRowGrandTotal } from './pricingCore'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
 export const NJ_TAX_RATE = 0.06625
@@ -1010,65 +1011,31 @@ export async function getJobByOrderId(orderId) {
 }
 
 // ── ORDER PRICE COMPUTATION ──────────────────────────────────────────────────
-// Mirrors SalesMode's buildLineItems → grand total math, but reads directly
-// from the saved row (add_ons jsonb + pricing jsonb).
+// LINE ITEMS ARE THE PRICE (Paul, final). The Orders-page total = SUM OF THE LINE
+// ITEMS (tax/discount per each line's own flags) via the SAME priceOrderTotals
+// engine the contract PDF uses — reached through the dependency-free pricingCore
+// accessor (orderRates registers it; see pricingCore.js). This kills the old
+// reconstruction's foundation double-count and taxable:false over-tax. The engine
+// uses .totals.grandTotal (NOT .displayed), so pricing.manualTotal is IGNORED for
+// the balance; contract_total / payment_status are never consulted. An order with
+// no line items totals $0 (intended).
+//
+// Memoized by id + updated_at so list/report renders (which call this per row,
+// many times) don't re-run the full engine + rowToOrder conversion repeatedly; the
+// key changes on any edit, so a re-priced order recomputes on next read.
+const _rowGrandTotalCache = new Map()
 export function rowGrandTotal(order) {
   if (!order) return 0
-  const pricing = order.pricing || {}
-  // Phase 4 — the editors now write pricing.lineItemOverrides (the one override
-  // map); legacy orders may still carry pricing.overrides. Read the UNION so this
-  // list/report total doesn't go stale after an order is re-priced (the active
-  // lineItemOverrides wins). World-A (computeFormLineItems / priceOrderTotals) and
-  // this World-B estimator are still separate engines — full unification is a
-  // later sprint; this only keeps the override values in sync across both.
-  const overrides = { ...(pricing.overrides || {}), ...(pricing.lineItemOverrides || {}) }
-  const addOns = order.add_ons || []
-
-  // Subtotal — line items
-  let subtotalDisc = 0    // discountable
-  let subtotalPermit = 0  // not discounted (cemetery permits)
-
-  // Base stone price
-  if (overrides['base-stone'] != null) {
-    subtotalDisc += Number(overrides['base-stone']) || 0
-  } else if (pricing.basePrice != null) {
-    subtotalDisc += Number(pricing.basePrice) || 0
+  const key = order.id != null
+    ? `${order.id}|${order.updated_at ?? order.updatedAt ?? ''}`
+    : null
+  if (key && _rowGrandTotalCache.has(key)) return _rowGrandTotalCache.get(key)
+  const total = Number(engineRowGrandTotal(order)) || 0
+  if (key) {
+    if (_rowGrandTotalCache.size > 2000) _rowGrandTotalCache.clear()  // bound memory
+    _rowGrandTotalCache.set(key, total)
   }
-
-  // All other override-style line items (foundation, polish, color premium, etc.)
-  for (const [code, val] of Object.entries(overrides)) {
-    if (code === 'base-stone') continue
-    if (typeof val !== 'number') continue
-    if (code === 'addon-permit') subtotalPermit += val
-    else                          subtotalDisc += val
-  }
-
-  // Add-ons
-  for (const a of addOns) {
-    if (a.freeWithStone) continue
-    const amt = (Number(a.price) || 0) * (Number(a.qty) || 1)
-    if (a.code === 'permit') subtotalPermit += amt
-    else                     subtotalDisc += amt
-  }
-
-  // Custom line items
-  for (const c of (pricing.customLineItems || [])) {
-    subtotalDisc += Number(c.amount) || 0
-  }
-
-  // Discount
-  const discountPct = Number(pricing.discountPct) || 0
-  const discountAmt = subtotalDisc * (discountPct / 100)
-
-  // Tax + CC. Cemetery permit is a pass-through — NOT taxed (matches computeTotals
-  // in orderRates, the single source of truth). Cents preserved so the order
-  // detail total matches the contract / payments to the cent.
-  const taxableBase = subtotalDisc - discountAmt
-  const tax = pricing.applyTax ? taxableBase * NJ_TAX_RATE : 0
-  const grandBeforeCC = taxableBase + subtotalPermit + tax
-  const cc  = pricing.applyCCSurcharge ? grandBeforeCC * CC_SURCHARGE : 0
-
-  return Math.round((grandBeforeCC + cc) * 100) / 100
+  return total
 }
 
 // Sprint M2 Phase 2 — payment helpers prefer the payments[] array when it's
@@ -1153,22 +1120,20 @@ const _msHas  = (job, key) => _msList(job).some(x => x.milestone_key === key)
 export function milestoneDone(job, key) { return _msDone(job, key) }
 
 // Editable contract total (orders.contract_total). NULL = blank in the table.
+// Still surfaced as a display/PnL field elsewhere — but NO LONGER the balance
+// total source (see _effectiveTotal). Kept exported for those other consumers.
 export function orderContractTotal(order) {
   return order?.contract_total != null ? Number(order.contract_total) : null
 }
-// Total used for payment status + the set-gate: the typed contract_total when
-// set, else the pricing-derived grand total (legacy/QB rows have no scalar).
+// LINE ITEMS ARE THE PRICE (Paul, final): payment status + the set-gate use the
+// engine line-item total — NOT contract_total, NOT a manual payment_status. Both
+// of those escape hatches were ripped here so the balance/paid-in-full can never
+// disagree with the contract's line-item math.
 function _effectiveTotal(order) {
-  const ct = orderContractTotal(order)
-  return ct != null ? ct : rowGrandTotal(order)
+  return rowGrandTotal(order)
 }
 
-// Manual override (orders.payment_status) wins — imported orders have no
-// reliable stored total, so the office sets payment by hand. Falls back to the
-// money derivation when no override is set (or before the column migration).
-const _PAY_CODES = new Set(['quoted', 'deposit', 'paid_in_full'])
 export function derivePaymentStatus(order) {
-  if (order?.payment_status && _PAY_CODES.has(order.payment_status)) return order.payment_status
   const total = _effectiveTotal(order)
   const paid = rowTotalPaid(order)
   if (total > 0 && (total - paid) <= 0) return 'paid_in_full'

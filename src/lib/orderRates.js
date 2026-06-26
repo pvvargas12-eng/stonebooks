@@ -24,9 +24,10 @@ import {
   BLING_SIZES, computeBlingPrice,
   VASE_SIZES, computeVasePrice,
   PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
-  buildLineItems,
+  buildLineItems, rowToOrder,
 } from '../SalesMode'
 import { supabase } from './supabase'
+import { registerRowGrandTotal } from './pricingCore'
 
 // Re-export the existing dropdown lists so the form imports everything from here.
 export {
@@ -753,3 +754,16 @@ export async function savePricingConfig(config, userId) {
     return { ok: false, error: String(e?.message || e) }
   }
 }
+
+// ── Register the shared line-item engine for stonebooksData (no import cycle) ──
+// LINE ITEMS ARE THE PRICE (Paul, final): the Orders-page total = sum of the line
+// items via the SAME priceOrderTotals the contract PDF uses. .totals.grandTotal —
+// NOT .displayed — so a manual grand-total override (pricing.manualTotal) is
+// IGNORED for the balance. Raw snake rows are converted via rowToOrder; an already
+// -camel order (has serviceTypes) passes straight through. No basePrice/override
+// reconstruction, no contract_total, no payment_status. $0 with no line items.
+registerRowGrandTotal((row) => {
+  if (!row) return 0
+  const o = row.serviceTypes ? row : rowToOrder(row)
+  return priceOrderTotals(o).totals.grandTotal
+})
