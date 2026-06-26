@@ -6797,12 +6797,21 @@ function buildTitleForPerson(d) {
   return [prefix, relStr].filter(Boolean).join(' ').trim()
 }
 
-// Sprint L2 Phase 4 — hoisted from pdfDeceasedLines. Carved name (Tab 8 §1)
-// preferred, fall back to assembled legal name from Tab 4.
+// Sprint L2 Phase 4 — hoisted from pdfDeceasedLines. The structured legal name
+// (Tab 4 first/middle/last) is AUTHORITATIVE and wins whenever it exists. The
+// "Name as carved" override (inscriptionName, Tab 8 §1) is only a usable NAME
+// when it actually carries letters — staff sometimes type a bare year/date into
+// that field, and a purely numeric value (e.g. "2026") must NEVER display as the
+// person's name. Returns '' when nothing usable, so pdfDeceasedLines' fallback
+// chain (inscription.familyName → deceased.lastName → customer name → '(name
+// pending)') can take over.
 function buildNameForPerson(d) {
   if (!d) return ''
-  if (d.inscriptionName && d.inscriptionName.trim()) return d.inscriptionName.trim()
-  return [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ')
+  const structured = [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ').trim()
+  if (structured) return structured
+  const insc = (d.inscriptionName || '').trim()
+  if (insc && /[A-Za-z]/.test(insc)) return insc   // a real carved name (has letters), not a bare year/date
+  return ''
 }
 
 // Build the deceased lines for the "In Memory Of" section
