@@ -10216,6 +10216,7 @@ export async function updateProofVersion(id, patch = {}) {
   // approval, nulled on unmark). Only the sign / unmark paths pass these.
   if (patch.signature_method !== undefined) row.signature_method = patch.signature_method || null
   if (patch.signature_url !== undefined)    row.signature_url = patch.signature_url || null
+  if (patch.notes !== undefined)            row.notes = (patch.notes || '').trim() || null   // internal design notes
   if (Object.keys(row).length === 0) return { ok: false, error: 'Nothing to update' }
   const { data, error } = await supabase
     .from('proof_versions')

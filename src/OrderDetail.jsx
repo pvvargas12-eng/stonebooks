@@ -27,7 +27,7 @@ import {
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
   createApprovalLink, getApprovalLinksForOrder, revokeApprovalLink,
   ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
-  getProofVersions, getProofSignatureSignedUrl,
+  getProofVersions, getProofSignatureSignedUrl, updateProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
   setOrderPermit, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
@@ -72,6 +72,31 @@ const permitTone = (s) => ({
   cemetery_permit_needed: 'amber', shev_permit_needed: 'amber', required: 'amber',
   not_required: 'bronze', unknown: 'bronze',
 }[s || 'unknown'] || 'bronze')
+
+// Design status as the 6 operator-facing labels, derived from the SAME signals as
+// the Design Hub four-state machine (proof_versions.sent_at/approved_at + the
+// proof_approved / proof_changes_requested milestones) — a richer deriver, NOT a
+// parallel enum. Reconciliation: Hub 'Approved'→approved, 'Need Revision'→revision,
+// 'Need Approval'→sent, 'Due'→not_created; 'needs_sending'/'drafted' split the
+// pre-send window (proof exists but not yet sent).
+const DESIGN_6 = {
+  not_created: 'Not created', drafted: 'Drafted', needs_sending: 'Needs sending to customer',
+  sent: 'Sent to customer', approved: 'Approved', revision: 'Revision needed',
+}
+const DESIGN_6_TONE = {
+  not_created: 'bronze', drafted: 'bronze', needs_sending: 'amber',
+  sent: 'blue', approved: 'green', revision: 'amber',
+}
+function deriveDesign6(job, proofVers) {
+  const proof = (proofVers || []).find(p => p.is_current) || (proofVers || [])[0]
+  const msDone = (k) => (job?.milestones || []).some(m => m.milestone_key === k && m.status === 'done')
+  const msInProg = (k) => (job?.milestones || []).some(m => m.milestone_key === k && m.status === 'in_progress')
+  if (!proof) return 'not_created'
+  if (proof.approved_at || msDone('proof_approved')) return 'approved'
+  if (msInProg('proof_changes_requested')) return 'revision'
+  if (proof.sent_at) return 'sent'
+  return proof.layout_image_url ? 'needs_sending' : 'drafted'
+}
 
 const stageTone = (status) => {
   switch (status) {
@@ -211,6 +236,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [feeBusy, setFeeBusy] = useState(false)
   const [feeMsg, setFeeMsg] = useState(null)
   const [monDraft, setMonDraft] = useState(null)        // camel order copy for the reused MonumentCard
+  const [designNotesDraft, setDesignNotesDraft] = useState('')   // internal design notes (current proof)
+  const [emailLinkBusy, setEmailLinkBusy] = useState(false)
+  const [emailLinkMsg, setEmailLinkMsg] = useState(null)
   // Activity log (#4)
   const [activity, setActivity] = useState([])
   const [actNote, setActNote] = useState('')
@@ -653,6 +681,41 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     return { ok: true }
   }
 
+  // ── Design / proof quick-edit (internal notes + email the approval link) ─────
+  const refreshProofs = async () => { if (job?.id) setProofVers(await getProofVersions(job.id)) }
+  const seedDesignDraft = () => {
+    const proof = proofVers.find(p => p.is_current) || proofVers[0]
+    setDesignNotesDraft(proof?.notes || '')
+    setEmailLinkMsg(null)
+  }
+  const saveDesignNotes = async () => {
+    const proof = proofVers.find(p => p.is_current) || proofVers[0]
+    if (!proof) return { ok: false, error: 'No proof yet — add a layout in the Design hub first.' }
+    const r = await updateProofVersion(proof.id, { notes: designNotesDraft })
+    if (!r.ok) return r
+    await refreshProofs()
+    logOrderActivity(orderId, { type: 'change', field: 'Design notes', newValue: 'updated', note: 'Internal design notes edited', actor: await getCurrentStaffName() }).then(() => refreshActivity()).catch(() => {})
+    return { ok: true }
+  }
+  // Email the active approval link to the customer (real send via the shop Gmail).
+  const emailApprovalLink = async () => {
+    if (emailLinkBusy) return
+    const active = approvalLinks.find(l => (l.displayStatus === 'pending' || l.displayStatus === 'viewed') && l.share_url)
+    const url = active?.share_url || sentLink
+    if (!url) { setEmailLinkMsg({ type: 'err', text: 'No active approval link — use “Send for approval” first.' }); return }
+    if (!cust?.email) { setEmailLinkMsg({ type: 'err', text: 'No customer email on file.' }); return }
+    setEmailLinkBusy(true); setEmailLinkMsg(null)
+    const surname = order.primary_lastname || cust.last_name || 'your'
+    const body = `Hello,\n\nYour monument layout is ready for your review and approval. Please open the link below, review the design, and approve it (or request changes):\n\n${url}\n\nThank you,\nShevchenko Monuments`
+    const r = await sendShopEmail({ to: cust.email, subject: `Monument layout approval — ${surname}`, text: body, orderId, customerId: order.customer_id })
+    setEmailLinkBusy(false)
+    if (!r.ok) { setEmailLinkMsg({ type: 'err', text: r.error || 'Email failed.' }); return }
+    setEmailLinkMsg({ type: 'ok', text: `Approval link emailed to ${cust.email}.` })
+    const staff = await getCurrentStaffName()
+    logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'emailed', note: `Approval link emailed to ${cust.email}`, actor: staff }).then(() => refreshActivity()).catch(() => {})
+    if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: `Approval link emailed to ${cust.email}`, createdBy: staff }).catch(() => {})
+  }
+
   // (Permit editing consolidated into the Cemetery & grave ⋯ quick-edit — see
   //  seedCgDraft / saveCemeteryGrave / recordPermitFee above. The permit fee is an
   //  outgoing expense, never an order column, never a customer payment.)
@@ -930,6 +993,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Derived statuses from the related job's milestones (read-only)
   const proofMs = milestoneStatus(job, ['proof_created', 'bronze_proof_created', 'proof_sent', 'bronze_proof_sent', 'proof_approved', 'bronze_proof_approved'])
   const proofLabel = proofMs ? humanize(proofMs.replace('bronze_', '')) : null
+  const design6 = deriveDesign6(job, proofVers)          // 6-label design status
+  const _currentProof = proofVers.find(p => p.is_current) || proofVers[0] || null
   const foundationMs = milestoneStatus(job, ['foundation_poured', 'foundation_cured'])
   const nra = job ? getNextRequiredAction(job) : null
   const jobStage = job ? jobStatusInfo(job.overall_status) : null
@@ -1274,14 +1339,30 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 3b — Design / proof quick-view (item B) */}
-          <Section id="od-design" title="Design / proof">
+          <Section id="od-design" title="Design / proof" headerAction={
+            <CardQuickEdit title="Design / Proof" onOpen={seedDesignDraft} onSave={saveDesignNotes} width={340} saveLabel="Save notes">
+              <CqeNote>Design status <strong>{DESIGN_6[design6]}</strong>{_currentProof?.approved_at ? ` · approved ${fmtDate(_currentProof.approved_at)}${_currentProof.approved_by_name ? ` by ${_currentProof.approved_by_name}` : ''}` : ''}{_currentProof?.signature_method ? ` · ${humanize(_currentProof.signature_method)}` : ''}</CqeNote>
+              <CqeArea label="Internal design notes" value={designNotesDraft} onChange={setDesignNotesDraft} rows={4} hint="(on the current proof)" />
+              <div className="sb-od-cqe-divider">Customer approval</div>
+              <CqeNote>Generate / copy / revoke the approval link on the card. Email it directly here:</CqeNote>
+              {emailLinkMsg && <div className={emailLinkMsg.type === 'ok' ? 'sb-od-cqe-okmsg' : 'sb-cqe-err'}>{emailLinkMsg.text}</div>}
+              <button type="button" className="sb-cqe-btn" onClick={emailApprovalLink} disabled={emailLinkBusy}>
+                {emailLinkBusy ? 'Emailing…' : 'Email approval link to customer'}
+              </button>
+              {signedApproval && (
+                <button type="button" className="sb-cqe-btn" onClick={previewSignedApproval}>View signed approval</button>
+              )}
+            </CardQuickEdit>
+          }>
             {reapprovalText && (
               <div className="sb-od-reapproval">⚠ {reapprovalText}</div>
             )}
+            <Field label="Design status" value={<Pill severity={DESIGN_6_TONE[design6]}>{DESIGN_6[design6]}</Pill>} />
             <Field label="Shape" value={humanize(order.shape)} />
             <Field label="Stone color" value={displayGraniteColor(order) || humanize(order.granite_color)} />
             <Field label="Die size" value={dims} />
             <Field label="Inscription" value={[insc.epitaph, insc.customNotes].filter(Boolean).join(' · ')} />
+            {_currentProof?.notes && <Field label="Internal design notes" value={_currentProof.notes} />}
             {(() => {
               const proof = proofVers.find(p => p.is_current) || proofVers[0]
               if (!proof) {
