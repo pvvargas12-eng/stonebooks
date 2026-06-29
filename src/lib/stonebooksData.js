@@ -162,6 +162,23 @@ export async function updateCustomerNotes(customerId, notes) {
   return { ok: true }
 }
 
+// General customer contact edit (Order detail → Customer & Contact quick-edit).
+// Whitelisted to the editable contact columns so a stray key can't write garbage.
+const _CUSTOMER_EDITABLE = new Set([
+  'first_name', 'last_name', 'phone_primary', 'phone_alt', 'email', 'email_alt',
+  'address_line1', 'address_line2', 'city', 'state', 'zip',
+  'referral_source', 'referral_source_detail',
+])
+export async function updateCustomer(customerId, patch = {}) {
+  if (!customerId) return { ok: false, error: 'Missing customer' }
+  const allowed = {}
+  for (const k of Object.keys(patch)) if (_CUSTOMER_EDITABLE.has(k)) allowed[k] = patch[k]
+  if (!Object.keys(allowed).length) return { ok: true }
+  const { error } = await supabase.from('customers').update(allowed).eq('id', customerId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ── ORDERS ───────────────────────────────────────────────────────────────────
 
 // `archived`: false → active only (archived is null/false), true → archived

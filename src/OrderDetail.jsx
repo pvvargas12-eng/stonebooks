@@ -32,7 +32,9 @@ import {
   setOrderPermit, PERMIT_STATUSES, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
   orderTypeLabel,
+  updateCustomer,
 } from './lib/stonebooksData'
+import CardQuickEdit, { CqeText, CqeRow } from './components/CardQuickEdit'
 import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
@@ -105,10 +107,13 @@ function Field({ label, value, hint }) {
   )
 }
 
-function Section({ title, span = 1, id, children }) {
+function Section({ title, span = 1, id, children, headerAction }) {
   return (
     <section id={id} className={`sb-od-card sb-od-span-${span}`}>
-      <div className="sb-od-card-eyebrow">{title}</div>
+      <div className="sb-od-card-eyebrow-row">
+        <div className="sb-od-card-eyebrow">{title}</div>
+        {headerAction && <div className="sb-od-card-action">{headerAction}</div>}
+      </div>
       <div className="sb-od-card-body">{children}</div>
     </section>
   )
@@ -192,6 +197,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [permitDraft, setPermitDraft] = useState(null)
   const [permitBusy, setPermitBusy] = useState(false)
   const [permitMsg, setPermitMsg] = useState(null)
+  // Card quick-edit drafts (three-dot popovers). Seeded on open, written on save.
+  const [custDraft, setCustDraft] = useState(null)
   // Activity log (#4)
   const [activity, setActivity] = useState([])
   const [actNote, setActNote] = useState('')
@@ -473,6 +480,28 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     })
     refreshActivity()
     setActionNote('Signed contract overridden — you can mark a new contract signed.')
+  }
+
+  // ── Customer & Contact quick-edit (writes the customers row) ─────────────────
+  const seedCustDraft = () => setCustDraft({
+    first_name: cust.first_name || '', last_name: cust.last_name || '',
+    phone_primary: cust.phone_primary || '', email: cust.email || '',
+    address_line1: cust.address_line1 || '', address_line2: cust.address_line2 || '',
+    city: cust.city || '', state: cust.state || '', zip: cust.zip || '',
+    phone_alt: cust.phone_alt || '', email_alt: cust.email_alt || '',
+    referral_source: cust.referral_source || '',
+  })
+  const saveCustomer = async () => {
+    if (!custDraft) return { ok: false, error: 'Nothing to edit.' }
+    if (!cust?.id) return { ok: false, error: 'No customer is linked to this order.' }
+    const r = await updateCustomer(cust.id, custDraft)
+    if (!r.ok) return r
+    await refreshOrder()
+    logOrderActivity(orderId, {
+      type: 'change', field: 'Customer & contact', newValue: 'updated',
+      note: 'Customer & contact edited', actor: await getCurrentStaffName(),
+    }).then(() => refreshActivity()).catch(() => {})
+    return { ok: true }
   }
 
   // ── Permit status editor ───────────────────────────────────────────────────
@@ -989,7 +1018,34 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           <SectionRail items={railItems} />
           <div className="sb-od-grid">
           {/* 1 — Customer / contact */}
-          <Section id="od-customer" title="Customer & contact">
+          <Section id="od-customer" title="Customer & contact" headerAction={
+            <CardQuickEdit title="Customer & Contact" onOpen={seedCustDraft} onSave={saveCustomer} width={360}>
+              {custDraft && (
+                <>
+                  <CqeRow cols={2}>
+                    <CqeText label="First name" value={custDraft.first_name} onChange={v => setCustDraft(d => ({ ...d, first_name: v }))} />
+                    <CqeText label="Last name" value={custDraft.last_name} onChange={v => setCustDraft(d => ({ ...d, last_name: v }))} />
+                  </CqeRow>
+                  <CqeRow cols={2}>
+                    <CqeText label="Phone" value={custDraft.phone_primary} onChange={v => setCustDraft(d => ({ ...d, phone_primary: v }))} />
+                    <CqeText label="Email" value={custDraft.email} onChange={v => setCustDraft(d => ({ ...d, email: v }))} />
+                  </CqeRow>
+                  <CqeText label="Address line 1" value={custDraft.address_line1} onChange={v => setCustDraft(d => ({ ...d, address_line1: v }))} />
+                  <CqeText label="Address line 2" value={custDraft.address_line2} onChange={v => setCustDraft(d => ({ ...d, address_line2: v }))} />
+                  <CqeRow cols={3}>
+                    <CqeText label="City" value={custDraft.city} onChange={v => setCustDraft(d => ({ ...d, city: v }))} />
+                    <CqeText label="State" value={custDraft.state} onChange={v => setCustDraft(d => ({ ...d, state: v }))} />
+                    <CqeText label="ZIP" value={custDraft.zip} onChange={v => setCustDraft(d => ({ ...d, zip: v }))} />
+                  </CqeRow>
+                  <CqeRow cols={2}>
+                    <CqeText label="Secondary phone" value={custDraft.phone_alt} onChange={v => setCustDraft(d => ({ ...d, phone_alt: v }))} />
+                    <CqeText label="Secondary email" value={custDraft.email_alt} onChange={v => setCustDraft(d => ({ ...d, email_alt: v }))} />
+                  </CqeRow>
+                  <CqeText label="Funeral home / referral" value={custDraft.referral_source} onChange={v => setCustDraft(d => ({ ...d, referral_source: v }))} />
+                </>
+              )}
+            </CardQuickEdit>
+          }>
             <Field label="Name" value={
               customerName(cust) !== '—'
                 ? <button type="button" className="sb-od-link" onClick={() => cust.id && onOpenCustomer?.(cust.id)}>{customerName(cust)}</button>
