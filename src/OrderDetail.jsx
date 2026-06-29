@@ -37,7 +37,8 @@ import {
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
 } from './lib/stonebooksData'
 import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeCheck, CqeRow, CqeNote } from './components/CardQuickEdit'
-import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
+import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, buildDieSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
+import { MonumentCard, OF_CSS } from './OrderForm'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill } from './lib/crmComponents.jsx'
@@ -45,7 +46,7 @@ import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
 import { TEAM_ROSTER } from './lib/team'
-import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS } from './SalesMode'
+import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -209,6 +210,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [permitExpenses, setPermitExpenses] = useState([])  // outgoing_payments (Permits) for this order
   const [feeBusy, setFeeBusy] = useState(false)
   const [feeMsg, setFeeMsg] = useState(null)
+  const [monDraft, setMonDraft] = useState(null)        // camel order copy for the reused MonumentCard
   // Activity log (#4)
   const [activity, setActivity] = useState([])
   const [actNote, setActNote] = useState('')
@@ -620,6 +622,37 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (job?.id) addJobEvent(job.id, { eventType: 'permit_expense_recorded', note: `Permit fee ${fmtUSD(amt)}${filing.ck ? ` ck #${filing.ck}` : ''} → ${cem.name || 'cemetery'} (outgoing)`, payload: { amount: amt, check: filing.ck, payee: cem.name }, createdBy: staff }).catch(() => {})
   }
 
+  // ── Monument quick-edit (reuses the New Order MonumentCard verbatim) ─────────
+  // The same editor the sales wizard uses (shape/size/color/polish/top + BaseSection
+  // + Die/Base description overrides) edits a camelCase draft; Save maps the monument
+  // fields back to the order columns. Display-only overrides (dieTextOverride /
+  // baseTextOverride) ride on baseConfig and never change pricing.
+  const seedMonDraft = () => setMonDraft(rowToOrder(order, order.customer, order.cemetery))
+  const monUpdate = (patch) => setMonDraft(d => ({ ...d, ...patch }))
+  const monUpdatePricing = (patch) => setMonDraft(d => ({ ...d, pricing: { ...(d.pricing || {}), ...patch } }))
+  const saveMonument = async () => {
+    if (!monDraft) return { ok: false, error: 'Nothing to edit.' }
+    const d = monDraft
+    const patch = {
+      shape: d.shape || null,
+      standard_size_code: d.standardSizeCode || null,
+      width_inches: d.width ?? null, depth_inches: d.depth ?? null,
+      thickness_inches: d.thickness ?? null, height_inches: d.height ?? null,
+      top_shape: d.topShape || null, sides: d.sides || null,
+      polish_level: d.polishLevel || null, granite_color: d.graniteColor || null,
+      custom_shape: d.customShape || null, custom_shape_desc: d.customShapeDescription || null,
+      base_config: d.baseConfig || {},
+      pricing: d.pricing || {},
+    }
+    const r = await bulkUpdateOrders([orderId], patch)
+    if (!r.ok) return r
+    await refreshOrder()
+    const staff = await getCurrentStaffName()
+    logOrderActivity(orderId, { type: 'change', field: 'Monument spec', newValue: 'updated', note: 'Monument spec / overrides edited', actor: staff }).then(() => refreshActivity()).catch(() => {})
+    if (job?.id) addJobEvent(job.id, { eventType: 'monument_spec_overridden', note: 'Monument spec / overrides edited', createdBy: staff }).catch(() => {})
+    return { ok: true }
+  }
+
   // (Permit editing consolidated into the Cemetery & grave ⋯ quick-edit — see
   //  seedCgDraft / saveCemeteryGrave / recordPermitFee above. The permit fee is an
   //  outgoing expense, never an order column, never a customer payment.)
@@ -887,7 +920,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     : (buildBaseSpec({ baseConfig })
         || [humanize(baseConfig.sizeCode), baseConfig.heightCode ? `${baseConfig.heightCode}" tall` : null].filter(Boolean).join(' · ')
         || 'Included')
-  const finish = [order.polish_level, humanize(order.sides)].filter(Boolean).join(' · ')
+  // ONE clean composed spec line (override-aware). dieTextOverride replaces the die
+  // line verbatim; buildBaseSpec already returns baseTextOverride verbatim when set.
+  const _dieOverride = (order.base_config?.dieTextOverride || '').trim()
+  const _dieLine = _dieOverride || buildDieSpec(receiptOrder)
+  const _baseLine = orderHasBase(baseConfig, _baseShape) ? buildBaseSpec(receiptOrder) : ''
+  const monumentLine = [_dieLine, _baseLine && `on ${_baseLine}`].filter(Boolean).join(' · ')
 
   // Derived statuses from the related job's milestones (read-only)
   const proofMs = milestoneStatus(job, ['proof_created', 'bronze_proof_created', 'proof_sent', 'bronze_proof_sent', 'proof_approved', 'bronze_proof_approved'])
@@ -1208,18 +1246,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 3 — Monument */}
-          <Section id="od-monument" title={monumentCardTitle}>
+          <Section id="od-monument" title={monumentCardTitle} headerAction={isStoneOrder ? (
+            <CardQuickEdit title="Monument Spec & Overrides" onOpen={seedMonDraft} onSave={saveMonument} width={580} saveLabel="Save monument">
+              {/* Reuse the EXACT New Order monument editor (shape/size/color/polish/top
+                  + shared BaseSection + Die/Base description overrides). Its of- and
+                  sm- prefixed CSS is class-scoped, so mounting it here does not bleed
+                  onto the sb- detail page behind the popover. */}
+              <style>{salesModeStyles}</style>
+              <style>{OF_CSS}</style>
+              {monDraft && <MonumentCard order={monDraft} update={monUpdate} updatePricing={monUpdatePricing} />}
+            </CardQuickEdit>
+          ) : null}>
             <Field label="Type" value={orderTypeLabel(order, job)} />
             {isStoneOrder && (
               <>
-                <Field label="Shape" value={humanize(order.shape)} />
-                <Field label="Die size" value={dims} />
-                <Field label="Base size" value={baseSummary} />
-                <Field label="Stone color" value={displayGraniteColor(order) || humanize(order.granite_color)} />
-                <Field label="Finish / polish" value={finish} />
+                {/* ONE clean composed spec line (size · top · polish · color · on base),
+                    override-aware. Inscription removed from this card per spec. */}
+                <Field label="Spec" value={monumentLine || null} />
+                <Field label="Base" value={baseSummary} />
               </>
             )}
-            <Field label="Inscription" value={[insc.epitaph, insc.customNotes].filter(Boolean).join(' · ')} />
             <Field label="Deceased" value={deceased.length
               ? deceased.map((d, i) => <div key={i}>{deceasedName(d) || '—'}</div>) : null} />
             <Field label="Add-ons" value={addOns.length
