@@ -35,6 +35,7 @@ import PartnerPortal from './PartnerPortal'
 import { getMyPartnerContext, getNewPartnerRequestCount } from './lib/vendorsData'
 import EmailTab from './EmailTab'
 import FixLog from './FixLog'
+import ReconciliationTab from './ReconciliationTab'
 import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
@@ -220,10 +221,11 @@ const NAV_PRIMARY = [
 ]
 
 const NAV_SECONDARY = [
-  { key: 'sales',    label: '+ New sale' },
-  { key: 'catalog',  label: 'Catalog' },
-  { key: 'fixlog',   label: 'Fix Log' },
-  { key: 'settings', label: 'Settings' },
+  { key: 'sales',     label: '+ New sale' },
+  { key: 'catalog',   label: 'Catalog' },
+  { key: 'reconcile', label: 'Reconcile' },
+  { key: 'fixlog',    label: 'Fix Log' },
+  { key: 'settings',  label: 'Settings' },
 ]
 
 // Full-screen order-type chooser shown on a fresh "+ New sale". Two big cards:
@@ -743,6 +745,7 @@ export default function Stonebooks() {
 {tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
 {tab === 'profit'    && <ProfitTab onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}
+          {tab === 'reconcile' && <ReconciliationTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}
           {tab === 'settings'  && <SettingsTab user={user} profile={profile} theme={theme} setTheme={setTheme} onProfileChange={reloadProfile} />}
         </main>
