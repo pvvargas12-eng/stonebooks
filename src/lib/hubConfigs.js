@@ -11,7 +11,7 @@
 
 import {
   deriveStoneStatus, deriveFdnStatus, stoneStatusLabel, fdnStatusLabel,
-  derivePaymentStatus, isReadyToSet, setBlockReason, milestoneDone,
+  derivePaymentStatus, isReadyToSet, setBlockReason, milestoneDone, permitNeeded,
 } from './stonebooksData'
 
 const _job = (item) => item?.job || null
@@ -82,7 +82,7 @@ const INSTALLATION_HUB = {
     if (!milestoneDone(job, 'production_completed')) out.push({ key: 'blasted', label: 'Stone not blasted' })
     const fdn = deriveFdnStatus(job)
     if (!(fdn === 'in' || fdn === 'na')) out.push({ key: 'fdn', label: `Foundation not in (${fdnStatusLabel(fdn)})` })
-    const permitRequired = order?.permit_required === true || order?.permit_status === 'required' || order?.permit_status === 'submitted'
+    const permitRequired = permitNeeded(order)
     if (permitRequired && order?.permit_status !== 'approved') out.push({ key: 'permit', label: 'Permit not approved' })
     return out
   },

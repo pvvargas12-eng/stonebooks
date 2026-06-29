@@ -28,6 +28,9 @@ import {
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
   orderTypeLabel,
+  // Permit (orders.permit_status — single source of truth, shared with Permit Hub)
+  PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
+  logOrderActivity, getCurrentStaffName,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
@@ -130,7 +133,23 @@ const QUICK_VIEWS = [
 // columns can't crush below readability on 1180–1440px laptops. When the 12 floors
 // exceed the available width the .sb-crm-table wrapper scrolls horizontally (it has
 // overflow-x:auto) instead of clipping; ≤1180px the Wave-1 collapse stacks the row.
-const DEFAULT_COLS = ['32px', 'minmax(96px, 1.7fr)', 'minmax(70px, 0.8fr)', 'minmax(96px, 1.7fr)', 'minmax(80px, 0.9fr)', 'minmax(84px, 1fr)', 'minmax(92px, 1.2fr)', 'minmax(92px, 1.3fr)', 'minmax(70px, 1fr)', 'minmax(96px, 1.3fr)', 'minmax(82px, 1fr)', 'minmax(80px, 1fr)']
+// Command-center order: [✓] Family · Order# · Job Type · Cemetery · Customer ·
+// Payment · Design · Stone · Permit · Foundation · Contract · Due (13 cols).
+const DEFAULT_COLS = [
+  '32px',                  // 0  checkbox
+  'minmax(96px, 1.7fr)',   // 1  Family
+  'minmax(70px, 0.8fr)',   // 2  Order #
+  'minmax(80px, 0.9fr)',   // 3  Job Type
+  'minmax(96px, 1.3fr)',   // 4  Cemetery
+  'minmax(96px, 1.7fr)',   // 5  Customer
+  'minmax(84px, 1fr)',     // 6  Payment
+  'minmax(92px, 1.2fr)',   // 7  Design
+  'minmax(92px, 1.3fr)',   // 8  Stone
+  'minmax(88px, 1.1fr)',   // 9  Permit
+  'minmax(70px, 1fr)',     // 10 Foundation
+  'minmax(82px, 1fr)',     // 11 Contract
+  'minmax(80px, 1fr)',     // 12 Due
+]
 const COL_RESIZE = { position: 'absolute', top: 0, right: 0, width: 7, height: '100%', cursor: 'col-resize', userSelect: 'none', zIndex: 2 }
 
 // Display-only title-casing (never alters stored data). Caps the first letter of
@@ -171,9 +190,12 @@ function severityRank(blocker) { return blocker ? (SEVERITY_RANK[blocker.severit
 // ── Clickable column sort helpers ───────────────────────────────────────────
 // Every meaningful Orders column is click-sortable (asc base; sortDir flips it).
 const CLICK_SORT_KEYS = new Set([
-  'customer', 'jobType', 'payment', 'design', 'stone', 'fdn',
+  'customer', 'jobType', 'payment', 'design', 'stone', 'fdn', 'permit',
   'total', 'cemeteryName', 'paymentStatus', 'dueDate',
 ])
+// Permit sort — needs-attention first (needed → submitted → unknown → approved → N/A).
+const _PERMIT_SORT_RANK = { shev_permit_needed: 0, cemetery_permit_needed: 0, required: 0, submitted: 1, unknown: 2, approved: 3, not_required: 4 }
+const permitSortRank = (st) => _PERMIT_SORT_RANK[st || 'unknown'] ?? 2
 // Date compare with nulls sorting last (ascending base).
 function cmpMaybeDate(a, b) {
   const ta = a ? new Date(a).getTime() : Infinity
@@ -446,6 +468,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       design:        (a, b) => dimRank(_DESIGN_DIM_RANK, a._design) - dimRank(_DESIGN_DIM_RANK, b._design) || (a._familyName || '').localeCompare(b._familyName || ''),
       stone:         (a, b) => dimRank(_STONE_DIM_RANK, a._stone) - dimRank(_STONE_DIM_RANK, b._stone) || (a._familyName || '').localeCompare(b._familyName || ''),
       fdn:           (a, b) => dimRank(_FDN_DIM_RANK, a._fdn) - dimRank(_FDN_DIM_RANK, b._fdn) || (a._familyName || '').localeCompare(b._familyName || ''),
+      permit:        (a, b) => permitSortRank(a.permit_status) - permitSortRank(b.permit_status) || (a._familyName || '').localeCompare(b._familyName || ''),
       total:         (a, b) => (a._total || 0) - (b._total || 0) || (a._familyName || '').localeCompare(b._familyName || ''),
       dueDate:       (a, b) => cmpMaybeDate(a.target_completion_date, b.target_completion_date),
       cemeteryName:  (a, b) => (a.cemetery?.name || '').localeCompare(b.cemetery?.name || ''),
@@ -652,6 +675,20 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code))
     const r = await setOrderFdnStatus(o._job.id, code)
     if (!r.ok) reload()
+  }
+  // Permit — writes orders.permit_status (single source of truth; Permit Hub +
+  // Cemetery & Grave card read the same field). Auto-stamps the submitted/approved
+  // date when first reached. Logged to order_activity in Phase 7.
+  const inlinePermit = async (o, code) => {
+    const today = new Date().toISOString().slice(0, 10)
+    const patch = { permit_status: code }
+    if (code === 'submitted' && !o.permit_filed_at) patch.permit_filed_at = today
+    if (code === 'approved' && !o.permit_approved_at) patch.permit_approved_at = today
+    patchOrderLocal(o.id, patch)
+    const prev = o.permit_status || 'unknown'
+    const r = await setOrderPermit(o.id, patch)
+    if (!r.ok) { reload(); return }
+    logOrderActivity(o.id, { type: 'change', field: 'Permit status', oldValue: permitStatusLabel(prev), newValue: permitStatusLabel(code), note: 'Permit status changed', actor: await getCurrentStaffName() }).catch(() => {})
   }
   // Inline date edits — contract = signed_at, due = target_completion_date.
   // Changing the contract date auto-fills an empty due date for new_stone (+5mo).
@@ -912,36 +949,40 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <span onMouseDown={startColResize(2)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <span className="sb-ord-sort-th" style={{ cursor: 'default' }}>Customer</span>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'jobType' ? 'on' : ''}`} onClick={() => handleHeaderSort('jobType')} title="Sort by job type">Job Type{sortCaret('jobType')}</button>
               <span onMouseDown={startColResize(3)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'jobType' ? 'on' : ''}`} onClick={() => handleHeaderSort('jobType')} title="Sort by job type">Job Type{sortCaret('jobType')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
               <span onMouseDown={startColResize(4)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'payment' ? 'on' : ''}`} onClick={() => handleHeaderSort('payment')} title="Sort by payment status">Payment{sortCaret('payment')}</button>
+              <span className="sb-ord-sort-th" style={{ cursor: 'default' }}>Customer</span>
               <span onMouseDown={startColResize(5)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'payment' ? 'on' : ''}`} onClick={() => handleHeaderSort('payment')} title="Sort by payment status">Payment{sortCaret('payment')}</button>
               <span onMouseDown={startColResize(6)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone stage">Stone{sortCaret('stone')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
               <span onMouseDown={startColResize(7)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'fdn' ? 'on' : ''}`} onClick={() => handleHeaderSort('fdn')} title="Sort by foundation stage">FDN{sortCaret('fdn')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone stage">Stone{sortCaret('stone')}</button>
               <span onMouseDown={startColResize(8)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'cemeteryName' ? 'on' : ''}`} onClick={() => handleHeaderSort('cemeteryName')} title="Sort by cemetery">Cemetery{sortCaret('cemeteryName')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'permit' ? 'on' : ''}`} onClick={() => handleHeaderSort('permit')} title="Sort by permit status">Permit{sortCaret('permit')}</button>
               <span onMouseDown={startColResize(9)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'fdn' ? 'on' : ''}`} onClick={() => handleHeaderSort('fdn')} title="Sort by foundation stage">Foundation{sortCaret('fdn')}</button>
               <span onMouseDown={startColResize(10)} style={COL_RESIZE} />
+            </div>
+            <div style={{ position: 'relative', minWidth: 0 }}>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'paymentStatus' ? 'on' : ''}`} onClick={() => handleHeaderSort('paymentStatus')} title="Group by payment status (Paid → Deposit → Not paid)">Contract{sortCaret('paymentStatus')}</button>
+              <span onMouseDown={startColResize(11)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
               <button type="button" className={`sb-ord-sort-th ${sortKey === 'dueDate' ? 'on' : ''}`} onClick={() => handleHeaderSort('dueDate')} title="Sort by due date">Due date{sortCaret('dueDate')}</button>
@@ -957,7 +998,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <OrderRow key={o.id} order={o} grid={grid} indexInFiltered={filteredIds.indexOf(o.id)}
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
                 onInlinePayment={inlinePayment}
-                onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn}
+                onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn} onInlinePermit={inlinePermit}
                 onInlineDate={inlineDate} onInlineSigned={inlineSigned} onInlineTotal={inlineTotal} busy={false} />
             ))
           )}
@@ -1051,7 +1092,7 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
   )
 }
 
-function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlineDate, onInlineSigned, onInlineTotal, busy }) {
+function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlinePermit, onInlineDate, onInlineSigned, onInlineTotal, busy }) {
   const hasJob = !!o._job
   const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
 
@@ -1075,15 +1116,18 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Order # */}
       <div style={{ minWidth: 0 }}><span className="sb-crm-secondary sb-crm-mono" style={{ fontSize: 12 }}>{o.order_number || 'DRAFT'}</span></div>
 
+      {/* Job Type */}
+      <div><span className="sb-crm-secondary">{orderTypeLabel(o)}</span></div>
+
+      {/* Cemetery */}
+      <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>
+
       {/* Customer name (full first + last, title-cased, shown in full — no truncation) */}
       <div style={{ minWidth: 0 }}>
         <span className="sb-crm-secondary" style={{ fontSize: 13, display: 'block', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
           {custName ? titleCaseName(custName) : <span className="sb-crm-muted">—</span>}
         </span>
       </div>
-
-      {/* Job Type */}
-      <div><span className="sb-crm-secondary">{orderTypeLabel(o)}</span></div>
 
       {/* Payment — editable manual override (orders.payment_status) */}
       <div onClick={e => e.stopPropagation()}>
@@ -1110,7 +1154,20 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
         ) : <span className="sb-crm-muted">—</span>}
       </div>
 
-      {/* FDN (inline → milestone) */}
+      {/* Permit (inline → orders.permit_status — single source of truth). Applies to
+          EVERY order; legacy 'required'/'unknown' show as a disabled display-only
+          option ("Permit Needed" / "—") while the 5 selectable codes are the choices. */}
+      <div onClick={e => e.stopPropagation()}>
+        <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${permitStatusTone(o.permit_status)}`}
+          value={o.permit_status || 'unknown'} disabled={busy} onChange={e => onInlinePermit(o, e.target.value)}>
+          {!PERMIT_SELECTABLE.has(o.permit_status) && (
+            <option value={o.permit_status || 'unknown'} disabled>{permitStatusLabel(o.permit_status || 'unknown')}</option>
+          )}
+          {PERMIT_STATUS_OPTIONS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+        </select>
+      </div>
+
+      {/* Foundation (inline → milestone) */}
       <div onClick={e => e.stopPropagation()}>
         {hasJob ? (
           <select className="sb-tw-inline" value={o._fdn || 'na'} disabled={busy} onChange={e => onInlineFdn(o, e.target.value)}>
@@ -1118,10 +1175,6 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
           </select>
         ) : <span className="sb-crm-muted">—</span>}
       </div>
-
-
-      {/* Cemetery */}
-      <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>
 
       {/* Contract (signed_at) — an explicit signed/not-signed status (settable on
           EVERY order) + the exact date. Commits on blur/Enter only. */}
@@ -1179,6 +1232,13 @@ const TW_CSS = `
   .sb-tw-inline { font: inherit; font-size: 12.5px; padding: 5px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; width: 100%; box-sizing: border-box; cursor: pointer; }
   .sb-tw-inline:hover:not(:disabled) { border-color: #9A7209; }
   .sb-tw-inline:disabled { opacity: 0.5; }
+  /* Permit status badge tones — glance-and-know. warn=needs action, info=submitted,
+     good=approved, neutral=not required / unset. */
+  .sb-tw-perm { font-weight: 600; }
+  .sb-tw-perm-warn    { background: #fdf3e2; border-color: #e6b667; color: #8a5a12; }
+  .sb-tw-perm-info    { background: #eaf1fb; border-color: #9bb8e6; color: #234c8a; }
+  .sb-tw-perm-good    { background: #e7f6ee; border-color: #8fceb0; color: #15724a; }
+  .sb-tw-perm-neutral { background: #f3f1ec; border-color: #d8d6d1; color: #6a6a66; }
 
   /* Orders-redesign cells */
   .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }

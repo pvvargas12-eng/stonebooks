@@ -14,7 +14,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   listAllOrders, getJobs, fmtUSD, customerName,
-  permitBuckets, PERMIT_QUEUES, PERMIT_STATUSES,
+  permitBuckets, PERMIT_QUEUES, PERMIT_STATUSES, permitNeeded,
   listCemeteriesWithPermit, updateCemeteryPermit,
   bulkUpdateOrders, maskPhoneInput, phoneDigits,
 } from './lib/stonebooksData'
@@ -136,7 +136,7 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
       // and nothing has actually been filed yet. Not for submitted/approved/
       // not_required (those aren't "missing"), not for terminal orders.
       const st = o.permit_status || 'unknown'
-      const needsPermit = (o.permit_required === true || st === 'required') &&
+      const needsPermit = permitNeeded(o) &&
         st !== 'submitted' && st !== 'approved' && st !== 'not_required'
       if (!terminal && needsPermit && recs.length === 0 && !buckets.includes('permit_missing')) {
         buckets.push('permit_missing')

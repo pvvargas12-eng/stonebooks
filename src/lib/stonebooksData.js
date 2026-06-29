@@ -1247,7 +1247,7 @@ export function setBlockReason(order, job) {
   if (!_msDone(job, 'production_completed')) return 'Not blasted'
   const fdn = deriveFdnStatus(job)
   if (!(fdn === 'in' || fdn === 'na')) return 'FDN not in'
-  const permitRequired = order?.permit_required === true || order?.permit_status === 'required' || order?.permit_status === 'submitted'
+  const permitRequired = permitNeeded(order)
   const permitOk = !permitRequired || order?.permit_status === 'approved'
   if (!permitOk) return 'Permit not approved'
   return null
@@ -2035,6 +2035,7 @@ export const OVERLAY_QUEUES = [
 const BLOCKED_BLOCKER_KINDS = new Set(['cemetery_hold', 'waiting_on_family', 'proof_waiting_customer', 'production_blocked'])
 
 // ── PERMITS (launch-critical permit command center) ─────────────────────────
+// Legacy internal set (kept for back-compat reads). NOT the selectable list.
 export const PERMIT_STATUSES = [
   { code: 'unknown',      label: 'Unknown' },
   { code: 'not_required', label: 'Not required' },
@@ -2042,6 +2043,52 @@ export const PERMIT_STATUSES = [
   { code: 'submitted',    label: 'Submitted' },
   { code: 'approved',     label: 'Approved' },
 ]
+
+// THE selectable permit statuses — every permit dropdown (Orders table, Cemetery &
+// Grave panel, Permit Hub) offers EXACTLY these 5. Legacy 'required'/'unknown' are
+// display-only (see PERMIT_STATUS_LABEL) and never appear as choices.
+export const PERMIT_STATUS_OPTIONS = [
+  { code: 'not_required',           label: 'Not Required' },
+  { code: 'cemetery_permit_needed', label: 'Cemetery Permit Needed' },
+  { code: 'shev_permit_needed',     label: 'Shev Permit Needed' },
+  { code: 'submitted',              label: 'Submitted' },
+  { code: 'approved',               label: 'Approved' },
+]
+export const PERMIT_SELECTABLE = new Set(PERMIT_STATUS_OPTIONS.map(o => o.code))
+
+// Display labels incl. legacy codes shown read-only ('required' → "Permit Needed",
+// 'unknown'/unset → "—"). permitStatusLabel never returns a raw code.
+export const PERMIT_STATUS_LABEL = {
+  not_required: 'Not Required',
+  cemetery_permit_needed: 'Cemetery Permit Needed',
+  shev_permit_needed: 'Shev Permit Needed',
+  submitted: 'Submitted',
+  approved: 'Approved',
+  required: 'Permit Needed',   // legacy, display-only — never selectable
+  unknown: '—',
+}
+export function permitStatusLabel(code) { return PERMIT_STATUS_LABEL[code] || '—' }
+
+// Codes meaning "a permit is in play / still needs handling" — legacy 'required' +
+// both new needed codes + 'submitted'. SINGLE SOURCE for every needs-a-permit check
+// (replaces the scattered `permit_status === 'required'` tests) so no legacy/migrated
+// row silently flips to not-required. 'approved'/'not_required' are NOT in the set.
+export const PERMIT_NEEDED_CODES = new Set(['required', 'cemetery_permit_needed', 'shev_permit_needed', 'submitted'])
+export function permitNeeded(order) {
+  return order?.permit_required === true || PERMIT_NEEDED_CODES.has(order?.permit_status)
+}
+
+// Glance-and-know badge tone per status (Orders table + panels share it).
+export const PERMIT_STATUS_TONE = {
+  not_required: 'neutral',
+  cemetery_permit_needed: 'warn',
+  shev_permit_needed: 'warn',
+  required: 'warn',     // legacy "Permit Needed"
+  submitted: 'info',
+  approved: 'good',
+  unknown: 'neutral',
+}
+export function permitStatusTone(code) { return PERMIT_STATUS_TONE[code] || 'neutral' }
 export const PERMIT_QUEUES = [
   { code: 'permit_required',  label: 'Permits required' },
   { code: 'permit_submitted', label: 'Permits submitted' },
@@ -2104,7 +2151,9 @@ export function permitBuckets(order, job) {
   const terminal = order.status === 'closed' || order.status === 'cancelled' || order.archived === true
   if (terminal) return out
   const st = order.permit_status || 'unknown'
-  if (st === 'required')  out.push('permit_required')
+  // "Needed" bucket: legacy 'required' + both new needed codes (submitted/approved
+  // have their own buckets below).
+  if (st === 'required' || st === 'cemetery_permit_needed' || st === 'shev_permit_needed') out.push('permit_required')
   if (st === 'submitted') out.push('permit_submitted')
   if (st === 'approved')  out.push('permit_approved')
   // Missing — cemetery requires a permit but the order has no determination yet.
