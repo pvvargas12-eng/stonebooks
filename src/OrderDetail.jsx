@@ -36,7 +36,7 @@ import {
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel as sharedPermitStatusLabel,
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
 } from './lib/stonebooksData'
-import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeCheck, CqeRow, CqeNote } from './components/CardQuickEdit'
+import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeRow, CqeNote } from './components/CardQuickEdit'
 import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, buildDieSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
 import { MonumentCard, OF_CSS } from './OrderForm'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -216,7 +216,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [delAttachBusy, setDelAttachBusy] = useState(false)
   // Pipeline rail task-remove confirm (× with confirm)
   const [delTask, setDelTask] = useState(null)   // order_activity task row | null
-  const [permitTaskText, setPermitTaskText] = useState('')
   // Signed contract (#C)
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
   const [signedApproval, setSignedApproval] = useState(null)   // { path, signedAt } | null (Phase 3)
@@ -230,8 +229,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Permit editor
   // Card quick-edit drafts (three-dot popovers). Seeded on open, written on save.
   const [custDraft, setCustDraft] = useState(null)
-  const [cgDraft, setCgDraft] = useState(null)          // Cemetery & Grave + permit
-  const [feeDraft, setFeeDraft] = useState({ amount: '', ck: '', date: todayISO(), method: 'check' })
+  const [cgDraft, setCgDraft] = useState(null)          // Cemetery & Grave (grave fields only)
+  const [permitDraft, setPermitDraft] = useState(null)  // Permit card (the ONE permit editor)
+  const [feeDraft, setFeeDraft] = useState({ amount: '', payee: '', ck: '', date: todayISO(), method: 'check' })
   const [permitExpenses, setPermitExpenses] = useState([])  // outgoing_payments (Permits) for this order
   const [feeBusy, setFeeBusy] = useState(false)
   const [feeMsg, setFeeMsg] = useState(null)
@@ -350,15 +350,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
 
   const pipelineTasks = activity.filter(a => a.type === 'task')
-  const permitTasks = activity.filter(a => a.type === 'task' && a.field === 'permit')
-  const addPermitTask = async () => {
-    const text = permitTaskText.trim()
-    if (!text) return
-    const actor = await getCurrentStaffName()
-    await logOrderActivity(orderId, { type: 'task', field: 'permit', note: text, taskStatus: 'open', actor })
-    setPermitTaskText('')
-    refreshActivity()
-  }
 
   // ── Activity log (#4) handlers ──────────────────────────────────────────────
   const handleAddActivity = async () => {
@@ -557,41 +548,45 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const all = await listOutgoingPayments()
     setPermitExpenses((all || []).filter(p => p.order_id === orderId && (p.category || '').toLowerCase() === 'permits'))
   }
+  // ── Cemetery & grave quick-edit (GRAVE fields only — permit lives on the Permit card) ──
   const seedCgDraft = () => {
-    const meta = order.permit_meta || {}
     setCgDraft({
       grave_location: order.grave_location || '', plot_type: order.plot_type || '',
       plot_notes: [order.plot_pin_notes, order.plot_other].filter(Boolean).join(' · '),
-      permit_status: order.permit_status || 'unknown',
-      permit_required: order.permit_required === true,
-      permit_type: meta.type || '',
-      permit_filed_at: order.permit_filed_at || '',
-      permit_approved_at: order.permit_approved_at || '',
-      cemetery_notes: meta.cemeteryNotes || '',
-      internal_notes: meta.internalNotes || '',
     })
-    setFeeDraft({ amount: '', ck: '', date: todayISO(), method: 'check' })
-    setFeeMsg(null)
-    loadPermitExpenses()
   }
   const saveCemeteryGrave = async () => {
     if (!cgDraft) return { ok: false, error: 'Nothing to edit.' }
-    const today = todayISO()
-    const status = cgDraft.permit_status
-    const patch = {
+    const r = await bulkUpdateOrders([orderId], {
       grave_location: cgDraft.grave_location || null,
       plot_type: cgDraft.plot_type || null,
       plot_other: cgDraft.plot_notes || null,
+    })
+    if (!r.ok) return r
+    await refreshOrder()
+    logOrderActivity(orderId, { type: 'change', field: 'Cemetery & grave', newValue: 'updated', note: 'Cemetery & grave details edited', actor: await getCurrentStaffName() }).then(() => refreshActivity()).catch(() => {})
+    return { ok: true }
+  }
+
+  // ── Permit card quick-edit — the ONE permit editor (status + dates + fee) ─────
+  const seedPermitDraft = () => {
+    setPermitDraft({
+      permit_status: order.permit_status || 'unknown',
+      permit_filed_at: order.permit_filed_at || '',
+      permit_approved_at: order.permit_approved_at || '',
+    })
+    setFeeDraft({ amount: '', payee: cem.name || '', ck: '', date: todayISO(), method: 'check' })
+    setFeeMsg(null)
+    loadPermitExpenses()
+  }
+  const savePermit = async () => {
+    if (!permitDraft) return { ok: false, error: 'Nothing to edit.' }
+    const today = todayISO()
+    const status = permitDraft.permit_status
+    const patch = {
       permit_status: status,
-      permit_required: !!cgDraft.permit_required,
-      permit_filed_at: cgDraft.permit_filed_at || null,
-      permit_approved_at: cgDraft.permit_approved_at || null,
-      permit_meta: {
-        ...(order.permit_meta || {}),
-        type: cgDraft.permit_type || null,
-        cemeteryNotes: cgDraft.cemetery_notes || null,
-        internalNotes: cgDraft.internal_notes || null,
-      },
+      permit_filed_at: permitDraft.permit_filed_at || null,
+      permit_approved_at: permitDraft.permit_approved_at || null,
     }
     if (status === 'submitted' && !patch.permit_filed_at) patch.permit_filed_at = today
     if (status === 'approved') {
@@ -599,19 +594,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       if (!patch.permit_approved_at) patch.permit_approved_at = today
     }
     const prev = order.permit_status || 'unknown'
-    const r = await bulkUpdateOrders([orderId], patch)
+    const r = await setOrderPermit(orderId, patch)
     if (!r.ok) return r
     await refreshOrder()
     const staff = await getCurrentStaffName()
     if (status && status !== prev) {
-      logOrderActivity(orderId, {
-        type: 'change', field: 'Permit status',
-        oldValue: permitStatusLabel(prev), newValue: permitStatusLabel(status),
-        note: 'Permit status changed', actor: staff,
-      }).then(() => refreshActivity()).catch(() => {})
+      logOrderActivity(orderId, { type: 'change', field: 'Permit status', oldValue: permitStatusLabel(prev), newValue: permitStatusLabel(status), note: 'Permit status changed', actor: staff }).then(() => refreshActivity()).catch(() => {})
       if (job?.id) addJobEvent(job.id, { eventType: 'permit_status_changed', note: `Permit ${permitStatusLabel(prev)} → ${permitStatusLabel(status)}`, payload: { from: prev, to: status }, createdBy: staff }).catch(() => {})
-    } else {
-      logOrderActivity(orderId, { type: 'change', field: 'Cemetery & grave', newValue: 'updated', note: 'Cemetery & grave / permit details edited', actor: staff }).then(() => refreshActivity()).catch(() => {})
     }
     return { ok: true }
   }
@@ -624,29 +613,30 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!Number.isFinite(amt) || amt <= 0) { setFeeMsg({ type: 'err', text: 'Enter an amount greater than zero.' }); return }
     if (!feeDraft.date) { setFeeMsg({ type: 'err', text: 'Enter the paid date.' }); return }
     setFeeBusy(true); setFeeMsg(null)
+    const payee = (feeDraft.payee || '').trim() || cem.name || null
     const filing = {
-      type: (cgDraft?.permit_type || 'permit'),
+      type: 'permit',
       amount: amt, method: feeDraft.method,
       ck: feeDraft.ck ? String(feeDraft.ck).trim() : null,
-      date_filed: feeDraft.date, name: cem.name || null,
+      date_filed: feeDraft.date, name: payee,
     }
     const staff = await getCurrentStaffName()
-    const exp = await createPermitOutgoingPayment(order, filing, { cemeteryName: cem.name, createdBy: staff })
+    const exp = await createPermitOutgoingPayment(order, filing, { cemeteryName: payee, createdBy: staff })
     if (exp.status === 'skipped') { setFeeBusy(false); setFeeMsg({ type: 'err', text: `Not recorded — ${exp.reason}` }); return }
     if (exp.status === 'duplicate') { setFeeBusy(false); setFeeMsg({ type: 'err', text: 'This permit fee is already recorded.' }); await loadPermitExpenses(); return }
     // Record the per-order filing too (Permit Hub "filed" bucket reads orders.permit[]).
     const nextArr = [...(Array.isArray(order.permit) ? order.permit : []), filing]
     await setOrderPermit(orderId, { permit: nextArr })
     setFeeBusy(false)
-    setFeeDraft({ amount: '', ck: '', date: todayISO(), method: 'check' })
+    setFeeDraft({ amount: '', payee: payee || '', ck: '', date: todayISO(), method: 'check' })
     await refreshOrder(); await loadPermitExpenses()
     logOrderActivity(orderId, {
       type: 'change', field: 'Permit expense',
       newValue: `${fmtUSD(amt)}${filing.ck ? ` ck #${filing.ck}` : ''} (outgoing)`,
-      note: `Permit fee paid to ${cem.name || 'cemetery'} — outgoing expense (does not affect customer balance)`,
+      note: `Permit fee paid to ${payee || 'cemetery'} — outgoing expense (does not affect customer balance)`,
       actor: staff,
     }).then(() => refreshActivity()).catch(() => {})
-    if (job?.id) addJobEvent(job.id, { eventType: 'permit_expense_recorded', note: `Permit fee ${fmtUSD(amt)}${filing.ck ? ` ck #${filing.ck}` : ''} → ${cem.name || 'cemetery'} (outgoing)`, payload: { amount: amt, check: filing.ck, payee: cem.name }, createdBy: staff }).catch(() => {})
+    if (job?.id) addJobEvent(job.id, { eventType: 'permit_expense_recorded', note: `Permit fee ${fmtUSD(amt)}${filing.ck ? ` ck #${filing.ck}` : ''} → ${payee || 'cemetery'} (outgoing)`, payload: { amount: amt, check: filing.ck, payee }, createdBy: staff }).catch(() => {})
   }
 
   // ── Monument quick-edit (reuses the New Order MonumentCard verbatim) ─────────
@@ -1264,55 +1254,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
           {/* 2 — Cemetery / grave */}
           <Section id="od-cemetery" title="Cemetery & grave" headerAction={
-            <CardQuickEdit title="Cemetery, Grave & Permit" onOpen={seedCgDraft} onSave={saveCemeteryGrave} width={380}>
-              {cgDraft && (() => {
-                const permitOpts = PERMIT_SELECTABLE.has(cgDraft.permit_status)
-                  ? PERMIT_STATUS_OPTIONS
-                  : [{ code: cgDraft.permit_status || 'unknown', label: permitStatusLabel(cgDraft.permit_status || 'unknown'), disabled: true }, ...PERMIT_STATUS_OPTIONS]
-                return (
-                  <>
-                    {/* ONE free-text location line. A legacy order shows its composed
-                        old parts as the placeholder; typing saves to grave_location. */}
-                    <CqeText label="Grave location" value={cgDraft.grave_location} onChange={v => setCgDraft(d => ({ ...d, grave_location: v }))}
-                      placeholder={composeGraveLocation(order) || 'e.g. Sec … · Blk … · Lot …'} />
-                    <CqeText label="Grave type" value={cgDraft.plot_type} onChange={v => setCgDraft(d => ({ ...d, plot_type: v }))} />
-                    <CqeArea label="Plot / location notes" value={cgDraft.plot_notes} onChange={v => setCgDraft(d => ({ ...d, plot_notes: v }))} />
-
-                    <div className="sb-od-cqe-divider">Permit</div>
-                    <CqeSelect label="Permit status" value={cgDraft.permit_status} options={permitOpts} onChange={v => setCgDraft(d => ({ ...d, permit_status: v }))} />
-                    <CqeCheck label="Cemetery requires a permit" checked={cgDraft.permit_required} onChange={v => setCgDraft(d => ({ ...d, permit_required: v }))} />
-                    <CqeText label="Permit type" value={cgDraft.permit_type} onChange={v => setCgDraft(d => ({ ...d, permit_type: v }))} placeholder="e.g. Installation permit" />
-                    <CqeRow cols={2}>
-                      <CqeDate label="Submitted date" value={cgDraft.permit_filed_at} onChange={v => setCgDraft(d => ({ ...d, permit_filed_at: v }))} />
-                      <CqeDate label="Approved date" value={cgDraft.permit_approved_at} onChange={v => setCgDraft(d => ({ ...d, permit_approved_at: v }))} />
-                    </CqeRow>
-                    <CqeArea label="Cemetery permit notes" value={cgDraft.cemetery_notes} onChange={v => setCgDraft(d => ({ ...d, cemetery_notes: v }))} />
-                    <CqeArea label="Internal permit notes" value={cgDraft.internal_notes} onChange={v => setCgDraft(d => ({ ...d, internal_notes: v }))} />
-
-                    <div className="sb-od-cqe-divider">Permit fee (outgoing expense)</div>
-                    <CqeNote>The permit fee is money the shop pays OUT to the cemetery / township. Recording it here logs an <strong>outgoing expense</strong> — it does <strong>NOT</strong> affect the customer’s balance due and is never a customer payment.</CqeNote>
-                    {permitExpenses.length > 0 && (
-                      <div className="sb-od-cqe-paid">
-                        {permitExpenses.map(p => (
-                          <div key={p.id} className="sb-od-cqe-paid-row">✓ {fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)} → {p.payee}</div>
-                        ))}
-                      </div>
-                    )}
-                    <CqeRow cols={2}>
-                      <CqeText label="Amount" type="number" value={feeDraft.amount} onChange={v => setFeeDraft(f => ({ ...f, amount: v }))} placeholder="0.00" />
-                      <CqeText label="Check #" value={feeDraft.ck} onChange={v => setFeeDraft(f => ({ ...f, ck: v }))} />
-                    </CqeRow>
-                    <CqeRow cols={2}>
-                      <CqeDate label="Paid date" value={feeDraft.date} onChange={v => setFeeDraft(f => ({ ...f, date: v }))} />
-                      <CqeSelect label="Method" value={feeDraft.method} options={PAY_METHODS} onChange={v => setFeeDraft(f => ({ ...f, method: v }))} />
-                    </CqeRow>
-                    {feeMsg && <div className="sb-cqe-err">{feeMsg.text}</div>}
-                    <button type="button" className="sb-cqe-btn sb-od-cqe-fee-btn" onClick={recordPermitFee} disabled={feeBusy}>
-                      {feeBusy ? 'Recording…' : 'Record permit payment (outgoing)'}
-                    </button>
-                  </>
-                )
-              })()}
+            <CardQuickEdit title="Cemetery & Grave" onOpen={seedCgDraft} onSave={saveCemeteryGrave} width={360}>
+              {cgDraft && (
+                <>
+                  {/* ONE free-text location line. A legacy order shows its composed
+                      old parts as the placeholder; typing saves to grave_location. */}
+                  <CqeText label="Grave location" value={cgDraft.grave_location} onChange={v => setCgDraft(d => ({ ...d, grave_location: v }))}
+                    placeholder={composeGraveLocation(order) || 'e.g. Sec … · Blk … · Lot …'} />
+                  <CqeText label="Grave type" value={cgDraft.plot_type} onChange={v => setCgDraft(d => ({ ...d, plot_type: v }))} />
+                  <CqeArea label="Plot / location notes" value={cgDraft.plot_notes} onChange={v => setCgDraft(d => ({ ...d, plot_notes: v }))} />
+                </>
+              )}
             </CardQuickEdit>
           }>
             <Field label="Cemetery" value={cem.name} />
@@ -1321,9 +1273,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <Field label="Grave type" value={humanize(order.plot_type)} hint={order.plot_type ? null : 'from plot_type'} />
             <Field label="Plot / location notes" value={[order.plot_pin_notes, order.plot_other].filter(Boolean).join(' · ')} />
             <Field label="Cemetery requirements" value={cem.notes} />
-            {/* Permit status now reads the order row (single source of truth — same
-                field the Orders table + Permit Hub use). Foundation stays milestone-derived. */}
-            <Field label="Permit status" value={order.permit_status && order.permit_status !== 'unknown' ? permitStatusLabel(order.permit_status) : null} />
+            {/* Permit + foundation live on their own cards (single source of truth). */}
             <Field label="Foundation status" value={foundationMs ? humanize(foundationMs) : null} hint="from job milestones" />
           </Section>
 
@@ -1529,45 +1479,55 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 4b — Permit */}
-          <Section id="od-permit" title="Permit">
-            <Field label="Cemetery requires permit" value={cem.permit_required == null ? null : (cem.permit_required ? 'Yes' : 'No')} hint={cem.permit_required == null ? (cem.id ? null : 'cemetery not linked') : null} />
+          <Section id="od-permit" title="Permit" headerAction={
+            <CardQuickEdit title="Permit" onOpen={seedPermitDraft} onSave={savePermit} width={360}>
+              {permitDraft && (() => {
+                const permitOpts = PERMIT_SELECTABLE.has(permitDraft.permit_status)
+                  ? PERMIT_STATUS_OPTIONS
+                  : [{ code: permitDraft.permit_status || 'unknown', label: permitStatusLabel(permitDraft.permit_status || 'unknown'), disabled: true }, ...PERMIT_STATUS_OPTIONS]
+                return (
+                  <>
+                    <CqeSelect label="Permit status" value={permitDraft.permit_status} options={permitOpts} onChange={v => setPermitDraft(d => ({ ...d, permit_status: v }))} />
+                    <CqeRow cols={2}>
+                      <CqeDate label="Submitted date" value={permitDraft.permit_filed_at} onChange={v => setPermitDraft(d => ({ ...d, permit_filed_at: v }))} />
+                      <CqeDate label="Approved date" value={permitDraft.permit_approved_at} onChange={v => setPermitDraft(d => ({ ...d, permit_approved_at: v }))} />
+                    </CqeRow>
+
+                    <div className="sb-od-cqe-divider">Permit fee (outgoing expense)</div>
+                    <CqeNote>The permit fee is money the shop pays OUT (to the township / cemetery). Recording it logs an <strong>outgoing expense</strong> — it does <strong>NOT</strong> affect the customer’s balance and is never a customer payment.</CqeNote>
+                    {permitExpenses.length > 0 && (
+                      <div className="sb-od-cqe-paid">
+                        {permitExpenses.map(p => (
+                          <div key={p.id} className="sb-od-cqe-paid-row">✓ {fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)} → {p.payee}</div>
+                        ))}
+                      </div>
+                    )}
+                    <CqeText label="Paid to (payee)" value={feeDraft.payee} onChange={v => setFeeDraft(f => ({ ...f, payee: v }))} placeholder={cem.name || 'Township / cemetery'} />
+                    <CqeRow cols={2}>
+                      <CqeText label="Amount" type="number" value={feeDraft.amount} onChange={v => setFeeDraft(f => ({ ...f, amount: v }))} placeholder="0.00" />
+                      <CqeText label="Check # / notes" value={feeDraft.ck} onChange={v => setFeeDraft(f => ({ ...f, ck: v }))} />
+                    </CqeRow>
+                    <CqeRow cols={2}>
+                      <CqeDate label="Paid date" value={feeDraft.date} onChange={v => setFeeDraft(f => ({ ...f, date: v }))} />
+                      <CqeSelect label="Method" value={feeDraft.method} options={PAY_METHODS} onChange={v => setFeeDraft(f => ({ ...f, method: v }))} />
+                    </CqeRow>
+                    {feeMsg && <div className="sb-cqe-err">{feeMsg.text}</div>}
+                    <button type="button" className="sb-cqe-btn sb-od-cqe-fee-btn" onClick={recordPermitFee} disabled={feeBusy}>
+                      {feeBusy ? 'Recording…' : 'Record permit payment (outgoing)'}
+                    </button>
+                  </>
+                )
+              })()}
+            </CardQuickEdit>
+          }>
             <Field label="Permit status" value={<Pill severity={permitTone(order.permit_status)}>{permitStatusLabel(order.permit_status)}</Pill>} />
             {readyBlocked && <Field label="⚠ Blocking install" value="Stone is ready to set but the permit isn't approved." />}
             <Field label="Filed / Approved" value={[order.permit_filed_at && `filed ${fmtDate(order.permit_filed_at)}`, order.permit_approved_at && `approved ${fmtDate(order.permit_approved_at)}`].filter(Boolean).join(' · ') || null} />
-            <Field label="Permit type" value={(order.permit_meta || {}).type || null} />
             {/* Permit FEE = OUTGOING shop expense (outgoing_payments) — NOT a customer
-                payment and does NOT reduce balance due. Record it in the Cemetery &
-                grave ⋯ panel; it surfaces in Payments → Outgoing and in Profit. */}
+                payment and does NOT reduce balance. Recorded in the ⋯ above. */}
             <Field label="Permit expense (outgoing)" value={permitExpenses.length
-              ? permitExpenses.map(p => <div key={p.id}>{fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)}</div>)
-              : null} hint={permitExpenses.length ? 'paid out to cemetery — not a customer payment' : 'none recorded'} />
-            <Field label="Cemetery permit notes" value={(order.permit_meta || {}).cemeteryNotes || cem.permit_notes} />
-            <Field label="Internal permit notes" value={(order.permit_meta || {}).internalNotes || null} />
-            <Field label="Document requirements" value={cem.permit_document_requirements} />
-            <Field label="Cemetery instructions" value={cem.permit_instructions} />
-            <Field label="Permit contact" value={[cem.permit_contact_name, cem.permit_contact_phone, cem.permit_contact_email].filter(Boolean).join(' · ') || null} />
-
-            {/* Permit tasks — order_activity (type 'task', field 'permit'). */}
-            <div className="sb-od-permit-tasks">
-              <div className="sb-od-field-label">Permit tasks</div>
-              {permitTasks.length === 0 && <div className="sb-od-empty-inline">No permit tasks yet.</div>}
-              {permitTasks.map(t => (
-                <div key={t.id} className="sb-od-permit-task">
-                  <button type="button" className="sb-od-permit-task-toggle" onClick={() => toggleTask(t)} title="Toggle done">{t.task_status === 'done' ? '✓' : '○'}</button>
-                  <span className={t.task_status === 'done' ? 'sb-od-permit-task-done' : ''}>{t.note}{t.assignee ? ` · ${t.assignee}` : ''}</span>
-                  <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setDelTask(t)}>×</button>
-                </div>
-              ))}
-              <div className="sb-od-permit-add">
-                <input className="sb-od-note-input" type="text" value={permitTaskText} placeholder="Add a permit task…"
-                  onChange={e => setPermitTaskText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addPermitTask() }} />
-                <button type="button" className="sb-od-btn" disabled={!permitTaskText.trim()} onClick={addPermitTask}>Add</button>
-              </div>
-            </div>
-
-            <div className="sb-od-inline-actions">
-              <span className="sb-od-hint">Edit status, dates &amp; record the permit fee via the ⋯ on <strong>Cemetery &amp; grave</strong>.</span>
-            </div>
+              ? permitExpenses.map(p => <div key={p.id}>{fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)}{p.payee ? ` → ${p.payee}` : ''}</div>)
+              : null} hint={permitExpenses.length ? 'paid out — not a customer payment' : 'none recorded'} />
           </Section>
 
           {/* 5 — Related job */}
