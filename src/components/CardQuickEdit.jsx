@@ -145,4 +145,5 @@ const CQE_CSS = `
   .sb-od-cqe-paid-row { font-size: 12px; color: #15724a; background: #e7f6ee; border-radius: 6px; padding: 5px 8px; }
   .sb-od-cqe-fee-btn { width: 100%; justify-content: center; margin-top: 2px; border-color: #c9a23a; color: #6a4d0c; background: #fdf6e7; }
   .sb-od-cqe-fee-btn:hover:not(:disabled) { background: #f8edd3; }
+  .sb-od-cqe-okmsg { font-size: 12px; color: #15724a; background: #e7f6ee; border-radius: 7px; padding: 7px 8px; }
 `
