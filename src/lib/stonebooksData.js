@@ -1541,6 +1541,28 @@ export async function deleteOutgoingPayment(id) {
   return { ok: true }
 }
 
+// ── Ordering vendors (stone suppliers; persistent list for the Monument card) ──
+// Distinct from the partners PORTAL table. A new vendor typed in the UI inserts
+// here and is reusable on every order afterward.
+export async function listOrderingVendors() {
+  const { data, error } = await supabase.from('ordering_vendors').select('id, name').order('name', { ascending: true })
+  if (error) { console.warn('[vendors] listOrderingVendors:', error.message); return [] }
+  return data || []
+}
+export async function addOrderingVendor(name) {
+  const n = String(name || '').trim()
+  if (!n) return { ok: false, error: 'Enter a vendor name.' }
+  const { data, error } = await supabase.from('ordering_vendors')
+    .upsert({ name: n }, { onConflict: 'tenant_id,name' }).select('id, name').single()
+  if (error) {
+    if (/relation .*ordering_vendors.* does not exist|could not find the table/i.test(error.message)) {
+      return { ok: false, error: 'Vendor list isn’t set up yet — apply the ordering_vendors migration in Studio.' }
+    }
+    return { ok: false, error: error.message }
+  }
+  return { ok: true, vendor: data }
+}
+
 // ── Permit → outgoing-payment sync (payee = cemetery) ───────────────────────
 // A filed permit (orders.permit[] = {type,amount,method,ck,date_filed,name})
 // is also money paid OUT to the cemetery, so it should appear in Payments →
