@@ -438,7 +438,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       setSendBusy(false)
       if (!res.ok) { setActionNote(`Could not create approval link — ${res.error}`); return }
       setSentLink(res.url)
-      await logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'sent', note: 'Approval link sent', actor: await getCurrentStaffName() })
+      const _staff = await getCurrentStaffName()
+      await logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'sent', note: 'Approval link sent', actor: _staff })
+      if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: 'Approval link generated / sent', createdBy: _staff }).catch(() => {})
       refreshApprovalLinks(); refreshActivity()
     } catch (e) {
       setSendBusy(false); setActionNote(`Could not create approval link — ${e?.message || 'error'}`)
