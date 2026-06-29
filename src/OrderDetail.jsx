@@ -35,6 +35,7 @@ import {
   updateCustomer, bulkUpdateOrders,
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel as sharedPermitStatusLabel,
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
+  deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
 } from './lib/stonebooksData'
 import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeRow, CqeNote } from './components/CardQuickEdit'
 import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, buildDieSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
@@ -64,6 +65,18 @@ const PAY_METHODS = [
 const PAY_TYPES = [
   { code: 'deposit', label: 'Deposit' }, { code: 'progress', label: 'Progress payment' }, { code: 'final', label: 'Final payment' },
 ]
+// Monument-card Stone Status — a simple ordering-stage control that REUSES the
+// existing milestone-backed STONE_STATUS codes (no new status field, no collision
+// with the schedule import / job milestones). 'ordered' carries a vendor.
+const STONE_SIMPLE = [
+  { code: 'not_ordered', label: 'Needs order' },
+  { code: 'in_stock',    label: 'In stock' },
+  { code: 'ordered',     label: 'Ordered from →' },
+]
+const NEW_VENDOR = '__new__'
+// Collapse the 7-state derive into the 3 ordering choices (anything past "ordered"
+// still reads as Ordered here; full production stages live on the Jobs tab).
+const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : s === 'in_stock' ? 'in_stock' : 'ordered'
 // Permit label = the shared 5-code vocabulary (legacy 'required' → "Permit Needed").
 const permitStatusLabel = (s) => sharedPermitStatusLabel(s || 'unknown')
 // Pill tone for the permit status (maps onto OrderDetail's Pill tones).
@@ -236,6 +249,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [feeBusy, setFeeBusy] = useState(false)
   const [feeMsg, setFeeMsg] = useState(null)
   const [monDraft, setMonDraft] = useState(null)        // camel order copy for the reused MonumentCard
+  const [stoneDraft, setStoneDraft] = useState(null)    // { status, vendor } — reuses milestone STONE_STATUS
+  const [vendorList, setVendorList] = useState([])      // ordering_vendors (persistent stone suppliers)
   const [designNotesDraft, setDesignNotesDraft] = useState('')   // internal design notes (current proof)
   const [emailLinkBusy, setEmailLinkBusy] = useState(false)
   const [emailLinkMsg, setEmailLinkMsg] = useState(null)
@@ -644,7 +659,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // + Die/Base description overrides) edits a camelCase draft; Save maps the monument
   // fields back to the order columns. Display-only overrides (dieTextOverride /
   // baseTextOverride) ride on baseConfig and never change pricing.
-  const seedMonDraft = () => setMonDraft(rowToOrder(order, order.customer, order.cemetery))
+  const seedMonDraft = () => {
+    setMonDraft(rowToOrder(order, order.customer, order.cemetery))
+    // Stone status (reuses the milestone-derived STONE_STATUS) + chosen vendor.
+    const cur = job ? stoneToSimple(deriveStoneStatus(job)) : 'not_ordered'
+    setStoneDraft({ status: cur, vendor: order.stone_vendor || '', newVendor: '' })
+    listOrderingVendors().then(vs => setVendorList(vs || []))
+  }
   const monUpdate = (patch) => setMonDraft(d => ({ ...d, ...patch }))
   const monUpdatePricing = (patch) => setMonDraft(d => ({ ...d, pricing: { ...(d.pricing || {}), ...patch } }))
   const saveMonument = async () => {
@@ -661,9 +682,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       base_config: d.baseConfig || {},
       pricing: d.pricing || {},
     }
+    // Stone Status — resolve a brand-new vendor first (persists for reuse), then
+    // store the chosen supplier on the order (only meaningful when "ordered").
+    let vendor = (stoneDraft?.vendor || '').trim()
+    if (stoneDraft?.status === 'ordered' && stoneDraft.vendor === NEW_VENDOR) {
+      const nv = (stoneDraft.newVendor || '').trim()
+      if (!nv) return { ok: false, error: 'Enter the new vendor name.' }
+      const vr = await addOrderingVendor(nv)
+      if (!vr.ok) return vr
+      vendor = vr.vendor.name
+    }
+    patch.stone_vendor = stoneDraft?.status === 'ordered' ? (vendor || null) : null
     const r = await bulkUpdateOrders([orderId], patch)
     if (!r.ok) return r
-    await refreshOrder()
+    // Stone status reuses the milestone-backed setter (same source as the Orders
+    // table + schedule). Needs a job; no-op when the order has none yet.
+    if (job?.id && stoneDraft) {
+      const cur = stoneToSimple(deriveStoneStatus(job))
+      if (stoneDraft.status !== cur) await setOrderStoneStatus(job.id, stoneDraft.status)
+    }
+    await refreshOrder(); await refreshJob?.()
     const staff = await getCurrentStaffName()
     logOrderActivity(orderId, { type: 'change', field: 'Monument spec', newValue: 'updated', note: 'Monument spec / overrides edited', actor: staff }).then(() => refreshActivity()).catch(() => {})
     if (job?.id) addJobEvent(job.id, { eventType: 'monument_spec_overridden', note: 'Monument spec / overrides edited', createdBy: staff }).catch(() => {})
@@ -1280,6 +1318,32 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           {/* 3 — Monument */}
           <Section id="od-monument" title={monumentCardTitle} headerAction={isStoneOrder ? (
             <CardQuickEdit title="Monument Spec & Overrides" onOpen={seedMonDraft} onSave={saveMonument} width={580} saveLabel="Save monument">
+              {/* Stone Status — reuses the milestone-backed STONE_STATUS; "Ordered from"
+                  carries a vendor from the persistent ordering_vendors list. */}
+              {stoneDraft && (
+                <>
+                  <CqeSelect label="Stone status" value={stoneDraft.status}
+                    options={STONE_SIMPLE.map(s => ({ code: s.code, label: s.label }))}
+                    onChange={v => setStoneDraft(d => ({ ...d, status: v }))} />
+                  {!job && <CqeNote>Stone status needs a production job to record (created when the order is signed). The vendor still saves.</CqeNote>}
+                  {stoneDraft.status === 'ordered' && (
+                    <>
+                      <CqeSelect label="Ordered from" value={stoneDraft.vendor || ''}
+                        options={[
+                          { code: '', label: '— pick a vendor —', disabled: true },
+                          ...((order.stone_vendor && !vendorList.some(v => v.name === order.stone_vendor)) ? [{ code: order.stone_vendor, label: order.stone_vendor }] : []),
+                          ...vendorList.map(v => ({ code: v.name, label: v.name })),
+                          { code: NEW_VENDOR, label: '+ New Vendor…' },
+                        ]}
+                        onChange={v => setStoneDraft(d => ({ ...d, vendor: v }))} />
+                      {stoneDraft.vendor === NEW_VENDOR && (
+                        <CqeText label="New vendor name" value={stoneDraft.newVendor} onChange={v => setStoneDraft(d => ({ ...d, newVendor: v }))} placeholder="Saved for reuse on future orders" />
+                      )}
+                    </>
+                  )}
+                  <div className="sb-od-cqe-divider">Monument spec & overrides</div>
+                </>
+              )}
               {/* Reuse the EXACT New Order monument editor (shape/size/color/polish/top
                   + shared BaseSection + Die/Base description overrides). Its of- and
                   sm- prefixed CSS is class-scoped, so mounting it here does not bleed
@@ -1296,6 +1360,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     override-aware. Inscription removed from this card per spec. */}
                 <Field label="Spec" value={monumentLine || null} />
                 <Field label="Base" value={baseSummary} />
+                <Field label="Stone status" hint={job ? null : 'no production job yet'}
+                  value={job
+                    ? `${STONE_SIMPLE.find(s => s.code === stoneToSimple(deriveStoneStatus(job)))?.label || '—'}${order.stone_vendor ? ` · ${order.stone_vendor}` : ''}`
+                    : (order.stone_vendor || null)} />
               </>
             )}
             <Field label="Deceased" value={deceased.length
