@@ -18,7 +18,7 @@ import {
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   fmtUSD,
   computeOrderPressure,
-  ORDER_STATUSES, ACTIVE_STATUSES,
+  ORDER_STATUSES,
   bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus,
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
@@ -27,7 +27,7 @@ import {
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
-  orderTypeLabel,
+  orderTypeLabel, orderCategory, ORDER_CATEGORIES,
   // Permit (orders.permit_status — single source of truth, shared with Permit Hub)
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
   logOrderActivity, getCurrentStaffName,
@@ -57,11 +57,16 @@ import { LEAD_STATUSES } from './lib/leads'
 // ── Constants ────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 50
 
-const ARCHIVE_VIEWS = [
+// Primary axis: Active | Closed | Archived. Archived = orders.archived=true (its own
+// fetch). Active vs Closed both fetch archived=false and split client-side by terminal
+// status (closed/cancelled = Closed; everything else = Active) — so no order is ever
+// invisible or in two tabs.
+const PRIMARY_VIEWS = [
   { code: 'active',   label: 'Active' },
+  { code: 'closed',   label: 'Closed' },
   { code: 'archived', label: 'Archived' },
-  { code: 'all',      label: 'All' },
 ]
+const TERMINAL_STATUSES = new Set(['closed', 'cancelled'])
 const PIPELINE_STAGE_FILTERS = [
   { code: 'draft',         label: 'Draft' },
   { code: 'scoping',       label: 'Scoping' },
@@ -77,20 +82,6 @@ const PAYMENT_FILTERS = [
   { code: 'partial',      label: 'Partial' },
   { code: 'unpaid',       label: 'Unpaid' },
   { code: 'overdue',      label: 'Overdue' },
-]
-const JOB_TYPE_FILTERS = [
-  { code: 'new_stone',       label: 'New stone' },
-  { code: 'mausoleum_door',  label: 'Crypt door' },
-  { code: 'cleaning_repair', label: 'Cleaning-repair' },
-  { code: 'inscription',     label: 'Inscription' },
-]
-const SERVICE_TYPE_FILTERS = [
-  { code: 'NEW_STONE',   label: 'New stone' },
-  { code: 'INSCRIPTION', label: 'Inscription' },
-  { code: 'REPAIR',      label: 'Repair' },
-  { code: 'ACID_WASH',   label: 'Acid wash' },
-  { code: 'BRONZE',      label: 'Bronze' },
-  { code: 'MAUSOLEUM',   label: 'Mausoleum' },
 ]
 // Job types settable in the bulk/inline editor (job_type lives on jobs).
 const JOB_TYPES = [
@@ -116,14 +107,6 @@ const SORT_OPTIONS = [
   { code: 'depositDesc',    label: 'Sort: Deposit high→low' },
   { code: 'familyName',     label: 'Sort: Family name A→Z' },
 ]
-const QUICK_VIEWS = [
-  { code: 'active_pipeline', label: 'Active pipeline' },
-  { code: 'owes_balance',    label: 'Owes balance' },
-  { code: 'needs_info',      label: 'Needs info' },
-  { code: 'deposit_only',    label: 'Deposit-only' },
-  { code: 'archived',        label: 'Archived' },
-]
-
 // checkbox | family | order# | customer name | job type | payment | design | stone | fdn | cemetery | contract | due
 // Family / Order# / Customer-name are explicit first columns. Total column was
 // removed; the freed width goes to Family + Customer (1.7fr each) so full names
@@ -233,23 +216,24 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Seed from the cross-mount cache so re-opening Orders renders instantly
   // (default archiveView is 'active'). loading starts false only when both
   // datasets are already cached.
-  const [orders, setOrders] = useState(() => peekCache(ORDERS_KEY('active')) ?? [])
+  const [orders, setOrders] = useState(() => peekCache(ORDERS_KEY('live')) ?? [])
   const [allJobs, setAllJobs] = useState(() => peekCache(JOBS_KEY) ?? [])
-  const [loading, setLoading] = useState(() => peekCache(ORDERS_KEY('active')) === undefined || peekCache(JOBS_KEY) === undefined)
+  const [loading, setLoading] = useState(() => peekCache(ORDERS_KEY('live')) === undefined || peekCache(JOBS_KEY) === undefined)
   const [loadErr, setLoadErr] = useState(null)
   const [reloadNonce, setReloadNonce] = useState(0)
 
-  // Filters
-  const [archiveView, setArchiveView] = useState('active')
+  // Filters — 2-tier: PRIMARY axis (Active/Closed/Archived) + a single-select
+  // category chip; everything else lives in the "More filters" dropdown.
+  const [primaryView, setPrimaryView] = useState('active')   // active | closed | archived
+  const [categoryFilter, setCategoryFilter] = useState(null) // ORDER_CATEGORIES code | null (= All)
+  const [moreOpen, setMoreOpen] = useState(false)            // More-filters dropdown
   const [pipelineFilters, setPipelineFilters] = useState(new Set())
   const [paymentFilters, setPaymentFilters] = useState(new Set())
-  const [jobTypeFilters, setJobTypeFilters] = useState(new Set())
-  const [serviceTypeFilters, setServiceTypeFilters] = useState(new Set())
   const [hasDeposit, setHasDeposit] = useState(false)
   const [owesBalance, setOwesBalance] = useState(false)
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
   const [cemeteryFilter, setCemeteryFilter] = useState('')
-  const [quickView, setQuickView] = useState(null)
+  const [quickView, setQuickView] = useState(null)           // 'needs_info' | 'deposit_only' | null (More filters)
   const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
   const [sortKey, setSortKey] = useState('createdDesc')   // default: newest by creation date
   const [sortDir, setSortDir] = useState('asc')   // C1 — direction for click-sortable columns
@@ -292,11 +276,14 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const [confirm, setConfirm] = useState(null)  // { title, body, run }
   const [busy, setBusy] = useState(false)       // bulk ops + confirm modal only
 
-  // ── Load (by archive view) ────────────────────────────────────────────────
+  // ── Load (by primary axis) ────────────────────────────────────────────────
+  // Active + Closed share ONE fetch (archived=false) and split client-side; only
+  // Archived fetches archived=true. So the fetch axis is just live-vs-archived.
   useEffect(() => {
     let cancelled = false
-    const oKey = ORDERS_KEY(archiveView)
-    const archived = archiveView === 'all' ? undefined : (archiveView === 'archived')
+    const fetchAxis = primaryView === 'archived' ? 'archived' : 'live'
+    const oKey = ORDERS_KEY(fetchAxis)
+    const archived = primaryView === 'archived'
     // Only show the spinner when a dataset isn't already cached — a cached
     // re-entry stays instant. cachedFetch returns cached data within the TTL and
     // refetches in the background otherwise.
@@ -312,7 +299,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       })
       .catch(e => { if (!cancelled) { setLoadErr(e?.message || 'Failed to load orders'); setLoading(false) } })
     return () => { cancelled = true }
-  }, [archiveView, reloadNonce])
+  }, [primaryView, reloadNonce])
 
   const reload = useCallback(() => { invalidateCache('orders:board'); invalidateCache(JOBS_KEY); setReloadNonce(n => n + 1) }, [])
 
@@ -344,9 +331,9 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   useEffect(() => {
     if (!initialQueue) return
     setQueueFilter(initialQueue)
-    setArchiveView('active'); setQuickView(null)
-    setPipelineFilters(new Set()); setPaymentFilters(new Set()); setJobTypeFilters(new Set())
-    setServiceTypeFilters(new Set()); setCemeteryFilter(''); setHasDeposit(false); setOwesBalance(false)
+    setPrimaryView('active'); setCategoryFilter(null); setQuickView(null)
+    setPipelineFilters(new Set()); setPaymentFilters(new Set())
+    setCemeteryFilter(''); setHasDeposit(false); setOwesBalance(false)
     setNeedsAttentionOnly(false); setSearch('')
     onConsumeInitialQueue?.()
   }, [initialQueue, onConsumeInitialQueue])
@@ -389,6 +376,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         _contractTotal: orderContractTotal(o),
         _setBlock: setBlock,
         _serviceTypesUp: new Set((o.service_types || []).map(s => String(s).toUpperCase())),
+        _category: orderCategory(o, job),   // one canonical category for the chip row
       }
     })
   }, [orders, allJobs])
@@ -400,53 +388,58 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }, [enriched])
 
   // ── Filter + sort ───────────────────────────────────────────────────────
-  const filtered = useMemo(() => {
+  // preCategory = every filter EXCEPT the category axis (and sort). It drives BOTH
+  // the category counts AND the rows, so the selected category's count always
+  // equals the rows shown.
+  const preCategory = useMemo(() => {
     let list = enriched
-    // Sub-tab partition (Orders · Leads · All). Leads are not a separate table —
-    // they're the draft/scoping/quoted statuses of the same orders set. The table
-    // surface renders the Orders tab (actual orders only) and the All tab
-    // (everything). A non-empty search ALWAYS shows the combined set so a name
-    // match surfaces whether it's a lead or an order, in every sub-tab.
+    // Orders · Leads · All partition (leads = draft/scoping/quoted of the same set).
+    // A non-empty search ALWAYS shows the combined set so a name match surfaces.
     const showAll = search.trim().length > 0 || view === 'all'
     if (!showAll) list = list.filter(o => !LEAD_STATUSES.includes(o.status))
-    // Workflow / permit queue (from a hub dashboard) — uses the shared classifiers.
+    // PRIMARY axis (archived handled at fetch): Active = non-terminal status, Closed
+    // = terminal (closed/cancelled). Archived fetch returns archived rows (any status).
+    if (primaryView === 'active') list = list.filter(o => !TERMINAL_STATUSES.has(o.status))
+    else if (primaryView === 'closed') list = list.filter(o => TERMINAL_STATUSES.has(o.status))
+    // Workflow / permit queue deep-link (from a hub dashboard) — shared classifiers.
     if (queueFilter) list = list.filter(o => {
       if (queueFilter.startsWith('permit_')) return permitBuckets(o, o._job).includes(queueFilter)
       const c = classifyOrderQueues(o, o._job, o._pressure)
       return c.productionQueue === queueFilter || c.overlays.includes(queueFilter)
     })
-    // Quick views layer over the granular filters.
-    if (quickView === 'active_pipeline') list = list.filter(o => ACTIVE_STATUSES.includes(o.status))
-    else if (quickView === 'owes_balance') list = list.filter(o => o._balance > 0)
-    else if (quickView === 'needs_info')   list = list.filter(o => o._missingInfo)
+    // More-filters (single-select needs-info / deposit-only).
+    if (quickView === 'needs_info')        list = list.filter(o => o._missingInfo)
     else if (quickView === 'deposit_only') list = list.filter(o => o._paid > 0 && o._total <= 0)
-
+    // More-filters (multi-select) + the always-visible Owes-balance toggle.
     if (pipelineFilters.size) list = list.filter(o => pipelineFilters.has(o.status))
     if (paymentFilters.size)  list = list.filter(o => paymentFilters.has(o._pressure.paymentState))
-    if (jobTypeFilters.size) list = list.filter(o => {
-      for (const f of jobTypeFilters) {
-        if (f === 'inscription') { if (o._serviceTypesUp.has('INSCRIPTION')) return true }
-        else if (o._jobType === f) return true
-      }
-      return false
-    })
-    if (serviceTypeFilters.size) list = list.filter(o => {
-      for (const f of serviceTypeFilters) if (o._serviceTypesUp.has(f)) return true
-      return false
-    })
     if (cemeteryFilter) list = list.filter(o => o.cemetery?.id === cemeteryFilter)
     if (hasDeposit) list = list.filter(o => o._paid > 0)
     if (owesBalance) list = list.filter(o => o._balance > 0)
     if (needsAttentionOnly) list = list.filter(o => {
       const sev = o._pressure.blocker?.severity; return sev === 'red' || sev === 'amber'
     })
-
     const needle = search.trim().toLowerCase()
     if (needle) list = list.filter(o => [
       o.order_number, o._familyName, o.customer?.first_name, o.customer?.last_name,
       o.customer?.phone_primary, o.customer?.email, o.cemetery?.name, o.cemetery?.city, o.sales_rep,
     ].filter(Boolean).join(' ').toLowerCase().includes(needle))
+    return list
+  }, [enriched, view, primaryView, queueFilter, quickView, pipelineFilters, paymentFilters,
+      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
 
+  // Live category counts — computed on the set with all OTHER active filters applied
+  // (category axis excluded), so each chip shows exactly how many rows it would yield
+  // and the SELECTED category's count equals the rows shown.
+  const categoryCounts = useMemo(() => {
+    const counts = { all: preCategory.length }
+    for (const c of ORDER_CATEGORIES) counts[c.code] = 0
+    for (const o of preCategory) counts[o._category] = (counts[o._category] || 0) + 1
+    return counts
+  }, [preCategory])
+
+  const filtered = useMemo(() => {
+    const list = categoryFilter ? preCategory.filter(o => o._category === categoryFilter) : preCategory
     const sorters = {
       createdDesc: (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
       actionPriority: (a, b) => {
@@ -479,12 +472,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     // sorters carry their own fixed direction.
     if (CLICK_SORT_KEYS.has(sortKey) && sortDir === 'desc') sorted.reverse()
     return sorted
-  }, [enriched, view, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters, serviceTypeFilters,
-      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search, sortKey, sortDir])
+  }, [preCategory, categoryFilter, sortKey, sortDir])
 
   // Reset page + clear stale selection when the filtered set changes shape.
-  useEffect(() => { setPage(0) }, [view, archiveView, queueFilter, quickView, pipelineFilters, paymentFilters, jobTypeFilters,
-    serviceTypeFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
+  useEffect(() => { setPage(0) }, [view, primaryView, categoryFilter, queueFilter, quickView, pipelineFilters,
+    paymentFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const pageRows = useMemo(() => filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE), [filtered, page])
@@ -752,17 +744,21 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }
 
   const resetAll = () => {
-    setPipelineFilters(new Set()); setPaymentFilters(new Set()); setJobTypeFilters(new Set())
-    setServiceTypeFilters(new Set()); setCemeteryFilter(''); setHasDeposit(false); setOwesBalance(false)
+    setPrimaryView('active'); setCategoryFilter(null)
+    setPipelineFilters(new Set()); setPaymentFilters(new Set())
+    setCemeteryFilter(''); setHasDeposit(false); setOwesBalance(false)
     setNeedsAttentionOnly(false); setQuickView(null); setSearch('')
   }
   const toggleSet = (set, setter) => (code) => {
     const next = new Set(set); next.has(code) ? next.delete(code) : next.add(code); setter(next)
   }
-  const onQuickView = (code) => {
-    if (code === 'archived') { setArchiveView(v => v === 'archived' ? 'active' : 'archived'); setQuickView(null); clearSelection(); return }
-    setQuickView(v => v === code ? null : code)
-  }
+  // More-filters single-select toggles (needs_info / deposit_only).
+  const onQuickView = (code) => setQuickView(v => v === code ? null : code)
+  // Pick a primary axis (Active/Closed/Archived). Archived refetches; Active↔Closed
+  // is client-side. Clears stale selection on change.
+  const onPrimaryView = (code) => { setPrimaryView(code); clearSelection() }
+  // Single-select category chip ('all' or null clears it).
+  const onCategory = (code) => { setCategoryFilter(code === 'all' ? null : code); clearSelection() }
 
   // ── Order detail drill-in ─────────────────────────────────────────────────
   if (selectedOrderId) {
@@ -775,8 +771,16 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     )
   }
 
-  const canArchive = archiveView !== 'archived'
-  const canRestore = archiveView !== 'active'
+  const canArchive = primaryView !== 'archived'
+  const canRestore = primaryView === 'archived'
+
+  // "More filters" badge + clear — everything that lives in the dropdown.
+  const moreActiveCount = pipelineFilters.size + paymentFilters.size
+    + (hasDeposit ? 1 : 0) + (needsAttentionOnly ? 1 : 0) + (quickView ? 1 : 0)
+  const clearMoreFilters = () => {
+    setPipelineFilters(new Set()); setPaymentFilters(new Set())
+    setHasDeposit(false); setNeedsAttentionOnly(false); setQuickView(null)
+  }
 
   // Large, prominent Orders · Leads · All toggle (shown in every view).
   const viewTabs = (
@@ -833,7 +837,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <div className="sb-crm-head-count">
               <strong>{loading ? '—' : filtered.length}</strong> {filtered.length === 1 ? 'order' : 'orders'}
               {searching && <> · matching “{search.trim()}” (leads + orders)</>}
-              {!searching && archiveView !== 'active' && <> · {ARCHIVE_VIEWS.find(v => v.code === archiveView)?.label}</>}
+              {!searching && primaryView !== 'active' && <> · {PRIMARY_VIEWS.find(v => v.code === primaryView)?.label}</>}
+              {!searching && categoryFilter && <> · {ORDER_CATEGORIES.find(c => c.code === categoryFilter)?.label}</>}
             </div>
           </div>
           <div className="sb-crm-head-actions">
@@ -855,63 +860,62 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
           </div>
         )}
 
-        {/* Quick views */}
-        <div className="sb-crm-chip-row">
-          <div className="sb-crm-chip-group">
-            <span className="sb-crm-chip-group-label">Quick views</span>
-            {QUICK_VIEWS.map(q => (
-              <FilterChip key={q.code} active={q.code === 'archived' ? archiveView === 'archived' : quickView === q.code} onClick={() => onQuickView(q.code)}>{q.label}</FilterChip>
+        {/* TIER 1 — primary axis (the main toggle) + always-visible Owes balance +
+            More filters + cemetery. */}
+        <div className="sb-crm-chip-row sb-ord-tier1">
+          <div className="sb-ord-segmented" role="tablist" aria-label="Order state">
+            {PRIMARY_VIEWS.map(v => (
+              <button key={v.code} type="button" role="tab" aria-selected={primaryView === v.code}
+                className={`sb-ord-seg${primaryView === v.code ? ' on' : ''}`} onClick={() => onPrimaryView(v.code)}>{v.label}</button>
             ))}
           </div>
-          <div className="sb-crm-chip-group">
-            <span className="sb-crm-chip-group-label">Show</span>
-            {ARCHIVE_VIEWS.map(v => (
-              <FilterChip key={v.code} active={archiveView === v.code} onClick={() => { setArchiveView(v.code); clearSelection() }}>{v.label}</FilterChip>
-            ))}
-          </div>
-        </div>
-
-        {/* Granular filters */}
-        <div className="sb-crm-chip-row">
-          <div className="sb-crm-chip-group">
-            <span className="sb-crm-chip-group-label">Status</span>
-            {PIPELINE_STAGE_FILTERS.map(f => (
-              <FilterChip key={f.code} active={pipelineFilters.has(f.code)} onClick={() => toggleSet(pipelineFilters, setPipelineFilters)(f.code)}>{f.label}</FilterChip>
-            ))}
-          </div>
-          <div className="sb-crm-chip-group">
-            <span className="sb-crm-chip-group-label">Payment</span>
-            {PAYMENT_FILTERS.map(f => (
-              <FilterChip key={f.code} active={paymentFilters.has(f.code)} onClick={() => toggleSet(paymentFilters, setPaymentFilters)(f.code)}>{f.label}</FilterChip>
-            ))}
-            <FilterChip active={hasDeposit} onClick={() => setHasDeposit(v => !v)}>Has deposit</FilterChip>
-            <FilterChip active={owesBalance} onClick={() => setOwesBalance(v => !v)}>Owes balance</FilterChip>
-          </div>
-          <div className="sb-crm-chip-group">
-            <span className="sb-crm-chip-group-label">Job type</span>
-            {JOB_TYPE_FILTERS.map(f => (
-              <FilterChip key={f.code} active={jobTypeFilters.has(f.code)} onClick={() => toggleSet(jobTypeFilters, setJobTypeFilters)(f.code)}>{f.label}</FilterChip>
-            ))}
-          </div>
-          <div className="sb-crm-chip-group">
-            <span className="sb-crm-chip-group-label">Service</span>
-            {SERVICE_TYPE_FILTERS.map(f => (
-              <FilterChip key={f.code} active={serviceTypeFilters.has(f.code)} onClick={() => toggleSet(serviceTypeFilters, setServiceTypeFilters)(f.code)}>{f.label}</FilterChip>
-            ))}
-          </div>
-          <div className="sb-crm-chip-group">
-            <FilterChip active={needsAttentionOnly} onClick={() => setNeedsAttentionOnly(v => !v)}>Needs attention</FilterChip>
-          </div>
+          <FilterChip active={owesBalance} onClick={() => setOwesBalance(v => !v)}>Owes balance</FilterChip>
+          <button type="button" className={`sb-ord-morebtn${moreOpen ? ' on' : ''}${moreActiveCount ? ' has' : ''}`}
+            onClick={() => setMoreOpen(v => !v)}>More filters{moreActiveCount ? ` · ${moreActiveCount}` : ''} {moreOpen ? '▴' : '▾'}</button>
+          {moreActiveCount > 0 && <button type="button" className="sb-tw-link" onClick={clearMoreFilters}>Clear</button>}
           {cemeteryOptions.length > 0 && (
-            <div className="sb-crm-chip-group">
-              <span className="sb-crm-chip-group-label">Cemetery</span>
-              <select className="sb-crm-sort" value={cemeteryFilter} onChange={e => setCemeteryFilter(e.target.value)} style={{ minWidth: 160 }}>
-                <option value="">All cemeteries</option>
-                {cemeteryOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
+            <select className="sb-crm-sort sb-ord-cemsel" value={cemeteryFilter} onChange={e => setCemeteryFilter(e.target.value)}>
+              <option value="">All cemeteries</option>
+              {cemeteryOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           )}
         </div>
+
+        {/* TIER 2 — category chips with live counts (single-select). The selected
+            category's count equals the rows shown. */}
+        <div className="sb-crm-chip-row sb-ord-tier2">
+          <FilterChip active={!categoryFilter} onClick={() => onCategory('all')}>All <span className="sb-ord-cat-n">{categoryCounts.all}</span></FilterChip>
+          {ORDER_CATEGORIES.map(c => (
+            <FilterChip key={c.code} active={categoryFilter === c.code} onClick={() => onCategory(c.code)}>
+              {c.label} <span className="sb-ord-cat-n">{categoryCounts[c.code] || 0}</span>
+            </FilterChip>
+          ))}
+        </div>
+
+        {/* MORE FILTERS — collapsible. Nothing deleted; everything stays reachable. */}
+        {moreOpen && (
+          <div className="sb-crm-chip-row sb-ord-more">
+            <div className="sb-crm-chip-group">
+              <span className="sb-crm-chip-group-label">Status</span>
+              {PIPELINE_STAGE_FILTERS.map(f => (
+                <FilterChip key={f.code} active={pipelineFilters.has(f.code)} onClick={() => toggleSet(pipelineFilters, setPipelineFilters)(f.code)}>{f.label}</FilterChip>
+              ))}
+            </div>
+            <div className="sb-crm-chip-group">
+              <span className="sb-crm-chip-group-label">Payment</span>
+              {PAYMENT_FILTERS.map(f => (
+                <FilterChip key={f.code} active={paymentFilters.has(f.code)} onClick={() => toggleSet(paymentFilters, setPaymentFilters)(f.code)}>{f.label}</FilterChip>
+              ))}
+              <FilterChip active={hasDeposit} onClick={() => setHasDeposit(v => !v)}>Has deposit</FilterChip>
+            </div>
+            <div className="sb-crm-chip-group">
+              <span className="sb-crm-chip-group-label">Other</span>
+              <FilterChip active={quickView === 'needs_info'} onClick={() => onQuickView('needs_info')}>Needs info</FilterChip>
+              <FilterChip active={quickView === 'deposit_only'} onClick={() => onQuickView('deposit_only')}>Deposit-only</FilterChip>
+              <FilterChip active={needsAttentionOnly} onClick={() => setNeedsAttentionOnly(v => !v)}>Needs attention</FilterChip>
+            </div>
+          </div>
+        )}
 
         {/* Bulk action bar — sticky, shown when ≥1 selected */}
         {selectedIds.size > 0 && (
@@ -1209,6 +1213,22 @@ const VIEWTABS_CSS = `
 `
 
 const TW_CSS = `
+  /* ── 2-tier filter header ─────────────────────────────────────────────── */
+  .sb-ord-tier1 { align-items: center; gap: 10px; }
+  .sb-ord-tier2 { margin-top: -4px; }
+  .sb-ord-segmented { display: inline-flex; background: #ece6d8; border-radius: 10px; padding: 3px; gap: 2px; }
+  .sb-ord-seg { border: none; cursor: pointer; border-radius: 8px; padding: 7px 18px; font-size: 13.5px; font-weight: 700;
+    background: transparent; color: #7a756a; transition: background 0.12s, color 0.12s; }
+  .sb-ord-seg.on { background: #fff; color: #0f1419; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  .sb-ord-morebtn { border: 1px solid #d8d6d1; background: #fff; color: #4a4a45; cursor: pointer; border-radius: 999px;
+    padding: 6px 14px; font-size: 13px; font-weight: 600; }
+  .sb-ord-morebtn:hover { border-color: #9A7209; }
+  .sb-ord-morebtn.on, .sb-ord-morebtn.has { border-color: #9A7209; color: #6a4d0c; background: #fdf6e7; }
+  .sb-ord-cemsel { min-width: 150px; margin-left: auto; }
+  .sb-ord-cat-n { display: inline-block; margin-left: 5px; padding: 0 6px; border-radius: 999px; font-size: 11px;
+    font-weight: 700; background: rgba(15,20,25,0.08); color: inherit; }
+  .sb-ord-more { background: #faf8f3; border: 1px solid #ece8df; border-radius: 12px; padding: 12px 14px; margin-top: 2px; }
+
   /* C1 — clickable sortable column headers. Match the .sb-crm-row-head > div
      typography (those text styles don't reach a <button>), add hover + active. */
   .sb-ord-sort-th {
