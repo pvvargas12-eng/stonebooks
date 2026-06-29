@@ -2869,19 +2869,15 @@ export function CemeteryStep({ order, update }) {
           )}
         </Field>
 
-        <div className="sm-helper sm-helper-strong">
-          Cemeteries vary — fill in only the fields they give you.
-        </div>
-
-        <div className="sm-grid-3">
-          <Field label="Section"><TextInput value={plot.section} onChange={v => updatePlot({ section: v })} /></Field>
-          <Field label="Block">  <TextInput value={plot.block}   onChange={v => updatePlot({ block: v })} /></Field>
-          <Field label="Lot">    <TextInput value={plot.lot}     onChange={v => updatePlot({ lot: v })} /></Field>
-          <Field label="Row">    <TextInput value={plot.row}     onChange={v => updatePlot({ row: v })} /></Field>
-          <Field label="Space">  <TextInput value={plot.space}   onChange={v => updatePlot({ space: v })} /></Field>
-          <Field label="Grave">  <TextInput value={plot.grave}   onChange={v => updatePlot({ grave: v })} /></Field>
-          <Field label="Level">  <TextInput value={plot.level}   onChange={v => updatePlot({ level: v })} /></Field>
-        </div>
+        {/* ONE free-text location line — type it however that cemetery formats it
+            (Section / Block / Lot / Row / Space / Grave / Level, whatever applies).
+            For a legacy order the composed old parts show as the placeholder so the
+            operator sees the current location; typing here saves it to grave_location
+            (the legacy parts are never touched). */}
+        <Field label="Grave location" wide hint="Type the full location however the cemetery formats it — e.g. “Sec Sub Div F · Blk 5 · Lot 12”">
+          <TextInput value={plot.location || ''} onChange={v => updatePlot({ location: v })}
+            placeholder={composeGraveLocation(order) || 'e.g. Sec … · Blk … · Lot …'} />
+        </Field>
         <Field label="Other plot reference" wide hint="Anything cemetery-specific that doesn't fit above">
           <TextInput
             value={plot.other}

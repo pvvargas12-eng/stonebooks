@@ -30,6 +30,7 @@ import {
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
 import BaseSection from './components/BaseSection'
+import { composeGraveLocation } from './lib/monumentCatalog'
 import DieOverrideField from './components/DieOverrideField'
 import {
   SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS,
@@ -638,12 +639,11 @@ function CemeteryCard({ order, update }) {
             options={PLOT_TYPES.map(p => ({ value: p.code, label: p.label }))} placeholder="Select arrangement…" />
           <SelectField label="Foundation type" value={order.foundationType || ''} onChange={v => update({ foundationType: v || null })}
             options={FOUNDATION_TYPES.map(f => ({ value: f, label: f }))} placeholder="Not set…" />
-          <TextField label="Section" value={plot.section} onChange={v => setPlot({ section: v })} />
-          <TextField label="Block" value={plot.block} onChange={v => setPlot({ block: v })} />
-          <TextField label="Lot" value={plot.lot} onChange={v => setPlot({ lot: v })} />
-          <TextField label="Grave #" value={plot.grave} onChange={v => setPlot({ grave: v })} />
-          <TextField label="Row / space" value={plot.row} onChange={v => setPlot({ row: v })} placeholder="Row or space" />
         </Grid>
+        {/* ONE free-text location line. Legacy orders show their composed old parts as
+            the placeholder; typing saves to grave_location (legacy parts untouched). */}
+        <TextField label="Grave location" value={plot.location || ''} onChange={v => setPlot({ location: v })}
+          placeholder={composeGraveLocation(order) || 'Type the location however the cemetery formats it…'} />
         <TextAreaField label="Plot notes" value={plot.pinNotes} onChange={v => setPlot({ pinNotes: v })}
           placeholder="Landmarks, access notes, sexton instructions…" rows={2} />
         <div className="of-maprow">

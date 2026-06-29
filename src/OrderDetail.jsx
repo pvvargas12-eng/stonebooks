@@ -560,8 +560,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const seedCgDraft = () => {
     const meta = order.permit_meta || {}
     setCgDraft({
-      plot_section: order.plot_section || '', plot_block: order.plot_block || '', plot_lot: order.plot_lot || '',
-      plot_grave: order.plot_grave || '', plot_type: order.plot_type || '',
+      grave_location: order.grave_location || '', plot_type: order.plot_type || '',
       plot_notes: [order.plot_pin_notes, order.plot_other].filter(Boolean).join(' · '),
       permit_status: order.permit_status || 'unknown',
       permit_required: order.permit_required === true,
@@ -580,10 +579,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const today = todayISO()
     const status = cgDraft.permit_status
     const patch = {
-      plot_section: cgDraft.plot_section || null,
-      plot_block: cgDraft.plot_block || null,
-      plot_lot: cgDraft.plot_lot || null,
-      plot_grave: cgDraft.plot_grave || null,
+      grave_location: cgDraft.grave_location || null,
       plot_type: cgDraft.plot_type || null,
       plot_other: cgDraft.plot_notes || null,
       permit_status: status,
@@ -1275,15 +1271,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   : [{ code: cgDraft.permit_status || 'unknown', label: permitStatusLabel(cgDraft.permit_status || 'unknown'), disabled: true }, ...PERMIT_STATUS_OPTIONS]
                 return (
                   <>
-                    <CqeRow cols={3}>
-                      <CqeText label="Section" value={cgDraft.plot_section} onChange={v => setCgDraft(d => ({ ...d, plot_section: v }))} />
-                      <CqeText label="Block" value={cgDraft.plot_block} onChange={v => setCgDraft(d => ({ ...d, plot_block: v }))} />
-                      <CqeText label="Lot" value={cgDraft.plot_lot} onChange={v => setCgDraft(d => ({ ...d, plot_lot: v }))} />
-                    </CqeRow>
-                    <CqeRow cols={2}>
-                      <CqeText label="Grave number" value={cgDraft.plot_grave} onChange={v => setCgDraft(d => ({ ...d, plot_grave: v }))} />
-                      <CqeText label="Grave type" value={cgDraft.plot_type} onChange={v => setCgDraft(d => ({ ...d, plot_type: v }))} />
-                    </CqeRow>
+                    {/* ONE free-text location line. A legacy order shows its composed
+                        old parts as the placeholder; typing saves to grave_location. */}
+                    <CqeText label="Grave location" value={cgDraft.grave_location} onChange={v => setCgDraft(d => ({ ...d, grave_location: v }))}
+                      placeholder={composeGraveLocation(order) || 'e.g. Sec … · Blk … · Lot …'} />
+                    <CqeText label="Grave type" value={cgDraft.plot_type} onChange={v => setCgDraft(d => ({ ...d, plot_type: v }))} />
                     <CqeArea label="Plot / location notes" value={cgDraft.plot_notes} onChange={v => setCgDraft(d => ({ ...d, plot_notes: v }))} />
 
                     <div className="sb-od-cqe-divider">Permit</div>
