@@ -2934,6 +2934,45 @@ export function orderTypeLabel(order, job) {
   return 'Order'
 }
 
+// Orders-tab category chips. ONE canonical category per order (no double-count
+// across multi-service orders) — mirrors orderTypeLabel's precedence.
+export const ORDER_CATEGORIES = [
+  { code: 'new_stone',       label: 'New stone' },
+  { code: 'bronze',          label: 'Bronze markers' },
+  { code: 'inscription',     label: 'Inscriptions' },
+  { code: 'cleaning_repair', label: 'Acid wash/repair' },
+  { code: 'mausoleum',       label: 'Mausoleum' },
+  { code: 'other',           label: 'Other' },
+]
+// Returns one of the ORDER_CATEGORIES codes. Precedence (single, deterministic):
+//   1. OTHER service → 'other'
+//   2. MAUSOLEUM or MAUSOLEUM_DOOR (crypt door) on service_types → 'mausoleum'
+//      — matched BEFORE job_type because the MAUSOLEUM service maps to job_type
+//        'new_stone' and would otherwise scatter into New stone.
+//   3. the linked job's job_type (single, clean)
+//   4. jobless lead → first service via the service→category map
+//   5. nothing resolves (bare draft) → 'other'
+const _SVC_TO_CATEGORY = {
+  NEW_STONE: 'new_stone', CIVIC_MEMORIAL: 'new_stone',
+  BRONZE: 'bronze', INSCRIPTION: 'inscription', ADD_PHOTO: 'inscription',
+  ACID_WASH: 'cleaning_repair', REPAIR: 'cleaning_repair',
+}
+const _JT_TO_CATEGORY = {
+  new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription',
+  cleaning_repair: 'cleaning_repair', mausoleum_door: 'mausoleum', other: 'other',
+}
+export function orderCategory(order, job) {
+  const o = order || {}
+  const svc = o.service_types ?? o.serviceTypes ?? []
+  const codes = (Array.isArray(svc) ? svc : []).map(s => String(s).toUpperCase())
+  if (codes.includes('OTHER')) return 'other'
+  if (codes.includes('MAUSOLEUM') || codes.includes('MAUSOLEUM_DOOR')) return 'mausoleum'
+  const jt = job?.job_type ?? job?.jobType ?? o._jobType ?? o.job_type ?? null
+  if (jt && _JT_TO_CATEGORY[jt]) return _JT_TO_CATEGORY[jt]
+  for (const c of codes) { if (_SVC_TO_CATEGORY[c]) return _SVC_TO_CATEGORY[c] }
+  return 'other'
+}
+
 // ── MAUSOLEUM DOOR PRICING ───────────────────────────────────────────────────
 // Hardcoded for now; migrate to a DB table when 3+ cemeteries are finalized.
 // Two pricing shapes:
