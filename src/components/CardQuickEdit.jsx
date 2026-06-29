@@ -138,4 +138,11 @@ const CQE_CSS = `
   .sb-cqe-btn:disabled { opacity: 0.5; cursor: default; }
   .sb-od-card-eyebrow-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
   .sb-od-card-action { flex-shrink: 0; margin-top: -2px; }
+  /* Quick-edit sub-section divider + permit-fee block (Cemetery & Grave panel). */
+  .sb-od-cqe-divider { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
+    color: #9A7209; border-top: 1px solid #ece8df; padding-top: 10px; margin-top: 4px; }
+  .sb-od-cqe-paid { display: flex; flex-direction: column; gap: 3px; }
+  .sb-od-cqe-paid-row { font-size: 12px; color: #15724a; background: #e7f6ee; border-radius: 6px; padding: 5px 8px; }
+  .sb-od-cqe-fee-btn { width: 100%; justify-content: center; margin-top: 2px; border-color: #c9a23a; color: #6a4d0c; background: #fdf6e7; }
+  .sb-od-cqe-fee-btn:hover:not(:disabled) { background: #f8edd3; }
 `
