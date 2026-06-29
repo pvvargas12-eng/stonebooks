@@ -298,6 +298,33 @@ export const DIE_TOP_TRADE = {
 }
 export const dimsFromWDT = (o) => [ftIn(o?.w), ftIn(o?.d), ftIn(o?.t)].filter(Boolean).join(' × ')
 
+// SINGLE SOURCE for the grave/plot LOCATION line. Prefers the one free-text field
+// (camel `order.plot.location` or raw `order.grave_location`); when that's empty,
+// falls back to composing the SEVEN legacy structured columns so existing orders
+// never go blank (read-fallback — no backfill). Accepts a RAW snake_case row OR a
+// camelCase order (reads both shapes). Used by the card, glance strip, contract/
+// estimate PDF, and the design packet so every surface shows ONE consistent line.
+// NOT included here: plot_type, foundation_type, plot_lat/lng, plot notes.
+export function composeGraveLocation(order) {
+  if (!order) return ''
+  const p = order.plot || {}
+  const single = String(order.grave_location ?? p.location ?? '').trim()
+  if (single) return single
+  const get = (col, key) => {
+    const v = order[col] ?? p[key]
+    return v == null ? '' : String(v).trim()
+  }
+  return [
+    get('plot_section', 'section') && `Sec ${get('plot_section', 'section')}`,
+    get('plot_block', 'block') && `Blk ${get('plot_block', 'block')}`,
+    get('plot_lot', 'lot') && `Lot ${get('plot_lot', 'lot')}`,
+    get('plot_row', 'row') && `Row ${get('plot_row', 'row')}`,
+    get('plot_space', 'space') && `Space ${get('plot_space', 'space')}`,
+    get('plot_grave', 'grave') && `Grave ${get('plot_grave', 'grave')}`,
+    get('plot_level', 'level') && `Level ${get('plot_level', 'level')}`,
+  ].filter(Boolean).join(' · ')
+}
+
 // SINGLE SOURCE for "which three columns are a die's L × W × H" from a RAW DB
 // order row (snake_case columns). A die is ALWAYS three values:
 //   L = width_inches, W (front-to-back) = depth_inches ?? thickness_inches

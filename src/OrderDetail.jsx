@@ -37,7 +37,7 @@ import {
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
 } from './lib/stonebooksData'
 import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeCheck, CqeRow, CqeNote } from './components/CardQuickEdit'
-import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, buildDieSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
+import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, buildDieSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
 import { MonumentCard, OF_CSS } from './OrderForm'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
@@ -969,12 +969,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const referral = [humanize(cust.referral_source), cust.referral_source_detail].filter(Boolean).join(' — ')
 
   // Quick-glance values (the three things to read the instant the order opens).
-  const plotShort = [
-    order.plot_section && `Sec ${order.plot_section}`,
-    order.plot_block && `Blk ${order.plot_block}`,
-    order.plot_lot && `Lot ${order.plot_lot}`,
-    order.plot_grave && `Grave ${order.plot_grave}`,
-  ].filter(Boolean).join(' · ')
+  const plotShort = composeGraveLocation(order)
   const orderType = orderTypeLabel(order, job)
   // #4 — service orders shouldn't render an empty Monument card; label + scope it.
   const svcTypes = order.service_types || []
@@ -1330,9 +1325,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           }>
             <Field label="Cemetery" value={cem.name} />
             <Field label="Address" value={cemAddr.length ? cemAddr.map((l, i) => <div key={i}>{l}</div>) : null} />
-            <Field label="Section / Block / Lot" value={[order.plot_section, order.plot_block, order.plot_lot].some(Boolean)
-              ? [order.plot_section && `Sec ${order.plot_section}`, order.plot_block && `Blk ${order.plot_block}`, order.plot_lot && `Lot ${order.plot_lot}`].filter(Boolean).join(' · ') : null} />
-            <Field label="Grave number" value={order.plot_grave} />
+            <Field label="Grave location" value={composeGraveLocation(order) || null} />
             <Field label="Grave type" value={humanize(order.plot_type)} hint={order.plot_type ? null : 'from plot_type'} />
             <Field label="Plot / location notes" value={[order.plot_pin_notes, order.plot_other].filter(Boolean).join(' · ')} />
             <Field label="Cemetery requirements" value={cem.notes} />

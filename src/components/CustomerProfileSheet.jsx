@@ -38,8 +38,8 @@ function plotChecks(order) {
   const type = (order?.plot_type || '').toLowerCase()
   // "Map on back" — checked when the order carries specific plot-location detail
   // (the cemetery map gets sketched on the back of the form for those).
-  const hasMapDetail = !!(order?.plot_section || order?.plot_block || order?.plot_lot ||
-    order?.plot_grave || order?.plot_space || order?.plot_lat)
+  const hasMapDetail = !!(order?.grave_location || order?.plot_section || order?.plot_block ||
+    order?.plot_lot || order?.plot_grave || order?.plot_space || order?.plot_lat)
   return [
     { label: 'Single',      on: type === 'single' },
     { label: 'Double',      on: type === 'double' },

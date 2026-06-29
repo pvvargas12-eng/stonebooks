@@ -61,7 +61,7 @@ import {
   addJobEvent,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
-import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, displayGraniteColor, SHAPES } from './lib/monumentCatalog'
+import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
 import RevisionThread from './components/RevisionThread'
 
 // ============================================================================
@@ -833,20 +833,9 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   // legacy rows occasionally have leading/trailing whitespace from
   // bulk imports or paste-overs; a whitespace-only field would render
   // as "Section   " without it.
-  const _plotPart = (raw, prefix) => {
-    if (raw == null) return null
-    const v = String(raw).trim()
-    return v ? `${prefix} ${v}` : null
-  }
-  const plotPositional = [
-    _plotPart(order.plot_section, 'Section'),
-    _plotPart(order.plot_block,   'Block'),
-    _plotPart(order.plot_lot,     'Lot'),
-    _plotPart(order.plot_row,     'Row'),
-    _plotPart(order.plot_space,   'Space'),
-    _plotPart(order.plot_grave,   'Grave'),
-    _plotPart(order.plot_level,   'Level'),
-  ].filter(Boolean).join(' · ') || null
+  // ONE location line via the shared helper (free-text grave_location, else compose
+  // the legacy parts — read-fallback so existing orders never go blank).
+  const plotPositional = composeGraveLocation(order) || null
 
   // Phase 2A.3 Fix 1 — Font row removed. When inscription.customFont is
   // set and has a non-default description, prepend it to special

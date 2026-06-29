@@ -23,7 +23,7 @@ import { supabase } from './lib/supabase'
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
   POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, dieSize3, dieTopLabel,
-  buildDieSpec, buildBaseSpec, displayGraniteColor, nearestFittingBaseSize,
+  buildDieSpec, buildBaseSpec, displayGraniteColor, nearestFittingBaseSize, composeGraveLocation,
 } from './lib/monumentCatalog'
 import BaseSection from './components/BaseSection'
 import DieOverrideField from './components/DieOverrideField'
@@ -1148,6 +1148,10 @@ export function makeBlankOrder() {
     },
     plot: {
       type: '',          // single / double / sxs / dd / family
+      location: '',      // ONE free-text grave/plot location line (the cemetery's own format)
+      // Legacy structured parts — no longer edited (composeGraveLocation reads them
+      // as a fallback for orders saved before the free-text field). Kept so nothing
+      // already stored goes blank.
       section: '',
       block: '',
       lot: '',
@@ -1777,6 +1781,8 @@ function orderToRow(order) {
     foundation_type: order.foundationType || null,
 
     plot_type: order.plot.type || null,
+    grave_location: order.plot.location || null,   // ONE free-text location line
+    // Legacy structured parts written back unchanged (round-trip safe; not edited).
     plot_section: order.plot.section || null,
     plot_block: order.plot.block || null,
     plot_lot: order.plot.lot || null,
@@ -1943,6 +1949,7 @@ export function rowToOrder(row, customerRow, cemeteryRow) {
 
     plot: {
       type: row.plot_type || '',
+      location: row.grave_location || '',   // ONE free-text location line (fallback composes the legacy parts below)
       section: row.plot_section || '',
       block: row.plot_block || '',
       lot: row.plot_lot || '',
@@ -7341,18 +7348,10 @@ export async function generateEstimatePDF(order, opts = {}) {
     const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
     // Only the SELECTED grave type prints (plain text); nothing if none set.
     const graveLabel = graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null
-    // #1 — plot details: one compact line, only the filled fields. Nothing prints
-    // if no plot fields are set (no empty labels, no blank row).
-    const p = order.plot || {}
-    const plotParts = []
-    if (p.section) plotParts.push(`Section ${p.section}`)
-    if (p.block)   plotParts.push(`Block ${p.block}`)
-    if (p.lot)     plotParts.push(`Lot ${p.lot}`)
-    if (p.row)     plotParts.push(`Row ${p.row}`)
-    if (p.space)   plotParts.push(`Space ${p.space}`)
-    if (p.grave)   plotParts.push(`Grave ${p.grave}`)
-    if (p.level)   plotParts.push(`Level ${p.level}`)
-    const plotLine = plotParts.length ? plotParts.join(' · ') : null
+    // #1 — plot details: ONE compact location line. Prefers the free-text
+    // grave_location; falls back to composing the legacy parts (read-fallback) so
+    // existing orders never go blank. Nothing prints if there's no location at all.
+    const plotLine = composeGraveLocation(order) || null
     doc.setFontSize(9)
     const plotWrapped = plotLine ? doc.splitTextToSize(plotLine, colW - 2 * padX) : []
     const hasFoundation = !!order.foundationType
@@ -8231,18 +8230,9 @@ export async function generateApprovalSheetPDF(proofVersion, opts = {}) {
   const leftX = M
   const rightX = M + colW + 2
   const labelW = 23
-  // Plot line (Phase 2) — reuse the contract's plot logic; read snake-row OR
-  // nested `plot`, only filled fields. Appended under the cemetery name.
-  const pget = (snake, nested) => liveOrder?.[snake] || liveOrder?.plot?.[nested]
-  const plotParts = []
-  if (pget('plot_section', 'section')) plotParts.push(`Section ${pget('plot_section', 'section')}`)
-  if (pget('plot_block', 'block'))     plotParts.push(`Block ${pget('plot_block', 'block')}`)
-  if (pget('plot_lot', 'lot'))         plotParts.push(`Lot ${pget('plot_lot', 'lot')}`)
-  if (pget('plot_row', 'row'))         plotParts.push(`Row ${pget('plot_row', 'row')}`)
-  if (pget('plot_space', 'space'))     plotParts.push(`Space ${pget('plot_space', 'space')}`)
-  if (pget('plot_grave', 'grave'))     plotParts.push(`Grave ${pget('plot_grave', 'grave')}`)
-  if (pget('plot_level', 'level'))     plotParts.push(`Level ${pget('plot_level', 'level')}`)
-  const plotLine = plotParts.length ? plotParts.join(' · ') : null
+  // Plot line — ONE location line via the shared helper (free-text grave_location,
+  // else compose the legacy parts). Reads snake-row OR nested `plot`. Under the name.
+  const plotLine = composeGraveLocation(liveOrder) || null
   const cemeteryCell = [cemeteryName, plotLine].filter(Boolean).join('\n') || '—'
 
   // Per-service packet content (Phase 2). Service work (acid/repair) gets NO
