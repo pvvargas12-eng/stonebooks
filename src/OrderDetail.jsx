@@ -239,6 +239,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [designNotesDraft, setDesignNotesDraft] = useState('')   // internal design notes (current proof)
   const [emailLinkBusy, setEmailLinkBusy] = useState(false)
   const [emailLinkMsg, setEmailLinkMsg] = useState(null)
+  const [payDraft, setPayDraft] = useState(null)        // quick add-payment (Financial card ⋯)
   // Activity log (#4)
   const [activity, setActivity] = useState([])
   const [actNote, setActNote] = useState('')
@@ -714,6 +715,35 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const staff = await getCurrentStaffName()
     logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'emailed', note: `Approval link emailed to ${cust.email}`, actor: staff }).then(() => refreshActivity()).catch(() => {})
     if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: `Approval link emailed to ${cust.email}`, createdBy: staff }).catch(() => {})
+  }
+
+  // ── Financial quick add-payment (Financial card ⋯) ──────────────────────────
+  // A CUSTOMER payment — written to orders.payments[] via recordOrderPayment (the
+  // SAME source the Payments tab uses), so it two-way-syncs automatically and DOES
+  // reduce the balance. Completely separate from the permit OUTGOING expense.
+  const seedPayDraft = async () => {
+    const me = await getCurrentStaffName()
+    setPayDraft({
+      amount: balance > 0 ? String(balance) : '',
+      method: 'check', type: rawPayments.length === 0 ? 'deposit' : 'final',
+      receivedAt: todayISO(), ref: '', collectedBy: me || '',
+    })
+  }
+  const savePaymentQuick = async () => {
+    if (!payDraft) return { ok: false, error: 'Nothing to record.' }
+    const amount = Number(payDraft.amount)
+    if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'Enter an amount greater than zero.' }
+    const createdBy = payDraft.collectedBy || await getCurrentStaffName()
+    const res = await recordOrderPayment(orderId, {
+      amount, method: payDraft.method, type: payDraft.type,
+      receivedAt: payDraft.receivedAt, ref: (payDraft.ref || '').trim() || null, createdBy,
+    })
+    if (!res.ok) return { ok: false, error: res.error || 'Could not record the payment.' }
+    if (res.payment) setLastReceiptPayment(res.payment)   // post-save receipt offer
+    await refreshOrder()
+    logOrderActivity(orderId, { type: 'activity', note: `Payment recorded: ${fmtUSD(amount)}${payDraft.method ? ` (${payDraft.method})` : ''}`, actor: createdBy }).then(() => refreshActivity()).catch(() => {})
+    if (job?.id) addJobEvent(job.id, { eventType: 'customer_payment_recorded', note: `Customer payment ${fmtUSD(amount)} (${payDraft.method})`, payload: { amount, method: payDraft.method }, createdBy }).catch(() => {})
+    return { ok: true }
   }
 
   // (Permit editing consolidated into the Cemetery & grave ⋯ quick-edit — see
@@ -1433,7 +1463,25 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 4 — Financial */}
-          <Section id="od-financial" title="Financial">
+          <Section id="od-financial" title="Financial" headerAction={
+            <CardQuickEdit title="Add a Customer Payment" onOpen={seedPayDraft} onSave={savePaymentQuick} width={320} saveLabel="Record payment">
+              {payDraft && (
+                <>
+                  <CqeNote>A <strong>customer</strong> payment — reduces the balance and syncs with the Payments tab. (Permit fees are recorded separately as an outgoing expense and never appear here.)</CqeNote>
+                  <CqeRow cols={2}>
+                    <CqeText label="Amount" type="number" value={payDraft.amount} onChange={v => setPayDraft(d => ({ ...d, amount: v }))} placeholder="0.00" />
+                    <CqeSelect label="Method" value={payDraft.method} options={PAY_METHODS} onChange={v => setPayDraft(d => ({ ...d, method: v }))} />
+                  </CqeRow>
+                  <CqeRow cols={2}>
+                    <CqeSelect label="Type" value={payDraft.type} options={PAY_TYPES} onChange={v => setPayDraft(d => ({ ...d, type: v }))} />
+                    <CqeDate label="Received" value={payDraft.receivedAt} onChange={v => setPayDraft(d => ({ ...d, receivedAt: v }))} />
+                  </CqeRow>
+                  <CqeText label="Check # / reference" value={payDraft.ref} onChange={v => setPayDraft(d => ({ ...d, ref: v }))} />
+                  <CqeNote>Balance after: <strong>{fmtUSD(Math.max(0, balance - (Number(payDraft.amount) || 0)))}</strong></CqeNote>
+                </>
+              )}
+            </CardQuickEdit>
+          }>
             <Field label="Contract total" value={total > 0 ? fmtUSD(total) : null} />
             <Field label="Collected" value={fmtUSD(paid)} />
             <Field label="Balance due" value={fmtUSD(balance)} />
