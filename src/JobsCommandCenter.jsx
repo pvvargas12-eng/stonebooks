@@ -98,6 +98,12 @@ export default function JobsCommandCenter({ onOpenJob }) {
     { key: 'blocked', label: 'Blocked', tone: 'amber', value: pressure.amber.length, sub: 'amber — waiting / stalled' },
   ]), [hubData, pressure])
 
+  // Alert panels — the at-a-glance red/amber lists (always visible).
+  const alertRows = useMemo(() => ({
+    red: pressure.red.map(toRow),
+    amber: pressure.amber.map(toRow),
+  }), [pressure])
+
   // The list below reflects the selected card.
   const listRows = useMemo(() => {
     if (!jobs) return []
@@ -143,6 +149,14 @@ export default function JobsCommandCenter({ onOpenJob }) {
         ))}
       </div>
 
+      {/* ALERT PANELS — red/amber pressure at a glance */}
+      <div className="jobcc-grid">
+        <AlertPanel title="Overdue" tone="red" rows={alertRows.red} loading={loading} onOpenJob={onOpenJob}
+          empty="✓ Nothing overdue — no red blockers." />
+        <AlertPanel title="Blocked / Waiting" tone="amber" rows={alertRows.amber} loading={loading} onOpenJob={onOpenJob}
+          empty="✓ Nothing blocked — no amber holds." />
+      </div>
+
       {/* JOB LIST — reflects the selected card */}
       <section className="jobcc-panel">
         <div className="jobcc-panel-head">
@@ -169,6 +183,36 @@ export default function JobsCommandCenter({ onOpenJob }) {
         )}
       </section>
     </div>
+  )
+}
+
+function AlertPanel({ title, tone, rows, loading, onOpenJob, empty }) {
+  const shown = rows.slice(0, 8)
+  return (
+    <section className="jobcc-panel">
+      <div className="jobcc-panel-head">
+        <span className="jobcc-panel-title">{title}</span>
+        <span className={`jobcc-panel-count jobcc-c-${tone}`}>{loading ? '—' : rows.length}</span>
+      </div>
+      {loading ? (
+        <div className="jobcc-empty">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="jobcc-empty jobcc-empty-ok">{empty}</div>
+      ) : (
+        <div className="jobcc-alerts">
+          {shown.map(r => (
+            <button type="button" key={r.jobId} className={`jobcc-alert jobcc-alert-${tone}`} onClick={() => onOpenJob?.(r.jobId)}>
+              <div className="jobcc-alert-top">
+                <span className="jobcc-alert-fam">{r.family}</span>
+                {r.blocker && <span className={`jobcc-tag jobcc-tag-${tone}`}>{r.blocker.label}</span>}
+              </div>
+              <div className="jobcc-alert-spec">{r.stage}{r.orderNumber || r.cemetery ? ` · ${[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}` : ''}</div>
+            </button>
+          ))}
+          {rows.length > 8 && <div className="jobcc-more">+{rows.length - 8} more</div>}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -202,6 +246,18 @@ const JOBCC_CSS = `
   .jobcc-kpi-amber  { border-left-color: #fbbf24; }
   .jobcc-kpi-red    { border-left-color: #f87171; }
   .jobcc-kpi-purple { border-left-color: #a78bfa; }
+
+  .jobcc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 1000px) { .jobcc-grid { grid-template-columns: 1fr; } }
+  .jobcc-c-red { color: #f87171; } .jobcc-c-amber { color: #fbbf24; }
+  .jobcc-alerts { display: flex; flex-direction: column; gap: 9px; }
+  .jobcc-alert { text-align: left; font: inherit; cursor: pointer; width: 100%; background: #151a22; border: 1px solid #232a35; border-radius: 9px; padding: 10px 12px; color: #e6e9ef; }
+  .jobcc-alert:hover { background: #1a212b; }
+  .jobcc-alert-red { border-color: #5c2a2a; background: #1c1416; }
+  .jobcc-alert-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .jobcc-alert-fam { font-size: 14px; font-weight: 700; color: #f4f6fa; }
+  .jobcc-alert-spec { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #c7cedb; }
+  .jobcc-more { font-size: 11.5px; color: #6f7a8a; padding: 2px 2px 0; }
 
   .jobcc-panel { background: #11151c; border: 1px solid #20262f; border-radius: 12px; padding: 15px 17px; margin-bottom: 16px; }
   .jobcc-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
