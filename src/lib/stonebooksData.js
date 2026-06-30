@@ -2948,12 +2948,15 @@ export function orderTypeLabel(order, job) {
     const desc = String(o.other_service_description ?? o.otherServiceDescription ?? '').trim()
     return desc ? `Other — ${desc}` : 'Other'
   }
-  // (b) a linked job with a real job_type.
-  const jt = job?.job_type ?? job?.jobType ?? o._jobType ?? o.job_type ?? null
-  if (jt) return _JOB_TYPE_LABEL[jt] || _humanizeType(jt)
-  // (c) service-type-direct mapping.
+  // (b) service_types is the EDITABLE source of truth (SalesMode Step 1) — prefer it
+  // so the label always reflects what the operator selected. Promoted above job_type:
+  // job_type is frozen at createJobFromOrder and never re-synced, so following it made
+  // a service-type edit on a contracted order appear to do nothing (the desync bug).
   for (const c of codes) { if (_SERVICE_TYPE_LABEL[c]) return _SERVICE_TYPE_LABEL[c] }
   if (codes.length) return _humanizeType(codes[0])
+  // (c) FALLBACK only when service_types is empty/absent: a linked job's job_type.
+  const jt = job?.job_type ?? job?.jobType ?? o._jobType ?? o.job_type ?? null
+  if (jt) return _JOB_TYPE_LABEL[jt] || _humanizeType(jt)
   // (d)
   return 'Order'
 }
