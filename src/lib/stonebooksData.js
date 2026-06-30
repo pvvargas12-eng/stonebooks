@@ -8,6 +8,7 @@
 import { supabase } from './supabase'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal } from './pricingCore'
+import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec } from './jobComponents'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
 export const NJ_TAX_RATE = 0.06625
@@ -3332,7 +3333,102 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // applyDepositMilestones, so a no-deposit signing is unaffected. Best-effort.
   try { await applyDepositMilestones(orderId) } catch (e) { console.warn('[A6] applyDepositMilestones (job create):', e?.message) }
 
+  // PART 2 B1 — seed per-component production rows for the new job (best-effort;
+  // a seed miss must never fail job creation). No-op for non-production-track orders.
+  try { await seedComponentsForOrder(orderId, job) } catch (e) { console.warn('[components] seed (job create):', e?.message) }
+
   return { ok: true, job, alreadyExisted: false }
+}
+
+// ── PART 2 B1 — per-component production seeding (job_components) ──────────────
+// Idempotent: only the missing (component_type, sort_order) rows are inserted, so
+// re-running is safe (e.g. after the reconciliation closes the phantom jobs). The
+// existing orderCategory classifier picks the track — no second classifier. Phases
+// are the shop's own enums; this writes ONLY components, never milestones (B3 does
+// the one-way rollup).
+const _COMP_TENANT = 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
+
+export async function seedComponentsForOrder(orderId, job = null) {
+  if (!orderId) return { ok: false, error: 'No orderId' }
+  const { data: row, error } = await supabase.from('orders').select('*').eq('id', orderId).single()
+  if (error || !row) return { ok: false, error: error?.message || 'Order not found' }
+  const category = orderCategory(row, job)
+  const comps = componentsForOrder(camelOrderForSpec(row), category)
+  // Link job_id onto any pre-existing components now that a job exists.
+  if (job?.id) {
+    await supabase.from('job_components').update({ job_id: job.id }).eq('order_id', orderId).is('job_id', null)
+  }
+  if (!comps.length) return { ok: true, seeded: 0 }   // not a production-floor track
+  const { data: existing } = await supabase.from('job_components').select('component_type, sort_order').eq('order_id', orderId)
+  const have = new Set((existing || []).map(c => `${c.component_type}|${c.sort_order}`))
+  const now = new Date().toISOString()
+  const toInsert = comps
+    .filter(c => !have.has(`${c.component_type}|${c.sort_order}`))
+    .map(c => ({ tenant_id: row.tenant_id || _COMP_TENANT, order_id: orderId, job_id: job?.id || null,
+      track: c.track, component_type: c.component_type, label: c.label, size: c.size, color: c.color,
+      current_phase: c.current_phase, sort_order: c.sort_order, phase_changed_at: now }))
+  if (!toInsert.length) return { ok: true, seeded: 0, track: comps[0].track }
+  const { error: insErr } = await supabase.from('job_components').insert(toInsert)
+  if (insErr) return { ok: false, error: insErr.message }
+  return { ok: true, seeded: toInsert.length, track: comps[0].track }
+}
+
+export async function seedComponentsForCemeteryOrder(cemeteryOrderId) {
+  if (!cemeteryOrderId) return { ok: false, error: 'No cemeteryOrderId' }
+  const { data: co, error } = await supabase.from('cemetery_orders').select('*').eq('id', cemeteryOrderId).single()
+  if (error || !co) return { ok: false, error: error?.message || 'Cemetery order not found' }
+  const comps = componentsForCemeteryOrder(co)
+  if (!comps.length) return { ok: true, seeded: 0 }
+  const { data: existing } = await supabase.from('job_components').select('component_type, sort_order').eq('cemetery_order_id', cemeteryOrderId)
+  const have = new Set((existing || []).map(c => `${c.component_type}|${c.sort_order}`))
+  // Door components link to their per-door job (jobs.cemetery_order_id + door_index).
+  const { data: doorJobs } = await supabase.from('jobs').select('id, door_index').eq('cemetery_order_id', cemeteryOrderId)
+  const jobByDoor = new Map((doorJobs || []).map(j => [j.door_index, j.id]))
+  const now = new Date().toISOString()
+  const toInsert = comps
+    .filter(c => !have.has(`${c.component_type}|${c.sort_order}`))
+    .map(c => ({ tenant_id: co.tenant_id || _COMP_TENANT, cemetery_order_id: cemeteryOrderId, job_id: jobByDoor.get(c.sort_order) || null,
+      track: c.track, component_type: c.component_type, label: c.label, size: c.size, color: c.color,
+      current_phase: c.current_phase, sort_order: c.sort_order, phase_changed_at: now }))
+  if (!toInsert.length) return { ok: true, seeded: 0 }
+  const { error: insErr } = await supabase.from('job_components').insert(toInsert)
+  if (insErr) return { ok: false, error: insErr.message }
+  return { ok: true, seeded: toInsert.length }
+}
+
+// Read components for a parent (order / cemetery_order / job).
+export async function getJobComponents({ orderId, cemeteryOrderId, jobId } = {}) {
+  let q = supabase.from('job_components').select('*')
+  if (orderId) q = q.eq('order_id', orderId)
+  if (cemeteryOrderId) q = q.eq('cemetery_order_id', cemeteryOrderId)
+  if (jobId) q = q.eq('job_id', jobId)
+  const { data, error } = await q.order('track', { ascending: true }).order('sort_order', { ascending: true })
+  if (error) { console.warn('[components] get:', error.message); return [] }
+  return data || []
+}
+
+// One-shot backfill — seeds components for every ACTIVE job (order-based + cemetery
+// door jobs). Idempotent + re-runnable: safe to run again after the reconciliation
+// closes the phantom jobs (their components simply drop off the active floor; nothing
+// is deleted). Non-production-track jobs (bronze / cleaning_repair / other) seed 0.
+export async function backfillJobComponents() {
+  const counts = { components: 0, new_stone: 0, inscription: 0, door: 0, ordersSeeded: 0, cemeteryOrdersSeeded: 0, skipped: 0, errors: 0 }
+  const { data: jobs } = await supabase.from('jobs')
+    .select('id, order_id, cemetery_order_id, overall_status')
+    .neq('overall_status', 'closed').neq('overall_status', 'cancelled')
+  for (const j of (jobs || []).filter(j => j.order_id)) {
+    const r = await seedComponentsForOrder(j.order_id, j)
+    if (!r.ok) { counts.errors++; continue }
+    if (r.seeded) { counts.components += r.seeded; counts.ordersSeeded++; if (r.track) counts[r.track] += r.seeded }
+    else counts.skipped++
+  }
+  const cemIds = [...new Set((jobs || []).filter(j => j.cemetery_order_id).map(j => j.cemetery_order_id))]
+  for (const coId of cemIds) {
+    const r = await seedComponentsForCemeteryOrder(coId)
+    if (!r.ok) { counts.errors++; continue }
+    if (r.seeded) { counts.components += r.seeded; counts.door += r.seeded; counts.cemeteryOrdersSeeded++ }
+  }
+  return counts
 }
 
 // New Order form — the ordered milestone list for a set of service types, so
@@ -4713,6 +4809,9 @@ export async function createJobsFromCemeteryOrder(cemeteryOrderId) {
   }
   const { error: updErr } = await supabase.from('cemetery_orders').update(patch).eq('id', co.id)
   if (updErr) return { ok: false, error: `Jobs created but order update failed: ${updErr.message}` }
+
+  // PART 2 B1 — seed one door component per door (best-effort; non-fatal).
+  try { await seedComponentsForCemeteryOrder(cemeteryOrderId) } catch (e) { console.warn('[components] seed (cemetery order):', e?.message) }
 
   return { ok: true, jobs: created, orderNumber: patch.order_number || co.order_number }
 }

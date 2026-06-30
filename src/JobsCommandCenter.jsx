@@ -12,7 +12,7 @@
 // reconciliation closes the phantom orders. That drop is expected and correct.
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getJobs, computeOrderPressure } from './lib/stonebooksData'
+import { getJobs, computeOrderPressure, backfillJobComponents } from './lib/stonebooksData'
 import { currentStage } from './lib/jobsRowHelpers'
 
 const REFRESH_MS = 30000
@@ -48,6 +48,8 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
   const [todayMs, setTodayMs] = useState(0)
   const [activeKpi, setActiveKpi] = useState(isProductionView ? 'in_production' : 'overdue')
   const [monitor, setMonitor] = useState(false)
+  const [seedBusy, setSeedBusy] = useState(false)
+  const [seedResult, setSeedResult] = useState(null)   // B1 one-shot backfill result
   const reqRef = useRef(0)
 
   const load = useCallback(async () => {
@@ -163,6 +165,20 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
           ))}
         </div>
         <div className="jobcc-floor-note">⚙ Production tracking coming online — per-component assembly board with one-click advance, QC gate, and bottleneck detection (Part 2).</div>
+        <div className="jobcc-floor-seed">
+          <button type="button" className="jobcc-btn" disabled={seedBusy} onClick={async () => {
+            setSeedBusy(true); setSeedResult(null)
+            try { setSeedResult(await backfillJobComponents()) }
+            catch (e) { setSeedResult({ error: e?.message || 'Seed failed' }) }
+            setSeedBusy(false)
+          }}>{seedBusy ? 'Seeding…' : 'Seed components (one-shot)'}</button>
+          {seedResult && (
+            <span className="jobcc-floor-seed-result">
+              {seedResult.error ? `⚠ ${seedResult.error}`
+                : `✓ ${seedResult.components} components · ${seedResult.new_stone} new-stone · ${seedResult.inscription} inscription · ${seedResult.door} door · ${seedResult.skipped} non-track · ${seedResult.errors} errors`}
+            </span>
+          )}
+        </div>
       </div>
     </section>
   )
@@ -357,6 +373,8 @@ const JOBCC_CSS = `
   .jobcc-floor-track { background: #151a22; border: 1px dashed #2a3340; border-radius: 9px; padding: 18px 12px; text-align: center; }
   .jobcc-floor-track-l { font-size: 13px; font-weight: 700; color: #8b95a5; text-transform: uppercase; letter-spacing: 0.04em; }
   .jobcc-floor-note { font-size: 12.5px; color: #6f7a8a; }
+  .jobcc-floor-seed { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .jobcc-floor-seed-result { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #34d399; }
 
   .jobcc-rows { display: flex; flex-direction: column; }
   .jobcc-row { text-align: left; font: inherit; cursor: pointer; display: grid; grid-template-columns: 1.4fr 1fr auto 1.3fr; gap: 12px; align-items: center;
