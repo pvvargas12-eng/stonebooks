@@ -33,8 +33,9 @@ const permitContext = (c) => {
 }
 
 // ── Dashboard funnel ─────────────────────────────────────────────────────────
-export function ThreeTrackFunnel({ onOpenBoard }) {
+export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
   const [components, setComponents] = useState(null)
+  const [open, setOpen] = useState(null)   // `${track}|${phase}` expanded
   useEffect(() => {
     let alive = true
     getProductionComponents().then(d => { if (alive) setComponents(d || []) })
@@ -54,21 +55,40 @@ export function ThreeTrackFunnel({ onOpenBoard }) {
           const bottleneckIdx = counts.indexOf(Math.max(...counts))
           const hasWork = inTrack.length > 0
           return (
-            <div key={track} className="pf-funnel-track" role="button" tabIndex={0}
-              onClick={() => onOpenBoard?.()} onKeyDown={(e) => { if (e.key === 'Enter') onOpenBoard?.() }}>
-              <div className="pf-funnel-head"><span className="pf-funnel-label">{TRACK_LABEL[track]}</span><span className="pf-funnel-total">{loading ? '—' : inTrack.length}</span></div>
-              {phases.map((p, i) => (
-                <div key={p} className={`pf-funnel-row ${hasWork && i === bottleneckIdx && counts[i] > 0 ? 'pf-funnel-bottleneck' : ''}`}>
-                  <span className="pf-funnel-pl">{phaseLabel(p)}</span>
-                  <span className="pf-funnel-bar"><span className="pf-funnel-fill" style={{ width: `${(counts[i] / max) * 100}%` }} /></span>
-                  <span className="pf-funnel-n">{loading ? '' : counts[i]}</span>
-                </div>
-              ))}
+            <div key={track} className="pf-funnel-track">
+              <div className="pf-funnel-head">
+                <span className="pf-funnel-label">{TRACK_LABEL[track]}</span>
+                <span className="pf-funnel-total">{loading ? '—' : inTrack.length}</span>
+              </div>
+              {phases.map((p, i) => {
+                const key = `${track}|${p}`
+                const isOpen = open === key
+                const cards = inTrack.filter(c => c.current_phase === p)
+                return (
+                  <div key={p}>
+                    <button type="button" className={`pf-funnel-row ${hasWork && i === bottleneckIdx && counts[i] > 0 ? 'pf-funnel-bottleneck' : ''} ${isOpen ? 'pf-funnel-row-open' : ''}`}
+                      disabled={counts[i] === 0} onClick={() => setOpen(isOpen ? null : key)}>
+                      <span className="pf-funnel-pl">{phaseLabel(p)}</span>
+                      <span className="pf-funnel-bar"><span className="pf-funnel-fill" style={{ width: `${(counts[i] / max) * 100}%` }} /></span>
+                      <span className="pf-funnel-n">{loading ? '' : counts[i]}</span>
+                    </button>
+                    {isOpen && cards.length > 0 && (
+                      <div className="pf-funnel-detail">
+                        {cards.map(c => (
+                          <button type="button" key={c.id} className="pf-funnel-card" onClick={() => c.job_id ? onOpenJob?.(c.job_id) : onOpenBoard?.()}>
+                            {famOf(c)} · {TYPE_LABEL[c.component_type] || c.label}{orderNoOf(c) ? ` · ${orderNoOf(c)}` : ''}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )
         })}
       </div>
-      <div className="pf-funnel-note">Longest bar = each track's bottleneck. Open the Production tab for the full board.</div>
+      <div className="pf-funnel-note">Longest bar = each track's bottleneck. Click a phase to see its pieces · <button type="button" className="pf-funnel-link" onClick={() => onOpenBoard?.()}>open full board →</button></div>
     </div>
   )
 }
@@ -347,14 +367,22 @@ const PF_CSS = `
   .pf-funnel-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
   .pf-funnel-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #c7cedb; }
   .pf-funnel-total { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 16px; font-weight: 700; color: #f4f6fa; }
-  .pf-funnel-row { display: grid; grid-template-columns: 92px 1fr 22px; gap: 6px; align-items: center; padding: 1.5px 0; }
+  .pf-funnel-row { width: 100%; font: inherit; background: none; border: 1px solid transparent; border-radius: 6px; display: grid; grid-template-columns: 92px 1fr 22px; gap: 6px; align-items: center; padding: 3px 4px; cursor: pointer; text-align: left; }
+  .pf-funnel-row:hover:not(:disabled) { background: #1a212b; }
+  .pf-funnel-row:disabled { cursor: default; opacity: 0.7; }
+  .pf-funnel-row-open { background: #1a2230; border-color: #3a4452; }
   .pf-funnel-pl { font-size: 10px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pf-funnel-bar { height: 9px; background: #0E1116; border-radius: 5px; overflow: hidden; }
   .pf-funnel-fill { display: block; height: 100%; background: #3a4452; border-radius: 5px; }
   .pf-funnel-bottleneck .pf-funnel-fill { background: #fbbf24; }
   .pf-funnel-bottleneck .pf-funnel-pl { color: #fbbf24; }
   .pf-funnel-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #c7cedb; text-align: right; }
+  .pf-funnel-detail { display: flex; flex-direction: column; gap: 3px; padding: 4px 4px 6px 8px; }
+  .pf-funnel-card { font: inherit; font-size: 11px; text-align: left; background: #0E1116; border: 1px solid #232a35; border-radius: 6px; padding: 4px 8px; color: #c7cedb; cursor: pointer; }
+  .pf-funnel-card:hover { background: #151b24; color: #f4f6fa; }
   .pf-funnel-note { font-size: 11.5px; color: #6f7a8a; }
+  .pf-funnel-link { font: inherit; font-size: 11.5px; background: none; border: none; color: #8b95a5; cursor: pointer; text-decoration: underline; padding: 0; }
+  .pf-funnel-link:hover { color: #f4f6fa; }
 
   .pf-board-track { margin-bottom: 22px; }
   .pf-board-track-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }

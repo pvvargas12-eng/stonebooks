@@ -51,6 +51,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
   const [monitor, setMonitor] = useState(false)
   const [seedBusy, setSeedBusy] = useState(false)
   const [seedResult, setSeedResult] = useState(null)   // B1 one-shot backfill result
+  const [agingExpanded, setAgingExpanded] = useState(false)
   const reqRef = useRef(0)
 
   const load = useCallback(async () => {
@@ -96,35 +97,33 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
     return { red, amber }
   }, [jobs])
 
-  // Milestone/date-derived metric sets (all from existing truth).
+  // Milestone/date-derived metric sets (all from existing truth). The date buckets
+  // (onTrack / dueWeek / dateOverdue) are arrays so the gauge segments are clickable.
   const metrics = useMemo(() => {
     const list = jobs || []
     const wk = todayMs + 7 * DAY_MS
-    const dueWeek = [], readySet = [], inProd = []
+    const dueWeek = [], readySet = [], inProd = [], onTrack = [], dateOverdue = []
     for (const j of list) {
       const tm = dateMs(j.order?.target_completion_date)
-      if (tm != null && todayMs && tm >= todayMs && tm <= wk && !msDone(j, 'installed')) dueWeek.push(j)
+      if (tm != null && todayMs && !msDone(j, 'installed')) {
+        if (tm < todayMs) dateOverdue.push(j)
+        else if (tm <= wk) dueWeek.push(j)
+        else onTrack.push(j)
+      }
       if (msDone(j, 'ready_to_install') && !msDone(j, 'installed')) readySet.push(j)
       if (msDone(j, 'production_started') && !msDone(j, 'production_completed')) inProd.push(j)
     }
-    return { active: list, dueWeek, readySet, inProd }
+    return { active: list, dueWeek, readySet, inProd, onTrack, dateOverdue }
   }, [jobs, todayMs])
 
-  // On-time gauge — distribution of DATED, not-yet-installed jobs.
-  const gauge = useMemo(() => {
-    const wk = todayMs + 7 * DAY_MS
-    let onTrack = 0, dueSoon = 0, overdue = 0
-    for (const j of (jobs || [])) {
-      const tm = dateMs(j.order?.target_completion_date)
-      if (tm == null || !todayMs || msDone(j, 'installed')) continue
-      if (tm < todayMs) overdue++
-      else if (tm <= wk) dueSoon++
-      else onTrack++
-    }
-    return { onTrack, dueSoon, overdue, total: onTrack + dueSoon + overdue }
-  }, [jobs, todayMs])
+  // On-time gauge — derived from the metric arrays (so a segment click filters them).
+  const gauge = useMemo(() => ({
+    onTrack: metrics.onTrack.length, dueSoon: metrics.dueWeek.length, overdue: metrics.dateOverdue.length,
+    total: metrics.onTrack.length + metrics.dueWeek.length + metrics.dateOverdue.length,
+  }), [metrics])
 
-  // Aging bottlenecks — not-done jobs that have sat untouched > 14 days, oldest first.
+  // Aging bottlenecks — not-done jobs untouched (since last_update_at, the real last
+  // status change) > 14 days, oldest first. Full list kept; the panel shows 4 + more.
   const aging = useMemo(() => {
     if (!todayMs) return []
     return (jobs || [])
@@ -132,7 +131,6 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
       .filter(r => r.updateMs && (todayMs - r.updateMs) > 14 * DAY_MS)
       .map(r => ({ ...r, days: Math.floor((todayMs - r.updateMs) / DAY_MS) }))
       .sort((a, b) => b.days - a.days)
-      .slice(0, 12)
   }, [jobs, todayMs])
 
   const kpis = useMemo(() => ([
@@ -148,11 +146,14 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
     const pick = {
       active: metrics.active, due_week: metrics.dueWeek, overdue: pressure.red,
       blocked: pressure.amber, ready_set: metrics.readySet, in_production: metrics.inProd,
+      on_track: metrics.onTrack, date_overdue: metrics.dateOverdue,
     }[activeKpi] || metrics.active
     return pick.map(toRow)
   }, [activeKpi, metrics, pressure])
 
-  const activeLabel = kpis.find(k => k.key === activeKpi)?.label || ''
+  // Gauge-segment filters aren't KPI cards; give them their own labels.
+  const FILTER_LABELS = { on_track: 'On track', date_overdue: 'Past target date' }
+  const activeLabel = kpis.find(k => k.key === activeKpi)?.label || FILTER_LABELS[activeKpi] || ''
 
   // The PART 2 three-track funnel lands here. On the Production tab it leads
   // (this is its future home); on the Dashboard it sits mid-page.
@@ -162,7 +163,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
         <span className="jobcc-panel-title">Production floor — three tracks</span>
         {onOpenBoard && <button type="button" className="jobcc-btn jobcc-floor-open" onClick={onOpenBoard}>Open board →</button>}
       </div>
-      <ThreeTrackFunnel onOpenBoard={onOpenBoard} />
+      <ThreeTrackFunnel onOpenBoard={onOpenBoard} onOpenJob={onOpenJob} />
       <div className="jobcc-floor-seed">
         <button type="button" className="jobcc-btn" disabled={seedBusy} onClick={async () => {
           setSeedBusy(true); setSeedResult(null)
@@ -220,7 +221,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
 
       {/* ON-TIME GAUGE + AGING BOTTLENECKS */}
       <div className="jobcc-grid">
-        <OnTimeGauge gauge={gauge} loading={loading} />
+        <OnTimeGauge gauge={gauge} loading={loading} active={activeKpi} onSelect={setActiveKpi} />
         <section className="jobcc-panel">
           <div className="jobcc-panel-head">
             <span className="jobcc-panel-title">Aging bottlenecks</span>
@@ -231,16 +232,21 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
             : aging.length === 0 ? <div className="jobcc-empty jobcc-empty-ok">✓ Nothing stale — everything's moving.</div>
             : (
               <div className="jobcc-alerts">
-                {aging.map(r => (
+                {(agingExpanded ? aging : aging.slice(0, 4)).map(r => (
                   <button type="button" key={r.jobId} className="jobcc-alert" onClick={() => onOpenJob?.(r.jobId)}>
                     <div className="jobcc-alert-top">
                       <span className="jobcc-alert-fam">{r.family}</span>
-                      <span className="jobcc-tag jobcc-tag-amber">{r.days}d</span>
+                      <span className="jobcc-tag jobcc-tag-age">{r.days}d</span>
                       {r.blocker && <span className={`jobcc-tag jobcc-tag-${r.blocker.severity === 'red' ? 'red' : 'amber'}`}>{r.blocker.label}</span>}
                     </div>
                     <div className="jobcc-alert-spec">{r.stage}{r.orderNumber || r.cemetery ? ` · ${[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}` : ''}</div>
                   </button>
                 ))}
+                {aging.length > 4 && (
+                  <button type="button" className="jobcc-more-btn" onClick={() => setAgingExpanded(v => !v)}>
+                    {agingExpanded ? 'Show less' : `+${aging.length - 4} more`}
+                  </button>
+                )}
               </div>
             )}
         </section>
@@ -276,7 +282,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
   )
 }
 
-function OnTimeGauge({ gauge, loading }) {
+function OnTimeGauge({ gauge, loading, active, onSelect }) {
   const { onTrack, dueSoon, overdue, total } = gauge
   const pct = (n) => total ? Math.round((n / total) * 100) : 0
   const a = total ? (onTrack / total) * 100 : 0
@@ -284,6 +290,11 @@ function OnTimeGauge({ gauge, loading }) {
   const ring = total
     ? `conic-gradient(#34d399 0 ${a}%, #fbbf24 ${a}% ${b}%, #f87171 ${b}% 100%)`
     : 'conic-gradient(#232a35 0 100%)'
+  const seg = [
+    { key: 'on_track',     dot: 'green', label: 'On track',     n: onTrack },
+    { key: 'due_week',     dot: 'amber', label: 'Due this week', n: dueSoon },
+    { key: 'date_overdue', dot: 'red',   label: 'Overdue',      n: overdue },
+  ]
   return (
     <section className="jobcc-panel">
       <div className="jobcc-panel-head"><span className="jobcc-panel-title">On-time</span><span className="jobcc-panel-count">{loading ? '—' : total} dated</span></div>
@@ -295,9 +306,11 @@ function OnTimeGauge({ gauge, loading }) {
           </div>
         </div>
         <div className="jobcc-legend">
-          <div className="jobcc-leg"><span className="jobcc-dot jobcc-dot-green" /> On track <strong>{onTrack}</strong> <span className="jobcc-leg-pct">{pct(onTrack)}%</span></div>
-          <div className="jobcc-leg"><span className="jobcc-dot jobcc-dot-amber" /> Due this week <strong>{dueSoon}</strong> <span className="jobcc-leg-pct">{pct(dueSoon)}%</span></div>
-          <div className="jobcc-leg"><span className="jobcc-dot jobcc-dot-red" /> Overdue <strong>{overdue}</strong> <span className="jobcc-leg-pct">{pct(overdue)}%</span></div>
+          {seg.map(s => (
+            <button type="button" key={s.key} className={`jobcc-leg ${active === s.key ? 'jobcc-leg-on' : ''}`} onClick={() => onSelect?.(s.key)} title={`Show ${s.label.toLowerCase()} jobs`}>
+              <span className={`jobcc-dot jobcc-dot-${s.dot}`} /> {s.label} <strong>{s.n}</strong> <span className="jobcc-leg-pct">{pct(s.n)}%</span>
+            </button>
+          ))}
         </div>
       </div>
     </section>
@@ -351,10 +364,12 @@ const JOBCC_CSS = `
   .jobcc-donut-hole { width: 82px; height: 82px; border-radius: 50%; background: #11151c; display: flex; flex-direction: column; align-items: center; justify-content: center; }
   .jobcc-donut-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 24px; font-weight: 700; color: #f4f6fa; }
   .jobcc-donut-l { font-size: 10.5px; color: #8b95a5; text-transform: uppercase; letter-spacing: 0.04em; }
-  .jobcc-legend { display: flex; flex-direction: column; gap: 8px; }
-  .jobcc-leg { font-size: 13px; color: #c7cedb; display: flex; align-items: center; gap: 8px; }
+  .jobcc-legend { display: flex; flex-direction: column; gap: 4px; }
+  .jobcc-leg { font: inherit; font-size: 13px; color: #c7cedb; display: flex; align-items: center; gap: 8px; cursor: pointer; background: none; border: 1px solid transparent; border-radius: 7px; padding: 4px 8px; text-align: left; }
+  .jobcc-leg:hover { background: #151b24; }
+  .jobcc-leg-on { background: #1a2230; border-color: #3a4452; }
   .jobcc-leg strong { color: #f4f6fa; }
-  .jobcc-leg-pct { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #6f7a8a; }
+  .jobcc-leg-pct { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #6f7a8a; margin-left: auto; }
   .jobcc-dot { width: 9px; height: 9px; border-radius: 50%; }
   .jobcc-dot-green { background: #34d399; } .jobcc-dot-amber { background: #fbbf24; } .jobcc-dot-red { background: #f87171; }
 
@@ -386,4 +401,7 @@ const JOBCC_CSS = `
   .jobcc-tag { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; justify-self: start; }
   .jobcc-tag-red { background: #3a1d1d; color: #f87171; }
   .jobcc-tag-amber { background: #322712; color: #fbbf24; }
+  .jobcc-tag-age { text-transform: none; background: #1a212b; color: #c7cedb; letter-spacing: 0; }
+  .jobcc-more-btn { font: inherit; font-size: 12px; font-weight: 600; color: #8b95a5; background: none; border: 1px dashed #2a3340; border-radius: 8px; padding: 6px; cursor: pointer; margin-top: 2px; }
+  .jobcc-more-btn:hover { color: #f4f6fa; border-color: #3a4452; }
 `
