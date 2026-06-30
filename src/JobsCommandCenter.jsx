@@ -173,7 +173,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
         {seedResult && (
           <span className="jobcc-floor-seed-result">
             {seedResult.error ? `⚠ ${seedResult.error}`
-              : `✓ ${seedResult.components} components · ${seedResult.new_stone} new-stone · ${seedResult.inscription} inscription · ${seedResult.door} door · ${seedResult.skipped} non-track · ${seedResult.errors} errors`}
+              : `✓ ${seedResult.components} components · ${seedResult.new_stone} new-stone · ${seedResult.inscription} inscription · ${seedResult.door} door · ${seedResult.bronze} bronze · ${seedResult.skipped} non-track · ${seedResult.errors} errors`}
           </span>
         )}
       </div>

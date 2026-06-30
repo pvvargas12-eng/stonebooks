@@ -3413,7 +3413,7 @@ export async function getJobComponents({ orderId, cemeteryOrderId, jobId } = {})
 // closes the phantom jobs (their components simply drop off the active floor; nothing
 // is deleted). Non-production-track jobs (bronze / cleaning_repair / other) seed 0.
 export async function backfillJobComponents() {
-  const counts = { components: 0, new_stone: 0, inscription: 0, door: 0, ordersSeeded: 0, cemeteryOrdersSeeded: 0, skipped: 0, errors: 0 }
+  const counts = { components: 0, new_stone: 0, inscription: 0, door: 0, bronze: 0, ordersSeeded: 0, cemeteryOrdersSeeded: 0, skipped: 0, errors: 0 }
   const { data: jobs } = await supabase.from('jobs')
     .select('id, order_id, cemetery_order_id, overall_status')
     .neq('overall_status', 'closed').neq('overall_status', 'cancelled')

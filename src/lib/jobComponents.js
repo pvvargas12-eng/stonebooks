@@ -16,6 +16,7 @@ export const TRACK_PHASES = {
   new_stone:   ['ready_to_bring_up', 'brought_to_line', 'cut', 'stencil_cut', 'stencil_stuck', 'blast', 'quality_check', 'ready_to_set'],
   inscription: ['needs_rubbing', 'stencil_cut', 'inscription_complete'],
   door:        ['pickup_doors', 'cut_stencil', 'stick_stencil', 'blast', 'quality_check', 'drop_off_doors'],
+  bronze:      ['bronze_on_order', 'bronze_received', 'mounted_on_base', 'delivered'],
 }
 
 export const PHASE_LABEL = {
@@ -25,9 +26,11 @@ export const PHASE_LABEL = {
   needs_rubbing: 'Needs Rubbing from Cemetery', inscription_complete: 'Inscription Complete',
   pickup_doors: 'Pickup Doors', cut_stencil: 'Cut Stencil', stick_stencil: 'Stick Stencil',
   drop_off_doors: 'Drop Off Doors',
+  bronze_on_order: 'Bronze on Order', bronze_received: 'Bronze Received',
+  mounted_on_base: 'Mounted on Base', delivered: 'Delivered',
 }
-export const TRACK_LABEL = { new_stone: 'New Stone', inscription: 'Inscription', door: 'Mausoleum Door' }
-export const INITIAL_PHASE = { new_stone: 'ready_to_bring_up', inscription: 'needs_rubbing', door: 'pickup_doors' }
+export const TRACK_LABEL = { new_stone: 'New Stone', inscription: 'Inscription', door: 'Mausoleum Door', bronze: 'Bronze Marker' }
+export const INITIAL_PHASE = { new_stone: 'ready_to_bring_up', inscription: 'needs_rubbing', door: 'pickup_doors', bronze: 'bronze_on_order' }
 // Quality Check is a hold-gate on new_stone + doors only (inscriptions have none).
 export const QC_PHASE = 'quality_check'
 export const TRACKS_WITH_QC = new Set(['new_stone', 'door'])
@@ -46,6 +49,7 @@ export function trackForCategory(category) {
   if (category === 'new_stone') return 'new_stone'
   if (category === 'inscription') return 'inscription'
   if (category === 'mausoleum') return 'door'   // MAUSOLEUM_DOOR / crypt door
+  if (category === 'bronze') return 'bronze'
   return null
 }
 
@@ -63,6 +67,10 @@ export function componentsForOrder(order, category) {
   }
   if (track === 'door') {
     return [{ track, component_type: 'door', label: 'Door', size: null, color: null, current_phase: INITIAL_PHASE.door, sort_order: 0 }]
+  }
+  if (track === 'bronze') {
+    // Bronze design lives in the Design Hub; production is just mount + deliver.
+    return [{ track, component_type: 'bronze', label: 'Bronze', size: null, color, current_phase: INITIAL_PHASE.bronze, sort_order: 0 }]
   }
 
   // new_stone: 1 die (2 for double-die/double-slant) + a base when the order has one.

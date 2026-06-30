@@ -19,8 +19,8 @@ import {
 } from '../lib/stonebooksData'
 import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases } from '../lib/jobComponents'
 
-const TRACK_ORDER = ['new_stone', 'inscription', 'door']
-const TYPE_LABEL = { die: 'Die', base: 'Base', inscription: 'Inscription', door: 'Door' }
+const TRACK_ORDER = ['new_stone', 'inscription', 'door', 'bronze']
+const TYPE_LABEL = { die: 'Die', base: 'Base', inscription: 'Inscription', door: 'Door', bronze: 'Bronze' }
 const DAY_MS = 86400000
 
 const famOf = (c) => c.order?.primary_lastname || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—'
@@ -230,8 +230,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
 
 const PF_CSS = `
   .pf-funnel-wrap { display: flex; flex-direction: column; gap: 10px; }
-  .pf-funnel-tracks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  @media (max-width: 900px) { .pf-funnel-tracks { grid-template-columns: 1fr; } }
+  .pf-funnel-tracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
   .pf-funnel-track { background: #151a22; border: 1px solid #232a35; border-radius: 9px; padding: 12px; cursor: pointer; }
   .pf-funnel-track:hover { border-color: #3a4452; }
   .pf-funnel-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
