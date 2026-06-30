@@ -3457,78 +3457,105 @@ async function _patchComponent(id, patch) {
   if (error) return { ok: false, error: error.message }
   return { ok: true, component: data }
 }
-async function _componentEvent(comp, eventType, { note = null, payload = {}, actor = null } = {}) {
-  const p = { component_id: comp.id, component_type: comp.component_type, track: comp.track, ...payload }
+async function _componentEvent(comp, eventType, { note = null, payload = {}, actor = null, source = 'board' } = {}) {
+  const p = { component_id: comp.id, component_type: comp.component_type, track: comp.track, source, ...payload }
   try {
     if (comp.job_id) await addJobEvent(comp.job_id, { eventType, note, payload: p, createdBy: actor })
     else if (comp.order_id) await logOrderActivity(comp.order_id, { type: 'change', field: 'Production', newValue: eventType, note, actor })
   } catch (e) { console.warn('[components] event:', e?.message) }
 }
 
-export async function setComponentPhase(id, newPhase, { actor = null, eventType = 'component_phase_set' } = {}) {
+// ── ONE-WAY rollup: component current_phase → job milestone stone-status ──────
+// The component is the SINGLE source of truth; this is a DOWNSTREAM MIRROR for the
+// Orders-tab Stone column + reconciliation (which read deriveStoneStatus off the
+// new_stone milestone ladder). Component → milestone ONLY — never the reverse. The
+// job's rolled-up status = the LEAST-advanced component (the stone is only as far
+// as its slowest piece). Scoped to new_stone — the other tracks don't feed the
+// Stone column, so their component IS the only truth (no milestone to mirror).
+const _STONE_RANK = ['not_ordered', 'in_stock', 'ordered', 'needs_pickup', 'needs_stencil_cut', 'needs_blasting', 'blasted']
+const _NEWSTONE_PHASE_TO_STONE = {
+  ready_to_bring_up: 'needs_stencil_cut', brought_to_line: 'needs_stencil_cut', cut: 'needs_stencil_cut',
+  stencil_cut: 'needs_blasting', stencil_stuck: 'needs_blasting', blast: 'needs_blasting', quality_check: 'needs_blasting',
+  ready_to_set: 'blasted',
+}
+async function _rollupNewStoneStatus(jobId) {
+  if (!jobId) return
+  const { data: comps } = await supabase.from('job_components').select('current_phase').eq('job_id', jobId).eq('track', 'new_stone')
+  if (!comps || !comps.length) return
+  let min = null
+  for (const c of comps) {
+    const code = _NEWSTONE_PHASE_TO_STONE[c.current_phase] || 'needs_stencil_cut'
+    if (min === null || _STONE_RANK.indexOf(code) < _STONE_RANK.indexOf(min)) min = code
+  }
+  if (min) { try { await setOrderStoneStatus(jobId, min) } catch (e) { console.warn('[rollup] stone-status:', e?.message) } }
+}
+
+export async function setComponentPhase(id, newPhase, { actor = null, eventType = 'component_phase_set', source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (!isValidPhase(c.track, newPhase)) return { ok: false, error: `Invalid phase for ${c.track}` }
   const leavingQc = c.current_phase === QC_PHASE && newPhase !== QC_PHASE
   const r = await _patchComponent(id, { previous_phase: c.current_phase, current_phase: newPhase, phase_changed_at: new Date().toISOString(), ...(leavingQc ? { qc_issue: null } : {}) })
   if (!r.ok) return r
-  await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor })
+  await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor, source })
+  if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
   return r
 }
-export async function advanceComponent(id, { actor = null } = {}) {
+export async function advanceComponent(id, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (c.current_phase === QC_PHASE) return { ok: false, error: 'At Quality Check — use Approve or Deny.' }
   const next = nextPhase(c.track, c.current_phase)
   if (!next) return { ok: false, error: 'Already at the final phase.' }
-  return setComponentPhase(id, next, { actor, eventType: 'component_advanced' })
+  return setComponentPhase(id, next, { actor, eventType: 'component_advanced', source })
 }
-export async function reverseComponent(id, { actor = null } = {}) {
+export async function reverseComponent(id, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   const prev = prevPhase(c.track, c.current_phase)
   if (!prev) return { ok: false, error: 'Already at the first phase.' }
-  return setComponentPhase(id, prev, { actor, eventType: 'component_reversed' })
+  return setComponentPhase(id, prev, { actor, eventType: 'component_reversed', source })
 }
-export async function overrideComponentPhase(id, newPhase, { actor = null } = {}) {
-  return setComponentPhase(id, newPhase, { actor, eventType: 'component_phase_override' })
+export async function overrideComponentPhase(id, newPhase, { actor = null, source = 'board' } = {}) {
+  return setComponentPhase(id, newPhase, { actor, eventType: 'component_phase_override', source })
 }
-export async function qcApproveComponent(id, { actor = null } = {}) {
+export async function qcApproveComponent(id, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (c.current_phase !== QC_PHASE) return { ok: false, error: 'Not at Quality Check.' }
   if (c.qc_issue) return { ok: false, error: 'Clear the QC issue before approving.' }
   const next = nextPhase(c.track, c.current_phase)
   const r = await _patchComponent(id, { previous_phase: c.current_phase, current_phase: next, phase_changed_at: new Date().toISOString(), qc_issue: null })
   if (!r.ok) return r
-  await _componentEvent(c, 'component_qc_approved', { note: `QC approved → ${phaseLabel(next)}`, payload: { previous_phase: c.current_phase, new_phase: next }, actor })
+  await _componentEvent(c, 'component_qc_approved', { note: `QC approved → ${phaseLabel(next)}`, payload: { previous_phase: c.current_phase, new_phase: next }, actor, source })
+  if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
   return r
 }
-export async function qcDenyComponent(id, issue, { actor = null } = {}) {
+export async function qcDenyComponent(id, issue, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (c.current_phase !== QC_PHASE) return { ok: false, error: 'Not at Quality Check.' }
   const note = (issue || '').trim(); if (!note) return { ok: false, error: 'Enter the QC issue.' }
   const r = await _patchComponent(id, { qc_issue: note })   // held at QC, cannot advance
   if (!r.ok) return r
-  await _componentEvent(c, 'component_qc_denied', { note: `QC denied: ${note}`, payload: { issue: note }, actor })
+  await _componentEvent(c, 'component_qc_denied', { note: `QC denied: ${note}`, payload: { issue: note }, actor, source })
   return r
 }
-export async function clearComponentQcIssue(id, { actor = null } = {}) {
+export async function clearComponentQcIssue(id, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   const r = await _patchComponent(id, { qc_issue: null })
   if (!r.ok) return r
-  await _componentEvent(c, 'component_qc_cleared', { note: 'QC issue cleared', payload: {}, actor })
+  await _componentEvent(c, 'component_qc_cleared', { note: 'QC issue cleared', payload: {}, actor, source })
   return r
 }
-export async function setComponentBlocker(id, blocker, { actor = null } = {}) {
+export async function setComponentBlocker(id, blocker, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   const val = (blocker || '').trim() || null
   const r = await _patchComponent(id, { blocker: val })
   if (!r.ok) return r
-  await _componentEvent(c, val ? 'component_blocked' : 'component_unblocked', { note: val ? `Blocked: ${val}` : 'Blocker cleared', payload: { blocker: val }, actor })
+  await _componentEvent(c, val ? 'component_blocked' : 'component_unblocked', { note: val ? `Blocked: ${val}` : 'Blocker cleared', payload: { blocker: val }, actor, source })
   return r
 }
-export async function setComponentNotes(id, notes, { actor = null } = {}) {
+export async function setComponentNotes(id, notes, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   const r = await _patchComponent(id, { notes: (notes || '').trim() || null })
   if (!r.ok) return r
-  await _componentEvent(c, 'component_note', { note: 'Note updated', payload: {}, actor })
+  await _componentEvent(c, 'component_note', { note: 'Note updated', payload: {}, actor, source })
   return r
 }
 
