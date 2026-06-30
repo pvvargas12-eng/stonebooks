@@ -48,6 +48,7 @@ import { enrichJob, ROW_GRID } from './lib/jobsRowHelpers'
 // keep their list-view body unchanged.
 import DesignHubHome from './DesignHubHome'
 import HubHome from './HubHome'
+import InstallBoard from './components/InstallBoard'
 import { HUB_HOME_CONFIGS } from './lib/hubConfigs'
 // The Workflow queues + Permit hub used to be separate top-level tabs. They
 // now live INSIDE the Jobs hub strip as two "section" hubs, reusing the
@@ -360,6 +361,10 @@ export default function JobsDepartmentView({
             onOpenOrder={onOpenOrderDetail}
             onReload={loadJobs}
           />
+        ) : hub === 'installation' ? (
+          <div className="sb-crm-container">
+            <InstallBoard jobs={jobs || []} onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
+          </div>
         ) : (
           <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS[hub]} />
         )

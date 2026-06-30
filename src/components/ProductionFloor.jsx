@@ -18,6 +18,7 @@ import {
   setComponentBlocker, setComponentNotes, permitStatusLabel,
 } from '../lib/stonebooksData'
 import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases } from '../lib/jobComponents'
+import { JOBCC_BASE_CSS } from './jobccBase'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'door', 'bronze']
 const TYPE_LABEL = { die: 'Die', base: 'Base', inscription: 'Inscription', door: 'Door', bronze: 'Bronze' }
@@ -112,7 +113,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
 
   return (
     <div className="jobcc">
-      <style>{PF_CSS}</style>
+      <style>{JOBCC_BASE_CSS}{PF_CSS}</style>
       <header className="jobcc-cmd">
         <div className="jobcc-cmd-left">
           <h1 className="jobcc-title">Production floor</h1>
