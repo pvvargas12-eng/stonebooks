@@ -69,6 +69,14 @@ export default function JobsCommandCenter({ onOpenJob }) {
     return () => clearInterval(id)
   }, [monitor, load])
 
+  // Escape exits the full-screen shop wall.
+  useEffect(() => {
+    if (!monitor) return
+    const onKey = (e) => { if (e.key === 'Escape') setMonitor(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [monitor])
+
   // Hub counts — the exact same derivation the Hubs view uses (no copy).
   const hubData = useMemo(() => {
     if (!jobs) return null
@@ -126,7 +134,7 @@ export default function JobsCommandCenter({ onOpenJob }) {
           <div className="jobcc-purpose">Live shop-floor state — what's overdue, blocked, and moving across every department.</div>
         </div>
         <div className="jobcc-cmd-right">
-          <span className="jobcc-live"><span className="jobcc-live-dot" /> LIVE · synced {syncedAt || '—'}</span>
+          <span className="jobcc-live"><span className="jobcc-live-dot" /> LIVE · synced {syncedAt || '—'}{monitor ? ' · auto every 30s · Esc to exit' : ''}</span>
           <div className="jobcc-actions">
             <button type="button" className="jobcc-btn" onClick={load}>Refresh</button>
             <button type="button" className="jobcc-btn" onClick={() => setMonitor(m => !m)}>{monitor ? 'Exit monitor' : 'Shop Monitor'}</button>
