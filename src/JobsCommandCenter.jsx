@@ -14,6 +14,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { getJobs, computeOrderPressure, backfillJobComponents } from './lib/stonebooksData'
 import { currentStage } from './lib/jobsRowHelpers'
+import { ThreeTrackFunnel } from './components/ProductionFloor'
 
 const REFRESH_MS = 30000
 const DAY_MS = 86400000
@@ -39,7 +40,7 @@ function toRow(job) {
   }
 }
 
-export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
+export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dashboard' }) {
   const isProductionView = view === 'production'
   const [jobs, setJobs] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -157,28 +158,24 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
   // (this is its future home); on the Dashboard it sits mid-page.
   const floorPanel = (
     <section className="jobcc-panel jobcc-floor">
-      <div className="jobcc-panel-head"><span className="jobcc-panel-title">Production floor — three tracks</span></div>
-      <div className="jobcc-floor-stub">
-        <div className="jobcc-floor-tracks">
-          {['New Stone', 'Inscription', 'Mausoleum Door'].map(t => (
-            <div key={t} className="jobcc-floor-track"><span className="jobcc-floor-track-l">{t}</span></div>
-          ))}
-        </div>
-        <div className="jobcc-floor-note">⚙ Production tracking coming online — per-component assembly board with one-click advance, QC gate, and bottleneck detection (Part 2).</div>
-        <div className="jobcc-floor-seed">
-          <button type="button" className="jobcc-btn" disabled={seedBusy} onClick={async () => {
-            setSeedBusy(true); setSeedResult(null)
-            try { setSeedResult(await backfillJobComponents()) }
-            catch (e) { setSeedResult({ error: e?.message || 'Seed failed' }) }
-            setSeedBusy(false)
-          }}>{seedBusy ? 'Seeding…' : 'Seed components (one-shot)'}</button>
-          {seedResult && (
-            <span className="jobcc-floor-seed-result">
-              {seedResult.error ? `⚠ ${seedResult.error}`
-                : `✓ ${seedResult.components} components · ${seedResult.new_stone} new-stone · ${seedResult.inscription} inscription · ${seedResult.door} door · ${seedResult.skipped} non-track · ${seedResult.errors} errors`}
-            </span>
-          )}
-        </div>
+      <div className="jobcc-panel-head">
+        <span className="jobcc-panel-title">Production floor — three tracks</span>
+        {onOpenBoard && <button type="button" className="jobcc-btn jobcc-floor-open" onClick={onOpenBoard}>Open board →</button>}
+      </div>
+      <ThreeTrackFunnel onOpenBoard={onOpenBoard} />
+      <div className="jobcc-floor-seed">
+        <button type="button" className="jobcc-btn" disabled={seedBusy} onClick={async () => {
+          setSeedBusy(true); setSeedResult(null)
+          try { setSeedResult(await backfillJobComponents()) }
+          catch (e) { setSeedResult({ error: e?.message || 'Seed failed' }) }
+          setSeedBusy(false)
+        }}>{seedBusy ? 'Seeding…' : 'Seed components (one-shot)'}</button>
+        {seedResult && (
+          <span className="jobcc-floor-seed-result">
+            {seedResult.error ? `⚠ ${seedResult.error}`
+              : `✓ ${seedResult.components} components · ${seedResult.new_stone} new-stone · ${seedResult.inscription} inscription · ${seedResult.door} door · ${seedResult.skipped} non-track · ${seedResult.errors} errors`}
+          </span>
+        )}
       </div>
     </section>
   )
@@ -373,7 +370,8 @@ const JOBCC_CSS = `
   .jobcc-floor-track { background: #151a22; border: 1px dashed #2a3340; border-radius: 9px; padding: 18px 12px; text-align: center; }
   .jobcc-floor-track-l { font-size: 13px; font-weight: 700; color: #8b95a5; text-transform: uppercase; letter-spacing: 0.04em; }
   .jobcc-floor-note { font-size: 12.5px; color: #6f7a8a; }
-  .jobcc-floor-seed { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .jobcc-floor-open { margin-left: auto; font-size: 12px; padding: 5px 11px; }
+  .jobcc-floor-seed { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
   .jobcc-floor-seed-result { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #34d399; }
 
   .jobcc-rows { display: flex; flex-direction: column; }

@@ -8,7 +8,8 @@
 import { supabase } from './supabase'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal } from './pricingCore'
-import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec } from './jobComponents'
+import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
+  isValidPhase, nextPhase, prevPhase, phaseLabel, QC_PHASE } from './jobComponents'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
 export const NJ_TAX_RATE = 0.06625
@@ -3429,6 +3430,106 @@ export async function backfillJobComponents() {
     if (r.seeded) { counts.components += r.seeded; counts.door += r.seeded; counts.cemeteryOrdersSeeded++ }
   }
   return counts
+}
+
+// ── PART 2 B2 — production-floor reads + per-component phase writes ───────────
+// Every phase change / QC action is event-logged: addJobEvent when the component
+// carries a job_id, else logOrderActivity on the order (pre-job fallback). Writes
+// ONLY components — never milestones (B3 rolls up one-way).
+export async function getProductionComponents() {
+  const { data, error } = await supabase.from('job_components')
+    .select(`*,
+      job:jobs(id, overall_status, last_update_at),
+      order:orders(id, order_number, primary_lastname, permit_status, cemetery:cemeteries(name)),
+      cemetery_order:cemetery_orders(id, order_number, cemetery_name)`)
+    .order('track', { ascending: true }).order('sort_order', { ascending: true })
+  if (error) { console.warn('[components] floor:', error.message); return [] }
+  // Drop components whose job is closed/cancelled (phantoms after reconciliation).
+  return (data || []).filter(c => !c.job || (c.job.overall_status !== 'closed' && c.job.overall_status !== 'cancelled'))
+}
+
+async function _loadComponent(id) {
+  const { data } = await supabase.from('job_components').select('*').eq('id', id).single()
+  return data || null
+}
+async function _patchComponent(id, patch) {
+  const { data, error } = await supabase.from('job_components').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, component: data }
+}
+async function _componentEvent(comp, eventType, { note = null, payload = {}, actor = null } = {}) {
+  const p = { component_id: comp.id, component_type: comp.component_type, track: comp.track, ...payload }
+  try {
+    if (comp.job_id) await addJobEvent(comp.job_id, { eventType, note, payload: p, createdBy: actor })
+    else if (comp.order_id) await logOrderActivity(comp.order_id, { type: 'change', field: 'Production', newValue: eventType, note, actor })
+  } catch (e) { console.warn('[components] event:', e?.message) }
+}
+
+export async function setComponentPhase(id, newPhase, { actor = null, eventType = 'component_phase_set' } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  if (!isValidPhase(c.track, newPhase)) return { ok: false, error: `Invalid phase for ${c.track}` }
+  const leavingQc = c.current_phase === QC_PHASE && newPhase !== QC_PHASE
+  const r = await _patchComponent(id, { previous_phase: c.current_phase, current_phase: newPhase, phase_changed_at: new Date().toISOString(), ...(leavingQc ? { qc_issue: null } : {}) })
+  if (!r.ok) return r
+  await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor })
+  return r
+}
+export async function advanceComponent(id, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  if (c.current_phase === QC_PHASE) return { ok: false, error: 'At Quality Check — use Approve or Deny.' }
+  const next = nextPhase(c.track, c.current_phase)
+  if (!next) return { ok: false, error: 'Already at the final phase.' }
+  return setComponentPhase(id, next, { actor, eventType: 'component_advanced' })
+}
+export async function reverseComponent(id, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const prev = prevPhase(c.track, c.current_phase)
+  if (!prev) return { ok: false, error: 'Already at the first phase.' }
+  return setComponentPhase(id, prev, { actor, eventType: 'component_reversed' })
+}
+export async function overrideComponentPhase(id, newPhase, { actor = null } = {}) {
+  return setComponentPhase(id, newPhase, { actor, eventType: 'component_phase_override' })
+}
+export async function qcApproveComponent(id, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  if (c.current_phase !== QC_PHASE) return { ok: false, error: 'Not at Quality Check.' }
+  if (c.qc_issue) return { ok: false, error: 'Clear the QC issue before approving.' }
+  const next = nextPhase(c.track, c.current_phase)
+  const r = await _patchComponent(id, { previous_phase: c.current_phase, current_phase: next, phase_changed_at: new Date().toISOString(), qc_issue: null })
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_qc_approved', { note: `QC approved → ${phaseLabel(next)}`, payload: { previous_phase: c.current_phase, new_phase: next }, actor })
+  return r
+}
+export async function qcDenyComponent(id, issue, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  if (c.current_phase !== QC_PHASE) return { ok: false, error: 'Not at Quality Check.' }
+  const note = (issue || '').trim(); if (!note) return { ok: false, error: 'Enter the QC issue.' }
+  const r = await _patchComponent(id, { qc_issue: note })   // held at QC, cannot advance
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_qc_denied', { note: `QC denied: ${note}`, payload: { issue: note }, actor })
+  return r
+}
+export async function clearComponentQcIssue(id, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const r = await _patchComponent(id, { qc_issue: null })
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_qc_cleared', { note: 'QC issue cleared', payload: {}, actor })
+  return r
+}
+export async function setComponentBlocker(id, blocker, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const val = (blocker || '').trim() || null
+  const r = await _patchComponent(id, { blocker: val })
+  if (!r.ok) return r
+  await _componentEvent(c, val ? 'component_blocked' : 'component_unblocked', { note: val ? `Blocked: ${val}` : 'Blocker cleared', payload: { blocker: val }, actor })
+  return r
+}
+export async function setComponentNotes(id, notes, { actor = null } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const r = await _patchComponent(id, { notes: (notes || '').trim() || null })
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_note', { note: 'Note updated', payload: {}, actor })
+  return r
 }
 
 // New Order form — the ordered milestone list for a set of service types, so
