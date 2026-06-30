@@ -151,6 +151,22 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
 
   const activeLabel = kpis.find(k => k.key === activeKpi)?.label || ''
 
+  // The PART 2 three-track funnel lands here. On the Production tab it leads
+  // (this is its future home); on the Dashboard it sits mid-page.
+  const floorPanel = (
+    <section className="jobcc-panel jobcc-floor">
+      <div className="jobcc-panel-head"><span className="jobcc-panel-title">Production floor — three tracks</span></div>
+      <div className="jobcc-floor-stub">
+        <div className="jobcc-floor-tracks">
+          {['New Stone', 'Inscription', 'Mausoleum Door'].map(t => (
+            <div key={t} className="jobcc-floor-track"><span className="jobcc-floor-track-l">{t}</span></div>
+          ))}
+        </div>
+        <div className="jobcc-floor-note">⚙ Production tracking coming online — per-component assembly board with one-click advance, QC gate, and bottleneck detection (Part 2).</div>
+      </div>
+    </section>
+  )
+
   return (
     <div className={`jobcc ${monitor ? 'jobcc-monitor' : ''}`}>
       <style>{JOBCC_CSS}</style>
@@ -172,6 +188,9 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
       </header>
 
       {err && <div className="jobcc-err">{err}</div>}
+
+      {/* Production tab leads with the (coming) three-track board. */}
+      {isProductionView && floorPanel}
 
       {/* KPI CARDS — click to filter the list below */}
       <div className="jobcc-kpis">
@@ -214,18 +233,8 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
         </section>
       </div>
 
-      {/* PRODUCTION FLOOR — PART 2 placeholder */}
-      <section className="jobcc-panel jobcc-floor">
-        <div className="jobcc-panel-head"><span className="jobcc-panel-title">Production floor — three tracks</span></div>
-        <div className="jobcc-floor-stub">
-          <div className="jobcc-floor-tracks">
-            {['New Stone', 'Inscription', 'Mausoleum Door'].map(t => (
-              <div key={t} className="jobcc-floor-track"><span className="jobcc-floor-track-l">{t}</span></div>
-            ))}
-          </div>
-          <div className="jobcc-floor-note">⚙ Production tracking coming online — per-component assembly board (Part 2).</div>
-        </div>
-      </section>
+      {/* PRODUCTION FLOOR — PART 2 placeholder (Dashboard mid-page) */}
+      {!isProductionView && floorPanel}
 
       {/* JOB LIST — reflects the selected KPI */}
       <section className="jobcc-panel">
