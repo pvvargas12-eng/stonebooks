@@ -15,10 +15,12 @@
 //   5. Permit ok    — order.permit_status ∈ {approved, not_required} (or not needed).
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded } from '../lib/stonebooksData'
+import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
+  updateMilestone, addOrderTask, logOrderActivity, getCurrentStaffName } from '../lib/stonebooksData'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
+import CompletionPhotoUploader from './CompletionPhotoUploader'
 
 // Track's STRICT terminal phase for "stone done" (decision-locked).
 const TERMINAL = { new_stone: 'ready_to_set', bronze: 'mounted_on_base', inscription: 'inscription_complete', door: 'drop_off_doors' }
@@ -37,6 +39,12 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const [components, setComponents] = useState(null)
   const [monthKey, setMonthKey] = useState('')
   const [activeKpi, setActiveKpi] = useState('ready')
+  // Action state — schedule date modal + the confirm→photo→finalize install chain.
+  const [scheduleRow, setScheduleRow] = useState(null)
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [installRow, setInstallRow] = useState(null)
+  const [installStep, setInstallStep] = useState(null)   // 'confirm' | 'photo'
 
   const load = useCallback(async () => {
     const d = await getProductionComponents()
@@ -73,10 +81,11 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       const termIdx = phaseIndex(track, TERMINAL[track])
       const stoneDone = ci.comps.length > 0 && ci.comps.every(c => !c.qc_issue && phaseIndex(track, c.current_phase) >= termIdx && termIdx >= 0)
       const ms = installMilestone(job)
+      const installKey = ms?.milestone_key || null
       const installed = ms?.status === 'done'
       if (installed) {
         if (ms?.status_date && String(ms.status_date).slice(0, 7) === monthKey) {
-          out.doneThisMonth.push(makeRow(job, ci, order, { installed: true }))
+          out.doneThisMonth.push(makeRow(job, ci, order, { installed: true, installKey }))
         }
         continue
       }
@@ -94,7 +103,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       if (!cem) unmet.push('cemetery')
       if (!permit) unmet.push('permit')
       const scheduled = ms?.status === 'in_progress'
-      const row = makeRow(job, ci, order, { gates, unmet, scheduled })
+      const row = makeRow(job, ci, order, { gates, unmet, scheduled, installKey, scheduledDate: scheduled ? (ms?.due_date || null) : null })
       if (needsFdn && fdn === false) out.foundationNeeded.push(row)
       if (scheduled) out.scheduled.push(row)
       else if (unmet.length === 0) out.ready.push(row)
@@ -102,6 +111,39 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     }
     return out
   }, [components, jobs, byJob, monthKey])
+
+  // ── Actions (reuse existing milestone + task + photo systems) ───────────────
+  const openSchedule = (row) => { const d = new Date(); setScheduleDate(d.toISOString().slice(0, 10)); setScheduleRow(row) }
+  const doSchedule = async () => {
+    if (!scheduleRow || !scheduleDate || busy) return
+    setBusy(true)
+    const actor = await getCurrentStaffName()
+    if (scheduleRow.installKey) await updateMilestone(scheduleRow.jobId, scheduleRow.installKey, { status: 'in_progress', dueDate: scheduleDate })
+    await logOrderActivity(scheduleRow.orderId, { type: 'change', field: 'Install', newValue: 'Scheduled', note: `Install scheduled for ${scheduleDate}`, actor })
+    setBusy(false); setScheduleRow(null); setScheduleDate('')
+    load()
+  }
+  const openInstall = (row) => { setInstallRow(row); setInstallStep('confirm') }
+  // Commit on the EXPLICIT confirm (the gate), then collect the photo. The uploader
+  // closes on a backdrop tap too, so committing here — not on its close — avoids a
+  // stray-tap install.
+  const confirmInstall = async () => {
+    if (!installRow || busy) return
+    setBusy(true)
+    const r = installRow
+    const actor = await getCurrentStaffName()
+    if (r.installKey) await updateMilestone(r.jobId, r.installKey, { status: 'done' })
+    await addOrderTask(r.orderId, { kind: 'closeout', note: 'Send install photo + thank-you to customer, close out order', actor })
+    await logOrderActivity(r.orderId, { type: 'change', field: 'Install', newValue: 'Installed', note: 'Marked installed; closeout task created', actor })
+    setBusy(false)
+    setInstallStep('photo')   // installed — now add the photo (uploads to the order)
+  }
+  const onPhotoUploaded = async () => {
+    if (!installRow) return
+    const actor = await getCurrentStaffName()
+    logOrderActivity(installRow.orderId, { type: 'change', field: 'Install photo', newValue: 'uploaded', note: 'Install photo uploaded', actor }).catch(() => {})
+  }
+  const closePhoto = () => { setInstallRow(null); setInstallStep(null); load() }
 
   const loading = components == null
   const kpis = [
@@ -114,6 +156,8 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const sectionRows = { ready: buckets.ready, scheduled: buckets.scheduled, blocked: buckets.blocked, foundation: buckets.foundationNeeded, done: buckets.doneThisMonth }[activeKpi] || buckets.ready
   const sectionLabel = kpis.find(k => k.key === activeKpi)?.label || ''
   const groupByCem = activeKpi !== 'done'
+  const canAct = activeKpi === 'ready' || activeKpi === 'scheduled'
+  const cardProps = { onOpenJob, onOpenOrderDetail, canAct, onSchedule: openSchedule, onMarkInstalled: openInstall }
 
   return (
     <div className="jobcc ib">
@@ -143,11 +187,51 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
           : groupByCem ? groupByCemetery(sectionRows).map(([cem, rows]) => (
             <div key={cem} className="ib-group">
               <div className="ib-group-head">{cem || 'Cemetery not set'} <span className="ib-group-n">{rows.length}</span></div>
-              <div className="ib-cards">{rows.map(r => <InstallCard key={r.jobId} row={r} onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />)}</div>
+              <div className="ib-cards">{rows.map(r => <InstallCard key={r.jobId} row={r} {...cardProps} />)}</div>
             </div>
           ))
-          : <div className="ib-cards">{sectionRows.map(r => <InstallCard key={r.jobId} row={r} onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />)}</div>}
+          : <div className="ib-cards">{sectionRows.map(r => <InstallCard key={r.jobId} row={r} {...cardProps} />)}</div>}
       </section>
+
+      {/* Schedule-install date modal */}
+      {scheduleRow && (
+        <div className="ib-modal-overlay" onClick={() => !busy && setScheduleRow(null)}>
+          <div className="ib-modal" onClick={e => e.stopPropagation()}>
+            <div className="ib-modal-title">Schedule install — {scheduleRow.family}</div>
+            <div className="ib-modal-body">Pick the planned install date. This sets the install milestone to in&#8209;progress and feeds the Scheduled count.</div>
+            <input type="date" className="ib-modal-input" value={scheduleDate} onChange={e => setScheduleDate(e.target.value)} />
+            <div className="ib-modal-actions">
+              <button type="button" className="jobcc-btn" onClick={() => setScheduleRow(null)} disabled={busy}>Cancel</button>
+              <button type="button" className="jobcc-btn ib-btn-go" onClick={doSchedule} disabled={busy || !scheduleDate}>{busy ? 'Saving…' : 'Schedule'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mark-installed confirm (the gate — confirming flips the milestone) */}
+      {installRow && installStep === 'confirm' && (
+        <div className="ib-modal-overlay" onClick={() => !busy && (setInstallRow(null), setInstallStep(null))}>
+          <div className="ib-modal" onClick={e => e.stopPropagation()}>
+            <div className="ib-modal-title">Mark {installRow.family}'s monument installed?</div>
+            <div className="ib-modal-body">This flips the job to <strong>installed</strong> and creates the admin closeout task — a stone in the ground is hard to undo. You'll add the install photo from your phone right after.</div>
+            <div className="ib-modal-actions">
+              <button type="button" className="jobcc-btn" onClick={() => { setInstallRow(null); setInstallStep(null) }} disabled={busy}>Cancel</button>
+              <button type="button" className="jobcc-btn ib-btn-go" onClick={confirmInstall} disabled={busy}>{busy ? 'Installing…' : 'Confirm & mark installed'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mark-installed step 2 — REUSE CompletionPhotoUploader verbatim (mobile camera).
+          Already committed on confirm; closing just finishes the photo step. */}
+      {installRow && installStep === 'photo' && (
+        <CompletionPhotoUploader
+          orderId={installRow.orderId}
+          label={`Install photo — ${installRow.family}`}
+          onUploaded={onPhotoUploaded}
+          onClose={closePhoto}
+        />
+      )}
     </div>
   )
 }
@@ -168,7 +252,7 @@ function groupByCemetery(rows) {
   return [...m.entries()].sort((a, b) => (a[0] || '~').localeCompare(b[0] || '~'))
 }
 
-function InstallCard({ row, onOpenJob, onOpenOrderDetail }) {
+function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled }) {
   const tone = TRACK_TONE[row.track] || 'neutral'
   return (
     <div className="ib-card">
@@ -191,7 +275,14 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail }) {
         </div>
       )}
       {row.installed && <div className="ib-installed">✓ Installed</div>}
+      {row.scheduled && row.scheduledDate && <div className="ib-sched">📅 Scheduled {row.scheduledDate}</div>}
       {row.unmet && row.unmet.length > 0 && <div className="ib-blocked">Blocked: {row.unmet.join(' + ')}</div>}
+      {canAct && (
+        <div className="ib-card-actions">
+          {!row.scheduled && <button type="button" className="ib-act" onClick={() => onSchedule?.(row)}>Schedule install</button>}
+          <button type="button" className="ib-act ib-act-go" onClick={() => onMarkInstalled?.(row)}>Mark installed</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -220,4 +311,16 @@ const IB_CSS = `
   .ib-gate-na { color: #5a6470; }
   .ib-blocked { font-size: 11px; color: #f87171; margin-top: 8px; font-weight: 600; }
   .ib-installed { font-size: 11.5px; color: #34d399; margin-top: 8px; font-weight: 600; }
+  .ib-sched { font-size: 11px; color: #a78bfa; margin-top: 8px; }
+  .ib-card-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .ib-act { font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a313c; background: #1a212b; color: #e6e9ef; cursor: pointer; }
+  .ib-act:hover { background: #232c38; }
+  .ib-act-go { border-color: #2d5a44; background: #15301f; color: #34d399; }
+  .ib-modal-overlay { position: fixed; inset: 0; z-index: 9500; background: rgba(8,10,14,0.66); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .ib-modal { background: #11151c; border: 1px solid #2a313c; border-radius: 14px; padding: 20px 22px; max-width: 420px; width: 100%; color: #e6e9ef; font-family: var(--font-b, 'Lato'), 'Helvetica Neue', sans-serif; }
+  .ib-modal-title { font-size: 16px; font-weight: 700; color: #f4f6fa; margin-bottom: 8px; }
+  .ib-modal-body { font-size: 13px; color: #b8c0cc; line-height: 1.5; margin-bottom: 14px; }
+  .ib-modal-input { font: inherit; font-size: 14px; width: 100%; background: #0E1116; border: 1px solid #2a313c; border-radius: 8px; color: #e6e9ef; padding: 8px 10px; margin-bottom: 14px; }
+  .ib-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .ib-btn-go { border-color: #2d5a44; background: #15301f; color: #34d399; }
 `
