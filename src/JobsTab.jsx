@@ -101,13 +101,12 @@ export default function JobsTab({
   onOpenQueue,
   onEditOrder,
 }) {
-  // View-mode state — restored from workspaceState on mount. The toggle
-  // updates both local state + persisted state so a refresh re-opens the
-  // same view mode without a flash.
-  const [view, setView] = useState(() => getJobsView(userId))
-  const handleViewChange = (next) => {
-    if (next !== 'hubs' && next !== 'all' && next !== 'monitor') return
-    setView(next)
+  // Tab state — the Jobs tab opens on the Dashboard command center and the
+  // hubs are tabs (Inventory-tab pattern). Persisted so a refresh re-opens the
+  // same tab. Existing hub bodies render unchanged under the tab row.
+  const [tab, setTab] = useState(() => getJobsView(userId))
+  const handleTabChange = (next) => {
+    setTab(next)
     setJobsView(userId, next)
   }
 
@@ -149,77 +148,77 @@ export default function JobsTab({
     )
   }
 
-  if (view === 'all') {
-    return (
-      <>
-        <JobsViewToggle view={view} onChange={handleViewChange} />
-        <JobsListView onOpenJob={handleOpenJob} />
-      </>
+  // Body per tab. Dashboard + Production render the dark command center
+  // (Production becomes the three-track board in PART 2). The remaining hub
+  // tabs reuse JobsDepartmentView's existing bodies (nothing lost) with its
+  // own hub strip hidden — the tab row is the navigation now.
+  let body
+  if (tab === 'dashboard') {
+    body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} /></div>
+  } else if (tab === 'production') {
+    body = <div className="sb-crm-container"><JobsCommandCenter view="production" onOpenJob={handleOpenJob} /></div>
+  } else if (tab === 'all') {
+    body = <JobsListView onOpenJob={handleOpenJob} />
+  } else {
+    body = (
+      <JobsDepartmentView
+        userId={userId}
+        forcedHub={tab}
+        hideStrip
+        onOpenJob={handleOpenJob}
+        onSwitchTab={onSwitchTab}
+        onOpenOrder={onOpenOrder}
+        onOpenOrderDetail={onOpenOrderDetail}
+        onOpenCustomer={onOpenCustomer}
+        onOpenQueue={onOpenQueue}
+        onEditOrder={onEditOrder}
+      />
     )
   }
 
-  if (view === 'monitor') {
-    return (
-      <div className="sb-crm-page">
-        <div className="sb-crm-container">
-          <header className="sb-crm-head">
-            <div><h1 className="sb-crm-head-title">Jobs</h1></div>
-            <div className="sb-crm-head-actions"><JobsViewToggle view={view} onChange={handleViewChange} /></div>
-          </header>
-          <JobsCommandCenter onOpenJob={handleOpenJob} />
-        </div>
+  return (
+    <div className="sb-jobs-tabshell">
+      <style>{JOBS_TABROW_CSS}</style>
+      <div className="sb-crm-container sb-jobs-tabrow-wrap">
+        <JobsTabRow tab={tab} onChange={handleTabChange} />
       </div>
-    )
-  }
-
-  return (
-    <JobsDepartmentView
-      userId={userId}
-      onOpenJob={handleOpenJob}
-      onSwitchTab={onSwitchTab}
-      onOpenOrder={onOpenOrder}
-      onOpenOrderDetail={onOpenOrderDetail}
-      onOpenCustomer={onOpenCustomer}
-      onOpenQueue={onOpenQueue}
-      onEditOrder={onEditOrder}
-      headerSlot={<JobsViewToggle view={view} onChange={handleViewChange} />}
-    />
-  )
-}
-
-// ── View-mode toggle ────────────────────────────────────────────────────────
-// Pill-pair segmented control. Lives in two places: top-right of the hub
-// view header (passed as headerSlot prop) and at the top of the flat list
-// (rendered above the existing JobsListView header). Same component, same
-// state — operator's eye sees one control in one place at a time.
-
-function JobsViewToggle({ view, onChange }) {
-  const OPTIONS = [
-    { code: 'hubs',    label: 'Hubs',       desc: '4 operational departments' },
-    { code: 'all',     label: 'Jobs — All', desc: 'Every job, one flat list' },
-    { code: 'monitor', label: 'Command',    desc: 'Shop-floor command center' },
-  ]
-  return (
-    <div className="sb-jobs-view-toggle" role="tablist" aria-label="Jobs view mode">
-      {OPTIONS.map(opt => {
-        const active = opt.code === view
-        return (
-          <button
-            key={opt.code}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            title={opt.desc}
-            className={`sb-jobs-view-chip ${active ? 'sb-jobs-view-chip-active' : ''}`}
-            onClick={() => onChange(opt.code)}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
+      {body}
     </div>
   )
 }
+
+// ── Jobs tab row ─────────────────────────────────────────────────────────────
+// Mirrors the Inventory tab-row pattern: Dashboard (command center) + the hubs
+// as tabs + the flat list. One control, top of the page.
+const JOBS_TABS = [
+  { code: 'dashboard',    label: 'Dashboard' },
+  { code: 'admin',        label: 'Admin' },
+  { code: 'design',       label: 'Design' },
+  { code: 'production',   label: 'Production' },
+  { code: 'installation', label: 'Installation' },
+  { code: 'permits',      label: 'Permits' },
+  { code: 'workflow',     label: 'Workflow' },
+  { code: 'all',          label: 'Jobs — All' },
+]
+function JobsTabRow({ tab, onChange }) {
+  return (
+    <div className="sb-jobs-tabrow" role="tablist" aria-label="Jobs">
+      {JOBS_TABS.map(t => (
+        <button key={t.code} type="button" role="tab" aria-selected={tab === t.code}
+          className={`sb-jobs-tab ${tab === t.code ? 'on' : ''}`} onClick={() => onChange(t.code)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+const JOBS_TABROW_CSS = `
+  .sb-jobs-tabrow-wrap { padding-top: 18px; padding-bottom: 4px; }
+  .sb-jobs-tabrow { display: inline-flex; gap: 2px; background: #f0ece3; border-radius: 9px; padding: 3px; flex-wrap: wrap; }
+  .sb-jobs-tab { font: inherit; font-size: 13px; font-weight: 500; padding: 6px 14px; border: none; border-radius: 6px; background: none; color: #6b6256; cursor: pointer; white-space: nowrap; }
+  .sb-jobs-tab:hover { color: #2a2a27; }
+  .sb-jobs-tab.on { background: #fff; color: #9A7209; font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+`
 
 // =============================================================================
 // JOBS LIST VIEW — family-first operational table

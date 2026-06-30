@@ -36,12 +36,13 @@ function toRow(job) {
   }
 }
 
-export default function JobsCommandCenter({ onOpenJob }) {
+export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
+  const isProductionView = view === 'production'
   const [jobs, setJobs] = useState(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [syncedAt, setSyncedAt] = useState('')
-  const [activeKpi, setActiveKpi] = useState('overdue')   // which card filters the list
+  const [activeKpi, setActiveKpi] = useState(isProductionView ? 'production' : 'overdue')   // which card filters the list
   const [monitor, setMonitor] = useState(false)
   const reqRef = useRef(0)
 

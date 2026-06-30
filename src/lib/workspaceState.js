@@ -246,12 +246,12 @@ export function setSelectedHub(userId, hub) {
 // every hub at once. Persists per user so a preference for the flat view
 // survives reloads.
 
-const VALID_JOBS_VIEWS = ['hubs', 'all', 'monitor']
+const VALID_JOBS_VIEWS = ['dashboard', 'admin', 'design', 'production', 'installation', 'permits', 'workflow', 'all']
 
 export function getJobsView(userId) {
   const raw = readRaw(userId)
   const mode = raw?.jobsView
-  return VALID_JOBS_VIEWS.includes(mode) ? mode : 'hubs'
+  return VALID_JOBS_VIEWS.includes(mode) ? mode : 'dashboard'
 }
 
 export function setJobsView(userId, mode) {

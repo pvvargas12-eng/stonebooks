@@ -103,8 +103,16 @@ export default function JobsDepartmentView({
   // Slot for the parent JobsTab's Hubs/All view toggle so it sits in the
   // page header alongside the search box rather than floating elsewhere.
   headerSlot = null,
+  // PART 1 restructure — when the parent Jobs tab-row drives the hub, it passes
+  // forcedHub and hides this view's own HubSelectorStrip (the tab row replaces
+  // it). All existing per-hub bodies render unchanged — nothing is lost.
+  forcedHub = null,
+  hideStrip = false,
 }) {
-  const [hub, setHub] = useState(() => getSelectedHub(userId))
+  // When the parent tab-row drives selection, `hub` is simply forcedHub (no
+  // local state to sync). Otherwise it's internal, switched via the strip.
+  const [internalHub, setHub] = useState(() => getSelectedHub(userId))
+  const hub = forcedHub || internalHub
   const [jobs, setJobs] = useState(null)
   const [orders, setOrders] = useState(null)             // consumed by the Quote Hub section
   // The CURRENT proof_versions row per job (Map job_id → {sent_at, approved_at}) —
@@ -309,14 +317,16 @@ export default function JobsDepartmentView({
           </div>
         )}
 
-        {/* Hub selector — 4 cards across the top. Always rendered (counts
-            show 0 until data lands rather than the strip disappearing). */}
-        <HubSelectorStrip
-          hubData={hubData}
-          selectedHub={hub}
-          onSelect={handleHubChange}
-          loading={loading}
-        />
+        {/* Hub selector — 4 cards across the top. Hidden when the parent Jobs
+            tab-row drives hub selection (hideStrip). */}
+        {!hideStrip && (
+          <HubSelectorStrip
+            hubData={hubData}
+            selectedHub={hub}
+            onSelect={handleHubChange}
+            loading={loading}
+          />
+        )}
       </div>
 
       {/* BRANCH — Workflow + Permits section hubs re-parent a whole existing
