@@ -65,6 +65,7 @@ import {
   recencyBand, severityRank,
 } from './lib/jobsRowHelpers'
 import JobsDepartmentView from './JobsDepartmentView'
+import JobsCommandCenter from './JobsCommandCenter'
 import { getJobsView, setJobsView } from './lib/workspaceState'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
 // view rendered as a tab inside JobDetail. Pure read-arrange of the joined
@@ -105,7 +106,7 @@ export default function JobsTab({
   // same view mode without a flash.
   const [view, setView] = useState(() => getJobsView(userId))
   const handleViewChange = (next) => {
-    if (next !== 'hubs' && next !== 'all') return
+    if (next !== 'hubs' && next !== 'all' && next !== 'monitor') return
     setView(next)
     setJobsView(userId, next)
   }
@@ -157,6 +158,20 @@ export default function JobsTab({
     )
   }
 
+  if (view === 'monitor') {
+    return (
+      <div className="sb-crm-page">
+        <div className="sb-crm-container">
+          <header className="sb-crm-head">
+            <div><h1 className="sb-crm-head-title">Jobs</h1></div>
+            <div className="sb-crm-head-actions"><JobsViewToggle view={view} onChange={handleViewChange} /></div>
+          </header>
+          <JobsCommandCenter onOpenJob={handleOpenJob} />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <JobsDepartmentView
       userId={userId}
@@ -180,8 +195,9 @@ export default function JobsTab({
 
 function JobsViewToggle({ view, onChange }) {
   const OPTIONS = [
-    { code: 'hubs', label: 'Hubs',      desc: '4 operational departments' },
-    { code: 'all',  label: 'Jobs — All', desc: 'Every job, one flat list' },
+    { code: 'hubs',    label: 'Hubs',       desc: '4 operational departments' },
+    { code: 'all',     label: 'Jobs — All', desc: 'Every job, one flat list' },
+    { code: 'monitor', label: 'Command',    desc: 'Shop-floor command center' },
   ]
   return (
     <div className="sb-jobs-view-toggle" role="tablist" aria-label="Jobs view mode">
