@@ -1,27 +1,29 @@
 // =============================================================================
-// JobsCommandCenter — Phase A: shop-floor command center (READ-ONLY reskin)
+// JobsCommandCenter — PART 1: shop-floor command center (READ-ONLY)
 // =============================================================================
-// A dark "war-room" surface over the EXISTING Jobs truth — no schema, no new
-// status. KPI cards read live hub counts (getHubWorkItems) + Overdue/Blocked
-// (computeOrderPressure); clicking a card filters the job list below. Two alert
-// panels surface red/amber pressure. A Shop Monitor mode goes full-screen with
-// large type + auto-refresh for the shop wall.
+// A dark "war-room" over the EXISTING Jobs truth — no schema, no new status.
+// KPI cards read live counts (jobs + milestones + computeOrderPressure); clicking
+// one filters the list below. An on-time gauge and an aging-bottlenecks list give
+// the owner read. A placeholder panel reserves the layout for the PART 2 three-
+// track production funnel. A Shop Monitor mode goes full-screen + auto-refresh.
 //
 // Mirrors the Inventory Command Center's .invd-* dark system, namespaced .jobcc-*.
-// Counts are never hardcoded — they read ~308 today and will fall to ~92 after
+// Counts are never hardcoded — they read ~308 today and fall to ~92 after
 // reconciliation closes the phantom orders. That drop is expected and correct.
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getJobs, HUB_DEFS, getHubWorkItems, computeOrderPressure } from './lib/stonebooksData'
+import { getJobs, computeOrderPressure } from './lib/stonebooksData'
 import { currentStage } from './lib/jobsRowHelpers'
 
-const HUB_ORDER = ['admin', 'design', 'production', 'installation']
-const HUB_TONE = { admin: 'purple', design: 'amber', production: 'green', installation: 'green' }
 const REFRESH_MS = 30000
+const DAY_MS = 86400000
 
 const familyOf = (o) => o?.primary_lastname || o?.customer?.last_name || '—'
+const msDone = (job, key) => (job?.milestones || []).some(m => m.milestone_key === key && m.status === 'done')
+// new Date(<string>) is deterministic (pure) — only bare new Date()/Date.now() in
+// render is the React 19 violation. Current time is read once in load() (todayMs).
+const dateMs = (d) => (d ? new Date(`${String(d).slice(0, 10)}T00:00:00`).getTime() : null)
 
-// One display row from either a hub work-item or a pressure item.
 function toRow(job) {
   const o = job?.order || null
   const stage = currentStage(job)
@@ -33,6 +35,7 @@ function toRow(job) {
     cemetery: o?.cemetery?.name || '',
     stage: stage?.fineLabel || stage?.bucketLabel || 'Intake',
     blocker: pressure?.blocker || null,
+    updateMs: job.last_update_at ? dateMs(job.last_update_at) : null,
   }
 }
 
@@ -42,7 +45,8 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [syncedAt, setSyncedAt] = useState('')
-  const [activeKpi, setActiveKpi] = useState(isProductionView ? 'production' : 'overdue')   // which card filters the list
+  const [todayMs, setTodayMs] = useState(0)
+  const [activeKpi, setActiveKpi] = useState(isProductionView ? 'in_production' : 'overdue')
   const [monitor, setMonitor] = useState(false)
   const reqRef = useRef(0)
 
@@ -53,7 +57,8 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
       if (token !== reqRef.current) return
       setJobs((data || []).filter(j => j.overall_status !== 'cancelled'))
       setErr(null)
-      // Stamp outside render (avoids the React 19 new-Date-in-render lint).
+      // Read the clock once, outside render (avoids the React 19 purity lint).
+      const d = new Date(); d.setHours(0, 0, 0, 0); setTodayMs(d.getTime())
       setSyncedAt(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
     } catch (e) {
       if (token === reqRef.current) { setErr(e?.message || 'Failed to load jobs'); setJobs([]) }
@@ -63,14 +68,12 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
   }, [])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
-  // Shop Monitor auto-refresh — only while monitor mode is on.
   useEffect(() => {
     if (!monitor) return
     const id = setInterval(load, REFRESH_MS)
     return () => clearInterval(id)
   }, [monitor, load])
 
-  // Escape exits the full-screen shop wall.
   useEffect(() => {
     if (!monitor) return
     const onKey = (e) => { if (e.key === 'Escape') setMonitor(false) }
@@ -78,50 +81,73 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [monitor])
 
-  // Hub counts — the exact same derivation the Hubs view uses (no copy).
-  const hubData = useMemo(() => {
-    if (!jobs) return null
-    return Object.fromEntries(HUB_ORDER.map(h => [h, getHubWorkItems(h, jobs)]))
-  }, [jobs])
-
-  // Pressure across every job → Overdue (red) / Blocked (amber) headline + panels.
+  // Pressure across every job → Overdue (red) / Blocked (amber).
   const pressure = useMemo(() => {
     const red = [], amber = []
     for (const j of (jobs || [])) {
       if (!j?.order) continue
       const p = computeOrderPressure(j.order, j, j.milestones || [])
-      if (!p?.blocker) continue
-      if (p.blocker.severity === 'red') red.push(j)
-      else if (p.blocker.severity === 'amber') amber.push(j)
+      if (p?.blocker?.severity === 'red') red.push(j)
+      else if (p?.blocker?.severity === 'amber') amber.push(j)
     }
     return { red, amber }
   }, [jobs])
 
+  // Milestone/date-derived metric sets (all from existing truth).
+  const metrics = useMemo(() => {
+    const list = jobs || []
+    const wk = todayMs + 7 * DAY_MS
+    const dueWeek = [], readySet = [], inProd = []
+    for (const j of list) {
+      const tm = dateMs(j.order?.target_completion_date)
+      if (tm != null && todayMs && tm >= todayMs && tm <= wk && !msDone(j, 'installed')) dueWeek.push(j)
+      if (msDone(j, 'ready_to_install') && !msDone(j, 'installed')) readySet.push(j)
+      if (msDone(j, 'production_started') && !msDone(j, 'production_completed')) inProd.push(j)
+    }
+    return { active: list, dueWeek, readySet, inProd }
+  }, [jobs, todayMs])
+
+  // On-time gauge — distribution of DATED, not-yet-installed jobs.
+  const gauge = useMemo(() => {
+    const wk = todayMs + 7 * DAY_MS
+    let onTrack = 0, dueSoon = 0, overdue = 0
+    for (const j of (jobs || [])) {
+      const tm = dateMs(j.order?.target_completion_date)
+      if (tm == null || !todayMs || msDone(j, 'installed')) continue
+      if (tm < todayMs) overdue++
+      else if (tm <= wk) dueSoon++
+      else onTrack++
+    }
+    return { onTrack, dueSoon, overdue, total: onTrack + dueSoon + overdue }
+  }, [jobs, todayMs])
+
+  // Aging bottlenecks — not-done jobs that have sat untouched > 14 days, oldest first.
+  const aging = useMemo(() => {
+    if (!todayMs) return []
+    return (jobs || [])
+      .map(toRow)
+      .filter(r => r.updateMs && (todayMs - r.updateMs) > 14 * DAY_MS)
+      .map(r => ({ ...r, days: Math.floor((todayMs - r.updateMs) / DAY_MS) }))
+      .sort((a, b) => b.days - a.days)
+      .slice(0, 12)
+  }, [jobs, todayMs])
+
   const kpis = useMemo(() => ([
-    ...HUB_ORDER.map(h => ({
-      key: h, label: HUB_DEFS[h].label, tone: HUB_TONE[h],
-      value: hubData?.[h]?.counts.total ?? 0,
-      sub: `${hubData?.[h]?.counts.urgent ?? 0} need attention`,
-    })),
-    { key: 'overdue', label: 'Overdue', tone: 'red', value: pressure.red.length, sub: 'red — past due / unpaid' },
-    { key: 'blocked', label: 'Blocked', tone: 'amber', value: pressure.amber.length, sub: 'amber — waiting / stalled' },
-  ]), [hubData, pressure])
+    { key: 'active',        label: 'Active jobs',   tone: 'green',  value: metrics.active.length, sub: 'in production' },
+    { key: 'due_week',      label: 'Due this week', tone: 'amber',  value: metrics.dueWeek.length, sub: 'target within 7 days' },
+    { key: 'overdue',       label: 'Overdue',       tone: 'red',    value: pressure.red.length,   sub: 'red — past due / unpaid' },
+    { key: 'blocked',       label: 'Blocked',       tone: 'amber',  value: pressure.amber.length, sub: 'amber — waiting / stalled' },
+    { key: 'ready_set',     label: 'Ready to set',  tone: 'purple', value: metrics.readySet.length, sub: 'stone ready, not installed' },
+    { key: 'in_production', label: 'In production', tone: 'green',  value: metrics.inProd.length, sub: 'cutting → blasting' },
+  ]), [metrics, pressure])
 
-  // Alert panels — the at-a-glance red/amber lists (always visible).
-  const alertRows = useMemo(() => ({
-    red: pressure.red.map(toRow),
-    amber: pressure.amber.map(toRow),
-  }), [pressure])
-
-  // The list below reflects the selected card.
   const listRows = useMemo(() => {
-    if (!jobs) return []
-    let src
-    if (activeKpi === 'overdue') src = pressure.red
-    else if (activeKpi === 'blocked') src = pressure.amber
-    else src = (hubData?.[activeKpi]?.items || []).map(it => it.job)
-    return src.map(toRow)
-  }, [jobs, activeKpi, hubData, pressure])
+    const pick = {
+      active: metrics.active, due_week: metrics.dueWeek, overdue: pressure.red,
+      blocked: pressure.amber, ready_set: metrics.readySet, in_production: metrics.inProd,
+    }[activeKpi] || metrics.active
+    return pick.map(toRow)
+  }, [activeKpi, metrics, pressure])
 
   const activeLabel = kpis.find(k => k.key === activeKpi)?.label || ''
 
@@ -131,8 +157,10 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
 
       <header className="jobcc-cmd">
         <div className="jobcc-cmd-left">
-          <h1 className="jobcc-title">Jobs Command Center</h1>
-          <div className="jobcc-purpose">Live shop-floor state — what's overdue, blocked, and moving across every department.</div>
+          <h1 className="jobcc-title">{isProductionView ? 'Production' : 'Jobs Command Center'}</h1>
+          <div className="jobcc-purpose">{isProductionView
+            ? 'Production-floor jobs across the shop — the three-track assembly board lands here next.'
+            : "Live shop-floor state — what's overdue, blocked, due, and moving across every department."}</div>
         </div>
         <div className="jobcc-cmd-right">
           <span className="jobcc-live"><span className="jobcc-live-dot" /> LIVE · synced {syncedAt || '—'}{monitor ? ' · auto every 30s · Esc to exit' : ''}</span>
@@ -158,69 +186,98 @@ export default function JobsCommandCenter({ onOpenJob, view = 'dashboard' }) {
         ))}
       </div>
 
-      {/* ALERT PANELS — red/amber pressure at a glance */}
+      {/* ON-TIME GAUGE + AGING BOTTLENECKS */}
       <div className="jobcc-grid">
-        <AlertPanel title="Overdue" tone="red" rows={alertRows.red} loading={loading} onOpenJob={onOpenJob}
-          empty="✓ Nothing overdue — no red blockers." />
-        <AlertPanel title="Blocked / Waiting" tone="amber" rows={alertRows.amber} loading={loading} onOpenJob={onOpenJob}
-          empty="✓ Nothing blocked — no amber holds." />
+        <OnTimeGauge gauge={gauge} loading={loading} />
+        <section className="jobcc-panel">
+          <div className="jobcc-panel-head">
+            <span className="jobcc-panel-title">Aging bottlenecks</span>
+            <span className="jobcc-panel-count jobcc-c-amber">{loading ? '—' : aging.length}</span>
+          </div>
+          <div className="jobcc-panel-hint">Not touched in 14+ days — oldest first.</div>
+          {loading ? <div className="jobcc-empty">Loading…</div>
+            : aging.length === 0 ? <div className="jobcc-empty jobcc-empty-ok">✓ Nothing stale — everything's moving.</div>
+            : (
+              <div className="jobcc-alerts">
+                {aging.map(r => (
+                  <button type="button" key={r.jobId} className="jobcc-alert" onClick={() => onOpenJob?.(r.jobId)}>
+                    <div className="jobcc-alert-top">
+                      <span className="jobcc-alert-fam">{r.family}</span>
+                      <span className="jobcc-tag jobcc-tag-amber">{r.days}d</span>
+                      {r.blocker && <span className={`jobcc-tag jobcc-tag-${r.blocker.severity === 'red' ? 'red' : 'amber'}`}>{r.blocker.label}</span>}
+                    </div>
+                    <div className="jobcc-alert-spec">{r.stage}{r.orderNumber || r.cemetery ? ` · ${[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}` : ''}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+        </section>
       </div>
 
-      {/* JOB LIST — reflects the selected card */}
+      {/* PRODUCTION FLOOR — PART 2 placeholder */}
+      <section className="jobcc-panel jobcc-floor">
+        <div className="jobcc-panel-head"><span className="jobcc-panel-title">Production floor — three tracks</span></div>
+        <div className="jobcc-floor-stub">
+          <div className="jobcc-floor-tracks">
+            {['New Stone', 'Inscription', 'Mausoleum Door'].map(t => (
+              <div key={t} className="jobcc-floor-track"><span className="jobcc-floor-track-l">{t}</span></div>
+            ))}
+          </div>
+          <div className="jobcc-floor-note">⚙ Production tracking coming online — per-component assembly board (Part 2).</div>
+        </div>
+      </section>
+
+      {/* JOB LIST — reflects the selected KPI */}
       <section className="jobcc-panel">
         <div className="jobcc-panel-head">
           <span className="jobcc-panel-title">{activeLabel}</span>
           <span className="jobcc-panel-count">{loading ? '—' : listRows.length}</span>
         </div>
-        {loading ? (
-          <div className="jobcc-empty">Loading…</div>
-        ) : listRows.length === 0 ? (
-          <div className="jobcc-empty jobcc-empty-ok">✓ Nothing here — all clear.</div>
-        ) : (
-          <div className="jobcc-rows">
-            {listRows.map(r => (
-              <button type="button" key={r.jobId} className="jobcc-row" onClick={() => onOpenJob?.(r.jobId)}>
-                <span className="jobcc-row-fam">{r.family}</span>
-                <span className="jobcc-row-stage">{r.stage}</span>
-                {r.blocker
-                  ? <span className={`jobcc-tag jobcc-tag-${r.blocker.severity === 'red' ? 'red' : 'amber'}`}>{r.blocker.label}</span>
-                  : <span className="jobcc-row-clear">on track</span>}
-                <span className="jobcc-row-meta">{[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}</span>
-              </button>
-            ))}
-          </div>
-        )}
+        {loading ? <div className="jobcc-empty">Loading…</div>
+          : listRows.length === 0 ? <div className="jobcc-empty jobcc-empty-ok">✓ Nothing here — all clear.</div>
+          : (
+            <div className="jobcc-rows">
+              {listRows.map(r => (
+                <button type="button" key={r.jobId} className="jobcc-row" onClick={() => onOpenJob?.(r.jobId)}>
+                  <span className="jobcc-row-fam">{r.family}</span>
+                  <span className="jobcc-row-stage">{r.stage}</span>
+                  {r.blocker
+                    ? <span className={`jobcc-tag jobcc-tag-${r.blocker.severity === 'red' ? 'red' : 'amber'}`}>{r.blocker.label}</span>
+                    : <span className="jobcc-row-clear">on track</span>}
+                  <span className="jobcc-row-meta">{[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}</span>
+                </button>
+              ))}
+            </div>
+          )}
       </section>
     </div>
   )
 }
 
-function AlertPanel({ title, tone, rows, loading, onOpenJob, empty }) {
-  const shown = rows.slice(0, 8)
+function OnTimeGauge({ gauge, loading }) {
+  const { onTrack, dueSoon, overdue, total } = gauge
+  const pct = (n) => total ? Math.round((n / total) * 100) : 0
+  const a = total ? (onTrack / total) * 100 : 0
+  const b = total ? a + (dueSoon / total) * 100 : 0
+  const ring = total
+    ? `conic-gradient(#34d399 0 ${a}%, #fbbf24 ${a}% ${b}%, #f87171 ${b}% 100%)`
+    : 'conic-gradient(#232a35 0 100%)'
   return (
     <section className="jobcc-panel">
-      <div className="jobcc-panel-head">
-        <span className="jobcc-panel-title">{title}</span>
-        <span className={`jobcc-panel-count jobcc-c-${tone}`}>{loading ? '—' : rows.length}</span>
-      </div>
-      {loading ? (
-        <div className="jobcc-empty">Loading…</div>
-      ) : rows.length === 0 ? (
-        <div className="jobcc-empty jobcc-empty-ok">{empty}</div>
-      ) : (
-        <div className="jobcc-alerts">
-          {shown.map(r => (
-            <button type="button" key={r.jobId} className={`jobcc-alert jobcc-alert-${tone}`} onClick={() => onOpenJob?.(r.jobId)}>
-              <div className="jobcc-alert-top">
-                <span className="jobcc-alert-fam">{r.family}</span>
-                {r.blocker && <span className={`jobcc-tag jobcc-tag-${tone}`}>{r.blocker.label}</span>}
-              </div>
-              <div className="jobcc-alert-spec">{r.stage}{r.orderNumber || r.cemetery ? ` · ${[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}` : ''}</div>
-            </button>
-          ))}
-          {rows.length > 8 && <div className="jobcc-more">+{rows.length - 8} more</div>}
+      <div className="jobcc-panel-head"><span className="jobcc-panel-title">On-time</span><span className="jobcc-panel-count">{loading ? '—' : total} dated</span></div>
+      <div className="jobcc-gauge">
+        <div className="jobcc-donut" style={{ background: ring }}>
+          <div className="jobcc-donut-hole">
+            <div className="jobcc-donut-n">{loading ? '—' : `${pct(onTrack)}%`}</div>
+            <div className="jobcc-donut-l">on track</div>
+          </div>
         </div>
-      )}
+        <div className="jobcc-legend">
+          <div className="jobcc-leg"><span className="jobcc-dot jobcc-dot-green" /> On track <strong>{onTrack}</strong> <span className="jobcc-leg-pct">{pct(onTrack)}%</span></div>
+          <div className="jobcc-leg"><span className="jobcc-dot jobcc-dot-amber" /> Due this week <strong>{dueSoon}</strong> <span className="jobcc-leg-pct">{pct(dueSoon)}%</span></div>
+          <div className="jobcc-leg"><span className="jobcc-dot jobcc-dot-red" /> Overdue <strong>{overdue}</strong> <span className="jobcc-leg-pct">{pct(overdue)}%</span></div>
+        </div>
+      </div>
     </section>
   )
 }
@@ -243,7 +300,7 @@ const JOBCC_CSS = `
   .jobcc-btn:hover { background: #232c38; border-color: #3a4452; }
   .jobcc-err { background: #1c1416; border: 1px solid #5c2a2a; color: #f87171; padding: 10px 12px; border-radius: 9px; margin-bottom: 14px; }
 
-  .jobcc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .jobcc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
   .jobcc-kpi { text-align: left; font: inherit; cursor: pointer; background: #11151c; border: 1px solid #20262f; border-left-width: 3px; border-radius: 11px; padding: 13px 15px; transition: background .12s, border-color .12s; }
   .jobcc-kpi:hover { background: #151b24; }
   .jobcc-kpi-on { background: #1a2230; border-color: #3a4452; box-shadow: inset 0 0 0 1px #3a4452; }
@@ -258,22 +315,39 @@ const JOBCC_CSS = `
 
   .jobcc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   @media (max-width: 1000px) { .jobcc-grid { grid-template-columns: 1fr; } }
+  .jobcc-panel { background: #11151c; border: 1px solid #20262f; border-radius: 12px; padding: 15px 17px; margin-bottom: 16px; }
+  .jobcc-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .jobcc-panel-title { font-size: 13px; font-weight: 700; color: #f4f6fa; text-transform: uppercase; letter-spacing: 0.04em; }
+  .jobcc-panel-count { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: #1a212b; color: #c7cedb; }
+  .jobcc-panel-hint { font-size: 11.5px; color: #6f7a8a; margin-bottom: 10px; }
   .jobcc-c-red { color: #f87171; } .jobcc-c-amber { color: #fbbf24; }
+  .jobcc-empty { color: #6f7a8a; font-size: 13px; padding: 10px 2px; }
+  .jobcc-empty-ok { color: #34d399; }
+
+  .jobcc-gauge { display: flex; align-items: center; gap: 22px; padding: 6px 0 2px; }
+  .jobcc-donut { width: 120px; height: 120px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .jobcc-donut-hole { width: 82px; height: 82px; border-radius: 50%; background: #11151c; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .jobcc-donut-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 24px; font-weight: 700; color: #f4f6fa; }
+  .jobcc-donut-l { font-size: 10.5px; color: #8b95a5; text-transform: uppercase; letter-spacing: 0.04em; }
+  .jobcc-legend { display: flex; flex-direction: column; gap: 8px; }
+  .jobcc-leg { font-size: 13px; color: #c7cedb; display: flex; align-items: center; gap: 8px; }
+  .jobcc-leg strong { color: #f4f6fa; }
+  .jobcc-leg-pct { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #6f7a8a; }
+  .jobcc-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .jobcc-dot-green { background: #34d399; } .jobcc-dot-amber { background: #fbbf24; } .jobcc-dot-red { background: #f87171; }
+
   .jobcc-alerts { display: flex; flex-direction: column; gap: 9px; }
   .jobcc-alert { text-align: left; font: inherit; cursor: pointer; width: 100%; background: #151a22; border: 1px solid #232a35; border-radius: 9px; padding: 10px 12px; color: #e6e9ef; }
   .jobcc-alert:hover { background: #1a212b; }
-  .jobcc-alert-red { border-color: #5c2a2a; background: #1c1416; }
   .jobcc-alert-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .jobcc-alert-fam { font-size: 14px; font-weight: 700; color: #f4f6fa; }
   .jobcc-alert-spec { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #c7cedb; }
-  .jobcc-more { font-size: 11.5px; color: #6f7a8a; padding: 2px 2px 0; }
 
-  .jobcc-panel { background: #11151c; border: 1px solid #20262f; border-radius: 12px; padding: 15px 17px; margin-bottom: 16px; }
-  .jobcc-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-  .jobcc-panel-title { font-size: 13px; font-weight: 700; color: #f4f6fa; text-transform: uppercase; letter-spacing: 0.04em; }
-  .jobcc-panel-count { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: #1a212b; color: #c7cedb; }
-  .jobcc-empty { color: #6f7a8a; font-size: 13px; padding: 10px 2px; }
-  .jobcc-empty-ok { color: #34d399; }
+  .jobcc-floor-stub { display: flex; flex-direction: column; gap: 12px; }
+  .jobcc-floor-tracks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .jobcc-floor-track { background: #151a22; border: 1px dashed #2a3340; border-radius: 9px; padding: 18px 12px; text-align: center; }
+  .jobcc-floor-track-l { font-size: 13px; font-weight: 700; color: #8b95a5; text-transform: uppercase; letter-spacing: 0.04em; }
+  .jobcc-floor-note { font-size: 12.5px; color: #6f7a8a; }
 
   .jobcc-rows { display: flex; flex-direction: column; }
   .jobcc-row { text-align: left; font: inherit; cursor: pointer; display: grid; grid-template-columns: 1.4fr 1fr auto 1.3fr; gap: 12px; align-items: center;
