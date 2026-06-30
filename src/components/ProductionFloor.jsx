@@ -12,7 +12,7 @@
 // =============================================================================
 import { useState, useEffect, useCallback } from 'react'
 import {
-  getProductionComponents, getCurrentStaffName,
+  getProductionComponents, getJobComponents, getCurrentStaffName,
   advanceComponent, reverseComponent, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
   setComponentBlocker, setComponentNotes, permitStatusLabel,
@@ -227,6 +227,117 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
     </div>
   )
 }
+
+// ── Order-side production control (OrderDetail) ──────────────────────────────
+// Reads + writes the SAME job_components the board uses (source:'order'). Light-
+// themed to match OrderDetail. Track-aware (only that order's track's phases),
+// multi-component (die + base set independently), QC gate respected. Two-way: this
+// and the board both write the one job_components row — no second status field.
+export function OrderProductionStatus({ orderId }) {
+  const [comps, setComps] = useState(null)
+  const load = useCallback(async () => { setComps(await getJobComponents({ orderId })) }, [orderId])
+  useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
+  if (comps == null) return <div className="ops"><style>{OPS_CSS}</style><div className="ops-empty">Loading…</div></div>
+  if (comps.length === 0) return (
+    <div className="ops"><style>{OPS_CSS}</style>
+      <div className="ops-empty">No production components yet — they seed when the order enters production.</div>
+    </div>
+  )
+  return (
+    <div className="ops">
+      <style>{OPS_CSS}</style>
+      <div className="ops-head">
+        <span className="ops-track">{TRACK_LABEL[comps[0].track]} track</span>
+        <button type="button" className="ops-refresh" onClick={load} title="Reflect board changes">↻</button>
+      </div>
+      {comps.map(c => <OpsRow key={c.id} comp={c} onChanged={load} />)}
+      <div className="ops-note">Edits here move the same piece the Jobs board tracks — one source of truth.</div>
+    </div>
+  )
+}
+
+function OpsRow({ comp, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState(null)   // 'deny' | 'override'
+  const [text, setText] = useState('')
+  const [err, setErr] = useState(null)
+  const atQc = comp.current_phase === QC_PHASE
+  const held = !!comp.qc_issue
+  const run = async (fn) => {
+    setBusy(true); setErr(null)
+    const actor = await getCurrentStaffName()
+    const r = await fn(actor)
+    setBusy(false)
+    if (r && r.ok === false) { setErr(r.error || 'Failed'); return }
+    setMode(null); setText(''); onChanged?.()
+  }
+  return (
+    <div className={`ops-row ${held ? 'ops-row-held' : ''}`}>
+      <div className="ops-row-main">
+        <span className="ops-type">{TYPE_LABEL[comp.component_type] || comp.label}</span>
+        <span className="ops-phase">{phaseLabel(comp.current_phase)}</span>
+        {held && <span className="ops-held">⚠ HELD: {comp.qc_issue}</span>}
+      </div>
+      {mode === 'deny' ? (
+        <div className="ops-form">
+          <input className="ops-input" value={text} placeholder="QC issue (chip, misspelling…)" onChange={e => setText(e.target.value)} />
+          <button type="button" className="ops-btn ops-btn-deny" disabled={busy} onClick={() => run(a => qcDenyComponent(comp.id, text, { actor: a, source: 'order' }))}>Hold</button>
+          <button type="button" className="ops-btn" onClick={() => { setMode(null); setText('') }}>Cancel</button>
+        </div>
+      ) : mode === 'override' ? (
+        <div className="ops-form">
+          <select className="ops-input" value={text} onChange={e => setText(e.target.value)}>
+            <option value="">— move to phase —</option>
+            {trackPhases(comp.track).map(p => <option key={p} value={p}>{phaseLabel(p)}</option>)}
+          </select>
+          <button type="button" className="ops-btn ops-btn-go" disabled={busy || !text} onClick={() => run(a => overrideComponentPhase(comp.id, text, { actor: a, source: 'order' }))}>Set</button>
+          <button type="button" className="ops-btn" onClick={() => { setMode(null); setText('') }}>Cancel</button>
+        </div>
+      ) : (
+        <div className="ops-actions">
+          {atQc ? (
+            <>
+              <button type="button" className="ops-btn ops-btn-go" disabled={busy || held} title={held ? 'Clear the issue first' : 'Approve'} onClick={() => run(a => qcApproveComponent(comp.id, { actor: a, source: 'order' }))}>✓ Approve</button>
+              {held
+                ? <button type="button" className="ops-btn" disabled={busy} onClick={() => run(a => clearComponentQcIssue(comp.id, { actor: a, source: 'order' }))}>Clear issue</button>
+                : <button type="button" className="ops-btn ops-btn-deny" disabled={busy} onClick={() => setMode('deny')}>✕ Deny</button>}
+            </>
+          ) : (
+            <button type="button" className="ops-btn ops-btn-go" disabled={busy} onClick={() => run(a => advanceComponent(comp.id, { actor: a, source: 'order' }))}>Advance →</button>
+          )}
+          <button type="button" className="ops-btn" disabled={busy} onClick={() => run(a => reverseComponent(comp.id, { actor: a, source: 'order' }))}>← Back</button>
+          <button type="button" className="ops-btn ops-btn-ghost" onClick={() => { setMode('override'); setText('') }}>Set phase…</button>
+        </div>
+      )}
+      {err && <div className="ops-err">{err}</div>}
+    </div>
+  )
+}
+
+const OPS_CSS = `
+  .ops { font: inherit; }
+  .ops-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .ops-track { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #8a7f6a; }
+  .ops-refresh { font: inherit; font-size: 13px; background: none; border: 1px solid #e0dbd0; border-radius: 6px; padding: 2px 8px; cursor: pointer; color: #6b6256; }
+  .ops-empty { font-size: 13px; color: #9a948a; }
+  .ops-row { padding: 8px 0; border-top: 1px solid #f0ece1; }
+  .ops-row:first-of-type { border-top: none; }
+  .ops-row-held { background: #fdf3f2; border-radius: 8px; padding: 8px 10px; }
+  .ops-row-main { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .ops-type { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #6b6256; background: #f0ece1; border-radius: 999px; padding: 2px 9px; }
+  .ops-phase { font-size: 13.5px; font-weight: 700; color: #2a2a27; }
+  .ops-held { font-size: 11.5px; color: #b3261e; font-weight: 600; }
+  .ops-actions, .ops-form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .ops-btn { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px; border: 1px solid #d8d2c6; background: #fff; color: #2a2a27; cursor: pointer; }
+  .ops-btn:hover:not(:disabled) { background: #f7f4ee; }
+  .ops-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .ops-btn-go { border-color: #b9892e; background: #fbf6ec; color: #8a5a12; }
+  .ops-btn-deny { border-color: #e3b4b0; background: #fdf3f2; color: #b3261e; }
+  .ops-btn-ghost { color: #6b6256; }
+  .ops-input { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid #d8d2c6; border-radius: 7px; min-width: 180px; }
+  .ops-err { font-size: 11.5px; color: #b3261e; margin-top: 4px; }
+  .ops-note { font-size: 11px; color: #9a948a; margin-top: 8px; }
+`
 
 const PF_CSS = `
   .pf-funnel-wrap { display: flex; flex-direction: column; gap: 10px; }

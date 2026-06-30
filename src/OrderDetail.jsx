@@ -46,6 +46,7 @@ import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
+import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
@@ -1371,6 +1372,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <Field label="Add-ons" value={addOns.length
               ? addOns.map((a, i) => <div key={a.code || i}>{a.label || humanize(a.code)}{a.qty > 1 ? ` × ${a.qty}` : ''}</div>) : null} />
             <Field label="Proof / approval" value={proofLabel} hint={job ? null : 'no production job yet'} />
+          </Section>
+
+          {/* 3a2 — Production status — reads/writes the SAME job_components the Jobs
+              board uses (two-way, source:'order'). One source of truth per piece. */}
+          <Section id="od-production" title="Production status">
+            <OrderProductionStatus orderId={orderId} />
           </Section>
 
           {/* 3b — Design / proof quick-view (item B) */}
