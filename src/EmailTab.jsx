@@ -55,14 +55,14 @@ const BUCKET_GROUPS = [
   { label: 'System', items: [
     { key: 'sent', label: 'Sent' },
     { soon: true, label: 'Drafts' },
-    { soon: true, label: 'Junk / spam' },
+    { key: 'junk', label: 'Junk / spam' },
     { soon: true, label: 'Failed / attention' },
   ] },
 ]
 const BUCKET_LABEL = {
   tasks: 'Review queue',
   inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies',
-  unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent',
+  unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent', junk: 'Junk / spam',
 }
 // Task-type filter chips (order = display order); only types with tasks show.
 const TASK_TYPE_LABELS = {
@@ -125,6 +125,9 @@ export default function EmailTab() {
   const [sigModal, setSigModal] = useState(false)
   const [railCollapsed, setRailCollapsed] = useState(() => { try { return localStorage.getItem('cc_rail_collapsed') === '1' } catch { return false } })
   const toggleRail = () => setRailCollapsed(c => { const n = !c; try { localStorage.setItem('cc_rail_collapsed', n ? '1' : '0') } catch { /* ignore */ } return n })
+  const [junkOverride, setJunkOverride] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_junk') || '{}') } catch { return {} } })
+  const junkOf = (t) => (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
+  const markJunk = (key, val) => setJunkOverride(prev => { const n = { ...prev, [key]: val }; try { localStorage.setItem('cc_junk', JSON.stringify(n)) } catch { /* ignore */ } return n })
   const [tasks, setTasks] = useState([])
   const [taskSort, setTaskSort] = useState('priority')
   const [taskFilter, setTaskFilter] = useState('all')
@@ -161,9 +164,30 @@ export default function EmailTab() {
   }
 
   const visible = useMemo(
-    () => threads.filter(t => matchBucket(t, bucket)).filter(t => matchSearch(t, q)),
-    [threads, bucket, q],
+    () => threads.filter(t => {
+      const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
+      if (bucket === 'junk') return j && matchSearch(t, q)
+      if (!matchBucket(t, bucket)) return false
+      if (j && bucket !== 'sent') return false   // junk is hidden from the inbound buckets
+      return matchSearch(t, q)
+    }),
+    [threads, bucket, q, junkOverride],
   )
+  const msgCounts = useMemo(() => {
+    const c = { inbox: 0, needs_reply: 0, customer_replies: 0, unlinked: 0, photos: 0, sent: 0, junk: 0 }
+    for (const t of threads) {
+      const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
+      if (j) c.junk++
+      const inb = !j
+      if (t.hasInbound && inb) c.inbox++
+      if (t.latestDirection === 'inbound' && inb) c.needs_reply++
+      if (t.matched && t.hasInbound && inb) c.customer_replies++
+      if (!t.matched && inb) c.unlinked++
+      if (t.hasAttachments && inb) c.photos++
+      if (t.hasOutbound) c.sent++
+    }
+    return c
+  }, [threads, junkOverride])
   const activeTasks = useMemo(() => tasks.filter(t => !snoozed.has(t.key)), [tasks, snoozed])
   const typeCounts = useMemo(() => {
     const m = {}
@@ -224,7 +248,7 @@ export default function EmailTab() {
   }
 
   const openThread = async (t) => {
-    setReading({ key: t.key, name: t.name, contact: t.contact, customerId: t.customerId, threadKey: t.threadKey, matched: t.matched, busy: true, messages: [], err: null })
+    setReading({ key: t.key, name: t.name, contact: t.contact, customerId: t.customerId, threadKey: t.threadKey, matched: t.matched, junk: t.junk, busy: true, messages: [], err: null })
     setBrain(null)
     if (t.unread > 0) {
       markThreadRead({ customerId: t.customerId, threadKey: t.threadKey })
@@ -330,7 +354,7 @@ export default function EmailTab() {
                 const cnt = item.key === 'tasks' ? activeTasks.length
                   : item.filter === 'payments' ? ((typeCounts.deposit || 0) + (typeCounts.balance_due || 0))
                     : item.filter ? (typeCounts[item.filter] || 0)
-                      : counts[item.key]
+                      : (msgCounts[item.key] ?? counts[item.key])
                 const tone = item.key === 'tasks' ? 'amber' : item.tone
                 const go = isTaskBucket
                   ? () => { setBucket('tasks'); setTaskFilter(filt); setReading(null); setBrain(null) }
@@ -440,6 +464,7 @@ export default function EmailTab() {
                   </div>
                   <div className="cc-read-head-actions">
                     <button type="button" className="cc-btn cc-btn-primary" onClick={replyToThread} disabled={reading.busy}>Reply</button>
+                    <button type="button" className="cc-btn" onClick={() => markJunk(reading.key, !junkOf(reading))}>{junkOf(reading) ? 'Not junk' : 'Mark junk'}</button>
                     <button type="button" className="cc-btn" onClick={() => { setReading(null); setBrain(null) }}>Close</button>
                   </div>
                 </div>

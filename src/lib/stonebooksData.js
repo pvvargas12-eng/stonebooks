@@ -439,6 +439,18 @@ export async function syncInbox() {
   } catch { return { ok: false, error: 'Email sync backend unreachable.' } }
 }
 
+// Junk/spam heuristic — CONSERVATIVE: never flags a matched customer. Flags an
+// unmatched thread when the sender looks automated (no-reply / bulk ESP) or the
+// subject/snippet carries obvious marketing markers. Manual override wins in the UI.
+const _JUNK_SENDER = /(no-?reply|do-?not-?reply|newsletter|marketing|notification|mailer-daemon|@(.*\.)?(mailchimp|mailchimpapp|sendgrid|constantcontact|hubspot|mailgun|list-manage|substack|beehiiv))/i
+const _JUNK_WORDS = /(unsubscribe|\bsale\b|\d+%\s*off|newsletter|webinar|limited[- ]time|act now|free trial|promo code|view (this )?(email )?in (your )?browser|shop now|special offer)/i
+function _isJunkThread(t) {
+  if (t.matched) return false
+  const from = (t.contact || '').toLowerCase()
+  const text = `${t.latestSubject || ''} ${t.latestSnippet || ''}`.toLowerCase()
+  return _JUNK_SENDER.test(from) || _JUNK_WORDS.test(text)
+}
+
 // ── Email command center — bucketed thread workspace (Slice 1) ─────────────
 // One fetch, grouped into customer/address threads with the flags the smart
 // buckets filter on. Iterating newest-first means the FIRST message seen per
@@ -477,6 +489,7 @@ export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
     if (r.direction === 'inbound' && !r.is_read) t.unread++
   }
   const threads = Array.from(map.values())
+  for (const t of threads) t.junk = _isJunkThread(t)
   const counts = {
     inbox: threads.filter(t => t.hasInbound).length,
     needs_reply: threads.filter(t => t.latestDirection === 'inbound').length,
