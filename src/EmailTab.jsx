@@ -24,8 +24,6 @@ import {
   rowBalanceDue, statusInfo, customerName, fmtUSD,
 } from './lib/stonebooksData'
 
-const SEARCH_EXAMPLES = ['Smith layout', 'Rosehill unsigned contract', 'photos missing', 'balance due', 'emails with attachments', 'waiting on approval']
-
 // Sidebar buckets. `key` = data-backed + clickable now; `soon` = roadmap only.
 const BUCKET_GROUPS = [
   { label: 'Queue', items: [
@@ -121,6 +119,7 @@ export default function EmailTab() {
   const [senderId, setSenderId] = useState('')
   const [sigModal, setSigModal] = useState(false)
   const [tasks, setTasks] = useState([])
+  const [taskSort, setTaskSort] = useState('priority')
   const [snoozed, setSnoozed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('cc_snoozed') || '[]')) } catch { return new Set() }
   })
@@ -157,7 +156,16 @@ export default function EmailTab() {
     () => threads.filter(t => matchBucket(t, bucket)).filter(t => matchSearch(t, q)),
     [threads, bucket, q],
   )
-  const visibleTasks = useMemo(() => tasks.filter(t => !snoozed.has(t.key)), [tasks, snoozed])
+  const visibleTasks = useMemo(() => {
+    const list = tasks.filter(t => !snoozed.has(t.key))
+    const cmp = {
+      priority: (a, b) => b.priority - a.priority,
+      amount: (a, b) => (b.amount || 0) - (a.amount || 0),
+      name: (a, b) => (a.name || '').localeCompare(b.name || ''),
+      type: (a, b) => (a.type || '').localeCompare(b.type || '') || b.priority - a.priority,
+    }[taskSort] || ((a, b) => b.priority - a.priority)
+    return [...list].sort(cmp)
+  }, [tasks, snoozed, taskSort])
 
   const snooze = (key) => setSnoozed(prev => {
     const n = new Set(prev); n.add(key)
@@ -169,9 +177,12 @@ export default function EmailTab() {
   const openTaskDraft = (task) => {
     const first = (task.name || '').trim().split(/\s+/)[0] || 'there'
     const ord = task.orderNumber ? ` (${task.orderNumber})` : ''
-    const body = task.type === 'balance_due'
-      ? `Hi ${first},\n\nWe hope you're doing well. This is a friendly reminder that a balance of ${fmtUSD(task.amount)} remains on your order${ord}. Whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com.\n\nPlease let us know if you have any questions — we're always glad to help.`
-      : `Hi ${first},\n\nJust following up on the estimate we put together for you${ord}. We'd be glad to help you move forward whenever you're ready, and we're happy to answer questions or make adjustments.\n\nPlease let us know how you'd like to proceed.`
+    const bodies = {
+      balance_due: `Hi ${first},\n\nWe hope you're doing well. This is a friendly reminder that a balance of ${fmtUSD(task.amount)} remains on your order${ord}. Whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com.\n\nPlease let us know if you have any questions — we're always glad to help.`,
+      followup: `Hi ${first},\n\nJust following up on the estimate we put together for you${ord}. We'd be glad to help you move forward whenever you're ready, and we're happy to answer questions or make adjustments.\n\nPlease let us know how you'd like to proceed.`,
+      closeout: `Hi ${first},\n\nIt was our privilege to complete your order${ord}, and we hope it brings you and your family comfort for years to come. Thank you for trusting Shevchenko Monuments with something so meaningful.\n\nIf there's ever anything we can do for you, please don't hesitate to reach out.`,
+    }
+    const body = bodies[task.type] || bodies.followup
     setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
   }
 
@@ -266,13 +277,6 @@ export default function EmailTab() {
         </div>
       </header>
 
-      <div className="cc-chips">
-        <span className="cc-chips-lead">Try</span>
-        {SEARCH_EXAMPLES.map(x => (
-          <button type="button" key={x} className="cc-chip" onClick={() => setQ(x)}>{x}</button>
-        ))}
-      </div>
-
       {syncMsg && <div className="cc-syncmsg">{syncMsg}</div>}
 
       <div className="cc-body">
@@ -315,6 +319,14 @@ export default function EmailTab() {
               bucket === 'tasks' ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
                 : loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`
             }</span>
+            {bucket === 'tasks' && (
+              <select className="cc-sort" value={taskSort} onChange={e => setTaskSort(e.target.value)} aria-label="Sort tasks">
+                <option value="priority">Sort: Priority</option>
+                <option value="amount">Sort: Amount due</option>
+                <option value="name">Sort: Customer A–Z</option>
+                <option value="type">Sort: Task type</option>
+              </select>
+            )}
           </div>
           {err && <div className="cc-error">{err}<div className="cc-error-hint">Make sure the mailbox is connected and the Gmail functions are deployed.</div></div>}
           <div className="cc-list-scroll">
@@ -324,6 +336,7 @@ export default function EmailTab() {
               ) : (
                 visibleTasks.map(t => (
                   <div key={t.key} className="cc-task">
+                    <button type="button" className="cc-task-x" onClick={() => snooze(t.key)} aria-label="Clear task" title="Clear this task">×</button>
                     <div className="cc-task-top">
                       <span className={`cc-task-tag cc-tag-${t.type}`}>{t.label}</span>
                       <span className="cc-task-ord">{t.orderNumber || 'DRAFT'}</span>
@@ -332,7 +345,6 @@ export default function EmailTab() {
                     <div className="cc-task-reason">{t.reason}</div>
                     <div className="cc-task-actions">
                       <button type="button" className="cc-btn cc-btn-primary" onClick={() => openTaskDraft(t)} disabled={!t.email}>Draft</button>
-                      <button type="button" className="cc-btn" onClick={() => snooze(t.key)}>Snooze</button>
                       {!t.email && <span className="cc-task-warn">no email on file</span>}
                     </div>
                   </div>
@@ -630,7 +642,8 @@ const CC_CSS = `
   .cc-count-red { background: rgba(179,38,30,0.28); color: #e79892; }
 
   .cc-list { border-left: 0.5px solid #ECE3D2; border-right: 0.5px solid #ECE3D2; display: flex; flex-direction: column; min-width: 0; }
-  .cc-list-head { padding: 13px 16px 10px; border-bottom: 0.5px solid #ECE3D2; }
+  .cc-list-head { display: flex; align-items: baseline; gap: 8px; padding: 13px 16px 10px; border-bottom: 0.5px solid #ECE3D2; }
+  .cc-sort { margin-left: auto; font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #444; cursor: pointer; }
   .cc-list-title { font-size: 15px; font-weight: 600; }
   .cc-list-sub { font-size: 12px; color: #8a8a85; margin-left: 8px; }
   .cc-list-scroll { overflow-y: auto; max-height: calc(100vh - 258px); }
@@ -717,13 +730,16 @@ const CC_CSS = `
   .cc-sender-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; }
   .cc-sender-ok { font-size: 12px; color: #1f7a3d; }
   .cc-sender-err { font-size: 12px; color: #b3261e; }
-  .cc-task { border-bottom: 0.5px solid #f1efeb; padding: 12px 16px; }
+  .cc-task { position: relative; border-bottom: 0.5px solid #f1efeb; padding: 12px 16px; }
   .cc-task:hover { background: #faf8f4; }
+  .cc-task-x { position: absolute; top: 8px; right: 10px; border: none; background: none; color: #b3aea2; font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+  .cc-task-x:hover { color: #b3261e; background: rgba(179,38,30,0.07); }
   .cc-task-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
   .cc-task-tag { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
   .cc-tag-balance_due { background: rgba(183,121,31,0.14); color: #8a5a12; }
   .cc-tag-followup { background: rgba(37,99,235,0.1); color: #1f52a8; }
-  .cc-task-ord { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
+  .cc-tag-closeout { background: rgba(31,122,61,0.1); color: #1f7a3d; }
+  .cc-task-ord { margin-left: auto; margin-right: 22px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
   .cc-task-name { font-size: 14px; font-weight: 600; }
   .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }
   .cc-task-actions { display: flex; align-items: center; gap: 7px; }

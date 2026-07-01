@@ -569,6 +569,15 @@ export async function getEmailTasks() {
         priority: 1e9,   // follow-ups sort above balance amounts
       })
     }
+    if (o.status === 'installed' && rowBalanceDue(o) <= 0) {
+      tasks.push({
+        key: `close-${o.id}`, type: 'closeout', label: 'Ready to close out',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: 'Installed and paid in full — send a thank-you',
+        subject: `Thank you — Order ${o.order_number || ''}`.trim(),
+        priority: 5e8,
+      })
+    }
   }
   tasks.sort((a, b) => b.priority - a.priority)
   return { ok: true, tasks }
