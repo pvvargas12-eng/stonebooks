@@ -653,7 +653,11 @@ const CC_CSS = `
   .cc-body { display: grid; grid-template-columns: 210px 340px 1fr; gap: 0; margin: 0 28px; background: #fff; border: 0.5px solid #E2D8C6; border-radius: 14px; overflow: hidden; }
   @media (max-width: 1100px) { .cc-body { grid-template-columns: 190px 300px 1fr; } }
 
-  .cc-rail { background: #0F1419; padding: 8px 8px 16px; max-height: calc(100vh - 210px); overflow-y: auto; }
+  .cc-rail { background: #0F1419; padding: 8px 8px 16px; max-height: calc(100vh - 210px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(230,185,85,0.5) rgba(255,255,255,0.06); }
+  .cc-rail::-webkit-scrollbar { width: 9px; }
+  .cc-rail::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+  .cc-rail::-webkit-scrollbar-thumb { background: rgba(230,185,85,0.45); border-radius: 5px; border: 2px solid #0F1419; }
+  .cc-rail::-webkit-scrollbar-thumb:hover { background: rgba(230,185,85,0.7); }
   .cc-rail-group { margin-bottom: 4px; }
   .cc-rail-label { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a8272; padding: 11px 10px 4px; font-weight: 600; }
   .cc-brow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; font: inherit; font-size: 12.5px; color: #d8d2c6; background: none; border: none; border-radius: 8px; padding: 7px 10px; cursor: pointer; }

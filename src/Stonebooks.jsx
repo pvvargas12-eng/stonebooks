@@ -275,6 +275,21 @@ export default function Stonebooks() {
   const [leadTaskCount, setLeadTaskCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
   const [tab, setTab] = useState('today')
+  const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem('sb_nav_collapsed') === '1' } catch { return false } })
+  const [navWidth, setNavWidth] = useState(() => { try { return Number(localStorage.getItem('sb_nav_width')) || 240 } catch { return 240 } })
+  const toggleNav = () => setNavCollapsed(c => { const n = !c; try { localStorage.setItem('sb_nav_collapsed', n ? '1' : '0') } catch { /* ignore */ } return n })
+  const startNavResize = (e) => {
+    e.preventDefault()
+    const startX = e.clientX, startW = navWidth
+    const onMove = (ev) => setNavWidth(Math.min(360, Math.max(160, startW + (ev.clientX - startX))))
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setNavWidth(w => { try { localStorage.setItem('sb_nav_width', String(w)) } catch { /* ignore */ } return w })
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
   const [salesOpen, setSalesOpen] = useState(false)
   const [salesOrderId, setSalesOrderId] = useState(null)   // when set, open Sales Mode with that order pre-loaded
   const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
@@ -661,8 +676,10 @@ export default function Stonebooks() {
       <style>{themeCSS}</style>
       <style>{shellStyles}</style>
 
-      <div className="sb-root">
+      <div className={`sb-root${navCollapsed ? ' sb-nav-collapsed' : ''}`} style={{ gridTemplateColumns: navCollapsed ? '0 1fr' : `${navWidth}px 1fr` }}>
         <aside className="sb-sidebar">
+          <button type="button" className="sb-nav-collapse" onClick={toggleNav} title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+          <div className="sb-nav-resize" onMouseDown={startNavResize} title="Drag to resize" role="separator" aria-label="Resize sidebar" />
           <div className="sb-sidebar-brand">
             <StonebooksWordmark size={28} color="var(--sb-text-on-dark)" />
             <div className="sb-sidebar-brand-sub">Shevchenko Monuments</div>
@@ -714,6 +731,10 @@ export default function Stonebooks() {
             </button>
           </div>
         </aside>
+
+        {navCollapsed && (
+          <button type="button" className="sb-nav-reopen" onClick={toggleNav} title="Open sidebar" aria-label="Open sidebar">☰</button>
+        )}
 
         <main className="sb-main">
           {/* v2 W-2 — Workspace Strip. Renders only when workpieces exist;
@@ -1179,7 +1200,24 @@ const shellStyles = `
     display: flex; flex-direction: column;
     padding: 24px 16px;
     border-right: 0.5px solid var(--sb-border);
+    position: relative;
   }
+  .sb-nav-collapse {
+    position: absolute; top: 16px; right: 10px; z-index: 4;
+    width: 24px; height: 24px; border-radius: 6px; border: none;
+    background: rgba(255,255,255,0.08); color: var(--sb-text-on-dark-muted);
+    font-size: 17px; line-height: 1; cursor: pointer;
+  }
+  .sb-nav-collapse:hover { background: rgba(255,255,255,0.16); color: #fff; }
+  .sb-nav-resize { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 5; }
+  .sb-nav-resize:hover { background: rgba(230,185,85,0.4); }
+  .sb-nav-collapsed .sb-sidebar { overflow: hidden; border-right: none; }
+  .sb-nav-reopen {
+    position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 34px; height: 34px; border-radius: 8px; border: 0.5px solid var(--sb-border);
+    background: var(--sb-sidebar); color: var(--sb-text-on-dark); font-size: 15px; cursor: pointer;
+  }
+  .sb-nav-reopen:hover { background: #1a2028; }
   .sb-sidebar-brand {
     padding: 8px 8px 32px;
     margin-bottom: 16px;
