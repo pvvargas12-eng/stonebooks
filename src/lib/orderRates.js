@@ -101,7 +101,8 @@ export const BASE_FINISHES = [
 
 // Monument "Type" → shape filter for the type dropdown (form-facing labels).
 export const MONUMENT_TYPES = [
-  { code: 'flat',          label: 'Flat',          shapeCodes: ['grass', 'hickey', 'bronze'] },
+  { code: 'flat',          label: 'Flat',          shapeCodes: ['grass', 'bronze'] },
+  { code: 'hickey',        label: 'Hickey',        shapeCodes: ['hickey'] },
   { code: 'slant',         label: 'Slant',         shapeCodes: ['slant'] },
   { code: 'double-slant',  label: 'Double slant',  shapeCodes: ['double-slant'] },
   { code: 'upright',       label: 'Upright',       shapeCodes: ['die'] },
