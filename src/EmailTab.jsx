@@ -123,6 +123,8 @@ export default function EmailTab() {
   const [senders, setSenders] = useState([])
   const [senderId, setSenderId] = useState('')
   const [sigModal, setSigModal] = useState(false)
+  const [railCollapsed, setRailCollapsed] = useState(() => { try { return localStorage.getItem('cc_rail_collapsed') === '1' } catch { return false } })
+  const toggleRail = () => setRailCollapsed(c => { const n = !c; try { localStorage.setItem('cc_rail_collapsed', n ? '1' : '0') } catch { /* ignore */ } return n })
   const [tasks, setTasks] = useState([])
   const [taskSort, setTaskSort] = useState('priority')
   const [taskFilter, setTaskFilter] = useState('all')
@@ -297,7 +299,10 @@ export default function EmailTab() {
 
       {syncMsg && <div className="cc-syncmsg">{syncMsg}</div>}
 
-      <div className="cc-body">
+      <div className={`cc-body${railCollapsed ? ' cc-rail-collapsed' : ''}`}>
+        {railCollapsed
+          ? <button type="button" className="cc-rail-reopen" onClick={toggleRail} title="Show buckets" aria-label="Show buckets">☰</button>
+          : <button type="button" className="cc-rail-collapse" onClick={toggleRail} title="Hide buckets" aria-label="Hide buckets">‹</button>}
         {/* Smart buckets */}
         <aside className="cc-rail">
           {BUCKET_GROUPS.map(g => (
@@ -651,8 +656,17 @@ const CC_CSS = `
   .cc-chip:hover { background: #faf8f4; border-color: #9A7209; }
   .cc-syncmsg { margin: 0 28px 12px; font-size: 12.5px; color: #876307; background: rgba(154,114,9,0.07); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 8px 12px; }
 
-  .cc-body { display: grid; grid-template-columns: 210px 340px 1fr; gap: 0; margin: 0 28px; background: #fff; border: 0.5px solid #E2D8C6; border-radius: 14px; overflow: hidden; }
+  .cc-body { position: relative; display: grid; grid-template-columns: 210px 340px 1fr; gap: 0; margin: 0 28px; background: #fff; border: 0.5px solid #E2D8C6; border-radius: 14px; overflow: hidden; }
   @media (max-width: 1100px) { .cc-body { grid-template-columns: 190px 300px 1fr; } }
+  .cc-body.cc-rail-collapsed { grid-template-columns: 0 340px 1fr; }
+  @media (max-width: 1100px) { .cc-body.cc-rail-collapsed { grid-template-columns: 0 300px 1fr; } }
+  .cc-rail-collapsed .cc-rail { overflow: hidden; padding: 0; }
+  .cc-rail-collapse { position: absolute; top: 8px; left: 178px; z-index: 6; width: 22px; height: 22px; border-radius: 6px; border: none; background: rgba(255,255,255,0.1); color: #cfc9bf; font-size: 15px; line-height: 1; cursor: pointer; }
+  .cc-rail-collapse:hover { background: rgba(255,255,255,0.2); color: #fff; }
+  @media (max-width: 1100px) { .cc-rail-collapse { left: 158px; } }
+  .cc-rail-reopen { position: absolute; top: 12px; left: 10px; z-index: 20; width: 30px; height: 30px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #444; font-size: 14px; cursor: pointer; }
+  .cc-rail-reopen:hover { background: #f4f2ee; }
+  .cc-rail-collapsed .cc-list-head { padding-left: 50px; }
 
   .cc-rail { background: #0F1419; padding: 8px 8px 16px; max-height: calc(100vh - 210px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(230,185,85,0.5) rgba(255,255,255,0.06); }
   .cc-rail::-webkit-scrollbar { width: 9px; }
