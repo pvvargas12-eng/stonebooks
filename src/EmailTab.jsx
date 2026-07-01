@@ -19,7 +19,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
-  sendShopEmail, syncInbox, markThreadRead, getEmailSignature,
+  sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
   getEmailSenders, saveEmailSender,
   rowBalanceDue, statusInfo, customerName, fmtUSD,
 } from './lib/stonebooksData'
@@ -205,7 +205,13 @@ export default function EmailTab() {
       quote: `Hi ${first},\n\nThank you for your patience — your quote for order${ord} is ready for your review. Please take a look and let us know if you'd like to move forward or have any questions; we're glad to walk through anything with you.\n\nWe appreciate the opportunity to help.`,
     }
     const body = bodies[task.type] || bodies.followup
-    setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
+    setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, attachments: [], attaching: !!task.fileUrl, busy: false, error: null, sent: false })
+    // Pull the real file (proof image / order sheet) in the background and attach it.
+    if (task.fileUrl) {
+      photoAttachment(task.fileUrl, task.fileName).then(att => {
+        setComposer(c => (c ? { ...c, attaching: false, attachments: att ? [att] : [] } : c))
+      })
+    }
   }
 
   const sync = async () => {
@@ -264,6 +270,7 @@ export default function EmailTab() {
     const finalText = useOwn ? `${composer.body ? composer.body + '\n\n' : ''}-- \n${sender.signature_text}` : composer.body
     const res = await sendShopEmail({
       to, subject, text: finalText, includeSignature: !useOwn,
+      attachments: (composer.attachments && composer.attachments.length) ? composer.attachments : undefined,
       customerId: composer.customerId || null,
       inReplyTo: composer.inReplyTo || null, references: composer.references || null,
     })
@@ -545,6 +552,14 @@ export default function EmailTab() {
                   <input type="text" className="cc-input" value={composer.subject} onChange={e => setComposer(c => ({ ...c, subject: e.target.value }))} placeholder="Subject" /></label>
                 <label className="cc-field"><span>Message</span>
                   <textarea className="cc-input" rows={8} value={composer.body} onChange={e => setComposer(c => ({ ...c, body: e.target.value }))} placeholder="Write your message…" /></label>
+                {composer.attaching && <div className="cc-attach-note">Attaching file…</div>}
+                {(composer.attachments || []).length > 0 && (
+                  <div className="cc-attach-row">
+                    {composer.attachments.map((a, i) => (
+                      <span key={i} className="cc-attach-chip">{a.filename}<button type="button" onClick={() => setComposer(c => ({ ...c, attachments: c.attachments.filter((_, j) => j !== i) }))} aria-label="Remove attachment">×</button></span>
+                    ))}
+                  </div>
+                )}
                 {(() => {
                   const sender = senders.find(s => s.id === senderId)
                   const sig = sender?.signature_text || signature
@@ -775,6 +790,11 @@ const CC_CSS = `
   .cc-sig-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: #9a8a5e; font-weight: 700; margin-bottom: 4px; }
   .cc-sig-body { font-size: 12.5px; color: #6b6256; white-space: pre-wrap; line-height: 1.45; }
   .cc-ok { font-size: 13px; color: #1f7a3d; background: rgba(31,122,61,0.07); border: 0.5px solid rgba(31,122,61,0.3); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+  .cc-attach-note { font-size: 12px; color: #8a8a85; margin: 4px 0 8px; }
+  .cc-attach-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+  .cc-attach-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #876307; background: rgba(154,114,9,0.1); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 7px; padding: 5px 10px; }
+  .cc-attach-chip button { border: none; background: none; color: #9a8a5e; font-size: 15px; line-height: 1; cursor: pointer; padding: 0; }
+  .cc-attach-chip button:hover { color: #b3261e; }
   .cc-sig-modal { max-height: 86vh; overflow-y: auto; width: min(620px, 95vw); }
   .cc-sig-hint { font-size: 12px; color: #8a8a85; margin-bottom: 14px; }
   .cc-sender-edit { border: 0.5px solid #ece3d2; border-radius: 10px; padding: 12px; margin-bottom: 12px; }

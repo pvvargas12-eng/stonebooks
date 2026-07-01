@@ -546,8 +546,9 @@ export async function getEmailTasks() {
   }
   // Orders whose CURRENT layout/proof hasn't been sent to the customer yet.
   const { data: proofRows } = await supabase.from('proof_versions')
-    .select('order_id, sent_at').eq('is_current', true).not('order_id', 'is', null)
-  const layoutReady = new Set((proofRows || []).filter(p => !p.sent_at && p.order_id).map(p => p.order_id))
+    .select('order_id, sent_at, layout_image_url').eq('is_current', true).not('order_id', 'is', null)
+  const layoutReady = new Map()
+  for (const p of (proofRows || [])) if (!p.sent_at && p.order_id) layoutReady.set(p.order_id, p.layout_image_url || null)
   const today = new Date().toISOString().slice(0, 10)
   const tasks = []
   for (const o of orders) {
@@ -607,6 +608,7 @@ export async function getEmailTasks() {
         orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
         reason: 'Proof ready — send it to the customer for review',
         subject: `Your monument layout for review — Order ${o.order_number || ''}`.trim(),
+        fileUrl: layoutReady.get(o.id) || null, fileName: 'Monument layout.jpg',
         priority: 8e8,
       })
     }
@@ -632,7 +634,7 @@ export async function getEmailTasks() {
   // Vendor orders — draft supplier POs (bulk_orders) ready to send to the supplier.
   // These email the SUPPLIER (not a customer): name/email come from the joined row.
   const { data: bulkRows } = await supabase.from('bulk_orders')
-    .select('id, po_number, kind, status, supplier:suppliers(name, email)').eq('status', 'draft')
+    .select('id, po_number, kind, status, po_file_url, supplier:suppliers(name, email)').eq('status', 'draft')
   for (const bo of (bulkRows || [])) {
     const sup = bo.supplier
     tasks.push({
@@ -641,6 +643,7 @@ export async function getEmailTasks() {
       name: sup?.name || 'Supplier', email: sup?.email || null,
       reason: `${String(bo.kind || 'order').replace(/_/g, ' ')} order ready to send${sup?.name ? ` to ${sup.name}` : ''}`,
       subject: `Order ${bo.po_number || ''} — Shevchenko Monuments`.trim(),
+      fileUrl: bo.po_file_url || null, fileName: `Order ${bo.po_number || 'sheet'}.pdf`,
       priority: 7e8,
     })
   }
