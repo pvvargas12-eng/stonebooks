@@ -439,6 +439,67 @@ export async function syncInbox() {
   } catch { return { ok: false, error: 'Email sync backend unreachable.' } }
 }
 
+// ── Email command center — bucketed thread workspace (Slice 1) ─────────────
+// One fetch, grouped into customer/address threads with the flags the smart
+// buckets filter on. Iterating newest-first means the FIRST message seen per
+// thread is the latest, so latestDirection drives "needs reply" (we owe a
+// response when the newest message is inbound). Counts are computed the same
+// way the UI filters, so each sidebar badge always matches its list.
+export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
+  const { data, error } = await supabase.from('messages')
+    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email)')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.warn('[email] workspace:', error.message); return { ok: false, error: error.message, threads: [], counts: {} } }
+  const map = new Map()
+  for (const r of (data || [])) {
+    const other = r.direction === 'inbound' ? r.from_email : (r.to_emails || [])[0]
+    const addr = String(other || 'unknown').toLowerCase()
+    const key = r.customer_id || `addr:${addr}`
+    let t = map.get(key)
+    if (!t) {
+      const c = r.customer
+      const name = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : ''
+      map.set(key, t = {
+        key, customerId: r.customer_id || null, orderId: r.order_id || null, threadKey: r.thread_key,
+        matched: !!r.customer_id,
+        name: name || r.from_email || (r.to_emails || [])[0] || 'Unknown',
+        contact: c?.email || addr,
+        latestSubject: r.subject || '(no subject)',
+        latestSnippet: r.snippet || (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        latestDate: r.received_at || r.sent_at || r.created_at,
+        latestDirection: r.direction,
+        hasInbound: false, hasOutbound: false, hasAttachments: false, unread: 0,
+      })
+    }
+    if (r.direction === 'inbound') t.hasInbound = true; else t.hasOutbound = true
+    if (r.has_attachments) t.hasAttachments = true
+    if (r.direction === 'inbound' && !r.is_read) t.unread++
+  }
+  const threads = Array.from(map.values())
+  const counts = {
+    inbox: threads.filter(t => t.hasInbound).length,
+    needs_reply: threads.filter(t => t.latestDirection === 'inbound').length,
+    customer_replies: threads.filter(t => t.matched && t.hasInbound).length,
+    unlinked: threads.filter(t => !t.matched).length,
+    photos: threads.filter(t => t.hasAttachments).length,
+    sent: threads.filter(t => t.hasOutbound).length,
+  }
+  return { ok: true, threads, counts }
+}
+
+// CRM "brain" for the Email context panel — the customer and their orders, so
+// the panel can render contract/quote/balance status + warnings without leaving
+// the tab. Reuses listOrdersForCustomer; the UI derives the status chips from
+// the order rows (signed_at, quote_status, rowBalanceDue).
+export async function getCustomerBrain(customerId) {
+  if (!customerId) return { ok: true, customer: null, orders: [] }
+  const { data: customer, error } = await supabase.from('customers').select('*').eq('id', customerId).maybeSingle()
+  if (error) { console.warn('[email] brain:', error.message); return { ok: false, error: error.message, customer: null, orders: [] } }
+  const orders = await listOrdersForCustomer(customerId)
+  return { ok: true, customer: customer || null, orders: orders || [] }
+}
+
 // ── Remote contract e-signing (R2) ────────────────────────────────────────
 // Create a signing link for an order. The browser generates the CONTRACT-variant
 // PDF (the jsPDF generator is browser-only) and passes its bytes + the customer
