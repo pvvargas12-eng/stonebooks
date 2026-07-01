@@ -39,13 +39,13 @@ const BUCKET_GROUPS = [
     { soon: true, label: 'Vendor replies' },
   ] },
   { label: 'Documents', items: [
-    { soon: true, label: 'Layout approvals' },
-    { soon: true, label: 'Contracts' },
+    { key: 'la', filter: 'layout', label: 'Layout approvals' },
+    { key: 'ct', filter: 'contract', label: 'Contracts' },
     { soon: true, label: 'Quotes' },
     { soon: true, label: 'Receipts / payments' },
     { key: 'photos', label: 'Photos & files' },
-    { soon: true, label: 'Cemetery / permits' },
-    { soon: true, label: 'Closeout' },
+    { key: 'cp', filter: 'permit', label: 'Cemetery / permits' },
+    { key: 'co', filter: 'closeout', label: 'Closeout' },
   ] },
   { label: 'Workflow', items: [
     { soon: true, label: 'Production questions' },
@@ -66,8 +66,8 @@ const BUCKET_LABEL = {
 }
 // Task-type filter chips (order = display order); only types with tasks show.
 const TASK_TYPE_LABELS = {
-  deposit: 'Deposit', balance_due: 'Balance', layout: 'Layout', followup: 'Follow-up',
-  closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
+  deposit: 'Deposit', balance_due: 'Balance', layout: 'Layout', contract: 'Contract',
+  followup: 'Follow-up', closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
 }
 
 function matchBucket(t, b) {
@@ -197,6 +197,7 @@ export default function EmailTab() {
       permit: `Hi ${first},\n\nGood news — the cemetery permit for your order${ord} has been approved, so we're clear to move forward with the work. We'll keep you posted as we progress.\n\nPlease reach out anytime with questions.`,
       layout: `Hi ${first},\n\nYour monument layout is ready for your review${ord}. We'll send over the proof so you can look over the lettering, dates, and design — please let us know if everything looks right or if you'd like any changes. Once you approve, we'll move into production.`,
       vendor: `Hello${task.name && task.name !== 'Supplier' ? ` ${task.name} team` : ''},\n\nPlease find our order${ord} below. Kindly confirm receipt and let us know the expected delivery timeline.\n\nThank you,\nShevchenko Monuments`,
+      contract: `Hi ${first},\n\nYour contract for order${ord} is ready for your signature. Please review the details and sign at your convenience so we can begin the work. If you have any questions before signing, we're glad to help.\n\nThank you.`,
     }
     const body = bodies[task.type] || bodies.followup
     setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
@@ -308,15 +309,18 @@ export default function EmailTab() {
                     <span className="cc-soon">soon</span>
                   </div>
                 )
-                const cnt = item.key === 'tasks' ? visibleTasks.length : counts[item.key]
+                const isTaskBucket = item.key === 'tasks' || !!item.filter
+                const filt = item.key === 'tasks' ? 'all' : (item.filter || null)
+                const on = isTaskBucket ? (bucket === 'tasks' && taskFilter === filt) : (bucket === item.key)
+                const cnt = item.key === 'tasks' ? activeTasks.length
+                  : item.filter ? (typeCounts[item.filter] || 0)
+                    : counts[item.key]
                 const tone = item.key === 'tasks' ? 'amber' : item.tone
+                const go = isTaskBucket
+                  ? () => { setBucket('tasks'); setTaskFilter(filt); setReading(null); setBrain(null) }
+                  : () => { setBucket(item.key); setReading(null); setBrain(null) }
                 return (
-                  <button
-                    key={item.key}
-                    type="button"
-                    className={`cc-brow${bucket === item.key ? ' on' : ''}`}
-                    onClick={() => { setBucket(item.key); setReading(null); setBrain(null) }}
-                  >
+                  <button key={item.key} type="button" className={`cc-brow${on ? ' on' : ''}`} onClick={go}>
                     {tone && <span className={`cc-dot cc-dot-${tone}`} aria-hidden="true" />}
                     <span className="cc-brow-name">{item.label}</span>
                     {cnt > 0 && <span className={`cc-count${tone ? ` cc-count-${tone}` : ''}`}>{cnt}</span>}
@@ -771,6 +775,7 @@ const CC_CSS = `
   .cc-tag-permit { background: rgba(107,70,193,0.12); color: #5a3aa8; }
   .cc-tag-layout { background: rgba(212,83,126,0.1); color: #99355a; }
   .cc-tag-vendor { background: rgba(29,158,117,0.12); color: #0f6e56; }
+  .cc-tag-contract { background: rgba(216,90,48,0.12); color: #993c1d; }
   .cc-task-ord { margin-left: auto; margin-right: 22px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
   .cc-task-name { font-size: 14px; font-weight: 600; }
   .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }

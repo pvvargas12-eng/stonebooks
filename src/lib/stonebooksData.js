@@ -610,6 +610,15 @@ export async function getEmailTasks() {
         priority: 8e8,
       })
     }
+    if (o.status === 'contracted' && !o.signed_at) {
+      tasks.push({
+        key: `contract-${o.id}`, type: 'contract', label: 'Contract to sign',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: 'Contracted but not signed yet — send for signature',
+        subject: `Your contract for Order ${o.order_number || ''}`.trim(),
+        priority: 9e8,
+      })
+    }
   }
   // Vendor orders — draft supplier POs (bulk_orders) ready to send to the supplier.
   // These email the SUPPLIER (not a customer): name/email come from the joined row.
