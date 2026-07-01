@@ -550,8 +550,18 @@ export async function getEmailTasks() {
     const cu = custMap[o.customer_id] || null
     const name = cu ? `${cu.first_name || ''} ${cu.last_name || ''}`.trim() : (o.primary_lastname || 'Customer')
     const email = cu?.email || null
-    const bal = rowBalanceDue(o)
-    if (bal > 0 && ['contracted', 'in_production', 'installed'].includes(o.status)) {
+    const paid = rowTotalPaid(o)
+    const grand = rowGrandTotal(o)
+    const bal = Math.max(0, grand - paid)
+    if (o.status === 'contracted' && paid <= 0 && grand > 0) {
+      tasks.push({
+        key: `dep-${o.id}`, type: 'deposit', label: 'Deposit needed',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: `No payment yet · ${fmtUSD(grand)} contract`,
+        subject: `Deposit for your order ${o.order_number || ''}`.trim(),
+        amount: grand, priority: grand + 2e9,   // deposits sort at the top
+      })
+    } else if (bal > 0 && ['contracted', 'in_production', 'installed'].includes(o.status)) {
       tasks.push({
         key: `bal-${o.id}`, type: 'balance_due', label: 'Balance due',
         orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
@@ -576,6 +586,15 @@ export async function getEmailTasks() {
         reason: 'Installed and paid in full — send a thank-you',
         subject: `Thank you — Order ${o.order_number || ''}`.trim(),
         priority: 5e8,
+      })
+    }
+    if (o.permit_status === 'approved') {
+      tasks.push({
+        key: `permit-${o.id}`, type: 'permit', label: 'Permit approved',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: 'Cemetery permit approved — update the customer',
+        subject: `Permit approved — Order ${o.order_number || ''}`.trim(),
+        priority: 1e8,
       })
     }
   }

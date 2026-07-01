@@ -181,6 +181,8 @@ export default function EmailTab() {
       balance_due: `Hi ${first},\n\nWe hope you're doing well. This is a friendly reminder that a balance of ${fmtUSD(task.amount)} remains on your order${ord}. Whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com.\n\nPlease let us know if you have any questions — we're always glad to help.`,
       followup: `Hi ${first},\n\nJust following up on the estimate we put together for you${ord}. We'd be glad to help you move forward whenever you're ready, and we're happy to answer questions or make adjustments.\n\nPlease let us know how you'd like to proceed.`,
       closeout: `Hi ${first},\n\nIt was our privilege to complete your order${ord}, and we hope it brings you and your family comfort for years to come. Thank you for trusting Shevchenko Monuments with something so meaningful.\n\nIf there's ever anything we can do for you, please don't hesitate to reach out.`,
+      deposit: `Hi ${first},\n\nThank you for choosing Shevchenko Monuments for your order${ord}. To begin work, we ask for a 50% deposit of ${fmtUSD((task.amount || 0) / 2)}. You can send it by check or Zelle to shevcoteam@gmail.com and we'll get started right away.\n\nPlease let us know if you have any questions.`,
+      permit: `Hi ${first},\n\nGood news — the cemetery permit for your order${ord} has been approved, so we're clear to move forward with the work. We'll keep you posted as we progress.\n\nPlease reach out anytime with questions.`,
     }
     const body = bodies[task.type] || bodies.followup
     setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
@@ -739,6 +741,8 @@ const CC_CSS = `
   .cc-tag-balance_due { background: rgba(183,121,31,0.14); color: #8a5a12; }
   .cc-tag-followup { background: rgba(37,99,235,0.1); color: #1f52a8; }
   .cc-tag-closeout { background: rgba(31,122,61,0.1); color: #1f7a3d; }
+  .cc-tag-deposit { background: rgba(154,114,9,0.14); color: #876307; }
+  .cc-tag-permit { background: rgba(107,70,193,0.12); color: #5a3aa8; }
   .cc-task-ord { margin-left: auto; margin-right: 22px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
   .cc-task-name { font-size: 14px; font-weight: 600; }
   .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }
