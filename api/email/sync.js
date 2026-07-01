@@ -31,6 +31,12 @@ dns.setDefaultResultOrder('ipv4first')
 // wall-clock budget keep every invocation well under the function timeout.
 const MAX_PER_RUN = 15          // messages per mailbox per run — keep one invocation short
 
+// Date floor — never import mail older than this. On a FRESH cursor (last_uid = 0)
+// the sync seeks to the first message on/after this date (IMAP SINCE) instead of
+// crawling from the mailbox start, so the pre-cutoff backlog is skipped entirely.
+// Override with EMAIL_SYNC_SINCE (YYYY-MM-DD); default keeps mail from 2025 onward.
+const SYNC_SINCE = process.env.EMAIL_SYNC_SINCE || '2025-01-01'
+
 // === HARD wall-clock guarantees ============================================
 // imapflow's built-in timeouts proved unreliable on Vercel — a connect/op can
 // hang at a layer they don't catch, and the whole invocation gets killed at the
@@ -139,6 +145,30 @@ async function syncMailbox(client, admin, mailbox, direction, { anchor = false, 
     const curValidity = Number(box.uidValidity)
     if (uidValidity != null && curValidity !== uidValidity) { lastUid = 0; maxUid = 0 }   // UIDVALIDITY changed → restart
     uidValidity = curValidity
+
+    // DATE FLOOR (fresh cursor only): seek the cursor to the first message on/after
+    // SYNC_SINCE so importing starts at the cutoff and skips the older backlog. Once
+    // the cursor has advanced (last_uid > 0) we never look back. Anchor takes priority.
+    if (!anchor && lastUid === 0 && SYNC_SINCE && box.exists > 0) {
+      try {
+        const sinceUids = await withTimeout(
+          client.search({ since: new Date(`${SYNC_SINCE}T00:00:00Z`) }, { uid: true }),
+          STEP_TIMEOUT_MS, `search:${mailbox}`,
+        )
+        if (Array.isArray(sinceUids) && sinceUids.length) {
+          const minUid = sinceUids.reduce((m, u) => (u < m ? u : m), sinceUids[0])
+          lastUid = Math.max(0, minUid - 1)                    // crawl starts at the first in-range UID
+          console.log(`[email/sync] ${mailbox}: floor ${SYNC_SINCE} -> start at uid ${lastUid + 1}`)
+        } else {
+          lastUid = Math.max(0, Number(box.uidNext || 1) - 1)  // nothing since the floor → skip to tail
+          console.log(`[email/sync] ${mailbox}: no mail since ${SYNC_SINCE} -> anchored to tail`)
+        }
+      } catch (e) {
+        lastUid = Math.max(0, Number(box.uidNext || 1) - 1)    // search failed → skip old backlog, don't crawl it
+        console.warn(`[email/sync] ${mailbox}: since-search failed, anchoring to tail:`, e?.message)
+      }
+      maxUid = lastUid
+    }
 
     // ANCHOR MODE: jump the cursor to the CURRENT tail (uidNext - 1) WITHOUT
     // importing anything, so future polls only fetch mail that arrives from now
