@@ -459,7 +459,7 @@ function _isJunkThread(t) {
 // way the UI filters, so each sidebar badge always matches its list.
 export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
   const { data, error } = await supabase.from('messages')
-    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email)')
+    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))')
     .order('created_at', { ascending: false })
     .limit(limit)
   if (error) { console.warn('[email] workspace:', error.message); return { ok: false, error: error.message, threads: [], counts: {} } }
@@ -481,6 +481,9 @@ export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
         latestSnippet: r.snippet || (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 160),
         latestDate: r.received_at || r.sent_at || r.created_at,
         latestDirection: r.direction,
+        orderNumber: r.order?.order_number || null,
+        cemetery: r.order?.cemetery?.name || null,
+        phone: c?.phone_primary || null,
         hasInbound: false, hasOutbound: false, hasAttachments: false, unread: 0,
       })
     }

@@ -84,7 +84,8 @@ function matchBucket(t, b) {
 function matchSearch(t, q) {
   if (!q) return true
   const s = q.toLowerCase()
-  return [t.name, t.contact, t.latestSubject, t.latestSnippet].some(x => (x || '').toLowerCase().includes(s))
+  return [t.name, t.contact, t.latestSubject, t.latestSnippet, t.orderNumber, t.cemetery, t.phone]
+    .some(x => (x == null ? '' : String(x)).toLowerCase().includes(s))
 }
 
 function fromName(raw) {
@@ -163,16 +164,17 @@ export default function EmailTab() {
     setLoading(false)
   }
 
-  const visible = useMemo(
-    () => threads.filter(t => {
+  const visible = useMemo(() => {
+    const query = q.trim()
+    if (query) return threads.filter(t => matchSearch(t, q))   // universal: search EVERY thread, any bucket
+    return threads.filter(t => {
       const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
-      if (bucket === 'junk') return j && matchSearch(t, q)
+      if (bucket === 'junk') return j
       if (!matchBucket(t, bucket)) return false
       if (j && bucket !== 'sent') return false   // junk is hidden from the inbound buckets
-      return matchSearch(t, q)
-    }),
-    [threads, bucket, q, junkOverride],
-  )
+      return true
+    })
+  }, [threads, bucket, q, junkOverride])
   const msgCounts = useMemo(() => {
     const c = { inbox: 0, needs_reply: 0, customer_replies: 0, unlinked: 0, photos: 0, sent: 0, junk: 0 }
     for (const t of threads) {
@@ -201,11 +203,13 @@ export default function EmailTab() {
       name: (a, b) => (a.name || '').localeCompare(b.name || ''),
       type: (a, b) => (a.type || '').localeCompare(b.type || '') || b.priority - a.priority,
     }[taskSort] || ((a, b) => b.priority - a.priority)
-    const list = taskFilter === 'all' ? activeTasks
+    let list = taskFilter === 'all' ? activeTasks
       : taskFilter === 'payments' ? activeTasks.filter(t => t.type === 'deposit' || t.type === 'balance_due')
         : activeTasks.filter(t => t.type === taskFilter)
+    const query = q.trim().toLowerCase()
+    if (query) list = list.filter(t => [t.name, t.orderNumber, t.reason, t.label].some(x => (x == null ? '' : String(x)).toLowerCase().includes(query)))
     return [...list].sort(cmp)
-  }, [activeTasks, taskSort, taskFilter])
+  }, [activeTasks, taskSort, taskFilter, q])
 
   const snooze = (key) => setSnoozed(prev => {
     const n = new Set(prev); n.add(key)
@@ -374,10 +378,11 @@ export default function EmailTab() {
         {/* Message list */}
         <section className="cc-list">
           <div className="cc-list-head">
-            <span className="cc-list-title">{BUCKET_LABEL[bucket] || 'Inbox'}</span>
+            <span className="cc-list-title">{q.trim() ? 'Search results' : (BUCKET_LABEL[bucket] || 'Inbox')}</span>
             <span className="cc-list-sub">{
-              bucket === 'tasks' ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
-                : loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`
+              q.trim() ? `${bucket === 'tasks' ? visibleTasks.length : visible.length} match${(bucket === 'tasks' ? visibleTasks.length : visible.length) === 1 ? '' : 'es'}`
+                : bucket === 'tasks' ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
+                  : loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`
             }</span>
             {bucket === 'tasks' && (
               <select className="cc-sort" value={taskSort} onChange={e => setTaskSort(e.target.value)} aria-label="Sort tasks">
@@ -440,6 +445,7 @@ export default function EmailTab() {
                   <div className="cc-row-subject">{t.latestSubject || '(no subject)'}</div>
                   <div className="cc-row-bottom">
                     <span className="cc-row-snippet">{t.latestSnippet}</span>
+                    {t.orderNumber && <span className="cc-tag">{t.orderNumber}</span>}
                     {!t.matched && <span className="cc-tag cc-tag-warn">unlinked</span>}
                     {t.hasAttachments && <span className="cc-tag">attach</span>}
                     {t.unread > 0 && <span className="cc-tag cc-tag-unread">{t.unread}</span>}
