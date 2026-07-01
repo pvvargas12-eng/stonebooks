@@ -18,7 +18,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import {
-  getEmailThreadsWorkspace, getMessageThread, getCustomerBrain,
+  getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature,
   getEmailSenders, saveEmailSender,
   rowBalanceDue, statusInfo, customerName, fmtUSD,
@@ -28,6 +28,9 @@ const SEARCH_EXAMPLES = ['Smith layout', 'Rosehill unsigned contract', 'photos m
 
 // Sidebar buckets. `key` = data-backed + clickable now; `soon` = roadmap only.
 const BUCKET_GROUPS = [
+  { label: 'Queue', items: [
+    { key: 'tasks', label: 'Review queue' },
+  ] },
   { label: 'Mail', items: [
     { key: 'inbox', label: 'Inbox' },
     { key: 'needs_reply', label: 'Needs reply', tone: 'amber' },
@@ -59,6 +62,7 @@ const BUCKET_GROUPS = [
   ] },
 ]
 const BUCKET_LABEL = {
+  tasks: 'Review queue',
   inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies',
   unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent',
 }
@@ -105,7 +109,7 @@ export default function EmailTab() {
   const [counts, setCounts] = useState({})
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
-  const [bucket, setBucket] = useState('inbox')
+  const [bucket, setBucket] = useState('tasks')
   const [q, setQ] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState(null)
@@ -116,6 +120,10 @@ export default function EmailTab() {
   const [senders, setSenders] = useState([])
   const [senderId, setSenderId] = useState('')
   const [sigModal, setSigModal] = useState(false)
+  const [tasks, setTasks] = useState([])
+  const [snoozed, setSnoozed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('cc_snoozed') || '[]')) } catch { return new Set() }
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -126,6 +134,7 @@ export default function EmailTab() {
       setLoading(false)
     })
     getEmailSignature().then(s => { if (!cancelled) setSignature(s?.signature_text || '') })
+    getEmailTasks().then(res => { if (!cancelled && res.ok) setTasks(res.tasks) })
     getEmailSenders().then(list => {
       if (cancelled) return
       setSenders(list)
@@ -148,6 +157,23 @@ export default function EmailTab() {
     () => threads.filter(t => matchBucket(t, bucket)).filter(t => matchSearch(t, q)),
     [threads, bucket, q],
   )
+  const visibleTasks = useMemo(() => tasks.filter(t => !snoozed.has(t.key)), [tasks, snoozed])
+
+  const snooze = (key) => setSnoozed(prev => {
+    const n = new Set(prev); n.add(key)
+    try { localStorage.setItem('cc_snoozed', JSON.stringify([...n])) } catch { /* ignore */ }
+    return n
+  })
+
+  // Open the composer prefilled from a task (a simple template; staff edit + send).
+  const openTaskDraft = (task) => {
+    const first = (task.name || '').trim().split(/\s+/)[0] || 'there'
+    const ord = task.orderNumber ? ` (${task.orderNumber})` : ''
+    const body = task.type === 'balance_due'
+      ? `Hi ${first},\n\nWe hope you're doing well. This is a friendly reminder that a balance of ${fmtUSD(task.amount)} remains on your order${ord}. Whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com.\n\nPlease let us know if you have any questions — we're always glad to help.`
+      : `Hi ${first},\n\nJust following up on the estimate we put together for you${ord}. We'd be glad to help you move forward whenever you're ready, and we're happy to answer questions or make adjustments.\n\nPlease let us know how you'd like to proceed.`
+    setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
+  }
 
   const sync = async () => {
     setSyncing(true); setSyncMsg(null)
@@ -255,23 +281,28 @@ export default function EmailTab() {
           {BUCKET_GROUPS.map(g => (
             <div key={g.label} className="cc-rail-group">
               <div className="cc-rail-label">{g.label}</div>
-              {g.items.map(item => item.soon ? (
-                <div key={item.label} className="cc-brow cc-brow-soon" title="Coming in a later slice">
-                  <span className="cc-brow-name">{item.label}</span>
-                  <span className="cc-soon">soon</span>
-                </div>
-              ) : (
-                <button
-                  key={item.key}
-                  type="button"
-                  className={`cc-brow${bucket === item.key ? ' on' : ''}`}
-                  onClick={() => { setBucket(item.key); setReading(null); setBrain(null) }}
-                >
-                  {item.tone && <span className={`cc-dot cc-dot-${item.tone}`} aria-hidden="true" />}
-                  <span className="cc-brow-name">{item.label}</span>
-                  {counts[item.key] > 0 && <span className={`cc-count${item.tone ? ` cc-count-${item.tone}` : ''}`}>{counts[item.key]}</span>}
-                </button>
-              ))}
+              {g.items.map(item => {
+                if (item.soon) return (
+                  <div key={item.label} className="cc-brow cc-brow-soon" title="Coming in a later slice">
+                    <span className="cc-brow-name">{item.label}</span>
+                    <span className="cc-soon">soon</span>
+                  </div>
+                )
+                const cnt = item.key === 'tasks' ? visibleTasks.length : counts[item.key]
+                const tone = item.key === 'tasks' ? 'amber' : item.tone
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className={`cc-brow${bucket === item.key ? ' on' : ''}`}
+                    onClick={() => { setBucket(item.key); setReading(null); setBrain(null) }}
+                  >
+                    {tone && <span className={`cc-dot cc-dot-${tone}`} aria-hidden="true" />}
+                    <span className="cc-brow-name">{item.label}</span>
+                    {cnt > 0 && <span className={`cc-count${tone ? ` cc-count-${tone}` : ''}`}>{cnt}</span>}
+                  </button>
+                )
+              })}
             </div>
           ))}
         </aside>
@@ -280,11 +311,34 @@ export default function EmailTab() {
         <section className="cc-list">
           <div className="cc-list-head">
             <span className="cc-list-title">{BUCKET_LABEL[bucket] || 'Inbox'}</span>
-            <span className="cc-list-sub">{loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`}</span>
+            <span className="cc-list-sub">{
+              bucket === 'tasks' ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
+                : loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`
+            }</span>
           </div>
           {err && <div className="cc-error">{err}<div className="cc-error-hint">Make sure the mailbox is connected and the Gmail functions are deployed.</div></div>}
           <div className="cc-list-scroll">
-            {loading ? (
+            {bucket === 'tasks' ? (
+              visibleTasks.length === 0 ? (
+                <div className="cc-empty">No tasks right now — you’re all caught up.</div>
+              ) : (
+                visibleTasks.map(t => (
+                  <div key={t.key} className="cc-task">
+                    <div className="cc-task-top">
+                      <span className={`cc-task-tag cc-tag-${t.type}`}>{t.label}</span>
+                      <span className="cc-task-ord">{t.orderNumber || 'DRAFT'}</span>
+                    </div>
+                    <div className="cc-task-name">{t.name}</div>
+                    <div className="cc-task-reason">{t.reason}</div>
+                    <div className="cc-task-actions">
+                      <button type="button" className="cc-btn cc-btn-primary" onClick={() => openTaskDraft(t)} disabled={!t.email}>Draft</button>
+                      <button type="button" className="cc-btn" onClick={() => snooze(t.key)}>Snooze</button>
+                      {!t.email && <span className="cc-task-warn">no email on file</span>}
+                    </div>
+                  </div>
+                ))
+              )
+            ) : loading ? (
               <div className="cc-empty">Loading…</div>
             ) : visible.length === 0 && !err ? (
               <div className="cc-empty">{q ? 'No threads match your search.' : 'Nothing here.'}</div>
@@ -663,4 +717,16 @@ const CC_CSS = `
   .cc-sender-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; }
   .cc-sender-ok { font-size: 12px; color: #1f7a3d; }
   .cc-sender-err { font-size: 12px; color: #b3261e; }
+  .cc-task { border-bottom: 0.5px solid #f1efeb; padding: 12px 16px; }
+  .cc-task:hover { background: #faf8f4; }
+  .cc-task-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .cc-task-tag { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .cc-tag-balance_due { background: rgba(183,121,31,0.14); color: #8a5a12; }
+  .cc-tag-followup { background: rgba(37,99,235,0.1); color: #1f52a8; }
+  .cc-task-ord { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
+  .cc-task-name { font-size: 14px; font-weight: 600; }
+  .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }
+  .cc-task-actions { display: flex; align-items: center; gap: 7px; }
+  .cc-task-actions .cc-btn { padding: 6px 12px; }
+  .cc-task-warn { font-size: 11px; color: #b3261e; }
 `

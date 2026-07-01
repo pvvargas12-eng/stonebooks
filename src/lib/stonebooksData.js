@@ -525,6 +525,55 @@ export async function saveEmailSender({ id, name, title, reply_to, phone, signat
   return error ? { ok: false, error: error.message } : { ok: true, id: data?.id }
 }
 
+// ── Email command center — CRM-event task queue (Slice 4, increment 1) ─────
+// Derives review-and-send email tasks from OPEN order state — one query, no
+// migration. Increment 1 covers the two events cheap to read off the order row:
+// a balance still owed, and an estimate whose follow-up date has passed. Later
+// increments add events needing more data (layout uploaded, photo received,
+// vendor orders, permits). Each task carries what the composer needs to prefill.
+const _TASK_OPEN_STATUSES = ['scoping', 'quoted', 'contracted', 'in_production', 'installed']
+export async function getEmailTasks() {
+  const { data, error } = await supabase.from('orders')
+    .select('*').in('status', _TASK_OPEN_STATUSES).eq('archived', false).limit(5000)
+  if (error) { console.warn('[email] tasks:', error.message); return { ok: false, error: error.message, tasks: [] } }
+  const orders = data || []
+  // Customer name/email in a second pass (keeps the orders select light).
+  const custIds = [...new Set(orders.map(o => o.customer_id).filter(Boolean))]
+  const custMap = {}
+  if (custIds.length) {
+    const { data: custs } = await supabase.from('customers').select('id, first_name, last_name, email').in('id', custIds)
+    for (const cu of (custs || [])) custMap[cu.id] = cu
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  const tasks = []
+  for (const o of orders) {
+    const cu = custMap[o.customer_id] || null
+    const name = cu ? `${cu.first_name || ''} ${cu.last_name || ''}`.trim() : (o.primary_lastname || 'Customer')
+    const email = cu?.email || null
+    const bal = rowBalanceDue(o)
+    if (bal > 0 && ['contracted', 'in_production', 'installed'].includes(o.status)) {
+      tasks.push({
+        key: `bal-${o.id}`, type: 'balance_due', label: 'Balance due',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: `${fmtUSD(bal)} outstanding · ${String(o.status).replace(/_/g, ' ')}`,
+        subject: `Balance due — Order ${o.order_number || ''}`.trim(),
+        amount: bal, priority: bal,
+      })
+    }
+    if (o.next_follow_up && o.next_follow_up <= today && !o.signed_at && ['scoping', 'quoted'].includes(o.status)) {
+      tasks.push({
+        key: `fu-${o.id}`, type: 'followup', label: 'Follow-up due',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: `Estimate follow-up was due ${o.next_follow_up}`,
+        subject: `Following up — Order ${o.order_number || ''}`.trim(),
+        priority: 1e9,   // follow-ups sort above balance amounts
+      })
+    }
+  }
+  tasks.sort((a, b) => b.priority - a.priority)
+  return { ok: true, tasks }
+}
+
 // ── Remote contract e-signing (R2) ────────────────────────────────────────
 // Create a signing link for an order. The browser generates the CONTRACT-variant
 // PDF (the jsPDF generator is browser-only) and passes its bytes + the customer
