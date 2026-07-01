@@ -42,7 +42,7 @@ const BUCKET_GROUPS = [
     { key: 'la', filter: 'layout', label: 'Layout approvals' },
     { key: 'ct', filter: 'contract', label: 'Contracts' },
     { key: 'qu', filter: 'quote', label: 'Quotes' },
-    { soon: true, label: 'Receipts / payments' },
+    { key: 'rp', filter: 'payments', label: 'Receipts / payments' },
     { key: 'photos', label: 'Photos & files' },
     { key: 'cp', filter: 'permit', label: 'Cemetery / permits' },
     { key: 'co', filter: 'closeout', label: 'Closeout' },
@@ -177,7 +177,9 @@ export default function EmailTab() {
       name: (a, b) => (a.name || '').localeCompare(b.name || ''),
       type: (a, b) => (a.type || '').localeCompare(b.type || '') || b.priority - a.priority,
     }[taskSort] || ((a, b) => b.priority - a.priority)
-    const list = taskFilter === 'all' ? activeTasks : activeTasks.filter(t => t.type === taskFilter)
+    const list = taskFilter === 'all' ? activeTasks
+      : taskFilter === 'payments' ? activeTasks.filter(t => t.type === 'deposit' || t.type === 'balance_due')
+        : activeTasks.filter(t => t.type === taskFilter)
     return [...list].sort(cmp)
   }, [activeTasks, taskSort, taskFilter])
 
@@ -319,8 +321,9 @@ export default function EmailTab() {
                 const filt = item.key === 'tasks' ? 'all' : (item.filter || null)
                 const on = isTaskBucket ? (bucket === 'tasks' && taskFilter === filt) : (bucket === item.key)
                 const cnt = item.key === 'tasks' ? activeTasks.length
-                  : item.filter ? (typeCounts[item.filter] || 0)
-                    : counts[item.key]
+                  : item.filter === 'payments' ? ((typeCounts.deposit || 0) + (typeCounts.balance_due || 0))
+                    : item.filter ? (typeCounts[item.filter] || 0)
+                      : counts[item.key]
                 const tone = item.key === 'tasks' ? 'amber' : item.tone
                 const go = isTaskBucket
                   ? () => { setBucket('tasks'); setTaskFilter(filt); setReading(null); setBrain(null) }
