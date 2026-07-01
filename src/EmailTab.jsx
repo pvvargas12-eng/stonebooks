@@ -21,7 +21,7 @@ import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
   getEmailSenders, saveEmailSender,
-  rowBalanceDue, statusInfo, customerName, fmtUSD,
+  rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
 } from './lib/stonebooksData'
 
 // Sidebar buckets. `key` = data-backed + clickable now; `soon` = roadmap only.
@@ -490,6 +490,11 @@ export default function EmailTab() {
                           <span className="cc-msg-date">{emailDate(msg.date)}</span>
                         </div>
                         <div className="cc-msg-body">{msg.body || '(no text body)'}</div>
+                        {(msg.attachments || []).length > 0 && (
+                          <div className="cc-msg-attach">
+                            {msg.attachments.map((a, i) => <span key={i} className="cc-msg-attach-chip" title="Attachment">{a.filename || 'attachment'}</span>)}
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -513,7 +518,7 @@ export default function EmailTab() {
                 <div className="cc-brain-cust">
                   <div className="cc-avatar">{initials(brain.customer)}</div>
                   <div>
-                    <div className="cc-brain-name">{brain.customer ? customerName(brain.customer) : reading.name}</div>
+                    <div className="cc-brain-name">{brain.customer ? properName(customerName(brain.customer)) : reading.name}</div>
                     <div className="cc-brain-contact">{brain.customer?.email || reading.contact}</div>
                     {brain.customer?.phone_primary && <div className="cc-brain-contact">{brain.customer.phone_primary}</div>}
                   </div>
@@ -778,6 +783,8 @@ const CC_CSS = `
   .cc-msg-subj { font-size: 12px; color: #8a7f6c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .cc-msg-date { font-size: 11.5px; color: #8a8a85; margin-left: auto; }
   .cc-msg-body { font-size: 13.5px; color: #333; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+  .cc-msg-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .cc-msg-attach-chip { font-size: 11.5px; color: #876307; background: rgba(154,114,9,0.1); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 7px; padding: 4px 9px; }
 
   .cc-brain { width: 288px; flex-shrink: 0; border-left: 0.5px solid #ECE3D2; background: #FCFAF6; max-height: calc(100vh - 210px); overflow-y: auto; }
   @media (max-width: 1100px) { .cc-brain { width: 240px; } }

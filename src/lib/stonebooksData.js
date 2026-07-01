@@ -451,6 +451,16 @@ function _isJunkThread(t) {
   return _JUNK_SENDER.test(from) || _JUNK_WORDS.test(text)
 }
 
+// Title-case a name for display/email: "CYNTHIA MACON" → "Cynthia Macon". Leaves
+// already mixed-case names (McDonald, O'Brien) untouched so real capitalization is
+// never mangled; only reformats all-caps or all-lowercase input.
+export function properName(name) {
+  if (!name) return name
+  const s = String(name).trim()
+  if (!s || (s !== s.toUpperCase() && s !== s.toLowerCase())) return s
+  return s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()).replace(/\bMc(\w)/g, (m, c) => `Mc${c.toUpperCase()}`)
+}
+
 // ── Email command center — bucketed thread workspace (Slice 1) ─────────────
 // One fetch, grouped into customer/address threads with the flags the smart
 // buckets filter on. Iterating newest-first means the FIRST message seen per
@@ -475,7 +485,7 @@ export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
       map.set(key, t = {
         key, customerId: r.customer_id || null, orderId: r.order_id || null, threadKey: r.thread_key,
         matched: !!r.customer_id,
-        name: name || r.from_email || (r.to_emails || [])[0] || 'Unknown',
+        name: (name && properName(name)) || r.from_email || (r.to_emails || [])[0] || 'Unknown',
         contact: c?.email || addr,
         latestSubject: r.subject || '(no subject)',
         latestSnippet: r.snippet || (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 160),
@@ -569,7 +579,7 @@ export async function getEmailTasks() {
   const tasks = []
   for (const o of orders) {
     const cu = custMap[o.customer_id] || null
-    const name = cu ? `${cu.first_name || ''} ${cu.last_name || ''}`.trim() : (o.primary_lastname || 'Customer')
+    const name = properName(cu ? `${cu.first_name || ''} ${cu.last_name || ''}`.trim() : (o.primary_lastname || 'Customer'))
     const email = cu?.email || null
     const paid = rowTotalPaid(o)
     const grand = rowGrandTotal(o)
@@ -656,7 +666,7 @@ export async function getEmailTasks() {
     tasks.push({
       key: `vendor-${bo.id}`, type: 'vendor', label: 'Vendor order',
       orderId: null, orderNumber: bo.po_number, customerId: null,
-      name: sup?.name || 'Supplier', email: sup?.email || null,
+      name: properName(sup?.name) || 'Supplier', email: sup?.email || null,
       reason: `${String(bo.kind || 'order').replace(/_/g, ' ')} order ready to send${sup?.name ? ` to ${sup.name}` : ''}`,
       subject: `Order ${bo.po_number || ''} — Shevchenko Monuments`.trim(),
       fileUrl: bo.po_file_url || null, fileName: `Order ${bo.po_number || 'sheet'}.pdf`,

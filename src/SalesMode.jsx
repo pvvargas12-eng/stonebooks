@@ -31,7 +31,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -9712,7 +9712,7 @@ function PdfDownloadButton({ order, label }) {
       doc.save(filename)
       // Compose mailto: with subject + body pre-filled
       const to = order.customer?.email || ''
-      const firstName = order.customer?.firstName || 'there'
+      const firstName = properName(order.customer?.firstName) || 'there'
       const orderNum = order.orderNumber || 'DRAFT'
       const repName = order.salesRep || 'the Shevchenko team'
       const subjectLabel = isContract ? 'contract' : 'estimate'
@@ -11585,11 +11585,11 @@ export function ReceiptActions({ order, payment, grandTotalOverride, hidePreview
       if (!to) { setErr('No customer email on file for this order.'); return }
       const { doc, filename } = await buildDoc()
       const contentBase64 = (doc.output('datauristring').split('base64,')[1]) || ''
-      const firstName = order.customer?.firstName || 'there'
+      const firstName = properName(order.customer?.firstName) || 'there'
       const orderNum = order.orderNumber || 'DRAFT'
       const subject = `Payment receipt — ${orderNum}`
-      const text = `Hello ${firstName},\n\nAttached is your payment receipt for order ${orderNum}.\n\nThank you for your business.`
-      const html = `<p>Hello ${firstName},</p><p>Attached is your payment receipt for order ${orderNum}.</p><p>Thank you for your business.</p>`
+      const text = `Hi ${firstName},\n\nThank you — we've received your payment, and your receipt for order ${orderNum} is attached for your records.\n\nIt's our privilege to serve your family. Please don't hesitate to reach out with any questions.`
+      const html = `<p>Hi ${firstName},</p><p>Thank you — we've received your payment, and your receipt for order ${orderNum} is attached for your records.</p><p>It's our privilege to serve your family. Please don't hesitate to reach out with any questions.</p>`
       const res = await sendShopEmail({
         to, subject, text, html,
         attachments: [{ filename, contentBase64, contentType: 'application/pdf' }],
