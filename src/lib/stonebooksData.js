@@ -862,6 +862,18 @@ export async function closeOrder(orderId) {
   return { ok: true }
 }
 
+// Bulk close — one query for many orders (Reconcile "Execute"). Same terminal
+// status as closeOrder; tenant-guarded. Returns the count actually closed.
+export async function bulkCloseOrders(orderIds = []) {
+  const ids = (orderIds || []).filter(Boolean)
+  if (!ids.length) return { ok: true, count: 0 }
+  const { data, error } = await supabase.from('orders')
+    .update({ status: 'closed', updated_at: new Date().toISOString() })
+    .in('id', ids).eq('tenant_id', TENANT_ID).select('id')
+  if (error) { console.warn('[orders] bulkCloseOrders:', error.message); return { ok: false, error: error.message } }
+  return { ok: true, count: data?.length || 0 }
+}
+
 // Fetch a (public) photo URL and return an email-attachment payload
 // [{ filename, contentBase64, contentType }] the /api/email/send endpoint accepts.
 // Returns null on any failure so a missing photo never blocks the send.

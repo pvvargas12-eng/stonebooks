@@ -12,7 +12,7 @@
 // (draft/scoping/quoted) and terminal (closed/cancelled) are never in this set.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
-import { listAllOrders } from './lib/stonebooksData'
+import { listAllOrders, closeOrder, bulkCloseOrders } from './lib/stonebooksData'
 import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
 
@@ -33,6 +33,10 @@ export default function ReconciliationTab({ onOpenOrder }) {
   const [err, setErr] = useState(null)
   const [orders, setOrders] = useState([])
   const [decisions, setDecisions] = useState({})   // orderId -> 'keep' | 'close' | 'reviewed' (LOCAL only)
+  const [closing, setClosing] = useState({})       // orderId -> 'busy' | 'done' | 'error' (actual DB close)
+  const [execText, setExecText] = useState('')
+  const [executing, setExecuting] = useState(false)
+  const [execMsg, setExecMsg] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -54,6 +58,30 @@ export default function ReconciliationTab({ onOpenOrder }) {
   const defaultDecision = (r) => r.bucket === 'confirmed' ? 'keep' : r.bucket === 'closeCandidate' ? 'close' : 'reviewed'
   const decisionOf = (r) => decisions[r.orderId] ?? defaultDecision(r)
   const setDecision = (orderId, d) => setDecisions(prev => ({ ...prev, [orderId]: d }))
+
+  // Actually close ONE order in the DB (per-row red Close button).
+  const doClose = async (orderId) => {
+    if (closing[orderId] === 'busy' || closing[orderId] === 'done') return
+    setClosing(s => ({ ...s, [orderId]: 'busy' }))
+    const res = await closeOrder(orderId)
+    setClosing(s => ({ ...s, [orderId]: res.ok ? 'done' : 'error' }))
+  }
+
+  // Bulk close every row still marked 'close' (typed-confirmation gated).
+  const executeCloses = async () => {
+    if (execText.trim() !== 'CLOSE UNMATCHED ORDERS' || executing) return
+    const ids = result.rows
+      .filter(r => decisionOf(r) === 'close' && closing[r.orderId] !== 'done')
+      .map(r => r.orderId)
+    if (!ids.length) { setExecMsg('No orders are marked to close.'); return }
+    setExecuting(true); setExecMsg(null)
+    const res = await bulkCloseOrders(ids)
+    setExecuting(false)
+    if (!res.ok) { setExecMsg(`Failed — ${res.error || 'error'}`); return }
+    setClosing(s => { const n = { ...s }; for (const id of ids) n[id] = 'done'; return n })
+    setExecText('')
+    setExecMsg(`Closed ${res.count} order${res.count === 1 ? '' : 's'}. ✓`)
+  }
 
   const backfillNeeded = useMemo(() => result.rows.filter(r => r.surnameSource === 'customer').length, [result])
   const plannedCloses = useMemo(() => result.rows.filter(r => (decisions[r.orderId] ?? (r.bucket === 'closeCandidate' ? 'close' : r.bucket === 'confirmed' ? 'keep' : 'reviewed')) === 'close').length, [result, decisions])
@@ -87,11 +115,11 @@ export default function ReconciliationTab({ onOpenOrder }) {
       {/* Buckets */}
       {!loading && (
         <>
-          <Bucket meta={BUCKET_META.closeCandidate} rows={byBucket('closeCandidate')} decisionOf={decisionOf} setDecision={setDecision} onOpenOrder={onOpenOrder} bulk={(d) => {
+          <Bucket meta={BUCKET_META.closeCandidate} rows={byBucket('closeCandidate')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} onOpenOrder={onOpenOrder} bulk={(d) => {
             setDecisions(prev => { const n = { ...prev }; for (const r of byBucket('closeCandidate')) n[r.orderId] = d; return n })
           }} />
-          <Bucket meta={BUCKET_META.review} rows={byBucket('review')} decisionOf={decisionOf} setDecision={setDecision} onOpenOrder={onOpenOrder} />
-          <Bucket meta={BUCKET_META.confirmed} rows={byBucket('confirmed')} decisionOf={decisionOf} setDecision={setDecision} onOpenOrder={onOpenOrder} />
+          <Bucket meta={BUCKET_META.review} rows={byBucket('review')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} onOpenOrder={onOpenOrder} />
+          <Bucket meta={BUCKET_META.confirmed} rows={byBucket('confirmed')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} onOpenOrder={onOpenOrder} />
 
           {/* Unmatched schedule jobs */}
           <section className="sb-recon-bucket">
@@ -111,16 +139,18 @@ export default function ReconciliationTab({ onOpenOrder }) {
 
           {/* PHASE 3 — gated, NOT wired in this build */}
           <section className="sb-recon-exec">
-            <div className="sb-recon-exec-title">Phase 3 — execute (locked)</div>
+            <div className="sb-recon-exec-title">Phase 3 — close reviewed orders</div>
             <div className="sb-recon-exec-body">
-              On your greenlight this will, in one logged batch: <strong>backfill</strong> {backfillNeeded} blank surnames from <code>customer.last_name</code>;
-              <strong> write schedule status</strong> to confirmed orders (reference only — the payment ledger is never touched);
-              and <strong>close</strong> {plannedCloses} reviewed close-candidates (prev_status stored, reversible).
+              <strong>Close</strong> the {plannedCloses} order{plannedCloses === 1 ? '' : 's'} still marked “close” below, in one batch. The payment ledger is never touched, and each close is reversible by changing the order’s status. (Surname backfill and schedule-status writes are separate and not run here.)
             </div>
             <div className="sb-recon-exec-gate">
-              <input className="sb-recon-confirm" placeholder='Type "CLOSE UNMATCHED ORDERS"' disabled />
-              <button type="button" className="sb-recon-exec-btn" disabled>Execute reconciliation</button>
-              <span className="sb-recon-locked">🔒 Wired after you review the buckets and greenlight Phase 3.</span>
+              <input className="sb-recon-confirm" placeholder='Type "CLOSE UNMATCHED ORDERS"' value={execText} onChange={e => setExecText(e.target.value)} />
+              <button type="button" className="sb-recon-exec-btn" onClick={executeCloses} disabled={executing || execText.trim() !== 'CLOSE UNMATCHED ORDERS'}>
+                {executing ? 'Closing…' : `Close ${plannedCloses} order${plannedCloses === 1 ? '' : 's'}`}
+              </button>
+              {execMsg
+                ? <span className="sb-recon-locked">{execMsg}</span>
+                : <span className="sb-recon-locked">Closes only the rows still marked “close.” Reversible via each order’s status.</span>}
             </div>
           </section>
         </>
@@ -139,7 +169,7 @@ function Card({ label, value, tone, sub }) {
   )
 }
 
-function Bucket({ meta, rows, decisionOf, setDecision, onOpenOrder, bulk }) {
+function Bucket({ meta, rows, decisionOf, setDecision, closing, doClose, onOpenOrder, bulk }) {
   const [open, setOpen] = useState(true)
   return (
     <section className="sb-recon-bucket">
@@ -173,9 +203,15 @@ function Bucket({ meta, rows, decisionOf, setDecision, onOpenOrder, bulk }) {
                 <span className="sb-recon-reason">{r.reason}</span>
               </div>
               <div className="sb-recon-actions">
-                <button type="button" className={dec === 'keep' ? 'on' : ''} onClick={() => setDecision(r.orderId, 'keep')}>Keep</button>
-                <button type="button" className={dec === 'close' ? 'on red' : ''} onClick={() => setDecision(r.orderId, 'close')}>Close</button>
-                <button type="button" className={dec === 'reviewed' ? 'on' : ''} onClick={() => setDecision(r.orderId, 'reviewed')}>Reviewed</button>
+                {closing[r.orderId] === 'done' ? (
+                  <span className="sb-recon-closed">Closed ✓</span>
+                ) : (<>
+                  <button type="button" className={dec === 'keep' ? 'on' : ''} onClick={() => setDecision(r.orderId, 'keep')}>Keep</button>
+                  <button type="button" className="close-act" onClick={() => doClose(r.orderId)} disabled={closing[r.orderId] === 'busy'}>
+                    {closing[r.orderId] === 'busy' ? 'Closing…' : closing[r.orderId] === 'error' ? 'Retry' : 'Close'}
+                  </button>
+                  <button type="button" className={dec === 'reviewed' ? 'on' : ''} onClick={() => setDecision(r.orderId, 'reviewed')}>Reviewed</button>
+                </>)}
               </div>
             </div>
           )})}
@@ -231,6 +267,10 @@ const RECON_CSS = `
   .sb-recon-actions button { font: inherit; font-size: 11.5px; padding: 4px 9px; border: 1px solid #d8d6d1; border-radius: 7px; background: #fff; cursor: pointer; }
   .sb-recon-actions button.on { border-color: #0f1419; background: #0f1419; color: #fff; }
   .sb-recon-actions button.on.red { border-color: #b3261e; background: #b3261e; }
+  .sb-recon-actions button.close-act { border-color: #b3261e; background: #b3261e; color: #fff; }
+  .sb-recon-actions button.close-act:hover:not(:disabled) { background: #96201a; }
+  .sb-recon-actions button.close-act:disabled { opacity: 0.6; cursor: default; }
+  .sb-recon-closed { font-size: 11.5px; font-weight: 700; color: #15724a; padding: 4px 9px; }
   .sb-recon-empty { color: #b3aea2; font-size: 13px; padding: 8px 6px; }
   .sb-recon-unmatched { display: flex; flex-direction: column; gap: 4px; }
   .sb-recon-unmatched-row { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 3px 0; }
@@ -241,6 +281,7 @@ const RECON_CSS = `
   .sb-recon-exec-body { font-size: 13px; color: #4a4a45; line-height: 1.5; margin: 8px 0 12px; }
   .sb-recon-exec-gate { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .sb-recon-confirm { font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid #d8d6d1; border-radius: 8px; width: 280px; }
-  .sb-recon-exec-btn { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #b3261e; background: #b3261e; color: #fff; opacity: 0.5; cursor: not-allowed; }
+  .sb-recon-exec-btn { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #b3261e; background: #b3261e; color: #fff; cursor: pointer; }
+  .sb-recon-exec-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .sb-recon-locked { font-size: 12px; color: #8a5a12; }
 `
