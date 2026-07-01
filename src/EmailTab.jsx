@@ -64,6 +64,11 @@ const BUCKET_LABEL = {
   inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies',
   unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent',
 }
+// Task-type filter chips (order = display order); only types with tasks show.
+const TASK_TYPE_LABELS = {
+  deposit: 'Deposit', balance_due: 'Balance', layout: 'Layout', followup: 'Follow-up',
+  closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
+}
 
 function matchBucket(t, b) {
   switch (b) {
@@ -120,6 +125,7 @@ export default function EmailTab() {
   const [sigModal, setSigModal] = useState(false)
   const [tasks, setTasks] = useState([])
   const [taskSort, setTaskSort] = useState('priority')
+  const [taskFilter, setTaskFilter] = useState('all')
   const [snoozed, setSnoozed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('cc_snoozed') || '[]')) } catch { return new Set() }
   })
@@ -156,16 +162,22 @@ export default function EmailTab() {
     () => threads.filter(t => matchBucket(t, bucket)).filter(t => matchSearch(t, q)),
     [threads, bucket, q],
   )
+  const activeTasks = useMemo(() => tasks.filter(t => !snoozed.has(t.key)), [tasks, snoozed])
+  const typeCounts = useMemo(() => {
+    const m = {}
+    for (const t of activeTasks) m[t.type] = (m[t.type] || 0) + 1
+    return m
+  }, [activeTasks])
   const visibleTasks = useMemo(() => {
-    const list = tasks.filter(t => !snoozed.has(t.key))
     const cmp = {
       priority: (a, b) => b.priority - a.priority,
       amount: (a, b) => (b.amount || 0) - (a.amount || 0),
       name: (a, b) => (a.name || '').localeCompare(b.name || ''),
       type: (a, b) => (a.type || '').localeCompare(b.type || '') || b.priority - a.priority,
     }[taskSort] || ((a, b) => b.priority - a.priority)
+    const list = taskFilter === 'all' ? activeTasks : activeTasks.filter(t => t.type === taskFilter)
     return [...list].sort(cmp)
-  }, [tasks, snoozed, taskSort])
+  }, [activeTasks, taskSort, taskFilter])
 
   const snooze = (key) => setSnoozed(prev => {
     const n = new Set(prev); n.add(key)
@@ -332,6 +344,14 @@ export default function EmailTab() {
               </select>
             )}
           </div>
+          {bucket === 'tasks' && activeTasks.length > 0 && (
+            <div className="cc-tfilter">
+              <button type="button" className={`cc-tchip${taskFilter === 'all' ? ' on' : ''}`} onClick={() => setTaskFilter('all')}>All {activeTasks.length}</button>
+              {Object.keys(TASK_TYPE_LABELS).filter(ty => typeCounts[ty]).map(ty => (
+                <button type="button" key={ty} className={`cc-tchip${taskFilter === ty ? ' on' : ''}`} onClick={() => setTaskFilter(ty)}>{TASK_TYPE_LABELS[ty]} {typeCounts[ty]}</button>
+              ))}
+            </div>
+          )}
           {err && <div className="cc-error">{err}<div className="cc-error-hint">Make sure the mailbox is connected and the Gmail functions are deployed.</div></div>}
           <div className="cc-list-scroll">
             {bucket === 'tasks' ? (
@@ -503,7 +523,7 @@ export default function EmailTab() {
                 {senders.length > 0 && (
                   <label className="cc-field"><span>From (signs as)</span>
                     <select className="cc-input" value={senderId} onChange={e => { setSenderId(e.target.value); try { localStorage.setItem('cc_sender', e.target.value) } catch { /* ignore */ } }}>
-                      {senders.map(s => <option key={s.id} value={s.id}>{s.name}{s.title ? ` · ${s.title}` : ''}</option>)}
+                      {senders.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select></label>
                 )}
                 <label className="cc-field"><span>To</span>
@@ -648,6 +668,10 @@ const CC_CSS = `
   .cc-list { border-left: 0.5px solid #ECE3D2; border-right: 0.5px solid #ECE3D2; display: flex; flex-direction: column; min-width: 0; }
   .cc-list-head { display: flex; align-items: baseline; gap: 8px; padding: 13px 16px 10px; border-bottom: 0.5px solid #ECE3D2; }
   .cc-sort { margin-left: auto; font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #444; cursor: pointer; }
+  .cc-tfilter { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 16px; border-bottom: 0.5px solid #f1efeb; }
+  .cc-tchip { font: inherit; font-size: 11.5px; padding: 3px 10px; border-radius: 999px; border: 0.5px solid #E2D8C6; background: #fff; color: #6b6256; cursor: pointer; }
+  .cc-tchip:hover { background: #faf8f4; }
+  .cc-tchip.on { background: #0F1419; border-color: #0F1419; color: #fff; }
   .cc-list-title { font-size: 15px; font-weight: 600; }
   .cc-list-sub { font-size: 12px; color: #8a8a85; margin-left: 8px; }
   .cc-list-scroll { overflow-y: auto; max-height: calc(100vh - 258px); }
