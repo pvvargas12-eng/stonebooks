@@ -500,6 +500,31 @@ export async function getCustomerBrain(customerId) {
   return { ok: true, customer: customer || null, orders: orders || [] }
 }
 
+// ── Email sender identities + signatures (Slice 2) ─────────────────────────
+// Per-person sender + signature. The shop still sends from shevcoteam@ (one App
+// Password) — "sender" is an identity/signature choice. Deploy-safe: if the
+// email_senders migration isn't applied yet, getEmailSenders returns [] and the
+// composer falls back to the shared shop signature.
+export async function getEmailSenders() {
+  const { data, error } = await supabase.from('email_senders')
+    .select('id, name, title, reply_to, phone, signature_text, sort_order, active')
+    .eq('active', true).order('sort_order', { ascending: true }).order('name', { ascending: true })
+  if (error) { console.warn('[email] senders:', error.message); return [] }
+  return data || []
+}
+export async function saveEmailSender({ id, name, title, reply_to, phone, signature_text } = {}) {
+  const patch = {
+    title: title ?? null, reply_to: reply_to ?? null, phone: phone ?? null,
+    signature_text: signature_text ?? null, updated_at: new Date().toISOString(),
+  }
+  if (id) {
+    const { error } = await supabase.from('email_senders').update(patch).eq('id', id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }
+  const { data, error } = await supabase.from('email_senders').insert({ name: name || 'Staff', ...patch }).select('id').maybeSingle()
+  return error ? { ok: false, error: error.message } : { ok: true, id: data?.id }
+}
+
 // ── Remote contract e-signing (R2) ────────────────────────────────────────
 // Create a signing link for an order. The browser generates the CONTRACT-variant
 // PDF (the jsPDF generator is browser-only) and passes its bytes + the customer

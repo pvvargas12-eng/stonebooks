@@ -20,6 +20,7 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature,
+  getEmailSenders, saveEmailSender,
   rowBalanceDue, statusInfo, customerName, fmtUSD,
 } from './lib/stonebooksData'
 
@@ -112,6 +113,9 @@ export default function EmailTab() {
   const [brain, setBrain] = useState(null)       // { customer, orders } | null
   const [composer, setComposer] = useState(null)
   const [signature, setSignature] = useState('')
+  const [senders, setSenders] = useState([])
+  const [senderId, setSenderId] = useState('')
+  const [sigModal, setSigModal] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -122,6 +126,13 @@ export default function EmailTab() {
       setLoading(false)
     })
     getEmailSignature().then(s => { if (!cancelled) setSignature(s?.signature_text || '') })
+    getEmailSenders().then(list => {
+      if (cancelled) return
+      setSenders(list)
+      let saved = ''
+      try { saved = localStorage.getItem('cc_sender') || '' } catch { /* ignore */ }
+      setSenderId(list.find(s => s.id === saved)?.id || list[0]?.id || '')
+    })
     return () => { cancelled = true }
   }, [])
 
@@ -187,8 +198,13 @@ export default function EmailTab() {
     const to = composer.to.trim(), subject = composer.subject.trim()
     if (!to || !subject || composer.busy) return
     setComposer(c => ({ ...c, busy: true, error: null }))
+    // If a sender is chosen, append THEIR signature and tell the backend not to
+    // add the shared one; otherwise fall back to the shop signature.
+    const sender = senders.find(s => s.id === senderId)
+    const useOwn = !!sender?.signature_text
+    const finalText = useOwn ? `${composer.body ? composer.body + '\n\n' : ''}-- \n${sender.signature_text}` : composer.body
     const res = await sendShopEmail({
-      to, subject, text: composer.body,
+      to, subject, text: finalText, includeSignature: !useOwn,
       customerId: composer.customerId || null,
       inReplyTo: composer.inReplyTo || null, references: composer.references || null,
     })
@@ -219,6 +235,7 @@ export default function EmailTab() {
         <div className="cc-top-actions">
           <button type="button" className="cc-btn" onClick={sync} disabled={syncing || loading}>{syncing ? 'Syncing…' : 'Sync'}</button>
           <button type="button" className="cc-btn" onClick={reload} disabled={loading}>Refresh</button>
+          <button type="button" className="cc-btn" onClick={() => setSigModal(true)}>Signatures</button>
           <button type="button" className="cc-btn cc-btn-primary" onClick={openComposer}>Compose</button>
         </div>
       </header>
@@ -413,18 +430,29 @@ export default function EmailTab() {
               </>
             ) : (
               <>
+                {senders.length > 0 && (
+                  <label className="cc-field"><span>From (signs as)</span>
+                    <select className="cc-input" value={senderId} onChange={e => { setSenderId(e.target.value); try { localStorage.setItem('cc_sender', e.target.value) } catch { /* ignore */ } }}>
+                      {senders.map(s => <option key={s.id} value={s.id}>{s.name}{s.title ? ` · ${s.title}` : ''}</option>)}
+                    </select></label>
+                )}
                 <label className="cc-field"><span>To</span>
                   <input type="email" className="cc-input" value={composer.to} onChange={e => setComposer(c => ({ ...c, to: e.target.value }))} placeholder="recipient@example.com" /></label>
                 <label className="cc-field"><span>Subject</span>
                   <input type="text" className="cc-input" value={composer.subject} onChange={e => setComposer(c => ({ ...c, subject: e.target.value }))} placeholder="Subject" /></label>
                 <label className="cc-field"><span>Message</span>
                   <textarea className="cc-input" rows={8} value={composer.body} onChange={e => setComposer(c => ({ ...c, body: e.target.value }))} placeholder="Write your message…" /></label>
-                {signature && (
-                  <div className="cc-sig">
-                    <div className="cc-sig-label">Signature — added automatically</div>
-                    <div className="cc-sig-body">{signature}</div>
-                  </div>
-                )}
+                {(() => {
+                  const sender = senders.find(s => s.id === senderId)
+                  const sig = sender?.signature_text || signature
+                  if (!sig) return null
+                  return (
+                    <div className="cc-sig">
+                      <div className="cc-sig-label">Signature — {sender ? sender.name : 'shop'} · added automatically</div>
+                      <div className="cc-sig-body">{sig}</div>
+                    </div>
+                  )
+                })()}
                 {composer.error && <div className="cc-error">{composer.error}</div>}
                 <div className="cc-composer-actions">
                   <button type="button" className="cc-btn" onClick={closeComposer} disabled={composer.busy}>Cancel</button>
@@ -435,6 +463,55 @@ export default function EmailTab() {
           </div>
         </div>
       )}
+
+      {sigModal && (
+        <SignaturesModal
+          senders={senders}
+          onClose={() => setSigModal(false)}
+          onSaved={() => getEmailSenders().then(setSenders)}
+        />
+      )}
+    </div>
+  )
+}
+
+// Signatures settings — each person edits + saves their own signature. Local
+// draft state so edits are live; Save persists via saveEmailSender.
+function SignaturesModal({ senders, onClose, onSaved }) {
+  const [items, setItems] = useState(() => senders.map(s => ({ ...s })))
+  const [savingId, setSavingId] = useState(null)
+  const [msg, setMsg] = useState(null)
+  const setField = (id, k, v) => setItems(its => its.map(s => (s.id === id ? { ...s, [k]: v } : s)))
+  const save = async (s) => {
+    setSavingId(s.id); setMsg(null)
+    const res = await saveEmailSender({ id: s.id, name: s.name, title: s.title, phone: s.phone, reply_to: s.reply_to, signature_text: s.signature_text })
+    setSavingId(null)
+    if (!res.ok) { setMsg({ id: s.id, text: res.error || 'Save failed', ok: false }); return }
+    setMsg({ id: s.id, text: 'Saved', ok: true })
+    onSaved?.()
+  }
+  return (
+    <div className="cc-modal-overlay" onClick={onClose}>
+      <div className="cc-composer cc-sig-modal" onClick={e => e.stopPropagation()}>
+        <div className="cc-composer-title">Signatures</div>
+        <div className="cc-sig-hint">Each person edits and saves their own signature. It’s added automatically when they’re the sender.</div>
+        {items.length === 0 ? (
+          <div className="cc-empty">No senders yet — apply the email_senders migration in Supabase.</div>
+        ) : items.map(s => (
+          <div key={s.id} className="cc-sender-edit">
+            <div className="cc-sender-head">
+              <span className="cc-sender-name">{s.name}</span>
+              <input className="cc-input cc-sender-title" value={s.title || ''} onChange={e => setField(s.id, 'title', e.target.value)} placeholder="Title (e.g. Family Care)" />
+            </div>
+            <textarea className="cc-input" rows={4} value={s.signature_text || ''} onChange={e => setField(s.id, 'signature_text', e.target.value)} placeholder="Email signature…" />
+            <div className="cc-sender-actions">
+              {msg?.id === s.id && <span className={msg.ok ? 'cc-sender-ok' : 'cc-sender-err'}>{msg.ok ? '✓ ' : ''}{msg.text}</span>}
+              <button type="button" className="cc-btn cc-btn-primary" onClick={() => save(s)} disabled={savingId === s.id}>{savingId === s.id ? 'Saving…' : 'Save'}</button>
+            </div>
+          </div>
+        ))}
+        <div className="cc-composer-actions"><button type="button" className="cc-btn" onClick={onClose}>Close</button></div>
+      </div>
     </div>
   )
 }
@@ -577,4 +654,13 @@ const CC_CSS = `
   .cc-sig-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: #9a8a5e; font-weight: 700; margin-bottom: 4px; }
   .cc-sig-body { font-size: 12.5px; color: #6b6256; white-space: pre-wrap; line-height: 1.45; }
   .cc-ok { font-size: 13px; color: #1f7a3d; background: rgba(31,122,61,0.07); border: 0.5px solid rgba(31,122,61,0.3); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+  .cc-sig-modal { max-height: 86vh; overflow-y: auto; width: min(620px, 95vw); }
+  .cc-sig-hint { font-size: 12px; color: #8a8a85; margin-bottom: 14px; }
+  .cc-sender-edit { border: 0.5px solid #ece3d2; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .cc-sender-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .cc-sender-name { font-size: 14px; font-weight: 700; min-width: 84px; }
+  .cc-sender-title { flex: 1; }
+  .cc-sender-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+  .cc-sender-ok { font-size: 12px; color: #1f7a3d; }
+  .cc-sender-err { font-size: 12px; color: #b3261e; }
 `
