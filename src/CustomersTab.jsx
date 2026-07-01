@@ -22,6 +22,7 @@ import {
   ACTIVE_STATUSES, SOLD_STATUSES,
   bulkArchiveCustomers, bulkRestoreCustomers,
   orderTypeLabel,
+  getMessageThread, sendShopEmail,
 } from './lib/stonebooksData'
 import { CRM, paymentTone, paymentLabel } from './lib/crmTheme'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
@@ -993,8 +994,122 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
         </div>
       )}
 
+      <CustomerEmailSection customer={customer} />
+
       {profileOpen && <CustomerProfileSheet order={profileOrder} onClose={() => setProfileOpen(false)} />}
     </div>
+  )
+}
+
+// Email traffic — the customer-level thread with the shop (the SAME conversation
+// shown on every one of the customer's orders and in the Email tab). Keyed on
+// customer.id, so it's identical no matter which surface it's viewed from. Reply
+// sends from the shop Gmail via sendShopEmail, tagged to this customer.
+function CustomerEmailSection({ customer }) {
+  const [emails, setEmails] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [composer, setComposer] = useState(null) // { subject, body, busy, error, sent } | null
+
+  const reload = () => getMessageThread({ customerId: customer.id }).then(r => setEmails(r.messages || []))
+
+  useEffect(() => {
+    if (!customer?.id) return
+    let cancelled = false
+    getMessageThread({ customerId: customer.id }).then(r => {
+      if (cancelled) return
+      setEmails(r.messages || [])
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [customer?.id])
+
+  const openComposer = () => setComposer({ subject: '', body: '', busy: false, error: null, sent: false })
+  const send = async () => {
+    if (!composer || composer.busy) return
+    const to = (customer.email || '').trim()
+    if (!to) { setComposer(c => ({ ...c, error: 'No email address on file for this customer.' })); return }
+    if (!composer.subject.trim()) { setComposer(c => ({ ...c, error: 'Subject is required.' })); return }
+    setComposer(c => ({ ...c, busy: true, error: null }))
+    const res = await sendShopEmail({ to, subject: composer.subject.trim(), text: composer.body, customerId: customer.id })
+    if (!res.ok) { setComposer(c => ({ ...c, busy: false, error: res.error || 'Send failed.' })); return }
+    setComposer(c => ({ ...c, busy: false, sent: true }))
+    reload()
+  }
+
+  return (
+    <>
+      <div className="sb-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>Email traffic</span>
+        <button
+          type="button"
+          className="sb-btn-secondary"
+          onClick={openComposer}
+          disabled={!customer.email}
+          title={customer.email ? `Email ${customer.email}` : 'No email address on file'}
+        >
+          {emails.length ? 'Reply' : 'Compose'}
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="sb-empty">Loading email…</div>
+      ) : (!customer.email && emails.length === 0) ? (
+        <div className="sb-card sb-muted">No email address on file.</div>
+      ) : emails.length === 0 ? (
+        <div className="sb-card sb-muted">No email history with this customer yet.</div>
+      ) : (
+        <div className="sb-card" style={{ maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {emails.map(m => (
+            <div key={m.id} style={{ borderBottom: '0.5px solid #ece3d2', paddingBottom: 10 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', marginBottom: 4 }}>
+                <strong style={{ fontSize: 13 }}>
+                  {m.direction === 'outbound' ? 'Shevchenko Monuments' : (m.from || customerName(customer))}
+                </strong>
+                {m.subject && <span className="sb-muted" style={{ fontSize: 12.5 }}>{m.subject}</span>}
+                <span className="sb-muted" style={{ fontSize: 12, marginLeft: 'auto' }}>{fmtDate(m.date)}</span>
+              </div>
+              <div className="sb-prewrap" style={{ fontSize: 13, color: '#333', lineHeight: 1.5 }}>
+                {m.body || '(no text body)'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {composer && (
+        <div
+          onClick={() => { if (!composer.busy) setComposer(null) }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,20,25,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+        >
+          <div className="sb-card" onClick={e => e.stopPropagation()} style={{ width: 'min(560px, 94vw)', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div className="sb-section-label" style={{ marginTop: 0 }}>Email {customerName(customer)}</div>
+            {composer.sent ? (
+              <>
+                <div style={{ fontSize: 13, color: '#1f7a3d', background: 'rgba(31,122,61,0.08)', border: '0.5px solid rgba(31,122,61,0.3)', borderRadius: 8, padding: '10px 12px', marginBottom: 12 }}>
+                  ✓ Sent to {customer.email}
+                </div>
+                <div className="sb-form-actions">
+                  <button type="button" className="sb-btn-primary" onClick={() => setComposer(null)}>Done</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <Field label="To"><input className="sb-input" value={customer.email || ''} readOnly /></Field>
+                <Field label="Subject"><input className="sb-input" value={composer.subject} onChange={e => setComposer(c => ({ ...c, subject: e.target.value }))} autoFocus /></Field>
+                <Field label="Message"><textarea className="sb-input" rows={8} value={composer.body} onChange={e => setComposer(c => ({ ...c, body: e.target.value }))} placeholder="Write your message…" /></Field>
+                {composer.error && <div className="sb-msg sb-msg-err">{composer.error}</div>}
+                <div className="sb-form-actions">
+                  <button type="button" className="sb-btn-primary" onClick={send} disabled={composer.busy || !customer.email}>
+                    {composer.busy ? 'Sending…' : 'Send'}
+                  </button>
+                  <button type="button" className="sb-btn-secondary" onClick={() => setComposer(null)} disabled={composer.busy}>Cancel</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
