@@ -611,6 +611,21 @@ export async function getEmailTasks() {
       })
     }
   }
+  // Vendor orders — draft supplier POs (bulk_orders) ready to send to the supplier.
+  // These email the SUPPLIER (not a customer): name/email come from the joined row.
+  const { data: bulkRows } = await supabase.from('bulk_orders')
+    .select('id, po_number, kind, status, supplier:suppliers(name, email)').eq('status', 'draft')
+  for (const bo of (bulkRows || [])) {
+    const sup = bo.supplier
+    tasks.push({
+      key: `vendor-${bo.id}`, type: 'vendor', label: 'Vendor order',
+      orderId: null, orderNumber: bo.po_number, customerId: null,
+      name: sup?.name || 'Supplier', email: sup?.email || null,
+      reason: `${String(bo.kind || 'order').replace(/_/g, ' ')} order ready to send${sup?.name ? ` to ${sup.name}` : ''}`,
+      subject: `Order ${bo.po_number || ''} — Shevchenko Monuments`.trim(),
+      priority: 7e8,
+    })
+  }
   tasks.sort((a, b) => b.priority - a.priority)
   return { ok: true, tasks }
 }

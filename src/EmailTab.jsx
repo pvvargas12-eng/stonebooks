@@ -184,6 +184,7 @@ export default function EmailTab() {
       deposit: `Hi ${first},\n\nThank you for choosing Shevchenko Monuments for your order${ord}. To begin work, we ask for a 50% deposit of ${fmtUSD((task.amount || 0) / 2)}. You can send it by check or Zelle to shevcoteam@gmail.com and we'll get started right away.\n\nPlease let us know if you have any questions.`,
       permit: `Hi ${first},\n\nGood news — the cemetery permit for your order${ord} has been approved, so we're clear to move forward with the work. We'll keep you posted as we progress.\n\nPlease reach out anytime with questions.`,
       layout: `Hi ${first},\n\nYour monument layout is ready for your review${ord}. We'll send over the proof so you can look over the lettering, dates, and design — please let us know if everything looks right or if you'd like any changes. Once you approve, we'll move into production.`,
+      vendor: `Hello${task.name && task.name !== 'Supplier' ? ` ${task.name} team` : ''},\n\nPlease find our order${ord} below. Kindly confirm receipt and let us know the expected delivery timeline.\n\nThank you,\nShevchenko Monuments`,
     }
     const body = bodies[task.type] || bodies.followup
     setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
@@ -745,6 +746,7 @@ const CC_CSS = `
   .cc-tag-deposit { background: rgba(154,114,9,0.14); color: #876307; }
   .cc-tag-permit { background: rgba(107,70,193,0.12); color: #5a3aa8; }
   .cc-tag-layout { background: rgba(212,83,126,0.1); color: #99355a; }
+  .cc-tag-vendor { background: rgba(29,158,117,0.12); color: #0f6e56; }
   .cc-task-ord { margin-left: auto; margin-right: 22px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
   .cc-task-name { font-size: 14px; font-weight: 600; }
   .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }
