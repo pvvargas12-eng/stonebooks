@@ -54,15 +54,16 @@ const BUCKET_GROUPS = [
   ] },
   { label: 'System', items: [
     { key: 'sent', label: 'Sent' },
-    { soon: true, label: 'Drafts' },
+    { key: 'drafts', label: 'Drafts' },
     { key: 'junk', label: 'Junk / spam' },
-    { soon: true, label: 'Failed / attention' },
+    { key: 'failed', label: 'Failed / attention', tone: 'red' },
   ] },
 ]
 const BUCKET_LABEL = {
   tasks: 'Review queue',
   inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies',
   unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent', junk: 'Junk / spam',
+  drafts: 'Drafts', failed: 'Failed / attention',
 }
 // Task-type filter chips (order = display order); only types with tasks show.
 const TASK_TYPE_LABELS = {
@@ -129,6 +130,18 @@ export default function EmailTab() {
   const [junkOverride, setJunkOverride] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_junk') || '{}') } catch { return {} } })
   const junkOf = (t) => (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
   const markJunk = (key, val) => setJunkOverride(prev => { const n = { ...prev, [key]: val }; try { localStorage.setItem('cc_junk', JSON.stringify(n)) } catch { /* ignore */ } return n })
+  const [drafts, setDrafts] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_drafts') || '[]') } catch { return [] } })
+  const [failed, setFailed] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_failed') || '[]') } catch { return [] } })
+  const persistDrafts = (list) => { setDrafts(list); try { localStorage.setItem('cc_drafts', JSON.stringify(list)) } catch { /* ignore */ } }
+  const persistFailed = (list) => { setFailed(list); try { localStorage.setItem('cc_failed', JSON.stringify(list)) } catch { /* ignore */ } }
+  const saveDraft = () => {
+    if (!composer) return
+    const d = { id: composer.draftId || crypto.randomUUID(), to: composer.to || '', subject: composer.subject || '', body: composer.body || '', customerId: composer.customerId || null }
+    persistDrafts([d, ...drafts.filter(x => x.id !== d.id)])
+    setComposer(null)
+  }
+  const resumeDraft = (d) => setComposer({ to: d.to, subject: d.subject, body: d.body, customerId: d.customerId || null, draftId: d.id, attachments: [], busy: false, error: null, sent: false })
+  const retryFailed = (f) => { persistFailed(failed.filter(x => x.id !== f.id)); setComposer({ to: f.to, subject: f.subject, body: f.body, customerId: null, attachments: [], busy: false, error: null, sent: false }) }
   const [tasks, setTasks] = useState([])
   const [taskSort, setTaskSort] = useState('priority')
   const [taskFilter, setTaskFilter] = useState('all')
@@ -302,7 +315,11 @@ export default function EmailTab() {
       customerId: composer.customerId || null,
       inReplyTo: composer.inReplyTo || null, references: composer.references || null,
     })
-    if (!res.ok) { setComposer(c => ({ ...c, busy: false, error: res.error || 'Send failed' })); return }
+    if (!res.ok) {
+      persistFailed([{ id: crypto.randomUUID(), to, subject, body: composer.body || '', error: res.error || 'Send failed', at: new Date().toISOString() }, ...failed])
+      setComposer(c => ({ ...c, busy: false, error: res.error || 'Send failed' })); return
+    }
+    if (composer.draftId) persistDrafts(drafts.filter(d => d.id !== composer.draftId))
     setComposer(c => ({ ...c, busy: false, sent: true }))
     reload()
   }
@@ -356,9 +373,11 @@ export default function EmailTab() {
                 const filt = item.key === 'tasks' ? 'all' : (item.filter || null)
                 const on = isTaskBucket ? (bucket === 'tasks' && taskFilter === filt) : (bucket === item.key)
                 const cnt = item.key === 'tasks' ? activeTasks.length
-                  : item.filter === 'payments' ? ((typeCounts.deposit || 0) + (typeCounts.balance_due || 0))
-                    : item.filter ? (typeCounts[item.filter] || 0)
-                      : (msgCounts[item.key] ?? counts[item.key])
+                  : item.key === 'drafts' ? drafts.length
+                    : item.key === 'failed' ? failed.length
+                      : item.filter === 'payments' ? ((typeCounts.deposit || 0) + (typeCounts.balance_due || 0))
+                        : item.filter ? (typeCounts[item.filter] || 0)
+                          : (msgCounts[item.key] ?? counts[item.key])
                 const tone = item.key === 'tasks' ? 'amber' : item.tone
                 const go = isTaskBucket
                   ? () => { setBucket('tasks'); setTaskFilter(filt); setReading(null); setBrain(null) }
@@ -382,7 +401,9 @@ export default function EmailTab() {
             <span className="cc-list-sub">{
               q.trim() ? `${bucket === 'tasks' ? visibleTasks.length : visible.length} match${(bucket === 'tasks' ? visibleTasks.length : visible.length) === 1 ? '' : 'es'}`
                 : bucket === 'tasks' ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
-                  : loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`
+                  : bucket === 'drafts' ? `${drafts.length} draft${drafts.length === 1 ? '' : 's'}`
+                    : bucket === 'failed' ? `${failed.length} failed`
+                      : loading ? 'Loading…' : `${visible.length} thread${visible.length === 1 ? '' : 's'}`
             }</span>
             {bucket === 'tasks' && (
               <select className="cc-sort" value={taskSort} onChange={e => setTaskSort(e.target.value)} aria-label="Sort tasks">
@@ -403,7 +424,25 @@ export default function EmailTab() {
           )}
           {err && <div className="cc-error">{err}<div className="cc-error-hint">Make sure the mailbox is connected and the Gmail functions are deployed.</div></div>}
           <div className="cc-list-scroll">
-            {bucket === 'tasks' ? (
+            {bucket === 'drafts' ? (
+              drafts.length === 0 ? <div className="cc-empty">No saved drafts.</div> : drafts.map(d => (
+                <div key={d.id} className="cc-sys-card">
+                  <div className="cc-sys-top"><span className="cc-sys-subj">{d.subject || '(no subject)'}</span><button type="button" className="cc-sys-x" onClick={() => persistDrafts(drafts.filter(x => x.id !== d.id))} aria-label="Discard draft">×</button></div>
+                  <div className="cc-sys-to">To: {d.to || '—'}</div>
+                  <div className="cc-sys-body">{(d.body || '').slice(0, 120) || '(empty)'}</div>
+                  <div className="cc-task-actions"><button type="button" className="cc-btn cc-btn-primary" onClick={() => resumeDraft(d)}>Resume</button></div>
+                </div>
+              ))
+            ) : bucket === 'failed' ? (
+              failed.length === 0 ? <div className="cc-empty">No failed sends.</div> : failed.map(f => (
+                <div key={f.id} className="cc-sys-card">
+                  <div className="cc-sys-top"><span className="cc-sys-subj">{f.subject || '(no subject)'}</span><button type="button" className="cc-sys-x" onClick={() => persistFailed(failed.filter(x => x.id !== f.id))} aria-label="Dismiss">×</button></div>
+                  <div className="cc-sys-to">To: {f.to || '—'}</div>
+                  <div className="cc-sys-err">{f.error}</div>
+                  <div className="cc-task-actions"><button type="button" className="cc-btn cc-btn-primary" onClick={() => retryFailed(f)}>Retry</button></div>
+                </div>
+              ))
+            ) : bucket === 'tasks' ? (
               visibleTasks.length === 0 ? (
                 <div className="cc-empty">No tasks right now — you’re all caught up.</div>
               ) : (
@@ -610,6 +649,7 @@ export default function EmailTab() {
                 {composer.error && <div className="cc-error">{composer.error}</div>}
                 <div className="cc-composer-actions">
                   <button type="button" className="cc-btn" onClick={closeComposer} disabled={composer.busy}>Cancel</button>
+                  <button type="button" className="cc-btn" onClick={saveDraft} disabled={composer.busy}>Save draft</button>
                   <button type="button" className="cc-btn cc-btn-primary" onClick={send} disabled={composer.busy || !composer.to.trim() || !composer.subject.trim()}>{composer.busy ? 'Sending…' : 'Send'}</button>
                 </div>
               </>
@@ -863,4 +903,13 @@ const CC_CSS = `
   .cc-task-actions { display: flex; align-items: center; gap: 7px; }
   .cc-task-actions .cc-btn { padding: 6px 12px; }
   .cc-task-warn { font-size: 11px; color: #b3261e; }
+  .cc-sys-card { border-bottom: 0.5px solid #f1efeb; padding: 12px 16px; }
+  .cc-sys-card:hover { background: #faf8f4; }
+  .cc-sys-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .cc-sys-subj { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cc-sys-x { border: none; background: none; color: #b3aea2; font-size: 17px; line-height: 1; cursor: pointer; padding: 0 4px; }
+  .cc-sys-x:hover { color: #b3261e; }
+  .cc-sys-to { font-size: 12px; color: #8a8a85; margin: 2px 0; }
+  .cc-sys-body { font-size: 12.5px; color: #6b6256; margin-bottom: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cc-sys-err { font-size: 12px; color: #b3261e; background: rgba(179,38,30,0.07); border-radius: 6px; padding: 5px 8px; margin: 4px 0 9px; }
 `
