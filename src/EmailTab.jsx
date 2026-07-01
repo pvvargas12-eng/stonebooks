@@ -41,7 +41,7 @@ const BUCKET_GROUPS = [
   { label: 'Documents', items: [
     { key: 'la', filter: 'layout', label: 'Layout approvals' },
     { key: 'ct', filter: 'contract', label: 'Contracts' },
-    { soon: true, label: 'Quotes' },
+    { key: 'qu', filter: 'quote', label: 'Quotes' },
     { soon: true, label: 'Receipts / payments' },
     { key: 'photos', label: 'Photos & files' },
     { key: 'cp', filter: 'permit', label: 'Cemetery / permits' },
@@ -66,7 +66,7 @@ const BUCKET_LABEL = {
 }
 // Task-type filter chips (order = display order); only types with tasks show.
 const TASK_TYPE_LABELS = {
-  deposit: 'Deposit', balance_due: 'Balance', layout: 'Layout', contract: 'Contract',
+  deposit: 'Deposit', balance_due: 'Balance', quote: 'Quote', layout: 'Layout', contract: 'Contract',
   followup: 'Follow-up', closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
 }
 
@@ -198,6 +198,7 @@ export default function EmailTab() {
       layout: `Hi ${first},\n\nYour monument layout is ready for your review${ord}. We'll send over the proof so you can look over the lettering, dates, and design — please let us know if everything looks right or if you'd like any changes. Once you approve, we'll move into production.`,
       vendor: `Hello${task.name && task.name !== 'Supplier' ? ` ${task.name} team` : ''},\n\nPlease find our order${ord} below. Kindly confirm receipt and let us know the expected delivery timeline.\n\nThank you,\nShevchenko Monuments`,
       contract: `Hi ${first},\n\nYour contract for order${ord} is ready for your signature. Please review the details and sign at your convenience so we can begin the work. If you have any questions before signing, we're glad to help.\n\nThank you.`,
+      quote: `Hi ${first},\n\nThank you for your patience — your quote for order${ord} is ready for your review. Please take a look and let us know if you'd like to move forward or have any questions; we're glad to walk through anything with you.\n\nWe appreciate the opportunity to help.`,
     }
     const body = bodies[task.type] || bodies.followup
     setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, busy: false, error: null, sent: false })
@@ -780,6 +781,7 @@ const CC_CSS = `
   .cc-tag-layout { background: rgba(212,83,126,0.1); color: #99355a; }
   .cc-tag-vendor { background: rgba(29,158,117,0.12); color: #0f6e56; }
   .cc-tag-contract { background: rgba(216,90,48,0.12); color: #993c1d; }
+  .cc-tag-quote { background: rgba(83,74,183,0.1); color: #3c3489; }
   .cc-task-ord { margin-left: auto; margin-right: 22px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
   .cc-task-name { font-size: 14px; font-weight: 600; }
   .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }

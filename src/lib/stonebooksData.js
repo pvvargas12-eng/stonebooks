@@ -619,6 +619,15 @@ export async function getEmailTasks() {
         priority: 9e8,
       })
     }
+    if (o.quote_status === 'approved') {
+      tasks.push({
+        key: `quote-${o.id}`, type: 'quote', label: 'Quote approved',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: 'Quote approved — send it to the customer',
+        subject: `Your quote — Order ${o.order_number || ''}`.trim(),
+        priority: 9.5e8,
+      })
+    }
   }
   // Vendor orders — draft supplier POs (bulk_orders) ready to send to the supplier.
   // These email the SUPPLIER (not a customer): name/email come from the joined row.
