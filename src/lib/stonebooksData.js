@@ -467,9 +467,11 @@ export function properName(name) {
 // thread is the latest, so latestDirection drives "needs reply" (we owe a
 // response when the newest message is inbound). Counts are computed the same
 // way the UI filters, so each sidebar badge always matches its list.
-export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
+export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
   const { data, error } = await supabase.from('messages')
     .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))')
+    .order('received_at', { ascending: false, nullsFirst: false })
+    .order('sent_at', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
     .limit(limit)
   if (error) { console.warn('[email] workspace:', error.message); return { ok: false, error: error.message, threads: [], counts: {} } }
@@ -502,6 +504,7 @@ export async function getEmailThreadsWorkspace({ limit = 800 } = {}) {
     if (r.direction === 'inbound' && !r.is_read) t.unread++
   }
   const threads = Array.from(map.values())
+  threads.sort((a, b) => (Date.parse(b.latestDate) || 0) - (Date.parse(a.latestDate) || 0))
   for (const t of threads) t.junk = _isJunkThread(t)
   const counts = {
     inbox: threads.filter(t => t.hasInbound).length,

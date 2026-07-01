@@ -131,84 +131,98 @@ async function upsertParsed(admin, parsed, direction, uid) {
   return true
 }
 
-async function syncMailbox(client, admin, mailbox, direction, { anchor = false, deadline = 0 } = {}) {
-  const { data: state } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', mailbox).maybeSingle()
-  let lastUid = Number(state?.last_uid) || 0
-  let uidValidity = state?.uid_validity != null ? Number(state.uid_validity) : null
-  let processed = 0, maxUid = lastUid, more = false
+// Fetch a UID range and import each message (parse + dedup upsert). Shares the
+// per-run cap via `alreadyDone`; `skipAtOrBelow` drops the trailing ':*' echo that
+// IMAP returns for open-ended ranges. Returns count + the highest UID seen.
+async function importRange(client, admin, mailbox, direction, range, skipAtOrBelow, deadline, alreadyDone) {
+  let processed = 0, maxUid = 0, more = false
+  const iter = client.fetch(range, { uid: true, source: true }, { uid: true })[Symbol.asyncIterator]()
+  try {
+    while (true) {
+      if ((alreadyDone + processed) >= MAX_PER_RUN || (deadline && Date.now() > deadline)) { more = true; break }
+      const step = await withTimeout(iter.next(), STEP_TIMEOUT_MS, `fetch:${mailbox}`)
+      if (step.done) break
+      const msg = step.value
+      if (msg.uid <= skipAtOrBelow) continue
+      try {
+        const parsed = await withTimeout(simpleParser(msg.source), STEP_TIMEOUT_MS, 'parse')
+        await upsertParsed(admin, parsed, direction, msg.uid)
+      } catch (e) { console.warn('[email/sync] parse/insert failed uid', msg.uid, e?.message) }
+      if (msg.uid > maxUid) maxUid = msg.uid
+      processed++
+    }
+  } finally { try { await iter.return?.() } catch { /* ignore — stop the stream */ } }
+  return { processed, maxUid, more }
+}
 
-  // Open/select the mailbox — raced so a hung SELECT can't stall the run.
+// Newest-first sync. Two cursors live in email_sync_state (no migration — extra
+// rows keyed by mailbox name):
+//   `${mailbox}`      TOP  — highest UID imported; catches NEW mail as it arrives.
+//   `${mailbox}:back` BACK — lowest UID imported; walked DOWN toward the date floor
+//                            so recent history backfills newest-first.
+// First newest-first run (no BACK row) re-anchors TOP to the tail, abandoning any
+// in-progress old forward crawl so fresh mail lands immediately.
+async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } = {}) {
+  const { data: topRow } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', mailbox).maybeSingle()
+  const { data: backRow } = await admin.from('email_sync_state').select('last_uid').eq('mailbox', `${mailbox}:back`).maybeSingle()
+  let uidValidity = topRow?.uid_validity != null ? Number(topRow.uid_validity) : null
+  let topUid = Number(topRow?.last_uid) || 0
+  let backUid = null
+  let processed = 0, more = false
+
   const lock = await withTimeout(client.getMailboxLock(mailbox), STEP_TIMEOUT_MS, `open:${mailbox}`)
   console.log(`[email/sync] selected ${mailbox}`)
   try {
     const box = client.mailbox
     const curValidity = Number(box.uidValidity)
-    if (uidValidity != null && curValidity !== uidValidity) { lastUid = 0; maxUid = 0 }   // UIDVALIDITY changed → restart
+    const validityChanged = uidValidity != null && curValidity !== uidValidity
     uidValidity = curValidity
+    const tail = Math.max(0, Number(box.uidNext || 1) - 1)
 
-    // DATE FLOOR (fresh cursor only): seek the cursor to the first message on/after
-    // SYNC_SINCE so importing starts at the cutoff and skips the older backlog. Once
-    // the cursor has advanced (last_uid > 0) we never look back. Anchor takes priority.
-    if (!anchor && lastUid === 0 && SYNC_SINCE && box.exists > 0) {
+    // Floor = lowest UID on/after SYNC_SINCE (never backfill older than the cutoff).
+    let floorUid = 1
+    if (SYNC_SINCE && box.exists > 0) {
       try {
-        const sinceUids = await withTimeout(
-          client.search({ since: new Date(`${SYNC_SINCE}T00:00:00Z`) }, { uid: true }),
-          STEP_TIMEOUT_MS, `search:${mailbox}`,
-        )
-        if (Array.isArray(sinceUids) && sinceUids.length) {
-          const minUid = sinceUids.reduce((m, u) => (u < m ? u : m), sinceUids[0])
-          lastUid = Math.max(0, minUid - 1)                    // crawl starts at the first in-range UID
-          console.log(`[email/sync] ${mailbox}: floor ${SYNC_SINCE} -> start at uid ${lastUid + 1}`)
-        } else {
-          lastUid = Math.max(0, Number(box.uidNext || 1) - 1)  // nothing since the floor → skip to tail
-          console.log(`[email/sync] ${mailbox}: no mail since ${SYNC_SINCE} -> anchored to tail`)
-        }
-      } catch (e) {
-        lastUid = Math.max(0, Number(box.uidNext || 1) - 1)    // search failed → skip old backlog, don't crawl it
-        console.warn(`[email/sync] ${mailbox}: since-search failed, anchoring to tail:`, e?.message)
-      }
-      maxUid = lastUid
+        const sinceUids = await withTimeout(client.search({ since: new Date(`${SYNC_SINCE}T00:00:00Z`) }, { uid: true }), STEP_TIMEOUT_MS, `search:${mailbox}`)
+        floorUid = (Array.isArray(sinceUids) && sinceUids.length) ? sinceUids.reduce((m, u) => (u < m ? u : m), sinceUids[0]) : tail + 1
+      } catch (e) { console.warn(`[email/sync] ${mailbox} since-search failed:`, e?.message); floorUid = 1 }
     }
 
-    // ANCHOR MODE: jump the cursor to the CURRENT tail (uidNext - 1) WITHOUT
-    // importing anything, so future polls only fetch mail that arrives from now
-    // on (no backfill of existing history). Use after a clean-slate delete.
-    if (anchor) {
-      const tail = Math.max(0, Number(box.uidNext || 1) - 1)
-      maxUid = Math.max(maxUid, tail)
-    } else if (box.exists > 0) {
-      // Manual iteration so each `.next()` (the network read) can be raced — a
-      // bare `for await` would hang invisibly waiting on the server.
-      const iter = client.fetch(`${lastUid + 1}:*`, { uid: true, source: true }, { uid: true })[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          // Batch cap OR wall-clock budget → stop, persist cursor, let the next run continue.
-          if (processed >= MAX_PER_RUN || (deadline && Date.now() > deadline)) { more = true; break }
-          const step = await withTimeout(iter.next(), STEP_TIMEOUT_MS, `fetch:${mailbox}`)
-          if (step.done) break
-          const msg = step.value
-          if (msg.uid <= lastUid) continue       // ':*' always returns the last msg even if below range
-          try {
-            const parsed = await withTimeout(simpleParser(msg.source), STEP_TIMEOUT_MS, 'parse')
-            await upsertParsed(admin, parsed, direction, msg.uid)
-          } catch (e) { console.warn('[email/sync] parse/insert failed uid', msg.uid, e?.message) }
-          maxUid = Math.max(maxUid, msg.uid)
-          processed++
-        }
-      } finally {
-        try { await iter.return?.() } catch { /* ignore — stop the stream */ }
+    if (backRow == null || backRow.last_uid == null || validityChanged) {
+      topUid = tail            // abandon any old forward crawl; new mail only from here
+      backUid = tail + 1       // backfill starts at the tail and walks DOWN
+    } else {
+      backUid = Number(backRow.last_uid) || (tail + 1)
+    }
+
+    if (box.exists > 0) {
+      // 1. NEW arrivals — newest mail above the top cursor (real-time going forward).
+      if (tail > topUid && processed < MAX_PER_RUN) {
+        const r = await importRange(client, admin, mailbox, direction, `${topUid + 1}:*`, topUid, deadline, processed)
+        processed += r.processed
+        if (r.maxUid > topUid) topUid = r.maxUid
+        if (r.more) more = true
+      }
+      // 2. BACKFILL newest-first — the batch just below the back cursor.
+      if (backUid > floorUid && processed < MAX_PER_RUN && (!deadline || Date.now() < deadline)) {
+        const from = Math.max(floorUid, backUid - MAX_PER_RUN)
+        const r = await importRange(client, admin, mailbox, direction, `${from}:${backUid - 1}`, 0, deadline, processed)
+        processed += r.processed
+        backUid = from
+        if (from > floorUid) more = true
       }
     }
-    console.log(`[email/sync] fetched ${processed} from ${mailbox} (more=${more})`)
+    console.log(`[email/sync] ${mailbox}: +${processed} (top=${topUid} back=${backUid} floor=${floorUid} more=${more})`)
   } finally {
     lock.release()
   }
 
-  await admin.from('email_sync_state').upsert({
-    mailbox, last_uid: maxUid, uid_validity: uidValidity,
-    last_run_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-  }, { onConflict: 'mailbox' })
-  return { mailbox, processed, lastUid: maxUid, more }
+  const stamp = new Date().toISOString()
+  await admin.from('email_sync_state').upsert({ mailbox, last_uid: topUid, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
+  if (backUid != null) {
+    await admin.from('email_sync_state').upsert({ mailbox: `${mailbox}:back`, last_uid: backUid, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
+  }
+  return { mailbox, processed, more }
 }
 
 export default async function handler(req, res) {
