@@ -544,6 +544,10 @@ export async function getEmailTasks() {
     const { data: custs } = await supabase.from('customers').select('id, first_name, last_name, email').in('id', custIds)
     for (const cu of (custs || [])) custMap[cu.id] = cu
   }
+  // Orders whose CURRENT layout/proof hasn't been sent to the customer yet.
+  const { data: proofRows } = await supabase.from('proof_versions')
+    .select('order_id, sent_at').eq('is_current', true).not('order_id', 'is', null)
+  const layoutReady = new Set((proofRows || []).filter(p => !p.sent_at && p.order_id).map(p => p.order_id))
   const today = new Date().toISOString().slice(0, 10)
   const tasks = []
   for (const o of orders) {
@@ -595,6 +599,15 @@ export async function getEmailTasks() {
         reason: 'Cemetery permit approved — update the customer',
         subject: `Permit approved — Order ${o.order_number || ''}`.trim(),
         priority: 1e8,
+      })
+    }
+    if (layoutReady.has(o.id)) {
+      tasks.push({
+        key: `layout-${o.id}`, type: 'layout', label: 'Layout ready',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: 'Proof ready — send it to the customer for review',
+        subject: `Your monument layout for review — Order ${o.order_number || ''}`.trim(),
+        priority: 8e8,
       })
     }
   }
