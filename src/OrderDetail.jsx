@@ -22,6 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
+  closeOrder, photoAttachment,
   updateOrderPayment, voidOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
@@ -833,10 +834,36 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const subject = (emailModal.subject || '').trim()
     if (!to || !subject || emailModal.busy) return
     setEmailModal(m => ({ ...m, busy: true, error: null }))
-    const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body })
+    // Closeout email — embed + attach the completion photo(s) so the family sees
+    // the finished monument, then close the order on success IF it's paid in full.
+    const isCloseout = emailModal.mode === 'closeout'
+    const photos = isCloseout ? (emailModal.photos || []) : []
+    let html, attachments
+    if (photos.length) {
+      const bodyHtml = String(emailModal.body || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+      const imgs = photos.map(p => `<img src="${p.url}" alt="Completed monument" style="max-width:100%;border-radius:8px;margin-top:14px" />`).join('')
+      html = `<div style="font-size:14px;line-height:1.6;color:#222">${bodyHtml}${imgs}</div>`
+      attachments = []
+      for (const p of photos) {
+        const a = await photoAttachment(p.url, p.name)
+        if (a) attachments.push(a)
+      }
+    }
+    const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments })
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
     if (order?.customer_id) setEmails((await getMessageThread({ customerId: order.customer_id })).messages || [])
+    // Auto-close only when paid in full — never close an order that still owes.
+    if (isCloseout) {
+      if (balance <= 0) {
+        const cr = await closeOrder(orderId)
+        if (cr.ok) { setOrder(o => (o ? { ...o, status: 'closed' } : o)); setActionNote('Order closed out — thank-you sent. ✓') }
+        else setActionNote('Thank-you sent, but closing the order failed — set it to Closed manually.')
+      } else {
+        setActionNote(`Thank-you sent. Order left open — $${balance.toFixed(2)} balance still due.`)
+      }
+    }
   }
 
   // Polish — rewrite the user's CURRENT composer body via ai-draft (mode
@@ -865,6 +892,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       to: order?.customer?.email || '',
       subject: res.subject || '',
       body: res.body || '',
+      mode,
+      photos: mode === 'closeout' ? completionPhotos.slice(0, 3) : null,
       busy: false, error: null, sent: false,
     })
   }

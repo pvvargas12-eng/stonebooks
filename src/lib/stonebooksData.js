@@ -850,6 +850,36 @@ export async function listCompletionPhotos(orderId) {
     })
 }
 
+// Close an order — terminal status. Called after the completion/thank-you email
+// is sent AND the balance is paid in full (the caller enforces the paid check;
+// we never close an order that still owes money).
+export async function closeOrder(orderId) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const { error } = await supabase.from('orders')
+    .update({ status: 'closed', updated_at: new Date().toISOString() })
+    .eq('id', orderId).eq('tenant_id', TENANT_ID)
+  if (error) { console.warn('[orders] closeOrder:', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
+// Fetch a (public) photo URL and return an email-attachment payload
+// [{ filename, contentBase64, contentType }] the /api/email/send endpoint accepts.
+// Returns null on any failure so a missing photo never blocks the send.
+export async function photoAttachment(url, filename) {
+  try {
+    const resp = await fetch(url)
+    if (!resp.ok) return null
+    const blob = await resp.blob()
+    const contentBase64 = await new Promise((resolve, reject) => {
+      const r = new FileReader()
+      r.onloadend = () => resolve(String(r.result).split(',')[1] || '')
+      r.onerror = reject
+      r.readAsDataURL(blob)
+    })
+    return { filename: filename || 'photo.jpg', contentBase64, contentType: blob.type || 'image/jpeg' }
+  } catch { return null }
+}
+
 // ── Order activity log (#4) — per-order timeline of changes / notes / tasks ──
 // Backed by the order_activity table (20260620_order_activity.sql). Best-effort:
 // if the table isn't migrated yet every call no-ops with a console.warn so a
