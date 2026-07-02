@@ -554,7 +554,23 @@ export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
   }
   const threads = Array.from(map.values())
   threads.sort((a, b) => (Date.parse(b.latestDate) || 0) - (Date.parse(a.latestDate) || 0))
-  for (const t of threads) t.junk = (t._manualJunk !== undefined) ? t._manualJunk : _isJunkThread(t)
+  // Vendor + production context for the workflow buckets: a thread is a VENDOR
+  // thread when its address matches a supplier or partner on file; a thread is
+  // IN PRODUCTION when its customer has an active in-production order.
+  const [supRes, partRes, prodRes] = await Promise.all([
+    supabase.from('suppliers').select('email').not('email', 'is', null),
+    supabase.from('partners').select('email').not('email', 'is', null),
+    supabase.from('orders').select('customer_id').eq('status', 'in_production').eq('archived', false),
+  ])
+  const vendorEmails = new Set(
+    [...(supRes.data || []), ...(partRes.data || [])].map(r => String(r.email || '').toLowerCase().trim()).filter(Boolean),
+  )
+  const prodCustomers = new Set((prodRes.data || []).map(r => r.customer_id).filter(Boolean))
+  for (const t of threads) {
+    t.vendor = vendorEmails.has(String(t.contact || '').toLowerCase().trim())
+    t.inProduction = t.customerId ? prodCustomers.has(t.customerId) : false
+    t.junk = (t._manualJunk !== undefined) ? t._manualJunk : (t.vendor ? false : _isJunkThread(t))
+  }
   const counts = {
     inbox: threads.filter(t => t.hasInbound).length,
     needs_reply: threads.filter(t => t.latestDirection === 'inbound').length,

@@ -36,7 +36,7 @@ const BUCKET_GROUPS = [
   ] },
   { label: 'Replies', items: [
     { key: 'customer_replies', label: 'Customer replies' },
-    { soon: true, label: 'Vendor replies' },
+    { key: 'vendor_replies', label: 'Vendor replies' },
   ] },
   { label: 'Documents', items: [
     { key: 'la', filter: 'layout', label: 'Layout approvals' },
@@ -48,9 +48,9 @@ const BUCKET_GROUPS = [
     { key: 'co', filter: 'closeout', label: 'Closeout' },
   ] },
   { label: 'Workflow', items: [
-    { soon: true, label: 'Production questions' },
-    { soon: true, label: 'Waiting on customer' },
-    { soon: true, label: 'Waiting on vendor' },
+    { key: 'production_questions', label: 'Production questions', tone: 'amber' },
+    { key: 'waiting_customer', label: 'Waiting on customer' },
+    { key: 'waiting_vendor', label: 'Waiting on vendor' },
   ] },
   { label: 'System', items: [
     { key: 'sent', label: 'Sent' },
@@ -62,6 +62,8 @@ const BUCKET_GROUPS = [
 const BUCKET_LABEL = {
   tasks: 'Review queue',
   inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies',
+  vendor_replies: 'Vendor replies', production_questions: 'Production questions',
+  waiting_customer: 'Waiting on customer', waiting_vendor: 'Waiting on vendor',
   unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent', junk: 'Junk / spam',
   drafts: 'Drafts', failed: 'Failed / attention',
 }
@@ -100,7 +102,11 @@ function matchBucket(t, b) {
     case 'inbox': return t.hasInbound
     case 'needs_reply': return t.latestDirection === 'inbound'
     case 'customer_replies': return t.matched && t.hasInbound
-    case 'unlinked': return !t.matched
+    case 'vendor_replies': return t.vendor && t.hasInbound
+    case 'production_questions': return t.inProduction && t.latestDirection === 'inbound'
+    case 'waiting_customer': return t.matched && !t.vendor && t.latestDirection === 'outbound'
+    case 'waiting_vendor': return t.vendor && t.latestDirection === 'outbound'
+    case 'unlinked': return !t.matched && !t.vendor
     case 'photos': return t.hasAttachments
     case 'sent': return t.hasOutbound
     default: return true
@@ -233,7 +239,7 @@ export default function EmailTab() {
     return m
   }, [threads, junkOverride])
   const msgCounts = useMemo(() => {
-    const c = { inbox: 0, needs_reply: 0, customer_replies: 0, unlinked: 0, photos: 0, sent: 0, junk: 0 }
+    const c = { inbox: 0, needs_reply: 0, customer_replies: 0, vendor_replies: 0, production_questions: 0, waiting_customer: 0, waiting_vendor: 0, unlinked: 0, photos: 0, sent: 0, junk: 0 }
     for (const t of threads) {
       const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
       if (j) c.junk++
@@ -241,7 +247,11 @@ export default function EmailTab() {
       if (t.hasInbound && inb) c.inbox++
       if (t.latestDirection === 'inbound' && inb) c.needs_reply++
       if (t.matched && t.hasInbound && inb) c.customer_replies++
-      if (!t.matched && inb) c.unlinked++
+      if (t.vendor && t.hasInbound && inb) c.vendor_replies++
+      if (t.inProduction && t.latestDirection === 'inbound' && inb) c.production_questions++
+      if (t.matched && !t.vendor && t.latestDirection === 'outbound' && inb) c.waiting_customer++
+      if (t.vendor && t.latestDirection === 'outbound' && inb) c.waiting_vendor++
+      if (!t.matched && !t.vendor && inb) c.unlinked++
       if (t.hasAttachments && inb) c.photos++
       if (t.hasOutbound) c.sent++
     }
@@ -621,7 +631,8 @@ export default function EmailTab() {
                   <div className="cc-row-bottom">
                     <span className="cc-row-snippet">{t.latestSnippet}</span>
                     {t.orderNumber && <span className="cc-tag">{t.orderNumber}</span>}
-                    {!t.matched && <span className="cc-tag cc-tag-warn">unlinked</span>}
+                    {t.vendor && <span className="cc-tag cc-tag-vendor-thread">vendor</span>}
+                    {!t.matched && !t.vendor && <span className="cc-tag cc-tag-warn">unlinked</span>}
                     {(t.attachKinds || []).slice(0, 3).map(k => <span key={k} className={`cc-tag cc-tag-att-${k}`}>{ATTACH_KIND_LABELS[k]}</span>)}
                     {t.unread > 0 && <span className="cc-tag cc-tag-unread">{t.unread}</span>}
                   </div>
@@ -1003,6 +1014,7 @@ const CC_CSS = `
   .cc-tag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: #f1efeb; color: #7a7468; flex-shrink: 0; }
   .cc-tag-warn { background: rgba(179,38,30,0.08); color: #b3261e; }
   .cc-tag-unread { background: #9A7209; color: #fff; }
+  .cc-tag-vendor-thread { background: rgba(29,158,117,0.12); color: #0f6e56; }
 
   .cc-detail { display: flex; min-width: 0; }
   .cc-read { flex: 1; min-width: 0; display: flex; flex-direction: column; max-height: calc(100vh - 210px); }
