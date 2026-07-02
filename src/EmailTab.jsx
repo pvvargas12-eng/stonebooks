@@ -68,7 +68,7 @@ const BUCKET_LABEL = {
 // Task-type filter chips (order = display order); only types with tasks show.
 const TASK_TYPE_LABELS = {
   deposit: 'Deposit', balance_due: 'Balance', quote: 'Quote', layout: 'Layout', contract: 'Contract',
-  followup: 'Follow-up', closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
+  followup: 'Follow-up', install: 'Install', photo: 'Photos', closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
 }
 
 function matchBucket(t, b) {
@@ -244,6 +244,8 @@ export default function EmailTab() {
       vendor: `Hello${task.name && task.name !== 'Supplier' ? ` ${task.name} team` : ''},\n\nPlease find our order${ord} below. Kindly confirm receipt and let us know the expected delivery timeline.\n\nThank you,\nShevchenko Monuments`,
       contract: `Hi ${first},\n\nYour contract for order${ord} is ready for your signature. Please review the details and sign at your convenience so we can begin the work. If you have any questions before signing, we're glad to help.\n\nThank you.`,
       quote: `Hi ${first},\n\nThank you for your patience — your quote for order${ord} is ready for your review. Please take a look and let us know if you'd like to move forward or have any questions; we're glad to walk through anything with you.\n\nWe appreciate the opportunity to help.`,
+      install: `Hi ${first},\n\nGood news — the installation for your order${ord} is scheduled for ${task.installDateText || 'the date we discussed'}. We wanted to confirm the date with you ahead of time; our crew will take great care with every detail.\n\nIf anything about the date doesn't work, or you have any questions, please don't hesitate to reach out.`,
+      photo: `Hi ${first},\n\nYour memorial${ord} is complete, and we've attached a photo so you can see the finished work. We hope it brings you and your family comfort.\n\nA balance of ${fmtUSD(task.amount)} remains on the order — whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com. Please reach out with any questions.`,
     }
     const body = bodies[task.type] || bodies.followup
     setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, attachments: [], attaching: !!task.fileUrl, busy: false, error: null, sent: false })

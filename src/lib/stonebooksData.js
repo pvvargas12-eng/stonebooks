@@ -578,8 +578,25 @@ export async function getEmailTasks() {
     .select('order_id, sent_at, layout_image_url').eq('is_current', true).not('order_id', 'is', null)
   const layoutReady = new Map()
   for (const p of (proofRows || [])) if (!p.sent_at && p.order_id) layoutReady.set(p.order_id, p.layout_image_url || null)
+  // Upcoming installs — the 'installed' milestone carries the scheduled trip
+  // date (same signal the Orders blocker 'install_scheduled' reads). One query
+  // across all open orders; filtered to not-done milestones with a date set.
+  const orderIdSet = new Set(orders.map(o => o.id))
+  const installDates = new Map()
+  if (orderIdSet.size) {
+    const { data: instRows } = await supabase.from('job_milestones')
+      .select('due_date, status, job:jobs(order_id)')
+      .eq('milestone_key', 'installed').not('due_date', 'is', null)
+    for (const m of (instRows || [])) {
+      const oid = m.job?.order_id
+      if (!oid || !orderIdSet.has(oid)) continue
+      if (m.status === 'done' || m.status === 'not_needed') continue
+      installDates.set(oid, String(m.due_date).slice(0, 10))
+    }
+  }
   const today = new Date().toISOString().slice(0, 10)
   const tasks = []
+  const photoCandidates = []
   for (const o of orders) {
     const cu = custMap[o.customer_id] || null
     const name = properName(cu ? `${cu.first_name || ''} ${cu.last_name || ''}`.trim() : (o.primary_lastname || 'Customer'))
@@ -659,6 +676,38 @@ export async function getEmailTasks() {
         priority: 9.5e8,
       })
     }
+    const installOn = installDates.get(o.id)
+    if (installOn && installOn >= today) {
+      const when = _shortDate(installOn + 'T00:00:00')
+      tasks.push({
+        key: `inst-${o.id}`, type: 'install', label: 'Install scheduled',
+        orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
+        reason: `Installation on the calendar for ${when} — confirm with the family`,
+        subject: `Your installation is scheduled — Order ${o.order_number || ''}`.trim(),
+        installDateText: when,
+        priority: 8.7e8,
+      })
+    }
+    if (o.status === 'installed' && bal > 0) photoCandidates.push({ o, name, email, bal })
+  }
+  // Photo-received — installed orders still carrying a balance whose completion
+  // photos are in storage: share the finished work + request the final balance.
+  // (Installed AND paid-in-full is the closeout task above.) Bounded set, so a
+  // parallel storage list per candidate is cheap.
+  if (photoCandidates.length) {
+    const lists = await Promise.all(photoCandidates.map(c => listCompletionPhotos(c.o.id)))
+    photoCandidates.forEach((c, i) => {
+      const photos = lists[i] || []
+      if (!photos.length) return
+      tasks.push({
+        key: `photo-${c.o.id}`, type: 'photo', label: 'Photos received',
+        orderId: c.o.id, orderNumber: c.o.order_number, customerId: c.o.customer_id, name: c.name, email: c.email,
+        reason: `${photos.length} completion photo${photos.length === 1 ? '' : 's'} in · ${fmtUSD(c.bal)} still due`,
+        subject: `Your memorial is complete — Order ${c.o.order_number || ''}`.trim(),
+        fileUrl: photos[0].url, fileName: photos[0].name,
+        amount: c.bal, priority: 6e8,
+      })
+    })
   }
   // Vendor orders — draft supplier POs (bulk_orders) ready to send to the supplier.
   // These email the SUPPLIER (not a customer): name/email come from the joined row.
