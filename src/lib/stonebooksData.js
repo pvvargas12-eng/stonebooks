@@ -413,6 +413,16 @@ export async function getMessageThread({ customerId, threadKey } = {}) {
   }
 }
 
+// Persist a thread's junk decision to every message in it — shared across all
+// staff and browsers. Deploy-safe: no-ops with a warning if the 20260702
+// is_junk migration isn't applied (the local override still works in-session).
+export async function setThreadJunk({ messageIds, junk }) {
+  if (!messageIds || !messageIds.length) return { ok: false, error: 'No messages' }
+  const { error } = await supabase.from('messages').update({ is_junk: junk }).in('id', messageIds)
+  if (error) { console.warn('[email] setThreadJunk:', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
 export async function markMessageRead(id) {
   if (!id) return { ok: false }
   const { error } = await supabase.from('messages').update({ is_read: true }).eq('id', id)
@@ -492,12 +502,16 @@ export function classifyAttachment({ filename, contentType } = {}) {
 // response when the newest message is inbound). Counts are computed the same
 // way the UI filters, so each sidebar badge always matches its list.
 export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
-  const { data, error } = await supabase.from('messages')
-    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))')
+  const cols = 'id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))'
+  const fetchRows = (withJunk) => supabase.from('messages')
+    .select(withJunk ? `${cols}, is_junk` : cols)
     .order('received_at', { ascending: false, nullsFirst: false })
     .order('sent_at', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
     .limit(limit)
+  // Deploy-safe: retry without is_junk if the 20260702 migration isn't applied yet.
+  let { data, error } = await fetchRows(true)
+  if (error && /is_junk/i.test(error.message || '')) ({ data, error } = await fetchRows(false))
   if (error) { console.warn('[email] workspace:', error.message); return { ok: false, error: error.message, threads: [], counts: {} } }
   const map = new Map()
   for (const r of (data || [])) {
@@ -521,8 +535,13 @@ export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
         cemetery: r.order?.cemetery?.name || null,
         phone: c?.phone_primary || null,
         hasInbound: false, hasOutbound: false, hasAttachments: false, attachKinds: [], unread: 0,
+        messageIds: [], _manualJunk: undefined,
       })
     }
+    t.messageIds.push(r.id)
+    // Manual junk decision — rows iterate newest-first, so the first non-null
+    // is_junk seen is the latest staff decision for the thread.
+    if (r.is_junk != null && t._manualJunk === undefined) t._manualJunk = !!r.is_junk
     if (r.direction === 'inbound') t.hasInbound = true; else t.hasOutbound = true
     if (r.has_attachments) {
       t.hasAttachments = true
@@ -535,7 +554,7 @@ export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
   }
   const threads = Array.from(map.values())
   threads.sort((a, b) => (Date.parse(b.latestDate) || 0) - (Date.parse(a.latestDate) || 0))
-  for (const t of threads) t.junk = _isJunkThread(t)
+  for (const t of threads) t.junk = (t._manualJunk !== undefined) ? t._manualJunk : _isJunkThread(t)
   const counts = {
     inbox: threads.filter(t => t.hasInbound).length,
     needs_reply: threads.filter(t => t.latestDirection === 'inbound').length,

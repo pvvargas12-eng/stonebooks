@@ -19,7 +19,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks, aiDraftEmail,
-  sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
+  sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment, setThreadJunk,
   getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, hydrateEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
 } from './lib/stonebooksData'
@@ -153,7 +153,13 @@ export default function EmailTab() {
   const toggleRail = () => setRailCollapsed(c => { const n = !c; try { localStorage.setItem('cc_rail_collapsed', n ? '1' : '0') } catch { /* ignore */ } return n })
   const [junkOverride, setJunkOverride] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_junk') || '{}') } catch { return {} } })
   const junkOf = (t) => (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
-  const markJunk = (key, val) => setJunkOverride(prev => { const n = { ...prev, [key]: val }; try { localStorage.setItem('cc_junk', JSON.stringify(n)) } catch { /* ignore */ } return n })
+  // Mark junk: instant local override (localStorage cache) + a shared DB write
+  // so every staff member sees the same decision (needs the is_junk migration;
+  // silently degrades to local-only until it's applied).
+  const markJunk = (t, val) => {
+    setJunkOverride(prev => { const n = { ...prev, [t.key]: val }; try { localStorage.setItem('cc_junk', JSON.stringify(n)) } catch { /* ignore */ } return n })
+    if (t.messageIds?.length) setThreadJunk({ messageIds: t.messageIds, junk: val })
+  }
   const [drafts, setDrafts] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_drafts') || '[]') } catch { return [] } })
   const [failed, setFailed] = useState(() => { try { return JSON.parse(localStorage.getItem('cc_failed') || '[]') } catch { return [] } })
   const persistDrafts = (list) => { setDrafts(list); try { localStorage.setItem('cc_drafts', JSON.stringify(list)) } catch { /* ignore */ } }
@@ -356,7 +362,7 @@ export default function EmailTab() {
   }
 
   const openThread = async (t) => {
-    setReading({ key: t.key, name: t.name, contact: t.contact, customerId: t.customerId, threadKey: t.threadKey, matched: t.matched, junk: t.junk, busy: true, messages: [], err: null })
+    setReading({ key: t.key, name: t.name, contact: t.contact, customerId: t.customerId, threadKey: t.threadKey, matched: t.matched, junk: t.junk, messageIds: t.messageIds || [], busy: true, messages: [], err: null })
     setBrain(null)
     if (t.unread > 0) {
       markThreadRead({ customerId: t.customerId, threadKey: t.threadKey })
@@ -640,7 +646,7 @@ export default function EmailTab() {
                   <div className="cc-read-head-actions">
                     <button type="button" className="cc-btn cc-btn-primary" onClick={replyToThread} disabled={reading.busy}>Reply</button>
                     <button type="button" className="cc-btn cc-btn-ai" onClick={aiReply} disabled={reading.busy || aiReplyBusy} title="Draft a reply from the thread + CRM context — you review before sending">{aiReplyBusy ? 'Drafting…' : 'AI reply'}</button>
-                    <button type="button" className="cc-btn" onClick={() => markJunk(reading.key, !junkOf(reading))}>{junkOf(reading) ? 'Not junk' : 'Mark junk'}</button>
+                    <button type="button" className="cc-btn" onClick={() => markJunk(reading, !junkOf(reading))}>{junkOf(reading) ? 'Not junk' : 'Mark junk'}</button>
                     <button type="button" className="cc-btn" onClick={() => { setReading(null); setBrain(null) }}>Close</button>
                   </div>
                 </div>
