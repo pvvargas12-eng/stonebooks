@@ -16,7 +16,7 @@
 // Sending stays on the shop Gmail via sendShopEmail. No migration.
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
@@ -300,6 +300,25 @@ export default function EmailTab() {
     }
   }
 
+  // Keyboard layer — Ctrl/Cmd+K or "/" focuses search; Escape walks the stack
+  // (composer handles its own Escape; then reading pane, then search query).
+  const searchRef = useRef(null)
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); searchRef.current?.focus(); return
+      }
+      const typing = /^(input|textarea|select)$/i.test(e.target?.tagName || '')
+      if (e.key === '/' && !typing) { e.preventDefault(); searchRef.current?.focus(); return }
+      if (e.key === 'Escape' && !composer) {
+        if (reading) { setReading(null); setBrain(null) }
+        else if (q) { setQ('') }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [composer, reading, q])
+
   // One task card — shared by the Review queue and semantic search results.
   const renderTaskCard = (t) => (
     <div key={t.key} className="cc-task">
@@ -317,12 +336,19 @@ export default function EmailTab() {
     </div>
   )
 
+  const syncMsgTimer = useRef(null)
+  const flashSyncMsg = (text, sticky = false) => {
+    setSyncMsg(text)
+    if (syncMsgTimer.current) clearTimeout(syncMsgTimer.current)
+    if (!sticky) syncMsgTimer.current = setTimeout(() => setSyncMsg(null), 6000)
+  }
+  useEffect(() => () => { if (syncMsgTimer.current) clearTimeout(syncMsgTimer.current) }, [])
   const sync = async () => {
     setSyncing(true); setSyncMsg(null)
     const res = await syncInbox()
     setSyncing(false)
-    if (!res.ok) { setSyncMsg(`Sync failed — ${res.error || 'error'}`); return }
-    setSyncMsg(`Synced — ${res.processed} new message${res.processed === 1 ? '' : 's'}`)
+    if (!res.ok) { flashSyncMsg(`Sync failed — ${res.error || 'error'}`, true); return }
+    flashSyncMsg(`Synced — ${res.processed} new message${res.processed === 1 ? '' : 's'}`)
     reload()
   }
 
@@ -398,12 +424,15 @@ export default function EmailTab() {
         <div className="cc-search">
           <span className="cc-search-ic" aria-hidden="true">⌕</span>
           <input
+            ref={searchRef}
             className="cc-search-input"
             value={q}
             onChange={e => setQ(e.target.value)}
-            placeholder="Search customers, orders, subjects, senders…"
+            onKeyDown={e => { if (e.key === 'Escape' && q) { e.stopPropagation(); setQ('') } }}
+            placeholder='Search customers, orders, senders… or ask: "balance due over $500"'
           />
-          {q && <button type="button" className="cc-search-clear" onClick={() => setQ('')} aria-label="Clear search">×</button>}
+          {q ? <button type="button" className="cc-search-clear" onClick={() => setQ('')} aria-label="Clear search">×</button>
+            : <span className="cc-search-kbd" aria-hidden="true">Ctrl K</span>}
         </div>
         <div className="cc-top-actions">
           <button type="button" className="cc-btn" onClick={sync} disabled={syncing || loading}>{syncing ? 'Syncing…' : 'Sync'}</button>
@@ -523,7 +552,12 @@ export default function EmailTab() {
                 <div className="cc-empty">No tasks right now — you’re all caught up.</div>
               ) : visibleTasks.map(renderTaskCard)
             ) : loading ? (
-              <div className="cc-empty">Loading…</div>
+              Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="cc-skel-row" aria-hidden="true">
+                  <div className="cc-skel cc-skel-line" style={{ width: `${52 + (i % 3) * 14}%` }} />
+                  <div className="cc-skel cc-skel-line dim" style={{ width: `${70 - (i % 4) * 9}%` }} />
+                </div>
+              ))
             ) : visible.length === 0 && !err ? (
               <div className="cc-empty">{q ? 'No threads match your search.' : 'Nothing here.'}</div>
             ) : (
@@ -575,7 +609,10 @@ export default function EmailTab() {
                 </div>
                 <div className="cc-read-body">
                   {reading.busy ? (
-                    <div className="cc-empty">Loading thread…</div>
+                    <div aria-hidden="true">
+                      <div className="cc-skel cc-skel-msg" />
+                      <div className="cc-skel cc-skel-msg dim" style={{ width: '85%' }} />
+                    </div>
                   ) : reading.err ? (
                     <div className="cc-error">{reading.err}</div>
                   ) : reading.messages.length === 0 ? (
@@ -618,7 +655,11 @@ export default function EmailTab() {
                 <div className="cc-brain-hint">Linking &amp; the full CRM brain arrive with the next slices.</div>
               </div>
             ) : !brain ? (
-              <div className="cc-brain-pad"><div className="cc-empty">Loading customer…</div></div>
+              <div className="cc-brain-pad" aria-hidden="true">
+                <div className="cc-skel cc-skel-avatar" />
+                <div className="cc-skel cc-skel-line" style={{ width: '60%' }} />
+                <div className="cc-skel cc-skel-line dim" style={{ width: '80%' }} />
+              </div>
             ) : (
               <div className="cc-brain-pad">
                 <div className="cc-brain-cust">
@@ -671,8 +712,15 @@ export default function EmailTab() {
       {/* Compose / reply modal */}
       {composer && (
         <div className="cc-modal-overlay" onClick={closeComposer}>
-          <div className="cc-composer" onClick={e => e.stopPropagation()}>
-            <div className="cc-composer-title">New email</div>
+          <div
+            className="cc-composer"
+            onClick={e => e.stopPropagation()}
+            onKeyDown={e => {
+              if (e.key === 'Escape') { e.stopPropagation(); closeComposer() }
+              else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !composer.sent) send()
+            }}
+          >
+            <div className="cc-composer-title">{composer.inReplyTo ? 'Reply' : composer.draftId ? 'Draft' : 'New email'}</div>
             {composer.sent ? (
               <>
                 <div className="cc-ok">✓ Sent to {composer.to}</div>
@@ -932,6 +980,17 @@ const CC_CSS = `
   .cc-schip.mut { background: #f1efeb; color: #7a7468; }
 
   .cc-empty { color: #8a8a85; font-size: 13.5px; padding: 34px 0; text-align: center; }
+  .cc-search-kbd { font-size: 10.5px; font-weight: 600; color: #a89f8d; border: 0.5px solid #E2D8C6; border-radius: 5px; padding: 1px 6px; letter-spacing: 0.04em; flex-shrink: 0; }
+  .cc-skel { border-radius: 6px; background: linear-gradient(90deg, #efece6 25%, #f7f5f1 50%, #efece6 75%); background-size: 200% 100%; animation: cc-shimmer 1.4s ease infinite; }
+  .cc-skel.dim { opacity: 0.6; }
+  .cc-skel-row { padding: 13px 16px; border-bottom: 0.5px solid #EFEAE0; }
+  .cc-skel-line { height: 11px; margin: 5px 0; }
+  .cc-skel-avatar { width: 38px; height: 38px; border-radius: 50%; margin-bottom: 12px; }
+  .cc-skel-msg { height: 74px; margin: 12px 0; border-radius: 12px; }
+  @keyframes cc-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .cc-btn:focus-visible, .cc-brow:focus-visible, .cc-row:focus-visible, .cc-tchip:focus-visible, .cc-search-input:focus-visible {
+    outline: 2px solid rgba(154,114,9,0.55); outline-offset: 1px; border-radius: 8px;
+  }
   .cc-error { font-size: 13px; color: #b3261e; background: rgba(179,38,30,0.06); border: 0.5px solid rgba(179,38,30,0.3); border-radius: 8px; padding: 10px 12px; margin: 12px 16px; }
   .cc-error-hint { font-size: 12px; color: #8a8a85; margin-top: 4px; }
 
