@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
-  getEmailSenders, saveEmailSender,
+  getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
 } from './lib/stonebooksData'
 
@@ -145,6 +145,7 @@ export default function EmailTab() {
   const [tasks, setTasks] = useState([])
   const [taskSort, setTaskSort] = useState('priority')
   const [taskFilter, setTaskFilter] = useState('all')
+  const [attachKind, setAttachKind] = useState('all')   // Photos & files bucket sub-filter
   const [snoozed, setSnoozed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('cc_snoozed') || '[]')) } catch { return new Set() }
   })
@@ -185,9 +186,20 @@ export default function EmailTab() {
       if (bucket === 'junk') return j
       if (!matchBucket(t, bucket)) return false
       if (j && bucket !== 'sent') return false   // junk is hidden from the inbound buckets
+      if (bucket === 'photos' && attachKind !== 'all' && !(t.attachKinds || []).includes(attachKind)) return false
       return true
     })
-  }, [threads, bucket, q, junkOverride])
+  }, [threads, bucket, q, junkOverride, attachKind])
+  // Per-kind thread counts for the Photos & files sub-filter chips.
+  const attachKindCounts = useMemo(() => {
+    const m = {}
+    for (const t of threads) {
+      const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
+      if (j || !t.hasAttachments) continue
+      for (const k of (t.attachKinds || [])) m[k] = (m[k] || 0) + 1
+    }
+    return m
+  }, [threads, junkOverride])
   const msgCounts = useMemo(() => {
     const c = { inbox: 0, needs_reply: 0, customer_replies: 0, unlinked: 0, photos: 0, sent: 0, junk: 0 }
     for (const t of threads) {
@@ -424,6 +436,14 @@ export default function EmailTab() {
               ))}
             </div>
           )}
+          {bucket === 'photos' && Object.keys(attachKindCounts).length > 0 && (
+            <div className="cc-tfilter">
+              <button type="button" className={`cc-tchip${attachKind === 'all' ? ' on' : ''}`} onClick={() => setAttachKind('all')}>All</button>
+              {Object.keys(ATTACH_KIND_LABELS).filter(k => attachKindCounts[k]).map(k => (
+                <button type="button" key={k} className={`cc-tchip${attachKind === k ? ' on' : ''}`} onClick={() => setAttachKind(k)}>{ATTACH_KIND_LABELS[k]} {attachKindCounts[k]}</button>
+              ))}
+            </div>
+          )}
           {err && <div className="cc-error">{err}<div className="cc-error-hint">Make sure the mailbox is connected and the Gmail functions are deployed.</div></div>}
           <div className="cc-list-scroll">
             {bucket === 'drafts' ? (
@@ -488,7 +508,7 @@ export default function EmailTab() {
                     <span className="cc-row-snippet">{t.latestSnippet}</span>
                     {t.orderNumber && <span className="cc-tag">{t.orderNumber}</span>}
                     {!t.matched && <span className="cc-tag cc-tag-warn">unlinked</span>}
-                    {t.hasAttachments && <span className="cc-tag">attach</span>}
+                    {(t.attachKinds || []).slice(0, 3).map(k => <span key={k} className={`cc-tag cc-tag-att-${k}`}>{ATTACH_KIND_LABELS[k]}</span>)}
                     {t.unread > 0 && <span className="cc-tag cc-tag-unread">{t.unread}</span>}
                   </div>
                 </button>
@@ -533,7 +553,14 @@ export default function EmailTab() {
                         <div className="cc-msg-body">{msg.body || '(no text body)'}</div>
                         {(msg.attachments || []).length > 0 && (
                           <div className="cc-msg-attach">
-                            {msg.attachments.map((a, i) => <span key={i} className="cc-msg-attach-chip" title="Attachment">{a.filename || 'attachment'}</span>)}
+                            {msg.attachments.map((a, i) => {
+                              const kind = classifyAttachment(a)
+                              return (
+                                <span key={i} className={`cc-msg-attach-chip cc-att-${kind}`} title={`${ATTACH_KIND_LABELS[kind]} attachment`}>
+                                  <span className="cc-att-kind">{ATTACH_KIND_LABELS[kind]}</span>{a.filename || 'attachment'}
+                                </span>
+                              )
+                            })}
                           </div>
                         )}
                       </div>
@@ -826,7 +853,19 @@ const CC_CSS = `
   .cc-msg-date { font-size: 11.5px; color: #8a8a85; margin-left: auto; }
   .cc-msg-body { font-size: 13.5px; color: #333; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
   .cc-msg-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .cc-msg-attach-chip { font-size: 11.5px; color: #876307; background: rgba(154,114,9,0.1); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 7px; padding: 4px 9px; }
+  .cc-msg-attach-chip { font-size: 11.5px; color: #876307; background: rgba(154,114,9,0.1); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 7px; padding: 4px 9px; display: inline-flex; align-items: center; gap: 6px; }
+  .cc-att-kind { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,0.06); }
+  .cc-msg-attach-chip.cc-att-contract { color: #993c1d; background: rgba(216,90,48,0.08); border-color: rgba(216,90,48,0.3); }
+  .cc-msg-attach-chip.cc-att-payment { color: #1f7a3d; background: rgba(31,122,61,0.08); border-color: rgba(31,122,61,0.3); }
+  .cc-msg-attach-chip.cc-att-permit { color: #5a3aa8; background: rgba(107,70,193,0.08); border-color: rgba(107,70,193,0.3); }
+  .cc-msg-attach-chip.cc-att-layout { color: #99355a; background: rgba(212,83,126,0.08); border-color: rgba(212,83,126,0.3); }
+  .cc-msg-attach-chip.cc-att-document { color: #52616e; background: rgba(82,97,110,0.08); border-color: rgba(82,97,110,0.3); }
+  .cc-tag-att-photo { background: rgba(154,114,9,0.12); color: #876307; }
+  .cc-tag-att-contract { background: rgba(216,90,48,0.12); color: #993c1d; }
+  .cc-tag-att-payment { background: rgba(31,122,61,0.1); color: #1f7a3d; }
+  .cc-tag-att-permit { background: rgba(107,70,193,0.12); color: #5a3aa8; }
+  .cc-tag-att-layout { background: rgba(212,83,126,0.1); color: #99355a; }
+  .cc-tag-att-document { background: rgba(82,97,110,0.1); color: #52616e; }
 
   .cc-brain { width: 288px; flex-shrink: 0; border-left: 0.5px solid #ECE3D2; background: #FCFAF6; max-height: calc(100vh - 210px); overflow-y: auto; }
   @media (max-width: 1100px) { .cc-brain { width: 240px; } }
@@ -899,6 +938,8 @@ const CC_CSS = `
   .cc-tag-vendor { background: rgba(29,158,117,0.12); color: #0f6e56; }
   .cc-tag-contract { background: rgba(216,90,48,0.12); color: #993c1d; }
   .cc-tag-quote { background: rgba(83,74,183,0.1); color: #3c3489; }
+  .cc-tag-install { background: rgba(14,116,144,0.1); color: #0e7490; }
+  .cc-tag-photo { background: rgba(154,114,9,0.12); color: #876307; }
   .cc-task-ord { margin-left: auto; margin-right: 22px; font-family: ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; }
   .cc-task-name { font-size: 14px; font-weight: 600; }
   .cc-task-reason { font-size: 12.5px; color: #6b6256; margin: 2px 0 9px; }

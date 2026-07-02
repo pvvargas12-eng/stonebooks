@@ -461,6 +461,27 @@ export function properName(name) {
   return s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()).replace(/\bMc(\w)/g, (m, c) => `Mc${c.toUpperCase()}`)
 }
 
+// ── Attachment intelligence — classify by filename + MIME (metadata only; the
+// IMAP sync stores no file bytes). Name keywords win over type so "contract.jpg"
+// files as a contract, not a photo. Kinds are CRM-meaningful: photo / contract /
+// payment / permit / layout / document (fallback).
+const _ATTACH_KIND_RULES = [
+  ['contract', /\b(contract|agreement|signed)\b/i],
+  ['payment',  /\b(receipt|invoice|payment|check|cheque|zelle|deposit|statement)\b/i],
+  ['permit',   /\b(permit|cemetery\s*form|authorization|burial)\b/i],
+  ['layout',   /\b(proof|layout|design|mock-?up|drawing|sketch|stencil)\b/i],
+]
+export const ATTACH_KIND_LABELS = {
+  photo: 'Photo', contract: 'Contract', payment: 'Payment', permit: 'Permit', layout: 'Layout', document: 'Doc',
+}
+export function classifyAttachment({ filename, contentType } = {}) {
+  const name = String(filename || '')
+  for (const [kind, re] of _ATTACH_KIND_RULES) if (re.test(name)) return kind
+  const type = String(contentType || '').toLowerCase()
+  if (type.startsWith('image/') || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(name)) return 'photo'
+  return 'document'
+}
+
 // ── Email command center — bucketed thread workspace (Slice 1) ─────────────
 // One fetch, grouped into customer/address threads with the flags the smart
 // buckets filter on. Iterating newest-first means the FIRST message seen per
@@ -469,7 +490,7 @@ export function properName(name) {
 // way the UI filters, so each sidebar badge always matches its list.
 export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
   const { data, error } = await supabase.from('messages')
-    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))')
+    .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))')
     .order('received_at', { ascending: false, nullsFirst: false })
     .order('sent_at', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
@@ -496,11 +517,17 @@ export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
         orderNumber: r.order?.order_number || null,
         cemetery: r.order?.cemetery?.name || null,
         phone: c?.phone_primary || null,
-        hasInbound: false, hasOutbound: false, hasAttachments: false, unread: 0,
+        hasInbound: false, hasOutbound: false, hasAttachments: false, attachKinds: [], unread: 0,
       })
     }
     if (r.direction === 'inbound') t.hasInbound = true; else t.hasOutbound = true
-    if (r.has_attachments) t.hasAttachments = true
+    if (r.has_attachments) {
+      t.hasAttachments = true
+      for (const a of (r.attachments || [])) {
+        const k = classifyAttachment(a)
+        if (!t.attachKinds.includes(k)) t.attachKinds.push(k)
+      }
+    }
     if (r.direction === 'inbound' && !r.is_read) t.unread++
   }
   const threads = Array.from(map.values())
