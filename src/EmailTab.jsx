@@ -71,6 +71,30 @@ const TASK_TYPE_LABELS = {
   followup: 'Follow-up', install: 'Install', photo: 'Photos', closeout: 'Closeout', permit: 'Permit', vendor: 'Vendor',
 }
 
+// Semantic CRM search — recognize intent phrases and answer from the task
+// queue ("unsigned contracts" is a CRM question, not a text match). Returns
+// { types, minAmount?, label } on a hit, null to fall through to literal search.
+function parseSemanticQuery(raw) {
+  const s = (raw || '').trim().toLowerCase()
+  if (!s) return null
+  const m = s.match(/(?:over|above|more than|>=?)\s*\$?([\d,]+)/)
+  const amount = m ? parseFloat(m[1].replace(/,/g, '')) : null
+  const has = (...words) => words.some(w => s.includes(w))
+  if (has('unsigned contract', 'contracts to sign', 'contract to sign', 'needs signature', 'awaiting signature', 'not signed')) return { types: ['contract'], label: 'Contracts awaiting signature' }
+  if (has('balance due', 'balances due', 'outstanding balance', 'unpaid balance', 'owes money', 'who owes')) return { types: ['balance_due'], minAmount: amount, label: amount ? `Balances due over ${fmtUSD(amount)}` : 'Balances due' }
+  if (has('deposit needed', 'needs deposit', 'no deposit yet', 'deposits needed', 'waiting on deposit')) return { types: ['deposit'], label: 'Deposits needed' }
+  if (has('follow-ups due', 'follow ups due', 'followups', 'overdue follow')) return { types: ['followup'], label: 'Follow-ups due' }
+  if (has('ready to close', 'closeouts', 'close out', 'thank-you emails')) return { types: ['closeout'], label: 'Ready to close out' }
+  if (has('permit approved', 'permits approved', 'permit updates')) return { types: ['permit'], label: 'Permit updates' }
+  if (has('layouts to send', 'layout ready', 'proof ready', 'proofs to send', 'unsent proofs')) return { types: ['layout'], label: 'Layouts to send' }
+  if (has('installs scheduled', 'install scheduled', 'upcoming installs', 'installation scheduled')) return { types: ['install'], label: 'Installs scheduled' }
+  if (has('photos in', 'completion photos', 'photos received', 'finished photos')) return { types: ['photo'], label: 'Completion photos in' }
+  if (has('vendor orders', 'supplier orders', 'purchase orders', 'pos to send')) return { types: ['vendor'], label: 'Vendor orders to send' }
+  if (has('quotes to send', 'quote approved', 'approved quotes')) return { types: ['quote'], label: 'Quotes to send' }
+  if (amount != null && has('due', 'owed', 'balance')) return { types: ['balance_due', 'deposit'], minAmount: amount, label: `Amounts due over ${fmtUSD(amount)}` }
+  return null
+}
+
 function matchBucket(t, b) {
   switch (b) {
     case 'inbox': return t.hasInbound
@@ -221,6 +245,7 @@ export default function EmailTab() {
     for (const t of activeTasks) m[t.type] = (m[t.type] || 0) + 1
     return m
   }, [activeTasks])
+  const semantic = useMemo(() => parseSemanticQuery(q), [q])
   const visibleTasks = useMemo(() => {
     const cmp = {
       priority: (a, b) => b.priority - a.priority,
@@ -228,13 +253,19 @@ export default function EmailTab() {
       name: (a, b) => (a.name || '').localeCompare(b.name || ''),
       type: (a, b) => (a.type || '').localeCompare(b.type || '') || b.priority - a.priority,
     }[taskSort] || ((a, b) => b.priority - a.priority)
-    let list = taskFilter === 'all' ? activeTasks
-      : taskFilter === 'payments' ? activeTasks.filter(t => t.type === 'deposit' || t.type === 'balance_due')
-        : activeTasks.filter(t => t.type === taskFilter)
-    const query = q.trim().toLowerCase()
-    if (query) list = list.filter(t => [t.name, t.orderNumber, t.reason, t.label].some(x => (x == null ? '' : String(x)).toLowerCase().includes(query)))
+    let list
+    if (semantic) {
+      list = activeTasks.filter(t => semantic.types.includes(t.type)
+        && (semantic.minAmount == null || (t.amount || 0) >= semantic.minAmount))
+    } else {
+      list = taskFilter === 'all' ? activeTasks
+        : taskFilter === 'payments' ? activeTasks.filter(t => t.type === 'deposit' || t.type === 'balance_due')
+          : activeTasks.filter(t => t.type === taskFilter)
+      const query = q.trim().toLowerCase()
+      if (query) list = list.filter(t => [t.name, t.orderNumber, t.reason, t.label].some(x => (x == null ? '' : String(x)).toLowerCase().includes(query)))
+    }
     return [...list].sort(cmp)
-  }, [activeTasks, taskSort, taskFilter, q])
+  }, [activeTasks, taskSort, taskFilter, q, semantic])
 
   const snooze = (key) => setSnoozed(prev => {
     const n = new Set(prev); n.add(key)
@@ -268,6 +299,23 @@ export default function EmailTab() {
       })
     }
   }
+
+  // One task card — shared by the Review queue and semantic search results.
+  const renderTaskCard = (t) => (
+    <div key={t.key} className="cc-task">
+      <button type="button" className="cc-task-x" onClick={() => snooze(t.key)} aria-label="Clear task" title="Clear this task">×</button>
+      <div className="cc-task-top">
+        <span className={`cc-task-tag cc-tag-${t.type}`}>{t.label}</span>
+        <span className="cc-task-ord">{t.orderNumber || 'DRAFT'}</span>
+      </div>
+      <div className="cc-task-name">{t.name}</div>
+      <div className="cc-task-reason">{t.reason}</div>
+      <div className="cc-task-actions">
+        <button type="button" className="cc-btn cc-btn-primary" onClick={() => openTaskDraft(t)} disabled={!t.email}>Draft</button>
+        {!t.email && <span className="cc-task-warn">no email on file</span>}
+      </div>
+    </div>
+  )
 
   const sync = async () => {
     setSyncing(true); setSyncMsg(null)
@@ -411,9 +459,11 @@ export default function EmailTab() {
         {/* Message list */}
         <section className="cc-list">
           <div className="cc-list-head">
-            <span className="cc-list-title">{q.trim() ? 'Search results' : (BUCKET_LABEL[bucket] || 'Inbox')}</span>
+            <span className="cc-list-title">{q.trim() ? (semantic ? semantic.label : 'Search results') : (BUCKET_LABEL[bucket] || 'Inbox')}</span>
             <span className="cc-list-sub">{
-              q.trim() ? `${bucket === 'tasks' ? visibleTasks.length : visible.length} match${(bucket === 'tasks' ? visibleTasks.length : visible.length) === 1 ? '' : 'es'}`
+              q.trim() ? ((semantic || bucket === 'tasks')
+                ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
+                : `${visible.length} match${visible.length === 1 ? '' : 'es'}`)
                 : bucket === 'tasks' ? `${visibleTasks.length} task${visibleTasks.length === 1 ? '' : 's'}`
                   : bucket === 'drafts' ? `${drafts.length} draft${drafts.length === 1 ? '' : 's'}`
                     : bucket === 'failed' ? `${failed.length} failed`
@@ -446,7 +496,11 @@ export default function EmailTab() {
           )}
           {err && <div className="cc-error">{err}<div className="cc-error-hint">Make sure the mailbox is connected and the Gmail functions are deployed.</div></div>}
           <div className="cc-list-scroll">
-            {bucket === 'drafts' ? (
+            {(q.trim() && semantic) ? (
+              visibleTasks.length === 0 ? (
+                <div className="cc-empty">No matching tasks right now.</div>
+              ) : visibleTasks.map(renderTaskCard)
+            ) : bucket === 'drafts' ? (
               drafts.length === 0 ? <div className="cc-empty">No saved drafts.</div> : drafts.map(d => (
                 <div key={d.id} className="cc-sys-card">
                   <div className="cc-sys-top"><span className="cc-sys-subj">{d.subject || '(no subject)'}</span><button type="button" className="cc-sys-x" onClick={() => persistDrafts(drafts.filter(x => x.id !== d.id))} aria-label="Discard draft">×</button></div>
@@ -467,23 +521,7 @@ export default function EmailTab() {
             ) : bucket === 'tasks' ? (
               visibleTasks.length === 0 ? (
                 <div className="cc-empty">No tasks right now — you’re all caught up.</div>
-              ) : (
-                visibleTasks.map(t => (
-                  <div key={t.key} className="cc-task">
-                    <button type="button" className="cc-task-x" onClick={() => snooze(t.key)} aria-label="Clear task" title="Clear this task">×</button>
-                    <div className="cc-task-top">
-                      <span className={`cc-task-tag cc-tag-${t.type}`}>{t.label}</span>
-                      <span className="cc-task-ord">{t.orderNumber || 'DRAFT'}</span>
-                    </div>
-                    <div className="cc-task-name">{t.name}</div>
-                    <div className="cc-task-reason">{t.reason}</div>
-                    <div className="cc-task-actions">
-                      <button type="button" className="cc-btn cc-btn-primary" onClick={() => openTaskDraft(t)} disabled={!t.email}>Draft</button>
-                      {!t.email && <span className="cc-task-warn">no email on file</span>}
-                    </div>
-                  </div>
-                ))
-              )
+              ) : visibleTasks.map(renderTaskCard)
             ) : loading ? (
               <div className="cc-empty">Loading…</div>
             ) : visible.length === 0 && !err ? (
