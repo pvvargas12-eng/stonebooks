@@ -1351,6 +1351,31 @@ export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false
   // the base-block override — Option B). No re-fold here.
   const displayItems = lineItems
 
+  // ── Rename + reorder (redesign slice C) ─────────────────────────────────
+  // Rename writes pricing.lineItemLabels[code] — the custom wording prints
+  // verbatim on every PDF (applyLineItemDisplay in orderRates); clearing the
+  // field restores the built label. Reorder writes pricing.lineItemOrder —
+  // the on-screen order IS the PDF order.
+  const [renaming, setRenaming] = useState(null)   // { code, value }
+  const labelsMap = p.lineItemLabels || {}
+  const saveRename = () => {
+    if (!renaming) return
+    const item = displayItems.find(x => String(x.code) === String(renaming.code))
+    const v = renaming.value.trim()
+    const next = { ...labelsMap }
+    if (!v || v === (item?.builtLabel || (labelsMap[renaming.code] ? null : item?.label))) delete next[renaming.code]
+    else next[renaming.code] = v
+    updatePricing({ lineItemLabels: next })
+    setRenaming(null)
+  }
+  const moveItem = (i, dir) => {
+    const codes = displayItems.map(x => String(x.code))
+    const j = i + dir
+    if (j < 0 || j >= codes.length) return
+    ;[codes[i], codes[j]] = [codes[j], codes[i]]
+    updatePricing({ lineItemOrder: codes })
+  }
+
   return (
     <div className="of-li">
       {isLocked && (
@@ -1361,14 +1386,36 @@ export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false
       {displayItems.map((it, i) => {
         const isCustom = !!it.custom
         const overridden = !isCustom && overrides[it.code] != null && overrides[it.code] !== ''
+        const isRenaming = renaming && String(renaming.code) === String(it.code)
+        const renamed = !isCustom && typeof labelsMap[it.code] === 'string' && labelsMap[it.code].trim()
         return (
           <div key={`${it.code}-${i}`}>
           <div className="of-li-row of-li-edit">
+            {!isLocked && (
+              <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 0, marginRight: 2 }} aria-hidden="true">
+                <button type="button" className="of-li-x" style={{ lineHeight: 0.8, fontSize: 10, padding: '1px 3px' }} title="Move up" disabled={i === 0} onClick={() => moveItem(i, -1)}>▲</button>
+                <button type="button" className="of-li-x" style={{ lineHeight: 0.8, fontSize: 10, padding: '1px 3px' }} title="Move down" disabled={i === displayItems.length - 1} onClick={() => moveItem(i, 1)}>▼</button>
+              </span>
+            )}
             {isCustom ? (
               <input className="of-input of-li-label-input" value={it.label === 'Custom item' ? '' : it.label}
                 placeholder="Custom line item" onChange={e => setCustomField(it.code, { label: e.target.value })} disabled={isLocked} />
+            ) : isRenaming ? (
+              <input
+                className="of-input of-li-label-input" autoFocus value={renaming.value}
+                onChange={e => setRenaming(r => ({ ...r, value: e.target.value }))}
+                onBlur={saveRename}
+                onKeyDown={e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setRenaming(null) }}
+                placeholder="Line item name (prints on the estimate & contract)"
+              />
             ) : (
-              <span className="of-li-label">{it.label}</span>
+              <span className="of-li-label" title={renamed ? `Built name: ${it.builtLabel || ''}` : undefined}>
+                {it.label}
+                {!isLocked && (
+                  <button type="button" className="of-li-x" style={{ marginLeft: 6, fontSize: 11 }} title="Rename this line (prints exactly as typed)"
+                    onClick={() => setRenaming({ code: String(it.code), value: it.label })}>✎</button>
+                )}
+              </span>
             )}
             {it.quotePending ? (
               <span className="of-li-amt of-li-amt-quote">$— (owner quote)</span>
@@ -1401,6 +1448,7 @@ export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false
                 <input type="checkbox" checked={it.discountable !== false} disabled={isLocked} onChange={e => setFlag(it, 'discountable', e.target.checked)} /> Discountable
               </label>
               {it.category && <span style={{ opacity: 0.7, textTransform: 'capitalize' }}>{it.category}</span>}
+              {renamed && it.builtLabel && <span style={{ opacity: 0.65 }} title="The configured item underneath — renaming never loses it">was: {it.builtLabel}</span>}
             </div>
           )}
           </div>

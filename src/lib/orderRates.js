@@ -573,12 +573,40 @@ export function computeTotals(items, { applyTax = true, applyCCSurcharge = false
 //   3. computeTotals(...)            — taxable/discountable-aware, pct OR $ discount
 //   4. manualTotal                   — a manual grand-total override wins
 // Returns { items, totals, manual, displayed }. `items` is the folded list.
+// Staff display customization — applied AFTER folding so EVERY consumer of the
+// one pipeline (OrderForm pricing table, estimate/contract/receipt PDFs,
+// QuoteHub) sees the same names and order.
+//   pricing.lineItemLabels[code] → custom display label (prints verbatim on
+//                                  every PDF; the built label is preserved as
+//                                  `builtLabel` for UI fine print)
+//   pricing.lineItemOrder[]      → staff-set display order by code; codes not
+//                                  listed keep their natural position after.
+export function applyLineItemDisplay(items, pricing) {
+  const labels = pricing?.lineItemLabels || {}
+  const out = items.map(it => {
+    const custom = typeof labels[it.code] === 'string' ? labels[it.code].trim() : ''
+    return custom ? { ...it, builtLabel: it.label, label: custom } : it
+  })
+  const orderArr = (pricing?.lineItemOrder || []).map(String)
+  if (orderArr.length) {
+    const pos = new Map(orderArr.map((c, i) => [c, i]))
+    const nat = new Map(out.map((it, i) => [it.code, i]))
+    out.sort((a, b) =>
+      (pos.has(a.code) ? pos.get(a.code) : orderArr.length + nat.get(a.code))
+      - (pos.has(b.code) ? pos.get(b.code) : orderArr.length + nat.get(b.code)))
+  }
+  return out
+}
+
 export function priceOrderTotals(order) {
   const o = order || {}
   const pr = o.pricing || {}
-  const items = foldBaseRows(
-    computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') })),
-    o,
+  const items = applyLineItemDisplay(
+    foldBaseRows(
+      computeFormLineItems(o).map(it => ({ ...it, code: String(it.code ?? '') })),
+      o,
+    ),
+    pr,
   )
   const totals = computeTotals(items, {
     applyTax: pr.applyTax !== false,

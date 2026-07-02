@@ -9122,6 +9122,26 @@ export function buildLineItems(order) {
     })
   }
 
+  // ── Display customization — applied LAST so EVERY consumer (Pricing step,
+  // estimate/contract/receipt PDFs, quotes) sees the same names + order.
+  // pricing.lineItemLabels[code] renames a line — the custom wording prints
+  // verbatim; the built label is preserved as `builtLabel` (UI fine print).
+  // pricing.lineItemOrder is the staff-set display order; codes not in it
+  // keep their natural position after the ordered ones.
+  const _labels = order.pricing?.lineItemLabels || {}
+  for (const it of items) {
+    const custom = typeof _labels[it.code] === 'string' ? _labels[it.code].trim() : ''
+    if (custom) { it.builtLabel = it.label; it.label = custom }
+  }
+  const _order = order.pricing?.lineItemOrder || []
+  if (_order.length) {
+    const pos = new Map(_order.map((c, i) => [c, i]))
+    const nat = new Map(items.map((it, i) => [it.code, i]))
+    items.sort((a, b) =>
+      (pos.has(a.code) ? pos.get(a.code) : _order.length + nat.get(a.code))
+      - (pos.has(b.code) ? pos.get(b.code) : _order.length + nat.get(b.code)))
+  }
+
   return items
 }
 
