@@ -227,9 +227,12 @@ export async function getOrderById(id) {
 // server-side; the draft is never auto-sent. photoCount (closeout mode) lets the
 // draft reference the completion photos being shared. Returns { ok, subject?,
 // body?, error? }.
-export async function aiDraftEmail({ orderId, mode, balance, total, draftText, photoCount }) {
+export async function aiDraftEmail({ orderId, mode, balance, total, draftText, photoCount, customerId, thread, crmLines }) {
   const { data, error } = await supabase.functions.invoke('ai-draft', {
-    body: { order_id: orderId, mode, balance, total, draft_text: draftText, photo_count: photoCount },
+    body: {
+      order_id: orderId, mode, balance, total, draft_text: draftText, photo_count: photoCount,
+      customer_id: customerId, thread, crm_lines: crmLines,
+    },
   })
   if (error) {
     let detail = error.message

@@ -89,72 +89,99 @@ Deno.serve(async (req) => {
   const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') ?? ''
   if (!ANTHROPIC_API_KEY) return json({ error: 'server_not_configured' }, 500)
 
-  let payload: { order_id?: string; mode?: string; balance?: number; total?: number; draft_text?: string; photo_count?: number }
+  let payload: {
+    order_id?: string; mode?: string; balance?: number; total?: number; draft_text?: string; photo_count?: number
+    // Command-center reply path — the client passes the LIVE thread (from the
+    // `messages` table) and a CRM summary, so no order is required and the
+    // stale order_emails fetch is skipped.
+    customer_id?: string
+    thread?: Array<{ direction?: string; from_email?: string; to_email?: string; subject?: string; body?: string }>
+    crm_lines?: string[]
+  }
   try { payload = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
   const { order_id, mode } = payload
   const isPolish = mode === 'polish'
   const draftText = (payload.draft_text || '').trim()
-  if (!order_id || !mode || (!isPolish && !MODE_INSTRUCTION[mode])) return json({ error: 'missing_or_bad_input' }, 400)
+  const hasClientThread = Array.isArray(payload.thread) && payload.thread.length > 0
+  if ((!order_id && !payload.customer_id && !hasClientThread) || !mode || (!isPolish && !MODE_INSTRUCTION[mode])) return json({ error: 'missing_or_bad_input' }, 400)
   if (isPolish && !draftText) return json({ error: 'missing_draft_text' }, 400)
 
   const rest = (path: string) => `${SUPABASE_URL}/rest/v1/${path}`
   const restHeaders = { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` }
 
   try {
-    // 1. Order + customer + cemetery.
-    const oRes = await fetch(
-      rest(`orders?id=eq.${order_id}&select=*,customer:customers(*),cemetery:cemeteries(*)&limit=1`),
-      { headers: restHeaders },
-    )
-    const orders = oRes.ok ? await oRes.json() : []
-    const order = Array.isArray(orders) ? orders[0] : null
-    if (!order) return json({ error: 'order_not_found' }, 404)
+    // 1. Order + customer + cemetery (only when an order id was given).
+    let order: any = null
+    if (order_id) {
+      const oRes = await fetch(
+        rest(`orders?id=eq.${order_id}&select=*,customer:customers(*),cemetery:cemeteries(*)&limit=1`),
+        { headers: restHeaders },
+      )
+      const orders = oRes.ok ? await oRes.json() : []
+      order = Array.isArray(orders) ? orders[0] : null
+      if (!order) return json({ error: 'order_not_found' }, 404)
+    }
 
-    // 2. Job proof milestones (proof/approval status).
-    const jRes = await fetch(
-      rest(`jobs?order_id=eq.${order_id}&select=overall_status,milestones:job_milestones(milestone_key,status)&limit=1`),
-      { headers: restHeaders },
-    )
-    const jobs = jRes.ok ? await jRes.json() : []
-    const job = Array.isArray(jobs) ? jobs[0] : null
-    const ms: Array<{ milestone_key: string; status: string }> = job?.milestones ?? []
-    const done = (k: string) => ms.some(m => m.milestone_key === k && m.status === 'done')
-    const proofStatus = (done('proof_approved') || done('bronze_proof_approved')) ? 'approved by the family'
-      : (done('proof_sent') || done('bronze_proof_sent')) ? 'sent — awaiting the family\'s approval'
-      : (done('proof_created') || done('bronze_proof_created')) ? 'drafted internally'
-      : 'not started'
+    // 2. Job proof milestones (proof/approval status) — order path only.
+    let proofStatus = 'unknown'
+    if (order_id) {
+      const jRes = await fetch(
+        rest(`jobs?order_id=eq.${order_id}&select=overall_status,milestones:job_milestones(milestone_key,status)&limit=1`),
+        { headers: restHeaders },
+      )
+      const jobs = jRes.ok ? await jRes.json() : []
+      const job = Array.isArray(jobs) ? jobs[0] : null
+      const ms: Array<{ milestone_key: string; status: string }> = job?.milestones ?? []
+      const done = (k: string) => ms.some(m => m.milestone_key === k && m.status === 'done')
+      proofStatus = (done('proof_approved') || done('bronze_proof_approved')) ? 'approved by the family'
+        : (done('proof_sent') || done('bronze_proof_sent')) ? 'sent — awaiting the family\'s approval'
+        : (done('proof_created') || done('bronze_proof_created')) ? 'drafted internally'
+        : 'not started'
+    }
 
-    // 3. Recent thread.
-    const tRes = await fetch(
-      rest(`order_emails?order_id=eq.${order_id}&select=direction,from_email,to_email,subject,snippet,body,sent_at&order=sent_at.desc&limit=8`),
-      { headers: restHeaders },
-    )
-    const thread = tRes.ok ? await tRes.json() : []
-    const latestInbound = (Array.isArray(thread) ? thread : []).find((e: any) => e.direction === 'inbound')
+    // 3. Thread — the client-passed LIVE thread (messages table) wins; the
+    //    legacy order_emails fetch remains as the order-path fallback.
+    let thread: any[] = Array.isArray(payload.thread) ? payload.thread : []
+    if (!thread.length && order_id) {
+      const tRes = await fetch(
+        rest(`order_emails?order_id=eq.${order_id}&select=direction,from_email,to_email,subject,snippet,body,sent_at&order=sent_at.desc&limit=8`),
+        { headers: restHeaders },
+      )
+      const rows = tRes.ok ? await tRes.json() : []
+      thread = Array.isArray(rows) ? rows : []
+    }
+    const latestInbound = thread.find((e: any) => e.direction === 'inbound')
 
-    // 4. Build the context block.
-    const cust = order.customer || {}
-    const customerName = [cust.first_name, cust.last_name].filter(Boolean).join(' ') || 'the family'
-    const deceased = Array.isArray(order.deceased) ? order.deceased : []
-    const deceasedLine = deceased
-      .filter((d: any) => d && (d.firstName || d.lastName))
-      .map((d: any) => {
-        const nm = [d.firstName, d.lastName].filter(Boolean).join(' ')
-        const b = (d.dateOfBirth || '').slice(0, 4), dd = (d.dateOfDeath || '').slice(0, 4)
-        return b || dd ? `${nm} (${b || '?'}–${dd || '?'})` : nm
-      }).join('; ') || '—'
-    const dims = [order.width_inches, order.depth_inches, order.thickness_inches, order.height_inches]
-      .filter((v: any) => v != null && v !== '').map((v: any) => `${v}"`).join(' × ') || '—'
+    // 4. Build the context block. Order path assembles it server-side; the
+    //    customer path uses the client's CRM summary lines.
+    let ctxLines: string[]
+    if (order) {
+      const cust = order.customer || {}
+      const customerName = [cust.first_name, cust.last_name].filter(Boolean).join(' ') || 'the family'
+      const deceased = Array.isArray(order.deceased) ? order.deceased : []
+      const deceasedLine = deceased
+        .filter((d: any) => d && (d.firstName || d.lastName))
+        .map((d: any) => {
+          const nm = [d.firstName, d.lastName].filter(Boolean).join(' ')
+          const b = (d.dateOfBirth || '').slice(0, 4), dd = (d.dateOfDeath || '').slice(0, 4)
+          return b || dd ? `${nm} (${b || '?'}–${dd || '?'})` : nm
+        }).join('; ') || '—'
+      const dims = [order.width_inches, order.depth_inches, order.thickness_inches, order.height_inches]
+        .filter((v: any) => v != null && v !== '').map((v: any) => `${v}"`).join(' × ') || '—'
 
-    const ctxLines = [
-      `Customer: ${customerName}`,
-      `Order #: ${order.order_number || 'draft'}`,
-      `In memory of: ${deceasedLine}`,
-      `Cemetery: ${order.cemetery?.name || '—'}`,
-      `Monument: ${order.granite_color || '—'} · ${order.shape || '—'} · ${dims}`,
-      `Proof / approval status: ${proofStatus}`,
-      `Order total: ${fmtUSD(payload.total) || 'unknown'} · Balance due: ${fmtUSD(payload.balance) ?? 'unknown'}`,
-    ]
+      ctxLines = [
+        `Customer: ${customerName}`,
+        `Order #: ${order.order_number || 'draft'}`,
+        `In memory of: ${deceasedLine}`,
+        `Cemetery: ${order.cemetery?.name || '—'}`,
+        `Monument: ${order.granite_color || '—'} · ${order.shape || '—'} · ${dims}`,
+        `Proof / approval status: ${proofStatus}`,
+        `Order total: ${fmtUSD(payload.total) || 'unknown'} · Balance due: ${fmtUSD(payload.balance) ?? 'unknown'}`,
+      ]
+    } else {
+      ctxLines = (payload.crm_lines || []).map(String).slice(0, 20)
+      if (!ctxLines.length) ctxLines = ['(no CRM context available for this sender)']
+    }
     // Completion photos (closeout mode) — count comes from the client, which
     // already listed orders-attachments-public/<order_id>/completion/.
     if (typeof payload.photo_count === 'number' && payload.photo_count > 0) {

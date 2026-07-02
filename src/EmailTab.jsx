@@ -18,7 +18,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
+  getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks, aiDraftEmail,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
   getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, hydrateEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
@@ -372,20 +372,53 @@ export default function EmailTab() {
     }
   }
 
-  const replyToThread = () => {
-    if (!reading || !reading.messages.length) return
+  // Reply headers (to / Re: subject / threading refs) — shared by the manual
+  // Reply button and the AI reply drafter.
+  const buildReplyComposer = () => {
+    if (!reading || !reading.messages.length) return null
     const msgs = reading.messages
     const last = [...msgs].reverse().find(m => m.gmailMessageId) || msgs[msgs.length - 1]
     const lastInbound = [...msgs].reverse().find(m => m.direction === 'inbound')
     const replyTo = fromEmail((lastInbound || last)?.from) || reading.contact || ''
     const subj = (last.subject || '').replace(/^(re:\s*)+/i, '')
     const refs = msgs.map(m => m.gmailMessageId).filter(Boolean)
-    setComposer({
+    return {
       to: replyTo, subject: subj ? `Re: ${subj}` : 'Re:', body: '',
       customerId: reading.customerId || null,
       inReplyTo: last.gmailMessageId || null, references: refs,
       busy: false, error: null, sent: false,
-    })
+    }
+  }
+  const replyToThread = () => { const c = buildReplyComposer(); if (c) setComposer(c) }
+
+  // AI reply — sends the live thread + a CRM summary (orders, balances,
+  // contract/quote state) to the ai-draft function; opens the composer
+  // prefilled. A human always reviews and sends.
+  const [aiReplyBusy, setAiReplyBusy] = useState(false)
+  const aiReply = async () => {
+    const base = buildReplyComposer()
+    if (!base || aiReplyBusy) return
+    setAiReplyBusy(true)
+    const msgs = [...reading.messages].slice(-8).reverse()   // newest first
+    const thread = msgs.map(m => ({
+      direction: m.direction, from_email: m.from, to_email: m.to,
+      subject: m.subject, body: (m.body || '').slice(0, 400),
+    }))
+    const crmLines = []
+    if (brain?.customer) crmLines.push(`Customer: ${properName(customerName(brain.customer))}`)
+    else crmLines.push(`Sender: ${reading.name || reading.contact || 'unknown'} (not linked to a CRM customer)`)
+    for (const o of (brain?.orders || []).slice(0, 4)) {
+      const bal = rowBalanceDue(o)
+      crmLines.push(`Order ${o.order_number || 'draft'}: ${String(o.status || '').replace(/_/g, ' ')}`
+        + (o.cemetery?.name ? ` · ${o.cemetery.name}` : '')
+        + ` · ${o.signed_at ? 'contract signed' : 'contract not signed'}`
+        + (o.quote_status ? ` · quote ${o.quote_status}` : '')
+        + ` · ${bal > 0 ? `${fmtUSD(bal)} balance due` : 'paid in full'}`)
+    }
+    const res = await aiDraftEmail({ customerId: reading.customerId || undefined, mode: 'reply', thread, crmLines })
+    setAiReplyBusy(false)
+    if (!res.ok) { flashSyncMsg(`AI draft failed — ${res.error}`, true); return }
+    setComposer({ ...base, subject: res.subject || base.subject, body: res.body || '' })
   }
 
   const openComposer = () => setComposer({ to: '', subject: '', body: '', busy: false, error: null, sent: false })
@@ -606,6 +639,7 @@ export default function EmailTab() {
                   </div>
                   <div className="cc-read-head-actions">
                     <button type="button" className="cc-btn cc-btn-primary" onClick={replyToThread} disabled={reading.busy}>Reply</button>
+                    <button type="button" className="cc-btn cc-btn-ai" onClick={aiReply} disabled={reading.busy || aiReplyBusy} title="Draft a reply from the thread + CRM context — you review before sending">{aiReplyBusy ? 'Drafting…' : 'AI reply'}</button>
                     <button type="button" className="cc-btn" onClick={() => markJunk(reading.key, !junkOf(reading))}>{junkOf(reading) ? 'Not junk' : 'Mark junk'}</button>
                     <button type="button" className="cc-btn" onClick={() => { setReading(null); setBrain(null) }}>Close</button>
                   </div>
@@ -898,6 +932,8 @@ const CC_CSS = `
   .cc-btn:disabled { opacity: 0.5; cursor: default; }
   .cc-btn-primary { background: #9A7209; border-color: #9A7209; color: #fff; }
   .cc-btn-primary:hover:not(:disabled) { background: #876307; }
+  .cc-btn-ai { border-color: rgba(154,114,9,0.45); color: #876307; background: rgba(154,114,9,0.06); }
+  .cc-btn-ai:hover:not(:disabled) { background: rgba(154,114,9,0.14); }
   .cc-chips { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 0 28px 12px; }
   .cc-chips-lead { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #8a8a85; font-weight: 600; }
   .cc-chip { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #444; cursor: pointer; }
