@@ -20,6 +20,7 @@ dns.setDefaultResultOrder('ipv4first')
 
 const CONNECT_TIMEOUT_MS = 12000
 const STEP_TIMEOUT_MS = 15000
+const FETCH_TIMEOUT_MS = 40000   // full-source download of a big attachment (function maxDuration is 60s)
 const IMAP_TIMEOUTS = { connectionTimeout: 12000, greetingTimeout: 10000, socketTimeout: 25000 }
 
 function withTimeout(promise, ms, label) {
@@ -42,7 +43,7 @@ async function fetchSource(client, mailbox, { uid, messageId }) {
   try {
     if (uid) {
       try {
-        const msg = await withTimeout(client.fetchOne(String(uid), { source: true }, { uid: true }), STEP_TIMEOUT_MS, 'fetchOne')
+        const msg = await withTimeout(client.fetchOne(String(uid), { source: true }, { uid: true }), FETCH_TIMEOUT_MS, 'fetchOne')
         if (msg?.source) {
           // Guard against a recycled UID (uidValidity change): confirm Message-ID.
           const head = msg.source.toString('utf8', 0, Math.min(msg.source.length, 16384))
@@ -56,7 +57,7 @@ async function fetchSource(client, mailbox, { uid, messageId }) {
         STEP_TIMEOUT_MS, `search:${mailbox}`
       )
       if (Array.isArray(uids) && uids.length) {
-        const msg = await withTimeout(client.fetchOne(String(uids[0]), { source: true }, { uid: true }), STEP_TIMEOUT_MS, 'fetchOne:searched')
+        const msg = await withTimeout(client.fetchOne(String(uids[0]), { source: true }, { uid: true }), FETCH_TIMEOUT_MS, 'fetchOne:searched')
         if (msg?.source) return msg.source
       }
     }

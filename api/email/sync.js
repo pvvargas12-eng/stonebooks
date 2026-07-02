@@ -31,6 +31,14 @@ dns.setDefaultResultOrder('ipv4first')
 // wall-clock budget keep every invocation well under the function timeout.
 const MAX_PER_RUN = 15          // messages per mailbox per run — keep one invocation short
 
+// Cap the per-message download. We persist text bodies + attachment METADATA
+// only, so there's no need to pull multi-MB attachments through the sync — a
+// single huge email used to hang the fetch step past its timeout and wedge the
+// whole sync on that message forever. Attachment metadata comes from the IMAP
+// bodystructure (exact, no download); /api/email/attachment pulls full files
+// on demand.
+const MAX_SOURCE_BYTES = 2 * 1024 * 1024
+
 // Date floor — never import mail older than this. On a FRESH cursor (last_uid = 0)
 // the sync seeks to the first message on/after this date (IMAP SINCE) instead of
 // crawling from the mailbox start, so the pre-cutoff backlog is skipped entirely.
@@ -92,7 +100,22 @@ async function bestEffortOrderId(admin, subject) {
   return data?.id || null
 }
 
-async function upsertParsed(admin, parsed, direction, uid) {
+// Walk an IMAP bodystructure tree and collect attachment metadata — filename,
+// content type, size — without downloading any bytes. Mirrors what mailparser
+// reports from a full source, but stays correct when the source was truncated.
+function attachmentsFromStructure(node, out = []) {
+  if (!node) return out
+  const disp = (node.disposition || '').toLowerCase()
+  const filename = node.dispositionParameters?.filename || node.parameters?.name || null
+  const type = node.type || null
+  if ((disp === 'attachment' || filename) && !/^multipart\//i.test(type || '')) {
+    out.push({ filename, contentType: type, size: node.size || null })
+  }
+  for (const child of (node.childNodes || [])) attachmentsFromStructure(child, out)
+  return out
+}
+
+async function upsertParsed(admin, parsed, direction, uid, bodyStructure) {
   const messageId = parsed.messageId || null
   if (!messageId) return false                 // no Message-ID → can't dedupe; skip
   const fromAddr = lc(parsed.from?.value?.[0]?.address)
@@ -103,6 +126,12 @@ async function upsertParsed(admin, parsed, direction, uid) {
   const dateIso = parsed.date ? new Date(parsed.date).toISOString() : new Date().toISOString()
   const refs = parsed.references ? (Array.isArray(parsed.references) ? parsed.references : [parsed.references]) : []
   const threadKey = refs[0] || parsed.inReplyTo || messageId
+
+  // Attachment metadata: prefer the bodystructure walk (exact even when the
+  // source download was capped); fall back to what mailparser saw.
+  const structAtts = attachmentsFromStructure(bodyStructure)
+  const attachmentMeta = structAtts.length ? structAtts
+    : (parsed.attachments || []).map(a => ({ filename: a.filename || null, contentType: a.contentType || null, size: a.size || null }))
 
   // Customer = grouping key: inbound→sender, outbound→first recipient.
   const matchAddr = direction === 'inbound' ? fromAddr : lc(toAddrs[0])
@@ -119,8 +148,8 @@ async function upsertParsed(admin, parsed, direction, uid) {
     body_text: text,
     body_html: html,
     snippet: snippetOf(text),
-    has_attachments: (parsed.attachments || []).length > 0,
-    attachments: (parsed.attachments || []).map(a => ({ filename: a.filename || null, contentType: a.contentType || null, size: a.size || null })),
+    has_attachments: attachmentMeta.length > 0,
+    attachments: attachmentMeta,
     order_id: orderId,
     customer_id: customerId,
     imap_uid: uid,
@@ -136,7 +165,7 @@ async function upsertParsed(admin, parsed, direction, uid) {
 // IMAP returns for open-ended ranges. Returns count + the highest UID seen.
 async function importRange(client, admin, mailbox, direction, range, skipAtOrBelow, deadline, alreadyDone) {
   let processed = 0, maxUid = 0, more = false
-  const iter = client.fetch(range, { uid: true, source: true }, { uid: true })[Symbol.asyncIterator]()
+  const iter = client.fetch(range, { uid: true, source: { maxLength: MAX_SOURCE_BYTES }, bodyStructure: true }, { uid: true })[Symbol.asyncIterator]()
   try {
     while (true) {
       if ((alreadyDone + processed) >= MAX_PER_RUN || (deadline && Date.now() > deadline)) { more = true; break }
@@ -146,7 +175,7 @@ async function importRange(client, admin, mailbox, direction, range, skipAtOrBel
       if (msg.uid <= skipAtOrBelow) continue
       try {
         const parsed = await withTimeout(simpleParser(msg.source), STEP_TIMEOUT_MS, 'parse')
-        await upsertParsed(admin, parsed, direction, msg.uid)
+        await upsertParsed(admin, parsed, direction, msg.uid, msg.bodyStructure)
       } catch (e) { console.warn('[email/sync] parse/insert failed uid', msg.uid, e?.message) }
       if (msg.uid > maxUid) maxUid = msg.uid
       processed++
