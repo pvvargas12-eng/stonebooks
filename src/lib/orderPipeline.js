@@ -122,7 +122,7 @@ export function deriveMilestones(order) {
 // this is the "what this order will look like" preview before a job exists.
 export const ORDER_TYPE_CONFIG = {
   new_stone: { base: [
-    { key: 'design_needed',        label: 'Design needed',        phase: 'design' },
+    { key: 'proof_sent',           label: 'Layout sent to family', phase: 'design' },
     { key: 'proof_approved',       label: 'Proof approved',       phase: 'design' },
     { key: 'stone_ordered',        label: 'Stone ordered',        phase: 'production' },
     { key: 'stone_received',       label: 'Stone received',       phase: 'production' },
@@ -177,14 +177,28 @@ export function buildPipeline(order, job) {
 
   if (hasJob) {
     // Live job milestones grouped by phase (real, tappable). Hide not_needed.
+    // RELEVANCE RULES (Paul, 2026-07-02): the rail never asks what the order
+    // already answers, and never duplicates another surface.
+    const activeDerivedKeys = new Set(deriveMilestones(order).map(d => d.key))
+    const hasEtching = addonMatches(order, /etch|laser/)
+    const hasPhotoItem = hasEtching || addonMatches(order, /porcelain|cameo|\bphoto\b/)
     for (const m of milestones) {
-      if (SALES_REPRESENTED_KEYS.has(m.milestone_key)) continue
+      const key = m.milestone_key
+      if (SALES_REPRESENTED_KEYS.has(key)) continue
       if (m.status === 'not_needed') continue
+      // Permit lives in the Permit box (orders.permit_status) — never as rail rows.
+      if (m.group === 'permit' || /permit|cemetery_rule/i.test(key)) continue
+      // Design starts at the layout — "is a design needed?" is not a step.
+      if (key === 'design_needed') continue
+      // Content-derived steps only while the order still carries that content.
+      if (isDerivedKey(key) && !activeDerivedKeys.has(key)) continue
+      if ((m.group === 'etching' || /etch/i.test(key)) && !hasEtching) continue
+      if (m.group === 'photo' && !hasPhotoItem) continue
       const phase = phaseForMilestone(m)
       if (!phase || phase === 'sales') continue
       byPhase[phase].push({
-        key: m.milestone_key, label: m.label, status: m.status || 'not_started',
-        derived: isDerivedKey(m.milestone_key), readOnly: false,
+        key, label: m.label, status: m.status || 'not_started',
+        derived: isDerivedKey(key), readOnly: false,
         group: m.group, team: m.team,
       })
     }
@@ -215,10 +229,14 @@ export function buildPipeline(order, job) {
 }
 
 // Synthetic Sales steps from order-level facts (quote sent / signed / deposit).
+// A SIGNED contract implies the quote step — a contracted order can never show
+// "quote not sent" (Paul, 2026-07-02).
 export function salesPhaseSteps(order) {
   const qEvents = Array.isArray(order?.quote_events) ? order.quote_events : []
-  const quoteSent = (order?.quote_status && order.quote_status !== 'draft') || qEvents.some(e => e?.type === 'sent')
   const signed = !!order?.signed_at
+  const quoteSent = signed
+    || (order?.quote_status && order.quote_status !== 'draft')
+    || qEvents.some(e => e?.type === 'sent')
   const payments = Array.isArray(order?.payments) ? order.payments : []
   const deposit = payments.some(p => p && (p.locked ?? true) && !p.voided && Number(p.amount) > 0)
   return [
