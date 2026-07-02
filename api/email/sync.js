@@ -42,10 +42,10 @@ const SYNC_SINCE = process.env.EMAIL_SYNC_SINCE || '2025-01-01'
 // hang at a layer they don't catch, and the whole invocation gets killed at the
 // platform limit. So we race EVERY network step against our own setTimeout and
 // hard-cap the whole handler. The function ALWAYS returns within ~HANDLER_BUDGET.
-const HANDLER_BUDGET_MS = 25000 // absolute ceiling — return partial rather than hang
+const HANDLER_BUDGET_MS = 50000 // absolute ceiling — return partial rather than hang
 const CONNECT_TIMEOUT_MS = 12000 // connect()+auth must settle within this
 const STEP_TIMEOUT_MS = 15000   // any single open/fetch/parse step
-const RUN_BUDGET_MS = 18000     // graceful per-run budget (below the hard cap) — stop, persist cursor, return
+const RUN_BUDGET_MS = 40000     // graceful per-run budget (below the hard cap) — stop, persist cursor, return
 
 // imapflow's own timeouts (belt-and-suspenders; the Promise.race below is the real guard).
 const IMAP_TIMEOUTS = {
@@ -165,9 +165,12 @@ async function importRange(client, admin, mailbox, direction, range, skipAtOrBel
 async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } = {}) {
   const { data: topRow } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', mailbox).maybeSingle()
   const { data: backRow } = await admin.from('email_sync_state').select('last_uid').eq('mailbox', `${mailbox}:back`).maybeSingle()
+  const { data: floorRow } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', `${mailbox}:floor`).maybeSingle()
   let uidValidity = topRow?.uid_validity != null ? Number(topRow.uid_validity) : null
   let topUid = Number(topRow?.last_uid) || 0
   let backUid = null
+  let floorUid = null
+  let floorComputed = false
   let processed = 0, more = false
 
   const lock = await withTimeout(client.getMailboxLock(mailbox), STEP_TIMEOUT_MS, `open:${mailbox}`)
@@ -179,15 +182,6 @@ async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } =
     uidValidity = curValidity
     const tail = Math.max(0, Number(box.uidNext || 1) - 1)
 
-    // Floor = lowest UID on/after SYNC_SINCE (never backfill older than the cutoff).
-    let floorUid = 1
-    if (SYNC_SINCE && box.exists > 0) {
-      try {
-        const sinceUids = await withTimeout(client.search({ since: new Date(`${SYNC_SINCE}T00:00:00Z`) }, { uid: true }), STEP_TIMEOUT_MS, `search:${mailbox}`)
-        floorUid = (Array.isArray(sinceUids) && sinceUids.length) ? sinceUids.reduce((m, u) => (u < m ? u : m), sinceUids[0]) : tail + 1
-      } catch (e) { console.warn(`[email/sync] ${mailbox} since-search failed:`, e?.message); floorUid = 1 }
-    }
-
     if (backRow == null || backRow.last_uid == null || validityChanged) {
       topUid = tail            // abandon any old forward crawl; new mail only from here
       backUid = tail + 1       // backfill starts at the tail and walks DOWN
@@ -196,20 +190,43 @@ async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } =
     }
 
     if (box.exists > 0) {
-      // 1. NEW arrivals — newest mail above the top cursor (real-time going forward).
+      // 1. NEW arrivals FIRST — this must never be starved by backfill work.
+      // (The floor search below used to run before this step and could eat the
+      // whole run budget, so every run imported nothing. New mail now lands on
+      // the first run after it arrives, always.)
       if (tail > topUid && processed < MAX_PER_RUN) {
         const r = await importRange(client, admin, mailbox, direction, `${topUid + 1}:*`, topUid, deadline, processed)
         processed += r.processed
         if (r.maxUid > topUid) topUid = r.maxUid
         if (r.more) more = true
       }
+
       // 2. BACKFILL newest-first — the batch just below the back cursor.
-      if (backUid > floorUid && processed < MAX_PER_RUN && (!deadline || Date.now() < deadline)) {
-        const from = Math.max(floorUid, backUid - MAX_PER_RUN)
-        const r = await importRange(client, admin, mailbox, direction, `${from}:${backUid - 1}`, 0, deadline, processed)
-        processed += r.processed
-        backUid = from
-        if (from > floorUid) more = true
+      // Floor = lowest UID on/after SYNC_SINCE. The IMAP SINCE search is
+      // expensive on a big mailbox, so the result is CACHED in email_sync_state
+      // (`${mailbox}:floor`) and recomputed only if uidValidity changes.
+      if (processed < MAX_PER_RUN && (!deadline || Date.now() < deadline)) {
+        if (floorRow?.last_uid != null && !validityChanged && Number(floorRow.uid_validity) === curValidity) {
+          floorUid = Number(floorRow.last_uid)
+        } else if (SYNC_SINCE) {
+          try {
+            const sinceUids = await withTimeout(client.search({ since: new Date(`${SYNC_SINCE}T00:00:00Z`) }, { uid: true }), STEP_TIMEOUT_MS, `search:${mailbox}`)
+            floorUid = (Array.isArray(sinceUids) && sinceUids.length) ? sinceUids.reduce((m, u) => (u < m ? u : m), sinceUids[0]) : tail + 1
+            floorComputed = true
+          } catch (e) { console.warn(`[email/sync] ${mailbox} since-search failed:`, e?.message); floorUid = null }
+        } else {
+          floorUid = 1
+          floorComputed = true
+        }
+        if (floorUid != null && backUid > floorUid && processed < MAX_PER_RUN && (!deadline || Date.now() < deadline)) {
+          const from = Math.max(floorUid, backUid - MAX_PER_RUN)
+          const r = await importRange(client, admin, mailbox, direction, `${from}:${backUid - 1}`, 0, deadline, processed)
+          processed += r.processed
+          backUid = from
+          if (from > floorUid) more = true
+        }
+      } else if (backUid > 1) {
+        more = true   // backfill didn't get a turn this run
       }
     }
     console.log(`[email/sync] ${mailbox}: +${processed} (top=${topUid} back=${backUid} floor=${floorUid} more=${more})`)
@@ -221,6 +238,9 @@ async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } =
   await admin.from('email_sync_state').upsert({ mailbox, last_uid: topUid, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
   if (backUid != null) {
     await admin.from('email_sync_state').upsert({ mailbox: `${mailbox}:back`, last_uid: backUid, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
+  }
+  if (floorComputed && floorUid != null) {
+    await admin.from('email_sync_state').upsert({ mailbox: `${mailbox}:floor`, last_uid: floorUid, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
   }
   return { mailbox, processed, more }
 }
