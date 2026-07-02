@@ -1052,6 +1052,38 @@ export async function listOrderAttachments(orderId) {
 // brief's layout `<order_id>/completion/`. No new bucket, no migration: the
 // files in storage ARE the persisted refs (mirrors listOrderAttachments), so
 // they survive navigation and show on the order record on reload.
+// Open an inbound-email attachment. The sync stores attachment METADATA only
+// (no bytes), so /api/email/attachment re-pulls the original message from Gmail
+// over IMAP and streams the file back. Opens in a new tab (images/PDFs preview
+// inline); falls back to a download if the popup is blocked.
+export async function openEmailAttachment({ messageId, idx = 0, filename = 'attachment' } = {}) {
+  if (!messageId) return { ok: false, error: 'Missing message' }
+  let token = null
+  try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
+  try {
+    const res = await fetch(`/api/email/attachment?id=${encodeURIComponent(messageId)}&idx=${idx}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try { const j = await res.json(); detail = j.detail || j.error || detail } catch { /* ignore */ }
+      return { ok: false, error: detail }
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const w = window.open(url, '_blank', 'noopener')
+    if (!w) {
+      const a = document.createElement('a')
+      a.href = url; a.download = filename
+      document.body.appendChild(a); a.click(); a.remove()
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || 'Could not fetch attachment' }
+  }
+}
+
 export async function uploadCompletionPhoto(orderId, file) {
   if (!orderId || !file) return { ok: false, error: 'Missing orderId or file' }
   const safe = String(file.name || 'photo').replace(/[^\w.-]+/g, '_')

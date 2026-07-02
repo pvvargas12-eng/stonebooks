@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
-  getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS,
+  getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, openEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
 } from './lib/stonebooksData'
 
@@ -170,6 +170,7 @@ export default function EmailTab() {
   const [taskSort, setTaskSort] = useState('priority')
   const [taskFilter, setTaskFilter] = useState('all')
   const [attachKind, setAttachKind] = useState('all')   // Photos & files bucket sub-filter
+  const [attBusy, setAttBusy] = useState(null)           // `${msgId}:${idx}` while an attachment fetches
   const [snoozed, setSnoozed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('cc_snoozed') || '[]')) } catch { return new Set() }
   })
@@ -630,10 +631,24 @@ export default function EmailTab() {
                           <div className="cc-msg-attach">
                             {msg.attachments.map((a, i) => {
                               const kind = classifyAttachment(a)
+                              const busyKey = `${msg.id}:${i}`
                               return (
-                                <span key={i} className={`cc-msg-attach-chip cc-att-${kind}`} title={`${ATTACH_KIND_LABELS[kind]} attachment`}>
-                                  <span className="cc-att-kind">{ATTACH_KIND_LABELS[kind]}</span>{a.filename || 'attachment'}
-                                </span>
+                                <button
+                                  key={i}
+                                  type="button"
+                                  className={`cc-msg-attach-chip cc-att-${kind}`}
+                                  title={`Open ${ATTACH_KIND_LABELS[kind].toLowerCase()} attachment`}
+                                  disabled={attBusy === busyKey}
+                                  onClick={async () => {
+                                    setAttBusy(busyKey)
+                                    const res = await openEmailAttachment({ messageId: msg.id, idx: i, filename: a.filename || 'attachment' })
+                                    setAttBusy(null)
+                                    if (!res.ok) flashSyncMsg(`Attachment failed — ${res.error}`, true)
+                                  }}
+                                >
+                                  <span className="cc-att-kind">{ATTACH_KIND_LABELS[kind]}</span>
+                                  {attBusy === busyKey ? 'Opening…' : (a.filename || 'attachment')}
+                                </button>
                               )
                             })}
                           </div>
@@ -939,7 +954,9 @@ const CC_CSS = `
   .cc-msg-date { font-size: 11.5px; color: #8a8a85; margin-left: auto; }
   .cc-msg-body { font-size: 13.5px; color: #333; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
   .cc-msg-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .cc-msg-attach-chip { font-size: 11.5px; color: #876307; background: rgba(154,114,9,0.1); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 7px; padding: 4px 9px; display: inline-flex; align-items: center; gap: 6px; }
+  .cc-msg-attach-chip { font: inherit; font-size: 11.5px; color: #876307; background: rgba(154,114,9,0.1); border: 0.5px solid rgba(154,114,9,0.25); border-radius: 7px; padding: 4px 9px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .cc-msg-attach-chip:hover:not(:disabled) { background: rgba(154,114,9,0.18); text-decoration: underline; }
+  .cc-msg-attach-chip:disabled { opacity: 0.6; cursor: default; }
   .cc-att-kind { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,0.06); }
   .cc-msg-attach-chip.cc-att-contract { color: #993c1d; background: rgba(216,90,48,0.08); border-color: rgba(216,90,48,0.3); }
   .cc-msg-attach-chip.cc-att-payment { color: #1f7a3d; background: rgba(31,122,61,0.08); border-color: rgba(31,122,61,0.3); }
