@@ -11,6 +11,15 @@
 export const LEAD_STATUSES = ['draft', 'scoping', 'quoted']
 export function isLeadStatus(status) { return LEAD_STATUSES.includes(status) }
 
+// Paul's rule (2026-07-02): an ORDER is a signed/contracted sale WITH money
+// down. Everything else — including contracted-but-no-deposit — is still a
+// LEAD. `paid` is passed in (rowTotalPaid) to keep this module dependency-free.
+export const CONTRACTED_STATUSES = ['contracted', 'in_production', 'installed', 'paid_in_full', 'closed']
+export function isOrderRow(o, paid) {
+  const contracted = !!o?.signed_at || CONTRACTED_STATUSES.includes(o?.status)
+  return contracted && (paid ?? 0) > 0
+}
+
 // Who's holding the ball. side 'us' renders in red/warning — WE are the
 // bottleneck. side 'them' is neutral (customer / external).
 export const WAITING_ON_OPTIONS = [

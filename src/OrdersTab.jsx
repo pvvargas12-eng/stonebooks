@@ -52,7 +52,7 @@ const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with Customer
 import OrderDetail from './OrderDetail.jsx'
 import LeadsView from './components/LeadsView.jsx'
 import NewLeadModal from './components/NewLeadModal.jsx'
-import { LEAD_STATUSES } from './lib/leads'
+import { isOrderRow, CONTRACTED_STATUSES } from './lib/leads'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 50
@@ -232,6 +232,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const [hasDeposit, setHasDeposit] = useState(false)
   const [owesBalance, setOwesBalance] = useState(false)
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
+  const [needsCallOnly, setNeedsCallOnly] = useState(false)     // hot chip — pressure.needsCall
+  const [unsignedOnly, setUnsignedOnly] = useState(false)       // hot chip — contracted, no signature on file
   const [cemeteryFilter, setCemeteryFilter] = useState('')
   const [quickView, setQuickView] = useState(null)           // 'needs_info' | 'deposit_only' | null (More filters)
   const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
@@ -393,10 +395,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // equals the rows shown.
   const preCategory = useMemo(() => {
     let list = enriched
-    // Orders · Leads · All partition (leads = draft/scoping/quoted of the same set).
+    // Orders · Leads · All partition — Paul's rule: an ORDER is contracted/signed
+    // AND deposit paid; everything else (incl. contracted-but-no-deposit) is a lead.
     // A non-empty search ALWAYS shows the combined set so a name match surfaces.
     const showAll = search.trim().length > 0 || view === 'all'
-    if (!showAll) list = list.filter(o => !LEAD_STATUSES.includes(o.status))
+    if (!showAll) list = list.filter(o => isOrderRow(o, o._paid))
     // PRIMARY axis (archived handled at fetch): Active = non-terminal status, Closed
     // = terminal (closed/cancelled). Archived fetch returns archived rows (any status).
     if (primaryView === 'active') list = list.filter(o => !TERMINAL_STATUSES.has(o.status))
@@ -419,6 +422,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     if (needsAttentionOnly) list = list.filter(o => {
       const sev = o._pressure.blocker?.severity; return sev === 'red' || sev === 'amber'
     })
+    if (needsCallOnly) list = list.filter(o => o._pressure.needsCall)
+    if (unsignedOnly) list = list.filter(o => !o.signed_at && CONTRACTED_STATUSES.includes(o.status))
     const needle = search.trim().toLowerCase()
     if (needle) list = list.filter(o => [
       o.order_number, o._familyName, o.customer?.first_name, o.customer?.last_name,
@@ -426,7 +431,32 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     ].filter(Boolean).join(' ').toLowerCase().includes(needle))
     return list
   }, [enriched, view, primaryView, queueFilter, quickView, pipelineFilters, paymentFilters,
-      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
+      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
+
+  // ── Pipeline strip + hot-chip counts — computed on the BASE scope (view
+  // partition + primary axis + search only), so tiles/chips behave like the
+  // category chips: clicking one never changes its own count.
+  const stripData = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    const base = enriched.filter(o => {
+      if (primaryView === 'active' && TERMINAL_STATUSES.has(o.status)) return false
+      if (primaryView === 'closed' && !TERMINAL_STATUSES.has(o.status)) return false
+      if (needle && ![o.order_number, o._familyName, o.customer?.first_name, o.customer?.last_name,
+        o.customer?.phone_primary, o.customer?.email, o.cemetery?.name, o.sales_rep,
+      ].filter(Boolean).join(' ').toLowerCase().includes(needle)) return false
+      return true
+    })
+    const stages = { leads: { n: 0, usd: 0 }, contracted: { n: 0, usd: 0 }, in_production: { n: 0, usd: 0 }, installed: { n: 0, usd: 0 }, paid_in_full: { n: 0, usd: 0 } }
+    let needsCall = 0, unsigned = 0
+    for (const o of base) {
+      if (o._pressure.needsCall) needsCall++
+      if (!o.signed_at && CONTRACTED_STATUSES.includes(o.status)) unsigned++
+      if (!isOrderRow(o, o._paid)) { stages.leads.n++; stages.leads.usd += o._total || 0; continue }
+      const k = stages[o.status] ? o.status : 'contracted'
+      stages[k].n++; stages[k].usd += o._total || 0
+    }
+    return { stages, needsCall, unsigned }
+  }, [enriched, primaryView, search])
 
   // Live category counts — computed on the set with all OTHER active filters applied
   // (category axis excluded), so each chip shows exactly how many rows it would yield
@@ -476,7 +506,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
   // Reset page + clear stale selection when the filtered set changes shape.
   useEffect(() => { setPage(0) }, [view, primaryView, categoryFilter, queueFilter, quickView, pipelineFilters,
-    paymentFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, search])
+    paymentFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const pageRows = useMemo(() => filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE), [filtered, page])
@@ -747,7 +777,12 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     setPrimaryView('active'); setCategoryFilter(null)
     setPipelineFilters(new Set()); setPaymentFilters(new Set())
     setCemeteryFilter(''); setHasDeposit(false); setOwesBalance(false)
-    setNeedsAttentionOnly(false); setQuickView(null); setSearch('')
+    setNeedsAttentionOnly(false); setNeedsCallOnly(false); setUnsignedOnly(false)
+    setQuickView(null); setSearch('')
+  }
+  // Pipeline strip tile click — single-select status filter (click again to clear).
+  const onStripStage = (code) => {
+    setPipelineFilters(prev => (prev.size === 1 && prev.has(code)) ? new Set() : new Set([code]))
   }
   const toggleSet = (set, setter) => (code) => {
     const next = new Set(set); next.has(code) ? next.delete(code) : next.add(code); setter(next)
@@ -853,6 +888,28 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
         {loadErr && <div className="sb-crm-error">{loadErr}</div>}
 
+        {/* Pipeline strip — the sales pipeline as the header. Counts + $ per
+            stage on the base scope; Leads tile jumps to the Leads view; stage
+            tiles single-select the status filter. Active view only. */}
+        {!loading && primaryView === 'active' && (
+          <div className="sb-pipe">
+            <button type="button" className="sb-pipe-seg sb-pipe-leads" onClick={() => setView('leads')} title="Open the Leads view">
+              <span className="sb-pipe-n">{stripData.stages.leads.n}</span>
+              <span className="sb-pipe-l">Leads</span>
+              <span className="sb-pipe-v">{stripData.stages.leads.usd > 0 ? `${fmtUSD(stripData.stages.leads.usd)} potential` : '—'}</span>
+            </button>
+            {[['contracted', 'Contracted'], ['in_production', 'In production'], ['installed', 'Installed'], ['paid_in_full', 'Paid in full']].map(([code, label]) => (
+              <button key={code} type="button"
+                className={`sb-pipe-seg${pipelineFilters.size === 1 && pipelineFilters.has(code) ? ' on' : ''}`}
+                onClick={() => onStripStage(code)} title={`Filter to ${label}`}>
+                <span className="sb-pipe-n">{stripData.stages[code].n}</span>
+                <span className="sb-pipe-l">{label}</span>
+                <span className="sb-pipe-v">{stripData.stages[code].usd > 0 ? fmtUSD(stripData.stages[code].usd) : '—'}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {queueFilter && (
           <div className="sb-tw-queuebar">
             <span>Queue: <strong>{queueLabel(queueFilter)}</strong> · {filtered.length} order{filtered.length === 1 ? '' : 's'}</span>
@@ -870,6 +927,16 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             ))}
           </div>
           <FilterChip active={owesBalance} onClick={() => setOwesBalance(v => !v)}>Owes balance</FilterChip>
+          {stripData.needsCall > 0 && (
+            <button type="button" className={`sb-ord-hotchip${needsCallOnly ? ' on' : ''}`} onClick={() => setNeedsCallOnly(v => !v)}>
+              Needs call · {stripData.needsCall}
+            </button>
+          )}
+          {stripData.unsigned > 0 && (
+            <button type="button" className={`sb-ord-hotchip${unsignedOnly ? ' on' : ''}`} onClick={() => setUnsignedOnly(v => !v)}>
+              Unsigned · {stripData.unsigned}
+            </button>
+          )}
           <button type="button" className={`sb-ord-morebtn${moreOpen ? ' on' : ''}${moreActiveCount ? ' has' : ''}`}
             onClick={() => setMoreOpen(v => !v)}>More filters{moreActiveCount ? ` · ${moreActiveCount}` : ''} {moreOpen ? '▴' : '▾'}</button>
           {moreActiveCount > 0 && <button type="button" className="sb-tw-link" onClick={clearMoreFilters}>Clear</button>}
@@ -1100,21 +1167,28 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
   const hasJob = !!o._job
   const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
 
+  const blocker = o._pressure?.blocker || null
   return (
-    <div className={`sb-crm-row sb-tw-row${selected ? ' sb-tw-row-sel' : ''}`} style={{ gridTemplateColumns: grid }}>
+    <div className={`sb-crm-row sb-tw-row${selected ? ' sb-tw-row-sel' : ''}${blocker ? ` sb-tw-sev-${blocker.severity}` : ''}`} style={{ gridTemplateColumns: grid }}>
       <div onClick={e => e.stopPropagation()}>
         <input type="checkbox" checked={selected}
           onClick={e => { e.stopPropagation(); onToggle(o.id, indexInFiltered, e.shiftKey) }}
           onChange={() => {}} aria-label="Select order" />
       </div>
 
-      {/* Family (click → detail) */}
+      {/* Family (click → detail) — carries the blocker pill + call flag */}
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
           <span className="sb-crm-primary sb-ord-cust-name">{titleCaseName(o._familyName)}</span>
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
-        {o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
+        {blocker && (
+          <div className="sb-ord-blockline">
+            <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>
+            {o._pressure.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
+          </div>
+        )}
+        {!blocker && o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
       </button>
 
       {/* Order # */}
@@ -1213,6 +1287,36 @@ const VIEWTABS_CSS = `
 `
 
 const TW_CSS = `
+  /* ── Pipeline strip — the sales pipeline as the header ─────────────────── */
+  .sb-pipe { display: flex; gap: 5px; margin-bottom: 12px; }
+  .sb-pipe-seg { flex: 1; border: 0.5px solid #E2D8C6; background: #FBFAF7; border-radius: 10px; padding: 9px 13px 8px;
+    text-align: left; cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
+  .sb-pipe-seg:hover { border-color: #9A7209; }
+  .sb-pipe-seg.on { border-color: #9A7209; background: rgba(154,114,9,0.09); box-shadow: inset 0 -3px 0 #9A7209; }
+  .sb-pipe-n { display: block; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 19px; font-weight: 700; line-height: 1.15; color: #1e2d3d; }
+  .sb-pipe-l { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #8a8a85; margin-top: 1px; }
+  .sb-pipe-seg.on .sb-pipe-l { color: #876307; }
+  .sb-pipe-v { display: block; font-size: 11px; color: #8a8a85; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .sb-pipe-leads { background: #f4f1e9; }
+
+  /* ── Hot chips + row blocker layer ─────────────────────────────────────── */
+  .sb-ord-hotchip { border: 0.5px solid rgba(179,38,30,0.4); background: rgba(179,38,30,0.06); color: #b3261e;
+    cursor: pointer; border-radius: 999px; padding: 6px 13px; font-size: 12.5px; font-weight: 700; }
+  .sb-ord-hotchip:hover { background: rgba(179,38,30,0.12); }
+  .sb-ord-hotchip.on { background: #b3261e; border-color: #b3261e; color: #fff; }
+  .sb-tw-sev-red   { box-shadow: inset 3px 0 0 #B3261E; }
+  .sb-tw-sev-amber { box-shadow: inset 3px 0 0 #B7791F; }
+  .sb-tw-sev-blue  { box-shadow: inset 3px 0 0 #1D6FA8; }
+  .sb-tw-row-sel.sb-tw-sev-red, .sb-tw-row-sel.sb-tw-sev-amber, .sb-tw-row-sel.sb-tw-sev-blue { box-shadow: none; }
+  .sb-ord-blockline { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+  .sb-ord-bpill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
+  .sb-ord-bpill-red   { color: #B3261E; background: rgba(179,38,30,0.08); }
+  .sb-ord-bpill-amber { color: #8a5a12; background: rgba(183,121,31,0.1); }
+  .sb-ord-bpill-blue  { color: #1D6FA8; background: rgba(29,111,168,0.09); }
+  .sb-ord-callpill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #B3261E; border: 0.5px solid rgba(179,38,30,0.4); border-radius: 999px; padding: 1px 8px; }
+
   /* ── 2-tier filter header ─────────────────────────────────────────────── */
   .sb-ord-tier1 { align-items: center; gap: 10px; }
   .sb-ord-tier2 { margin-top: -4px; }

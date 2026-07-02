@@ -18,13 +18,13 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import {
-  rowGrandTotal, fmtUSD, fmtDate, fmtPhone, statusInfo,
+  rowGrandTotal, rowTotalPaid, fmtUSD, fmtDate, fmtPhone, statusInfo,
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
   bulkArchiveOrders, hardDeleteOrder, TASK_KINDS,
 } from '../lib/stonebooksData'
 import { SALES_REPS } from '../SalesMode'
-import { LEAD_STATUSES, followUpUrgency } from '../lib/leads'
+import { isOrderRow, followUpUrgency } from '../lib/leads'
 
 const pad = (n) => String(n).padStart(2, '0')
 // today as YYYY-MM-DD — call only in event handlers / effects (never in render).
@@ -115,8 +115,11 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
 
   useEffect(() => { setTodayISO(todayStr()) }, [])
 
+  // A lead is anything that is NOT a real order (Paul's rule: signed + deposit
+  // paid = order) — so contracted-but-no-deposit rows stay visible here.
   const leads = useMemo(
-    () => (orders || []).filter(o => LEAD_STATUSES.includes(o.status) && !o.archived && !o.lost_at),
+    () => (orders || []).filter(o => !isOrderRow(o, rowTotalPaid(o))
+      && !['closed', 'cancelled'].includes(o.status) && !o.archived && !o.lost_at),
     [orders])
   const leadById = useMemo(() => { const m = {}; for (const l of leads) m[l.id] = l; return m }, [leads])
   const leadIdsKey = leads.map(o => o.id).join(',')
