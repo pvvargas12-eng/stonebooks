@@ -12,7 +12,7 @@
 // Open approval packet, Add note, Upload attachment, Record payment.
 // =============================================================================
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getOrderById, getJobByOrderId,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
@@ -30,6 +30,7 @@ import {
   ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
   getProofVersions, getProofSignatureSignedUrl, updateProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
+  hydrateEmailAttachment, renameEmailAttachment, copyEmailAttachmentToOrder, classifyAttachment, ATTACH_KIND_LABELS,
   setOrderPermit, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
   orderTypeLabel,
@@ -319,6 +320,78 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
   const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
+
+  // ── Email attachment history (Email traffic → Attachments tab) ────────────
+  const [emailView, setEmailView] = useState('emails')   // 'emails' | 'attachments'
+  const [emailViewer, setEmailViewer] = useState(null)    // full-message popup viewer
+  const [attBusyKey, setAttBusyKey] = useState(null)      // `${messageId}:${idx}` while fetching/copying
+  const [attRename, setAttRename] = useState(null)        // { key, value } inline rename
+  const [attNote, setAttNote] = useState(null)            // { key, text, ok } per-card status
+  const hydrateTried = useRef(new Set())
+
+  // Every attachment across the customer's thread, newest first.
+  const emailAttachments = useMemo(() => {
+    const out = []
+    for (const em of emails) {
+      (em.attachments || []).forEach((a, i) => out.push({
+        key: `${em.id}:${i}`, messageId: em.id, idx: i,
+        direction: em.direction, date: em.date, subject: em.subject, ...a,
+      }))
+    }
+    out.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0))
+    return out
+  }, [emails])
+
+  // Write a hydration/rename patch back into the loaded thread state.
+  const patchEmailAtt = (a, patch) => setEmails(ems => ems.map(m => (m.id === a.messageId
+    ? { ...m, attachments: (m.attachments || []).map((x, j) => (j === a.idx ? { ...x, ...patch } : x)) }
+    : m)))
+
+  // Opening the Attachments tab hydrates any not-yet-cached files from Gmail in
+  // the background (sequential, capped per visit; failures aren't retried in a loop).
+  useEffect(() => {
+    if (emailView !== 'attachments') return
+    const pending = emailAttachments.filter(a => !a.url && !hydrateTried.current.has(a.key)).slice(0, 8)
+    if (!pending.length) return undefined
+    let cancelled = false
+    ;(async () => {
+      for (const a of pending) {
+        if (cancelled) return
+        hydrateTried.current.add(a.key)
+        const r = await hydrateEmailAttachment({ messageId: a.messageId, idx: a.idx })
+        if (cancelled) return
+        if (r.ok) patchEmailAtt(a, { path: r.path, url: r.url })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [emailView, emailAttachments])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const previewEmailAttachment = async (a) => {
+    const name = a.displayName || a.filename || 'Attachment'
+    if (a.url) { openPreview(name, a.url, a.contentType || '', false); return }
+    setAttBusyKey(a.key)
+    const r = await hydrateEmailAttachment({ messageId: a.messageId, idx: a.idx })
+    setAttBusyKey(null)
+    if (!r.ok) { setAttNote({ key: a.key, text: r.error || 'Could not fetch', ok: false }); return }
+    patchEmailAtt(a, { path: r.path, url: r.url })
+    openPreview(name, r.url, a.contentType || '', false)
+  }
+  const saveAttRename = async () => {
+    if (!attRename) return
+    const a = emailAttachments.find(x => x.key === attRename.key)
+    setAttRename(null)
+    if (!a) return
+    const r = await renameEmailAttachment({ messageId: a.messageId, idx: a.idx, displayName: attRename.value })
+    if (r.ok) patchEmailAtt(a, { displayName: (attRename.value || '').trim() || null })
+    else setAttNote({ key: a.key, text: r.error || 'Rename failed', ok: false })
+  }
+  const copyAttToOrder = async (a) => {
+    setAttBusyKey(a.key)
+    const r = await copyEmailAttachmentToOrder({ messageId: a.messageId, idx: a.idx, orderId })
+    setAttBusyKey(null)
+    setAttNote({ key: a.key, text: r.ok ? 'Added to order files' : (r.error || 'Copy failed'), ok: r.ok })
+    if (r.ok) refreshUploads()
+  }
   const refreshOrder = async () => { const o = await getOrderById(orderId); if (o) setOrder(o) }
   const refreshActivity = async () => setActivity(await getOrderActivity(orderId))
   const refreshJob = async () => { const j = await getJobByOrderId(orderId); setJob(j) }
@@ -1830,26 +1903,75 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <span className="sb-od-actions-spacer" />
               <button type="button" className="sb-od-link" onClick={openEmailComposer}>+ Send email</button>
             </div>
-            {emails.length === 0 ? (
-              <div className="sb-od-empty-inline">No email with this customer yet — Send email to start a thread.</div>
-            ) : (
-              <div className="sb-od-email-list">
-                {emails.map(em => (
-                  <div key={em.id} className="sb-od-email-row">
-                    <span className={`sb-od-email-dir sb-od-email-dir-${em.direction || 'outbound'}`}>
-                      {em.direction === 'inbound' ? 'In' : 'Out'}
-                    </span>
-                    <div className="sb-od-email-main">
-                      <div className="sb-od-email-subject">{em.subject || '(no subject)'}</div>
-                      <div className="sb-od-email-sub">
-                        {em.direction === 'inbound' ? `from ${em.from || '—'}` : `to ${em.to || '—'}`}
-                        {em.date ? ` · ${fmtDate(em.date)}` : ''}
+            <div className="sb-od-email-tabs">
+              <button type="button" className={`sb-od-email-tab${emailView === 'emails' ? ' on' : ''}`} onClick={() => setEmailView('emails')}>Emails {emails.length > 0 && <span className="sb-od-email-tab-n">{emails.length}</span>}</button>
+              <button type="button" className={`sb-od-email-tab${emailView === 'attachments' ? ' on' : ''}`} onClick={() => setEmailView('attachments')}>Attachments {emailAttachments.length > 0 && <span className="sb-od-email-tab-n">{emailAttachments.length}</span>}</button>
+            </div>
+            {emailView === 'emails' ? (
+              emails.length === 0 ? (
+                <div className="sb-od-empty-inline">No email with this customer yet — Send email to start a thread.</div>
+              ) : (
+                <div className="sb-od-email-list">
+                  {emails.map(em => (
+                    <button key={em.id} type="button" className="sb-od-email-row" onClick={() => setEmailViewer(em)} title="Open this email">
+                      <span className={`sb-od-email-dir sb-od-email-dir-${em.direction || 'outbound'}`}>
+                        {em.direction === 'inbound' ? 'In' : 'Out'}
+                      </span>
+                      <div className="sb-od-email-main">
+                        <div className="sb-od-email-subject">{em.subject || '(no subject)'}</div>
+                        <div className="sb-od-email-sub">
+                          {em.direction === 'inbound' ? `from ${em.from || '—'}` : `to ${em.to || '—'}`}
+                          {em.date ? ` · ${fmtDate(em.date)}` : ''}
+                          {(em.attachments || []).length > 0 && ` · ${em.attachments.length} attachment${em.attachments.length === 1 ? '' : 's'}`}
+                        </div>
+                        {em.body && <div className="sb-od-email-snippet">{em.body.slice(0, 160)}</div>}
                       </div>
-                      {em.body && <div className="sb-od-email-snippet">{em.body.slice(0, 160)}</div>}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                    </button>
+                  ))}
+                </div>
+              )
+            ) : (
+              emailAttachments.length === 0 ? (
+                <div className="sb-od-empty-inline">No attachments in this customer’s emails yet.</div>
+              ) : (
+                <div className="sb-od-att-grid">
+                  {emailAttachments.map(a => {
+                    const kind = classifyAttachment(a)
+                    const name = a.displayName || a.filename || 'attachment'
+                    const isImg = /^image\//i.test(a.contentType || '')
+                    return (
+                      <div key={a.key} className="sb-od-att-card">
+                        <button type="button" className={`sb-od-att-thumb${a.url ? '' : ' loading'}`} onClick={() => previewEmailAttachment(a)} title="Preview" disabled={attBusyKey === a.key}>
+                          {isImg && a.url
+                            ? <img src={a.url} alt={name} loading="lazy" />
+                            : <span className="sb-od-att-kind">{ATTACH_KIND_LABELS[kind]}{!a.url && '…'}</span>}
+                        </button>
+                        {attRename?.key === a.key ? (
+                          <div className="sb-od-att-rename">
+                            <input
+                              autoFocus
+                              className="sb-od-att-rename-input"
+                              value={attRename.value}
+                              onChange={e => setAttRename(r => ({ ...r, value: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') saveAttRename(); if (e.key === 'Escape') setAttRename(null) }}
+                            />
+                            <button type="button" className="sb-od-link" onClick={saveAttRename}>Save</button>
+                          </div>
+                        ) : (
+                          <div className="sb-od-att-name" title={a.filename || ''}>{name}</div>
+                        )}
+                        <div className="sb-od-att-sub">{a.direction === 'inbound' ? 'From customer' : 'Sent'}{a.date ? ` · ${fmtDate(a.date)}` : ''}</div>
+                        <div className="sb-od-att-actions">
+                          <button type="button" className="sb-od-link" onClick={() => previewEmailAttachment(a)} disabled={attBusyKey === a.key}>{attBusyKey === a.key ? 'Working…' : 'Preview'}</button>
+                          <button type="button" className="sb-od-link" onClick={() => setAttRename({ key: a.key, value: a.displayName || a.filename || '' })}>Rename</button>
+                          <button type="button" className="sb-od-link" onClick={() => copyAttToOrder(a)} disabled={attBusyKey === a.key}>+ Order files</button>
+                        </div>
+                        {attNote?.key === a.key && <div className={`sb-od-att-note${attNote.ok ? '' : ' err'}`}>{attNote.text}</div>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
             )}
           </Section>
 
@@ -1882,6 +2004,40 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </div>
         </div>
       </div>
+
+      {/* Email popup viewer — full message + openable attachments */}
+      {emailViewer && (
+        <div className="sb-od-modal-overlay" onClick={() => setEmailViewer(null)}>
+          <div className="sb-od-modal sb-od-email-modal" role="dialog" aria-modal="true" aria-label="Email" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-email-modal-head">
+              <span className={`sb-od-email-dir sb-od-email-dir-${emailViewer.direction || 'outbound'}`}>{emailViewer.direction === 'inbound' ? 'In' : 'Out'}</span>
+              <div>
+                <div className="sb-od-modal-title" style={{ marginBottom: 2 }}>{emailViewer.subject || '(no subject)'}</div>
+                <div className="sb-od-email-sub">
+                  {emailViewer.direction === 'inbound' ? `From ${emailViewer.from || '—'}` : `To ${emailViewer.to || '—'}`}
+                  {emailViewer.date ? ` · ${fmtDate(emailViewer.date)}` : ''}
+                </div>
+              </div>
+            </div>
+            <div className="sb-od-email-modal-body">{emailViewer.body || '(no text body)'}</div>
+            {(emailViewer.attachments || []).length > 0 && (
+              <div className="sb-od-att-chips">
+                {emailViewer.attachments.map((x, i) => {
+                  const a = { key: `${emailViewer.id}:${i}`, messageId: emailViewer.id, idx: i, ...x }
+                  return (
+                    <button key={i} type="button" className="sb-od-att-chip" disabled={attBusyKey === a.key} onClick={() => previewEmailAttachment(a)}>
+                      {attBusyKey === a.key ? 'Opening…' : (x.displayName || x.filename || 'attachment')}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setEmailViewer(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {delTask && (
         <div className="sb-od-modal-overlay" onClick={() => setDelTask(null)}>
@@ -2407,6 +2563,34 @@ const OD_CSS = `
   .sb-od-email-subject { font-size: 13.5px; font-weight: 600; color: #222; }
   .sb-od-email-sub { font-size: 12px; color: #8a8a85; margin-top: 2px; }
   .sb-od-email-snippet { font-size: 12.5px; color: #555; margin-top: 4px; word-break: break-word; }
+  .sb-od-email-row { width: 100%; text-align: left; background: none; border: none; font: inherit; cursor: pointer; border-radius: 8px; }
+  .sb-od-email-row:hover { background: #faf8f4; }
+  .sb-od-email-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .sb-od-email-tab { font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; border: 0.5px solid #E2D8C6; background: #fff; color: #7a7468; cursor: pointer; }
+  .sb-od-email-tab.on { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .sb-od-email-tab-n { opacity: 0.75; font-weight: 500; margin-left: 3px; }
+  .sb-od-att-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+  .sb-od-att-card { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .sb-od-att-thumb { width: 100%; aspect-ratio: 4/3; border-radius: 10px; border: 0.5px solid #E2D8C6; background: #f6f4ef; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+  .sb-od-att-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .sb-od-att-thumb:hover { border-color: #9A7209; }
+  .sb-od-att-thumb.loading { background: linear-gradient(90deg, #f1eee8 25%, #f8f6f2 50%, #f1eee8 75%); background-size: 200% 100%; animation: sb-od-att-shimmer 1.4s ease infinite; }
+  @keyframes sb-od-att-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .sb-od-att-kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #8a8a85; }
+  .sb-od-att-name { font-size: 12.5px; font-weight: 600; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-od-att-sub { font-size: 11px; color: #8a8a85; }
+  .sb-od-att-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .sb-od-att-rename { display: flex; gap: 6px; align-items: center; }
+  .sb-od-att-rename-input { flex: 1; min-width: 0; font: inherit; font-size: 12.5px; padding: 3px 7px; border: 0.5px solid #9A7209; border-radius: 6px; outline: none; }
+  .sb-od-att-note { font-size: 11.5px; color: #1f7a3d; }
+  .sb-od-att-note.err { color: #b3261e; }
+  .sb-od-att-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .sb-od-att-chip { font: inherit; font-size: 12px; color: #876307; background: rgba(154,114,9,0.08); border: 0.5px solid rgba(154,114,9,0.3); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+  .sb-od-att-chip:hover:not(:disabled) { background: rgba(154,114,9,0.16); }
+  .sb-od-att-chip:disabled { opacity: 0.6; cursor: default; }
+  .sb-od-email-modal { width: min(640px, 94vw); }
+  .sb-od-email-modal-head { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+  .sb-od-email-modal-body { font-size: 13.5px; color: #333; white-space: pre-wrap; word-break: break-word; max-height: 48vh; overflow-y: auto; border: 0.5px solid #f1efeb; border-radius: 10px; padding: 14px; background: #fcfbf9; }
 
   /* Send-email composer modal */
   .sb-od-modal-overlay {

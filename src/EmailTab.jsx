@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getEmailThreadsWorkspace, getMessageThread, getCustomerBrain, getEmailTasks,
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment,
-  getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, openEmailAttachment,
+  getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, hydrateEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
 } from './lib/stonebooksData'
 
@@ -171,6 +171,7 @@ export default function EmailTab() {
   const [taskFilter, setTaskFilter] = useState('all')
   const [attachKind, setAttachKind] = useState('all')   // Photos & files bucket sub-filter
   const [attBusy, setAttBusy] = useState(null)           // `${msgId}:${idx}` while an attachment fetches
+  const [attPreview, setAttPreview] = useState(null)     // { name, url, contentType } in-app preview
   const [snoozed, setSnoozed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('cc_snoozed') || '[]')) } catch { return new Set() }
   })
@@ -312,13 +313,14 @@ export default function EmailTab() {
       const typing = /^(input|textarea|select)$/i.test(e.target?.tagName || '')
       if (e.key === '/' && !typing) { e.preventDefault(); searchRef.current?.focus(); return }
       if (e.key === 'Escape' && !composer) {
-        if (reading) { setReading(null); setBrain(null) }
+        if (attPreview) { setAttPreview(null) }
+        else if (reading) { setReading(null); setBrain(null) }
         else if (q) { setQ('') }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [composer, reading, q])
+  }, [composer, reading, q, attPreview])
 
   // One task card — shared by the Review queue and semantic search results.
   const renderTaskCard = (t) => (
@@ -640,10 +642,12 @@ export default function EmailTab() {
                                   title={`Open ${ATTACH_KIND_LABELS[kind].toLowerCase()} attachment`}
                                   disabled={attBusy === busyKey}
                                   onClick={async () => {
+                                    if (a.url) { setAttPreview({ name: a.displayName || a.filename || 'Attachment', url: a.url, contentType: a.contentType }); return }
                                     setAttBusy(busyKey)
-                                    const res = await openEmailAttachment({ messageId: msg.id, idx: i, filename: a.filename || 'attachment' })
+                                    const res = await hydrateEmailAttachment({ messageId: msg.id, idx: i })
                                     setAttBusy(null)
-                                    if (!res.ok) flashSyncMsg(`Attachment failed — ${res.error}`, true)
+                                    if (!res.ok) { flashSyncMsg(`Attachment failed — ${res.error}`, true); return }
+                                    setAttPreview({ name: a.displayName || a.filename || 'Attachment', url: res.url, contentType: a.contentType })
                                   }}
                                 >
                                   <span className="cc-att-kind">{ATTACH_KIND_LABELS[kind]}</span>
@@ -783,6 +787,26 @@ export default function EmailTab() {
                   <button type="button" className="cc-btn cc-btn-primary" onClick={send} disabled={composer.busy || !composer.to.trim() || !composer.subject.trim()}>{composer.busy ? 'Sending…' : 'Send'}</button>
                 </div>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* In-app attachment preview — no downloads, no popup blockers */}
+      {attPreview && (
+        <div className="cc-modal-overlay" onClick={() => setAttPreview(null)}>
+          <div className="cc-att-preview" onClick={e => e.stopPropagation()}>
+            <div className="cc-att-preview-head">
+              <span className="cc-att-preview-name">{attPreview.name}</span>
+              <a className="cc-btn" href={attPreview.url} target="_blank" rel="noopener noreferrer">Open full size</a>
+              <button type="button" className="cc-btn" onClick={() => setAttPreview(null)}>Close</button>
+            </div>
+            {/^image\//i.test(attPreview.contentType || '') ? (
+              <img className="cc-att-preview-img" src={attPreview.url} alt={attPreview.name} />
+            ) : /pdf/i.test(attPreview.contentType || '') ? (
+              <iframe className="cc-att-preview-frame" src={attPreview.url} title={attPreview.name} />
+            ) : (
+              <div className="cc-att-preview-other">No inline preview for this file type — use “Open full size”.</div>
             )}
           </div>
         </div>
@@ -969,6 +993,12 @@ const CC_CSS = `
   .cc-tag-att-permit { background: rgba(107,70,193,0.12); color: #5a3aa8; }
   .cc-tag-att-layout { background: rgba(212,83,126,0.1); color: #99355a; }
   .cc-tag-att-document { background: rgba(82,97,110,0.1); color: #52616e; }
+  .cc-att-preview { background: #fff; border-radius: 14px; padding: 16px; width: min(860px, 94vw); max-height: 92vh; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 12px 48px rgba(0,0,0,0.25); }
+  .cc-att-preview-head { display: flex; align-items: center; gap: 10px; }
+  .cc-att-preview-name { flex: 1; font-size: 14px; font-weight: 600; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cc-att-preview-img { max-width: 100%; max-height: 76vh; object-fit: contain; border-radius: 10px; align-self: center; }
+  .cc-att-preview-frame { width: 100%; height: 76vh; border: 0.5px solid #E2D8C6; border-radius: 10px; background: #f6f4ef; }
+  .cc-att-preview-other { padding: 40px 0; text-align: center; color: #8a8a85; font-size: 13.5px; }
 
   .cc-brain { width: 288px; flex-shrink: 0; border-left: 0.5px solid #ECE3D2; background: #FCFAF6; max-height: calc(100vh - 210px); overflow-y: auto; }
   @media (max-width: 1100px) { .cc-brain { width: 240px; } }

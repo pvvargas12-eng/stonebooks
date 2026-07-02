@@ -1052,12 +1052,35 @@ export async function listOrderAttachments(orderId) {
 // brief's layout `<order_id>/completion/`. No new bucket, no migration: the
 // files in storage ARE the persisted refs (mirrors listOrderAttachments), so
 // they survive navigation and show on the order record on reload.
-// Open an inbound-email attachment. The sync stores attachment METADATA only
-// (no bytes), so /api/email/attachment re-pulls the original message from Gmail
-// over IMAP and streams the file back. Opens in a new tab (images/PDFs preview
-// inline); falls back to a download if the popup is blocked.
-export async function openEmailAttachment({ messageId, idx = 0, filename = 'attachment' } = {}) {
+// ── Email attachment pipeline ───────────────────────────────────────────────
+// Gmail holds the actual files; the messages row holds metadata. On first view
+// an attachment is HYDRATED: pulled once from Gmail via /api/email/attachment,
+// cached into storage under email/<messageId>/, and its storage path/url written
+// back into the message's attachments jsonb — so every later view is instant,
+// renames persist, and copy-to-order is a cheap storage copy.
+const EMAIL_ATT_BUCKET = 'orders-attachments-public'
+const _emailAttPath = (messageId, idx, filename) =>
+  `email/${messageId}/${idx}_${String(filename || 'attachment').replace(/[^\w.-]+/g, '_')}`
+
+async function _getMessageAttachments(messageId) {
+  const { data, error } = await supabase.from('messages').select('attachments').eq('id', messageId).maybeSingle()
+  if (error || !data) return null
+  return data.attachments || []
+}
+async function _saveMessageAttachments(messageId, attachments) {
+  const { error } = await supabase.from('messages').update({ attachments }).eq('id', messageId)
+  return !error
+}
+
+// Fetch-once cache: returns { ok, url, path, meta }. If already hydrated, no
+// Gmail round-trip. On first hydrate the file lands in storage + jsonb.
+export async function hydrateEmailAttachment({ messageId, idx = 0 } = {}) {
   if (!messageId) return { ok: false, error: 'Missing message' }
+  const atts = await _getMessageAttachments(messageId)
+  const meta = atts?.[idx]
+  if (!meta) return { ok: false, error: 'Attachment not found' }
+  if (meta.path && meta.url) return { ok: true, url: meta.url, path: meta.path, meta }
+
   let token = null
   try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
   try {
@@ -1070,18 +1093,45 @@ export async function openEmailAttachment({ messageId, idx = 0, filename = 'atta
       return { ok: false, error: detail }
     }
     const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const w = window.open(url, '_blank', 'noopener')
-    if (!w) {
-      const a = document.createElement('a')
-      a.href = url; a.download = filename
-      document.body.appendChild(a); a.click(); a.remove()
-    }
-    setTimeout(() => URL.revokeObjectURL(url), 60000)
-    return { ok: true }
+    const path = _emailAttPath(messageId, idx, meta.filename)
+    const { error: upErr } = await supabase.storage.from(EMAIL_ATT_BUCKET)
+      .upload(path, blob, { upsert: true, contentType: meta.contentType || blob.type || undefined })
+    if (upErr) return { ok: false, error: upErr.message }
+    const { data: u } = supabase.storage.from(EMAIL_ATT_BUCKET).getPublicUrl(path)
+    const next = atts.map((a, i) => (i === idx ? { ...a, path, url: u.publicUrl } : a))
+    await _saveMessageAttachments(messageId, next)
+    return { ok: true, url: u.publicUrl, path, meta: next[idx] }
   } catch (e) {
     return { ok: false, error: e?.message || 'Could not fetch attachment' }
   }
+}
+
+// Display-name rename — the original filename is kept; displayName wins in the UI.
+export async function renameEmailAttachment({ messageId, idx = 0, displayName } = {}) {
+  if (!messageId) return { ok: false, error: 'Missing message' }
+  const name = (displayName || '').trim()
+  const atts = await _getMessageAttachments(messageId)
+  if (!atts?.[idx]) return { ok: false, error: 'Attachment not found' }
+  const next = atts.map((a, i) => (i === idx ? { ...a, displayName: name || null } : a))
+  const ok = await _saveMessageAttachments(messageId, next)
+  return ok ? { ok: true, meta: next[idx] } : { ok: false, error: 'Could not save name' }
+}
+
+// COPY (never move) an email attachment into the order's files. Hydrates first
+// if needed; the copy lands under attachments/<orderId>/ with the display name,
+// so listOrderAttachments picks it up like any staff upload.
+export async function copyEmailAttachmentToOrder({ messageId, idx = 0, orderId } = {}) {
+  if (!messageId || !orderId) return { ok: false, error: 'Missing message or order' }
+  const h = await hydrateEmailAttachment({ messageId, idx })
+  if (!h.ok) return h
+  const meta = h.meta || {}
+  let name = (meta.displayName || meta.filename || 'attachment').replace(/[^\w.-]+/g, '_')
+  const origExt = (meta.filename || '').match(/\.[A-Za-z0-9]{1,8}$/)?.[0]
+  if (origExt && !name.toLowerCase().endsWith(origExt.toLowerCase())) name += origExt
+  const dest = `attachments/${orderId}/${crypto.randomUUID()}_${name}`
+  const { error } = await supabase.storage.from(EMAIL_ATT_BUCKET).copy(h.path, dest)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, path: dest }
 }
 
 export async function uploadCompletionPhoto(orderId, file) {
