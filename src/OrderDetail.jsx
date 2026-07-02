@@ -48,6 +48,7 @@ import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
+import { buildPipeline } from './lib/orderPipeline'
 import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles } from './SalesMode'
@@ -1033,16 +1034,36 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     setEditPay(null)
     await refreshOrder()
   }
-  const voidPay = async (p) => {
-    const reason = window.prompt('Void this payment? Enter a reason (kept for the record):')
-    if (reason == null) return
-    if (!reason.trim()) { setPayRowErr('A reason is required to void a payment.'); return }
+  // Void — proper reason dialog (audit-aware), not a browser prompt.
+  const [voidModal, setVoidModal] = useState(null)   // { payment, reason }
+  const voidPay = (p) => { setPayRowErr(null); setVoidModal({ payment: p, reason: '' }) }
+  const confirmVoid = async () => {
+    if (!voidModal || !voidModal.reason.trim()) return
+    const p = voidModal.payment
     setPayRowBusy(p.id); setPayRowErr(null)
     const actor = await getCurrentStaffName().catch(() => null)
-    const res = await voidOrderPayment(orderId, p.id, { reason: reason.trim(), actor })
+    const res = await voidOrderPayment(orderId, p.id, { reason: voidModal.reason.trim(), actor })
     setPayRowBusy(null)
-    if (!res.ok) { setPayRowErr(res.error || 'Could not void the payment.'); return }
+    if (!res.ok) { setPayRowErr(res.error || 'Could not void the payment.'); setVoidModal(null); return }
+    setVoidModal(null)
     await refreshOrder()
+  }
+
+  // Mark as contracted — the prominent pipeline action. Two-step arm/confirm
+  // button (no modal). Stamps signed_at today (keeps an existing date) and
+  // advances a pre-contract status to 'contracted'.
+  const [contractArm, setContractArm] = useState(false)
+  const markContracted = async () => {
+    if (!contractArm) { setContractArm(true); setTimeout(() => setContractArm(false), 4000); return }
+    setContractArm(false)
+    const d = order.signed_at ? String(order.signed_at).slice(0, 10) : new Date().toISOString().slice(0, 10)
+    const patch = { signed_at: `${d}T00:00:00` }
+    if (['draft', 'scoping', 'quoted'].includes(order.status)) patch.status = 'contracted'
+    const res = await bulkUpdateOrders([orderId], patch)
+    if (!res.ok) { setActionNote(res.error || 'Could not mark contracted.'); return }
+    setOrder(o => ({ ...o, ...patch }))
+    logOrderActivity(orderId, { type: 'change', field: 'Contract', oldValue: 'unsigned', newValue: `signed ${d}`, note: 'Marked as contracted', actor: await getCurrentStaffName().catch(() => null) }).catch(() => {})
+    setActionNote('Marked as contracted.')
   }
 
   if (loading) {
@@ -1152,6 +1173,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const foundationMs = milestoneStatus(job, ['foundation_poured', 'foundation_cured'])
   const nra = job ? getNextRequiredAction(job) : null
   const jobStage = job ? jobStatusInfo(job.overall_status) : null
+  // Status Overview card — same engine as the rail (they can never disagree).
+  const overviewPipe = buildPipeline(order, job)
+  const overviewPressure = computeOrderPressure(order, job, job?.milestones)
 
   // ── Quick actions ──────────────────────────────────────────────────────────
   const handleOpenContract = async () => {
@@ -1347,6 +1371,42 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onPickAttachment} />
         </div>
         {actionNote && <div className="sb-od-actionnote">{actionNote}</div>}
+
+        {/* ── STATUS OVERVIEW — where it stands, what's next, what's blocking.
+            Reads the SAME engine as the rail (buildPipeline + pressure), so the
+            two surfaces can never disagree. The rail stays for tap-to-advance. */}
+        <div className="sb-od-status">
+          <div className="sb-od-status-top">
+            <span className="sb-od-status-label">Status overview</span>
+            {order.signed_at ? (
+              <span className="sb-od-status-signed">Contract signed {fmtDate(order.signed_at)}</span>
+            ) : (
+              <button type="button" className={`sb-od-mark-contracted${contractArm ? ' arm' : ''}`} onClick={markContracted}>
+                {contractArm ? 'Confirm — mark as contracted' : 'Mark as contracted'}
+              </button>
+            )}
+            <span className="sb-od-status-pct">{overviewPipe.overallPct}% complete</span>
+          </div>
+          <div className="sb-od-status-bar"><i style={{ width: `${overviewPipe.overallPct}%` }} /></div>
+          <div className="sb-od-status-phases">
+            {(() => {
+              const activeIdx = overviewPipe.phases.findIndex(ph => ph.total > 0 && ph.done < ph.total)
+              return overviewPipe.phases.map((ph, i) => (
+                <span key={ph.code} className={`sb-od-ph${ph.total > 0 && ph.done >= ph.total ? ' done' : i === activeIdx ? ' now' : ''}`}>
+                  {ph.label}{ph.total > 0 ? ` ${ph.done}/${ph.total}` : ''}
+                </span>
+              ))
+            })()}
+          </div>
+          <div className="sb-od-status-foot">
+            <div className="sb-od-status-kv"><b>Next action</b><span>{nra?.label || '—'}</span></div>
+            <div className="sb-od-status-kv"><b>Blocker</b>{overviewPressure.blocker
+              ? <span className={`sb-od-ovpill sb-od-ovpill-${overviewPressure.blocker.severity}`}>{overviewPressure.blocker.label}</span>
+              : <span>None</span>}</div>
+            <div className="sb-od-status-kv"><b>Balance</b><span className={balance > 0 ? 'sb-od-status-due' : ''}>{balance > 0 ? `${fmtUSD(balance)} due` : 'Paid in full'}</span></div>
+            <div className="sb-od-status-kv"><b>Target</b><span>{order.target_completion_date ? fmtDate(order.target_completion_date) : '—'}</span></div>
+          </div>
+        </div>
 
         {/* ── SECTIONS with left-rail nav ───────────────────────────────────── */}
         <div className="sb-od-layout">
@@ -1613,7 +1673,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <div style={{ marginTop: 6 }}>
               <div className="sb-od-field-label">Payments made</div>
               {rawPayments.length === 0 && <div className="sb-od-empty-inline">No payments yet.</div>}
-              {rawPayments.map(p => (editPay?.id === p.id ? (
+              {(() => { let _run = 0; return rawPayments.map(p => {
+                if (p.locked ?? true) _run += Number(p.amount) || 0
+                const _after = total > 0 ? Math.max(0, total - _run) : null
+                return (editPay?.id === p.id ? (
                 <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '8px 0', borderTop: '1px solid #f0ece1' }}>
                   <input type="number" className="sb-od-note-input" value={editPay.amount} onChange={e => setEditPay(s => ({ ...s, amount: e.target.value }))} placeholder="Amount" />
                   <select className="sb-od-note-input" value={editPay.method} onChange={e => setEditPay(s => ({ ...s, method: e.target.value }))}>
@@ -1632,6 +1695,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                     <span>{fmtUSD(p.amount)} · {humanize(p.method) || '—'}{p.receivedAt ? ` · ${fmtDate(p.receivedAt)}` : ''}{p.ref ? ` · #${p.ref}` : ''}{p.locked ? '' : ' (draft)'}</span>
                     <span className="sb-od-inline-actions">
+                      {_after != null && (p.locked ?? true) && <span className="sb-od-pay-run">bal after: {fmtUSD(_after)}</span>}
                       <button type="button" className="sb-od-link" onClick={e => { e.stopPropagation(); startEditPay(p) }}>Edit</button>
                       <button type="button" className="sb-od-link" onClick={e => { e.stopPropagation(); voidPay(p) }}>Void</button>
                     </span>
@@ -1640,7 +1704,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     <ReceiptActions order={receiptOrder} payment={p} />
                   </div>
                 </div>
-              )))}
+              )) }) })()}
               {payRowErr && <div className="sb-msg sb-msg-err" style={{ marginTop: 6 }}>{payRowErr}</div>}
             </div>
 
@@ -2004,6 +2068,32 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </div>
         </div>
       </div>
+
+      {/* Void payment — reason required, kept for the record */}
+      {voidModal && (
+        <div className="sb-od-modal-overlay" onClick={() => setVoidModal(null)}>
+          <div className="sb-od-modal" role="dialog" aria-modal="true" aria-label="Void payment" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Void this payment?</div>
+            <p style={{ fontSize: 13.5, color: '#555', marginTop: 0 }}>
+              {fmtUSD(voidModal.payment.amount)} · {humanize(voidModal.payment.method) || '—'}
+              {voidModal.payment.receivedAt ? ` · ${fmtDate(voidModal.payment.receivedAt)}` : ''} — the payment stays on the record
+              as voided and stops counting toward the balance.
+            </p>
+            <textarea
+              className="sb-od-note-input" rows={3} autoFocus
+              placeholder="Reason (required — kept for the record)"
+              value={voidModal.reason}
+              onChange={e => setVoidModal(v => ({ ...v, reason: e.target.value }))}
+            />
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" onClick={() => setVoidModal(null)}>Cancel</button>
+              <button type="button" className="sb-od-danger-btn" disabled={!voidModal.reason.trim() || payRowBusy === voidModal.payment.id} onClick={confirmVoid}>
+                {payRowBusy === voidModal.payment.id ? 'Voiding…' : 'Void payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Email popup viewer — full message + openable attachments */}
       {emailViewer && (
@@ -2589,6 +2679,31 @@ const OD_CSS = `
   .sb-od-att-chip:hover:not(:disabled) { background: rgba(154,114,9,0.16); }
   .sb-od-att-chip:disabled { opacity: 0.6; cursor: default; }
   .sb-od-email-modal { width: min(640px, 94vw); }
+
+  /* ── Status overview card ── */
+  .sb-od-status { border: 0.5px solid #E2D8C6; border-radius: 12px; background: #FBFAF7; padding: 14px 18px; margin-top: 14px; }
+  .sb-od-status-top { display: flex; align-items: center; gap: 14px; }
+  .sb-od-status-label { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #876307; }
+  .sb-od-status-signed { font-size: 12.5px; font-weight: 600; color: #2d7a4f; background: #e8f5ea; border-radius: 999px; padding: 4px 12px; }
+  .sb-od-mark-contracted { font: inherit; font-size: 12.5px; font-weight: 700; color: #fff; background: #9A7209; border: none; border-radius: 999px; padding: 6px 15px; cursor: pointer; }
+  .sb-od-mark-contracted:hover { background: #876307; }
+  .sb-od-mark-contracted.arm { background: #B3261E; }
+  .sb-od-status-pct { margin-left: auto; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 700; }
+  .sb-od-status-bar { height: 7px; border-radius: 4px; background: #E9E4D8; margin: 9px 0 11px; overflow: hidden; }
+  .sb-od-status-bar i { display: block; height: 100%; background: linear-gradient(90deg, #9A7209, #B8933A); border-radius: 4px; transition: width 0.3s; }
+  .sb-od-status-phases { display: flex; gap: 6px; flex-wrap: wrap; }
+  .sb-od-ph { flex: 1; min-width: 90px; text-align: center; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 4px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #8a8a85; }
+  .sb-od-ph.done { color: #2d7a4f; border-color: rgba(45,122,79,0.35); background: #e8f5ea; }
+  .sb-od-ph.now { color: #876307; border-color: #9A7209; background: rgba(154,114,9,0.09); box-shadow: inset 0 -2px 0 #9A7209; }
+  .sb-od-status-foot { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .sb-od-status-kv b { display: block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; }
+  .sb-od-status-kv span { font-size: 13.5px; font-weight: 600; }
+  .sb-od-status-due { color: #B3261E; }
+  .sb-od-ovpill { display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 5px; padding: 2px 8px; }
+  .sb-od-ovpill-red { color: #B3261E; background: rgba(179,38,30,0.08); }
+  .sb-od-ovpill-amber { color: #8a5a12; background: rgba(183,121,31,0.1); }
+  .sb-od-ovpill-blue { color: #1D6FA8; background: rgba(29,111,168,0.09); }
+  .sb-od-pay-run { font-size: 11.5px; color: #8a8a85; font-variant-numeric: tabular-nums; }
   .sb-od-email-modal-head { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
   .sb-od-email-modal-body { font-size: 13.5px; color: #333; white-space: pre-wrap; word-break: break-word; max-height: 48vh; overflow-y: auto; border: 0.5px solid #f1efeb; border-radius: 10px; padding: 14px; background: #fcfbf9; }
 
