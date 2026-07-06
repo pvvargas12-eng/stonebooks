@@ -9,6 +9,11 @@
 // OrderDetail's permit section. Buckets come from the shared permitBuckets
 // classifier, so the hub and the list can't disagree. Read-only except the
 // cemetery editor.
+//
+// TODO (Directive 2026-07-06 Part 6A — DEFERRED, do not build yet): Permits Hub
+// payment section with columns Cemetery | Name | Job | Amount | Method | Date.
+// Blocked on Paul's answer: does Amount/Method come from the permit log import,
+// or is it a new staff-editable table? Nothing stubbed on purpose.
 // =============================================================================
 
 import { useState, useEffect, useMemo, useRef } from 'react'

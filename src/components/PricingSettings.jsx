@@ -12,7 +12,7 @@
 import { useState, useEffect } from 'react'
 import {
   getEffectivePricingConfig, savePricingConfig, DEFAULT_PRICING_CONFIG,
-  SHAPES, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, ADD_ONS_CATALOG,
+  SHAPES, BASE_SIZES, BASE_HEIGHTS, ADD_ONS_CATALOG,
   FOUNDATION_RATE, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
 } from '../lib/orderRates'
 
@@ -125,11 +125,11 @@ export default function PricingSettings({ user, canEdit = false }) {
         ))}
       </Group>
 
-      <Group title="Color premiums (% on base stone)">
-        {GRANITE_COLORS.map(c => (
-          <Num key={c.code} label={c.label} suffix="%" value={val(`colorPremiums.${c.code}`, { pct: true })} onChange={v => set(`colorPremiums.${c.code}`, v, { pct: true })} step="0.1" />
-        ))}
-      </Group>
+      {/* Color premiums moved to Settings → Sales Options (sales_options table
+          is now the source of truth for stone colors + their premiums). */}
+      <div className="ps-note">
+        Stone colors &amp; their premiums are managed in <strong>Settings → Sales Options</strong>.
+      </div>
 
       <Group title="Taxes & surcharge">
         <Num label="NJ sales tax" suffix="%" value={val('taxes.njTax', { pct: true })} onChange={v => set('taxes.njTax', v, { pct: true })} step="0.001" />
@@ -202,6 +202,7 @@ const PS_CSS = `
   .ps-lede { font-size: 13.5px; color: #6b6b66; margin: 0 0 20px; max-width: 620px; line-height: 1.5; }
   .ps-group { margin-bottom: 22px; }
   .ps-group-title { font-family: var(--font-d, 'Playfair Display'), Georgia, serif; font-size: 16px; font-weight: 600; color: #1e2d3d; margin: 0 0 12px; }
+  .ps-note { font-size: 13px; color: #5a6472; background: #f6f4ef; border: 1px solid #e3ded2; border-radius: 8px; padding: 10px 14px; margin: 4px 0 16px; }
   .ps-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }
   .ps-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .ps-field-label { font-size: 13px; color: #444; flex: 1 1 auto; min-width: 0; }

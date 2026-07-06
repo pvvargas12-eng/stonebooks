@@ -23,8 +23,13 @@ import { supabase } from './lib/supabase'
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
   POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, dieSize3, dieTopLabel,
-  buildDieSpec, buildBaseSpec, displayGraniteColor, nearestFittingBaseSize, composeGraveLocation,
+  buildDieSpec, buildBaseSpec, displayGraniteColor, displayColorLabel, effectiveColorPremium,
+  nearestFittingBaseSize, composeGraveLocation,
 } from './lib/monumentCatalog'
+// Directive Part 1 — Settings-managed stone colors. Pickers list ACTIVE colors
+// only; the shared GRANITE_COLORS table keeps deactivated/legacy entries for
+// saved-order lookups (see lib/salesOptions.js).
+import { getActiveStoneColors, colorSwatchUrl } from './lib/salesOptions'
 import BaseSection from './components/BaseSection'
 import DieOverrideField from './components/DieOverrideField'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
@@ -990,16 +995,15 @@ const COLOR_FAMILY_LABELS = {
   mahogany: 'Mahogany', green: 'Green', multi: 'Multi / Other',
 }
 
-// Granite origin (#5) — country-of-origin (China/India/etc.) is never shown.
-// Barre Grey and Mountain Rose are Shevchenko's two domestic granites; every
-// other stone is Imported. This is the SINGLE source of truth for both the
-// Domestic/Imported display label AND the due-date supplier-confidence buffer
-// (calculateDueDateRaw treats Domestic as the fast 5-month lead time). Accepts a
-// color object or a color code string.
+// Granite origin — INTERNAL ONLY (Directive Part 2: origin words never appear
+// in any customer-facing output; the old Domestic/Imported display label was
+// removed). Barre Gray and Mountain Rose are the two fast-supplier granites;
+// this set feeds ONLY the due-date supplier-confidence buffer
+// (calculateDueDateRaw treats these codes as the fast 5-month lead time).
 const DOMESTIC_GRANITE_CODES = new Set(['medium-barre-grey', 'mountain-rose'])
-function getGraniteOrigin(color) {
+function isFastSupplierGranite(color) {
   const code = typeof color === 'string' ? color : color?.code
-  return DOMESTIC_GRANITE_CODES.has(code) ? 'Domestic' : 'Imported'
+  return DOMESTIC_GRANITE_CODES.has(code)
 }
 
 // CSS hex hint per color family — used to tint the live preview when no design
@@ -1825,7 +1829,26 @@ function orderToRow(order) {
     inscription: order.inscription || {},
 
     add_ons: order.addOns || [],
-    pricing: order.pricing || {},
+    // Directive Part 1E — snapshot the color premium onto the order at every
+    // save (pricing rides whole as JSONB; no new column). buildLineItems and
+    // the custom-die recompute prefer this snapshot via effectiveColorPremium,
+    // so later Settings premium edits / color deactivations have ZERO effect on
+    // a saved order's total. Re-snapshots when the color CHANGES (staff intent:
+    // reprice at today's premium); otherwise the saved premium sticks.
+    pricing: (() => {
+      const pricing = { ...(order.pricing || {}) }
+      const code = order.graniteColor
+      if (code && code !== 'custom' && code !== 'undecided') {
+        if (!pricing.colorPremiumSnapshot || pricing.colorPremiumSnapshot.code !== code) {
+          const c = GRANITE_COLORS.find(g => g.code === code)
+          if (c) pricing.colorPremiumSnapshot = { code, premium: c.premium ?? 0, label: c.label }
+        }
+      } else if (pricing.colorPremiumSnapshot && code !== pricing.colorPremiumSnapshot.code) {
+        // Color cleared or switched to custom/undecided — drop the stale snapshot.
+        delete pricing.colorPremiumSnapshot
+      }
+      return pricing
+    })(),
 
     // Signatures + contract conversion (Sprint 3b)
     customer_signature_url: order.customerSignatureUrl || null,
@@ -3333,7 +3356,7 @@ export function ShapeStep({ order, update }) {
       )}
 
       {/* ---- 5. POLISH & SIDES (only for shapes with vertical sides) ------- */}
-      {shape && ['slant', 'double-slant', 'die', 'double-die', 'civic', 'custom'].includes(shape.code) && (
+      {shape && ['slant', 'double-slant', 'die', 'double-die', 'civic', 'custom', 'heart', 'double-heart'].includes(shape.code) && (
         <Section title="Polish &amp; sides" eyebrow="Surface treatment">
           <div className="sm-grid-2">
             <Field label="Polish level" hint="Auto-fills the Sides field — change after if needed">
@@ -3399,14 +3422,19 @@ export function ShapeStep({ order, update }) {
 const UNDECIDED_COLOR = 'undecided'
 
 export function ColorStep({ order, update }) {
+  // Settings-managed list (sales_options) — active colors only, owner order.
+  const activeColors = getActiveStoneColors()
+
   const grouped = useMemo(() => {
     const out = {}
-    for (const c of GRANITE_COLORS) {
-      if (!out[c.family]) out[c.family] = []
-      out[c.family].push(c)
+    for (const c of activeColors) {
+      const fam = c.family || 'multi'
+      if (!out[fam]) out[fam] = []
+      out[fam].push(c)
     }
     return out
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeColors.length])
 
   const families = ['gray', 'black', 'blue', 'pink', 'red', 'mahogany', 'green', 'multi']
 
@@ -3420,6 +3448,20 @@ export function ColorStep({ order, update }) {
           we'll show that in pricing later.
         </p>
       </div>
+
+      {/* Directive Part 2C — every ACTIVE color is selectable here, including
+          colors without a swatch photo (they don't appear in the grid below). */}
+      <Section title="All colors" eyebrow="Pick from the list — or tap a swatch below">
+        <SelectInput
+          value={activeColors.some(c => c.code === order.graniteColor) ? order.graniteColor : ''}
+          onChange={v => update({ graniteColor: v || null })}
+          placeholder="— choose a granite color —"
+          options={activeColors.map(c => ({
+            value: c.code,
+            label: `${c.label}${c.premium > 0 ? ` (+${Math.round(c.premium * 100)}%)` : ''}`,
+          }))}
+        />
+      </Section>
 
       <Section title="Not sure yet?" eyebrow="You can decide later">
         <button
@@ -3438,7 +3480,9 @@ export function ColorStep({ order, update }) {
       </Section>
 
       {families.map(fam => {
-        const list = grouped[fam] || []
+        // Swatch grid — colors WITH an image only; imageless colors are
+        // selectable from the dropdown above.
+        const list = (grouped[fam] || []).filter(c => colorSwatchUrl(c))
         if (list.length === 0) return null
         return (
           <Section key={fam} title={COLOR_FAMILY_LABELS[fam]} eyebrow={`${list.length} option${list.length > 1 ? 's' : ''}`}>
@@ -3451,13 +3495,12 @@ export function ColorStep({ order, update }) {
                   onClick={() => update({ graniteColor: c.code })}
                 >
                   <div className="sm-color-swatch">
-                    <img src={`/granite/${c.file}`} alt={c.label} loading="lazy" />
+                    <img src={colorSwatchUrl(c)} alt={c.label} loading="lazy" />
                     {c.popular && <span className="sm-color-popular">Popular</span>}
                   </div>
                   <div className="sm-color-info">
                     <div className="sm-color-name">{c.label}</div>
                     <div className="sm-color-meta">
-                      <span>{getGraniteOrigin(c)}</span>
                       {c.premium > 0 && <span className="sm-color-premium">+{Math.round(c.premium * 100)}%</span>}
                     </div>
                   </div>
@@ -5818,12 +5861,14 @@ function BlingConfigurator({ order, update, updateAddOn }) {
 
           {showColors && (
             <div className="sm-bling-color-grid">
-              {GRANITE_COLORS.map(c => (
+              {getActiveStoneColors().map(c => (
                 <button key={c.code} type="button"
                   className={`sm-bling-color-card ${active.color === c.code ? 'on' : ''}`}
                   onClick={() => pickColor(c.code)}>
                   <div className="sm-bling-color-swatch">
-                    <img src={`/granite/${c.file}`} alt={c.label} loading="lazy" />
+                    {colorSwatchUrl(c)
+                      ? <img src={colorSwatchUrl(c)} alt={c.label} loading="lazy" />
+                      : <div className="sm-bling-color-noimg" aria-hidden="true" />}
                   </div>
                   <div className="sm-bling-color-info">
                     <div className="sm-bling-color-name">{c.label}</div>
@@ -6240,12 +6285,14 @@ function VaseConfigurator({ order, update, updateAddOn }) {
 
           {showColors && (
             <div className="sm-bling-color-grid">
-              {GRANITE_COLORS.map(c => (
+              {getActiveStoneColors().map(c => (
                 <button key={c.code} type="button"
                   className={`sm-bling-color-card ${active.color === c.code ? 'on' : ''}`}
                   onClick={() => pickColor(c.code)}>
                   <div className="sm-bling-color-swatch">
-                    <img src={`/granite/${c.file}`} alt={c.label} loading="lazy" />
+                    {colorSwatchUrl(c)
+                      ? <img src={colorSwatchUrl(c)} alt={c.label} loading="lazy" />
+                      : <div className="sm-bling-color-noimg" aria-hidden="true" />}
                   </div>
                   <div className="sm-bling-color-info">
                     <div className="sm-bling-color-name">{c.label}</div>
@@ -6921,9 +6968,9 @@ function calculateDueDateRaw(order, anchorDate) {
       // Barre Grey and Mountain Rose are Shevchenko's most reliable supply chains.
       // All other stones get the conservative 6-month buffer. Rule is a risk-buffer
       // based on supplier confidence, not granite family or geography. Updated 2026-05-14.
-      // Domestic == fast; reads the shared getGraniteOrigin helper so display +
-      // due-date math can never disagree on which stones are domestic.
-      const fast = getGraniteOrigin(order.graniteColor) === 'Domestic'
+      // Fast-supplier stones get the shorter buffer (internal rule only — the
+      // origin word itself never prints anywhere customer-facing).
+      const fast = isFastSupplierGranite(order.graniteColor)
       return { unit: 'months', value: fast ? 5 : 6 }
     }
     if (svc === 'BRONZE')      return { unit: 'months', value: 4 }
@@ -7517,9 +7564,10 @@ export async function generateEstimatePDF(order, opts = {}) {
       sectionHeader('Stone specifications')
       kvRow('Shape', shapeLine)
       // Show the row even for a custom color (catalog lookup misses) — the resolver
-      // returns the entered name ("Morning Rose"); named colors keep their origin suffix.
+      // returns the entered name ("Morning Rose"). Label only — origin words
+      // (Domestic/Imported/Vermont) never print on customer-facing output.
       const colorName = displayGraniteColor(order)
-      if (colorName) kvRow('Granite color', color ? `${color.label} (${getGraniteOrigin(color)})` : colorName)
+      if (colorName) kvRow('Granite color', colorName)
       // Phase 6 — Top shape uses the SAME dieTopLabel resolution as the die line item
       // (trade name → label), so the two paths can't show a different top shape.
       if (top) kvRow('Top shape', dieTopLabel(order))
@@ -8955,13 +9003,19 @@ export function buildLineItems(order) {
       editable: true,
     })
 
-    // Color premium (multiplier on base)
+    // Color premium (multiplier on base). Directive Part 1E — the multiplier
+    // prefers the order's SAVED snapshot (pricing.colorPremiumSnapshot, written
+    // at save time) over the live catalog, so Settings edits / deactivations
+    // never shift a saved order's total. Label resolves live (display-only) and
+    // routes through the legacy origin-word scrub.
     const color = GRANITE_COLORS.find(c => c.code === order.graniteColor)
-    if (color && color.premium > 0) {
+    const colorPremium = effectiveColorPremium(order)
+    const colorLabel = displayColorLabel(color?.label || order.pricing?.colorPremiumSnapshot?.label || order.graniteColor)
+    if (colorPremium > 0) {
       items.push({
         code: 'color-premium',
-        label: `${color.label} premium (+${Math.round(color.premium * 100)}%)`,
-        amount: Math.round(basePrice * color.premium),
+        label: `${colorLabel} premium (+${Math.round(colorPremium * 100)}%)`,
+        amount: Math.round(basePrice * colorPremium),
         editable: true,
       })
     }
@@ -8996,16 +9050,16 @@ export function buildLineItems(order) {
       })
 
       // Base color premium — the base STONE gets the same per-color uplift the
-      // die does (reuses the `color` resolved above; one color rule per order).
-      // Scales ONLY baseBasePrice (the stone) — never height/margin/saw, which
-      // are dimensional/labor add-ons. Folds into the single base line via
-      // BASE_FOLD_CODES. Custom bases price baseBasePrice=0 today, so ×premium=0
-      // until custom base pricing lands.
-      if (color && color.premium > 0 && baseBasePrice > 0) {
+      // die does (reuses the snapshot-aware premium resolved above; one color
+      // rule per order). Scales ONLY baseBasePrice (the stone) — never
+      // height/margin/saw, which are dimensional/labor add-ons. Folds into the
+      // single base line via BASE_FOLD_CODES. Custom bases price
+      // baseBasePrice=0 today, so ×premium=0 until custom base pricing lands.
+      if (colorPremium > 0 && baseBasePrice > 0) {
         items.push({
           code: 'base-color-premium',
-          label: `Base ${color.label} premium (+${Math.round(color.premium * 100)}%)`,
-          amount: Math.round(baseBasePrice * color.premium),
+          label: `Base ${colorLabel} premium (+${Math.round(colorPremium * 100)}%)`,
+          amount: Math.round(baseBasePrice * colorPremium),
           editable: true,
         })
       }
@@ -10922,7 +10976,7 @@ function ContinueLater({ order, update, onDepositLogged }) {
               <div>
                 <div className="sm-summary-lab">Granite</div>
                 <div className="sm-summary-val">
-                  {color ? `${color.label} (${getGraniteOrigin(color)})` : (displayGraniteColor(order) || '—')}
+                  {displayGraniteColor(order) || '—'}
                 </div>
               </div>
             </>
@@ -15673,6 +15727,7 @@ export const salesModeStyles = `
 .sm-bling-color-card.on { border-color: var(--sm-navy); box-shadow: 0 3px 8px rgba(30,45,61,0.18); }
 .sm-bling-color-swatch { width: 100%; aspect-ratio: 4 / 3; background: #f0ede6; overflow: hidden; }
 .sm-bling-color-swatch img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sm-bling-color-noimg { width: 100%; height: 100%; background: repeating-linear-gradient(45deg, #ece8df, #ece8df 8px, #f4f1ea 8px, #f4f1ea 16px); }
 .sm-bling-color-info { padding: 6px 8px 8px; }
 .sm-bling-color-name { font-size: 12px; font-weight: 600; color: var(--sm-navy); line-height: 1.2; }
 .sm-bling-color-prem { font-size: 10px; color: var(--sm-gold); font-weight: 700; margin-top: 2px; }

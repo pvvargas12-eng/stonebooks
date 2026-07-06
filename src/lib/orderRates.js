@@ -15,8 +15,9 @@
 // buildLineItems) still comes from SalesMode.
 import {
   SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_LEVELS,
-  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, buildBaseSpec,
+  BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, buildBaseSpec, effectiveColorPremium,
 } from './monumentCatalog'
+import { reapplyStoneColors } from './salesOptions'
 import {
   FOUNDATION_RATE, ADD_ONS_CATALOG,
   NJ_TAX_RATE, CC_SURCHARGE, CUSTOM_FONT_FEE,
@@ -107,6 +108,8 @@ export const MONUMENT_TYPES = [
   { code: 'double-slant',  label: 'Double slant',  shapeCodes: ['double-slant'] },
   { code: 'upright',       label: 'Upright',       shapeCodes: ['die'] },
   { code: 'double-upright',label: 'Double upright',shapeCodes: ['double-die'] },
+  { code: 'heart',         label: 'Single heart',  shapeCodes: ['heart'] },
+  { code: 'double-heart',  label: 'Double heart',  shapeCodes: ['double-heart'] },
   { code: 'custom',        label: 'Custom',        shapeCodes: ['custom'] },
 ]
 
@@ -379,10 +382,11 @@ export function computeFormLineItems(order) {
       // 3A — the catalog color-premium line was computed in buildLineItems from
       // basePrice ($0 for a custom die). Recompute it from the CORRECTED die amount
       // so a premium granite (Jet Black +25%, Bahama +30%, …) is no longer $0.
+      // Snapshot-aware (Directive 1E): the order's saved premium wins over the
+      // live catalog, so Settings edits can't move a saved order's total.
       const colorPrem = items.find(it => it.code === 'color-premium')
       if (colorPrem) {
-        const c = GRANITE_COLORS.find(g => g.code === order.graniteColor)
-        colorPrem.amount = Math.round(baseStone.amount * (c?.premium || 0))
+        colorPrem.amount = Math.round(baseStone.amount * effectiveColorPremium(order))
       }
     }
   }
@@ -746,6 +750,10 @@ export async function loadPricingConfig() {
       .from('pricing_config').select('config').eq('tenant_id', PRICING_TENANT_ID).maybeSingle()
     if (error) { console.error('loadPricingConfig:', error.message); return { ok: false, error: error.message } }
     if (data?.config && Object.keys(data.config).length) applyPricingConfig(data.config)
+    // Sales-options colors are the premium source of truth — re-overlay them
+    // (applyPricingConfig resets GRANITE_COLORS premiums to hardcoded defaults
+    // + any legacy colorPremiums override; sales_options wins when loaded).
+    reapplyStoneColors()
     _pricingLoaded = true
     return { ok: true }
   } catch (e) {
@@ -778,6 +786,9 @@ export async function savePricingConfig(config, userId) {
     }, { onConflict: 'tenant_id' })
     if (error) return { ok: false, error: error.message }
     applyPricingConfig(config)
+    // applyPricingConfig resets color premiums to the hardcoded defaults —
+    // re-overlay the settings-managed sales_options values (source of truth).
+    reapplyStoneColors()
     return { ok: true }
   } catch (e) {
     return { ok: false, error: String(e?.message || e) }

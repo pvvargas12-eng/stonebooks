@@ -31,6 +31,7 @@ import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
 import BaseSection from './components/BaseSection'
 import { composeGraveLocation } from './lib/monumentCatalog'
+import { getActiveStoneColors } from './lib/salesOptions'
 import DieOverrideField from './components/DieOverrideField'
 import {
   SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS,
@@ -734,7 +735,12 @@ export function MonumentCard({ order, update, updatePricing }) {
           hint="Spec only — no price effect." />
         <SelectField label="Granite color" value={order.graniteColor} onChange={v => onColor(v)}
           options={[
-            ...GRANITE_COLORS.map(c => ({ value: c.code, label: `${c.label}${c.premium > 0 ? ` (+${Math.round(c.premium * 100)}%)` : ''}` })),
+            ...getActiveStoneColors().map(c => ({ value: c.code, label: `${c.label}${c.premium > 0 ? ` (+${Math.round(c.premium * 100)}%)` : ''}` })),
+            // A saved order carrying a deactivated/legacy color keeps it selectable
+            // so opening the form doesn't silently blank the field.
+            ...(order.graniteColor && order.graniteColor !== 'custom' && !getActiveStoneColors().some(c => c.code === order.graniteColor)
+              ? [{ value: order.graniteColor, label: `${GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || order.graniteColor} (no longer offered)` }]
+              : []),
             { value: 'custom', label: 'Custom…' },
           ]}
           placeholder="Select color…" />
@@ -987,7 +993,7 @@ export function AddOnsCard({ order, update, updatePricing, kinds = [] }) {
             )}
             {(a.kind === 'vase' || a.kind === 'bling') && (
               <SelectField label="Color upcharge" value={a.color} onChange={v => setRow(i, { color: v })}
-                options={GRANITE_COLORS.filter(c => c.premium > 0).map(c => ({ value: c.code, label: `${c.label} (+${Math.round(c.premium * 100)}%)` }))}
+                options={getActiveStoneColors().filter(c => c.premium > 0).map(c => ({ value: c.code, label: `${c.label} (+${Math.round(c.premium * 100)}%)` }))}
                 placeholder="Match stone (no upcharge)" />
             )}
           </Grid>

@@ -124,6 +124,22 @@ export const SHAPES = [
     canHaveBase: true,
   },
   {
+    code: 'heart',
+    label: 'Single Heart',
+    blurb: 'Heart-shaped die — custom sized, on a base.',
+    icon: '',
+    standardSizes: [],
+    canHaveBase: true,
+  },
+  {
+    code: 'double-heart',
+    label: 'Double Heart',
+    blurb: 'Two joined hearts on one stone — custom sized.',
+    icon: '',
+    standardSizes: [],
+    canHaveBase: true,
+  },
+  {
     code: 'custom',
     label: 'Custom Shape',
     blurb: 'Heart, cross, teardrop, angel — describe below.',
@@ -369,16 +385,52 @@ export function standardSizeCodeLabel(code) {
   return null
 }
 
+// LEGACY COLOR LABEL MAPPING (Directive Part 2B — display/print only, stored
+// order data untouched). Applied by displayGraniteColor, so every render path
+// (contract PDF, estimate PDF, OrderDetail, receipts, quote hub, PR prints,
+// buildDieSpec/buildBaseSpec) gets it for free. Rules, in order:
+//   1. 'Vermont Gray/Grey'            → 'Barre Gray'
+//   2. strip 'Domestic' / 'Imported'  ('Domestic Gray' → 'Gray')
+//   3. strip any remaining standalone 'Vermont'
+// Origin words (Domestic / Vermont / Imported) must never print on
+// customer-facing output.
+export function displayColorLabel(raw) {
+  if (!raw) return raw
+  let s = String(raw)
+  if (/vermont\s+gr[ae]y/i.test(s)) s = s.replace(/vermont\s+gr[ae]y/gi, 'Barre Gray')
+  s = s.replace(/\b(domestic|imported)\b/gi, ' ')
+  s = s.replace(/\bvermont\b/gi, ' ')
+  return s.replace(/\s{2,}/g, ' ').trim()
+}
+
 // SINGLE SOURCE for the granite color DISPLAY name. A custom color shows its
 // entered name (pricing.customColorName), never the generic "Custom"; named catalog
 // colors show their label. Handles camelCase (graniteColor / pricing) and snake_case
 // (granite_color) order shapes. DISPLAY only — the color premium derives from
 // pricing.customColorPct (the %), NOT this name, so this never affects a total.
+// Every label routes through displayColorLabel (legacy origin-word scrub).
 export function displayGraniteColor(order) {
   if (!order) return null
   const code = order.graniteColor ?? order.granite_color
-  if (code === 'custom') return (order.pricing?.customColorName || '').trim() || 'Custom color'
-  return GRANITE_COLORS.find(c => c.code === code)?.label || code || null
+  if (code === 'custom') return displayColorLabel((order.pricing?.customColorName || '').trim()) || 'Custom color'
+  return displayColorLabel(GRANITE_COLORS.find(c => c.code === code)?.label || code) || null
+}
+
+// EFFECTIVE color premium for an order (Directive Part 1E — order safety).
+// Prefers the premium SNAPSHOTTED on the order at save time
+// (pricing.colorPremiumSnapshot, written by orderToRow) so later Settings
+// edits / deactivations can never shift a saved order's total. Falls back to
+// the live catalog premium for legacy orders saved before snapshotting.
+// Accepts a camelCase order or a RAW snake_case row (pricing is JSONB either way).
+export function effectiveColorPremium(order) {
+  if (!order) return 0
+  const code = order.graniteColor ?? order.granite_color
+  if (!code) return 0
+  const snap = order.pricing?.colorPremiumSnapshot
+  if (snap && snap.code === code && Number.isFinite(Number(snap.premium))) {
+    return Number(snap.premium)
+  }
+  return GRANITE_COLORS.find(c => c.code === code)?.premium || 0
 }
 
 export function dieSize3(order, shape) {

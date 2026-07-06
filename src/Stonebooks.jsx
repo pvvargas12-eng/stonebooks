@@ -17,8 +17,10 @@ import {
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
 import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount } from './lib/stonebooksData'
 import { loadPricingConfig } from './lib/orderRates'
+import { loadSalesOptions } from './lib/salesOptions'
 import { setSelectedHub } from './lib/workspaceState'
 import PricingSettings from './components/PricingSettings'
+import SalesOptionsSettings from './components/SalesOptionsSettings'
 import SalesMode from './SalesMode'
 import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
@@ -48,14 +50,7 @@ import TodayTab from './TodayTab'
 // drill-in mechanisms. Sidebar and tabs continue to function unchanged.
 import CommandSurface from './CommandSurface'
 import { useCommandSurface } from './lib/useCommandSurface'
-import { subscribeCommand, refreshEntityIndex, lookupEntityRecord } from './lib/commandSurface'
-
-// v2 W-2 — Workspace Strip + workpiece registry. Persisted operational
-// context that survives refresh/reopen. The strip is a subdued chip row
-// rendered at the top of main; chips mirror the operator's open detail
-// views. Sidebar, tabs, and existing routing are all unchanged.
-import WorkspaceStrip from './WorkspaceStrip'
-import { useWorkpieces } from './lib/useWorkpieces'
+import { subscribeCommand, refreshEntityIndex } from './lib/commandSurface'
 
 // =============================================================================
 // LOGO COMPONENTS
@@ -320,17 +315,6 @@ export default function Stonebooks() {
   const [orderDetailId, setOrderDetailId] = useState(null) // ITEM 5 — Jobs Admin Hub closeout → OrderDetail
   const [orderDetailAction, setOrderDetailAction] = useState(null) // optional auto-action on open (e.g. 'email')
 
-  // v2 W-2 — Workpiece registry. Persists open jobs / customers across
-  // refresh and reopen. The strip renders one chip per workpiece; clicking
-  // a chip re-focuses that workpiece (sets selectedJobId/etc + tab). The
-  // hook handles all localStorage I/O; the shell owns the routing.
-  const workpieces = useWorkpieces(user?.id)
-
-  // One-shot restoration guard — prevents the restore-on-mount effect from
-  // re-firing after the operator manually navigates away. Without this,
-  // re-entering Today after closing a chip would re-restore the chip.
-  const restoredRef = useRef(false)
-
   // Open Sales Mode — either fresh (no id) or with a specific order
   const openSales = (orderId = null) => {
     setSalesOrderId(orderId)
@@ -420,7 +404,9 @@ export default function Stonebooks() {
 
   // Load owner-set pricing overrides once at startup so the New Order form
   // prices at the configured values (falls back to constant defaults silently).
-  useEffect(() => { loadPricingConfig() }, [])
+  // Sales options load AFTER the pricing config so the settings-managed color
+  // list/premiums overlay deterministically (sales_options is the color truth).
+  useEffect(() => { loadPricingConfig().then(() => loadSalesOptions()) }, [])
 
   // Capture the Gmail OAuth return — the gmail-oauth-callback Edge Function
   // redirects back here with ?gmail=connected&email=… on success. Persist the
@@ -506,84 +492,6 @@ export default function Stonebooks() {
       console.warn('[Stonebooks] entity index warm-up failed:', err)
     })
   }, [user?.id, portal])
-
-  // v2 W-2 — On sign-in, restore the most-recently-focused workpiece.
-  // We restore from workpieces[0] (the registry orders most-recent-first
-  // via activateWorkpiece) rather than from focusedKey, because focusedKey
-  // is cleared when the operator navigates away to Today. Using the array
-  // order means the restoration honors "last operational context" even
-  // when the operator was on Today at refresh time — matching the
-  // workspace-trust success metric. One-shot per session.
-  useEffect(() => {
-    if (!user?.id) return
-    if (restoredRef.current) return
-    const wp = workpieces.workpieces[0]
-    if (!wp) { restoredRef.current = true; return }
-    if (wp.type === 'job')      { setSelectedJobId(wp.id); setTab('jobs') }
-    else if (wp.type === 'customer') { setSelectedCustomerId(wp.id); setTab('customers') }
-    restoredRef.current = true
-  }, [user?.id, workpieces.workpieces])
-
-  // v2 W-2 — Activate a workpiece whenever the operator opens a job or
-  // customer detail (regardless of entry point — sidebar click, Today drill-
-  // in, command surface, workspace chip). Label comes from the entity index
-  // when available; falls back to a placeholder until the next refresh.
-  useEffect(() => {
-    if (!selectedJobId) return
-    const rec = lookupEntityRecord('job', selectedJobId)
-    workpieces.activate({
-      type: 'job',
-      id: selectedJobId,
-      label:    rec?.label    || null,
-      sublabel: rec?.sublabel || null,
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedJobId])
-
-  useEffect(() => {
-    if (!selectedCustomerId) return
-    const rec = lookupEntityRecord('customer', selectedCustomerId)
-    workpieces.activate({
-      type: 'customer',
-      id: selectedCustomerId,
-      label:    rec?.label    || null,
-      sublabel: rec?.sublabel || null,
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCustomerId])
-
-  // v2 W-2 — Tab changes that leave both detail views clear the focused
-  // workpiece (the operator is now on Today / Reports / etc., which aren't
-  // entities). Chips remain in the strip; nothing highlights as current.
-  useEffect(() => {
-    const onJobDetail = tab === 'jobs' && selectedJobId
-    const onCustomerDetail = tab === 'customers' && selectedCustomerId
-    if (!onJobDetail && !onCustomerDetail) {
-      if (workpieces.focusedKey) workpieces.focus(null)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, selectedJobId, selectedCustomerId])
-
-  // v2 W-2 — Strip click handlers. Focus routes through the shell's existing
-  // selected* state + tab setter. Close removes the chip and, if the closed
-  // workpiece's entity is the value of the corresponding selected* state,
-  // also clears that state — preventing the "JobDetail open for an entity
-  // with no chip in the strip" inconsistency. Strip and detail views stay
-  // in lockstep regardless of which tab the operator is currently on.
-  const handleWorkpieceFocus = (wp) => {
-    if (wp.type === 'job')      { setSelectedJobId(wp.id); setTab('jobs') }
-    else if (wp.type === 'customer') { setSelectedCustomerId(wp.id); setTab('customers') }
-    // Always re-activate — covers the case where the clicked chip's entity
-    // is already the current selected* value (React no-ops same-value
-    // setState, so the activation useEffect wouldn't fire). This makes
-    // chip click visibly re-focus regardless of prior state.
-    workpieces.activate({ type: wp.type, id: wp.id, label: wp.label, sublabel: wp.sublabel })
-  }
-  const handleWorkpieceClose = (wp) => {
-    workpieces.close(wp)
-    if (wp.type === 'job' && selectedJobId === wp.id) setSelectedJobId(null)
-    else if (wp.type === 'customer' && selectedCustomerId === wp.id) setSelectedCustomerId(null)
-  }
 
   // Build CSS once per theme
   const themeCSS = useMemo(() => buildThemeCSS(theme), [theme])
@@ -737,17 +645,6 @@ export default function Stonebooks() {
         )}
 
         <main className="sb-main">
-          {/* v2 W-2 — Workspace Strip. Renders only when workpieces exist;
-              otherwise the operator sees the unchanged tab content. The
-              strip lives inside main so it sits above the page header and
-              survives every tab change. */}
-          <WorkspaceStrip
-            workpieces={workpieces.workpieces}
-            focusedKey={workpieces.focusedKey}
-            onFocus={handleWorkpieceFocus}
-            onClose={handleWorkpieceClose}
-          />
-
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} />}
@@ -811,6 +708,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
             { k: 'profile',      l: 'Profile' },
             { k: 'appearance',   l: 'Appearance' },
             { k: 'pricing',      l: 'Pricing' },
+            { k: 'sales-options', l: 'Sales Options' },
             { k: 'integrations', l: 'Integrations' },
             { k: 'account',      l: 'Account' },
             { k: 'shop',         l: 'Shop info' },
@@ -830,6 +728,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {section === 'profile'      && <ProfileSettings user={user} profile={profile} onProfileChange={onProfileChange} />}
           {section === 'appearance'   && <AppearanceSettings theme={theme} setTheme={setTheme} />}
           {section === 'pricing'      && <PricingSettings user={user} canEdit={isOwner(user)} />}
+          {section === 'sales-options' && <SalesOptionsSettings canEdit={isOwner(user)} />}
           {section === 'integrations' && <><IntegrationsSettings /><EmailSignatureSettings /></>}
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
