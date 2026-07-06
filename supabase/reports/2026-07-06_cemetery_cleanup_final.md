@@ -133,10 +133,12 @@ Christ-vs-Christ-Church flag is CLOSED.
 - No ZZ_DEMO-prefixed orders remain anywhere (prior demo-cleanup already
   handled them).
 
-## Still open for Paul (updated list)
+## Status: CLEANUP CLOSED (Paul, 2026-07-06)
 
-1. Hillside generic rows — 20 orders need Linden / Scotch Plains / Lyndhurst
-   assignment (sections "Dogwood" and "St Francis" may identify it).
-2. E-26-0354 — Hillside or New Mt. Zion? (order itself is real and kept).
-3. Generic-vs-specific: nothing else. Christ, St. Peter, Resurrection, E, Gerd,
-   Ukr are all CLOSED.
+Paul's final call: **leave the generic Hillside rows and their 20 orders as-is**
+(no location assignment), and **leave E-26-0354 / the combined
+"Hillside Cemetery / New Mt. Zion Cemetery" row untouched**. These are
+deliberate keeps, not open items — do NOT re-flag them in future cleanups.
+The specific rows (Hillside — Linden / Scotch Plains / Lyndhurst) remain
+available in the picker if staff ever want them. Everything else — Christ,
+St. Peter, Resurrection, E, Gerd, Ukr, test data — is CLOSED.
