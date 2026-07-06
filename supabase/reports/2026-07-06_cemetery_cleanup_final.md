@@ -85,3 +85,58 @@ references existed to rewrite.
 select public.merge_cemetery_by_id('03de015d-6d3c-4e9b-bc55-5fddadb8e66a',
        (select id from cemeteries where name = 'Hillside Cemetery — Scotch Plains'));
 ```
+
+---
+
+# ROUND 2 — Paul's follow-up decisions + test-data purge (same day)
+
+**Cemeteries: 83 → 80. Orders: 364 → 351 (13 test orders deleted). Customers:
+1224 → 1212 (12 test customers deleted). 9 test jobs deleted. Every deleted row
+is snapshotted whole (full JSONB) in `_test_data_purge_log` (34 rows) —
+recoverable if anything was wrong. 0 orphans after; no financial_records were
+attached to anything purged (guarded — the purge would have aborted).**
+
+## Decisions applied
+
+- **Resurrection = Piscataway** — generic `Resurrection Cemetery` (8 orders,
+  incl. the ex-"Resurrection" one) merged into `Resurrection Cemetery —
+  Piscataway` → 9 orders. `— Toms River` demo row kept at 0 uses.
+- **St. Peter & Paul ≠ St. Peter's Episcopal** — kept separate; `St. Peters`
+  renamed to `St. Peter's Episcopal Cemetery` for clarity (logged).
+- **E-26-0234 (cemetery "E")** — deleted per Paul; `E` cemetery row deleted.
+- **E-26-0354 (Hillside / New Mt. Zion) KEPT** — it IS filled out: customer
+  Helen Rech (Helenrech2000@yahoo.com), deceased Thomas & Jean, 1 job. Still
+  needs the Hillside-vs-New-Mt.-Zion call (row still flagged).
+
+## Test-order purge (13 orders, 9 jobs, 12 customers)
+
+Signatures used: customer email pv.vargas12@gmail.com / pauly_vargas@outlook.com
+/ `asdfasdf` / fake@email.com; DEMO/TEST/LEAD DEMO/V2/V3/V4 names; gibberish
+(asdf/sdf) fields. Deleted orders: E-26-0234, 0238, 0239, 0244 (DEMO ACID WASH),
+0246, 0261, 0272, 0274, 0291, 0292, 0302, 0303, 0304 (the ex-"Gerd" order —
+its customer turned out to be LEAD DEMO V3). Deleted customers: 5× LEAD DEMO
+variants, DEMO V3/DEMO ACID WASH, DEMOZV4/DEMO INSCRIPTION, DEMO V2/DEMOV2,
+DEMO TEST, DEMO DEMO/TEST TEST TEST, and the Paul Vargas manual-test customer
+(`bae19030`, pauly_vargas@outlook.com, 0 orders).
+
+**Christ Cemetery resolved:** its only 2 orders were test entries (E-26-0272 /
+0292, plot fields "sdf") — orders purged, row deleted. `Christ Church Cemetery`
+(the real one, 2 imported in-production orders) stays. The earlier
+Christ-vs-Christ-Church flag is CLOSED.
+
+## Deliberately KEPT (matched a pattern but are real)
+
+- **DAVID DEMORESKI** (NJDAV69@GMAIL.COM, Perth Amboy, 1 order) — surname
+  contains "demo"; real customer.
+- **Sonia Vargas** (Svponce61@gmail.com, draft E-26-0342) — shares the Vargas
+  surname but real email/identity.
+- No ZZ_DEMO-prefixed orders remain anywhere (prior demo-cleanup already
+  handled them).
+
+## Still open for Paul (updated list)
+
+1. Hillside generic rows — 20 orders need Linden / Scotch Plains / Lyndhurst
+   assignment (sections "Dogwood" and "St Francis" may identify it).
+2. E-26-0354 — Hillside or New Mt. Zion? (order itself is real and kept).
+3. Generic-vs-specific: nothing else. Christ, St. Peter, Resurrection, E, Gerd,
+   Ukr are all CLOSED.
