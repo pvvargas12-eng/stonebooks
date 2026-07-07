@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { supabase } from './supabase'
-import { getCurrentStaffName } from './stonebooksData'
+import { getCurrentStaffName, createTradeJob } from './stonebooksData'
 
 const MIGRATION_HINT = 'Vendor portal isn’t set up yet — apply the 20260608_vendor_portal migration in Supabase Studio, then try again.'
 const isMissing = (msg) => /relation .* does not exist|could not find the table|schema cache/i.test(msg || '')
@@ -470,16 +470,38 @@ export async function updateTradeOrder(requestId, patch = {}) {
   return { ok: true }
 }
 
-// The Accept checkpoint — specs verified, guarantee attaches. (Slice 4 adds
-// job creation here.) Also clears a post-edit re-accept flag.
+// The Accept checkpoint — specs verified, guarantee attaches, and the order
+// becomes a REAL job (same milestone templates the shop already works, so the
+// Scheduler / hubs / dealer tracker all read one truth). Re-accepts (post-edit)
+// keep the existing job.
 export async function acceptTradeOrder(requestId, { actor = null } = {}) {
+  const { data: req } = await supabase.from('vendor_requests')
+    .select('id, partner_id, services, job_id').eq('id', requestId).maybeSingle()
   const r = await updateTradeOrder(requestId, {
     acceptedAt: new Date().toISOString(), acceptedBy: actor, needsReaccept: false,
     status: 'accepted',
   })
   if (!r.ok) return r
-  await logTradeEvent({ requestId, type: 'order_accepted', actor, detail: 'Specs verified — order accepted' })
+  await logTradeEvent({ requestId, partnerId: req?.partner_id || null, type: 'order_accepted', actor, detail: 'Specs verified — order accepted' })
+  if (req && !req.job_id) {
+    const jr = await createTradeJob({ vendorRequestId: requestId, services: req.services || [] })
+    if (jr.ok && jr.job && !jr.alreadyExisted) {
+      await updateTradeOrder(requestId, { jobId: jr.job.id })
+      await logTradeEvent({ requestId, partnerId: req?.partner_id || null, type: 'job_created', actor, detail: 'Sent to production — job created' })
+    } else if (!jr.ok) {
+      console.warn('[trade] job creation failed:', jr.error)
+    }
+  }
   return r
+}
+
+// Dealer-facing live tracker — sanitized production steps via the
+// trade_tracker SECURITY DEFINER RPC (partners can't read jobs directly).
+export async function getTradeTracker(requestId) {
+  if (!requestId) return []
+  const { data, error } = await supabase.rpc('trade_tracker', { req: requestId })
+  if (error) { console.warn('[trade] trade_tracker:', error.message); return [] }
+  return Array.isArray(data) ? data : []
 }
 
 // Rush decision — ANY staff. Approving guarantees the dealer-written date.

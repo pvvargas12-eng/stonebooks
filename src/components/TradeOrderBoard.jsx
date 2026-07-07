@@ -15,7 +15,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   listTradeOrders, updateTradeOrder, logTradeEvent, listTradeOrderEvents,
-  decideTradeRush, acceptTradeOrder, deleteTradeOrder,
+  decideTradeRush, acceptTradeOrder, deleteTradeOrder, getTradeTracker,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
 import { getCurrentStaffName } from '../lib/stonebooksData'
@@ -155,11 +155,17 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     await acceptTradeOrder(r.id, { actor: who })
   })
 
+  const [trackerById, setTrackerById] = useState({})
   const toggleExpand = (r) => {
     const next = expandedId === r.id ? null : r.id
     setExpandedId(next)
     if (next && !eventsById[r.id]) {
       listTradeOrderEvents(r.id).then(ev => setEventsById(m => ({ ...m, [r.id]: ev })))
+    }
+    if (next) {
+      // Tracker refetches on every expand — milestone flips in the shop should
+      // show the moment anyone looks.
+      getTradeTracker(r.id).then(steps => setTrackerById(m => ({ ...m, [r.id]: steps })))
     }
   }
 
@@ -256,6 +262,21 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
 
                 {open && (
                   <div className="sb-tb-detail">
+                    {(trackerById[r.id] || []).length > 0 && (
+                      <div className="sb-tb-track">
+                        {trackerById[r.id].map((s, i, arr) => {
+                          const doneCount = arr.filter(x => x.done).length
+                          const state = s.done ? 'done' : (i === doneCount ? 'now' : 'todo')
+                          return (
+                            <div key={s.key} className={`sb-tb-tstep ${state}`}>
+                              <div className="sb-tb-tdot">{s.done ? '✓' : ''}</div>
+                              <div className="sb-tb-tlab">{s.key === 'blast' && !s.done && s.started ? 'Blasting…' : s.label}</div>
+                              <div className="sb-tb-tdate">{s.done && s.date ? fmtD(s.date) : state === 'now' ? 'next' : '—'}</div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                     {staffView && r.rush_status === 'pending' && (
                       <div className="sb-tb-rushbar">
                         <b>Rush requested — needed by {fmtD(r.rush_need_by)}.</b> Approving guarantees the date.
@@ -462,6 +483,19 @@ const TB_CSS = `
   .sb-tb-dropbtn:hover:not(:disabled) { background: #9A7209; color: #fff; border-style: solid; }
 
   .sb-tb-detail { padding: 4px 16px 16px; background: #faf9f5; border-top: 0.5px dashed #e4e0d4; }
+  .sb-tb-track { display: flex; align-items: flex-start; overflow-x: auto; padding: 14px 2px 6px; }
+  .sb-tb-tstep { flex: 1; min-width: 82px; text-align: center; position: relative; }
+  .sb-tb-tstep::before { content: ""; position: absolute; top: 10px; left: 0; right: 0; height: 3px; background: #e4e0d4; }
+  .sb-tb-tstep:first-child::before { left: 50%; }
+  .sb-tb-tstep:last-child::before { right: 50%; }
+  .sb-tb-tstep.done::before { background: #2f7d4f; }
+  .sb-tb-tstep.now::before { background: linear-gradient(90deg, #2f7d4f 50%, #e4e0d4 50%); }
+  .sb-tb-tdot { position: relative; z-index: 1; width: 20px; height: 20px; margin: 0 auto 5px; border-radius: 50%; background: #fff; border: 3px solid #e4e0d4; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: #fff; }
+  .sb-tb-tstep.done .sb-tb-tdot { background: #2f7d4f; border-color: #2f7d4f; }
+  .sb-tb-tstep.now .sb-tb-tdot { background: #9A7209; border-color: #9A7209; box-shadow: 0 0 0 4px #f5edda; }
+  .sb-tb-tlab { font-size: 10.5px; font-weight: 700; line-height: 1.25; color: #2a2a2a; }
+  .sb-tb-tstep.todo .sb-tb-tlab { color: #a09a8c; font-weight: 600; }
+  .sb-tb-tdate { font-size: 10px; color: #a09a8c; font-variant-numeric: tabular-nums; }
   .sb-tb-rushbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #fdf3e2; border: 1px solid #e6b667; color: #8a5a12; border-radius: 10px; padding: 9px 13px; margin: 10px 0 4px; font-size: 13px; }
   .sb-tb-approve { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px; border: none; background: #2f7d4f; color: #fff; cursor: pointer; margin-left: auto; }
   .sb-tb-decline { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px; border: 0.5px solid #b3261e; background: #fff; color: #b3261e; cursor: pointer; }

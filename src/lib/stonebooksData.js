@@ -3687,6 +3687,65 @@ async function buildMilestoneListForOrder(serviceTypes) {
 // for the audit trail: 'wizard' (auto from contract signing), 'backfill'
 // (batch from Jobs tab), or 'manual' (default for any ad-hoc caller).
 
+// ── STONEBOOKS TRADE — a trade order (vendor_request) becomes a real job ─────
+// Called from acceptTradeOrder (the Accept checkpoint). The job carries
+// vendor_request_id as its owner (jobs_owner_xor: exactly one of order /
+// cemetery order / trade order) and seeds the SAME milestone templates the
+// shop already works — so the Scheduler, hubs, and the dealer's live tracker
+// (trade_tracker RPC) all read one truth. Service mapping: fix → REPAIR
+// (cleaning_repair), doors → MAUSOLEUM (door template), everything else
+// (design / blast / install / pickup / custom) → NEW_STONE.
+export async function createTradeJob({ vendorRequestId, services = [] }) {
+  if (!vendorRequestId) return { ok: false, error: 'No trade order id' }
+  const { data: existing } = await supabase
+    .from('jobs').select('*').eq('vendor_request_id', vendorRequestId).maybeSingle()
+  if (existing) return { ok: true, job: existing, alreadyExisted: true }
+
+  const svc = services || []
+  const serviceTypes = svc.includes('doors') ? ['MAUSOLEUM']
+    : (svc.includes('fix') && !svc.some(s => ['design', 'blast', 'install'].includes(s))) ? ['REPAIR']
+    : ['NEW_STONE']
+  const { primaryTemplate, allMilestones, jobType } = await buildMilestoneListForOrder(serviceTypes)
+  if (!primaryTemplate) return { ok: false, error: 'No active milestone template for trade work' }
+
+  const jobRow = {
+    // Shevchenko tenant (operational lock — the default for every tenant_id).
+    tenant_id: 'a1b2c3d4-e5f6-7890-abcd-ef0123456789',
+    vendor_request_id: vendorRequestId,
+    template_id: primaryTemplate.id,
+    job_type: jobType || primaryTemplate.job_type,
+    overall_status: 'active',
+    last_update_at: new Date().toISOString(),
+  }
+  const { data: job, error: jobErr } = await supabase.from('jobs').insert(jobRow).select().single()
+  if (jobErr) return { ok: false, error: jobErr.message }
+
+  const milestoneRows = allMilestones.map((m, idx) => ({
+    tenant_id: jobRow.tenant_id,
+    job_id: job.id,
+    milestone_key: m.key,
+    label: m.label,
+    group: m.group,
+    team: m.team || null,
+    status: m.default_status || 'not_started',
+    sort_order: idx,
+    requires: m.requires || [],
+    is_decision: !!m.is_decision,
+    cascades_to: m.cascades_to || [],
+    is_customer_visible: !!m.is_customer_visible,
+    due_date: null,
+    updated_at: new Date().toISOString(),
+  }))
+  if (milestoneRows.length > 0) {
+    const { error: msErr } = await supabase.from('job_milestones').insert(milestoneRows)
+    if (msErr) {
+      await supabase.from('jobs').delete().eq('id', job.id)
+      return { ok: false, error: `Failed to seed milestones: ${msErr.message}` }
+    }
+  }
+  return { ok: true, job }
+}
+
 export async function createJobFromOrder(orderId, { source, allowUnsigned = false } = {}) {
   if (!orderId) return { ok: false, error: 'No orderId' }
 
