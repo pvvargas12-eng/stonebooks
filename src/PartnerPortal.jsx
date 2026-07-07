@@ -196,14 +196,30 @@ function ItemCard({ item, onOpen }) {
   )
 }
 
+// Trade service chips — mirrors TRADE_SERVICES in vendorsData (kept inline so
+// this file stays dependency-light; codes must match the DB check).
+const TRADE_SVC = [
+  ['design', 'Design'], ['blast', 'Blast'], ['pickup', 'Pickup'],
+  ['install', 'Install'], ['doors', 'Doors'], ['fix', 'Fix'], ['custom', 'Custom…'],
+]
+
 function NewRequestForm({ partnerId, partner, onDone }) {
+  const [familyName, setFamilyName] = useState('')
+  const [dealerOrderNumber, setDealerOrderNumber] = useState('')
+  const [services, setServices] = useState(() => new Set(['design']))
+  const [serviceCustom, setServiceCustom] = useState('')
   const [requestName, setRequestName] = useState('')
   const [neededBy, setNeededBy] = useState('')
   const [rush, setRush] = useState(false)
+  const [rushNeedBy, setRushNeedBy] = useState('')
   const [generalNotes, setGeneralNotes] = useState('')
   const [items, setItems] = useState([blankItem('design')])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+
+  const toggleSvc = (code) => setServices(prev => {
+    const n = new Set(prev); if (n.has(code)) n.delete(code); else n.add(code); return n
+  })
 
   const setItem = (idx, next) => setItems(arr => arr.map((it, i) => i === idx ? next : it))
   const dupItem = (idx) => setItems(arr => { const c = { ...arr[idx], _files: [...(arr[idx]._files || [])], _key: nextKey() }; const n = [...arr]; n.splice(idx + 1, 0, c); return n })
@@ -211,9 +227,12 @@ function NewRequestForm({ partnerId, partner, onDone }) {
   const addItem = () => setItems(arr => [...arr, { ...blankItem('design'), _key: nextKey() }])
 
   const submit = async () => {
+    if (!familyName.trim()) { setError('Enter the family name — it is how everyone tracks this order.'); return }
+    if (rush && !rushNeedBy) { setError('Rush orders need the date you need it by.'); return }
     setBusy(true); setError(null)
     const res = await createVendorRequest({
       partnerId, source: 'partner', requestName, neededBy: neededBy || null, rush, generalNotes,
+      familyName, dealerOrderNumber, services: [...services], serviceCustom, rushNeedBy: rushNeedBy || null,
       createdBy: partner?.contact_person || partner?.company_name || 'Partner',
       items: items.map(({ _files, _key, ...rest }) => rest),  // eslint-disable-line no-unused-vars
     })
@@ -233,14 +252,39 @@ function NewRequestForm({ partnerId, partner, onDone }) {
 
   return (
     <div className="vp-section vp-newreq">
-      <div className="vp-section-h">New Request</div>
-      <p className="vp-newreq-lede">Tell us what you need. Add one card per stone or item — the notes box on each card is where the detail goes.</p>
+      <div className="vp-section-h">New order</div>
+      <p className="vp-newreq-lede">Everything you used to email — family name, your order number, the drawing — plus the details that keep your order moving. Add one card per stone.</p>
+      <style>{`
+        .vp-svcrow { display: flex; flex-wrap: wrap; gap: 7px; margin: 4px 0 12px; }
+        .vp-svc { font: inherit; font-size: 12.5px; font-weight: 600; border: 1px solid #d8d2c4; border-radius: 999px; padding: 5px 14px; background: #fff; color: #6a6a62; cursor: pointer; }
+        .vp-svc.on { background: #9A7209; border-color: #9A7209; color: #fff; }
+        .vp-rushdate { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; }
+        .vp-rushnote { font-size: 12px; color: #8a5a12; margin: 4px 0 10px; }
+      `}</style>
       <div className="vp-grid2">
-        <label className="vic-field"><span>Request name (optional)</span><input className="vic-input" value={requestName} onChange={e => setRequestName(e.target.value)} placeholder="e.g. Smith — 2 stones" /></label>
-        <label className="vic-field"><span>Needed by (optional)</span><input className="vic-input" type="date" value={neededBy} onChange={e => setNeededBy(e.target.value)} /></label>
+        <label className="vic-field"><span>Family name *</span><input className="vic-input" value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="e.g. Kowalski" /></label>
+        <label className="vic-field"><span>Your order # (optional)</span><input className="vic-input" value={dealerOrderNumber} onChange={e => setDealerOrderNumber(e.target.value)} placeholder="e.g. HM-2211" /></label>
       </div>
-      <label className="vp-rush"><input type="checkbox" checked={rush} onChange={e => setRush(e.target.checked)} /> <span>Rush — needed urgently</span></label>
-      <label className="vic-field"><span>General notes (optional)</span><textarea className="vic-input" rows={2} value={generalNotes} onChange={e => setGeneralNotes(e.target.value)} placeholder="Anything that applies to the whole request" /></label>
+      <div className="vic-field"><span style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>Services</span>
+        <div className="vp-svcrow">
+          {TRADE_SVC.map(([code, label]) => (
+            <button key={code} type="button" className={`vp-svc${services.has(code) ? ' on' : ''}`} onClick={() => toggleSvc(code)}>{label}</button>
+          ))}
+        </div>
+        {services.has('custom') && (
+          <input className="vic-input" style={{ marginBottom: 12 }} value={serviceCustom} onChange={e => setServiceCustom(e.target.value)} placeholder="Describe the custom service" />
+        )}
+      </div>
+      <div className="vp-grid2">
+        <label className="vic-field"><span>Deadline (optional)</span><input className="vic-input" type="date" value={neededBy} onChange={e => setNeededBy(e.target.value)} /></label>
+        <label className="vic-field"><span>Request name (optional)</span><input className="vic-input" value={requestName} onChange={e => setRequestName(e.target.value)} placeholder="e.g. Smith — 2 stones" /></label>
+      </div>
+      <label className="vp-rush">
+        <input type="checkbox" checked={rush} onChange={e => setRush(e.target.checked)} /> <span><b style={{ color: '#b3261e' }}>Rush order</b> — I need this by:</span>
+        {rush && <span className="vp-rushdate"><input className="vic-input" type="date" value={rushNeedBy} onChange={e => setRushNeedBy(e.target.value)} /></span>}
+      </label>
+      {rush && <div className="vp-rushnote">Rush requests go to Shevchenko for approval — once approved, your date is guaranteed. Rush pricing may apply.</div>}
+      <label className="vic-field"><span>General notes (optional)</span><textarea className="vic-input" rows={2} value={generalNotes} onChange={e => setGeneralNotes(e.target.value)} placeholder="Anything that applies to the whole order" /></label>
 
       <div className="vp-items">
         {items.map((it, idx) => (

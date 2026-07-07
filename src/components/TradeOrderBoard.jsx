@@ -15,7 +15,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   listTradeOrders, updateTradeOrder, logTradeEvent, listTradeOrderEvents,
-  decideTradeRush, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
+  decideTradeRush, acceptTradeOrder,
+  TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
 import { getCurrentStaffName } from '../lib/stonebooksData'
 
@@ -66,6 +67,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   const [expandedId, setExpandedId] = useState(null)
   const [eventsById, setEventsById] = useState({})
   const [busyId, setBusyId] = useState(null)
+  const [editOrder, setEditOrder] = useState(null)   // order being edited | null
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce(n => n + 1), [])
 
@@ -143,6 +145,13 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   const rushDecide = (r, approve) => withBusy(r.id, async () => {
     const who = await actor()
     await decideTradeRush(r.id, approve, { actor: who })
+  })
+
+  // Accept checkpoint (staff) — specs verified, guarantee attaches. Slice 4
+  // hooks job creation here.
+  const accept = (r) => withBusy(r.id, async () => {
+    const who = await actor()
+    await acceptTradeOrder(r.id, { actor: who })
   })
 
   const toggleExpand = (r) => {
@@ -267,6 +276,14 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                         ))}
                         {r.general_notes && <div className="sb-tb-note" style={{ marginTop: 6 }}>{r.general_notes}</div>}
                         <div className="sb-tb-detail-actions">
+                          {staffView && (!r.accepted_at || r.needs_reaccept) && (
+                            <button type="button" className="sb-tb-acceptbtn" disabled={busy} onClick={() => accept(r)}
+                              title="Specs verified — the order is locked in and the guarantee attaches">
+                              {r.needs_reaccept ? '✓ Re-accept order' : '✓ Accept order'}
+                            </button>
+                          )}
+                          {r.accepted_at && !r.needs_reaccept && <span className="sb-tb-pill sb-tb-t-green" title={`Accepted by ${r.accepted_by || 'staff'}`}>Accepted {fmtDT(r.accepted_at)}</span>}
+                          <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setEditOrder(r)}>✎ Edit order</button>
                           {tab !== 'archived'
                             ? <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setArchived(r, true)}>Archive order</button>
                             : <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setArchived(r, false)}>Restore order</button>}
@@ -294,6 +311,97 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
           })}
         </div>
       )}
+
+      {editOrder && (
+        <TradeOrderEditModal order={editOrder} staffView={staffView} getActor={actor}
+          onClose={() => setEditOrder(null)}
+          onSaved={() => { setEditOrder(null); reload() }} />
+      )}
+    </div>
+  )
+}
+
+// ── Edit modal — order-grain fields, both sides ──────────────────────────────
+// Dealers edit freely BEFORE Accept; a dealer edit AFTER Accept flips
+// needs_reaccept so staff re-verify the specs before the shop cuts anything.
+// Staff edits never trigger re-accept (they ARE the verification).
+function TradeOrderEditModal({ order: r, staffView, getActor, onClose, onSaved }) {
+  const [familyName, setFamilyName] = useState(r.family_name || '')
+  const [dealerOrderNumber, setDealerOrderNumber] = useState(r.dealer_order_number || '')
+  const [services, setServices] = useState(() => new Set(r.services || []))
+  const [serviceCustom, setServiceCustom] = useState(r.service_custom || '')
+  const [neededBy, setNeededBy] = useState(dOnly(r.needed_by) || '')
+  const [rush, setRush] = useState(!!r.rush || r.rush_status === 'pending' || r.rush_status === 'approved')
+  const [rushNeedBy, setRushNeedBy] = useState(dOnly(r.rush_need_by) || '')
+  const [notes, setNotes] = useState(r.general_notes || '')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const toggleSvc = (code) => setServices(prev => {
+    const n = new Set(prev); if (n.has(code)) n.delete(code); else n.add(code); return n
+  })
+
+  const save = async () => {
+    if (!familyName.trim()) { setErr('Family name is required.') ; return }
+    if (rush && !rushNeedBy) { setErr('Rush needs the date you need it by.'); return }
+    setBusy(true); setErr(null)
+    const who = await getActor()
+    const rushTurnedOn = rush && r.rush_status === 'none'
+    const dealerEditPostAccept = !staffView && !!r.accepted_at
+    const res = await updateTradeOrder(r.id, {
+      familyName: familyName.trim(), dealerOrderNumber: dealerOrderNumber.trim() || null,
+      services: [...services], serviceCustom: serviceCustom.trim() || null,
+      neededBy: neededBy || null,
+      rush, rushNeedBy: rush ? (rushNeedBy || null) : null,
+      ...(rushTurnedOn ? { rushStatus: 'pending' } : (!rush && r.rush_status !== 'none' ? { rushStatus: 'none' } : {})),
+      generalNotes: notes.trim() || null,
+      ...(dealerEditPostAccept ? { needsReaccept: true } : {}),
+    })
+    if (!res.ok) { setBusy(false); setErr(res.error || 'Save failed.'); return }
+    await logTradeEvent({
+      requestId: r.id, partnerId: r.partner_id, type: 'order_edited',
+      detail: `Order edited${dealerEditPostAccept ? ' after accept — needs re-accept' : ''}${rushTurnedOn ? ` · RUSH requested for ${rushNeedBy}` : ''}`,
+      actor: who, actorRole: staffView ? 'staff' : 'partner',
+    })
+    setBusy(false)
+    onSaved()
+  }
+
+  return (
+    <div className="sb-tb-modal-overlay" onClick={() => !busy && onClose()}>
+      <div className="sb-tb-modal" onClick={e => e.stopPropagation()}>
+        <div className="sb-tb-modal-title">Edit order{r.dealer_order_number ? ` · ${r.dealer_order_number}` : ''}</div>
+        {!staffView && r.accepted_at && (
+          <div className="sb-tb-modal-warn">This order was already accepted — saving changes sends it back to Shevchenko for a quick re-check before work continues.</div>
+        )}
+        <div className="sb-tb-modal-grid">
+          <label className="sb-tb-f"><span>Family name *</span><input value={familyName} onChange={e => setFamilyName(e.target.value)} /></label>
+          <label className="sb-tb-f"><span>Order #</span><input value={dealerOrderNumber} onChange={e => setDealerOrderNumber(e.target.value)} /></label>
+        </div>
+        <div className="sb-tb-f"><span>Services</span>
+          <div className="sb-tb-svcrow">
+            {TRADE_SERVICES.map(s => (
+              <button key={s.code} type="button" className={`sb-tb-svcchip${services.has(s.code) ? ' on' : ''}`} onClick={() => toggleSvc(s.code)}>{s.label}</button>
+            ))}
+          </div>
+          {services.has('custom') && <input value={serviceCustom} onChange={e => setServiceCustom(e.target.value)} placeholder="Describe the custom service" style={{ marginTop: 6 }} />}
+        </div>
+        <div className="sb-tb-modal-grid">
+          <label className="sb-tb-f"><span>Deadline</span><input type="date" value={neededBy} onChange={e => setNeededBy(e.target.value)} /></label>
+          <label className="sb-tb-f sb-tb-f-rush"><span>Rush — need it by</span>
+            <span className="sb-tb-rushline">
+              <input type="checkbox" checked={rush} onChange={e => setRush(e.target.checked)} />
+              <input type="date" value={rushNeedBy} onChange={e => setRushNeedBy(e.target.value)} disabled={!rush} />
+            </span>
+          </label>
+        </div>
+        <label className="sb-tb-f"><span>Notes</span><textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></label>
+        {err && <div className="sb-tb-modal-err">{err}</div>}
+        <div className="sb-tb-modal-actions">
+          <button type="button" className="sb-tb-linkbtn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="sb-tb-acceptbtn" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -361,8 +469,30 @@ const TB_CSS = `
   .sb-tb-logmeta { color: #a09a8c; font-size: 11.5px; white-space: nowrap; }
   .sb-tb-empty { padding: 40px 16px; text-align: center; color: #8a8a85; font-size: 14px; background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 12px; font-style: italic; }
 
+  .sb-tb-acceptbtn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px; border: none; background: #2f7d4f; color: #fff; cursor: pointer; }
+  .sb-tb-acceptbtn:hover:not(:disabled) { background: #256a41; }
+  .sb-tb-acceptbtn:disabled { opacity: .5; }
+  .sb-tb-detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  .sb-tb-modal-overlay { position: fixed; inset: 0; z-index: 1200; background: rgba(15,20,25,.5); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .sb-tb-modal { background: #fff; border-radius: 14px; width: min(560px, 96vw); max-height: 92vh; overflow-y: auto; padding: 20px 22px; box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  .sb-tb-modal-title { font-size: 16px; font-weight: 700; color: #1e2d3d; margin-bottom: 12px; }
+  .sb-tb-modal-warn { background: #fdf3e2; border: 1px solid #e6b667; color: #8a5a12; border-radius: 9px; padding: 8px 12px; font-size: 12.5px; margin-bottom: 12px; }
+  .sb-tb-modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .sb-tb-f { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .sb-tb-f > span { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #979387; }
+  .sb-tb-f input, .sb-tb-f textarea { font: inherit; font-size: 13.5px; padding: 8px 10px; border: 0.5px solid #d8d2c4; border-radius: 8px; background: #fff; }
+  .sb-tb-f input[type=checkbox] { width: 16px; height: 16px; padding: 0; accent-color: #9A7209; }
+  .sb-tb-rushline { display: flex; align-items: center; gap: 8px; }
+  .sb-tb-svcrow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sb-tb-svcchip { font: inherit; font-size: 12px; font-weight: 600; border: 1px solid #d8d2c4; border-radius: 999px; padding: 4px 12px; background: #fff; color: #6a6a62; cursor: pointer; }
+  .sb-tb-svcchip.on { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .sb-tb-modal-err { background: #fbedec; color: #b3261e; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; margin-bottom: 10px; }
+  .sb-tb-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+
   @media (max-width: 900px) {
     .sb-tb-head { display: none; }
     .sb-tb-row, .sb-tb-row.staff { grid-template-columns: 1fr 1fr; }
+    .sb-tb-modal-grid { grid-template-columns: 1fr; }
   }
 `

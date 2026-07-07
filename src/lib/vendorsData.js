@@ -57,6 +57,8 @@ export async function createVendorRequest(input = {}) {
   const items = (input.items || []).filter(Boolean)
   if (items.length === 0) return { ok: false, error: 'Add at least one item.' }
   const createdBy = input.createdBy || await getCurrentStaffName().catch(() => null)
+  const TRADE_SERVICE_CODES = ['design', 'blast', 'pickup', 'install', 'doors', 'fix', 'custom']
+  const services = (input.services || []).filter(s => TRADE_SERVICE_CODES.includes(s))
   const reqRow = {
     partner_id: input.partnerId,
     request_name: input.requestName?.trim() || null,
@@ -66,13 +68,20 @@ export async function createVendorRequest(input = {}) {
     status: 'submitted',
     source: input.source === 'partner' ? 'partner' : 'internal',
     created_by: createdBy || null,
+    // Stonebooks Trade order-grain fields (20260707 migration).
+    family_name: input.familyName?.trim() || null,
+    dealer_order_number: input.dealerOrderNumber?.trim() || null,
+    services,
+    service_custom: input.serviceCustom?.trim() || null,
+    rush_need_by: input.rush ? (input.rushNeedBy || input.neededBy || null) : null,
+    rush_status: input.rush ? 'pending' : 'none',
   }
   const { data: req, error: reqErr } = await supabase.from('vendor_requests').insert(reqRow).select().single()
   if (reqErr) return wrapErr(reqErr)
 
   const itemRows = items.map(it => ({
     request_id: req.id,
-    work_type: ['design', 'blasting', 'setting', 'other'].includes(it.workType) ? it.workType : 'other',
+    work_type: ['design', 'blasting', 'setting', 'other', 'blast', 'pickup', 'install', 'doors', 'fix', 'custom'].includes(it.workType) ? it.workType : 'other',
     vendor_reference: it.vendorReference?.trim() || null,
     stone_size: it.stoneSize?.trim() || null,
     base_size: it.baseSize?.trim() || null,
@@ -85,9 +94,14 @@ export async function createVendorRequest(input = {}) {
   const { data: created, error: itemErr } = await supabase.from('vendor_items').insert(itemRows).select()
   if (itemErr) return { ok: false, error: `Request created but items failed: ${itemErr.message}`, request: req }
 
+  // Event carries partner_id + actor_role so a dealer submission lights the
+  // Vendors badge (partner-actor, staff_seen_at null) the moment it lands.
   await supabase.from('vendor_events').insert({
-    request_id: req.id, event_type: 'submitted', actor: createdBy || (reqRow.source === 'partner' ? 'Partner' : 'Staff'),
-    detail: `${itemRows.length} item${itemRows.length === 1 ? '' : 's'} submitted${reqRow.rush ? ' · RUSH' : ''}`,
+    request_id: req.id, partner_id: input.partnerId,
+    event_type: 'order_created',
+    actor: createdBy || (reqRow.source === 'partner' ? 'Partner' : 'Staff'),
+    actor_role: reqRow.source === 'partner' ? 'partner' : 'staff',
+    detail: `New order${reqRow.family_name ? ` — ${reqRow.family_name}` : ''}${reqRow.dealer_order_number ? ` (${reqRow.dealer_order_number})` : ''}${reqRow.rush ? ` · RUSH needed by ${reqRow.rush_need_by || '?'}` : ''}`,
   }).select().maybeSingle().then(() => {}, () => {})
 
   return { ok: true, request: req, items: created || [] }
