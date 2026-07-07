@@ -12408,6 +12408,39 @@ function RemoteSigningSection({ order, locked }) {
     catch { setErr('Copy failed — select the link and copy manually.') }
   }
 
+  // One-click email with the payment terms baked in (Paul, 2026-07-07):
+  // NEW STONE / BRONZE → 50% deposit due; every other job → paid in full.
+  const [emailBusy, setEmailBusy] = useState(false)
+  const [emailMsg, setEmailMsg] = useState(null)
+  const emailSigningLink = async () => {
+    const to = order.customer?.email
+    if (!to) { setErr('No customer email on the order — add one, or copy the link and send it yourself.'); return }
+    if (!result?.url) return
+    setEmailBusy(true); setEmailMsg(null); setErr(null)
+    const svc = order.serviceTypes || []
+    const depositLine = (svc.includes('NEW_STONE') || svc.includes('BRONZE'))
+      ? 'A 50% deposit is due to place your order; the remaining balance is due before carving work begins.'
+      : 'Payment in full is due before work begins.'
+    const subject = `Your contract from Shevchenko Monuments${order.orderNumber ? ` — ${order.orderNumber}` : ''}`
+    const expires = result.expiresText ? ` on ${result.expiresText}` : ' in 14 days'
+    const html =
+      `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
+      `<p style="margin:0 0 10px">Hello,</p>` +
+      `<p style="margin:0 0 10px">Please review and sign your monument contract using the secure link below. You can read every term, sign online, and download your signed copy right away.</p>` +
+      `<p style="margin:0 0 10px"><b>${depositLine}</b></p>` +
+      `<p style="margin:18px 0"><a href="${result.url}" style="background:#1e2d3d;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">Review &amp; sign your contract →</a></p>` +
+      `<p style="margin:0 0 10px;color:#6b7682;font-size:12.5px">This link expires${expires}.</p>` +
+      `<p style="margin:0">Thank you,<br>Shevchenko Monuments · 732-442-1286</p></div>`
+    const r = await sendShopEmail({
+      to, subject, html,
+      text: `Please review and sign your contract: ${result.url}\n\n${depositLine}\n\nThis link expires${expires}.\n\nShevchenko Monuments · 732-442-1286`,
+      orderId: order.id, customerId: order.customer?.id || null,
+    })
+    setEmailBusy(false)
+    if (r.ok) setEmailMsg(`Sent to ${to}.`)
+    else setErr(r.error || 'Email failed — copy the link and send it yourself.')
+  }
+
   // R5 per-request actions.
   const copyAgain = async (req) => {
     const url = `${SIGN_ORIGIN}/sign/${req.token}`
@@ -12475,16 +12508,20 @@ function RemoteSigningSection({ order, locked }) {
             {result.url}
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="sm-btn sm-btn-navy" onClick={emailSigningLink} disabled={emailBusy}>
+              {emailBusy ? 'Sending…' : `Email to ${order.customer?.email || 'customer'}`}
+            </button>
             <button type="button" className="sm-btn" onClick={handleCopy}>
               {copied ? '✓ Copied' : 'Copy link'}
             </button>
-            <a className="sm-btn sm-btn-navy" href={composeHref()}>
-              Compose email
+            <a className="sm-btn" href={composeHref()}>
+              Compose manually
             </a>
           </div>
+          {emailMsg && <div className="sm-helper" style={{ marginTop: 8, color: '#2d7a4f', fontWeight: 600 }}>✓ {emailMsg}</div>}
           <div className="sm-helper" style={{ marginTop: 8 }}>
             {result.expiresText ? `Link expires ${result.expiresText}.` : 'Link expires in 14 days.'}{' '}
-            No email is sent automatically — use Compose email or paste the link into your own message.
+            The email includes the payment terms (50% deposit for new stones &amp; bronze markers; paid in full for other work). Signing marks the order contracted and files the signed copy here.
           </div>
         </div>
       )}

@@ -65,6 +65,19 @@ jobs:
       - name: Deploy vendor-invite (default JWT verify)
         run: supabase functions deploy vendor-invite --project-ref "$PROJECT_REF"
 
+      # Remote contract signing (R2). signing-create is called by the
+      # authenticated staff app (default verify). signing-load + signing-submit
+      # are called by the PUBLIC /sign/<token> page — the token is the
+      # credential — so they MUST deploy with --no-verify-jwt (approve-* posture).
+      - name: Deploy signing-create (default JWT verify)
+        run: supabase functions deploy signing-create --project-ref "$PROJECT_REF"
+
+      - name: Deploy signing-load (JWT verify OFF)
+        run: supabase functions deploy signing-load --project-ref "$PROJECT_REF" --no-verify-jwt
+
+      - name: Deploy signing-submit (JWT verify OFF)
+        run: supabase functions deploy signing-submit --project-ref "$PROJECT_REF" --no-verify-jwt
+
       # trade-signup is called by ANONYMOUS visitors via supabase.functions.invoke,
       # which sends the anon key as the Bearer JWT — default verification accepts
       # it. The reusable invite code is the real credential; the function

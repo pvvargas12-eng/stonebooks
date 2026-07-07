@@ -17,6 +17,7 @@ import {
   listVendorItems, createVendorRequest, uploadVendorFile, listVendorAttachments,
   vendorFileSignedUrl, addVendorEvent, listVendorEvents, listVendorPOs,
   listTradeInvoices, listTradeOrders, tradeServiceLabel,
+  TRADE_NOTIFY_PREFS, updatePartnerNotificationPrefs,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
@@ -453,8 +454,20 @@ function PartnerReports({ partnerId }) {
   )
 }
 
-// ── Settings — company info + who has access ─────────────────────────────────
+// ── Settings — company info, who has access, email notification toggles ──────
 function PartnerSettings({ partner }) {
+  const [prefs, setPrefs] = useState(() => ({ ...(partner?.notification_prefs || {}) }))
+  const [saved, setSaved] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const toggle = async (key) => {
+    const next = { ...prefs, [key]: prefs[key] === false ? true : false }
+    // Normalize: true = default, store only the mutes.
+    for (const k of Object.keys(next)) if (next[k] !== false) delete next[k]
+    setPrefs(next); setBusy(true); setSaved(false)
+    const r = await updatePartnerNotificationPrefs(partner?.id, next)
+    setBusy(false)
+    if (r.ok) { setSaved(true); setTimeout(() => setSaved(false), 2000) }
+  }
   const row = (k, v) => (
     <div style={{ display: 'flex', gap: 12, padding: '7px 0', borderTop: '0.5px solid #f0ede6', fontSize: 13.5 }}>
       <span style={{ width: 120, color: '#8a8a85', flexShrink: 0 }}>{k}</span><span>{v || '—'}</span>
@@ -471,10 +484,26 @@ function PartnerSettings({ partner }) {
         {row('Address', partner?.address)}
         {row('Terms', partner?.payment_terms)}
       </div>
+
+      <div style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '14px 18px', marginTop: 14, maxWidth: 520 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: '#979387', marginBottom: 6 }}>
+          Email notifications {saved && <span style={{ color: '#2d7a4f', textTransform: 'none', letterSpacing: 0 }}>· saved ✓</span>}
+        </div>
+        {TRADE_NOTIFY_PREFS.map(p => (
+          <label key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: '0.5px solid #f0ede6', fontSize: 13.5, cursor: 'pointer' }}>
+            <input type="checkbox" checked={prefs[p.key] !== false} disabled={busy} onChange={() => toggle(p.key)}
+              style={{ width: 16, height: 16, accentColor: '#9A7209' }} />
+            <span>{p.label}</span>
+          </label>
+        ))}
+        <p style={{ fontSize: 12, color: '#8a8a85', marginTop: 8, marginBottom: 0 }}>
+          Sent to the company email above. Unchecking mutes that email — everything still shows in your portal.
+        </p>
+      </div>
+
       <p style={{ fontSize: 12.5, color: '#8a8a85', marginTop: 12, maxWidth: 520 }}>
-        Notification emails go to the company email above. To update company info, add teammates
-        (your signup link works for everyone at your company), or remove a login, contact
-        Shevchenko Monuments — 732-442-1286 · shevcoteam@gmail.com.
+        To update company info, add teammates (your signup link works for everyone at your company),
+        or remove a login, contact Shevchenko Monuments — 732-442-1286 · shevcoteam@gmail.com.
       </p>
     </div>
   )

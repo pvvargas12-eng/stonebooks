@@ -104,6 +104,9 @@ export async function createVendorRequest(input = {}) {
     detail: `New order${reqRow.family_name ? ` — ${reqRow.family_name}` : ''}${reqRow.dealer_order_number ? ` (${reqRow.dealer_order_number})` : ''}${reqRow.rush ? ` · RUSH needed by ${reqRow.rush_need_by || '?'}` : ''}`,
   }).select().maybeSingle().then(() => {}, () => {})
 
+  // Dealer confirmation email ("we got it") — respects their Settings toggle.
+  if (reqRow.source === 'partner') notifyTradeDealer(req.id, 'placed').catch(() => {})
+
   return { ok: true, request: req, items: created || [] }
 }
 
@@ -502,17 +505,40 @@ export async function acceptTradeOrder(requestId, { actor = null } = {}) {
 // the exact order (?trade=<id> → the portal auto-opens Orders and expands it).
 // Sent to the company email (partners.email); per-user prefs land in slice 8's
 // Settings. Fire-and-forget — a mail hiccup never blocks the action.
+// Preference keys — each maps one or more notify kinds; false = muted, absent
+// = ON. Edited by the dealer in portal Settings (partners.notification_prefs).
+export const TRADE_NOTIFY_PREFS = [
+  { key: 'placed',       label: 'Order placed (confirmation)' },
+  { key: 'accepted',     label: 'Order accepted' },
+  { key: 'rush',         label: 'Rush approved / declined' },
+  { key: 'layout_ready', label: 'Layout ready for approval' },
+  { key: 'photo',        label: 'Finished-stone photo added' },
+  { key: 'ready',        label: 'Ready for pickup' },
+  { key: 'invoice',      label: 'Invoice sent' },
+]
+const NOTIFY_PREF_KEY = { rush_approved: 'rush', rush_declined: 'rush' }
+export async function updatePartnerNotificationPrefs(partnerId, prefs) {
+  if (!partnerId) return { ok: false, error: 'Missing company' }
+  const { error } = await supabase.from('partners')
+    .update({ notification_prefs: prefs || {}, updated_at: new Date().toISOString() }).eq('id', partnerId)
+  return error ? wrapErr(error) : { ok: true }
+}
+
 export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {
   try {
     const { data: r } = await supabase.from('vendor_requests')
-      .select('id, family_name, dealer_order_number, rush_need_by, partner:partners(id, company_name, email)')
+      .select('id, family_name, dealer_order_number, rush_need_by, partner:partners(id, company_name, email, notification_prefs)')
       .eq('id', requestId).maybeSingle()
     const to = r?.partner?.email
     if (!to) return { ok: false, error: 'No company email on file' }
+    // Respect the dealer's Settings toggles (false = muted; absent = on).
+    const prefs = r?.partner?.notification_prefs || {}
+    if (prefs[NOTIFY_PREF_KEY[kind] || kind] === false) return { ok: true, muted: true }
     const fam = r.family_name || 'your order'
     const num = r.dealer_order_number ? ` (${r.dealer_order_number})` : ''
     const link = `${window.location.origin}/trade?trade=${r.id}`
     const M = {
+      placed:        { s: `Order received — ${fam}${num}`,         b: 'We got your order — it’s in our queue for review. You’ll hear from us when it’s accepted.', cta: 'See your order' },
       accepted:      { s: `Order accepted — ${fam}${num}`,        b: 'Your order was accepted and is locked in. We’ll take it from here.', cta: 'See your order' },
       rush_approved: { s: `Rush approved — ${fam}${num}`,          b: `Your rush is approved${r.rush_need_by ? ` — ${r.rush_need_by} is guaranteed` : ''}.`, cta: 'See your order' },
       rush_declined: { s: `Rush update — ${fam}${num}`,            b: 'We couldn’t guarantee the rush date on this one — the order continues on a standard timeline. Reach out and we’ll work out a date.', cta: 'See your order' },
@@ -782,7 +808,7 @@ export async function setTradeInvoiceStatus(invoiceId, status, { paidNote = null
   if (error) return wrapErr(error)
 
   const { data: inv } = await supabase.from('vendor_invoices')
-    .select('*, partner:partners(id, company_name, email), lines:vendor_invoice_lines(*)')
+    .select('*, partner:partners(id, company_name, email, notification_prefs), lines:vendor_invoice_lines(*)')
     .eq('id', invoiceId).maybeSingle()
   if (!inv) return { ok: true }
   const total = (inv.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
@@ -792,7 +818,7 @@ export async function setTradeInvoiceStatus(invoiceId, status, { paidNote = null
       await logTradeEvent({ requestId: rid, partnerId: inv.partner_id, type: evType, actor, detail: `Invoice ${inv.invoice_number} ${status} — $${total.toLocaleString()}` })
     }
   }
-  if (status === 'sent' && inv.partner?.email) {
+  if (status === 'sent' && inv.partner?.email && (inv.partner?.notification_prefs || {}).invoice !== false) {
     const rowsHtml = (inv.lines || []).map(l =>
       `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
       `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`

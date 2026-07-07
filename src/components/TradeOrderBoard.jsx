@@ -20,7 +20,7 @@ import {
   uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, notifyTradeDealer,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
-import { getCurrentStaffName } from '../lib/stonebooksData'
+import { getCurrentStaffName, uploadProofLayout, createProofVersion } from '../lib/stonebooksData'
 
 const TABS = [
   { code: 'active',   label: 'Active' },
@@ -206,6 +206,33 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     })
   }
 
+  // Staff layout upload — right here on the board (no Design-hub detour).
+  // Creates the next proof version (V1..Vn stack), flips the phase to Sent
+  // draft, and emails the dealer their approve/deny link.
+  const layoutInputRef = useRef(null)
+  const layoutForRef = useRef(null)
+  const onPickLayout = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    const r = layoutForRef.current
+    if (!file || !r) return
+    await withBusy(r.id, async () => {
+      const who = await actor()
+      const up = r.job_id
+        ? await uploadProofLayout(r.job_id, file)
+        : await uploadProofLayout(r.id, file, { scope: 'order' })
+      if (!up.ok) { console.warn('[trade] layout upload:', up.error); return }
+      const { error } = await createProofVersion(r.job_id
+        ? { jobId: r.job_id, layoutImageUrl: up.url, uploadedBy: who }
+        : { orderId: r.id, layoutImageUrl: up.url, uploadedBy: who })
+      if (error) { console.warn('[trade] proof version:', error.message); return }
+      await updateTradeOrder(r.id, { designPhase: 'sent_draft' })
+      await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'layout_sent', detail: 'Layout uploaded — sent for approval', actor: who, actorRole: 'staff' })
+      notifyTradeDealer(r.id, 'layout_ready').catch(() => {})
+      refreshDetail(r.id)
+    })
+  }
+
   const [trackerById, setTrackerById] = useState({})
   const [layoutsById, setLayoutsById] = useState({})
   const [photosById, setPhotosById] = useState({})
@@ -364,10 +391,21 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                     )}
 
                     {/* Layout versions V1..Vn — dealer approves & signs the current
-                        one, or requests changes (their words land in the feed). */}
-                    {(layoutsById[r.id] || []).length > 0 && (
+                        one, or requests changes (their words land in the feed).
+                        Staff upload the next version right here. */}
+                    {((layoutsById[r.id] || []).length > 0 || staffView) && (
                       <div className="sb-tb-layouts">
-                        <div className="sb-tb-dl">Layout versions — every one kept</div>
+                        <div className="sb-tb-dl" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span>Layout versions — every one kept</span>
+                          {staffView && (
+                            <button type="button" className="sb-tb-linkbtn" disabled={busy}
+                              onClick={() => { layoutForRef.current = r; layoutInputRef.current?.click() }}
+                              title="Upload the next version (JPG/PNG) — sends it to the dealer for approval">
+                              ⤴ Upload layout
+                            </button>
+                          )}
+                        </div>
+                        {(layoutsById[r.id] || []).length === 0 && <div className="sb-tb-dim">No layout yet — upload the first version.</div>}
                         {layoutsById[r.id].map(v => (
                           <div key={v.id} className={`sb-tb-layout${v.is_current ? ' cur' : ''}`}>
                             {v.image_url
@@ -517,6 +555,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
           onCancel={() => setSigModal(null)} onDone={onSigDone} />
       )}
       <input ref={photoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
+      <input ref={layoutInputRef} type="file" accept="image/jpeg,image/png" style={{ display: 'none' }} onChange={onPickLayout} />
     </div>
   )
 }
