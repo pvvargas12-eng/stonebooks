@@ -12734,6 +12734,12 @@ function SignStep({ order, update }) {
       )}
 
       <Section title="Contract preview" eyebrow="Customer should review before signing">
+        {order.pricing?.contractOverrides && (
+          <div className="sm-helper" style={{ marginBottom: 8, padding: '7px 10px', background: '#fdf3d9', border: '1px solid #d9b45c', borderRadius: 7, color: '#7a5c1e' }}>
+            This contract carries <strong>custom wording</strong> from the contract editor — review it before signing.
+            (Edit or reset it from the order page → Edit contract.)
+          </div>
+        )}
         {previewErr ? (
           <div className="sm-pdf-err">⚠ {previewErr}</div>
         ) : previewUrl ? (
