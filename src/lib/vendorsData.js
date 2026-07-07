@@ -108,13 +108,16 @@ export async function createVendorRequest(input = {}) {
 }
 
 // All items across partners, request + partner + batch joined (Work Queue).
+// ARCHIVED requests are excluded EVERYWHERE this feeds (Work Queue, batches,
+// the partner portal job lists) — Paul's rule: archived = off every work
+// surface in Stonebooks, not just hidden on the board.
 export async function listVendorItems() {
   const { data, error } = await supabase
     .from('vendor_items')
     .select('*, request:vendor_requests(*, partner:partners(*)), batch:vendor_batches(*)')
     .order('updated_at', { ascending: false })
   if (error) { console.warn('[vendors] listVendorItems:', error.message); return [] }
-  return data || []
+  return (data || []).filter(i => !i.request?.archived_at)
 }
 export async function getVendorItem(id) {
   if (!id) return null
@@ -515,6 +518,16 @@ export async function markTradeUpdatesSeen() {
     .update({ staff_seen_at: new Date().toISOString() })
     .eq('actor_role', 'partner').is('staff_seen_at', null)
   if (error) { console.warn('[trade] markTradeUpdatesSeen:', error.message); return { ok: false } }
+  return { ok: true }
+}
+
+// Hard delete (STAFF, archived orders only) — cascades items, attachments
+// rows, and events via the V1 FKs. Storage files are left in place (cheap,
+// and recoverable if a delete was a mistake).
+export async function deleteTradeOrder(requestId) {
+  if (!requestId) return { ok: false, error: 'Missing order id' }
+  const { error } = await supabase.from('vendor_requests').delete().eq('id', requestId)
+  if (error) return wrapErr(error)
   return { ok: true }
 }
 

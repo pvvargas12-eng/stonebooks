@@ -5463,7 +5463,12 @@ export async function getJobs({ teamFilter, statusFilter, includeClosed = false,
 
   // The double-nested customer/cemetery select returns arrays of join objects;
   // flatten to a single record per job for easier consumption.
-  const rows = (data || []).map(j => {
+  // Paul's rule (2026-07-07): an ARCHIVED order is off EVERY work surface —
+  // its job disappears from the Jobs tab, hubs, scheduler, and queues. Jobs
+  // without an order (cemetery-order door jobs) are unaffected.
+  const live = (data || []).filter(j => !j.order?.archived)
+
+  const rows = live.map(j => {
     const order = j.order || null
     // Unnest customer + cemetery via a second fetch path; Supabase's PostgREST
     // can sometimes return either shape depending on relationship hints. Be

@@ -15,7 +15,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   listTradeOrders, updateTradeOrder, logTradeEvent, listTradeOrderEvents,
-  decideTradeRush, acceptTradeOrder,
+  decideTradeRush, acceptTradeOrder, deleteTradeOrder,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
 import { getCurrentStaffName } from '../lib/stonebooksData'
@@ -68,6 +68,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   const [eventsById, setEventsById] = useState({})
   const [busyId, setBusyId] = useState(null)
   const [editOrder, setEditOrder] = useState(null)   // order being edited | null
+  const [deleteArmId, setDeleteArmId] = useState(null) // two-step delete (archive, staff)
   const [nonce, setNonce] = useState(0)
   const reload = useCallback(() => setNonce(n => n + 1), [])
 
@@ -188,7 +189,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
       <div className="sb-tb-toolbar">
         <div className="sb-tb-tabs">
           {TABS.map(t => (
-            <button key={t.code} type="button" className={`sb-tb-tab${tab === t.code ? ' on' : ''}`} onClick={() => { setTab(t.code); setExpandedId(null) }}>
+            <button key={t.code} type="button" className={`sb-tb-tab${tab === t.code ? ' on' : ''}`} onClick={() => { setTab(t.code); setExpandedId(null); setDeleteArmId(null) }}>
               {t.label} · {partitioned[t.code].length}
             </button>
           ))}
@@ -287,6 +288,19 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                           {tab !== 'archived'
                             ? <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setArchived(r, true)}>Archive order</button>
                             : <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setArchived(r, false)}>Restore order</button>}
+                          {staffView && tab === 'archived' && (
+                            deleteArmId === r.id ? (
+                              <button type="button" className="sb-tb-deletebtn armed" disabled={busy}
+                                onClick={() => withBusy(r.id, async () => { await deleteTradeOrder(r.id); setDeleteArmId(null); setExpandedId(null) })}>
+                                Really delete forever? Click again
+                              </button>
+                            ) : (
+                              <button type="button" className="sb-tb-deletebtn" disabled={busy} onClick={() => setDeleteArmId(r.id)}
+                                title="Permanently removes the order, its items, and its activity log">
+                                Delete permanently
+                              </button>
+                            )
+                          )}
                         </div>
                       </div>
                       <div>
@@ -469,6 +483,8 @@ const TB_CSS = `
   .sb-tb-logmeta { color: #a09a8c; font-size: 11.5px; white-space: nowrap; }
   .sb-tb-empty { padding: 40px 16px; text-align: center; color: #8a8a85; font-size: 14px; background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 12px; font-style: italic; }
 
+  .sb-tb-deletebtn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 5px 12px; border-radius: 7px; border: 0.5px solid rgba(179,38,30,.5); background: #fff; color: #b3261e; cursor: pointer; margin-left: auto; }
+  .sb-tb-deletebtn.armed, .sb-tb-deletebtn:hover:not(:disabled) { background: #b3261e; border-color: #b3261e; color: #fff; }
   .sb-tb-acceptbtn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px; border: none; background: #2f7d4f; color: #fff; cursor: pointer; }
   .sb-tb-acceptbtn:hover:not(:disabled) { background: #256a41; }
   .sb-tb-acceptbtn:disabled { opacity: .5; }
