@@ -96,7 +96,12 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     const rows = []
     for (const job of (jobs || [])) {
       if (!job) continue
-      const order = job.order || null
+      // getJobs flattens the customer join to job.customer (NOT order.customer)
+      // — merge it in so familyOf's customer fallback works. Without this,
+      // orders with no deceased on file (primary_lastname null) showed "—"
+      // even though the customer's name was sitting right on the job.
+      const raw = job.order || null
+      const order = raw ? (raw.customer ? raw : { ...raw, customer: job.customer || null }) : null
       const state = designStateFor(order, job, currentProofsByJob)
       if (!state) continue
       const ageDays = ageDaysOf(order, nowMs)
@@ -104,6 +109,18 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     }
     return rows
   }, [jobs, currentProofsByJob, nowMs])
+
+  // ── Scroll memory — coming back from a job/order lands where you left off,
+  // not at the top. Saved on row click, consumed once on the next mount.
+  useEffect(() => {
+    let saved = null
+    try { saved = sessionStorage.getItem('dh2_scroll'); sessionStorage.removeItem('dh2_scroll') } catch { /* ignore */ }
+    const y = Number(saved)
+    if (saved != null && y > 0) requestAnimationFrame(() => window.scrollTo(0, y))
+  }, [])
+  const rememberScroll = () => {
+    try { sessionStorage.setItem('dh2_scroll', String(Math.round(window.scrollY || 0))) } catch { /* ignore */ }
+  }
 
   // Tile counts — derived from the SAME rows (never items.length).
   const counts = useMemo(() => {
@@ -318,7 +335,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 <div
                   key={r.job.id}
                   className={`sb-dh2-row sb-dh2-row-${r.urgency}`}
-                  onClick={() => onOpenJob?.(r.job.id, 'design')}
+                  onClick={() => { rememberScroll(); onOpenJob?.(r.job.id, 'design') }}
                   role="button"
                   tabIndex={0}
                 >
@@ -355,7 +372,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
           ) : (
             <div className="sb-dh2-rows">
               {estimateRows.map(o => (
-                <div key={o.id} className="sb-dh2-row" onClick={() => onOpenOrder?.(o.id)} role="button" tabIndex={0}>
+                <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id) }} role="button" tabIndex={0}>
                   <span className="sb-dh2-fam">{familyOf(o)}</span>
                   <span className="sb-dh2-est-meta">{o.order_number || 'estimate'}</span>
                   {hasLayout(o.id) && <span className="sb-dh2-pill sb-dh2-pill-green">Layout ✓</span>}
