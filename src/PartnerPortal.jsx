@@ -18,6 +18,7 @@ import {
   vendorFileSignedUrl, addVendorEvent, listVendorEvents, listVendorPOs,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
+import TradeOrderBoard from './components/TradeOrderBoard'
 import { fmtDate } from './lib/stonebooksData'
 
 const PARTNER_STATUS = {
@@ -101,6 +102,7 @@ export default function PartnerPortal({ context, onSignOut }) {
       <nav className="vp-nav">
         {[
           { code: 'home', label: 'Home' },
+          { code: 'orders', label: 'Orders' },
           { code: 'new', label: '+ New Request' },
           { code: 'open', label: `Open Jobs${openJobs.length ? ` (${openJobs.length})` : ''}` },
           { code: 'ready', label: `Ready for Pickup${ready.length ? ` (${ready.length})` : ''}` },
@@ -116,6 +118,11 @@ export default function PartnerPortal({ context, onSignOut }) {
           <>
             {view === 'home' && (
               <PortalHome partner={partner} openJobs={openJobs} ready={ready} completed={completed} onNew={() => setView('new')} onGo={setView} onOpenItem={setOpenItem} />
+            )}
+            {view === 'orders' && (
+              /* Stonebooks Trade order board — the whiteboard columns, dealer side.
+                 RLS scopes queries to this partner; partnerId narrows explicitly. */
+              <TradeOrderBoard partnerId={partnerId} actorName={partner?.contact_person || partner?.company_name || 'Dealer'} onNewOrder={() => setView('new')} />
             )}
             {view === 'new' && (
               <NewRequestForm partnerId={partnerId} partner={partner} onDone={async () => { await loadAll(); setView('open'); flash('Request submitted — thank you.') }} />

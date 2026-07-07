@@ -20,8 +20,10 @@ import {
   invitePartnerUser, listPartnerUsers,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
+import TradeOrderBoard from './components/TradeOrderBoard'
 
 const SUBNAV = [
+  { code: 'board', label: 'Trade Board' },
   { code: 'queue', label: 'Work Queue' },
   { code: 'batches', label: 'Batches' },
   { code: 'partners', label: 'Partners' },
@@ -34,7 +36,7 @@ const STATUS_TONE = { submitted: '#6b6b66', waiting_on_info: '#b54040', ready_to
 const blankItem = () => ({ workType: 'design', vendorReference: '', stoneSize: '', baseSize: '', color: '', cemetery: '', deceasedFamilyName: '', itemNotes: '', _files: [] })
 
 export default function VendorsTab() {
-  const [sub, setSub] = useState('queue')
+  const [sub, setSub] = useState('board')   // Trade Board is the main surface
   const [partners, setPartners] = useState([])
   const [items, setItems] = useState(null)
   const [batches, setBatches] = useState([])
@@ -82,6 +84,9 @@ export default function VendorsTab() {
         ))}
       </div>
 
+      {/* Stonebooks Trade order board — all dealers, whiteboard columns, inline
+          status edits, rush approve/decline in the expanded row. */}
+      {sub === 'board' && <TradeOrderBoard staffView />}
       {sub === 'queue' && <WorkQueue items={items} partners={partners} onOpen={setDrawerId} />}
       {sub === 'batches' && <BatchesView batches={batches} items={items || []} partners={partners} onReload={loadAll} onOpenItem={setDrawerId} onGeneratePO={(b) => setPoModal({ partnerId: b.partner_id, batchId: b.id, items: (items || []).filter(i => i.batch_id === b.id) })} flash={flash} />}
       {sub === 'partners' && <PartnersView partners={partners} onReload={loadAll} flash={flash} />}
