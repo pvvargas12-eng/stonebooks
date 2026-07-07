@@ -22,7 +22,10 @@ import {
   sendShopEmail, syncInbox, markThreadRead, getEmailSignature, photoAttachment, setThreadJunk,
   getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, hydrateEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
+  getOrderById, getProofVersionsByOrder,
 } from './lib/stonebooksData'
+import { generateApprovalSheetPDF } from './SalesMode'
+import { computeDieBaseTrade } from './DesignPacket'
 
 // Sidebar buckets. `key` = data-backed + clickable now; `soon` = roadmap only.
 const BUCKET_GROUPS = [
@@ -301,7 +304,7 @@ export default function EmailTab() {
       closeout: `Hi ${first},\n\nIt was our privilege to complete your order${ord}, and we hope it brings you and your family comfort for years to come. Thank you for trusting Shevchenko Monuments with something so meaningful.\n\nIf there's ever anything we can do for you, please don't hesitate to reach out.`,
       deposit: `Hi ${first},\n\nThank you for choosing Shevchenko Monuments for your order${ord}. To begin work, we ask for a 50% deposit of ${fmtUSD((task.amount || 0) / 2)}. You can send it by check or Zelle to shevcoteam@gmail.com and we'll get started right away.\n\nPlease let us know if you have any questions.`,
       permit: `Hi ${first},\n\nGood news — the cemetery permit for your order${ord} has been approved, so we're clear to move forward with the work. We'll keep you posted as we progress.\n\nPlease reach out anytime with questions.`,
-      layout: `Hi ${first},\n\nYour monument layout is ready for your review${ord}. We'll send over the proof so you can look over the lettering, dates, and design — please let us know if everything looks right or if you'd like any changes. Once you approve, we'll move into production.`,
+      layout: `Hi ${first},\n\nYour monument layout is ready for your review${ord} — the layout approval sheet is attached with the design and specs. Please look over the lettering, dates, and design and let us know if everything looks right or if you'd like any changes. Once you approve, we'll move into production.`,
       vendor: `Hello${task.name && task.name !== 'Supplier' ? ` ${task.name} team` : ''},\n\nPlease find our order${ord} below. Kindly confirm receipt and let us know the expected delivery timeline.\n\nThank you,\nShevchenko Monuments`,
       contract: `Hi ${first},\n\nYour contract for order${ord} is ready for your signature. Please review the details and sign at your convenience so we can begin the work. If you have any questions before signing, we're glad to help.\n\nThank you.`,
       quote: `Hi ${first},\n\nThank you for your patience — your quote for order${ord} is ready for your review. Please take a look and let us know if you'd like to move forward or have any questions; we're glad to walk through anything with you.\n\nWe appreciate the opportunity to help.`,
@@ -309,13 +312,57 @@ export default function EmailTab() {
       photo: `Hi ${first},\n\nYour memorial${ord} is complete, and we've attached a photo so you can see the finished work. We hope it brings you and your family comfort.\n\nA balance of ${fmtUSD(task.amount)} remains on the order — whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com. Please reach out with any questions.`,
     }
     const body = bodies[task.type] || bodies.followup
-    setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, attachments: [], attaching: !!task.fileUrl, busy: false, error: null, sent: false })
-    // Pull the real file (proof image / order sheet) in the background and attach it.
-    if (task.fileUrl) {
+    const willAttach = task.type === 'layout' ? !!(task.orderId || task.fileUrl) : !!task.fileUrl
+    setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, attachments: [], attaching: willAttach, busy: false, error: null, sent: false })
+    // Pull the real file(s) in the background and attach: layout tasks get the
+    // generated approval-sheet PDF (+ the raw proof image as a fallback);
+    // everything else keeps its single task file (photo / vendor order sheet).
+    if (task.type === 'layout' && task.orderId) {
+      buildLayoutAttachments(task).then(atts => {
+        setComposer(c => (c ? { ...c, attaching: false, attachments: atts } : c))
+      })
+    } else if (task.fileUrl) {
       photoAttachment(task.fileUrl, task.fileName).then(att => {
         setComposer(c => (c ? { ...c, attaching: false, attachments: att ? [att] : [] } : c))
       })
     }
+  }
+
+  // Layout task → the SAME approval sheet the Design Packet previews (one spec
+  // source, generated from the current proof version + live order). Falls back
+  // to the raw proof image when the sheet can't be generated, so the draft is
+  // never left empty-handed.
+  const buildLayoutAttachments = async (task) => {
+    const atts = []
+    try {
+      const [order, versions] = await Promise.all([
+        getOrderById(task.orderId),
+        getProofVersionsByOrder(task.orderId),
+      ])
+      const v = (versions || []).find(x => x.is_current) || (versions || [])[0]
+      if (order && v) {
+        const { die, base } = computeDieBaseTrade(order)
+        const fallbackImageUrl = (versions || []).find(x => x.layout_image_url)?.layout_image_url || null
+        const res = await generateApprovalSheetPDF(v, {
+          order, balance: rowBalanceDue(order), die, base,
+          signatureImageUrl: null, fallbackImageUrl, returnDoc: true,
+        })
+        if (res?.doc) {
+          const contentBase64 = String(res.doc.output('datauristring')).split(',')[1] || ''
+          if (contentBase64) {
+            atts.push({
+              filename: `Layout approval - Order ${order.order_number || ''}.pdf`.replace(/\s+/g, ' ').trim(),
+              contentBase64, contentType: 'application/pdf',
+            })
+          }
+        }
+      }
+    } catch (e) { console.warn('[email] layout approval sheet:', e?.message || e) }
+    if (!atts.length && task.fileUrl) {
+      const img = await photoAttachment(task.fileUrl, task.fileName)
+      if (img) atts.push(img)
+    }
+    return atts
   }
 
   // Keyboard layer — Ctrl/Cmd+K or "/" focuses search; Escape walks the stack

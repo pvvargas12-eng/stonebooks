@@ -204,7 +204,10 @@ const DIE_SIDES_TRADE = {
 // correct spec from the live order. Reads the raw snake_case order row.
 //   DIE  = "F-I X F-I X F-I SHAPE, P-level[, SIDES]"  e.g. "4-0 X 0-6 X 2-6 SERP, P5"
 //   BASE = "F-I X F-I X F-I FINISH[, 2\" POL]"        or "Not included"
-function computeDieBaseTrade(order) {
+// Exported for the Email Command Center's layout-task drafts, which generate
+// the same approval sheet this packet previews (one spec source, two mounts).
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeDieBaseTrade(order) {
   const o = order || {}
   // A die is ALWAYS three values — L × W × H, never four. Same column-picker
   // (dieDisplayInches) the on-screen packet uses, so snapshot ≡ screen. F-I, " X ".
