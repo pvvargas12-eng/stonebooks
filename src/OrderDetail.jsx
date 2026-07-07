@@ -1064,6 +1064,36 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     setOrder(o => ({ ...o, ...patch }))
     logOrderActivity(orderId, { type: 'change', field: 'Contract', oldValue: 'unsigned', newValue: `signed ${d}`, note: 'Marked as contracted', actor: await getCurrentStaffName().catch(() => null) }).catch(() => {})
     setActionNote('Marked as contracted.')
+    // Auto deposit-invoice draft (pipeline quick strike): signing should
+    // immediately ask for the 50% deposit. Prefill the composer — staff review
+    // + one click to send; meaningful emails never auto-send.
+    const t = rowGrandTotal(order)
+    const pd = rowTotalPaid(order)
+    const depositDue = Math.max(0, Math.round((t / 2 - pd) * 100) / 100)
+    if (t > 0 && depositDue > 0) {
+      const first = (order.customer?.first_name || '').trim()
+      const lines = [
+        `Hi${first ? ` ${first}` : ''},`,
+        '',
+        'Thank you for signing your monument contract with Shevchenko Monuments.',
+        '',
+        `Contract total: ${fmtUSD(t)}`,
+        ...(pd > 0 ? [`Received to date: ${fmtUSD(pd)}`] : []),
+        `Deposit due (50%): ${fmtUSD(depositDue)}`,
+        '',
+        `You can pay by Zelle to shevcoteam@gmail.com — please put order ${order.order_number || ''} in the memo — or by cash, check, or card at the office.`,
+        '',
+        'Work on your monument is scheduled once the deposit is received. If you have any questions, just reply to this email or give us a call.',
+        '',
+        'Shevchenko Monuments',
+      ]
+      setEmailModal({
+        to: order.customer?.email || '',
+        subject: `Deposit invoice — order ${order.order_number || ''} — Shevchenko Monuments`,
+        body: lines.join('\n'),
+        busy: false, error: null, sent: false,
+      })
+    }
   }
 
   if (loading) {
