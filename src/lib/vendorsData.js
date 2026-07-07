@@ -687,19 +687,24 @@ export async function revokePartnerInvite(inviteId) {
   return error ? wrapErr(error) : { ok: true }
 }
 export async function tradeSignup({ code, email, password, name, phone = null }) {
+  const FRIENDLY = {
+    invalid_invite: 'This invite link is not valid — ask Shevchenko for a fresh one.',
+    invite_revoked: 'This invite link was turned off — ask Shevchenko for a fresh one.',
+    invite_expired: 'This invite link expired — ask Shevchenko for a fresh one.',
+    email_in_use: 'That email already has a login — sign in instead, or use another email.',
+    password_too_short: 'Password needs at least 8 characters.',
+    missing_fields: 'Fill in your name, email, and password.',
+  }
   try {
     const { data, error } = await supabase.functions.invoke('trade-signup', { body: { code, email, password, name, phone } })
-    if (error) return { ok: false, error: error.message || 'Signup failed.' }
-    if (data?.error) {
-      const M = {
-        invalid_invite: 'This invite link is not valid — ask Shevchenko for a fresh one.',
-        invite_revoked: 'This invite link was turned off — ask Shevchenko for a fresh one.',
-        invite_expired: 'This invite link expired — ask Shevchenko for a fresh one.',
-        email_in_use: 'That email already has a login — sign in instead, or use another email.',
-        password_too_short: 'Password needs at least 8 characters.',
-      }
-      return { ok: false, error: M[data.error] || data.error }
+    if (error) {
+      // On a non-2xx, functions.invoke hides the body inside error.context —
+      // pull the real error code out so the user sees English, not plumbing.
+      let code2 = null
+      try { const ctx = await error.context?.json?.(); code2 = ctx?.error || null } catch { /* ignore */ }
+      return { ok: false, error: FRIENDLY[code2] || code2 || error.message || 'Signup failed.' }
     }
+    if (data?.error) return { ok: false, error: FRIENDLY[data.error] || data.error }
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e?.message || 'Signup failed.' }

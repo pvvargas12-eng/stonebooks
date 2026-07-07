@@ -1569,6 +1569,7 @@ const TW_CSS = `
   .sb-tw-perm-info    { background: #eaf1fb; border-color: #9bb8e6; color: #234c8a; }
   .sb-tw-perm-good    { background: #e7f6ee; border-color: #8fceb0; color: #15724a; }
   .sb-tw-perm-neutral { background: #f3f1ec; border-color: #d8d6d1; color: #6a6a66; }
+  .sb-tw-perm-bad     { background: #fbedec; border-color: #e39b95; color: #b3261e; }
 
   /* Orders-redesign cells */
   .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }

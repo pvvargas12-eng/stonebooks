@@ -86,7 +86,7 @@ const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : s === 'in_sto
 const permitStatusLabel = (s) => sharedPermitStatusLabel(s || 'unknown')
 // Pill tone for the permit status (maps onto OrderDetail's Pill tones).
 const permitTone = (s) => ({
-  approved: 'green', submitted: 'blue',
+  approved: 'green', submitted: 'blue', denied: 'red',
   cemetery_permit_needed: 'amber', shev_permit_needed: 'amber', required: 'amber',
   not_required: 'bronze', unknown: 'bronze',
 }[s || 'unknown'] || 'bronze')
@@ -667,6 +667,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       permit_status: order.permit_status || 'unknown',
       permit_filed_at: order.permit_filed_at || '',
       permit_approved_at: order.permit_approved_at || '',
+      permit_denied_at: order.permit_denied_at || '',
     })
     setFeeDraft({ amount: '', payee: cem.name || '', ck: '', date: todayISO(), method: 'check' })
     setFeeMsg(null)
@@ -680,11 +681,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       permit_status: status,
       permit_filed_at: permitDraft.permit_filed_at || null,
       permit_approved_at: permitDraft.permit_approved_at || null,
+      permit_denied_at: permitDraft.permit_denied_at || null,
     }
     if (status === 'submitted' && !patch.permit_filed_at) patch.permit_filed_at = today
     if (status === 'approved') {
       if (!patch.permit_filed_at) patch.permit_filed_at = today
       if (!patch.permit_approved_at) patch.permit_approved_at = today
+    }
+    if (status === 'denied') {
+      if (!patch.permit_filed_at) patch.permit_filed_at = today
+      if (!patch.permit_denied_at) patch.permit_denied_at = today
+      patch.permit_approved_at = null   // a denial supersedes any stale approval
     }
     const prev = order.permit_status || 'unknown'
     const r = await setOrderPermit(orderId, patch)
@@ -1809,6 +1816,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                       <CqeDate label="Submitted date" value={permitDraft.permit_filed_at} onChange={v => setPermitDraft(d => ({ ...d, permit_filed_at: v }))} />
                       <CqeDate label="Approved date" value={permitDraft.permit_approved_at} onChange={v => setPermitDraft(d => ({ ...d, permit_approved_at: v }))} />
                     </CqeRow>
+                    {permitDraft.permit_status === 'denied' && (
+                      <CqeDate label="Denied date" value={permitDraft.permit_denied_at} onChange={v => setPermitDraft(d => ({ ...d, permit_denied_at: v }))} />
+                    )}
 
                     <div className="sb-od-cqe-divider">Permit fee (outgoing expense)</div>
                     <CqeNote>The permit fee is money the shop pays OUT (to the township / cemetery). Recording it logs an <strong>outgoing expense</strong> — it does <strong>NOT</strong> affect the customer’s balance and is never a customer payment.</CqeNote>
@@ -1839,12 +1849,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           }>
             <Field label="Permit status" value={<Pill severity={permitTone(order.permit_status)}>{permitStatusLabel(order.permit_status)}</Pill>} />
             {readyBlocked && <Field label="⚠ Blocking install" value="Stone is ready to set but the permit isn't approved." />}
-            <Field label="Filed / Approved" value={[order.permit_filed_at && `filed ${fmtDate(order.permit_filed_at)}`, order.permit_approved_at && `approved ${fmtDate(order.permit_approved_at)}`].filter(Boolean).join(' · ') || null} />
+            {/* Everything in front of you (Paul, 2026-07-07): submitted = date +
+                what was paid (amount · check # · date); approved = date; denied =
+                date + fix-it flag. */}
+            <Field label="Submitted" value={order.permit_filed_at ? fmtDate(order.permit_filed_at) : null}
+              hint={order.permit_filed_at ? null : 'not submitted yet'} />
+            {order.permit_status === 'denied' ? (
+              <Field label="Denied" value={
+                <span style={{ color: '#B3261E', fontWeight: 600 }}>
+                  {order.permit_denied_at ? fmtDate(order.permit_denied_at) : 'date not set'} — needs a fix / refile
+                </span>
+              } />
+            ) : (
+              <Field label="Approved" value={order.permit_approved_at ? fmtDate(order.permit_approved_at) : null}
+                hint={order.permit_approved_at ? null : 'not approved yet'} />
+            )}
             {/* Permit FEE = OUTGOING shop expense (outgoing_payments) — NOT a customer
                 payment and does NOT reduce balance. Recorded in the ⋯ above. */}
-            <Field label="Permit expense (outgoing)" value={permitExpenses.length
+            <Field label="Paid (outgoing)" value={permitExpenses.length
               ? permitExpenses.map(p => <div key={p.id}>{fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)}{p.payee ? ` → ${p.payee}` : ''}</div>)
-              : null} hint={permitExpenses.length ? 'paid out — not a customer payment' : 'none recorded'} />
+              : null} hint={permitExpenses.length ? 'paid out — not a customer payment' : 'none recorded — add it via ⋯'} />
           </Section>
 
           {/* 5 — Related job */}

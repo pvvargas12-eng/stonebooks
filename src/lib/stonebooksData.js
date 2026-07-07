@@ -2587,6 +2587,7 @@ export const PERMIT_STATUS_OPTIONS = [
   { code: 'shev_permit_needed',     label: 'Shev Permit Needed' },
   { code: 'submitted',              label: 'Submitted' },
   { code: 'approved',               label: 'Approved' },
+  { code: 'denied',                 label: 'Denied' },
 ]
 export const PERMIT_SELECTABLE = new Set(PERMIT_STATUS_OPTIONS.map(o => o.code))
 
@@ -2598,6 +2599,7 @@ export const PERMIT_STATUS_LABEL = {
   shev_permit_needed: 'Shev Permit Needed',
   submitted: 'Submitted',
   approved: 'Approved',
+  denied: 'Denied',
   required: 'Permit Needed',   // legacy, display-only — never selectable
   unknown: '—',
 }
@@ -2607,7 +2609,8 @@ export function permitStatusLabel(code) { return PERMIT_STATUS_LABEL[code] || '�
 // both new needed codes + 'submitted'. SINGLE SOURCE for every needs-a-permit check
 // (replaces the scattered `permit_status === 'required'` tests) so no legacy/migrated
 // row silently flips to not-required. 'approved'/'not_required' are NOT in the set.
-export const PERMIT_NEEDED_CODES = new Set(['required', 'cemetery_permit_needed', 'shev_permit_needed', 'submitted'])
+// 'denied' is in the set — a denied permit is unresolved work (refile / fix).
+export const PERMIT_NEEDED_CODES = new Set(['required', 'cemetery_permit_needed', 'shev_permit_needed', 'submitted', 'denied'])
 export function permitNeeded(order) {
   return order?.permit_required === true || PERMIT_NEEDED_CODES.has(order?.permit_status)
 }
@@ -2617,6 +2620,7 @@ export const PERMIT_STATUS_TONE = {
   not_required: 'neutral',
   cemetery_permit_needed: 'warn',
   shev_permit_needed: 'warn',
+  denied: 'bad',        // red — unresolved, needs a refile / fix
   required: 'warn',     // legacy "Permit Needed"
   submitted: 'info',
   approved: 'good',
