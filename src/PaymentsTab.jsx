@@ -26,6 +26,7 @@ import {
 } from './lib/stonebooksData'
 import { ReceiptActions, rowToOrder, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
+import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
 
 // Customer-payment methods + method-specific reference label.
 const IN_METHODS = [
@@ -101,12 +102,15 @@ function paymentsOf(row) {
   return out
 }
 
+// ORDER_PRICING_COLUMNS is the pricing-column contract — this list once
+// under-selected (no base_config/shape/dims), so Outstanding / On-the-table /
+// payment-default figures were priced die-only (2026-07-07 audit finding).
 const ORDER_SELECT =
   'id, order_number, status, created_at, signed_at, target_completion_date, ' +
   'payments, primary_lastname, deceased, ' +
   'deposit_amount, deposit_method, deposit_ref, deposit_received_at, ' +
   'balance_amount, balance_method, balance_ref, balance_received_at, ' +
-  'pricing, add_ons, customer:customers(first_name, last_name, email)'
+  ORDER_PRICING_COLUMNS + ', customer:customers(first_name, last_name, email)'
 
 export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [view, setView] = useState('incoming')

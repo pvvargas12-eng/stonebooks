@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useState, useMemo } from 'react'
-import { fmtUSD, fmtDate } from './lib/stonebooksData'
+import { fmtUSD, fmtDate, rowGrandTotal } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 
 const shortDate = (iso) => fmtDate(iso)
@@ -190,10 +190,12 @@ function PreviewPane({ item, config, onOpenPacket }) {
         )}
       </div>
 
-      {order?.contract_total != null && (
+      {/* LINE ITEMS ARE THE PRICE — engine total, never contract_total
+          (2026-07-07 audit: this displayed the stale editable column). */}
+      {order && rowGrandTotal(order) > 0 && (
         <div className="sb-dh-preview-section">
           <div className="sb-dh-preview-section-eyebrow">Financial</div>
-          <div className="sb-dh-preview-financial">{fmtUSD(Number(order.contract_total))} total</div>
+          <div className="sb-dh-preview-financial">{fmtUSD(rowGrandTotal(order))} total</div>
         </div>
       )}
 

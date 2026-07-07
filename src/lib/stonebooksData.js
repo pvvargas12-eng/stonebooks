@@ -5143,7 +5143,10 @@ async function _getProfitOverviewInner() {
   const orderPays = []
   const contractByOrder = {}
   for (const o of orders) {
-    contractByOrder[o.id] = (o.contract_total != null ? Number(o.contract_total) : rowGrandTotal(o)) || 0
+    // LINE ITEMS ARE THE PRICE — the engine, never contract_total (2026-07-07
+    // audit: the legacy editable column shadowed the engine here and could
+    // skew every projected-margin figure when stale).
+    contractByOrder[o.id] = rowGrandTotal(o) || 0
     const ps = Array.isArray(o.payments) ? o.payments.filter(p => p && !p.voided && (p.locked ?? true)) : []
     for (const p of ps) {
       const amt = Number(p.amount) || 0

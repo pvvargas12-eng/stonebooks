@@ -12,11 +12,16 @@ import {
   fetchAllPaged, getJobs, listOutgoingPayments, getAllOpenPromises,
   getBatches, getUserSettings, upsertUserSettings,
 } from './stonebooksData'
+import { ORDER_PRICING_COLUMNS } from './pricingCore'
 
+// ORDER_PRICING_COLUMNS is the pricing-column contract — this list once
+// under-selected (no base_config/shape/dims), so every Reports dollar figure
+// was priced die-only (the 2026-07-07 Illuzzi bug class, found in audit).
 const REPORT_ORDER_SELECT =
   'id, order_number, status, created_at, signed_at, target_completion_date, ' +
   'payments, deposit_amount, deposit_received_at, balance_amount, balance_received_at, ' +
-  'pricing, add_ons, contract_total, primary_lastname, deceased, archived, ' +
+  'primary_lastname, deceased, archived, ' +
+  ORDER_PRICING_COLUMNS + ', ' +
   'customer:customers(id, first_name, last_name, email), cemetery:cemeteries(id, name)'
 
 // One bundle for every report. Best-effort per source so one failure doesn't
