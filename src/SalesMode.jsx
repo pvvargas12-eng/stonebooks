@@ -7098,6 +7098,163 @@ function reencodeImageViaCanvas(src, { mime = 'image/png', quality, label } = {}
 // Generate the order PDF — works for both Estimate and Contract.
 // mode 'estimate' or 'contract'. Contract embeds signature images and
 // changes the badge/filename.
+// ══ Contract editor — shared block builders ══════════════════════════════════
+// ONE source for each override-able block's generated text: the PDF generator
+// AND the contract editor's prefills read these, so what the editor shows as
+// "auto" is exactly what prints. Change wording HERE, never in two places.
+
+// Due-date headline + range flag (Sprint 3w stored date / S1 mausoleum range /
+// legacy calculateDueDate fallback).
+// eslint-disable-next-line react-refresh/only-export-components
+export function contractDueInfo(order) {
+  const isMausoleum = (order.serviceTypes || []).includes('MAUSOLEUM')
+  const hasRange = isMausoleum && order.targetCompletionDate && order.targetCompletionEndDate
+  // 'T00:00:00' forces local-midnight parsing — without it, 'YYYY-MM-DD' is
+  // read as UTC and shifts back a day in negative-UTC timezones.
+  const fmtLong = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  if (hasRange) return { dateText: `${fmtLong(order.targetCompletionDate)} – ${fmtLong(order.targetCompletionEndDate)}`, isRange: true }
+  if (order.targetCompletionDate) return { dateText: fmtLong(order.targetCompletionDate), isRange: false }
+  let due = null
+  try { due = calculateDueDate(order) } catch { /* TBD below */ }
+  return { dateText: (due && due.dateText) || 'TBD — contact office', isRange: false }
+}
+
+// Delivery disclaimer — exact legal text (Sprint 3u / S1 range variant).
+// eslint-disable-next-line react-refresh/only-export-components
+export function contractDeliveryDisclaimer(isRange) {
+  return (isRange
+    ? 'To be delivered within the due-date window or as near that time as existing circumstances of trade and freighting facilities will permit. '
+    : 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. ')
+    + 'All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
+}
+
+// The two boxed party columns (NAME/ADDRESS | CEMETERY) + the cemetery extras.
+// eslint-disable-next-line react-refresh/only-export-components
+export function contractPartyLines(order) {
+  const c = order.customer || {}
+  const cem = order.cemetery || {}
+  // A3 — pull the FULL customer block. Read the real record keys (addressLine1 /
+  // phonePrimary / emailAlt) with legacy fallbacks; only render city/state/zip
+  // when there's an actual city or zip, so a lone "NJ" never shows by itself.
+  const street = [c.addressLine1 || c.address, c.addressLine2].filter(Boolean).join(', ')
+  const phone = c.phonePrimary || c.phone
+  const altEmail = c.emailAlt || c.altEmail
+  const customerLines = [pdfCustomerLine(order)]
+  if (street) customerLines.push(street)
+  const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
+  if (c.city || c.zip) customerLines.push(cityLine)
+  if (phone) customerLines.push('Phone: ' + formatPhone(phone))
+  if (c.email) customerLines.push('Email: ' + c.email)
+  if (altEmail) customerLines.push('Alt email: ' + altEmail)
+
+  const cemeteryLines = []
+  if (cem.name) cemeteryLines.push(cem.name)
+  const cemLoc = [cem.city, cem.state].filter(Boolean).join(', ')
+  if (cemLoc) cemeteryLines.push(cemLoc)
+  const lot = []
+  if (cem.section) lot.push(`Section ${cem.section}`)
+  if (cem.lot) lot.push(`Lot ${cem.lot}`)
+  if (cem.grave) lot.push(`Grave ${cem.grave}`)
+  if (lot.length) cemeteryLines.push(lot.join(' · '))
+  const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
+  // Only the SELECTED grave type prints (plain text); nothing if none set.
+  const graveLabel = graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null
+  // #1 — plot details: ONE compact location line (free-text grave_location
+  // preferred, legacy parts composed as read-fallback).
+  const plotLine = composeGraveLocation(order) || null
+  return { customerLines, cemeteryLines, graveLabel, plotLine, foundationType: order.foundationType || null }
+}
+
+// Legal terms by service type (Sprint 3u Part C texts, verbatim).
+const CONTRACT_FULL_PARAS = [
+  'Client agrees to pay Shevchenko Monuments LLC a deposit equal to fifty percent (50%) of the total contract price. This deposit is non-refundable. The remaining balance is due in full prior to the commencement of any carving work. Carving work is defined as any operation that physically alters the granite, including sandblasting, hand-carving, laser etching, or shape carving. Materials for the memorial may be ordered prior to balance payment; in such cases, Shevchenko Monuments bears the material cost at the Client\'s risk should the contract be subsequently breached.',
+  'Ownership of the described memorial shall remain with Shevchenko Monuments until payment is received in full. If payment is not made in accordance with this agreement — whether at delivery or thereafter — Shevchenko Monuments is authorized to enter the cemetery and remove the memorial without prior notice and without liability for emotional distress, consequential damages, or other claims. Client agrees that legal fees incurred by Shevchenko Monuments in any contested removal shall be the responsibility of the Client. If the memorial is removed for non-payment and Client subsequently requests reinstallation, a reset fee of five hundred dollars ($500) shall apply in addition to any unpaid balance.',
+  'Any changes to the design, materials, or scope of work after this contract is signed require written agreement between Client and Shevchenko Monuments. Such changes may incur additional costs and may reset the production timeline.',
+  'Client has fourteen (14) days from the date of delivery or installation to raise quality concerns in writing. After this fourteen-day window, the work shall be deemed accepted in full.',
+  'This agreement is final and not subject to cancellation. Client grants permission for Shevchenko Monuments to use photographs of the completed memorial for display, portfolio, or advertising purposes.',
+]
+const CONTRACT_ACID_PARA = 'Payment is due in full before any cleaning or restoration work begins. Acid washing and cleaning are performed on an existing monument; results vary with the age, type, and condition of the stone, and Shevchenko Monuments cannot guarantee removal of all staining, etching, or weathering, nor is it responsible for pre-existing damage, cracks, or deterioration. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+const CONTRACT_REPAIR_PARA = 'Payment is due in full before any repair work begins. Repairs are performed on an existing monument and are limited by the age, material, and condition of the stone; Shevchenko Monuments cannot guarantee a flawless or permanent result on weathered, cracked, or previously repaired stone, and is not responsible for pre-existing damage or for further deterioration arising from existing conditions. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+const CONTRACT_INSCR_PARA = 'Payment is due in full before any carving begins. Client is responsible for reviewing and approving all spelling, dates, and layout before work starts; once carving begins it cannot be undone, and Shevchenko Monuments is not responsible for errors in an approved proof. Added lettering is matched to the existing monument as closely as possible, but exact matching of font, depth, and color is not guaranteed due to natural stone variation and weathering. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+const CONTRACT_GENERIC_PARA = 'Payment terms are as stated above. Completion is expected on or near the due date, subject to circumstances beyond our control. Any changes after signing require written agreement and may affect cost and timeline. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
+const CONTRACT_ACID_BODY = 'Acid washing and cleaning are performed on an existing monument; results vary with the age, type, and condition of the stone, and Shevchenko Monuments cannot guarantee removal of all staining, etching, or weathering, nor is it responsible for pre-existing damage, cracks, or deterioration.'
+const CONTRACT_REPAIR_BODY = 'Repairs are performed on an existing monument and are limited by the age, material, and condition of the stone; Shevchenko Monuments cannot guarantee a flawless or permanent result on weathered, cracked, or previously repaired stone, and is not responsible for pre-existing damage or for further deterioration arising from existing conditions.'
+const CONTRACT_INSCR_BODY = 'Client is responsible for reviewing and approving all spelling, dates, and layout before work starts; once carving begins it cannot be undone, and Shevchenko Monuments is not responsible for errors in an approved proof. Added lettering is matched to the existing monument as closely as possible, but exact matching of font, depth, and color is not guaranteed due to natural stone variation and weathering.'
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function contractLegalParagraphs(order) {
+  const STONE_SVC = ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
+  const svcCodes = order.serviceTypes || []
+  const hasStone = svcCodes.some(c => STONE_SVC.includes(c))
+  const hasAcid = svcCodes.includes('ACID_WASH')
+  const hasRepair = svcCodes.includes('REPAIR')
+  const hasInscription = svcCodes.includes('INSCRIPTION')
+  if (hasStone) return CONTRACT_FULL_PARAS
+  const smalls = [hasAcid && 'acid', hasRepair && 'repair', hasInscription && 'inscription'].filter(Boolean)
+  if (smalls.length === 0) return [CONTRACT_GENERIC_PARA]
+  if (smalls.length === 1) {
+    return [smalls[0] === 'acid' ? CONTRACT_ACID_PARA : smalls[0] === 'repair' ? CONTRACT_REPAIR_PARA : CONTRACT_INSCR_PARA]
+  }
+  // Combine: shared paid-in-full + each unique body + shared scheduling +
+  // shared photograph (each shared line shown exactly once).
+  return [
+    'Payment is due in full before any work begins.',
+    ...(hasAcid ? [CONTRACT_ACID_BODY] : []),
+    ...(hasRepair ? [CONTRACT_REPAIR_BODY] : []),
+    ...(hasInscription ? [CONTRACT_INSCR_BODY] : []),
+    'Scheduling is subject to cemetery access and weather.',
+    'Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.',
+  ]
+}
+
+// The contract editor's prefill: every override-able block's GENERATED text,
+// stringified the way the editor edits it (multiline boxes, "name | dates"
+// deceased lines, blank-line-separated terms). Mirrors the info-box derivation
+// in generateEstimatePDF — keep the two in sync. Calls new Date(): invoke from
+// event handlers/effects only (React 19 purity).
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildContractDefaults(order, opts = {}) {
+  const isContract = opts.isContract !== false
+  const shortDate = (d) => d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' })
+  const infoDate = shortDate(isContract && order.signedAt ? new Date(order.signedAt) : new Date())
+  let infoDue
+  if (order.targetCompletionDate) infoDue = shortDate(new Date(order.targetCompletionDate + 'T00:00:00'))
+  else { try { const dd = calculateDueDate(order); infoDue = (dd && dd.dateText) || 'TBD' } catch { infoDue = 'TBD' } }
+  const familyName = (order.inscription?.familyName || (order.deceased || []).find(d => d?.lastName)?.lastName || order.customer?.lastName || '').trim()
+  const custFullName = [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ').trim()
+  const due = contractDueInfo(order)
+  const party = contractPartyLines(order)
+  const cemeteryBox = [
+    ...party.cemeteryLines,
+    party.graveLabel,
+    party.plotLine,
+    party.foundationType ? `Foundation: ${party.foundationType}` : null,
+  ].filter(Boolean).join('\n')
+  const deceasedBlock = pdfDeceasedLines(order).map(ln =>
+    ln.kind === 'person' ? (ln.dates ? `${ln.name} | ${ln.dates}` : ln.name) : ln.text
+  ).join('\n')
+  return {
+    fields: {
+      date: infoDate,
+      dueDate: infoDue,
+      familyName: familyName || custFullName || (order.orderNumber || 'DRAFT'),
+      orderNumber: order.orderNumber || 'DRAFT',
+    },
+    validityNote: 'This estimate is valid for 30 days.',
+    dueDateText: due.dateText,
+    dueDateNote: contractDeliveryDisclaimer(due.isRange),
+    customerBox: party.customerLines.join('\n'),
+    cemeteryBox,
+    deceasedBlock,
+    notesText: '',
+    terms: [
+      ...contractLegalParagraphs(order),
+      'This agreement is governed by the laws of the State of New Jersey.',
+      'This writing is the entire agreement between the parties; no oral modifications are binding.',
+    ].join('\n\n'),
+  }
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export async function generateEstimatePDF(order, opts = {}) {
   const mode = opts.mode || (order.signedAt ? 'contract' : 'estimate')
@@ -7321,39 +7478,14 @@ export async function generateEstimatePDF(order, opts = {}) {
   // ============================ DUE DATE ================================
   // Sprint 3u — contract only. Estimates skip this block entirely.
   if (isContract && !coHidden.has('dueDate')) {
-    // Sprint 3w / S1 — prefer the stored dates (set / auto-populated on step
-    // 10). Mausoleum orders with BOTH range dates set render an
-    // "earliest – latest" range; other orders render a single date. Falls back
-    // to calculateDueDate for legacy orders that pre-date Sprint 3w or that
-    // have no stored date.
-    const isMausoleum = (order.serviceTypes || []).includes('MAUSOLEUM')
-    const hasRange = isMausoleum && order.targetCompletionDate && order.targetCompletionEndDate
-    let due
-    if (hasRange) {
-      // 'T00:00:00' forces local-midnight parsing — without it, 'YYYY-MM-DD' is
-      // read as UTC and shifts back a day in negative-UTC timezones.
-      const start = new Date(order.targetCompletionDate + 'T00:00:00')
-      const end = new Date(order.targetCompletionEndDate + 'T00:00:00')
-      const fmt = (d) => d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-      due = { dateText: `${fmt(start)} – ${fmt(end)}`, months: null, isRange: true }
-    } else if (order.targetCompletionDate) {
-      const d = new Date(order.targetCompletionDate + 'T00:00:00')
-      due = {
-        dateText: d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-        months: null,
-        isRange: false,
-      }
-    } else {
-      due = calculateDueDate(order)
-      due.isRange = false
-    }
+    // Sprint 3w / S1 rules live in the SHARED contractDueInfo builder (stored
+    // date / mausoleum range / calculateDueDate fallback) — the contract
+    // editor's prefill reads the same function, so they can't diverge.
+    const due = contractDueInfo(order)
     // Sprint S1 — for a mausoleum range, the disclaimer says "within the
     // due-date window" instead of "on the due date"; the rest is identical.
     // Contract-editor override replaces the whole disclaimer paragraph.
-    const deliveryDisclaimer = coText(co.dueDateNote) || ((due.isRange
-      ? 'To be delivered within the due-date window or as near that time as existing circumstances of trade and freighting facilities will permit. '
-      : 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. ')
-      + 'All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.')
+    const deliveryDisclaimer = coText(co.dueDateNote) || contractDeliveryDisclaimer(due.isRange)
     // Measure the disclaimer at its render font size (9pt) for an accurate line count.
     doc.setFont('helvetica', 'italic')
     doc.setFontSize(9)
@@ -7377,8 +7509,6 @@ export async function generateEstimatePDF(order, opts = {}) {
 
   // ================= TWO BOXED COLUMNS (NAME | CEMETERY) =================
   {
-    const c = order.customer || {}
-    const cem = order.cemetery || {}
     const colGap = 6
     const colW = (W - 2 * M - colGap) / 2
     const lx = M, rx = M + colW + colGap
@@ -7386,56 +7516,27 @@ export async function generateEstimatePDF(order, opts = {}) {
     const padX = 3
     const lineH = 4.4
 
-    // Contract-editor overrides — each override replaces its ENTIRE box body
-    // (the extras below fold into the text the operator saved). Pre-wrapped at
-    // the render width so long override lines advance the cursor correctly.
+    // Party lines come from the SHARED contractPartyLines builder (the contract
+    // editor's prefill reads the same function). A contract-editor override
+    // replaces its ENTIRE box body — the cemetery extras fold into the saved
+    // text. Pre-wrapped at the render width so long override lines advance the
+    // cursor correctly.
     doc.setFontSize(9)
     const custOverride = coLines(co.customerBox)
     const cemOverride = coLines(co.cemeteryBox)
-
-    // A3 — pull the FULL customer block. Read the real record keys (addressLine1 /
-    // phonePrimary / emailAlt) with legacy fallbacks; only render city/state/zip
-    // when there's an actual city or zip, so a lone "NJ" never shows by itself.
-    const street = [c.addressLine1 || c.address, c.addressLine2].filter(Boolean).join(', ')
-    const phone = c.phonePrimary || c.phone
-    const altEmail = c.emailAlt || c.altEmail
-    let leftLines
-    if (custOverride) {
-      leftLines = custOverride.flatMap(ln => doc.splitTextToSize(ln, colW - 2 * padX))
-    } else {
-      leftLines = [pdfCustomerLine(order)]
-      if (street) leftLines.push(street)
-      const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
-      if (c.city || c.zip) leftLines.push(cityLine)
-      if (phone) leftLines.push('Phone: ' + formatPhone(phone))
-      if (c.email) leftLines.push('Email: ' + c.email)
-      if (altEmail) leftLines.push('Alt email: ' + altEmail)
-    }
-
-    let rightLines
-    if (cemOverride) {
-      rightLines = cemOverride.flatMap(ln => doc.splitTextToSize(ln, colW - 2 * padX))
-    } else {
-      rightLines = []
-      if (cem.name) rightLines.push(cem.name)
-      const cemLoc = [cem.city, cem.state].filter(Boolean).join(', ')
-      if (cemLoc) rightLines.push(cemLoc)
-      const lot = []
-      if (cem.section) lot.push(`Section ${cem.section}`)
-      if (cem.lot) lot.push(`Lot ${cem.lot}`)
-      if (cem.grave) lot.push(`Grave ${cem.grave}`)
-      if (lot.length) rightLines.push(lot.join(' · '))
-    }
-    const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
-    // Only the SELECTED grave type prints (plain text); nothing if none set.
-    // All three extras are suppressed when the cemetery box is overridden.
-    const graveLabel = cemOverride ? null : (graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null)
-    // #1 — plot details: ONE compact location line. Prefers the free-text
-    // grave_location; falls back to composing the legacy parts (read-fallback) so
-    // existing orders never go blank. Nothing prints if there's no location at all.
-    const plotLine = cemOverride ? null : (composeGraveLocation(order) || null)
+    const party = contractPartyLines(order)
+    const leftLines = custOverride
+      ? custOverride.flatMap(ln => doc.splitTextToSize(ln, colW - 2 * padX))
+      : party.customerLines
+    const rightLines = cemOverride
+      ? cemOverride.flatMap(ln => doc.splitTextToSize(ln, colW - 2 * padX))
+      : party.cemeteryLines
+    // Cemetery extras (grave type / plot line / foundation) — suppressed when
+    // the cemetery box is overridden.
+    const graveLabel = cemOverride ? null : party.graveLabel
+    const plotLine = cemOverride ? null : party.plotLine
     const plotWrapped = plotLine ? doc.splitTextToSize(plotLine, colW - 2 * padX) : []
-    const hasFoundation = cemOverride ? false : !!order.foundationType
+    const hasFoundation = cemOverride ? false : !!party.foundationType
     const extraRows = (graveLabel ? 1 : 0) + plotWrapped.length + (hasFoundation ? 1 : 0)
 
     const headerH = 7
@@ -8012,47 +8113,10 @@ export async function generateEstimatePDF(order, opts = {}) {
   // renders them as a numbered, justified serif list at its own ~7pt scale
   // (TERMS_FS/LH/GAP), so no shared font-size consts are needed here.
 
-  // FULL terms — new stone / monument (unchanged deep block).
-  const FULL_PARAS = [
-    'Client agrees to pay Shevchenko Monuments LLC a deposit equal to fifty percent (50%) of the total contract price. This deposit is non-refundable. The remaining balance is due in full prior to the commencement of any carving work. Carving work is defined as any operation that physically alters the granite, including sandblasting, hand-carving, laser etching, or shape carving. Materials for the memorial may be ordered prior to balance payment; in such cases, Shevchenko Monuments bears the material cost at the Client\'s risk should the contract be subsequently breached.',
-    'Ownership of the described memorial shall remain with Shevchenko Monuments until payment is received in full. If payment is not made in accordance with this agreement — whether at delivery or thereafter — Shevchenko Monuments is authorized to enter the cemetery and remove the memorial without prior notice and without liability for emotional distress, consequential damages, or other claims. Client agrees that legal fees incurred by Shevchenko Monuments in any contested removal shall be the responsibility of the Client. If the memorial is removed for non-payment and Client subsequently requests reinstallation, a reset fee of five hundred dollars ($500) shall apply in addition to any unpaid balance.',
-    'Any changes to the design, materials, or scope of work after this contract is signed require written agreement between Client and Shevchenko Monuments. Such changes may incur additional costs and may reset the production timeline.',
-    'Client has fourteen (14) days from the date of delivery or installation to raise quality concerns in writing. After this fourteen-day window, the work shall be deemed accepted in full.',
-    'This agreement is final and not subject to cancellation. Client grants permission for Shevchenko Monuments to use photographs of the completed memorial for display, portfolio, or advertising purposes.',
-  ]
-  // Verbatim small-service blocks (used when a single small service is present).
-  const ACID_PARA = 'Payment is due in full before any cleaning or restoration work begins. Acid washing and cleaning are performed on an existing monument; results vary with the age, type, and condition of the stone, and Shevchenko Monuments cannot guarantee removal of all staining, etching, or weathering, nor is it responsible for pre-existing damage, cracks, or deterioration. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
-  const REPAIR_PARA = 'Payment is due in full before any repair work begins. Repairs are performed on an existing monument and are limited by the age, material, and condition of the stone; Shevchenko Monuments cannot guarantee a flawless or permanent result on weathered, cracked, or previously repaired stone, and is not responsible for pre-existing damage or for further deterioration arising from existing conditions. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
-  const INSCR_PARA = 'Payment is due in full before any carving begins. Client is responsible for reviewing and approving all spelling, dates, and layout before work starts; once carving begins it cannot be undone, and Shevchenko Monuments is not responsible for errors in an approved proof. Added lettering is matched to the existing monument as closely as possible, but exact matching of font, depth, and color is not guaranteed due to natural stone variation and weathering. Scheduling is subject to cemetery access and weather. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
-  const GENERIC_PARA = 'Payment terms are as stated above. Completion is expected on or near the due date, subject to circumstances beyond our control. Any changes after signing require written agreement and may affect cost and timeline. Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.'
-  // Unique bodies — for combining multiple small services WITHOUT repeating the
-  // shared paid-in-full / scheduling / photograph lines.
-  const ACID_BODY = 'Acid washing and cleaning are performed on an existing monument; results vary with the age, type, and condition of the stone, and Shevchenko Monuments cannot guarantee removal of all staining, etching, or weathering, nor is it responsible for pre-existing damage, cracks, or deterioration.'
-  const REPAIR_BODY = 'Repairs are performed on an existing monument and are limited by the age, material, and condition of the stone; Shevchenko Monuments cannot guarantee a flawless or permanent result on weathered, cracked, or previously repaired stone, and is not responsible for pre-existing damage or for further deterioration arising from existing conditions.'
-  const INSCR_BODY = 'Client is responsible for reviewing and approving all spelling, dates, and layout before work starts; once carving begins it cannot be undone, and Shevchenko Monuments is not responsible for errors in an approved proof. Added lettering is matched to the existing monument as closely as possible, but exact matching of font, depth, and color is not guaranteed due to natural stone variation and weathering.'
-
-  let legalParagraphs
-  if (hasStone) {
-    legalParagraphs = FULL_PARAS
-  } else {
-    const smalls = [hasAcid && 'acid', hasRepair && 'repair', hasInscription && 'inscription'].filter(Boolean)
-    if (smalls.length === 0) {
-      legalParagraphs = [GENERIC_PARA]
-    } else if (smalls.length === 1) {
-      legalParagraphs = [smalls[0] === 'acid' ? ACID_PARA : smalls[0] === 'repair' ? REPAIR_PARA : INSCR_PARA]
-    } else {
-      // Combine: shared paid-in-full + each unique body + shared scheduling +
-      // shared photograph (each shared line shown exactly once).
-      legalParagraphs = [
-        'Payment is due in full before any work begins.',
-        ...(hasAcid ? [ACID_BODY] : []),
-        ...(hasRepair ? [REPAIR_BODY] : []),
-        ...(hasInscription ? [INSCR_BODY] : []),
-        'Scheduling is subject to cemetery access and weather.',
-        'Client grants permission for Shevchenko Monuments to photograph the completed work for portfolio or advertising.',
-      ]
-    }
-  }
+  // Legal terms by service type — the SHARED contractLegalParagraphs builder
+  // (verbatim Sprint 3u Part C texts, hoisted to module scope so the contract
+  // editor's prefill reads the exact same paragraphs).
+  const legalParagraphs = contractLegalParagraphs(order)
 
   // Thin divider before the terms / sign-off.
   y += 3

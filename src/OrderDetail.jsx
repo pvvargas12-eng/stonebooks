@@ -51,8 +51,10 @@ import OrderPipelineRail from './components/OrderPipelineRail'
 import { buildPipeline } from './lib/orderPipeline'
 import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
-import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles } from './SalesMode'
+import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles, buildContractDefaults } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
+import ContractEditor from './components/ContractEditor'
+import { priceOrderTotals } from './lib/orderRates'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 const humanize = (s) =>
@@ -226,6 +228,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [deleteErr, setDeleteErr] = useState(null)
   // Approval packet preview
   const [approvalSheet, setApprovalSheet] = useState(null)  // { url, doc, filename, version } | null
+  const [contractEd, setContractEd] = useState(null)        // ContractEditor props bundle | null
   // In-app attachment preview (#3) — { url, name, mime, isBlob } | null
   const [preview, setPreview] = useState(null)
   // Attachment delete confirm (#A) — { path, name } | null
@@ -1219,6 +1222,42 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       setActionNote(`Could not open contract — ${e?.message || 'error'}.`)
     }
   }
+  // ── Contract editor — per-order wording overrides (pricing.contractOverrides).
+  // The opener prepares EVERYTHING (camel order, generated defaults, priced
+  // lines) so ContractEditor stays render-pure (buildContractDefaults calls
+  // new Date() — handler context only).
+  const openContractEditor = () => {
+    setActionNote(null)
+    try {
+      const camel = rowToOrder(order, order.customer, order.cemetery)
+      const priced = priceOrderTotals(camel)
+      setContractEd({
+        camel,
+        defaults: buildContractDefaults(camel, { isContract: true }),
+        existing: order.pricing?.contractOverrides || null,
+        lineItems: (priced.items || []).filter(it => !it.quotePending && it.amount != null),
+        total: priced.displayed,
+        locked: !!order.signed_at,
+      })
+    } catch (e) {
+      setActionNote(`Could not open the contract editor — ${e?.message || 'error'}.`)
+    }
+  }
+  const saveContractOverrides = async (overrides) => {
+    const pricing = { ...(order.pricing || {}) }
+    if (overrides) pricing.contractOverrides = overrides
+    else delete pricing.contractOverrides
+    const r = await bulkUpdateOrders([orderId], { pricing })
+    if (!r.ok) return r
+    await refreshOrder()
+    logOrderActivity(orderId, {
+      type: 'change', field: 'Contract wording',
+      newValue: overrides ? 'custom wording saved' : 'reset to auto-generated',
+      note: 'Edited in the contract editor', actor: await getCurrentStaffName(),
+    }).then(() => refreshActivity()).catch(() => {})
+    return { ok: true }
+  }
+
   // ── Approval packet — the customer-facing approval sheet for the current
   // proof version. Reuses generateApprovalSheetPDF (frozen snapshot + live
   // balance + signature when approved). Read-only here; send/approve/request-
@@ -1385,6 +1424,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </button>
           )}
           <button type="button" className="sb-od-btn" onClick={handleOpenContract}>Open contract</button>
+          <button type="button" className="sb-od-btn" onClick={openContractEditor}>
+            Edit contract{order.pricing?.contractOverrides ? ' ●' : ''}
+          </button>
           <button type="button" className="sb-od-btn" onClick={() => setProfileOpen(true)}>View / print customer profile</button>
           <button type="button" className="sb-od-btn" onClick={openApprovalPacket}>Open approval packet</button>
           <button type="button" className="sb-od-btn" onClick={() => job ? onOpenJob?.(job.id) : null} disabled={!job}
@@ -2173,6 +2215,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       )}
 
       {profileOpen && <CustomerProfileSheet order={order} onClose={() => setProfileOpen(false)} />}
+      {contractEd && (
+        <ContractEditor {...contractEd}
+          onClose={() => setContractEd(null)}
+          onSave={saveContractOverrides} />
+      )}
 
       {deleteModal && (
         <div className="sb-od-modal-backdrop" onClick={() => { if (!deleteBusy) setDeleteModal(false) }}>
