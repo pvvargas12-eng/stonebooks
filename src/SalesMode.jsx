@@ -7815,9 +7815,17 @@ export async function generateEstimatePDF(order, opts = {}) {
     // "L × W × H · Top · Sides · Color". No type name, no "(custom — set price)".
     // Same builder the Financial line items use, so they never diverge. Non-die
     // stone lines just get the pricing-method language stripped.
+    // Explicit operator text WINS over the derived physical spec. A die
+    // description override (baseConfig.dieTextOverride) or a per-line rename
+    // (pricing.lineItemLabels['base-stone']) already flowed into the engine's
+    // label via buildLineItems / applyLineItemDisplay — rewriting it to
+    // buildDieSpec here was dropping it from the printed contract (the "P2"
+    // bug: empty die dropdowns collapse the spec to just the polish code).
+    const dieOverride = String(order.baseConfig?.dieTextOverride || '').trim()
+    const dieRenamed = !!(order.pricing?.lineItemLabels?.['base-stone'])
     const shp = SHAPES.find(s => s.code === order.shape)
     const dieIdx = out.findIndex(it => String(it.code) === 'base-stone')
-    if (dieIdx >= 0) {
+    if (dieIdx >= 0 && !dieOverride && !dieRenamed) {
       let dieLabel = out[dieIdx].label
       if (shp && (shp.canHaveBase || shp.requiresBase)) {
         const spec = buildDieSpec(order)
