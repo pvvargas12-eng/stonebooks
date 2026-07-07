@@ -61,3 +61,13 @@ jobs:
 
       - name: Deploy approve-create (default JWT verify)
         run: supabase functions deploy approve-create --project-ref "$PROJECT_REF"
+
+      - name: Deploy vendor-invite (default JWT verify)
+        run: supabase functions deploy vendor-invite --project-ref "$PROJECT_REF"
+
+      # trade-signup is called by ANONYMOUS visitors via supabase.functions.invoke,
+      # which sends the anon key as the Bearer JWT — default verification accepts
+      # it. The reusable invite code is the real credential; the function
+      # validates it (revocable/expirable) before creating any login.
+      - name: Deploy trade-signup (default JWT verify)
+        run: supabase functions deploy trade-signup --project-ref "$PROJECT_REF"
