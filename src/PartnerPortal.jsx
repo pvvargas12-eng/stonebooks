@@ -54,7 +54,12 @@ function PartnerStatusChip({ status }) {
 export default function PartnerPortal({ context, onSignOut }) {
   const partner = context?.partner
   const partnerId = context?.partnerId
-  const [view, setView] = useState('home')
+  // Email deep link: ?trade=<orderId> lands the dealer straight on that order,
+  // expanded on the board — no hunting.
+  const [deepTradeId] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('trade') } catch { return null }
+  })
+  const [view, setView] = useState(deepTradeId ? 'orders' : 'home')
   const [items, setItems] = useState([])
   const [pos, setPos] = useState([])
   const [loading, setLoading] = useState(true)
@@ -122,7 +127,8 @@ export default function PartnerPortal({ context, onSignOut }) {
             {view === 'orders' && (
               /* Stonebooks Trade order board — the whiteboard columns, dealer side.
                  RLS scopes queries to this partner; partnerId narrows explicitly. */
-              <TradeOrderBoard partnerId={partnerId} actorName={partner?.contact_person || partner?.company_name || 'Dealer'} onNewOrder={() => setView('new')} />
+              <TradeOrderBoard partnerId={partnerId} actorName={partner?.contact_person || partner?.company_name || 'Dealer'}
+                onNewOrder={() => setView('new')} initialExpandId={deepTradeId} />
             )}
             {view === 'new' && (
               <NewRequestForm partnerId={partnerId} partner={partner} onDone={async () => { await loadAll(); setView('open'); flash('Request submitted — thank you.') }} />

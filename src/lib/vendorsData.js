@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { supabase } from './supabase'
-import { getCurrentStaffName, createTradeJob } from './stonebooksData'
+import { getCurrentStaffName, createTradeJob, sendShopEmail } from './stonebooksData'
 
 const MIGRATION_HINT = 'Vendor portal isn’t set up yet — apply the 20260608_vendor_portal migration in Supabase Studio, then try again.'
 const isMissing = (msg) => /relation .* does not exist|could not find the table|schema cache/i.test(msg || '')
@@ -484,6 +484,7 @@ export async function acceptTradeOrder(requestId, { actor = null } = {}) {
   })
   if (!r.ok) return r
   await logTradeEvent({ requestId, partnerId: req?.partner_id || null, type: 'order_accepted', actor, detail: 'Specs verified — order accepted' })
+  notifyTradeDealer(requestId, 'accepted').catch(() => {})
   if (req && !req.job_id) {
     const jr = await createTradeJob({ vendorRequestId: requestId, services: req.services || [] })
     if (jr.ok && jr.job && !jr.alreadyExisted) {
@@ -494,6 +495,45 @@ export async function acceptTradeOrder(requestId, { actor = null } = {}) {
     }
   }
   return r
+}
+
+// ── Slice 6: dealer email notifications with deep links ─────────────────────
+// Every Shevchenko action emails the dealer with ONE button that lands them on
+// the exact order (?trade=<id> → the portal auto-opens Orders and expands it).
+// Sent to the company email (partners.email); per-user prefs land in slice 8's
+// Settings. Fire-and-forget — a mail hiccup never blocks the action.
+export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {
+  try {
+    const { data: r } = await supabase.from('vendor_requests')
+      .select('id, family_name, dealer_order_number, rush_need_by, partner:partners(id, company_name, email)')
+      .eq('id', requestId).maybeSingle()
+    const to = r?.partner?.email
+    if (!to) return { ok: false, error: 'No company email on file' }
+    const fam = r.family_name || 'your order'
+    const num = r.dealer_order_number ? ` (${r.dealer_order_number})` : ''
+    const link = `${window.location.origin}/?trade=${r.id}`
+    const M = {
+      accepted:      { s: `Order accepted — ${fam}${num}`,        b: 'Your order was accepted and is locked in. We’ll take it from here.', cta: 'See your order' },
+      rush_approved: { s: `Rush approved — ${fam}${num}`,          b: `Your rush is approved${r.rush_need_by ? ` — ${r.rush_need_by} is guaranteed` : ''}.`, cta: 'See your order' },
+      rush_declined: { s: `Rush update — ${fam}${num}`,            b: 'We couldn’t guarantee the rush date on this one — the order continues on a standard timeline. Reach out and we’ll work out a date.', cta: 'See your order' },
+      layout_ready:  { s: `Layout ready to review — ${fam}${num}`, b: 'Your layout is ready. Approve it or request changes with one tap.', cta: 'Review layout' },
+      photo:         { s: `Finished stone — ${fam}${num}`,         b: 'A photo of the finished work was added to your order.', cta: 'See finished stone' },
+      ready:         { s: `Ready for pickup — ${fam}${num}`,       b: 'Your stone is ready for pickup at the Perth Amboy shop.', cta: 'See your order' },
+    }
+    const m = M[kind]
+    if (!m) return { ok: false, error: `Unknown notify kind ${kind}` }
+    const body = `${m.b}${extra ? ` ${extra}` : ''}`
+    const html =
+      `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
+      `<p style="margin:0 0 4px"><b>${m.s}</b></p><p style="margin:0">${body}</p>` +
+      `<p style="margin:18px 0"><a href="${link}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">${m.cta} →</a></p>` +
+      `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments</p></div>`
+    await sendShopEmail({ to, subject: m.s, html, text: `${body}\n\n${m.cta}: ${link}` })
+    return { ok: true }
+  } catch (e) {
+    console.warn('[trade] notifyTradeDealer:', e?.message)
+    return { ok: false, error: e?.message }
+  }
 }
 
 // Dealer-facing live tracker — sanitized production steps via the
@@ -514,6 +554,7 @@ export async function decideTradeRush(requestId, approve, { actor = null } = {})
   if (!r.ok) return r
   await logTradeEvent({ requestId, type: approve ? 'rush_approved' : 'rush_declined', actor,
     detail: approve ? 'Rush approved — date guaranteed' : 'Rush declined' })
+  notifyTradeDealer(requestId, approve ? 'rush_approved' : 'rush_declined').catch(() => {})
   return r
 }
 

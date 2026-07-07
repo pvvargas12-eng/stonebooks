@@ -18,12 +18,14 @@ import {
   listVendorBatches, createVendorBatch, updateVendorBatch, setItemBatch,
   listVendorPOs, createVendorPO, updateVendorPO, nextPONumber,
   invitePartnerUser, listPartnerUsers,
+  listTradeUpdates, markTradeUpdatesSeen, getTradeUpdatesCount, decideTradeRush,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
 
 const SUBNAV = [
   { code: 'board', label: 'Trade Board' },
+  { code: 'updates', label: 'Updates' },
   { code: 'queue', label: 'Work Queue' },
   { code: 'batches', label: 'Batches' },
   { code: 'partners', label: 'Partners' },
@@ -45,8 +47,11 @@ export default function VendorsTab() {
   const [newReqOpen, setNewReqOpen] = useState(false)
   const [poModal, setPoModal] = useState(null)   // { partnerId, items:[], batchId? }
   const [toast, setToast] = useState(null)
+  const [updatesCount, setUpdatesCount] = useState(0)
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(t => t === msg ? null : t), 3000) }, [])
+  const refreshUpdatesCount = useCallback(() => { getTradeUpdatesCount().then(setUpdatesCount).catch(() => {}) }, [])
+  useEffect(() => { refreshUpdatesCount() }, [refreshUpdatesCount])
 
   // Partner-submitted requests still awaiting first triage (≥1 'submitted' item).
   const newPartnerCount = useMemo(() => {
@@ -80,6 +85,7 @@ export default function VendorsTab() {
           <button key={s.code} type="button" className={`vend-subtab ${sub === s.code ? 'on' : ''}`} onClick={() => setSub(s.code)}>
             {s.label}
             {s.code === 'queue' && newPartnerCount > 0 && <span className="vend-subbadge">{newPartnerCount}</span>}
+            {s.code === 'updates' && updatesCount > 0 && <span className="vend-subbadge">{updatesCount}</span>}
           </button>
         ))}
       </div>
@@ -87,6 +93,7 @@ export default function VendorsTab() {
       {/* Stonebooks Trade order board — all dealers, whiteboard columns, inline
           status edits, rush approve/decline in the expanded row. */}
       {sub === 'board' && <TradeOrderBoard staffView />}
+      {sub === 'updates' && <TradeUpdatesFeed onSeen={refreshUpdatesCount} />}
       {sub === 'queue' && <WorkQueue items={items} partners={partners} onOpen={setDrawerId} />}
       {sub === 'batches' && <BatchesView batches={batches} items={items || []} partners={partners} onReload={loadAll} onOpenItem={setDrawerId} onGeneratePO={(b) => setPoModal({ partnerId: b.partner_id, batchId: b.id, items: (items || []).filter(i => i.batch_id === b.id) })} flash={flash} />}
       {sub === 'partners' && <PartnersView partners={partners} onReload={loadAll} flash={flash} />}
@@ -97,6 +104,60 @@ export default function VendorsTab() {
       {poModal && <POModal seed={poModal} partners={partners} onClose={() => setPoModal(null)} onSaved={() => { setPoModal(null); loadAll(); flash('PO saved.') }} />}
 
       {toast && <div className="vend-toast">{toast}</div>}
+    </div>
+  )
+}
+
+// ── Trade Updates feed — every dealer action, newest first ───────────────────
+// Opening the feed stamps everything seen (clears the red badge on the Vendors
+// nav + sub-tab). Pending rush requests are actionable inline.
+function TradeUpdatesFeed({ onSeen }) {
+  const [rows, setRows] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+  const load = useCallback(() => listTradeUpdates({ limit: 80 }).then(setRows).catch(() => setRows([])), [])
+  useEffect(() => {
+    load()
+    markTradeUpdatesSeen().then(() => onSeen?.())
+  }, [load, onSeen])
+
+  const decideRush = async (ev, approve) => {
+    setBusyId(ev.id)
+    const who = await getCurrentStaffName().catch(() => null)
+    await decideTradeRush(ev.request_id, approve, { actor: who })
+    setBusyId(null)
+    load()
+  }
+
+  const dotFor = (t) => /approved|dropped|picked/.test(t) ? '#2d7a4f'
+    : /changes|rush_requested|fix/.test(t) ? '#b54040'
+    : '#9A7209'
+
+  if (rows === null) return <div className="vend-updates-empty">Loading updates…</div>
+  if (rows.length === 0) return <div className="vend-updates-empty">No dealer activity yet — everything dealers do lands here.</div>
+  return (
+    <div className="vend-updates">
+      {rows.map(ev => {
+        const rushPending = ev.request?.rush_status === 'pending'
+        return (
+          <div key={ev.id} className={`vend-update${ev.staff_seen_at ? '' : ' fresh'}`}>
+            <span className="vend-update-dot" style={{ background: dotFor(ev.event_type || '') }} />
+            <div className="vend-update-body">
+              <div className="vend-update-line">
+                <b>{ev.partner?.company_name || 'Dealer'}</b>
+                <span> — {ev.detail || (ev.event_type || '').replace(/_/g, ' ')}</span>
+                {ev.request?.family_name && <span className="vend-update-fam"> · {ev.request.family_name}{ev.request.dealer_order_number ? ` (${ev.request.dealer_order_number})` : ''}</span>}
+              </div>
+              <div className="vend-update-meta">{fmtDate(ev.created_at)}{ev.actor ? ` · ${ev.actor}` : ''}</div>
+            </div>
+            {rushPending && (
+              <span className="vend-update-actions">
+                <button type="button" className="vend-update-approve" disabled={busyId === ev.id} onClick={() => decideRush(ev, true)}>Approve rush{ev.request?.rush_need_by ? ` · ${ev.request.rush_need_by}` : ''}</button>
+                <button type="button" className="vend-update-decline" disabled={busyId === ev.id} onClick={() => decideRush(ev, false)}>Decline</button>
+              </span>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -708,6 +769,19 @@ async function downloadPOPdf(po) {
 }
 
 const VEND_CSS = `
+  .vend-updates { background: #fff; border: 0.5px solid rgba(0,0,0,0.09); border-radius: 12px; overflow: hidden; }
+  .vend-update { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-top: 0.5px solid #f0ede6; }
+  .vend-update:first-child { border-top: none; }
+  .vend-update.fresh { background: #fdfaf1; }
+  .vend-update-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .vend-update-body { flex: 1; min-width: 0; }
+  .vend-update-line { font-size: 13.5px; color: #2a2a2a; }
+  .vend-update-fam { color: #6a6a62; }
+  .vend-update-meta { font-size: 11.5px; color: #a09a8c; margin-top: 1px; }
+  .vend-update-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .vend-update-approve { font: inherit; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: none; background: #2d7a4f; color: #fff; cursor: pointer; }
+  .vend-update-decline { font: inherit; font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 0.5px solid #b3261e; background: #fff; color: #b3261e; cursor: pointer; }
+  .vend-updates-empty { padding: 40px 16px; text-align: center; color: #8a8a85; font-size: 14px; background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 12px; font-style: italic; }
   .vend-head { display: flex; align-items: flex-start; justify-content: space-between; }
   .vend-primary { font: inherit; font-size: 13px; font-weight: 600; padding: 9px 16px; border: 0.5px solid transparent; border-radius: 8px; background: #9A7209; color: #fff; cursor: pointer; white-space: nowrap; }
   .vend-primary:hover:not(:disabled) { filter: brightness(0.95); } .vend-primary:disabled { opacity: 0.5; cursor: not-allowed; }

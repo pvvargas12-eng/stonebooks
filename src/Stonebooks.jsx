@@ -34,7 +34,7 @@ import PaymentsTab from './PaymentsTab'
 import VendorsTab from './VendorsTab'
 import InventoryTab from './InventoryTab'
 import PartnerPortal from './PartnerPortal'
-import { getMyPartnerContext, getNewPartnerRequestCount } from './lib/vendorsData'
+import { getMyPartnerContext, getTradeUpdatesCount } from './lib/vendorsData'
 import EmailTab from './EmailTab'
 import FixLog from './FixLog'
 import ReconciliationTab from './ReconciliationTab'
@@ -375,11 +375,13 @@ export default function Stonebooks() {
   }, [user?.id])
 
   // Staff-only: keep the Vendors nav badge current. Reloads on tab change and
-  // every 60s so a partner submit surfaces without opening the Vendors tab.
+  // every 60s. Slice 6: the badge now counts EVERY unseen dealer action (new
+  // order, layout approved, changes requested, stone dropped off, …) — not
+  // just new submissions. Opening the Updates feed clears it.
   useEffect(() => {
     if (!user?.id || portal !== null) return
     let cancelled = false
-    const load = () => getNewPartnerRequestCount()
+    const load = () => getTradeUpdatesCount()
       .then(n => { if (!cancelled) setVendorAlertCount(n) })
       .catch(() => {})
     load()

@@ -17,7 +17,7 @@ import {
   listTradeOrders, updateTradeOrder, logTradeEvent, listTradeOrderEvents,
   decideTradeRush, acceptTradeOrder, deleteTradeOrder, getTradeTracker,
   getTradeLayouts, uploadTradeSignature, approveTradeLayout, signTradeReceipt,
-  uploadVendorFile, listVendorAttachments, vendorFileSignedUrl,
+  uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, notifyTradeDealer,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
 import { getCurrentStaffName } from '../lib/stonebooksData'
@@ -58,7 +58,7 @@ const deadlineOf = (r) => (r.rush_status === 'approved' && r.rush_need_by) ? r.r
 
 const humanizeEvent = (t) => String(t || '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
 
-export default function TradeOrderBoard({ staffView = false, partnerId = null, actorName = null, onNewOrder = null }) {
+export default function TradeOrderBoard({ staffView = false, partnerId = null, actorName = null, onNewOrder = null, initialExpandId = null }) {
   const [todayISO, setTodayISO] = useState('')
   useEffect(() => { setTodayISO(todayStr()) }, [])
 
@@ -122,6 +122,8 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
       designApprovedAt: code === 'approved' ? new Date().toISOString() : null,
     })
     await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'design_phase', detail: `Design phase → ${label}`, actor: who, actorRole: staffView ? 'staff' : 'partner' })
+    // Layout going out for review pulls the dealer in by email (deep link).
+    if (staffView && code === 'sent_draft') notifyTradeDealer(r.id, 'layout_ready').catch(() => {})
   })
 
   const setStone = (r, code) => withBusy(r.id, async () => {
@@ -199,6 +201,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     if (!file || !r) return
     await withBusy(r.id, async () => {
       await uploadVendorFile(file, { partnerId: r.partner_id, requestId: r.id, uploaderRole: staffView ? 'staff' : 'partner', kind: 'completion_photo' })
+      if (staffView) notifyTradeDealer(r.id, 'photo').catch(() => {})
       refreshDetail(r.id)
     })
   }
@@ -229,6 +232,20 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     // versions, and fresh photos show the moment anyone looks.
     if (next) refreshDetail(r.id)
   }
+
+  // Email deep link (?trade=<id>) — auto-expand that order once on first load.
+  const deepLinked = useRef(false)
+  useEffect(() => {
+    if (deepLinked.current || !initialExpandId || !orders) return
+    deepLinked.current = true
+    const hit = orders.find(o => o.id === initialExpandId)
+    if (hit) {
+      if (hit.archived_at) setTab('archived')
+      else if (['completed', 'cancelled'].includes(hit.status)) setTab('complete')
+      setExpandedId(hit.id)
+      refreshDetail(hit.id)
+    }
+  }, [orders, initialExpandId, refreshDetail])
 
   const phaseMeta = (code) => TRADE_DESIGN_PHASES.find(p => p.code === code) || TRADE_DESIGN_PHASES[0]
   const stoneMeta = (code) => TRADE_STONE_STATUSES.find(s => s.code === code) || TRADE_STONE_STATUSES[0]
