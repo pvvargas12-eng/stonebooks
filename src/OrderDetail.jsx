@@ -748,7 +748,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     setMonDraft(rowToOrder(order, order.customer, order.cemetery))
     // Stone status (reuses the milestone-derived STONE_STATUS) + chosen vendor.
     const cur = job ? stoneToSimple(deriveStoneStatus(job)) : 'not_ordered'
-    setStoneDraft({ status: cur, vendor: order.stone_vendor || '', newVendor: '' })
+    setStoneDraft({
+      status: cur, vendor: order.stone_vendor || '', newVendor: '',
+      // Purchase record (Paul, 2026-07-07): the date the stone was ordered
+      // (backdatable) + the supplier's acknowledgement (# / note + optional file).
+      orderedDate: order.stone_ordered_date || '',
+      ack: order.stone_purchase_ack || '',
+      ackUrl: order.stone_purchase_ack_url || '',
+    })
     listOrderingVendors().then(vs => setVendorList(vs || []))
   }
   const monUpdate = (patch) => setMonDraft(d => ({ ...d, ...patch }))
@@ -778,13 +785,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       vendor = vr.vendor.name
     }
     patch.stone_vendor = stoneDraft?.status === 'ordered' ? (vendor || null) : null
+    // Purchase record persists regardless of later status moves — the fact the
+    // stone was ordered on a date, with an acknowledgement, is history.
+    patch.stone_ordered_date = stoneDraft?.orderedDate || null
+    patch.stone_purchase_ack = stoneDraft?.ack?.trim() || null
+    patch.stone_purchase_ack_url = stoneDraft?.ackUrl || null
     const r = await bulkUpdateOrders([orderId], patch)
     if (!r.ok) return r
     // Stone status reuses the milestone-backed setter (same source as the Orders
-    // table + schedule). Needs a job; no-op when the order has none yet.
+    // table + schedule). Needs a job; no-op when the order has none yet. Entering
+    // an ordered DATE on a not-ordered stone advances it to Ordered automatically.
     if (job?.id && stoneDraft) {
       const cur = stoneToSimple(deriveStoneStatus(job))
-      if (stoneDraft.status !== cur) await setOrderStoneStatus(job.id, stoneDraft.status)
+      const target = (stoneDraft.orderedDate && stoneDraft.status === 'not_ordered') ? 'ordered' : stoneDraft.status
+      if (target !== cur) await setOrderStoneStatus(job.id, target)
     }
     await refreshOrder(); await refreshJob?.()
     const staff = await getCurrentStaffName()
@@ -1587,6 +1601,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                       )}
                     </>
                   )}
+                  {/* Purchase record — always editable once past not-ordered (and
+                      entering a date on a not-ordered stone advances it). */}
+                  <CqeRow cols={2}>
+                    <CqeDate label="Date stone ordered" value={stoneDraft.orderedDate} onChange={v => setStoneDraft(d => ({ ...d, orderedDate: v }))} />
+                    <CqeText label="Purchase acknowledgement #" value={stoneDraft.ack} onChange={v => setStoneDraft(d => ({ ...d, ack: v }))} placeholder="e.g. Rock of Ages ack #4512" />
+                  </CqeRow>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    {stoneDraft.ackUrl
+                      ? <a href={stoneDraft.ackUrl} target="_blank" rel="noreferrer" className="sb-od-link">View acknowledgement file</a>
+                      : <span style={{ fontSize: 12, color: '#8a8a85' }}>No acknowledgement file attached.</span>}
+                    <label className="sb-od-link" style={{ cursor: 'pointer' }}>
+                      {stoneDraft.ackUrl ? 'Replace file…' : 'Upload file…'}
+                      <input type="file" style={{ display: 'none' }} onChange={async (e) => {
+                        const f = e.target.files?.[0]; e.target.value = ''
+                        if (!f) return
+                        const up = await uploadOrderAttachment(orderId, f)
+                        if (up.ok) setStoneDraft(d => ({ ...d, ackUrl: up.url }))
+                      }} />
+                    </label>
+                  </div>
                   <div className="sb-od-cqe-divider">Monument spec & overrides</div>
                 </>
               )}
@@ -1610,6 +1644,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   value={job
                     ? `${STONE_SIMPLE.find(s => s.code === stoneToSimple(deriveStoneStatus(job)))?.label || '—'}${order.stone_vendor ? ` · ${order.stone_vendor}` : ''}`
                     : (order.stone_vendor || null)} />
+                <Field label="Stone ordered" value={order.stone_ordered_date ? fmtDate(order.stone_ordered_date) : null}
+                  hint={order.stone_ordered_date ? null : 'date not recorded — add it via ⋯'} />
+                <Field label="Purchase ack" value={(order.stone_purchase_ack || order.stone_purchase_ack_url) ? (
+                  <span>
+                    {order.stone_purchase_ack || ''}
+                    {order.stone_purchase_ack_url && (
+                      <>{order.stone_purchase_ack ? ' · ' : ''}<a href={order.stone_purchase_ack_url} target="_blank" rel="noreferrer" className="sb-od-link">view file</a></>
+                    )}
+                  </span>
+                ) : null} />
               </>
             )}
             <Field label="Deceased" value={deceased.length
