@@ -7142,6 +7142,20 @@ export async function generateEstimatePDF(order, opts = {}) {
       .replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/…/g, '...')
   }
 
+  // ── Contract editor overrides — order.pricing.contractOverrides ───────────
+  // Per-block operator text: null/absent/blank = generated default (this layer
+  // is a no-op on untouched orders). ONE layer serves BOTH documents (shared
+  // generator) — contract-only blocks simply don't print on estimates. Money is
+  // NOT here: line items / totals stay in the pricing engine (lineItemLabels /
+  // lineItemOverrides / custom items), so text edits can never move a total.
+  // Shape: { fields: {date, dueDate, familyName, orderNumber}, validityNote,
+  //   dueDateText, dueDateNote, customerBox, cemeteryBox, deceasedBlock,
+  //   notesText, terms, hidden: ['validity'|'dueDate'|'deceased'|'notes'|'terms'] }
+  const co = order.pricing?.contractOverrides || {}
+  const coHidden = new Set(Array.isArray(co.hidden) ? co.hidden : [])
+  const coText = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  const coLines = (v) => { const t = coText(v); return t ? t.split('\n').map(s => s.trim()).filter(Boolean) : null }
+
   // buildDoc(S) renders the ENTIRE document at vertical scale S. Font sizes shrink
   // via a setFontSize wrapper, and every Y coordinate maps through phys() so the
   // y-cursor logic below stays in logical (S=1) units — no per-line edits needed.
@@ -7268,7 +7282,13 @@ export async function generateEstimatePDF(order, opts = {}) {
   // the order #, so it is never blank.
   const custFullName = [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ').trim()
   const fileLabel = familyName || custFullName || (order.orderNumber || 'DRAFT')
-  const ibRows = [['Date', infoDate], ['Due Date', infoDue], ['Family Name', fileLabel], ['Order #', order.orderNumber || 'DRAFT']]
+  // Contract-editor field overrides win over each derived value.
+  const ibRows = [
+    ['Date', coText(co.fields?.date) || infoDate],
+    ['Due Date', coText(co.fields?.dueDate) || infoDue],
+    ['Family Name', coText(co.fields?.familyName) || fileLabel],
+    ['Order #', coText(co.fields?.orderNumber) || order.orderNumber || 'DRAFT'],
+  ]
   // Enlarged header info box (#6) — bigger box + text, square corners, uniform
   // 0.4 stroke (#4).
   const ibW = 74, ibRowH = 6, ibX = W - M - ibW, ibTop = y + 11
@@ -7292,15 +7312,15 @@ export async function generateEstimatePDF(order, opts = {}) {
   y += 6
 
   // Estimate-only: 30-day validity note under the title/info box.
-  if (!isContract) {
+  if (!isContract && !coHidden.has('validity')) {
     doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(...TEXT)
-    doc.text('This estimate is valid for 30 days.', M, y)
+    doc.text(coText(co.validityNote) || 'This estimate is valid for 30 days.', M, y)
     y += 6
   }
 
   // ============================ DUE DATE ================================
   // Sprint 3u — contract only. Estimates skip this block entirely.
-  if (isContract) {
+  if (isContract && !coHidden.has('dueDate')) {
     // Sprint 3w / S1 — prefer the stored dates (set / auto-populated on step
     // 10). Mausoleum orders with BOTH range dates set render an
     // "earliest – latest" range; other orders render a single date. Falls back
@@ -7329,10 +7349,11 @@ export async function generateEstimatePDF(order, opts = {}) {
     }
     // Sprint S1 — for a mausoleum range, the disclaimer says "within the
     // due-date window" instead of "on the due date"; the rest is identical.
-    const deliveryDisclaimer = (due.isRange
+    // Contract-editor override replaces the whole disclaimer paragraph.
+    const deliveryDisclaimer = coText(co.dueDateNote) || ((due.isRange
       ? 'To be delivered within the due-date window or as near that time as existing circumstances of trade and freighting facilities will permit. '
       : 'To be delivered on the due date or as near that time as existing circumstances of trade and freighting facilities will permit. ')
-      + 'All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.'
+      + 'All agreements made contingent upon strikes, fires, accidents or other causes beyond our control.')
     // Measure the disclaimer at its render font size (9pt) for an accurate line count.
     doc.setFont('helvetica', 'italic')
     doc.setFontSize(9)
@@ -7343,7 +7364,7 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10)
     doc.setTextColor(...NAVY)
-    doc.text(`Due Date: ${due.dateText}`, M, y)
+    doc.text(`Due Date: ${coText(co.dueDateText) || due.dateText}`, M, y)
     y += 5
 
     // Delivery disclaimer — exact legal text, contract only (signed or unsigned).
@@ -7365,39 +7386,56 @@ export async function generateEstimatePDF(order, opts = {}) {
     const padX = 3
     const lineH = 4.4
 
+    // Contract-editor overrides — each override replaces its ENTIRE box body
+    // (the extras below fold into the text the operator saved). Pre-wrapped at
+    // the render width so long override lines advance the cursor correctly.
+    doc.setFontSize(9)
+    const custOverride = coLines(co.customerBox)
+    const cemOverride = coLines(co.cemeteryBox)
+
     // A3 — pull the FULL customer block. Read the real record keys (addressLine1 /
     // phonePrimary / emailAlt) with legacy fallbacks; only render city/state/zip
     // when there's an actual city or zip, so a lone "NJ" never shows by itself.
     const street = [c.addressLine1 || c.address, c.addressLine2].filter(Boolean).join(', ')
     const phone = c.phonePrimary || c.phone
     const altEmail = c.emailAlt || c.altEmail
-    const leftLines = [pdfCustomerLine(order)]
-    if (street) leftLines.push(street)
-    const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
-    if (c.city || c.zip) leftLines.push(cityLine)
-    if (phone) leftLines.push('Phone: ' + formatPhone(phone))
-    if (c.email) leftLines.push('Email: ' + c.email)
-    if (altEmail) leftLines.push('Alt email: ' + altEmail)
+    let leftLines
+    if (custOverride) {
+      leftLines = custOverride.flatMap(ln => doc.splitTextToSize(ln, colW - 2 * padX))
+    } else {
+      leftLines = [pdfCustomerLine(order)]
+      if (street) leftLines.push(street)
+      const cityLine = [c.city, c.state, c.zip].filter(Boolean).join(', ')
+      if (c.city || c.zip) leftLines.push(cityLine)
+      if (phone) leftLines.push('Phone: ' + formatPhone(phone))
+      if (c.email) leftLines.push('Email: ' + c.email)
+      if (altEmail) leftLines.push('Alt email: ' + altEmail)
+    }
 
-    const rightLines = []
-    if (cem.name) rightLines.push(cem.name)
-    const cemLoc = [cem.city, cem.state].filter(Boolean).join(', ')
-    if (cemLoc) rightLines.push(cemLoc)
-    const lot = []
-    if (cem.section) lot.push(`Section ${cem.section}`)
-    if (cem.lot) lot.push(`Lot ${cem.lot}`)
-    if (cem.grave) lot.push(`Grave ${cem.grave}`)
-    if (lot.length) rightLines.push(lot.join(' · '))
+    let rightLines
+    if (cemOverride) {
+      rightLines = cemOverride.flatMap(ln => doc.splitTextToSize(ln, colW - 2 * padX))
+    } else {
+      rightLines = []
+      if (cem.name) rightLines.push(cem.name)
+      const cemLoc = [cem.city, cem.state].filter(Boolean).join(', ')
+      if (cemLoc) rightLines.push(cemLoc)
+      const lot = []
+      if (cem.section) lot.push(`Section ${cem.section}`)
+      if (cem.lot) lot.push(`Lot ${cem.lot}`)
+      if (cem.grave) lot.push(`Grave ${cem.grave}`)
+      if (lot.length) rightLines.push(lot.join(' · '))
+    }
     const graveOpts = [['single', 'Single'], ['dd', 'Double Deep'], ['sxs', 'Side×Side'], ['family', 'Family']]
     // Only the SELECTED grave type prints (plain text); nothing if none set.
-    const graveLabel = graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null
+    // All three extras are suppressed when the cemetery box is overridden.
+    const graveLabel = cemOverride ? null : (graveOpts.find(([code]) => order.plot?.type === code)?.[1] || null)
     // #1 — plot details: ONE compact location line. Prefers the free-text
     // grave_location; falls back to composing the legacy parts (read-fallback) so
     // existing orders never go blank. Nothing prints if there's no location at all.
-    const plotLine = composeGraveLocation(order) || null
-    doc.setFontSize(9)
+    const plotLine = cemOverride ? null : (composeGraveLocation(order) || null)
     const plotWrapped = plotLine ? doc.splitTextToSize(plotLine, colW - 2 * padX) : []
-    const hasFoundation = !!order.foundationType
+    const hasFoundation = cemOverride ? false : !!order.foundationType
     const extraRows = (graveLabel ? 1 : 0) + plotWrapped.length + (hasFoundation ? 1 : 0)
 
     const headerH = 7
@@ -7455,8 +7493,12 @@ export async function generateEstimatePDF(order, opts = {}) {
   // up with the box, and sits FLUSH on the box's top border (no gap). The deceased
   // name/date line(s) are captured here and rendered INSIDE the box, just under
   // the bar (emitted right after specBoxStart, below). Visual only — same draws.
+  // Contract-editor override: each override line renders as a person row (a
+  // " | " splits name | right-aligned dates); the whole section hides via
+  // hidden:['deceased'] and can exist on override text alone (no deceased[]).
+  const deceasedOverride = coLines(co.deceasedBlock)
   let deceasedBarLines = null
-  if (order.deceased?.length) {
+  if ((order.deceased?.length || deceasedOverride) && !coHidden.has('deceased')) {
     // Black banner bar with reversed (white) centered title.
     ensure(18)
     y += 2
@@ -7467,7 +7509,12 @@ export async function generateEstimatePDF(order, opts = {}) {
     doc.text('DECEASED INFORMATION', W / 2, y + 4.5, { align: 'center' })
     doc.setTextColor(...TEXT)
     y += barH                 // box top border begins immediately at the bar's bottom (flush)
-    deceasedBarLines = pdfDeceasedLines(order)
+    deceasedBarLines = deceasedOverride
+      ? deceasedOverride.map(t => {
+          const [name, dates] = t.split(' | ')
+          return { kind: 'person', name: (name || '').trim(), dates: (dates || '').trim() }
+        })
+      : pdfDeceasedLines(order)
   }
 
   // SERVICE section removed (round 2) — the line-item descriptions already make
@@ -7895,6 +7942,17 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.rect(M - 2, specBoxStart - 2, W - 2 * M + 4, (y - specBoxStart) + 2)
   y += 6
 
+  // Contract-editor note — an optional customer-facing paragraph under the
+  // pricing box (both documents). Absent unless the operator wrote one.
+  const coNote = coText(co.notesText)
+  if (coNote && !coHidden.has('notes')) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+    const noteLines = doc.splitTextToSize(coNote, W - 2 * M)
+    ensure(4 * noteLines.length + 2)
+    doc.text(noteLines, M, y)
+    y += 4 * noteLines.length + 2
+  }
+
   // ============ PAYMENT TERMS (CONTRACT ONLY, by service type) ============
   // Payment terms belong on the contract, not the estimate — nothing is "due"
   // on a quote. Small services (acid wash / repair / inscription / other — NO
@@ -8007,12 +8065,18 @@ export async function generateEstimatePDF(order, opts = {}) {
   // single-leading so it stays compact. Governing-law + entire-agreement clauses
   // are appended. The ESTIMATE has no legal
   // block here — its sign-off is the call-to-action below.
-  if (isContract) {
-    const numberedTerms = [
-      ...legalParagraphs,
-      'This agreement is governed by the laws of the State of New Jersey.',
-      'This writing is the entire agreement between the parties; no oral modifications are binding.',
-    ]
+  if (isContract && !coHidden.has('terms')) {
+    // Contract-editor override: paragraphs separated by blank lines, numbered
+    // here (write them unnumbered in the editor). Replaces the ENTIRE list
+    // including the governing-law + entire-agreement clauses.
+    const coTerms = coText(co.terms)
+    const numberedTerms = coTerms
+      ? coTerms.split(/\n\s*\n/).map(s => s.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean)
+      : [
+          ...legalParagraphs,
+          'This agreement is governed by the laws of the State of New Jersey.',
+          'This writing is the entire agreement between the parties; no oral modifications are binding.',
+        ]
     // Black section bar.
     const tcBarH = 6
     doc.setFillColor(0, 0, 0)
