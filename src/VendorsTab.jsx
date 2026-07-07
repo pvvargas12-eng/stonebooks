@@ -742,7 +742,9 @@ function PartnersView({ partners, onReload, flash }) {
     if (!r.ok) { flash(r.error || 'Could not create the invite link.'); return }
     try { await navigator.clipboard.writeText(r.url) } catch { /* clipboard optional */ }
     if (p.email) {
-      sendShopEmail({
+      // sendShopEmail reports failure by RESOLVING with {ok:false} — check it,
+      // never assume (the launch-day invite "sent" toast lied on a failed send).
+      const mail = await sendShopEmail({
         to: p.email,
         subject: `Your Stonebooks Trade portal — ${p.company_name}`,
         html: `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
@@ -752,7 +754,9 @@ function PartnersView({ partners, onReload, flash }) {
           `<p style="margin:18px 0"><a href="${r.url}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">Create your login →</a></p>` +
           `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments · Perth Amboy, NJ</p></div>`,
         text: `Welcome to Stonebooks Trade. Create your login: ${r.url}`,
-      }).then(() => flash(`Invite emailed to ${p.email} + link copied.`)).catch(() => flash('Link copied — email failed, paste it manually.'))
+      }).catch(e => ({ ok: false, error: e?.message || 'send threw' }))
+      if (mail.ok) flash(`Invite emailed to ${p.email} + link copied.`)
+      else flash(`Link COPIED (paste it manually) — email failed: ${mail.error}`)
     } else {
       flash('Invite link copied — add a company email to send it from here.')
     }
