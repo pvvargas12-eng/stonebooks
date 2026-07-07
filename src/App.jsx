@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './lib/supabase'
-import { getSession, onAuthStateChange, signInWithPassword } from './lib/auth'
-import { tradeSignup } from './lib/vendorsData'
+import { getSession, onAuthStateChange, signInWithPassword, signOut } from './lib/auth'
+import { tradeSignup, getMyPartnerContext } from './lib/vendorsData'
+import PartnerPortal from './PartnerPortal'
 import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
 import CatalogTab from './CatalogTab'
@@ -470,6 +471,15 @@ const isCatalogRoute = () => {
   return new URLSearchParams(window.location.search).get('catalog') === '1'
 }
 
+// /trade — STONEBOOKS TRADE, the dealer portal's own front door (like /catalog
+// is the catalog's). Dealers sign in / sign up here under Trade branding and
+// never see the Shevchenko staff gate. Deep links (?trade=<id>, ?payments=1,
+// ?trade_invite=<code>) all ride this path.
+const isTradeRoute = () => {
+  if (typeof window === 'undefined') return false
+  return window.location.pathname.replace(/\/+$/, '') === '/trade'
+}
+
 // /sign/<token> — PUBLIC remote contract signing. No staff auth; the token is the
 // credential and is validated by the service-role signing-* Edge Functions.
 const getSignToken = () => {
@@ -494,6 +504,9 @@ export default function App() {
   if (approveToken) {
     return <ApprovePage token={approveToken} />
   }
+  if (isTradeRoute()) {
+    return <TradePortalStandalone />
+  }
   if (isCatalogRoute()) {
     return <CatalogStandalone />
   }
@@ -502,6 +515,84 @@ export default function App() {
     return <Stonebooks />
   }
   return <CustomerApp />
+}
+
+// ── STONEBOOKS TRADE — the dealer portal's own front door (/trade) ───────────
+// Unauthenticated: the Trade-branded sign-in (or the signup form when the URL
+// carries ?trade_invite). Authenticated dealer: their portal. Authenticated
+// STAFF who wander here get a polite pointer back to the main app.
+function TradePortalStandalone() {
+  const [authed, setAuthed] = useState(undefined)
+  const [ctx, setCtx] = useState(undefined)   // undefined=resolving, null=not a partner
+  const inviteCode = (() => {
+    try { return new URLSearchParams(window.location.search).get('trade_invite') } catch { return null }
+  })()
+
+  useEffect(() => {
+    let cancelled = false
+    getSession().then(s => { if (!cancelled) setAuthed(!!s) })
+    const unsub = onAuthStateChange((u) => setAuthed(!!u))
+    return () => { cancelled = true; unsub() }
+  }, [])
+  useEffect(() => {
+    if (authed !== true) { setCtx(undefined); return }
+    let cancelled = false
+    getMyPartnerContext().then(c => { if (!cancelled) setCtx(c || null) }).catch(() => { if (!cancelled) setCtx(null) })
+    return () => { cancelled = true }
+  }, [authed])
+
+  if (authed === undefined || (authed && ctx === undefined)) {
+    return (<><style>{css}</style><div className="loading" style={{ minHeight: '100vh' }}><div className="spinner" />Loading…</div></>)
+  }
+  if (!authed) return inviteCode ? <TradeSignupGate code={inviteCode} /> : <TradeLoginGate />
+  if (!ctx) {
+    // Signed in but not mapped to a company — most likely a staff account.
+    return (
+      <><style>{css}</style>
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
+          <div style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', maxWidth: 420, textAlign: 'center' }}>
+            <div style={{ fontFamily: 'var(--font-d)', fontSize: 22, color: 'var(--navy)', marginBottom: 8 }}>stonebooks <span style={{ color: 'var(--accent)' }}>· Trade</span></div>
+            <div style={{ fontSize: 14, color: 'var(--text-mid)', marginBottom: 18 }}>This is the dealer portal — your login isn't linked to a dealer company. Staff work happens in the main app.</div>
+            <a href="/" className="btn btn-navy" style={{ display: 'inline-block', padding: '10px 22px', fontSize: 13, textDecoration: 'none' }}>Open Stonebooks →</a>
+            <div style={{ marginTop: 12 }}>
+              <button type="button" onClick={() => signOut()} style={{ background: 'none', border: 'none', color: 'var(--text-mid)', fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline' }}>Sign out</button>
+            </div>
+          </div>
+        </div>
+      </>
+    )
+  }
+  return <PartnerPortal context={ctx} onSignOut={() => { signOut(); setAuthed(false) }} />
+}
+
+// Trade-branded dealer sign-in (the /trade front door).
+function TradeLoginGate() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true); setErr(null)
+    const r = await signInWithPassword(email, password)
+    setBusy(false)
+    if (!r.ok) setErr(r.error)
+  }
+  return (
+    <>
+      <style>{css}</style>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
+        <form onSubmit={submit} style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', width: '100%', maxWidth: 380, boxShadow: 'var(--shadow-md)' }}>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: 24, color: 'var(--navy)', marginBottom: 4 }}>stonebooks <span style={{ color: 'var(--accent)' }}>· Trade</span></div>
+          <div style={{ fontSize: 13, color: 'var(--text-mid)', marginBottom: 22 }}>Dealer portal · Shevchenko Monuments. Sign in — or use your company's invite link to create a login.</div>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" autoFocus autoComplete="username" style={gateInput} />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" autoComplete="current-password" style={gateInput} />
+          {err && <div style={{ color: '#b54040', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+          <button type="submit" className="btn btn-navy" disabled={busy} style={{ width: '100%', padding: '12px', fontSize: 13 }}>{busy ? 'Signing in…' : 'Sign In'}</button>
+        </form>
+      </div>
+    </>
+  )
 }
 
 // Standalone catalog: staff sign-in gate, then the gallery/detail with NO CRM

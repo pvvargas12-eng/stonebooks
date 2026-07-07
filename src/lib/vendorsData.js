@@ -339,7 +339,7 @@ export async function invitePartnerUser({ partnerId, email } = {}) {
   if (!partnerId) return { ok: false, error: 'Missing partner.' }
   if (!email?.trim()) return { ok: false, error: 'Enter the partner contact’s email.' }
   const { data, error } = await supabase.functions.invoke('vendor-invite', {
-    body: { partner_id: partnerId, email: email.trim().toLowerCase(), redirect_to: window.location.origin },
+    body: { partner_id: partnerId, email: email.trim().toLowerCase(), redirect_to: `${window.location.origin}/trade` },
   })
   if (error) {
     // Edge function not deployed yet, or returned an error body.
@@ -511,7 +511,7 @@ export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {
     if (!to) return { ok: false, error: 'No company email on file' }
     const fam = r.family_name || 'your order'
     const num = r.dealer_order_number ? ` (${r.dealer_order_number})` : ''
-    const link = `${window.location.origin}/?trade=${r.id}`
+    const link = `${window.location.origin}/trade?trade=${r.id}`
     const M = {
       accepted:      { s: `Order accepted — ${fam}${num}`,        b: 'Your order was accepted and is locked in. We’ll take it from here.', cta: 'See your order' },
       rush_approved: { s: `Rush approved — ${fam}${num}`,          b: `Your rush is approved${r.rush_need_by ? ` — ${r.rush_need_by} is guaranteed` : ''}.`, cta: 'See your order' },
@@ -674,12 +674,12 @@ export async function getOrCreatePartnerInvite(partnerId, { createdBy = null } =
     .select('*').eq('partner_id', partnerId).is('revoked_at', null)
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (existing && (!existing.expires_at || new Date(existing.expires_at) > new Date())) {
-    return { ok: true, invite: existing, url: `${window.location.origin}/?trade_invite=${existing.code}` }
+    return { ok: true, invite: existing, url: `${window.location.origin}/trade?trade_invite=${existing.code}` }
   }
   const { data, error } = await supabase.from('partner_invites')
     .insert({ partner_id: partnerId, created_by: createdBy }).select().single()
   if (error) return wrapErr(error)
-  return { ok: true, invite: data, url: `${window.location.origin}/?trade_invite=${data.code}` }
+  return { ok: true, invite: data, url: `${window.location.origin}/trade?trade_invite=${data.code}` }
 }
 export async function revokePartnerInvite(inviteId) {
   const { error } = await supabase.from('partner_invites')
@@ -792,7 +792,7 @@ export async function setTradeInvoiceStatus(invoiceId, status, { paidNote = null
       `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
       `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`
     ).join('')
-    const link = `${window.location.origin}/?payments=1`
+    const link = `${window.location.origin}/trade?payments=1`
     const html =
       `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
       `<p style="margin:0 0 10px"><b>Invoice ${inv.invoice_number} — Shevchenko Monuments</b></p>` +
