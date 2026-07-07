@@ -400,7 +400,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             {sections.includes('addons') && <div className="of-span-2"><AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={ADDON_SETS[type] || []} /></div>}
             {sections.includes('finance') && (
               <div className="of-span-2"><FinanceCard order={order} lineItems={lineItems} totals={totals} displayedTotal={displayedTotal}
-                updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}
+                update={update} updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}
                 deposit={deposit} setDeposit={setDeposit}
                 markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate} /></div>
             )}
@@ -1332,7 +1332,7 @@ function AcidWashCard({ order, update, updatePricing }) {
 // Extracted from FinanceCard so the SAME box renders inside each multi-quote
 // panel (QuotesManager) — one implementation, mount-agnostic.
 // =============================================================================
-export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false }) {
+export function LineItemsBox({ order, lineItems, update = null, updatePricing, isLocked = false }) {
   const p = order.pricing || {}
   const overrides = p.lineItemOverrides || {}
   const customItems = p.customLineItems || []
@@ -1382,11 +1382,40 @@ export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false
     updatePricing({ lineItemOrder: codes })
   }
 
+  // ── Qty steppers (redesign) ─────────────────────────────────────────────
+  // Add-on lines (code `addon-<code>`) carry a real quantity on order.addOns —
+  // the stepper edits THAT (amount = price × qty recomputes through the one
+  // engine). Needs the order-level `update`; mounts without it get no stepper.
+  const addons = order.addOns || []
+  const addonFor = (it) => (!it.custom && update && String(it.code).startsWith('addon-'))
+    ? addons.find(a => `addon-${a.code}` === String(it.code)) : null
+  const stepAddonQty = (a, dir) => {
+    const next = Math.max(1, (Number(a.qty) || 1) + dir)
+    if (next === (Number(a.qty) || 1)) return
+    update({ addOns: addons.map(x => x.code === a.code ? { ...x, qty: next } : x) })
+  }
+
+  // ── Override summary ("N overridden / reset all") ───────────────────────
+  const overriddenCount = displayItems.filter(it =>
+    !it.custom && overrides[it.code] != null && overrides[it.code] !== '').length
+  const resetAllOverrides = () => updatePricing({ lineItemOverrides: {} })
+
   return (
     <div className="of-li">
       {isLocked && (
         <div className="of-li-locked" style={{ marginBottom: 10, padding: '8px 11px', background: '#fbf6ec', border: '1px solid #e7d9bd', borderRadius: 7, fontSize: 13, color: '#7a6a45' }}>
           <strong>This order is signed — pricing is locked.</strong> Re-open the order to edit line items.
+        </div>
+      )}
+      {overriddenCount > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 12.5 }}>
+          <span style={{ background: '#fbf3e4', border: '1px solid #e7d3a8', color: '#7a5c1e', borderRadius: 999, padding: '2px 10px', fontWeight: 600 }}
+            title="Lines whose price was hand-set (the ↻ on a row resets just that line)">
+            {overriddenCount} price {overriddenCount === 1 ? 'override' : 'overrides'}
+          </span>
+          {!isLocked && (
+            <button type="button" className="of-link" onClick={resetAllOverrides}>Reset all to calculated</button>
+          )}
         </div>
       )}
       {displayItems.map((it, i) => {
@@ -1447,6 +1476,26 @@ export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false
           </div>
           {!it.quotePending && (
             <div style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '1px 2px 7px', fontSize: 12, color: 'var(--sb-text-muted, #8a7f6c)' }}>
+              {(() => {
+                const a = addonFor(it)
+                if (!a) return null
+                const qty = Number(a.qty) || 1
+                return (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title="Quantity — the line amount is price × qty">
+                    <span style={{ fontWeight: 600 }}>Qty</span>
+                    {!isLocked && (
+                      <button type="button" className="of-li-x" style={{ padding: '0 5px' }} disabled={qty <= 1}
+                        onClick={() => stepAddonQty(a, -1)}>−</button>
+                    )}
+                    <span style={{ minWidth: 16, textAlign: 'center', fontWeight: 600 }}>{qty}</span>
+                    {!isLocked && (
+                      <button type="button" className="of-li-x" style={{ padding: '0 5px' }}
+                        onClick={() => stepAddonQty(a, 1)}>+</button>
+                    )}
+                    {qty > 1 && <span style={{ opacity: 0.7 }}>@ {fmtUSD(Number(a.price) || 0)} ea</span>}
+                  </span>
+                )
+              })()}
               <label style={{ display: 'flex', gap: 4, alignItems: 'center', cursor: isLocked ? 'default' : 'pointer' }}>
                 <input type="checkbox" checked={it.taxable !== false} disabled={isLocked} onChange={e => setFlag(it, 'taxable', e.target.checked)} /> Taxable
               </label>
@@ -1478,7 +1527,7 @@ export function LineItemsBox({ order, lineItems, updatePricing, isLocked = false
 // =============================================================================
 // FINANCIAL + signed date
 // =============================================================================
-function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate }) {
+function FinanceCard({ order, lineItems, totals, displayedTotal, update, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate }) {
   const p = order.pricing || {}
   const hasManual = manualTotal != null && manualTotal !== ''
   const ownerQuoteItems = lineItems.filter(it => it.quotePending)
@@ -1501,7 +1550,7 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, updatePricing, 
 
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
-      <LineItemsBox order={order} lineItems={lineItems} updatePricing={updatePricing} isLocked={pricingLocked} />
+      <LineItemsBox order={order} lineItems={lineItems} update={update} updatePricing={updatePricing} isLocked={pricingLocked} />
 
       <div className="of-toggles">
         <CheckRow checked={p.applyTax !== false} onChange={v => updatePricing({ applyTax: v })} label="Apply NJ sales tax (6.625%)" />

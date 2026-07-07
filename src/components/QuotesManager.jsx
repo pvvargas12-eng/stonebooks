@@ -233,7 +233,7 @@ export default function QuotesManager({ order, update }) {
                 <AddOnsCard order={synth} update={adUpdate} updatePricing={adUpdatePricing} kinds={allKinds} />
                 <div className="of-card">
                   <div className="of-card-head"><h3 className="of-card-title">Line items</h3></div>
-                  <LineItemsBox order={synth} lineItems={lineItems} updatePricing={adUpdatePricing} />
+                  <LineItemsBox order={synth} lineItems={lineItems} update={adUpdate} updatePricing={adUpdatePricing} />
                 </div>
               </div>
             )}
