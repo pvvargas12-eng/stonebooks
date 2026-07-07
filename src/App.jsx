@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './lib/supabase'
 import { getSession, onAuthStateChange, signInWithPassword } from './lib/auth'
+import { tradeSignup } from './lib/vendorsData'
 import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
 import CatalogTab from './CatalogTab'
@@ -536,6 +537,59 @@ const gateInput = {
   background: 'var(--cream)', color: 'var(--text)',
 }
 function CatalogLoginGate() {
+  // Stonebooks Trade invite link (?trade_invite=<code>) → dealer self-signup
+  // instead of the staff sign-in. Everything else lands on the staff gate.
+  const inviteCode = (() => {
+    try { return new URLSearchParams(window.location.search).get('trade_invite') } catch { return null }
+  })()
+  return inviteCode ? <TradeSignupGate code={inviteCode} /> : <StaffLoginGate />
+}
+
+// Dealer self-signup — one reusable company link creates unlimited logins.
+// Runs through the trade-signup Edge Function (service role), then signs the
+// new user straight in; the auth listener routes them into their portal.
+function TradeSignupGate({ code }) {
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [err, setErr] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!name.trim()) { setErr('Enter your name.'); return }
+    if (password.length < 8) { setErr('Password needs at least 8 characters.'); return }
+    if (password !== confirm) { setErr('Passwords don’t match.'); return }
+    setBusy(true); setErr(null)
+    const r = await tradeSignup({ code, email, password, name: name.trim(), phone: phone.trim() || null })
+    if (!r.ok) { setBusy(false); setErr(r.error); return }
+    const s = await signInWithPassword(email, password)
+    setBusy(false)
+    if (!s.ok) setErr('Account created — sign in with your new email and password.')
+    // On success the auth listener flips `authed` → the Trade portal loads.
+  }
+  return (
+    <>
+      <style>{css}</style>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
+        <form onSubmit={submit} style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', width: '100%', maxWidth: 400, boxShadow: 'var(--shadow-md)' }}>
+          <div style={{ fontFamily: 'var(--font-d)', fontSize: 24, color: 'var(--navy)', marginBottom: 2 }}>stonebooks <span style={{ color: 'var(--accent)' }}>· Trade</span></div>
+          <div style={{ fontSize: 13, color: 'var(--text-mid)', marginBottom: 20 }}>You’ve been invited to the Shevchenko Monuments trade portal. Create your login — anyone at your company with this link can make their own.</div>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name" autoFocus style={gateInput} />
+          <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Phone (optional)" style={gateInput} />
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" autoComplete="username" style={gateInput} />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password (8+ characters)" autoComplete="new-password" style={gateInput} />
+          <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Confirm password" autoComplete="new-password" style={gateInput} />
+          {err && <div style={{ color: '#b54040', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+          <button type="submit" className="btn btn-navy" disabled={busy} style={{ width: '100%', padding: '12px', fontSize: 13 }}>{busy ? 'Creating your login…' : 'Create login & enter portal'}</button>
+        </form>
+      </div>
+    </>
+  )
+}
+
+function StaffLoginGate() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState(null)

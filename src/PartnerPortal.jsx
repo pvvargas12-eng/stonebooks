@@ -16,7 +16,7 @@ import { signOut } from './lib/auth'
 import {
   listVendorItems, createVendorRequest, uploadVendorFile, listVendorAttachments,
   vendorFileSignedUrl, addVendorEvent, listVendorEvents, listVendorPOs,
-  listTradeInvoices,
+  listTradeInvoices, listTradeOrders, tradeServiceLabel,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
@@ -52,7 +52,7 @@ function PartnerStatusChip({ status }) {
   return <span className="vp-chip" style={{ background: t.bg, borderColor: t.bd, color: t.fg }}>{PARTNER_STATUS[status] || status}</span>
 }
 
-export default function PartnerPortal({ context, onSignOut }) {
+export default function PartnerPortal({ context, onSignOut, viewAs = false }) {
   const partner = context?.partner
   const partnerId = context?.partnerId
   // Email deep link: ?trade=<orderId> lands the dealer straight on that order,
@@ -86,9 +86,14 @@ export default function PartnerPortal({ context, onSignOut }) {
     return () => { cancelled = true }
   }, [])
 
-  const openJobs = items.filter(i => OPEN_STATUSES.includes(i.status))
-  const ready = items.filter(i => i.status === 'ready_for_pickup')
-  const completed = items.filter(i => i.status === 'completed')
+  // Partner sessions are RLS-scoped already; the explicit partner filter makes
+  // staff "View as" render exactly what the dealer sees (staff RLS is a
+  // superset and would otherwise show every company's rows).
+  const scoped = partnerId ? items.filter(i => i.request?.partner_id === partnerId) : items
+  const scopedPos = partnerId ? pos.filter(po => po.partner_id === partnerId) : pos
+  const openJobs = scoped.filter(i => OPEN_STATUSES.includes(i.status))
+  const ready = scoped.filter(i => i.status === 'ready_for_pickup')
+  const completed = scoped.filter(i => i.status === 'completed')
 
   const handleSignOut = async () => {
     await signOut()
@@ -102,10 +107,10 @@ export default function PartnerPortal({ context, onSignOut }) {
 
       <header className="vp-header">
         <div className="vp-brand">
-          <div className="vp-brand-mark">Shevchenko <span>Monuments</span></div>
-          <div className="vp-brand-sub">Partner Portal{partner?.company_name ? ` · ${partner.company_name}` : ''}</div>
+          <div className="vp-brand-mark">stonebooks <span>· Trade</span></div>
+          <div className="vp-brand-sub">Shevchenko Monuments{partner?.company_name ? ` · ${partner.company_name}` : ''}</div>
         </div>
-        <button type="button" className="vp-signout" onClick={handleSignOut}>Sign out</button>
+        <button type="button" className="vp-signout" onClick={handleSignOut}>{viewAs ? 'Exit' : 'Sign out'}</button>
       </header>
 
       <nav className="vp-nav">
@@ -117,6 +122,9 @@ export default function PartnerPortal({ context, onSignOut }) {
           { code: 'ready', label: `Ready for Pickup${ready.length ? ` (${ready.length})` : ''}` },
           { code: 'completed', label: 'Completed' },
           { code: 'payments', label: 'Payments' },
+          { code: 'fix', label: 'Fix' },
+          { code: 'reports', label: 'Reports' },
+          { code: 'settings', label: 'Settings' },
           { code: 'pos', label: 'POs' },
         ].map(t => (
           <button key={t.code} type="button" className={`vp-nav-btn ${view === t.code ? 'on' : ''}`} onClick={() => setView(t.code)}>{t.label}</button>
@@ -141,8 +149,11 @@ export default function PartnerPortal({ context, onSignOut }) {
             {view === 'open' && <ItemList title="Open Jobs" empty="No open jobs right now." items={openJobs} onOpenItem={setOpenItem} />}
             {view === 'ready' && <ItemList title="Ready for Pickup" empty="Nothing ready for pickup yet." items={ready} onOpenItem={setOpenItem} />}
             {view === 'completed' && <ItemList title="Completed" empty="No completed jobs yet." items={completed} onOpenItem={setOpenItem} />}
-            {view === 'payments' && <PartnerPayments />}
-            {view === 'pos' && <POList pos={pos} />}
+            {view === 'payments' && <PartnerPayments partnerId={partnerId} />}
+            {view === 'fix' && <PartnerFix partnerId={partnerId} onNew={() => setView('new')} />}
+            {view === 'reports' && <PartnerReports partnerId={partnerId} />}
+            {view === 'settings' && <PartnerSettings partner={partner} />}
+            {view === 'pos' && <POList pos={scopedPos} />}
           </>
         )}
       </main>
@@ -160,7 +171,8 @@ function PortalHome({ partner, openJobs, ready, completed, onNew, onGo, onOpenIt
       <div className="vp-hero">
         <div>
           <div className="vp-hero-h">Welcome{partner?.contact_person ? `, ${partner.contact_person}` : ''}</div>
-          <div className="vp-hero-sub">Submit work to Shevchenko Monuments and track it through to pickup.</div>
+          <div className="vp-hero-sub">Place orders, watch them move through the shop live, and pick up on time.
+            <b style={{ color: '#9A7209' }}> Work placed through the portal is guaranteed.</b></div>
         </div>
         <button type="button" className="vp-primary vp-hero-cta" onClick={onNew}>+ New Request</button>
       </div>
@@ -314,13 +326,13 @@ function NewRequestForm({ partnerId, partner, onDone }) {
 }
 
 // ── Payments — the dealer's invoices (RLS hides drafts; sent + paid only) ────
-function PartnerPayments() {
+function PartnerPayments({ partnerId = null }) {
   const [invoices, setInvoices] = useState(null)
   useEffect(() => {
     let alive = true
-    listTradeInvoices().then(rows => { if (alive) setInvoices(rows) }).catch(() => { if (alive) setInvoices([]) })
+    listTradeInvoices({ partnerId }).then(rows => { if (alive) setInvoices(rows) }).catch(() => { if (alive) setInvoices([]) })
     return () => { alive = false }
-  }, [])
+  }, [partnerId])
   if (invoices === null) return <div className="vp-empty">Loading…</div>
   const openBal = invoices.filter(i => i.status === 'sent').reduce((s, i) => s + i.total, 0)
   return (
@@ -359,6 +371,111 @@ function PartnerPayments() {
           {inv.notes && <div style={{ fontSize: 12.5, color: '#6a6a62', marginTop: 6, fontStyle: 'italic' }}>{inv.notes}</div>}
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Fix — report a problem on past work, track it to resolution ──────────────
+function PartnerFix({ partnerId, onNew }) {
+  const [orders, setOrders] = useState(null)
+  useEffect(() => {
+    let alive = true
+    listTradeOrders({ partnerId, scope: 'all' })
+      .then(rows => { if (alive) setOrders(rows.filter(o => (o.services || []).includes('fix'))) })
+      .catch(() => { if (alive) setOrders([]) })
+    return () => { alive = false }
+  }, [partnerId])
+  return (
+    <div className="vp-section">
+      <div className="vp-section-h">Fix requests</div>
+      <p style={{ fontSize: 13.5, color: '#6a6a62', margin: '6px 0 14px' }}>
+        Something not right on past work? Start a fix request — pick the <b>Fix</b> service, tell us what's wrong, attach a photo.
+      </p>
+      <button type="button" className="vp-primary" onClick={onNew}>+ Request a fix</button>
+      <div style={{ marginTop: 18 }}>
+        {orders === null ? <div className="vp-empty">Loading…</div>
+          : orders.length === 0 ? <div className="vp-empty">No fix requests yet.</div>
+          : orders.map(o => (
+            <div key={o.id} style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '10px 16px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <b>{o.family_name || o.request_name || 'Fix'}</b>
+              <span style={{ fontSize: 12.5, color: '#6a6a62' }}>{o.dealer_order_number || ''}</span>
+              <span className="vp-chip" style={o.status === 'completed'
+                ? { background: '#e8f5ee', borderColor: '#7ac4a0', color: '#1f6b46' }
+                : { background: '#fdf8ec', borderColor: '#e8d9a8', color: '#8a6d12' }}>
+                {o.status === 'completed' ? 'Resolved' : o.accepted_at ? 'In progress' : 'Submitted'}
+              </span>
+            </div>
+          ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Reports — their numbers, our receipts (on-time proof for the guarantee) ──
+function PartnerReports({ partnerId }) {
+  const [orders, setOrders] = useState(null)
+  useEffect(() => {
+    let alive = true
+    listTradeOrders({ partnerId, scope: 'all' }).then(rows => { if (alive) setOrders(rows) }).catch(() => { if (alive) setOrders([]) })
+    return () => { alive = false }
+  }, [partnerId])
+  if (orders === null) return <div className="vp-empty">Loading…</div>
+  const done = orders.filter(o => o.status === 'completed')
+  const finishedAt = (o) => o.pickup_receipt?.at || o.updated_at
+  const withDeadline = done.filter(o => o.needed_by || o.rush_need_by)
+  const onTime = withDeadline.filter(o => {
+    const dl = (o.rush_status === 'approved' && o.rush_need_by) ? o.rush_need_by : (o.needed_by || o.rush_need_by)
+    return String(finishedAt(o)).slice(0, 10) <= String(dl).slice(0, 10)
+  })
+  const turnarounds = done
+    .map(o => (Date.parse(String(finishedAt(o)).slice(0, 10)) - Date.parse(String(o.created_at).slice(0, 10))) / 86400000)
+    .filter(d => Number.isFinite(d) && d >= 0)
+  const avgDays = turnarounds.length ? Math.round(turnarounds.reduce((s, d) => s + d, 0) / turnarounds.length) : null
+  const stat = (n, label, color = '#1e2d3d') => (
+    <div style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '14px 20px', minWidth: 130 }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums' }}>{n}</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>{label}</div>
+    </div>
+  )
+  return (
+    <div className="vp-section">
+      <div className="vp-section-h">Reports</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
+        {stat(orders.length, 'Orders all-time')}
+        {stat(done.length, 'Completed')}
+        {stat(withDeadline.length ? `${Math.round((onTime.length / withDeadline.length) * 100)}%` : '—', 'On time (of dated orders)', '#1f6b46')}
+        {stat(avgDays != null ? `${avgDays}d` : '—', 'Avg turnaround')}
+      </div>
+      <p style={{ fontSize: 12.5, color: '#8a8a85', marginTop: 12 }}>
+        On-time counts completed orders against the deadline you gave us (rush dates included). Our guarantee lives and dies by this number.
+      </p>
+    </div>
+  )
+}
+
+// ── Settings — company info + who has access ─────────────────────────────────
+function PartnerSettings({ partner }) {
+  const row = (k, v) => (
+    <div style={{ display: 'flex', gap: 12, padding: '7px 0', borderTop: '0.5px solid #f0ede6', fontSize: 13.5 }}>
+      <span style={{ width: 120, color: '#8a8a85', flexShrink: 0 }}>{k}</span><span>{v || '—'}</span>
+    </div>
+  )
+  return (
+    <div className="vp-section">
+      <div className="vp-section-h">Settings</div>
+      <div style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '14px 18px', marginTop: 12, maxWidth: 520 }}>
+        {row('Company', partner?.company_name)}
+        {row('Contact', partner?.contact_person)}
+        {row('Phone', partner?.phone)}
+        {row('Email', partner?.email)}
+        {row('Address', partner?.address)}
+        {row('Terms', partner?.payment_terms)}
+      </div>
+      <p style={{ fontSize: 12.5, color: '#8a8a85', marginTop: 12, maxWidth: 520 }}>
+        Notification emails go to the company email above. To update company info, add teammates
+        (your signup link works for everyone at your company), or remove a login, contact
+        Shevchenko Monuments — 732-442-1286 · shevcoteam@gmail.com.
+      </p>
     </div>
   )
 }

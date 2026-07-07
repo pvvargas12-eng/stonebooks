@@ -9,7 +9,8 @@
 // =============================================================================
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { fmtDate, getCurrentStaffName, sendOrderEmail } from './lib/stonebooksData'
+import { fmtDate, getCurrentStaffName, sendOrderEmail, sendShopEmail } from './lib/stonebooksData'
+import PartnerPortal from './PartnerPortal'
 import {
   listPartners, createPartner, updatePartner,
   listVendorItems, getVendorItem, createVendorRequest, updateVendorRequest, updateVendorItem,
@@ -21,6 +22,7 @@ import {
   listTradeUpdates, markTradeUpdatesSeen, getTradeUpdatesCount, decideTradeRush,
   listTradeInvoices, listUninvoicedTradeOrders, createTradeInvoice,
   deleteTradeInvoiceLine, setTradeInvoiceStatus, tradeServiceLabel,
+  getOrCreatePartnerInvite,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
@@ -727,6 +729,35 @@ function EmailComposer({ email, onClose, onSent }) {
 // ── Partners ─────────────────────────────────────────────────────────────────
 function PartnersView({ partners, onReload, flash }) {
   const [editing, setEditing] = useState(null)   // partner | 'new' | null
+  const [viewAs, setViewAs] = useState(null)     // partner | null — troubleshooting portal view
+  const [inviteBusy, setInviteBusy] = useState(null)
+
+  // ONE reusable signup link per company — copied to the clipboard and (when a
+  // company email exists) emailed with a short note. Unlimited logins per link.
+  const inviteLink = async (p) => {
+    setInviteBusy(p.id)
+    const who = await getCurrentStaffName().catch(() => null)
+    const r = await getOrCreatePartnerInvite(p.id, { createdBy: who })
+    setInviteBusy(null)
+    if (!r.ok) { flash(r.error || 'Could not create the invite link.'); return }
+    try { await navigator.clipboard.writeText(r.url) } catch { /* clipboard optional */ }
+    if (p.email) {
+      sendShopEmail({
+        to: p.email,
+        subject: `Your Stonebooks Trade portal — ${p.company_name}`,
+        html: `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
+          `<p style="margin:0 0 10px"><b>Welcome to Stonebooks Trade.</b></p>` +
+          `<p style="margin:0">Place orders, track design and stone status live, approve layouts, and see invoices — all in one place. ` +
+          `Use the link below to create your login. Anyone at ${p.company_name} can use the same link to make their own.</p>` +
+          `<p style="margin:18px 0"><a href="${r.url}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">Create your login →</a></p>` +
+          `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments · Perth Amboy, NJ</p></div>`,
+        text: `Welcome to Stonebooks Trade. Create your login: ${r.url}`,
+      }).then(() => flash(`Invite emailed to ${p.email} + link copied.`)).catch(() => flash('Link copied — email failed, paste it manually.'))
+    } else {
+      flash('Invite link copied — add a company email to send it from here.')
+    }
+  }
+
   return (
     <>
       <div className="vend-filters"><div style={{ flex: 1 }} /><button type="button" className="vend-primary" onClick={() => setEditing('new')}>+ Add partner</button></div>
@@ -737,12 +768,39 @@ function PartnersView({ partners, onReload, flash }) {
             <div key={p.id} className="vend-row vend-prow">
               <div className="vend-strong">{p.company_name}</div><div>{p.contact_person || '—'}</div><div>{p.phone || '—'}</div>
               <div className="vend-dim">{p.email || '—'}</div><div>{p.payment_terms || '—'}</div><div>{p.active ? 'Yes' : 'No'}</div>
-              <div><button type="button" className="vend-open" onClick={() => setEditing(p)}>Edit</button></div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button type="button" className="vend-open" onClick={() => setEditing(p)}>Edit</button>
+                <button type="button" className="vend-open" disabled={inviteBusy === p.id} onClick={() => inviteLink(p)}
+                  title="Copy (and email) the reusable signup link — unlimited logins per company">
+                  {inviteBusy === p.id ? '…' : 'Invite link'}
+                </button>
+                <button type="button" className="vend-open" onClick={() => setViewAs(p)}
+                  title="See their portal exactly as they see it (troubleshooting)">View portal</button>
+              </div>
             </div>
           ))}
       </div>
       {editing && <PartnerModal partner={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onReload(); flash('Partner saved.') }} />}
+      {viewAs && <ViewAsPartner partner={viewAs} onClose={() => setViewAs(null)} />}
     </>
+  )
+}
+
+// ── View-as — the dealer's exact portal, rendered under the staff session ─────
+// Everything works (staff RLS is a superset), so Paul can reproduce anything a
+// dealer reports. The amber bar makes the mode unmistakable.
+function ViewAsPartner({ partner, onClose }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1400, background: '#f7f5f0', overflowY: 'auto' }}>
+      <div style={{ position: 'sticky', top: 0, zIndex: 10, display: 'flex', alignItems: 'center', gap: 12, background: '#8a5a12', color: '#fff', padding: '9px 16px', fontSize: 13.5, fontWeight: 600 }}>
+        <span>Viewing the portal as <b>{partner.company_name}</b> — actions you take here are real and logged as staff.</span>
+        <button type="button" onClick={onClose}
+          style={{ marginLeft: 'auto', font: 'inherit', fontWeight: 700, background: '#fff', color: '#8a5a12', border: 'none', borderRadius: 8, padding: '6px 14px', cursor: 'pointer' }}>
+          ✕ Exit view-as
+        </button>
+      </div>
+      <PartnerPortal context={{ partner, partnerId: partner.id }} onSignOut={onClose} viewAs />
+    </div>
   )
 }
 

@@ -665,6 +665,47 @@ export async function signTradeReceipt(order, kind, { where = null, signerRole =
   return { ok: true }
 }
 
+// ── Slice 8: reusable invite links ───────────────────────────────────────────
+// ONE link per company creates unlimited logins; revoke any time. Signup runs
+// through the trade-signup Edge Function (service role).
+export async function getOrCreatePartnerInvite(partnerId, { createdBy = null } = {}) {
+  if (!partnerId) return { ok: false, error: 'Missing company' }
+  const { data: existing } = await supabase.from('partner_invites')
+    .select('*').eq('partner_id', partnerId).is('revoked_at', null)
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (existing && (!existing.expires_at || new Date(existing.expires_at) > new Date())) {
+    return { ok: true, invite: existing, url: `${window.location.origin}/?trade_invite=${existing.code}` }
+  }
+  const { data, error } = await supabase.from('partner_invites')
+    .insert({ partner_id: partnerId, created_by: createdBy }).select().single()
+  if (error) return wrapErr(error)
+  return { ok: true, invite: data, url: `${window.location.origin}/?trade_invite=${data.code}` }
+}
+export async function revokePartnerInvite(inviteId) {
+  const { error } = await supabase.from('partner_invites')
+    .update({ revoked_at: new Date().toISOString() }).eq('id', inviteId)
+  return error ? wrapErr(error) : { ok: true }
+}
+export async function tradeSignup({ code, email, password, name, phone = null }) {
+  try {
+    const { data, error } = await supabase.functions.invoke('trade-signup', { body: { code, email, password, name, phone } })
+    if (error) return { ok: false, error: error.message || 'Signup failed.' }
+    if (data?.error) {
+      const M = {
+        invalid_invite: 'This invite link is not valid — ask Shevchenko for a fresh one.',
+        invite_revoked: 'This invite link was turned off — ask Shevchenko for a fresh one.',
+        invite_expired: 'This invite link expired — ask Shevchenko for a fresh one.',
+        email_in_use: 'That email already has a login — sign in instead, or use another email.',
+        password_too_short: 'Password needs at least 8 characters.',
+      }
+      return { ok: false, error: M[data.error] || data.error }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || 'Signup failed.' }
+  }
+}
+
 // ── Slice 7: invoicing ───────────────────────────────────────────────────────
 // Total = sum of lines, always (no stored total — honest by construction).
 // Dealers see invoices only once SENT (RLS hides drafts). Rush-approved orders
