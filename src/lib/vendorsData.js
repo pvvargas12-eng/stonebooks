@@ -460,6 +460,7 @@ const TRADE_ORDER_COLS = {
   stoneStatus: 'stone_status', stoneArrivedAt: 'stone_arrived_at', stoneDropLocation: 'stone_drop_location',
   archivedAt: 'archived_at', archivedBy: 'archived_by', jobId: 'job_id',
   status: 'status', generalNotes: 'general_notes', requestName: 'request_name',
+  dropoffReceipt: 'dropoff_receipt', pickupReceipt: 'pickup_receipt',
 }
 export async function updateTradeOrder(requestId, patch = {}) {
   if (!requestId) return { ok: false, error: 'Missing order id' }
@@ -550,6 +551,76 @@ export async function deleteTradeOrder(requestId) {
   if (!requestId) return { ok: false, error: 'Missing order id' }
   const { error } = await supabase.from('vendor_requests').delete().eq('id', requestId)
   if (error) return wrapErr(error)
+  return { ok: true }
+}
+
+// ── Slice 5: layouts, signatures, receipts ───────────────────────────────────
+// Layout versions V1..Vn via the trade_layouts SECURITY DEFINER RPC (partners
+// are RLS-locked out of proof_versions; the RPC ownership-checks and returns
+// sanitized rows).
+export async function getTradeLayouts(requestId) {
+  if (!requestId) return []
+  const { data, error } = await supabase.rpc('trade_layouts', { req: requestId })
+  if (error) { console.warn('[trade] trade_layouts:', error.message); return [] }
+  return Array.isArray(data) ? data : []
+}
+
+// Signature PNG (canvas dataURL) → private vendor-files bucket under the
+// partner prefix. No attachment row — signatures belong to their receipt /
+// approval, not the files list. Returns the storage path.
+export async function uploadTradeSignature(partnerId, requestId, dataUrl) {
+  try {
+    const blob = await (await fetch(dataUrl)).blob()
+    const path = `${partnerId || 'unknown'}/${requestId || 'misc'}/sig_${uid()}.png`
+    const { error } = await supabase.storage.from('vendor-files').upload(path, blob, { contentType: 'image/png' })
+    if (error) return { ok: false, error: error.message }
+    return { ok: true, path }
+  } catch (e) {
+    return { ok: false, error: e?.message || 'Signature upload failed' }
+  }
+}
+
+// Approve a layout: stamps proof_versions + flips design_phase (one RPC
+// transaction), then logs the shared event.
+export async function approveTradeLayout(requestId, proofId, { partnerId = null, sigPath = null, approver = null, actorRole = 'partner' } = {}) {
+  const { data, error } = await supabase.rpc('trade_approve_layout', {
+    req: requestId, proof: proofId, sig_path: sigPath, approver: approver || null,
+  })
+  if (error) return { ok: false, error: error.message }
+  if (!data) return { ok: false, error: 'Approval was not recorded — layout not found for this order.' }
+  await logTradeEvent({ requestId, partnerId, type: 'layout_approved', actor: approver, actorRole, detail: 'Layout approved & signed' })
+  return { ok: true }
+}
+
+// Dual-signature receipts (drop-off / pickup). Each call merges one party's
+// signature into the receipt jsonb; side effects fire on FIRST signature:
+// dropoff → stone arrived, pickup → order completed.
+export async function signTradeReceipt(order, kind, { where = null, signerRole = 'staff', signerName = null, sigPath = null } = {}) {
+  if (!order?.id || !['dropoff', 'pickup'].includes(kind)) return { ok: false, error: 'Bad receipt call' }
+  const col = kind === 'dropoff' ? 'dropoff_receipt' : 'pickup_receipt'
+  const existing = order[col] || null
+  const receipt = {
+    at: existing?.at || new Date().toISOString(),
+    where: existing?.where || where || 'Shevchenko shop — Perth Amboy',
+    signatures: [
+      ...(existing?.signatures || []).filter(s => s.role !== signerRole),
+      { role: signerRole, name: signerName || (signerRole === 'partner' ? 'Dealer' : 'Staff'), path: sigPath || null, at: new Date().toISOString() },
+    ],
+  }
+  const first = !existing
+  const patch = kind === 'dropoff'
+    ? { dropoffReceipt: receipt, ...(first ? { stoneStatus: 'arrived', stoneArrivedAt: receipt.at, stoneDropLocation: receipt.where } : {}) }
+    : { pickupReceipt: receipt, ...(first ? { status: 'completed' } : {}) }
+  const r = await updateTradeOrder(order.id, patch)
+  if (!r.ok) return r
+  await logTradeEvent({
+    requestId: order.id, partnerId: order.partner_id,
+    type: first ? (kind === 'dropoff' ? 'stone_dropped_off' : 'picked_up') : `${kind}_countersigned`,
+    detail: first
+      ? (kind === 'dropoff' ? `Stone dropped off — ${receipt.where} (signed)` : 'Stone picked up (signed)')
+      : `${kind === 'dropoff' ? 'Drop-off' : 'Pickup'} receipt countersigned`,
+    actor: signerName, actorRole: signerRole,
+  })
   return { ok: true }
 }
 

@@ -12,10 +12,12 @@
 // what, when — both sides read the same timeline).
 // =============================================================================
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   listTradeOrders, updateTradeOrder, logTradeEvent, listTradeOrderEvents,
   decideTradeRush, acceptTradeOrder, deleteTradeOrder, getTradeTracker,
+  getTradeLayouts, uploadTradeSignature, approveTradeLayout, signTradeReceipt,
+  uploadVendorFile, listVendorAttachments, vendorFileSignedUrl,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
 import { getCurrentStaffName } from '../lib/stonebooksData'
@@ -155,18 +157,77 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     await acceptTradeOrder(r.id, { actor: who })
   })
 
+  // ── Slice 5: signatures (layout approval / drop-off / pickup) ──────────────
+  const onSigDone = async ({ dataUrl, where }) => {
+    const m = sigModal
+    if (!m) return
+    setSigModal(null)
+    await withBusy(m.order.id, async () => {
+      const who = await actor()
+      const role = staffView ? 'staff' : 'partner'
+      let sigPath = null
+      if (dataUrl) {
+        const up = await uploadTradeSignature(m.order.partner_id, m.order.id, dataUrl)
+        if (up.ok) sigPath = up.path
+      }
+      if (m.mode === 'approve') {
+        await approveTradeLayout(m.order.id, m.proofId, { partnerId: m.order.partner_id, sigPath, approver: who, actorRole: role })
+      } else {
+        await signTradeReceipt(m.order, m.mode, { where, signerRole: role, signerName: who, sigPath })
+      }
+      refreshDetail(m.order.id)
+    })
+  }
+
+  const requestChanges = (r) => withBusy(r.id, async () => {
+    const who = await actor()
+    const note = (changesFor?.note || '').trim()
+    await updateTradeOrder(r.id, { designPhase: 'in_progress' })
+    await logTradeEvent({
+      requestId: r.id, partnerId: r.partner_id, type: 'changes_requested',
+      detail: `Changes requested${note ? `: "${note}"` : ''}`,
+      actor: who, actorRole: staffView ? 'staff' : 'partner',
+    })
+    setChangesFor(null)
+    refreshDetail(r.id)
+  })
+
+  const onPickPhoto = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    const r = photoForRef.current
+    if (!file || !r) return
+    await withBusy(r.id, async () => {
+      await uploadVendorFile(file, { partnerId: r.partner_id, requestId: r.id, uploaderRole: staffView ? 'staff' : 'partner', kind: 'completion_photo' })
+      refreshDetail(r.id)
+    })
+  }
+
   const [trackerById, setTrackerById] = useState({})
+  const [layoutsById, setLayoutsById] = useState({})
+  const [photosById, setPhotosById] = useState({})
+  const [sigModal, setSigModal] = useState(null)   // { mode: 'approve'|'dropoff'|'pickup', order, proofId? }
+  const [changesFor, setChangesFor] = useState(null) // { id, note } — request-changes note box
+  const photoInputRef = useRef(null)
+  const photoForRef = useRef(null)
+
+  const refreshDetail = useCallback((id) => {
+    listTradeOrderEvents(id).then(ev => setEventsById(m => ({ ...m, [id]: ev })))
+    getTradeTracker(id).then(steps => setTrackerById(m => ({ ...m, [id]: steps })))
+    getTradeLayouts(id).then(vs => setLayoutsById(m => ({ ...m, [id]: vs })))
+    listVendorAttachments({ requestId: id }).then(async (rows) => {
+      const photos = (rows || []).filter(a => a.kind === 'completion_photo')
+      const withUrls = await Promise.all(photos.map(async p => ({ ...p, url: await vendorFileSignedUrl(p.file_path) })))
+      setPhotosById(m => ({ ...m, [id]: withUrls }))
+    })
+  }, [])
+
   const toggleExpand = (r) => {
     const next = expandedId === r.id ? null : r.id
     setExpandedId(next)
-    if (next && !eventsById[r.id]) {
-      listTradeOrderEvents(r.id).then(ev => setEventsById(m => ({ ...m, [r.id]: ev })))
-    }
-    if (next) {
-      // Tracker refetches on every expand — milestone flips in the shop should
-      // show the moment anyone looks.
-      getTradeTracker(r.id).then(steps => setTrackerById(m => ({ ...m, [r.id]: steps })))
-    }
+    // Everything refetches on expand — shop milestone flips, new layout
+    // versions, and fresh photos show the moment anyone looks.
+    if (next) refreshDetail(r.id)
   }
 
   const phaseMeta = (code) => TRADE_DESIGN_PHASES.find(p => p.code === code) || TRADE_DESIGN_PHASES[0]
@@ -251,7 +312,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                     ) : r.stone_status === 'arrived' ? (
                       <span className="sb-tb-pill sb-tb-t-green">Arrived {fmtDT(r.stone_arrived_at)}</span>
                     ) : (
-                      <button type="button" className="sb-tb-dropbtn" disabled={busy} onClick={() => setStone(r, 'arrived')} title="Mark the stone as dropped off at the shop">
+                      <button type="button" className="sb-tb-dropbtn" disabled={busy} onClick={() => setSigModal({ mode: 'dropoff', order: r })} title="Sign the drop-off receipt — marks the stone arrived">
                         Stone dropped off?
                       </button>
                     )}
@@ -282,6 +343,45 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                         <b>Rush requested — needed by {fmtD(r.rush_need_by)}.</b> Approving guarantees the date.
                         <button type="button" className="sb-tb-approve" disabled={busy} onClick={() => rushDecide(r, true)}>Approve rush</button>
                         <button type="button" className="sb-tb-decline" disabled={busy} onClick={() => rushDecide(r, false)}>Decline</button>
+                      </div>
+                    )}
+
+                    {/* Layout versions V1..Vn — dealer approves & signs the current
+                        one, or requests changes (their words land in the feed). */}
+                    {(layoutsById[r.id] || []).length > 0 && (
+                      <div className="sb-tb-layouts">
+                        <div className="sb-tb-dl">Layout versions — every one kept</div>
+                        {layoutsById[r.id].map(v => (
+                          <div key={v.id} className={`sb-tb-layout${v.is_current ? ' cur' : ''}`}>
+                            {v.image_url
+                              ? <a href={v.image_url} target="_blank" rel="noreferrer"><img src={v.image_url} alt={`Layout V${v.version}`} className="sb-tb-layimg" /></a>
+                              : <span className="sb-tb-layimg sb-tb-layimg-none">V{v.version}</span>}
+                            <div className="sb-tb-layinfo">
+                              <b>V{v.version}{v.is_current ? ' · current' : ''}</b>
+                              <span className="sb-tb-dim">
+                                {v.approved_at ? `Approved ${fmtD(v.approved_at)}${v.approved_by ? ` — ${v.approved_by}` : ''}`
+                                  : v.sent_at ? `Sent for approval ${fmtD(v.sent_at)}`
+                                  : `Uploaded ${fmtD(v.uploaded_at)}`}
+                              </span>
+                            </div>
+                            {v.is_current && !v.approved_at && (
+                              <span className="sb-tb-layactions">
+                                <button type="button" className="sb-tb-acceptbtn" disabled={busy} onClick={() => setSigModal({ mode: 'approve', order: r, proofId: v.id })}>✓ Approve &amp; sign</button>
+                                <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setChangesFor({ id: r.id, note: '' })}>Request changes</button>
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                        {changesFor?.id === r.id && (
+                          <div className="sb-tb-changes">
+                            <textarea rows={2} placeholder='What needs to change? e.g. "date should read 1941"' value={changesFor.note}
+                              onChange={e => setChangesFor({ id: r.id, note: e.target.value })} />
+                            <div className="sb-tb-modal-actions">
+                              <button type="button" className="sb-tb-linkbtn" onClick={() => setChangesFor(null)}>Cancel</button>
+                              <button type="button" className="sb-tb-acceptbtn" disabled={busy || !changesFor.note.trim()} onClick={() => requestChanges(r)}>Send change request</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     <div className="sb-tb-detail-cols">
@@ -323,6 +423,48 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                             )
                           )}
                         </div>
+
+                        {/* Receipts — drop-off / pickup, dual signature */}
+                        <div className="sb-tb-receipts">
+                          {r.dropoff_receipt ? (
+                            <div className="sb-tb-receipt">
+                              <b>Drop-off</b> · {fmtD(r.dropoff_receipt.at)} · {r.dropoff_receipt.where}
+                              <span className="sb-tb-dim"> · signed: {(r.dropoff_receipt.signatures || []).map(s => s.name).join(' + ') || '—'}</span>
+                              {!(r.dropoff_receipt.signatures || []).some(s => s.role === (staffView ? 'staff' : 'partner')) && (
+                                <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setSigModal({ mode: 'dropoff', order: r })}>Countersign</button>
+                              )}
+                            </div>
+                          ) : staffView && (
+                            <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setSigModal({ mode: 'dropoff', order: r })}>Stone drop-off receipt…</button>
+                          )}
+                          {r.pickup_receipt ? (
+                            <div className="sb-tb-receipt">
+                              <b>Pickup</b> · {fmtD(r.pickup_receipt.at)}
+                              <span className="sb-tb-dim"> · signed: {(r.pickup_receipt.signatures || []).map(s => s.name).join(' + ') || '—'}</span>
+                              {!(r.pickup_receipt.signatures || []).some(s => s.role === (staffView ? 'staff' : 'partner')) && (
+                                <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setSigModal({ mode: 'pickup', order: r })}>Countersign</button>
+                              )}
+                            </div>
+                          ) : (r.accepted_at && r.status !== 'completed' && (
+                            <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setSigModal({ mode: 'pickup', order: r })}>Mark picked up (sign)…</button>
+                          ))}
+                        </div>
+
+                        {/* Completion photos — staff add; dealer sees the work
+                            before driving over. */}
+                        <div className="sb-tb-dl" style={{ marginTop: 12 }}>Completion photos</div>
+                        <div className="sb-tb-photos">
+                          {(photosById[r.id] || []).map(p => p.url && (
+                            <a key={p.id} href={p.url} target="_blank" rel="noreferrer">
+                              <img src={p.url} className="sb-tb-photo" alt={p.file_name || 'Completion photo'} />
+                            </a>
+                          ))}
+                          {(photosById[r.id] || []).length === 0 && <span className="sb-tb-dim">None yet.</span>}
+                          {staffView && (
+                            <button type="button" className="sb-tb-linkbtn" disabled={busy}
+                              onClick={() => { photoForRef.current = r; photoInputRef.current?.click() }}>+ Add photo</button>
+                          )}
+                        </div>
                       </div>
                       <div>
                         <div className="sb-tb-dl">Activity — who did what, when</div>
@@ -352,6 +494,65 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
           onClose={() => setEditOrder(null)}
           onSaved={() => { setEditOrder(null); reload() }} />
       )}
+
+      {sigModal && (
+        <TradeSignModal mode={sigModal.mode} busy={busyId === sigModal.order.id}
+          onCancel={() => setSigModal(null)} onDone={onSigDone} />
+      )}
+      <input ref={photoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
+    </div>
+  )
+}
+
+// ── Signature modal — shared by layout approval, drop-off, and pickup ────────
+// Plain canvas pad (mouse + touch — drop-offs happen at a truck tailgate).
+function TradeSignModal({ mode, busy, onCancel, onDone }) {
+  const canvasRef = useRef(null)
+  const drawing = useRef(false)
+  const [hasInk, setHasInk] = useState(false)
+  const [where, setWhere] = useState('Shevchenko shop — Perth Amboy')
+  const pos = (e) => {
+    const c = canvasRef.current
+    const rect = c.getBoundingClientRect()
+    const t = e.touches?.[0] || e
+    return { x: (t.clientX - rect.left) * (c.width / rect.width), y: (t.clientY - rect.top) * (c.height / rect.height) }
+  }
+  const start = (e) => { drawing.current = true; const ctx = canvasRef.current.getContext('2d'); const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y) }
+  const move = (e) => {
+    if (!drawing.current) return
+    e.preventDefault()
+    const ctx = canvasRef.current.getContext('2d')
+    const p = pos(e)
+    ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.strokeStyle = '#17202a'
+    ctx.lineTo(p.x, p.y); ctx.stroke()
+    setHasInk(true)
+  }
+  const end = () => { drawing.current = false }
+  const clear = () => { const c = canvasRef.current; c.getContext('2d').clearRect(0, 0, c.width, c.height); setHasInk(false) }
+  const titles = {
+    approve: 'Approve this layout — sign below',
+    dropoff: 'Stone drop-off receipt — sign below',
+    pickup: 'Stone pickup receipt — sign below',
+  }
+  return (
+    <div className="sb-tb-modal-overlay" onClick={() => !busy && onCancel()}>
+      <div className="sb-tb-modal" onClick={e => e.stopPropagation()}>
+        <div className="sb-tb-modal-title">{titles[mode] || 'Sign below'}</div>
+        {mode === 'dropoff' && (
+          <label className="sb-tb-f"><span>Where</span><input value={where} onChange={e => setWhere(e.target.value)} /></label>
+        )}
+        <canvas ref={canvasRef} width={520} height={160} className="sb-tb-sigpad"
+          onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+          onTouchStart={start} onTouchMove={move} onTouchEnd={end} />
+        <div className="sb-tb-modal-actions">
+          <button type="button" className="sb-tb-linkbtn" onClick={clear}>Clear</button>
+          <button type="button" className="sb-tb-linkbtn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="sb-tb-acceptbtn" disabled={busy || !hasInk}
+            onClick={() => onDone({ dataUrl: canvasRef.current.toDataURL('image/png'), where })}>
+            {busy ? 'Saving…' : mode === 'approve' ? '✓ Approve & sign' : 'Sign & save'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -539,6 +740,22 @@ const TB_CSS = `
   .sb-tb-svcchip.on { background: #9A7209; border-color: #9A7209; color: #fff; }
   .sb-tb-modal-err { background: #fbedec; color: #b3261e; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; margin-bottom: 10px; }
   .sb-tb-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+
+  .sb-tb-sigpad { width: 100%; height: 160px; border: 1.5px dashed #c9c2b1; border-radius: 10px; background: #fff; touch-action: none; cursor: crosshair; margin-bottom: 10px; }
+  .sb-tb-layouts { margin: 10px 0 4px; }
+  .sb-tb-layout { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 0.5px solid #ece8df; flex-wrap: wrap; }
+  .sb-tb-layout:first-of-type { border-top: none; }
+  .sb-tb-layout.cur { background: #fdfbf4; }
+  .sb-tb-layimg { width: 74px; height: 54px; object-fit: cover; border: 0.5px solid #ddd6c6; border-radius: 6px; background: #f4f1e9; }
+  .sb-tb-layimg-none { display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #a09a8c; }
+  .sb-tb-layinfo { display: flex; flex-direction: column; gap: 1px; font-size: 13px; min-width: 0; }
+  .sb-tb-layactions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .sb-tb-changes { padding: 8px 0; }
+  .sb-tb-changes textarea { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; padding: 8px 10px; border: 0.5px solid #d8d2c4; border-radius: 8px; margin-bottom: 8px; }
+  .sb-tb-receipts { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .sb-tb-receipt { font-size: 12.5px; color: #2a2a2a; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #f4f7f4; border: 0.5px solid #cfe0d2; border-radius: 8px; padding: 6px 10px; }
+  .sb-tb-photos { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sb-tb-photo { width: 84px; height: 62px; object-fit: cover; border: 0.5px solid #ddd6c6; border-radius: 7px; }
 
   @media (max-width: 900px) {
     .sb-tb-head { display: none; }
