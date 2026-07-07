@@ -24,7 +24,7 @@ import {
   bulkArchiveOrders, hardDeleteOrder, TASK_KINDS,
 } from '../lib/stonebooksData'
 import { SALES_REPS } from '../SalesMode'
-import { isOrderRow, followUpUrgency } from '../lib/leads'
+import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES } from '../lib/leads'
 
 const pad = (n) => String(n).padStart(2, '0')
 // today as YYYY-MM-DD — call only in event handlers / effects (never in render).
@@ -184,6 +184,11 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
       jobType: jobTypeLabel(o),
       status: statusInfo(o.status),
       design: layoutByLead.has(o.id) || o.waiting_on === 'reviewing_layout',
+      // Contract stalls — these rows live in Leads (Paul's rule: no deposit =
+      // lead) but are silently stuck mid-close: contracted status without a
+      // signature, or signed without a dollar down.
+      stall: CONTRACTED_STATUSES.includes(o.status) && !o.signed_at ? 'unsigned'
+        : o.signed_at ? 'nodeposit' : null,
       value: rowGrandTotal(o),
       cemetery: o.cemetery?.name || '—',
       started: o.created_at || null,
@@ -397,7 +402,11 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                         <td className="sb-lt-fam">{r.family}</td>
                         <td className="sb-lt-cust">{r.customer}</td>
                         <td>{r.jobType}</td>
-                        <td><span className="sb-lt-statuschip" style={{ color: r.status.color }}><span className="sb-lt-statusdot" style={{ background: r.status.color }} />{r.status.label}</span></td>
+                        <td>
+                          <span className="sb-lt-statuschip" style={{ color: r.status.color }}><span className="sb-lt-statusdot" style={{ background: r.status.color }} />{r.status.label}</span>
+                          {r.stall === 'unsigned' && <span className="sb-lt-stall sb-lt-stall-red" title="Contracted status but no signature on file — get it signed or move it back">Unsigned contract</span>}
+                          {r.stall === 'nodeposit' && <span className="sb-lt-stall sb-lt-stall-amber" title="Signed but no deposit recorded — becomes an Order once money is down">No deposit</span>}
+                        </td>
                         <td className="sb-lt-c-center">{r.design ? <span className="sb-lt-yes">Yes</span> : <span className="sb-lt-dash">—</span>}</td>
                         <td className="sb-lt-c-num">{r.value > 0 ? fmtUSD(r.value) : '—'}</td>
                         <td>{r.cemetery}</td>
@@ -552,6 +561,9 @@ const CSS = `
 .sb-lt-statuschip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
 .sb-lt-statusdot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .sb-lt-yes { font-size: 11.5px; font-weight: 700; color: #1d4ed8; background: #e7edfd; border-radius: 6px; padding: 2px 8px; }
+.sb-lt-stall { display: inline-block; margin-left: 7px; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 2px 7px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; vertical-align: middle; }
+.sb-lt-stall-red { color: #b3261e; background: #fbeaea; border: 1px solid #f0c9c6; }
+.sb-lt-stall-amber { color: #7a4a12; background: #fdf2e9; border: 1px solid #eed9be; }
 .sb-lt-dash { color: #c2bdb2; }
 .sb-lt-nocontact { font-size: 12px; font-weight: 600; color: #b3261e; }
 
