@@ -16,8 +16,9 @@ import { signOut } from './lib/auth'
 import {
   listVendorItems, createVendorRequest, uploadVendorFile, listVendorAttachments,
   vendorFileSignedUrl, addVendorEvent, listVendorEvents, listVendorPOs,
-  listTradeInvoices, listTradeOrders, tradeServiceLabel,
+  listTradeInvoices, listTradeOrders,
   TRADE_NOTIFY_PREFS, updatePartnerNotificationPrefs,
+  submitTradeIssue, listTradeIssues,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
@@ -151,7 +152,7 @@ export default function PartnerPortal({ context, onSignOut, viewAs = false }) {
             {view === 'ready' && <ItemList title="Ready for Pickup" empty="Nothing ready for pickup yet." items={ready} onOpenItem={setOpenItem} />}
             {view === 'completed' && <ItemList title="Completed" empty="No completed jobs yet." items={completed} onOpenItem={setOpenItem} />}
             {view === 'payments' && <PartnerPayments partnerId={partnerId} />}
-            {view === 'fix' && <PartnerFix partnerId={partnerId} onNew={() => setView('new')} />}
+            {view === 'fix' && <PartnerFix partnerId={partnerId} partner={partner} />}
             {view === 'reports' && <PartnerReports partnerId={partnerId} />}
             {view === 'settings' && <PartnerSettings partner={partner} />}
             {view === 'pos' && <POList pos={scopedPos} />}
@@ -222,10 +223,11 @@ function ItemCard({ item, onOpen }) {
 }
 
 // Trade service chips — mirrors TRADE_SERVICES in vendorsData (kept inline so
-// this file stays dependency-light; codes must match the DB check).
+// this file stays dependency-light; codes must match the DB check). 'fix' is
+// NOT offered — the Fix tab is for PORTAL issues; stone rework goes via Custom.
 const TRADE_SVC = [
   ['design', 'Design'], ['blast', 'Blast'], ['pickup', 'Pickup'],
-  ['install', 'Install'], ['doors', 'Doors'], ['fix', 'Fix'], ['custom', 'Custom…'],
+  ['install', 'Install'], ['doors', 'Doors'], ['custom', 'Custom…'],
 ]
 
 function NewRequestForm({ partnerId, partner, onDone }) {
@@ -254,6 +256,14 @@ function NewRequestForm({ partnerId, partner, onDone }) {
   const submit = async () => {
     if (!familyName.trim()) { setError('Enter the family name — it is how everyone tracks this order.'); return }
     if (rush && !rushNeedBy) { setError('Rush orders need the date you need it by.'); return }
+    // Single-service sanity check (Paul): design-only and blast-only orders are
+    // easy to mis-click — confirm before submitting.
+    const svcList = [...services]
+    if (svcList.length === 1 && (svcList[0] === 'design' || svcList[0] === 'blast')) {
+      const word = svcList[0] === 'design' ? 'DESIGN' : 'BLAST'
+      const sure = window.confirm(`Just to be sure — this order is ${word} ONLY.\n\nNo other services will be scheduled. Submit it as ${word} only?`)
+      if (!sure) return
+    }
     setBusy(true); setError(null)
     const res = await createVendorRequest({
       partnerId, source: 'partner', requestName, neededBy: neededBy || null, rush, generalNotes,
@@ -313,10 +323,11 @@ function NewRequestForm({ partnerId, partner, onDone }) {
 
       <div className="vp-items">
         {items.map((it, idx) => (
-          <VendorItemCard key={it._key} item={it} index={idx} onChange={(n) => setItem(idx, n)} onDuplicate={() => dupItem(idx)} onRemove={() => rmItem(idx)} canRemove={items.length > 1} />
+          <VendorItemCard key={it._key} item={it} index={idx} onChange={(n) => setItem(idx, n)} onDuplicate={() => dupItem(idx)} onRemove={() => rmItem(idx)} canRemove={items.length > 1}
+            hideWorkType hideReference />
         ))}
       </div>
-      <button type="button" className="vp-additem" onClick={addItem}>+ Add another item</button>
+      <button type="button" className="vp-additem" onClick={addItem}>+ Add another stone (one stone per item)</button>
 
       {error && <div className="vp-error">{error}</div>}
       <div className="vp-newreq-actions">
@@ -376,37 +387,57 @@ function PartnerPayments({ partnerId = null }) {
   )
 }
 
-// ── Fix — report a problem on past work, track it to resolution ──────────────
-function PartnerFix({ partnerId, onNew }) {
-  const [orders, setOrders] = useState(null)
-  useEffect(() => {
-    let alive = true
-    listTradeOrders({ partnerId, scope: 'all' })
-      .then(rows => { if (alive) setOrders(rows.filter(o => (o.services || []).includes('fix'))) })
-      .catch(() => { if (alive) setOrders([]) })
-    return () => { alive = false }
-  }, [partnerId])
+// ── Fix — report a problem with the PORTAL itself (Paul's Fix Log, dealer
+// side). Not stone rework — that goes through a normal order. Issues land in
+// Shevchenko's Updates feed and get tracked open → fixed.
+function PartnerFix({ partnerId, partner }) {
+  const [issues, setIssues] = useState(null)
+  const [desc, setDesc] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const load = () => listTradeIssues({ partnerId }).then(setIssues).catch(() => setIssues([]))
+  useEffect(() => { load() }, [partnerId])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const submit = async () => {
+    if (!desc.trim()) { setMsg({ err: true, text: 'Describe what went wrong.' }); return }
+    setBusy(true); setMsg(null)
+    const r = await submitTradeIssue({
+      partnerId, description: desc,
+      createdBy: partner?.contact_person || partner?.company_name || 'Dealer',
+    })
+    setBusy(false)
+    if (r.ok) { setDesc(''); setMsg({ text: 'Sent — Shevchenko sees this right away. Thank you!' }); load() }
+    else setMsg({ err: true, text: r.error || 'Could not send — try again.' })
+  }
+
+  const STATUS = { open: ['Open', '#fdf8ec', '#e8d9a8', '#8a6d12'], fixed: ['Fixed ✓', '#e8f5ee', '#7ac4a0', '#1f6b46'], dismissed: ['Closed', '#f4f2ee', '#ddd9d2', '#9a9a92'] }
   return (
     <div className="vp-section">
-      <div className="vp-section-h">Fix requests</div>
-      <p style={{ fontSize: 13.5, color: '#6a6a62', margin: '6px 0 14px' }}>
-        Something not right on past work? Start a fix request — pick the <b>Fix</b> service, tell us what's wrong, attach a photo.
+      <div className="vp-section-h">Fix — report a portal problem</div>
+      <p style={{ fontSize: 13.5, color: '#6a6a62', margin: '6px 0 12px', maxWidth: 560 }}>
+        Something in <b>Stonebooks Trade</b> not working right — a button, a page, a number that looks off?
+        Tell us here and we'll fix it. (Problems with a <b>stone</b> belong on an order — use + New Request.)
       </p>
-      <button type="button" className="vp-primary" onClick={onNew}>+ Request a fix</button>
-      <div style={{ marginTop: 18 }}>
-        {orders === null ? <div className="vp-empty">Loading…</div>
-          : orders.length === 0 ? <div className="vp-empty">No fix requests yet.</div>
-          : orders.map(o => (
-            <div key={o.id} style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '10px 16px', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <b>{o.family_name || o.request_name || 'Fix'}</b>
-              <span style={{ fontSize: 12.5, color: '#6a6a62' }}>{o.dealer_order_number || ''}</span>
-              <span className="vp-chip" style={o.status === 'completed'
-                ? { background: '#e8f5ee', borderColor: '#7ac4a0', color: '#1f6b46' }
-                : { background: '#fdf8ec', borderColor: '#e8d9a8', color: '#8a6d12' }}>
-                {o.status === 'completed' ? 'Resolved' : o.accepted_at ? 'In progress' : 'Submitted'}
-              </span>
-            </div>
-          ))}
+      <textarea className="vic-input" rows={3} value={desc} onChange={e => setDesc(e.target.value)}
+        style={{ width: '100%', maxWidth: 560, boxSizing: 'border-box' }}
+        placeholder='What happened, and where? e.g. "On the Orders page, the tracker shows the wrong date for KOWALSKI."' />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
+        <button type="button" className="vp-primary" onClick={submit} disabled={busy}>{busy ? 'Sending…' : 'Send to Shevchenko'}</button>
+        {msg && <span style={{ fontSize: 13, color: msg.err ? '#b54040' : '#1f6b46', fontWeight: 600 }}>{msg.text}</span>}
+      </div>
+      <div style={{ marginTop: 20 }}>
+        {issues === null ? <div className="vp-empty">Loading…</div>
+          : issues.length === 0 ? <div className="vp-empty">Nothing reported yet.</div>
+          : issues.map(i => {
+            const [label, bg, bd, fg] = STATUS[i.status] || STATUS.open
+            return (
+              <div key={i.id} style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '10px 16px', marginBottom: 8, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ flex: 1, minWidth: 200, fontSize: 13.5 }}>{i.description}</span>
+                <span style={{ fontSize: 12, color: '#8a8a85', whiteSpace: 'nowrap' }}>{fmtDate(i.created_at)}{i.created_by ? ` · ${i.created_by}` : ''}</span>
+                <span className="vp-chip" style={{ background: bg, borderColor: bd, color: fg }}>{label}</span>
+              </div>
+            )
+          })}
       </div>
     </div>
   )

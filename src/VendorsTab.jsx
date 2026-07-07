@@ -20,6 +20,7 @@ import {
   listVendorPOs, createVendorPO, updateVendorPO, nextPONumber,
   invitePartnerUser, listPartnerUsers,
   listTradeUpdates, markTradeUpdatesSeen, getTradeUpdatesCount, decideTradeRush,
+  listTradeIssues, setTradeIssueStatus,
   listTradeInvoices, listUninvoicedTradeOrders, createTradeInvoice,
   deleteTradeInvoiceLine, setTradeInvoiceStatus, tradeServiceLabel,
   getOrCreatePartnerInvite,
@@ -119,12 +120,23 @@ export default function VendorsTab() {
 // nav + sub-tab). Pending rush requests are actionable inline.
 function TradeUpdatesFeed({ onSeen }) {
   const [rows, setRows] = useState(null)
+  const [issues, setIssues] = useState([])
   const [busyId, setBusyId] = useState(null)
-  const load = useCallback(() => listTradeUpdates({ limit: 80 }).then(setRows).catch(() => setRows([])), [])
+  const load = useCallback(() => {
+    listTradeUpdates({ limit: 80 }).then(setRows).catch(() => setRows([]))
+    listTradeIssues({ openOnly: true }).then(setIssues).catch(() => setIssues([]))
+  }, [])
   useEffect(() => {
     load()
     markTradeUpdatesSeen().then(() => onSeen?.())
   }, [load, onSeen])
+
+  const resolveIssue = async (issue, status) => {
+    setBusyId(issue.id)
+    await setTradeIssueStatus(issue.id, status)
+    setBusyId(null)
+    load()
+  }
 
   const decideRush = async (ev, approve) => {
     setBusyId(ev.id)
@@ -139,9 +151,23 @@ function TradeUpdatesFeed({ onSeen }) {
     : '#9A7209'
 
   if (rows === null) return <div className="vend-updates-empty">Loading updates…</div>
-  if (rows.length === 0) return <div className="vend-updates-empty">No dealer activity yet — everything dealers do lands here.</div>
+  if (rows.length === 0 && issues.length === 0) return <div className="vend-updates-empty">No dealer activity yet — everything dealers do lands here.</div>
   return (
     <div className="vend-updates">
+      {/* Open portal issues (the dealer Fix tab) pinned on top — bugs first. */}
+      {issues.map(i => (
+        <div key={i.id} className="vend-update fresh" style={{ borderLeft: '3px solid #b54040' }}>
+          <span className="vend-update-dot" style={{ background: '#b54040' }} />
+          <div className="vend-update-body">
+            <div className="vend-update-line"><b>{i.partner?.company_name || 'Dealer'}</b> — portal problem: “{i.description}”</div>
+            <div className="vend-update-meta">{fmtDate(i.created_at)}{i.created_by ? ` · ${i.created_by}` : ''}</div>
+          </div>
+          <span className="vend-update-actions">
+            <button type="button" className="vend-update-approve" disabled={busyId === i.id} onClick={() => resolveIssue(i, 'fixed')}>Mark fixed</button>
+            <button type="button" className="vend-update-decline" disabled={busyId === i.id} onClick={() => resolveIssue(i, 'dismissed')}>Dismiss</button>
+          </span>
+        </div>
+      ))}
       {rows.map(ev => {
         const rushPending = ev.request?.rush_status === 'pending'
         return (

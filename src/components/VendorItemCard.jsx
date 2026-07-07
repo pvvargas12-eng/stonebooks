@@ -24,7 +24,10 @@ const NOTE_PLACEHOLDER = {
   other: 'Describe what needs to be done.',
 }
 
-export default function VendorItemCard({ item, index, onChange, onDuplicate, onRemove, canRemove = true }) {
+// hideWorkType / hideReference — the Stonebooks Trade order form picks services
+// and the order # at the ORDER level, so its item cards suppress the per-item
+// legacy work-type tiles and the duplicate reference field (Paul, 2026-07-07).
+export default function VendorItemCard({ item, index, onChange, onDuplicate, onRemove, canRemove = true, hideWorkType = false, hideReference = false }) {
   const [showOptional, setShowOptional] = useState(!!(item.cemetery || item.deceasedFamilyName))
   const fileRef = useRef(null)
   const wt = item.workType || 'design'
@@ -47,17 +50,21 @@ export default function VendorItemCard({ item, index, onChange, onDuplicate, onR
         </div>
       </div>
 
-      <div className="vic-tiles">
-        {WORK_TYPES.map(t => (
-          <button key={t.code} type="button" className={`vic-tile ${wt === t.code ? 'on' : ''}`} onClick={() => set({ workType: t.code })}>{t.label}</button>
-        ))}
-      </div>
+      {!hideWorkType && (
+        <div className="vic-tiles">
+          {WORK_TYPES.map(t => (
+            <button key={t.code} type="button" className={`vic-tile ${wt === t.code ? 'on' : ''}`} onClick={() => set({ workType: t.code })}>{t.label}</button>
+          ))}
+        </div>
+      )}
 
       <div className="vic-grid">
-        <label className="vic-field">
-          <span>Vendor reference</span>
-          <input className="vic-input" value={item.vendorReference || ''} onChange={e => set({ vendorReference: e.target.value })} placeholder="e.g. HM-2441" />
-        </label>
+        {!hideReference && (
+          <label className="vic-field">
+            <span>Vendor reference</span>
+            <input className="vic-input" value={item.vendorReference || ''} onChange={e => set({ vendorReference: e.target.value })} placeholder="e.g. HM-2441" />
+          </label>
+        )}
         <label className="vic-field">
           <span>Color</span>
           <input className="vic-input" list={`vic-colors-${index}`} value={item.color || ''} onChange={e => set({ color: e.target.value })} placeholder="Select or type" />

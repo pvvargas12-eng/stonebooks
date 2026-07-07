@@ -584,13 +584,40 @@ export async function decideTradeRush(requestId, approve, { actor = null } = {})
   return r
 }
 
+// ── Portal issues (the Trade Fix tab — problems with the PORTAL, not stones) ─
+export async function submitTradeIssue({ partnerId, description, page = null, createdBy = null }) {
+  if (!partnerId || !description?.trim()) return { ok: false, error: 'Describe the problem.' }
+  const { error } = await supabase.from('trade_issues')
+    .insert({ partner_id: partnerId, description: description.trim(), page, created_by: createdBy })
+  return error ? wrapErr(error) : { ok: true }
+}
+export async function listTradeIssues({ partnerId = null, openOnly = false } = {}) {
+  let q = supabase.from('trade_issues')
+    .select('*, partner:partners(id, company_name)')
+    .order('created_at', { ascending: false })
+  if (partnerId) q = q.eq('partner_id', partnerId)
+  if (openOnly) q = q.eq('status', 'open')
+  const { data, error } = await q
+  if (error) { console.warn('[trade] listTradeIssues:', error.message); return [] }
+  return data || []
+}
+export async function setTradeIssueStatus(id, status) {
+  const { error } = await supabase.from('trade_issues').update({ status }).eq('id', id)
+  return error ? wrapErr(error) : { ok: true }
+}
+
 // ── Updates feed (staff side) ────────────────────────────────────────────────
+// The red badge counts unseen dealer EVENTS + unseen portal ISSUES.
 export async function getTradeUpdatesCount() {
-  const { count, error } = await supabase.from('vendor_events')
-    .select('id', { count: 'exact', head: true })
-    .eq('actor_role', 'partner').is('staff_seen_at', null)
-  if (error) { console.warn('[trade] getTradeUpdatesCount:', error.message); return 0 }
-  return count || 0
+  const [{ count: ev, error: e1 }, { count: iss, error: e2 }] = await Promise.all([
+    supabase.from('vendor_events').select('id', { count: 'exact', head: true })
+      .eq('actor_role', 'partner').is('staff_seen_at', null),
+    supabase.from('trade_issues').select('id', { count: 'exact', head: true })
+      .is('staff_seen_at', null),
+  ])
+  if (e1) console.warn('[trade] getTradeUpdatesCount:', e1.message)
+  if (e2 && !isMissing(e2.message)) console.warn('[trade] issue count:', e2.message)
+  return (ev || 0) + (iss || 0)
 }
 export async function listTradeUpdates({ limit = 50, unseenOnly = false } = {}) {
   let q = supabase.from('vendor_events')
@@ -604,10 +631,13 @@ export async function listTradeUpdates({ limit = 50, unseenOnly = false } = {}) 
   return data || []
 }
 export async function markTradeUpdatesSeen() {
+  const now = new Date().toISOString()
   const { error } = await supabase.from('vendor_events')
-    .update({ staff_seen_at: new Date().toISOString() })
+    .update({ staff_seen_at: now })
     .eq('actor_role', 'partner').is('staff_seen_at', null)
   if (error) { console.warn('[trade] markTradeUpdatesSeen:', error.message); return { ok: false } }
+  await supabase.from('trade_issues').update({ staff_seen_at: now }).is('staff_seen_at', null)
+    .then(() => {}, () => {})
   return { ok: true }
 }
 
