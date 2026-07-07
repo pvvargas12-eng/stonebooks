@@ -496,6 +496,16 @@ const getApproveToken = () => {
 }
 
 export default function App() {
+  // Trade params on any non-/trade path (old-format invite links, emails sent
+  // before the /trade route existed, hand-typed links) forward to the Trade
+  // front door — a dealer link must NEVER land on staff chrome.
+  if (typeof window !== 'undefined' && !isTradeRoute()) {
+    const q = new URLSearchParams(window.location.search)
+    if (q.get('trade_invite') || q.get('trade') || q.get('payments')) {
+      window.location.replace(`/trade${window.location.search}`)
+      return null
+    }
+  }
   const signToken = getSignToken()
   if (signToken) {
     return <SignPage token={signToken} />
