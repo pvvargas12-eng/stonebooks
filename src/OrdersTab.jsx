@@ -97,6 +97,25 @@ const NEW_STONE_STAGES = [
   'proof_approved', 'stone_ordered', 'stone_received', 'stencil_created', 'stencil_cut',
   'production_started', 'production_completed', 'foundation_poured', 'ready_to_install', 'installed',
 ]
+// ── Kanban board (opens from the pipeline strip) ────────────────────────────
+// Same stage partition as the strip: a row that fails Paul's order rule
+// (signed/contracted AND deposit paid) is a Lead; otherwise its status picks
+// the column, with unknown statuses folding into Contracted — identical to
+// stripData, so the board and the tiles always agree.
+const BOARD_STAGES = [
+  { code: 'leads',         label: 'Leads' },
+  { code: 'contracted',    label: 'Contracted' },
+  { code: 'in_production', label: 'In production' },
+  { code: 'installed',     label: 'Installed' },
+  { code: 'paid_in_full',  label: 'Paid in full' },
+]
+// Drop targets. Leads is NOT one (demoting a signed order is a deliberate
+// OrderDetail act, not a mouse slip) and Paid in full is derived from the
+// payment ledger — dragging can't make an order paid.
+const BOARD_DROP_TARGETS = new Set(['contracted', 'in_production', 'installed'])
+const BOARD_COL_CAP = 40          // cards rendered per column before the "+N more" note
+const BOARD_OPEN_KEY = 'sb_orders_board_open'
+
 const SORT_OPTIONS = [
   { code: 'createdDesc',    label: 'Sort: Newest first' },
   { code: 'actionPriority', label: 'Sort: Action priority' },
@@ -209,6 +228,37 @@ function furthestStage(job) {
   return best ? { key: best.milestone_key, label: best.label || humanizeKey(best.milestone_key) } : null
 }
 
+// Row sorters — shared by the table (filtered) and the board columns so the
+// board honors the same sort dropdown / header clicks. Pure functions of the
+// enriched row; hoisted out of the filtered memo unchanged.
+const ROW_SORTERS = {
+  createdDesc: (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+  actionPriority: (a, b) => {
+    const bd = recencyBand(a.updated_at) - recencyBand(b.updated_at); if (bd) return bd
+    const sd = severityRank(a._pressure.blocker) - severityRank(b._pressure.blocker); if (sd) return sd
+    return new Date(b.updated_at) - new Date(a.updated_at)
+  },
+  lastActivity: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+  ageDesc:     (a, b) => (b._pressure.ageDays || 0) - (a._pressure.ageDays || 0),
+  balanceDesc: (a, b) => b._balance - a._balance,
+  totalDesc:   (a, b) => b._total - a._total,
+  depositDesc: (a, b) => b._paid - a._paid,
+  familyName:  (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
+  // Clickable column sorts (ascending base; sortDir flips them). Each falls
+  // back to family name so ties have a stable, readable secondary order.
+  customer:      (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
+  jobType:       (a, b) => orderTypeLabel(a).localeCompare(orderTypeLabel(b)) || (a._familyName || '').localeCompare(b._familyName || ''),
+  payment:       (a, b) => dimRank(_PAY_DIM_RANK, a._payment) - dimRank(_PAY_DIM_RANK, b._payment) || (a._familyName || '').localeCompare(b._familyName || ''),
+  design:        (a, b) => dimRank(_DESIGN_DIM_RANK, a._design) - dimRank(_DESIGN_DIM_RANK, b._design) || (a._familyName || '').localeCompare(b._familyName || ''),
+  stone:         (a, b) => dimRank(_STONE_DIM_RANK, a._stone) - dimRank(_STONE_DIM_RANK, b._stone) || (a._familyName || '').localeCompare(b._familyName || ''),
+  fdn:           (a, b) => dimRank(_FDN_DIM_RANK, a._fdn) - dimRank(_FDN_DIM_RANK, b._fdn) || (a._familyName || '').localeCompare(b._familyName || ''),
+  permit:        (a, b) => permitSortRank(a.permit_status) - permitSortRank(b.permit_status) || (a._familyName || '').localeCompare(b._familyName || ''),
+  total:         (a, b) => (a._total || 0) - (b._total || 0) || (a._familyName || '').localeCompare(b._familyName || ''),
+  dueDate:       (a, b) => cmpMaybeDate(a.target_completion_date, b.target_completion_date),
+  cemeteryName:  (a, b) => (a.cemetery?.name || '').localeCompare(b.cemetery?.name || ''),
+  paymentStatus: (a, b) => payRank(a) - payRank(b) || (a._familyName || '').localeCompare(b._familyName || ''),
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, onOpenHub, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
@@ -268,6 +318,19 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const sortCaret = (key) => (sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓')
   const [search, setSearch] = useState('')
   const [newLeadOpen, setNewLeadOpen] = useState(false)   // first-call lead intake modal
+
+  // ── Kanban board (opens from the pipeline strip, remembers last choice) ────
+  const [boardOpen, setBoardOpen] = useState(() => { try { return localStorage.getItem(BOARD_OPEN_KEY) === '1' } catch { return false } })
+  const toggleBoard = () => setBoardOpen(v => { const n = !v; try { localStorage.setItem(BOARD_OPEN_KEY, n ? '1' : '0') } catch { /* ignore */ } return n })
+  // Drop toast — 8s with Undo (the CAL-DRAG pattern); only the latest shows.
+  const [boardToast, setBoardToast] = useState(null)   // { text, undo?, error? }
+  const boardToastTimer = useRef(null)
+  useEffect(() => () => clearTimeout(boardToastTimer.current), [])
+  const showBoardToast = useCallback((t) => {
+    clearTimeout(boardToastTimer.current)
+    setBoardToast(t)
+    boardToastTimer.current = setTimeout(() => setBoardToast(null), 8000)
+  }, [])
 
   // Selection + pagination
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -393,13 +456,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // preCategory = every filter EXCEPT the category axis (and sort). It drives BOTH
   // the category counts AND the rows, so the selected category's count always
   // equals the rows shown.
-  const preCategory = useMemo(() => {
+  // preView = every filter EXCEPT the Orders·Leads·All partition (and category/sort).
+  // The table applies the partition on top (preCategory below); the kanban board
+  // reads preView directly so its Leads column stays populated in Orders view.
+  const preView = useMemo(() => {
     let list = enriched
-    // Orders · Leads · All partition — Paul's rule: an ORDER is contracted/signed
-    // AND deposit paid; everything else (incl. contracted-but-no-deposit) is a lead.
-    // A non-empty search ALWAYS shows the combined set so a name match surfaces.
-    const showAll = search.trim().length > 0 || view === 'all'
-    if (!showAll) list = list.filter(o => isOrderRow(o, o._paid))
     // PRIMARY axis (archived handled at fetch): Active = non-terminal status, Closed
     // = terminal (closed/cancelled). Archived fetch returns archived rows (any status).
     if (primaryView === 'active') list = list.filter(o => !TERMINAL_STATUSES.has(o.status))
@@ -430,8 +491,16 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       o.customer?.phone_primary, o.customer?.email, o.cemetery?.name, o.cemetery?.city, o.sales_rep,
     ].filter(Boolean).join(' ').toLowerCase().includes(needle))
     return list
-  }, [enriched, view, primaryView, queueFilter, quickView, pipelineFilters, paymentFilters,
+  }, [enriched, primaryView, queueFilter, quickView, pipelineFilters, paymentFilters,
       cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
+
+  // Orders · Leads · All partition — Paul's rule: an ORDER is contracted/signed
+  // AND deposit paid; everything else (incl. contracted-but-no-deposit) is a lead.
+  // A non-empty search ALWAYS shows the combined set so a name match surfaces.
+  const preCategory = useMemo(() => {
+    const showAll = search.trim().length > 0 || view === 'all'
+    return showAll ? preView : preView.filter(o => isOrderRow(o, o._paid))
+  }, [preView, view, search])
 
   // ── Pipeline strip + hot-chip counts — computed on the BASE scope (view
   // partition + primary axis + search only), so tiles/chips behave like the
@@ -458,6 +527,24 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     return { stages, needsCall, unsigned }
   }, [enriched, primaryView, search])
 
+  // ── Kanban board columns — preView (leads included) + category filter, same
+  // stage partition as stripData, sorted with the table's current sort.
+  const boardActive = boardOpen && primaryView === 'active'
+  const boardColumns = useMemo(() => {
+    if (!boardActive) return null
+    const list = categoryFilter ? preView.filter(o => o._category === categoryFilter) : preView
+    const cols = {}
+    for (const s of BOARD_STAGES) cols[s.code] = { rows: [], usd: 0 }
+    for (const o of list) {
+      const k = !isOrderRow(o, o._paid) ? 'leads' : (cols[o.status] ? o.status : 'contracted')
+      cols[k].rows.push(o); cols[k].usd += o._total || 0
+    }
+    const sorter = ROW_SORTERS[sortKey] || ROW_SORTERS.actionPriority
+    const flip = CLICK_SORT_KEYS.has(sortKey) && sortDir === 'desc'
+    for (const s of BOARD_STAGES) { cols[s.code].rows.sort(sorter); if (flip) cols[s.code].rows.reverse() }
+    return cols
+  }, [boardActive, preView, categoryFilter, sortKey, sortDir])
+
   // Live category counts — computed on the set with all OTHER active filters applied
   // (category axis excluded), so each chip shows exactly how many rows it would yield
   // and the SELECTED category's count equals the rows shown.
@@ -470,34 +557,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
   const filtered = useMemo(() => {
     const list = categoryFilter ? preCategory.filter(o => o._category === categoryFilter) : preCategory
-    const sorters = {
-      createdDesc: (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
-      actionPriority: (a, b) => {
-        const bd = recencyBand(a.updated_at) - recencyBand(b.updated_at); if (bd) return bd
-        const sd = severityRank(a._pressure.blocker) - severityRank(b._pressure.blocker); if (sd) return sd
-        return new Date(b.updated_at) - new Date(a.updated_at)
-      },
-      lastActivity: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
-      ageDesc:     (a, b) => (b._pressure.ageDays || 0) - (a._pressure.ageDays || 0),
-      balanceDesc: (a, b) => b._balance - a._balance,
-      totalDesc:   (a, b) => b._total - a._total,
-      depositDesc: (a, b) => b._paid - a._paid,
-      familyName:  (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
-      // Clickable column sorts (ascending base; sortDir flips them). Each falls
-      // back to family name so ties have a stable, readable secondary order.
-      customer:      (a, b) => (a._familyName || '').localeCompare(b._familyName || ''),
-      jobType:       (a, b) => orderTypeLabel(a).localeCompare(orderTypeLabel(b)) || (a._familyName || '').localeCompare(b._familyName || ''),
-      payment:       (a, b) => dimRank(_PAY_DIM_RANK, a._payment) - dimRank(_PAY_DIM_RANK, b._payment) || (a._familyName || '').localeCompare(b._familyName || ''),
-      design:        (a, b) => dimRank(_DESIGN_DIM_RANK, a._design) - dimRank(_DESIGN_DIM_RANK, b._design) || (a._familyName || '').localeCompare(b._familyName || ''),
-      stone:         (a, b) => dimRank(_STONE_DIM_RANK, a._stone) - dimRank(_STONE_DIM_RANK, b._stone) || (a._familyName || '').localeCompare(b._familyName || ''),
-      fdn:           (a, b) => dimRank(_FDN_DIM_RANK, a._fdn) - dimRank(_FDN_DIM_RANK, b._fdn) || (a._familyName || '').localeCompare(b._familyName || ''),
-      permit:        (a, b) => permitSortRank(a.permit_status) - permitSortRank(b.permit_status) || (a._familyName || '').localeCompare(b._familyName || ''),
-      total:         (a, b) => (a._total || 0) - (b._total || 0) || (a._familyName || '').localeCompare(b._familyName || ''),
-      dueDate:       (a, b) => cmpMaybeDate(a.target_completion_date, b.target_completion_date),
-      cemeteryName:  (a, b) => (a.cemetery?.name || '').localeCompare(b.cemetery?.name || ''),
-      paymentStatus: (a, b) => payRank(a) - payRank(b) || (a._familyName || '').localeCompare(b._familyName || ''),
-    }
-    const sorted = [...list].sort(sorters[sortKey] || sorters.actionPriority)
+    const sorted = [...list].sort(ROW_SORTERS[sortKey] || ROW_SORTERS.actionPriority)
     // Direction toggle only applies to the click-sortable columns; the dropdown
     // sorters carry their own fixed direction.
     if (CLICK_SORT_KEYS.has(sortKey) && sortDir === 'desc') sorted.reverse()
@@ -670,6 +730,40 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       return { ...j, milestones }
     }))
   }, [])
+
+  // ── Board drag-drop — a drop sets the order's status (the same mutation as
+  // the bulk "Set status" action): optimistic patch, activity log, 8s Undo
+  // toast. Leads → Contracted may leave the card in Leads (no deposit yet —
+  // Paul's rule); the toast says so explicitly so it doesn't look broken.
+  const boardMove = useCallback(async (o, target) => {
+    if (!BOARD_DROP_TARGETS.has(target) || o.status === target) return
+    const prev = o.status
+    patchOrderLocal(o.id, { status: target })
+    const r = await bulkSetOrderStatus([o.id], target)
+    if (!r?.ok) {
+      patchOrderLocal(o.id, { status: prev })
+      showBoardToast({ error: true, text: `Couldn't move ${titleCaseName(o._familyName)} — nothing was changed.` })
+      return
+    }
+    logOrderActivity(o.id, {
+      type: 'change', field: 'Status', oldValue: statusInfo(prev).label, newValue: statusInfo(target).label,
+      note: 'Moved on the pipeline board', actor: await getCurrentStaffName(),
+    }).catch(() => {})
+    // No deposit yet → the row still fails isOrderRow and stays in the Leads
+    // column no matter which stage was dropped on. Say so, or it looks broken.
+    const stillLead = !((o._paid ?? 0) > 0)
+    showBoardToast({
+      text: stillLead
+        ? `${titleCaseName(o._familyName)} is now ${statusInfo(target).label} — stays under Leads until a deposit is recorded.`
+        : `${titleCaseName(o._familyName)} moved to ${statusInfo(target).label}.`,
+      undo: async () => {
+        clearTimeout(boardToastTimer.current); setBoardToast(null)
+        patchOrderLocal(o.id, { status: prev })
+        const u = await bulkSetOrderStatus([o.id], prev)
+        if (!u?.ok) reload()
+      },
+    })
+  }, [patchOrderLocal, showBoardToast, reload])
 
   // OPTIMISTIC-FIRST inline edits — patch local state BEFORE the await so the
   // UI updates instantly with ZERO flicker (no busy/disable opacity change, no
@@ -907,6 +1001,10 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
                 <span className="sb-pipe-v">{stripData.stages[code].usd > 0 ? fmtUSD(stripData.stages[code].usd) : '—'}</span>
               </button>
             ))}
+            <button type="button" className={`sb-pipe-boardbtn${boardOpen ? ' on' : ''}`} onClick={toggleBoard}
+              title={boardOpen ? 'Close the board and return to the table' : 'Open the pipeline as a drag-and-drop board'}>
+              {boardOpen ? '✕ Close board' : '⊞ Board'}
+            </button>
           </div>
         )}
 
@@ -983,6 +1081,14 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             </div>
           </div>
         )}
+
+        {/* Board mode swaps ONLY the table area (bulk bar + table + pager);
+            the strip, toggles, chips, and filters above stay live for both. */}
+        {boardActive ? (
+          <OrdersBoard columns={boardColumns} loading={loading} onOpen={setSelectedOrderId}
+            onMove={boardMove} toast={boardToast} onDismissToast={() => setBoardToast(null)}
+            onResetFilters={resetAll} />
+        ) : (<>
 
         {/* Bulk action bar — sticky, shown when ≥1 selected */}
         {selectedIds.size > 0 && (
@@ -1091,6 +1197,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <button type="button" disabled={page >= pageCount - 1} onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}>Next →</button>
           </div>
         )}
+
+        </>)}
       </div>
 
       {/* Confirm modal */}
@@ -1275,6 +1383,100 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
   )
 }
 
+// ── OrdersBoard — the kanban view of the pipeline ─────────────────────────────
+// One column per BOARD_STAGES entry, cards sorted by the table's current sort.
+// Native HTML5 drag (the CAL-DRAG approach — no dependency): drag state lives
+// locally, the drop delegates to onMove which owns the mutation + toast.
+function OrdersBoard({ columns, loading, onOpen, onMove, toast, onDismissToast, onResetFilters }) {
+  const [drag, setDrag] = useState(null)       // { order } while a card is mid-drag
+  const [overCol, setOverCol] = useState(null) // column code under the pointer
+
+  if (loading) return <div className="sb-crm-card"><div className="sb-crm-empty">Loading orders…</div></div>
+  const total = BOARD_STAGES.reduce((n, s) => n + columns[s.code].rows.length, 0)
+
+  return (
+    <>
+      {total === 0 ? (
+        <div className="sb-crm-card">
+          <div className="sb-crm-empty">No orders match these filters.<div><button type="button" onClick={onResetFilters}>Reset filters</button></div></div>
+        </div>
+      ) : (
+        <div className="sb-kb">
+          {BOARD_STAGES.map(s => {
+            const col = columns[s.code]
+            const canDrop = !!drag && BOARD_DROP_TARGETS.has(s.code) && drag.order.status !== s.code
+            return (
+              <div key={s.code}
+                className={`sb-kb-col${canDrop ? ' sb-kb-can' : ''}${canDrop && overCol === s.code ? ' sb-kb-over' : ''}`}
+                onDragOver={canDrop ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } : undefined}
+                onDragEnter={canDrop ? () => setOverCol(s.code) : undefined}
+                onDragLeave={canDrop ? (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOverCol(null) } : undefined}
+                onDrop={canDrop ? (e) => { e.preventDefault(); const o = drag?.order; setDrag(null); setOverCol(null); if (o) onMove(o, s.code) } : undefined}>
+                <div className="sb-kb-head">
+                  <span className="sb-kb-head-n">{col.rows.length}</span>
+                  <span className="sb-kb-head-l">{s.label}</span>
+                  <span className="sb-kb-head-v">{col.usd > 0 ? fmtUSD(col.usd) : '—'}</span>
+                </div>
+                {s.code === 'paid_in_full' && <div className="sb-kb-hint">Set by payments — not a drop target</div>}
+                {col.rows.slice(0, BOARD_COL_CAP).map(o => (
+                  <BoardCard key={o.id} order={o}
+                    draggable={s.code !== 'paid_in_full'}
+                    dragging={drag?.order.id === o.id}
+                    onDragStart={(e) => { e.dataTransfer.setData('text/plain', o.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ order: o }) }}
+                    onDragEnd={() => { setDrag(null); setOverCol(null) }}
+                    onOpen={onOpen} />
+                ))}
+                {col.rows.length > BOARD_COL_CAP && (
+                  <div className="sb-kb-more">+{col.rows.length - BOARD_COL_CAP} more — narrow with search or filters</div>
+                )}
+                {col.rows.length === 0 && <div className="sb-kb-empty">{canDrop ? 'Drop here' : 'No orders'}</div>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {toast && (
+        <div className={`sb-kb-toast${toast.error ? ' err' : ''}`} role="status">
+          <span>{toast.text}</span>
+          {toast.undo && <button type="button" className="sb-kb-undo" onClick={toast.undo}>Undo</button>}
+          <button type="button" className="sb-kb-x" onClick={onDismissToast} aria-label="Dismiss">✕</button>
+        </div>
+      )}
+    </>
+  )
+}
+
+// One board card — same signals as the table row: severity stripe, blocker
+// pill, Call flag, Unsigned badge. Click (or Enter) opens OrderDetail.
+function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOpen }) {
+  const blocker = o._pressure?.blocker || null
+  const unsigned = !o.signed_at && CONTRACTED_STATUSES.includes(o.status)
+  return (
+    <div className={`sb-kb-card${blocker ? ` sb-tw-sev-${blocker.severity}` : ''}${dragging ? ' sb-kb-dragging' : ''}`}
+      draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd}
+      role="button" tabIndex={0}
+      onClick={() => onOpen(o.id)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(o.id) } }}>
+      <div className="sb-kb-card-top">
+        <span className="sb-kb-card-name">{titleCaseName(o._familyName)}</span>
+        <span className="sb-kb-card-num">{o.order_number || 'DRAFT'}</span>
+      </div>
+      {o.cemetery?.name && <div className="sb-kb-card-cem">{o.cemetery.name}</div>}
+      <div className="sb-kb-card-money">
+        {o._total > 0 ? fmtUSD(o._total) : '—'}
+        {o._balance > 0 && <span className="sb-kb-card-owes"> · owes {fmtUSD(o._balance)}</span>}
+      </div>
+      {(blocker || unsigned || o._pressure?.needsCall) && (
+        <div className="sb-ord-blockline">
+          {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
+          {unsigned && <span className="sb-ord-bpill sb-ord-bpill-red">Unsigned</span>}
+          {o._pressure?.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const VIEWTABS_CSS = `
   .sb-leads-viewtabs { display: flex; gap: 4px; background: #ece6d8; border-radius: 11px; padding: 4px; width: fit-content; margin-bottom: 18px; }
   .sb-leads-viewtab { border: none; cursor: pointer; border-radius: 8px; padding: 10px 26px; font-size: 15px; font-weight: 700; background: transparent; color: #7a756a; transition: background 0.12s, color 0.12s; }
@@ -1404,4 +1606,41 @@ const TW_CSS = `
   .sb-tw-modal-title { font-size: 16px; font-weight: 700; color: #111; margin-bottom: 8px; }
   .sb-tw-modal-body { font-size: 13.5px; color: #555; line-height: 1.5; margin-bottom: 18px; }
   .sb-tw-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+  /* ── Kanban board ──────────────────────────────────────────────────────── */
+  .sb-pipe-boardbtn { flex: 0 0 auto; border: 0.5px solid #E2D8C6; background: #FBFAF7; border-radius: 10px;
+    padding: 9px 14px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; color: #6a6a66;
+    white-space: nowrap; transition: border-color 0.12s, background 0.12s, color 0.12s; }
+  .sb-pipe-boardbtn:hover { border-color: #9A7209; color: #9A7209; }
+  .sb-pipe-boardbtn.on { border-color: #9A7209; background: rgba(154,114,9,0.09); color: #876307; }
+  .sb-kb { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: start; margin-bottom: 14px; }
+  @media (max-width: 1100px) { .sb-kb { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .sb-kb-col { background: #f4f1e9; border: 0.5px solid #E2D8C6; border-radius: 12px; padding: 8px;
+    display: flex; flex-direction: column; gap: 8px; min-height: 240px; max-height: 74vh; overflow-y: auto; }
+  .sb-kb-col.sb-kb-can { outline: 1.5px dashed rgba(154,114,9,0.45); outline-offset: -3px; }
+  .sb-kb-col.sb-kb-over { outline: 2px dashed #9A7209; outline-offset: -3px; background: #fdf6e7; }
+  .sb-kb-head { display: flex; align-items: baseline; gap: 7px; padding: 2px 4px 0; }
+  .sb-kb-head-n { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; font-weight: 700; color: #1e2d3d; }
+  .sb-kb-head-l { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #8a8a85; }
+  .sb-kb-head-v { margin-left: auto; font-size: 11px; color: #8a8a85; font-variant-numeric: tabular-nums; }
+  .sb-kb-hint { font-size: 10.5px; color: #a09a8c; padding: 0 4px 2px; }
+  .sb-kb-card { background: #fff; border: 0.5px solid #e4e0d5; border-radius: 10px; padding: 9px 11px; cursor: grab; }
+  .sb-kb-card:hover { border-color: #9A7209; }
+  .sb-kb-card:active { cursor: grabbing; }
+  .sb-kb-dragging { opacity: 0.4; }
+  .sb-kb-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+  .sb-kb-card-name { font-size: 13.5px; font-weight: 700; color: #1e2d3d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-kb-card-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: #8a8a85; flex-shrink: 0; }
+  .sb-kb-card-cem { font-size: 11.5px; color: #6a6a66; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-kb-card-money { font-size: 12px; color: #1e2d3d; font-variant-numeric: tabular-nums; margin-top: 3px; }
+  .sb-kb-card-owes { color: #8a5a12; font-weight: 600; }
+  .sb-kb-more { font-size: 11.5px; color: #8a8a85; padding: 4px; text-align: center; }
+  .sb-kb-empty { font-size: 11.5px; color: #a09a8c; padding: 14px 4px; text-align: center; border: 1px dashed #ddd6c6; border-radius: 8px; }
+  .sb-kb-toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 26px; z-index: 1100;
+    display: flex; align-items: center; gap: 12px; background: #1e2d3d; color: #fff; border-radius: 10px;
+    padding: 11px 16px; font-size: 13.5px; box-shadow: 0 10px 30px rgba(15,20,25,0.3); max-width: 560px; }
+  .sb-kb-toast.err { background: #7a1f1a; }
+  .sb-kb-toast button { font: inherit; font-size: 12.5px; font-weight: 700; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+  .sb-kb-toast .sb-kb-undo { background: #d6a85a; border: none; color: #1e2d3d; }
+  .sb-kb-toast .sb-kb-x { background: transparent; border: 0.5px solid rgba(255,255,255,0.4); color: #fff; }
 `
