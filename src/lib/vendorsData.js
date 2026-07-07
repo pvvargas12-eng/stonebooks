@@ -371,3 +371,144 @@ export async function listMyRequests() {
   if (error) { console.warn('[vendors] listMyRequests:', error.message); return [] }
   return data || []
 }
+
+// =============================================================================
+// STONEBOOKS TRADE (Trade Accounts) — slice 1 data layer
+// =============================================================================
+// The trade ORDER is a vendor_requests row (order-grain fields added by the
+// 20260707_trade_accounts migration); specs live on its vendor_items. Every
+// action logs a vendor_event carrying partner_id + actor_role — partner-actor
+// events power the red Vendors badge until staff_seen_at is stamped.
+// =============================================================================
+
+export const TRADE_SERVICES = [
+  { code: 'design',  label: 'Design' },
+  { code: 'blast',   label: 'Blast' },
+  { code: 'pickup',  label: 'Pickup' },
+  { code: 'install', label: 'Install' },
+  { code: 'doors',   label: 'Doors' },
+  { code: 'fix',     label: 'Fix' },
+  { code: 'custom',  label: 'Custom' },
+]
+export const TRADE_DESIGN_PHASES = [
+  { code: 'not_created', label: 'Not created', tone: 'gray' },
+  { code: 'in_progress', label: 'In progress', tone: 'blue' },
+  { code: 'sent_draft',  label: 'Sent draft',  tone: 'amber' },
+  { code: 'approved',    label: 'Approved',    tone: 'green' },
+]
+export const TRADE_STONE_STATUSES = [
+  { code: 'not_here', label: 'Not here', tone: 'gray' },
+  { code: 'arrived',  label: 'Arrived',  tone: 'green' },
+]
+export const TRADE_RUSH_STATUSES = ['none', 'pending', 'approved', 'declined']
+export const tradeServiceLabel = (code) =>
+  (TRADE_SERVICES.find(s => s.code === code)?.label) || (code ? String(code) : '')
+
+// One event writer for BOTH sides. actorRole 'partner' events light the badge.
+export async function logTradeEvent({ requestId = null, itemId = null, partnerId = null, type, detail = null, actor = null, actorRole = 'staff' }) {
+  if (!type) return { ok: false, error: 'Missing event type' }
+  const { error } = await supabase.from('vendor_events').insert({
+    request_id: requestId, item_id: itemId, partner_id: partnerId,
+    event_type: type, detail, actor, actor_role: actorRole === 'partner' ? 'partner' : 'staff',
+  })
+  if (error) { console.warn('[trade] logTradeEvent:', error.message); return wrapErr(error) }
+  return { ok: true }
+}
+
+// Trade orders, request-grain, partner + items joined. scope: active (default,
+// not archived + not completed/cancelled), complete, archived, all.
+export async function listTradeOrders({ partnerId = null, scope = 'active' } = {}) {
+  let q = supabase.from('vendor_requests')
+    .select('*, partner:partners(*), items:vendor_items(*)')
+    .order('created_at', { ascending: false })
+  if (partnerId) q = q.eq('partner_id', partnerId)
+  const { data, error } = await q
+  if (error) { console.warn('[trade] listTradeOrders:', error.message); return [] }
+  const rows = data || []
+  const isComplete = (r) => ['completed', 'cancelled'].includes(r.status)
+  if (scope === 'archived') return rows.filter(r => r.archived_at)
+  if (scope === 'complete') return rows.filter(r => !r.archived_at && isComplete(r))
+  if (scope === 'active')   return rows.filter(r => !r.archived_at && !isComplete(r))
+  return rows
+}
+
+// Order-grain patch (camelCase → columns). Callers decide needs_reaccept.
+const TRADE_ORDER_COLS = {
+  familyName: 'family_name', dealerOrderNumber: 'dealer_order_number',
+  services: 'services', serviceCustom: 'service_custom',
+  neededBy: 'needed_by', rush: 'rush', rushNeedBy: 'rush_need_by',
+  rushStatus: 'rush_status', rushDecidedBy: 'rush_decided_by', rushDecidedAt: 'rush_decided_at',
+  acceptedAt: 'accepted_at', acceptedBy: 'accepted_by', needsReaccept: 'needs_reaccept',
+  designPhase: 'design_phase', designApprovedAt: 'design_approved_at',
+  stoneStatus: 'stone_status', stoneArrivedAt: 'stone_arrived_at', stoneDropLocation: 'stone_drop_location',
+  archivedAt: 'archived_at', archivedBy: 'archived_by', jobId: 'job_id',
+  status: 'status', generalNotes: 'general_notes', requestName: 'request_name',
+}
+export async function updateTradeOrder(requestId, patch = {}) {
+  if (!requestId) return { ok: false, error: 'Missing order id' }
+  const row = { updated_at: new Date().toISOString() }
+  for (const [k, col] of Object.entries(TRADE_ORDER_COLS)) if (k in patch) row[col] = patch[k]
+  const { error } = await supabase.from('vendor_requests').update(row).eq('id', requestId)
+  if (error) return wrapErr(error)
+  return { ok: true }
+}
+
+// The Accept checkpoint — specs verified, guarantee attaches. (Slice 4 adds
+// job creation here.) Also clears a post-edit re-accept flag.
+export async function acceptTradeOrder(requestId, { actor = null } = {}) {
+  const r = await updateTradeOrder(requestId, {
+    acceptedAt: new Date().toISOString(), acceptedBy: actor, needsReaccept: false,
+    status: 'accepted',
+  })
+  if (!r.ok) return r
+  await logTradeEvent({ requestId, type: 'order_accepted', actor, detail: 'Specs verified — order accepted' })
+  return r
+}
+
+// Rush decision — ANY staff. Approving guarantees the dealer-written date.
+export async function decideTradeRush(requestId, approve, { actor = null } = {}) {
+  const r = await updateTradeOrder(requestId, {
+    rushStatus: approve ? 'approved' : 'declined',
+    rushDecidedBy: actor, rushDecidedAt: new Date().toISOString(),
+  })
+  if (!r.ok) return r
+  await logTradeEvent({ requestId, type: approve ? 'rush_approved' : 'rush_declined', actor,
+    detail: approve ? 'Rush approved — date guaranteed' : 'Rush declined' })
+  return r
+}
+
+// ── Updates feed (staff side) ────────────────────────────────────────────────
+export async function getTradeUpdatesCount() {
+  const { count, error } = await supabase.from('vendor_events')
+    .select('id', { count: 'exact', head: true })
+    .eq('actor_role', 'partner').is('staff_seen_at', null)
+  if (error) { console.warn('[trade] getTradeUpdatesCount:', error.message); return 0 }
+  return count || 0
+}
+export async function listTradeUpdates({ limit = 50, unseenOnly = false } = {}) {
+  let q = supabase.from('vendor_events')
+    .select('*, request:vendor_requests(id, family_name, dealer_order_number, rush, rush_status, rush_need_by, partner_id), partner:partners(id, company_name)')
+    .eq('actor_role', 'partner')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (unseenOnly) q = q.is('staff_seen_at', null)
+  const { data, error } = await q
+  if (error) { console.warn('[trade] listTradeUpdates:', error.message); return [] }
+  return data || []
+}
+export async function markTradeUpdatesSeen() {
+  const { error } = await supabase.from('vendor_events')
+    .update({ staff_seen_at: new Date().toISOString() })
+    .eq('actor_role', 'partner').is('staff_seen_at', null)
+  if (error) { console.warn('[trade] markTradeUpdatesSeen:', error.message); return { ok: false } }
+  return { ok: true }
+}
+
+// Per-order activity log — both sides read the same timeline.
+export async function listTradeOrderEvents(requestId) {
+  if (!requestId) return []
+  const { data, error } = await supabase.from('vendor_events')
+    .select('*').eq('request_id', requestId).order('created_at', { ascending: false })
+  if (error) { console.warn('[trade] listTradeOrderEvents:', error.message); return [] }
+  return data || []
+}
