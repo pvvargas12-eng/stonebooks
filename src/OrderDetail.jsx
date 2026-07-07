@@ -54,7 +54,6 @@ import { TEAM_ROSTER } from './lib/team'
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles, buildContractDefaults } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import ContractEditor from './components/ContractEditor'
-import { priceOrderTotals } from './lib/orderRates'
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 const humanize = (s) =>
@@ -1230,29 +1229,34 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     setActionNote(null)
     try {
       const camel = rowToOrder(order, order.customer, order.cemetery)
-      const priced = priceOrderTotals(camel)
       setContractEd({
         camel,
         defaults: buildContractDefaults(camel, { isContract: true }),
         existing: order.pricing?.contractOverrides || null,
-        lineItems: (priced.items || []).filter(it => !it.quotePending && it.amount != null),
-        total: priced.displayed,
         locked: !!order.signed_at,
       })
     } catch (e) {
       setActionNote(`Could not open the contract editor — ${e?.message || 'error'}.`)
     }
   }
-  const saveContractOverrides = async (overrides) => {
-    const pricing = { ...(order.pricing || {}) }
+  // Saves wording overrides (pricing.contractOverrides) + any line-item edits
+  // (pricingPatch = the same lineItemLabels/Overrides/… keys the Pricing step
+  // writes; addOns when qty steppers were used). One write, one activity entry.
+  const saveContractEdits = async ({ overrides, pricingPatch, addOns }) => {
+    const pricing = { ...(order.pricing || {}), ...(pricingPatch || {}) }
     if (overrides) pricing.contractOverrides = overrides
     else delete pricing.contractOverrides
-    const r = await bulkUpdateOrders([orderId], { pricing })
+    const patch = { pricing }
+    if (addOns) patch.add_ons = addOns
+    const r = await bulkUpdateOrders([orderId], patch)
     if (!r.ok) return r
     await refreshOrder()
+    const what = [
+      overrides ? 'custom wording' : 'wording reset to auto',
+      pricingPatch || addOns ? 'line items edited' : null,
+    ].filter(Boolean).join(' · ')
     logOrderActivity(orderId, {
-      type: 'change', field: 'Contract wording',
-      newValue: overrides ? 'custom wording saved' : 'reset to auto-generated',
+      type: 'change', field: 'Contract', newValue: what,
       note: 'Edited in the contract editor', actor: await getCurrentStaffName(),
     }).then(() => refreshActivity()).catch(() => {})
     return { ok: true }
@@ -2218,7 +2222,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       {contractEd && (
         <ContractEditor {...contractEd}
           onClose={() => setContractEd(null)}
-          onSave={saveContractOverrides} />
+          onSave={saveContractEdits} />
       )}
 
       {deleteModal && (

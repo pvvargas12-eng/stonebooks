@@ -19,9 +19,11 @@
 //   onClose() / onSave(overridesOrNull) → { ok, error? }
 // =============================================================================
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { generateEstimatePDF } from '../SalesMode'
 import { fmtUSD } from '../lib/stonebooksData'
+import { LineItemsBox, OF_CSS } from '../OrderForm'
+import { priceOrderTotals } from '../lib/orderRates'
 
 // Text blocks that can be overridden (order = document order). `hideKey` blocks
 // can be removed from the print entirely; boxes and fields cannot (core layout).
@@ -42,7 +44,7 @@ const FIELD_ROWS = [
   ['date', 'Date'], ['dueDate', 'Due Date'], ['familyName', 'Family Name'], ['orderNumber', 'Order #'],
 ]
 
-export default function ContractEditor({ camel, defaults, existing, lineItems, total, locked, onClose, onSave }) {
+export default function ContractEditor({ camel, defaults, existing, locked, onClose, onSave }) {
   const [ov, setOv] = useState(() => {
     const base = existing ? { ...existing } : {}
     base.fields = { ...(existing?.fields || {}) }
@@ -51,6 +53,24 @@ export default function ContractEditor({ camel, defaults, existing, lineItems, t
   const [hidden, setHidden] = useState(() => new Set(existing?.hidden || []))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+
+  // ── Line items (slice 3) — the REAL pricing mechanisms, drafted locally ────
+  // LineItemsBox edits pricing.{lineItemLabels,lineItemOrder,lineItemOverrides,
+  // customLineItems,removedLineItems,lineItemFlagOverrides} and order.addOns
+  // (qty steppers) — the exact keys the Pricing step writes, so receipts,
+  // quotes, and totals stay honest. Edits stage in pricingPatch / addOnsDraft
+  // until Save; priceOrderTotals recomputes the folded rows + total live.
+  const [pricingPatch, setPricingPatch] = useState({})
+  const [addOnsDraft, setAddOnsDraft] = useState(null)   // null = untouched
+  const draftOrder = useMemo(() => ({
+    ...camel,
+    addOns: addOnsDraft ?? camel.addOns,
+    pricing: { ...(camel.pricing || {}), ...pricingPatch },
+  }), [camel, pricingPatch, addOnsDraft])
+  const priced = useMemo(() => priceOrderTotals(draftOrder), [draftOrder])
+  const updatePricing = (patch) => setPricingPatch(p => ({ ...p, ...patch }))
+  const updateDraft = (patch) => { if (patch.addOns) setAddOnsDraft(patch.addOns) }
+  const linesDirty = Object.keys(pricingPatch).length > 0 || addOnsDraft != null
   const [preview, setPreview] = useState(null)   // { url, filename, label }
   const previewRef = useRef(null)
   useEffect(() => { previewRef.current = preview }, [preview])
@@ -110,7 +130,11 @@ export default function ContractEditor({ camel, defaults, existing, lineItems, t
 
   const handleSave = async () => {
     setBusy(true); setErr(null)
-    const r = await onSave(normalized())
+    const r = await onSave({
+      overrides: normalized(),
+      pricingPatch: linesDirty ? pricingPatch : null,
+      addOns: addOnsDraft,
+    })
     setBusy(false)
     if (r?.ok) onClose()
     else setErr(r?.error || 'Save failed — nothing was changed. Try again.')
@@ -119,7 +143,8 @@ export default function ContractEditor({ camel, defaults, existing, lineItems, t
   const openPreview = async (docMode) => {
     setErr(null)
     try {
-      const o = { ...camel, pricing: { ...(camel.pricing || {}), contractOverrides: normalized() || undefined } }
+      // Preview includes UNSAVED edits — wording overrides AND line-item drafts.
+      const o = { ...draftOrder, pricing: { ...draftOrder.pricing, contractOverrides: normalized() || undefined } }
       const { doc, filename } = await generateEstimatePDF(o, { mode: docMode, returnDoc: true })
       const url = URL.createObjectURL(doc.output('blob'))
       setPreview(p => { if (p?.url) URL.revokeObjectURL(p.url); return { url, filename, label: docMode === 'contract' ? 'Contract preview' : 'Estimate preview' } })
@@ -161,7 +186,7 @@ export default function ContractEditor({ camel, defaults, existing, lineItems, t
           <div className="sb-ce-actions">
             <button type="button" className="sb-ce-btn" onClick={() => openPreview('contract')}>Preview contract</button>
             <button type="button" className="sb-ce-btn" onClick={() => openPreview('estimate')}>Preview estimate</button>
-            {anyCustom && !locked && <button type="button" className="sb-ce-btn sb-ce-btn-warn" onClick={resetAll}>Reset all to auto</button>}
+            {anyCustom && !locked && <button type="button" className="sb-ce-btn sb-ce-btn-warn" onClick={resetAll}>Reset wording to auto</button>}
             <button type="button" className="sb-ce-btn" onClick={onClose}>Cancel</button>
             <button type="button" className="sb-ce-btn sb-ce-btn-primary" onClick={handleSave} disabled={busy || locked}>
               {busy ? 'Saving…' : 'Save'}
@@ -216,27 +241,26 @@ export default function ContractEditor({ camel, defaults, existing, lineItems, t
               </section>
             ))}
 
-            {/* Pricing table — read-only this slice (edited in the Pricing step) */}
+            {/* Pricing — the REAL line-item editor (same component as the
+                Pricing step / multi-quotes): rename ✎, ▲▼ reorder, price
+                override, remove/restore, add custom line, qty steppers. */}
             <section className="sb-ce-block">
               <div className="sb-ce-bhead">
                 <span className="sb-ce-blabel">Pricing</span>
-                <span className="sb-ce-chip">From the pricing engine</span>
+                <span className={`sb-ce-chip${linesDirty ? ' custom' : ''}`}>{linesDirty ? 'Edited — saves with this order' : 'From the pricing engine'}</span>
               </div>
-              <div className="sb-ce-lines">
-                {(lineItems || []).map((it, i) => (
-                  <div key={it.id || it.code || i} className="sb-ce-line">
-                    <span className="sb-ce-line-label">{it.label || '(item)'}</span>
-                    <span className="sb-ce-line-amt">{fmtUSD(it.amount)}</span>
-                  </div>
-                ))}
+              <style>{OF_CSS}</style>
+              <LineItemsBox order={draftOrder} lineItems={priced.items}
+                update={updateDraft} updatePricing={updatePricing} isLocked={locked} />
+              <div className="sb-ce-lines" style={{ marginTop: 8 }}>
                 <div className="sb-ce-line sb-ce-line-total">
                   <span className="sb-ce-line-label">TOTAL</span>
-                  <span className="sb-ce-line-amt">{fmtUSD(total)}</span>
+                  <span className="sb-ce-line-amt">{fmtUSD(priced.displayed)}</span>
                 </div>
               </div>
               <div className="sb-ce-hint">
-                Line wording and prices are edited on the order's Pricing step (rename ✎ / override / add custom line) —
-                those edits print here automatically. In-place line editing lands in the next update.
+                Renames print exactly as typed (spec kept as fine print); price edits go through the same
+                override system as the Pricing step, so receipts and balances always match.
               </div>
             </section>
           </div>
