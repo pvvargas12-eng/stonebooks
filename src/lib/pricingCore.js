@@ -22,6 +22,20 @@
 // total $0 (intended).
 // =============================================================================
 
+// ── THE PRICING COLUMN CONTRACT ──────────────────────────────────────────────
+// Every orders column the line-item engine reads (rowToOrder →
+// buildLineItems / computeFormLineItems / priceOrderTotals). ANY trimmed
+// .select() on `orders` whose rows can EVER reach rowGrandTotal /
+// rowBalanceDue MUST append this list. An under-selected row prices
+// PARTIALLY — the 2026-07-07 Illuzzi bug: the Orders board select dropped
+// base_config/height/depth, the engine priced the die only ($3,320 instead
+// of $4,289.25), and the rowGrandTotal memo cache spread the wrong number to
+// OrderDetail. rowGrandTotal now refuses to cache partial rows and warns.
+export const ORDER_PRICING_COLUMNS =
+  'service_types, shape, standard_size_code, width_inches, height_inches, depth_inches, ' +
+  'thickness_inches, granite_color, top_shape, polish_level, sides, base_config, ' +
+  'foundation_type, add_ons, pricing, inscription, contract_total'
+
 let _rowGrandTotal = null
 
 // orderRates calls this once at load to wire in the real engine.

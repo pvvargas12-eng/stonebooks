@@ -25,6 +25,7 @@ import {
   getMessageThread, sendShopEmail,
 } from './lib/stonebooksData'
 import { CRM, paymentTone, paymentLabel } from './lib/crmTheme'
+import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
 import { Pill, FilterChip, ProgressMicroBar } from './lib/crmComponents.jsx'
 import UndoToast from './components/calendar/UndoToast.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
@@ -127,9 +128,13 @@ export default function CustomersTab({ selectedId, setSelectedId, onOpenOrder })
         // Page through ALL orders — PostgREST caps a single request at 1000 rows
         // (.limit can't override it), which truncated late orders / rollups.
         fetchAllPaged(() => supabase.from('orders').select(
+          // ORDER_PRICING_COLUMNS is the pricing-column contract — this list
+          // once under-selected (no base_config/shape/dims) and produced
+          // partial rowGrandTotal figures (the 2026-07-07 Illuzzi bug).
           'id, customer_id, status, order_number, updated_at, created_at, signed_at, pricing_locked_at, ' +
-          'deposit_amount, balance_amount, payments, pricing, add_ons, archived, ' +
-          'target_completion_date, primary_lastname, deceased, service_types, cemetery_id, ' +
+          'deposit_amount, balance_amount, payments, archived, ' +
+          'target_completion_date, primary_lastname, deceased, cemetery_id, ' +
+          ORDER_PRICING_COLUMNS + ', ' +
           'cemetery:cemeteries(id, name)'
         )),
         // Shared with the Orders board under 'jobs:all' — switching Orders<->Customers

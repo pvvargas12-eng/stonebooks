@@ -35,17 +35,21 @@ import {
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
 import { cachedFetch, peekCache, invalidateCache } from './lib/dataCache'
+import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
 
-// Trimmed column set for the Orders board — ONLY what the list + status/payment
-// derivations read (verified against every helper). Heavy jsonb (deceased,
-// designs, design_snapshot, mausoleum_intake, element_filters, …) is NOT here —
-// the detail view fetches the full row. Keeps the board fetch ~0.4MB vs ~1.0MB.
+// Trimmed column set for the Orders board — the list/status fields PLUS the
+// full ORDER_PRICING_COLUMNS contract (lib/pricingCore). The 2026-07-07
+// Illuzzi bug: this select once hand-listed a SUBSET of the pricing columns
+// (no base_config/height/depth), so the engine priced the die only and the
+// rowGrandTotal cache spread the wrong total to OrderDetail. Never hand-list
+// pricing columns here again — the shared constant is the contract. Heavy
+// non-pricing jsonb (deceased, designs, …) stays excluded.
 const ORDERS_BOARD_SELECT =
   'id, status, archived, order_number, created_at, updated_at, signed_at, pricing_locked_at, ' +
-  'target_completion_date, primary_lastname, sales_rep, service_types, shape, granite_color, ' +
-  'width_inches, standard_size_code, pricing, add_ons, contract_total, payments, deposit_amount, ' +
+  'target_completion_date, primary_lastname, sales_rep, payments, deposit_amount, ' +
   'balance_amount, payment_status, permit_required, permit_status, customer_id, cemetery_id, ' +
   'next_follow_up, waiting_on, lost_reason, lost_at, ' +
+  ORDER_PRICING_COLUMNS + ', ' +
   'customer:customers(id, first_name, last_name, email, phone_primary), cemetery:cemeteries(id, name)'
 const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`
 const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with CustomersTab

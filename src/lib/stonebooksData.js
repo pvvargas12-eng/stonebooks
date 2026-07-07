@@ -7,7 +7,7 @@
 
 import { supabase } from './supabase'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
-import { engineRowGrandTotal } from './pricingCore'
+import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
 import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
   isValidPhase, nextPhase, prevPhase, phaseLabel, QC_PHASE } from './jobComponents'
 
@@ -1522,9 +1522,23 @@ export async function getJobByOrderId(orderId) {
 // many times) don't re-run the full engine + rowToOrder conversion repeatedly; the
 // key changes on any edit, so a re-priced order recomputes on next read.
 const _rowGrandTotalCache = new Map()
+let _partialRowWarned = false
 export function rowGrandTotal(order) {
   if (!order) return 0
-  const key = order.id != null
+  // PARTIAL-ROW GUARD (Illuzzi bug, 2026-07-07): a trimmed .select() that
+  // omits pricing-critical columns produces a partially-priced total (e.g.
+  // die-only) — and the memo cache would then serve that wrong number to
+  // EVERY surface via the id|updated_at key, including ones that fetched the
+  // full row. Detection: full rows always carry the base_config/baseConfig
+  // KEY (even when its value is null); trimmed selects omit the key entirely.
+  // Partial rows compute best-effort but NEVER touch the cache, and warn once
+  // so the under-selected fetch gets ORDER_PRICING_COLUMNS added.
+  const partial = !('base_config' in order) && !('baseConfig' in order)
+  if (partial && !_partialRowWarned) {
+    _partialRowWarned = true
+    console.warn('[pricing] rowGrandTotal received a partial order row (no base_config key) — its total may be incomplete. Append ORDER_PRICING_COLUMNS (lib/pricingCore) to that select.')
+  }
+  const key = !partial && order.id != null
     ? `${order.id}|${order.updated_at ?? order.updatedAt ?? ''}`
     : null
   if (key && _rowGrandTotalCache.has(key)) return _rowGrandTotalCache.get(key)
@@ -5097,7 +5111,7 @@ async function _getProfitOverviewInner() {
     safe(fetchAllPaged(() => supabase.from('cemetery_orders').select('id, cemetery_name, total_amount, status, created_at, submitted_at')), 'cemetery_orders').then(toArr),
     safe(fetchAllPaged(() => supabase.from('job_cost_estimates').select('job_id, cemetery_order_id, category, estimated_amount')), 'estimates').then(toArr),
     // D1 — archived orders never count toward any financial rollup.
-    safe(fetchAllPaged(() => supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, contract_total, pricing, add_ons, created_at, archived').or('archived.is.null,archived.eq.false')), 'orders').then(toArr),
+    safe(fetchAllPaged(() => supabase.from('orders').select('id, payments, deposit_amount, balance_amount, deposit_received_at, created_at, archived, ' + ORDER_PRICING_COLUMNS).or('archived.is.null,archived.eq.false')), 'orders').then(toArr),
     safe(fetchAllPaged(() => supabase.from('outgoing_payments').select('id, amount, category, paid_date, order_id, recurring_bill_id')), 'outgoing').then(toArr),
   ])
 
