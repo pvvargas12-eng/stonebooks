@@ -665,6 +665,112 @@ export async function signTradeReceipt(order, kind, { where = null, signerRole =
   return { ok: true }
 }
 
+// ── Slice 7: invoicing ───────────────────────────────────────────────────────
+// Total = sum of lines, always (no stored total — honest by construction).
+// Dealers see invoices only once SENT (RLS hides drafts). Rush-approved orders
+// auto-suggest a rush-fee line the staff can strike before sending.
+
+export async function listTradeInvoices({ partnerId = null } = {}) {
+  let q = supabase.from('vendor_invoices')
+    .select('*, partner:partners(id, company_name, email), lines:vendor_invoice_lines(*)')
+    .order('created_at', { ascending: false })
+  if (partnerId) q = q.eq('partner_id', partnerId)
+  const { data, error } = await q
+  if (error) { console.warn('[trade] listTradeInvoices:', error.message); return [] }
+  return (data || []).map(inv => ({
+    ...inv,
+    total: (inv.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0),
+  }))
+}
+
+// Which of a partner's orders are NOT yet on any non-void invoice.
+export async function listUninvoicedTradeOrders(partnerId) {
+  if (!partnerId) return []
+  const [orders, invs] = await Promise.all([
+    listTradeOrders({ partnerId, scope: 'all' }),
+    listTradeInvoices({ partnerId }),
+  ])
+  const invoiced = new Set()
+  for (const inv of invs) if (inv.status !== 'void') for (const l of (inv.lines || [])) if (l.request_id) invoiced.add(l.request_id)
+  return orders.filter(o => !invoiced.has(o.id))
+}
+
+export async function nextTradeInvoiceNumber() {
+  const year = new Date().getFullYear()
+  const { count } = await supabase.from('vendor_invoices').select('id', { count: 'exact', head: true })
+  return `TI-${year}-${String((count || 0) + 1).padStart(3, '0')}`
+}
+
+export async function createTradeInvoice({ partnerId, lines = [], notes = null, createdBy = null } = {}) {
+  if (!partnerId) return { ok: false, error: 'Pick a company.' }
+  const clean = lines.filter(l => l && (l.description || '').trim())
+  if (!clean.length) return { ok: false, error: 'Add at least one line.' }
+  const invoice_number = await nextTradeInvoiceNumber()
+  const { data: inv, error } = await supabase.from('vendor_invoices')
+    .insert({ partner_id: partnerId, invoice_number, status: 'draft', notes, created_by: createdBy })
+    .select().single()
+  if (error) return wrapErr(error)
+  const lineRows = clean.map(l => ({
+    invoice_id: inv.id, request_id: l.requestId || null,
+    description: l.description.trim(), amount: Number(l.amount) || 0,
+    is_rush_fee: !!l.isRushFee,
+  }))
+  const { error: lErr } = await supabase.from('vendor_invoice_lines').insert(lineRows)
+  if (lErr) { await supabase.from('vendor_invoices').delete().eq('id', inv.id); return wrapErr(lErr) }
+  return { ok: true, invoice: inv }
+}
+
+export async function deleteTradeInvoiceLine(lineId) {
+  const { error } = await supabase.from('vendor_invoice_lines').delete().eq('id', lineId)
+  return error ? wrapErr(error) : { ok: true }
+}
+
+// Send: stamp sent, log per-order events, email the dealer the full invoice
+// with a deep-link button. Mark paid: stamp + note ("check #2211" / Zelle conf).
+export async function setTradeInvoiceStatus(invoiceId, status, { paidNote = null, actor = null } = {}) {
+  if (!['sent', 'paid', 'void', 'draft'].includes(status)) return { ok: false, error: 'Bad status' }
+  const patch = { status, updated_at: new Date().toISOString() }
+  if (status === 'sent') patch.sent_at = new Date().toISOString()
+  if (status === 'paid') { patch.paid_at = new Date().toISOString(); patch.paid_note = paidNote }
+  const { error } = await supabase.from('vendor_invoices').update(patch).eq('id', invoiceId)
+  if (error) return wrapErr(error)
+
+  const { data: inv } = await supabase.from('vendor_invoices')
+    .select('*, partner:partners(id, company_name, email), lines:vendor_invoice_lines(*)')
+    .eq('id', invoiceId).maybeSingle()
+  if (!inv) return { ok: true }
+  const total = (inv.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
+  const evType = status === 'sent' ? 'invoice_sent' : status === 'paid' ? 'invoice_paid' : null
+  if (evType) {
+    for (const rid of [...new Set((inv.lines || []).map(l => l.request_id).filter(Boolean))]) {
+      await logTradeEvent({ requestId: rid, partnerId: inv.partner_id, type: evType, actor, detail: `Invoice ${inv.invoice_number} ${status} — $${total.toLocaleString()}` })
+    }
+  }
+  if (status === 'sent' && inv.partner?.email) {
+    const rowsHtml = (inv.lines || []).map(l =>
+      `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
+      `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`
+    ).join('')
+    const link = `${window.location.origin}/?payments=1`
+    const html =
+      `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
+      `<p style="margin:0 0 10px"><b>Invoice ${inv.invoice_number} — Shevchenko Monuments</b></p>` +
+      `<table style="border-collapse:collapse;width:100%;max-width:520px;font-size:14px">${rowsHtml}` +
+      `<tr><td style="padding:8px 10px;font-weight:800">TOTAL</td><td style="padding:8px 10px;text-align:right;font-weight:800">$${total.toLocaleString()}</td></tr></table>` +
+      (inv.notes ? `<p style="margin:10px 0 0;color:#555">${inv.notes}</p>` : '') +
+      `<p style="margin:14px 0 0;color:#555">Pay by check or Zelle (shevcoteam@gmail.com — memo ${inv.invoice_number}).</p>` +
+      `<p style="margin:18px 0"><a href="${link}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">View in your portal →</a></p>` +
+      `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments</p></div>`
+    sendShopEmail({
+      to: inv.partner.email,
+      subject: `Invoice ${inv.invoice_number} — $${total.toLocaleString()} — Shevchenko Monuments`,
+      html,
+      text: `Invoice ${inv.invoice_number} — total $${total.toLocaleString()}. View it in your portal: ${link}`,
+    }).catch(() => {})
+  }
+  return { ok: true }
+}
+
 // Per-order activity log — both sides read the same timeline.
 export async function listTradeOrderEvents(requestId) {
   if (!requestId) return []

@@ -16,6 +16,7 @@ import { signOut } from './lib/auth'
 import {
   listVendorItems, createVendorRequest, uploadVendorFile, listVendorAttachments,
   vendorFileSignedUrl, addVendorEvent, listVendorEvents, listVendorPOs,
+  listTradeInvoices,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
@@ -59,7 +60,10 @@ export default function PartnerPortal({ context, onSignOut }) {
   const [deepTradeId] = useState(() => {
     try { return new URLSearchParams(window.location.search).get('trade') } catch { return null }
   })
-  const [view, setView] = useState(deepTradeId ? 'orders' : 'home')
+  const [deepPayments] = useState(() => {
+    try { return !!new URLSearchParams(window.location.search).get('payments') } catch { return false }
+  })
+  const [view, setView] = useState(deepTradeId ? 'orders' : deepPayments ? 'payments' : 'home')
   const [items, setItems] = useState([])
   const [pos, setPos] = useState([])
   const [loading, setLoading] = useState(true)
@@ -112,6 +116,7 @@ export default function PartnerPortal({ context, onSignOut }) {
           { code: 'open', label: `Open Jobs${openJobs.length ? ` (${openJobs.length})` : ''}` },
           { code: 'ready', label: `Ready for Pickup${ready.length ? ` (${ready.length})` : ''}` },
           { code: 'completed', label: 'Completed' },
+          { code: 'payments', label: 'Payments' },
           { code: 'pos', label: 'POs' },
         ].map(t => (
           <button key={t.code} type="button" className={`vp-nav-btn ${view === t.code ? 'on' : ''}`} onClick={() => setView(t.code)}>{t.label}</button>
@@ -136,6 +141,7 @@ export default function PartnerPortal({ context, onSignOut }) {
             {view === 'open' && <ItemList title="Open Jobs" empty="No open jobs right now." items={openJobs} onOpenItem={setOpenItem} />}
             {view === 'ready' && <ItemList title="Ready for Pickup" empty="Nothing ready for pickup yet." items={ready} onOpenItem={setOpenItem} />}
             {view === 'completed' && <ItemList title="Completed" empty="No completed jobs yet." items={completed} onOpenItem={setOpenItem} />}
+            {view === 'payments' && <PartnerPayments />}
             {view === 'pos' && <POList pos={pos} />}
           </>
         )}
@@ -303,6 +309,56 @@ function NewRequestForm({ partnerId, partner, onDone }) {
       <div className="vp-newreq-actions">
         <button type="button" className="vp-primary" onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit request'}</button>
       </div>
+    </div>
+  )
+}
+
+// ── Payments — the dealer's invoices (RLS hides drafts; sent + paid only) ────
+function PartnerPayments() {
+  const [invoices, setInvoices] = useState(null)
+  useEffect(() => {
+    let alive = true
+    listTradeInvoices().then(rows => { if (alive) setInvoices(rows) }).catch(() => { if (alive) setInvoices([]) })
+    return () => { alive = false }
+  }, [])
+  if (invoices === null) return <div className="vp-empty">Loading…</div>
+  const openBal = invoices.filter(i => i.status === 'sent').reduce((s, i) => s + i.total, 0)
+  return (
+    <div className="vp-section">
+      <div className="vp-section-h">Payments</div>
+      <div style={{ display: 'flex', gap: 14, margin: '10px 0 16px', flexWrap: 'wrap' }}>
+        <div style={{ background: openBal > 0 ? '#fdf3df' : '#e9f4ec', border: `1px solid ${openBal > 0 ? '#e6b667' : '#8fceb0'}`, borderRadius: 12, padding: '12px 18px' }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: openBal > 0 ? '#8a5a12' : '#1f6b46', fontVariantNumeric: 'tabular-nums' }}>${openBal.toLocaleString()}</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>Open balance</div>
+        </div>
+      </div>
+      {invoices.length === 0 ? <div className="vp-empty">No invoices yet.</div> : invoices.map(inv => (
+        <div key={inv.id} style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '12px 16px', marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <b>{inv.invoice_number}</b>
+            <span className="vp-chip" style={inv.status === 'paid'
+              ? { background: '#e8f5ee', borderColor: '#7ac4a0', color: '#1f6b46' }
+              : { background: '#fdf3df', borderColor: '#e6b667', color: '#8a5a12' }}>
+              {inv.status === 'paid' ? `Paid${inv.paid_at ? ` ${fmtDate(inv.paid_at)}` : ''}` : 'Due'}
+            </span>
+            <span style={{ marginLeft: 'auto', fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>${inv.total.toLocaleString()}</span>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            {(inv.lines || []).map(l => (
+              <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, padding: '4px 0', borderTop: '0.5px solid #f0ede6' }}>
+                <span>{l.description}{l.is_rush_fee && <b style={{ color: '#b3261e' }}> (rush)</b>}</span>
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>${(Number(l.amount) || 0).toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+          {inv.status === 'sent' && (
+            <div style={{ fontSize: 12.5, color: '#6a6a62', marginTop: 8 }}>
+              Pay by check, or Zelle <b>shevcoteam@gmail.com</b> — memo <b>{inv.invoice_number}</b>.
+            </div>
+          )}
+          {inv.notes && <div style={{ fontSize: 12.5, color: '#6a6a62', marginTop: 6, fontStyle: 'italic' }}>{inv.notes}</div>}
+        </div>
+      ))}
     </div>
   )
 }

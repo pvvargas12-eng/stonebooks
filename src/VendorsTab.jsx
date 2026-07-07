@@ -19,6 +19,8 @@ import {
   listVendorPOs, createVendorPO, updateVendorPO, nextPONumber,
   invitePartnerUser, listPartnerUsers,
   listTradeUpdates, markTradeUpdatesSeen, getTradeUpdatesCount, decideTradeRush,
+  listTradeInvoices, listUninvoicedTradeOrders, createTradeInvoice,
+  deleteTradeInvoiceLine, setTradeInvoiceStatus, tradeServiceLabel,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
@@ -26,6 +28,7 @@ import TradeOrderBoard from './components/TradeOrderBoard'
 const SUBNAV = [
   { code: 'board', label: 'Trade Board' },
   { code: 'updates', label: 'Updates' },
+  { code: 'invoices', label: 'Invoices' },
   { code: 'queue', label: 'Work Queue' },
   { code: 'batches', label: 'Batches' },
   { code: 'partners', label: 'Partners' },
@@ -94,6 +97,7 @@ export default function VendorsTab() {
           status edits, rush approve/decline in the expanded row. */}
       {sub === 'board' && <TradeOrderBoard staffView />}
       {sub === 'updates' && <TradeUpdatesFeed onSeen={refreshUpdatesCount} />}
+      {sub === 'invoices' && <TradeInvoicesView partners={partners} flash={flash} />}
       {sub === 'queue' && <WorkQueue items={items} partners={partners} onOpen={setDrawerId} />}
       {sub === 'batches' && <BatchesView batches={batches} items={items || []} partners={partners} onReload={loadAll} onOpenItem={setDrawerId} onGeneratePO={(b) => setPoModal({ partnerId: b.partner_id, batchId: b.id, items: (items || []).filter(i => i.batch_id === b.id) })} flash={flash} />}
       {sub === 'partners' && <PartnersView partners={partners} onReload={loadAll} flash={flash} />}
@@ -158,6 +162,208 @@ function TradeUpdatesFeed({ onSeen }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// ── Trade Invoices — price, bundle, send, mark paid ──────────────────────────
+// Total is always the sum of the lines. Drafts are invisible to dealers (RLS);
+// Send emails the dealer the full invoice + stamps events on every order in it.
+function TradeInvoicesView({ partners, flash }) {
+  const [invoices, setInvoices] = useState(null)
+  const [openId, setOpenId] = useState(null)
+  const [builder, setBuilder] = useState(false)
+  const [busyId, setBusyId] = useState(null)
+  const [payNote, setPayNote] = useState({})   // invoiceId → note draft
+  const load = useCallback(() => listTradeInvoices().then(setInvoices).catch(() => setInvoices([])), [])
+  useEffect(() => { load() }, [load])
+
+  const act = async (inv, status, extra = {}) => {
+    setBusyId(inv.id)
+    const who = await getCurrentStaffName().catch(() => null)
+    const r = await setTradeInvoiceStatus(inv.id, status, { ...extra, actor: who })
+    setBusyId(null)
+    if (r.ok) { flash(status === 'sent' ? `Invoice ${inv.invoice_number} sent.` : status === 'paid' ? `Invoice ${inv.invoice_number} marked paid.` : 'Invoice updated.'); load() }
+    else flash(r.error || 'Failed.')
+  }
+  const strikeLine = async (inv, line) => {
+    setBusyId(inv.id)
+    await deleteTradeInvoiceLine(line.id)
+    setBusyId(null); load()
+  }
+
+  const STATUS_PILL = { draft: ['#f1eee5', '#6a6a62'], sent: ['#fbf3df', '#8a5a12'], paid: ['#e9f4ec', '#2f7d4f'], void: ['#f4f2ee', '#9a9a92'] }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button type="button" className="vend-primary" onClick={() => setBuilder(true)}>+ New invoice</button>
+      </div>
+      {invoices === null ? <div className="vend-updates-empty">Loading invoices…</div>
+        : invoices.length === 0 ? <div className="vend-updates-empty">No invoices yet — “+ New invoice” bundles a dealer’s orders into one bill.</div>
+        : (
+          <div className="vend-updates">
+            {invoices.map(inv => {
+              const [bg, fg] = STATUS_PILL[inv.status] || STATUS_PILL.draft
+              const open = openId === inv.id
+              const busy = busyId === inv.id
+              return (
+                <div key={inv.id} style={{ borderTop: '0.5px solid #f0ede6' }}>
+                  <div className="vend-update" style={{ cursor: 'pointer' }} onClick={() => setOpenId(open ? null : inv.id)}>
+                    <div className="vend-update-body">
+                      <div className="vend-update-line"><b>{inv.invoice_number}</b> · {inv.partner?.company_name || '—'} <span className="vend-update-fam">· {(inv.lines || []).length} line{(inv.lines || []).length === 1 ? '' : 's'}</span></div>
+                      <div className="vend-update-meta">{fmtDate(inv.created_at)}{inv.status === 'paid' && inv.paid_note ? ` · ${inv.paid_note}` : ''}</div>
+                    </div>
+                    <b style={{ fontVariantNumeric: 'tabular-nums' }}>${inv.total.toLocaleString()}</b>
+                    <span style={{ background: bg, color: fg, fontSize: 11, fontWeight: 700, borderRadius: 999, padding: '2px 10px', textTransform: 'uppercase' }}>{inv.status}</span>
+                  </div>
+                  {open && (
+                    <div style={{ padding: '4px 16px 14px', background: '#faf9f5' }}>
+                      {(inv.lines || []).map(l => (
+                        <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0', fontSize: 13, borderTop: '0.5px solid #ece8df' }}>
+                          <span style={{ flex: 1 }}>{l.description}{l.is_rush_fee && <b style={{ color: '#b3261e' }}> (rush fee)</b>}</span>
+                          <span style={{ fontVariantNumeric: 'tabular-nums' }}>${(Number(l.amount) || 0).toLocaleString()}</span>
+                          {inv.status === 'draft' && (
+                            <button type="button" className="vend-update-decline" disabled={busy} title="Strike this line" onClick={() => strikeLine(inv, l)}>✕</button>
+                          )}
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                        {inv.status === 'draft' && (
+                          <>
+                            <button type="button" className="vend-update-approve" disabled={busy || !(inv.lines || []).length} onClick={() => act(inv, 'sent')}>Send invoice · ${inv.total.toLocaleString()}</button>
+                            <button type="button" className="vend-update-decline" disabled={busy} onClick={() => act(inv, 'void')}>Void</button>
+                          </>
+                        )}
+                        {inv.status === 'sent' && (
+                          <>
+                            <input className="vic-input" style={{ maxWidth: 220 }} placeholder='e.g. check #2211 / Zelle conf' value={payNote[inv.id] || ''}
+                              onChange={e => setPayNote(m => ({ ...m, [inv.id]: e.target.value }))} />
+                            <button type="button" className="vend-update-approve" disabled={busy} onClick={() => act(inv, 'paid', { paidNote: (payNote[inv.id] || '').trim() || null })}>Mark paid</button>
+                            <button type="button" className="vend-update-decline" disabled={busy} onClick={() => act(inv, 'void')}>Void</button>
+                          </>
+                        )}
+                        {inv.status === 'paid' && <span className="vend-update-meta">Paid {inv.paid_at ? fmtDate(inv.paid_at) : ''}</span>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      {builder && <TradeInvoiceBuilder partners={partners} onClose={() => setBuilder(false)} onSaved={() => { setBuilder(false); flash('Draft invoice created.'); load() }} />}
+    </div>
+  )
+}
+
+// Builder: pick the company → check off their un-invoiced orders → price each →
+// rush-approved orders auto-suggest a strikeable rush-fee line → custom lines.
+function TradeInvoiceBuilder({ partners, onClose, onSaved }) {
+  const [partnerId, setPartnerId] = useState(partners[0]?.id || '')
+  const [orders, setOrders] = useState(null)
+  const [picked, setPicked] = useState({})    // requestId → { on, amount, rushOn, rushAmount }
+  const [custom, setCustom] = useState([])    // [{ key, description, amount }]
+  const [notes, setNotes] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    if (!partnerId) { setOrders([]); return }
+    let alive = true
+    setOrders(null)
+    listUninvoicedTradeOrders(partnerId).then(rows => { if (alive) { setOrders(rows); setPicked({}) } })
+    return () => { alive = false }
+  }, [partnerId])
+
+  const descFor = (o) => {
+    const svc = (o.services || []).map(tradeServiceLabel).join(' + ')
+    return `${o.family_name || o.request_name || 'Order'}${o.dealer_order_number ? ` (${o.dealer_order_number})` : ''}${svc ? ` — ${svc}` : ''}`
+  }
+  const setPick = (id, patch) => setPicked(m => ({ ...m, [id]: { on: false, amount: '', rushOn: true, rushAmount: '', ...(m[id] || {}), ...patch } }))
+  const addCustom = () => setCustom(c => [...c, { key: Date.now() + Math.random(), description: '', amount: '' }])
+
+  const save = async () => {
+    const lines = []
+    for (const o of (orders || [])) {
+      const p = picked[o.id]
+      if (!p?.on) continue
+      lines.push({ requestId: o.id, description: descFor(o), amount: Number(p.amount) || 0 })
+      if (o.rush_status === 'approved' && p.rushOn && Number(p.rushAmount) > 0) {
+        lines.push({ requestId: o.id, description: `Rush fee — ${o.family_name || o.dealer_order_number || 'order'}`, amount: Number(p.rushAmount), isRushFee: true })
+      }
+    }
+    for (const c of custom) if (c.description.trim()) lines.push({ description: c.description, amount: Number(c.amount) || 0 })
+    if (!lines.length) { setErr('Pick at least one order or add a line.'); return }
+    setBusy(true); setErr(null)
+    const who = await getCurrentStaffName().catch(() => null)
+    const r = await createTradeInvoice({ partnerId, lines, notes: notes.trim() || null, createdBy: who })
+    setBusy(false)
+    if (r.ok) onSaved()
+    else setErr(r.error || 'Could not create the invoice.')
+  }
+
+  const total = (orders || []).reduce((s, o) => {
+    const p = picked[o.id]
+    if (!p?.on) return s
+    let t = s + (Number(p.amount) || 0)
+    if (o.rush_status === 'approved' && p.rushOn) t += Number(p.rushAmount) || 0
+    return t
+  }, 0) + custom.reduce((s, c) => s + (Number(c.amount) || 0), 0)
+
+  return (
+    <div className="vend-backdrop" onClick={() => !busy && onClose()}>
+      <div className="vend-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+        <div className="vend-modal-title">New invoice</div>
+        <label className="vic-field"><span>Company</span>
+          <select className="vic-input" value={partnerId} onChange={e => setPartnerId(e.target.value)}>
+            {partners.map(p => <option key={p.id} value={p.id}>{p.company_name}</option>)}
+          </select>
+        </label>
+        {orders === null ? <div className="vend-update-meta" style={{ padding: '10px 0' }}>Loading their orders…</div>
+          : orders.length === 0 ? <div className="vend-update-meta" style={{ padding: '10px 0' }}>No un-invoiced orders for this company.</div>
+          : orders.map(o => {
+            const p = picked[o.id] || {}
+            return (
+              <div key={o.id} style={{ borderTop: '0.5px solid #ece8df', padding: '8px 0' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!p.on} onChange={e => setPick(o.id, { on: e.target.checked })} />
+                  <span style={{ flex: 1 }}>{descFor(o)}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>$
+                    <input className="vic-input" style={{ width: 100, textAlign: 'right' }} value={p.amount || ''} placeholder="0"
+                      onChange={e => setPick(o.id, { on: true, amount: e.target.value })} /></span>
+                </label>
+                {o.rush_status === 'approved' && p.on && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5, color: '#8a5a12', margin: '6px 0 0 26px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={p.rushOn !== false} onChange={e => setPick(o.id, { rushOn: e.target.checked })} />
+                    <span>Rush fee (auto — uncheck to waive)</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>$
+                      <input className="vic-input" style={{ width: 80, textAlign: 'right' }} value={p.rushAmount || ''} placeholder="0"
+                        onChange={e => setPick(o.id, { rushAmount: e.target.value })} /></span>
+                  </label>
+                )}
+              </div>
+            )
+          })}
+        {custom.map((c, i) => (
+          <div key={c.key} style={{ display: 'flex', gap: 8, alignItems: 'center', borderTop: '0.5px solid #ece8df', padding: '8px 0' }}>
+            <input className="vic-input" style={{ flex: 1 }} placeholder="Custom line — e.g. delivery" value={c.description}
+              onChange={e => setCustom(arr => arr.map((x, j) => j === i ? { ...x, description: e.target.value } : x))} />
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>$
+              <input className="vic-input" style={{ width: 100, textAlign: 'right' }} value={c.amount} placeholder="0"
+                onChange={e => setCustom(arr => arr.map((x, j) => j === i ? { ...x, amount: e.target.value } : x))} /></span>
+            <button type="button" className="vend-update-decline" onClick={() => setCustom(arr => arr.filter((_, j) => j !== i))}>✕</button>
+          </div>
+        ))}
+        <button type="button" className="vend-update-decline" style={{ borderStyle: 'dashed', color: '#9A7209', borderColor: '#d9c48a', marginTop: 8 }} onClick={addCustom}>+ Add a custom line</button>
+        <label className="vic-field" style={{ marginTop: 10 }}><span>Note on the invoice (optional)</span>
+          <input className="vic-input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. Net 30 · June work" /></label>
+        {err && <div style={{ background: '#fbedec', color: '#b3261e', borderRadius: 8, padding: '8px 12px', fontSize: 12.5, marginTop: 8 }}>{err}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 14 }}>
+          <button type="button" className="vend-update-decline" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="vend-primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : `Create draft · $${total.toLocaleString()}`}</button>
+        </div>
+      </div>
     </div>
   )
 }
