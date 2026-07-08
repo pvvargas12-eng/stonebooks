@@ -108,7 +108,9 @@ export default function VendorsTab() {
 
       {newReqOpen && <NewRequestModal partners={partners} onClose={() => setNewReqOpen(false)} onSaved={() => { setNewReqOpen(false); setSub('queue'); loadAll(); flash('Request created — in the Work Queue.') }} />}
       {drawerId && <ItemDrawer itemId={drawerId} batches={batches} onClose={() => setDrawerId(null)} onChanged={loadAll} onGeneratePO={(it) => setPoModal({ partnerId: it.request?.partner_id, items: [it] })} flash={flash} />}
-      {poModal && <POModal seed={poModal} partners={partners} onClose={() => setPoModal(null)} onSaved={() => { setPoModal(null); loadAll(); flash('PO saved.') }} />}
+      {/* Saving jumps to the POs tab — Paul saved two from Batches and thought
+          they were lost because the list lives on another sub-tab. */}
+      {poModal && <POModal seed={poModal} partners={partners} onClose={() => setPoModal(null)} onSaved={() => { setPoModal(null); setSub('pos'); loadAll(); flash('Invoice saved — it lives here in the POs tab.') }} />}
 
       {toast && <div className="vend-toast">{toast}</div>}
     </div>
@@ -922,7 +924,7 @@ function BatchesView({ batches, items, partners, onReload, onOpenItem, onGenerat
                   <div><div className="vend-strong">{b.name || 'Batch'}</div><div className="vend-dim">{b.partner?.company_name || '—'} · {its.length} item{its.length === 1 ? '' : 's'}</div></div>
                   <div className="vend-batch-actions">
                     <select value={b.status} onChange={async e => { await updateVendorBatch(b.id, { status: e.target.value }); onReload() }}>{['open', 'in_progress', 'ready_for_pickup', 'completed', 'po_sent'].map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}</select>
-                    <button type="button" onClick={() => onGeneratePO(b)}>Generate PO</button>
+                    <button type="button" onClick={() => onGeneratePO(b)}>Generate invoice</button>
                   </div>
                 </div>
                 <div className="vend-batch-items">
@@ -980,7 +982,7 @@ function POsView({ pos, partners, onNew, onReload, flash }) {
               <div className="vend-po-actions">
                 {po.status === 'draft' && <button type="button" onClick={async () => { await updateVendorPO(po.id, { status: 'sent' }); onReload(); flash('PO marked sent.') }}>Send</button>}
                 <button type="button" onClick={() => previewPOPdf(po)}>Preview</button>
-                <button type="button" onClick={() => downloadPOPdf(po)}>PDF</button>
+                <button type="button" onClick={() => downloadPOPdf(po)}>⬇ Download</button>
               </div>
             </div>
           ))}
@@ -1024,7 +1026,7 @@ function POModal({ seed, partners, onClose, onSaved }) {
   return (
     <div className="vend-backdrop" onClick={() => { if (!busy) onClose() }}>
       <div className="vend-modal" onClick={e => e.stopPropagation()}>
-        <h3 className="vend-modal-title">Generate PO</h3>
+        <h3 className="vend-modal-title">Generate invoice</h3>
         <div className="vend-grid2">
           <label className="vic-field"><span>Partner</span><select className="vic-input" value={partnerId} onChange={e => setPartnerId(e.target.value)}><option value="">Select…</option>{partners.map(p => <option key={p.id} value={p.id}>{p.company_name}</option>)}</select></label>
           <label className="vic-field"><span>PO number</span><input className="vic-input" value={poNumber} onChange={e => setPoNumber(e.target.value)} /></label>
@@ -1051,8 +1053,9 @@ function POModal({ seed, partners, onClose, onSaved }) {
         <div className="vend-modal-actions">
           <button type="button" className="vend-cancel" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="button" className="vend-cancel" onClick={() => previewPOPdf(toPoObject())} disabled={busy}>👁 Preview</button>
+          <button type="button" className="vend-cancel" onClick={() => downloadPOPdf(toPoObject())} disabled={busy}>⬇ Download</button>
           <button type="button" className="vend-cancel" onClick={() => save('draft')} disabled={busy}>Save draft</button>
-          <button type="button" className="vend-primary" onClick={() => save('sent')} disabled={busy}>Send PO</button>
+          <button type="button" className="vend-primary" onClick={() => save('sent')} disabled={busy}>Save &amp; send</button>
         </div>
       </div>
     </div>
@@ -1075,9 +1078,10 @@ function loadJsPDF() {
   return _jsPDFPromise
 }
 
-// Professional PO document — letterhead, vendor block, priced line-item table,
-// total. This is what gets emailed/printed, so it has to look like an invoice
-// (Paul, 2026-07-08). Shared by download AND preview.
+// Professional billing document — letterhead, bill-to block, priced line-item
+// table, total. Paul bills dealers with these, so the header reads INVOICE
+// (his words: "these batches are Invoices not Purchase orders", 2026-07-08).
+// Shared by download AND preview.
 const money = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
 async function buildPOPdf(po) {
   const jsPDF = await loadJsPDF()
@@ -1090,16 +1094,16 @@ async function buildPOPdf(po) {
   doc.text('Shevchenko Monuments, LLC.', M, 24)
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...DIM)
   doc.text('329 S Florida Grove Rd, Perth Amboy, NJ 08861  ·  732-442-1286  ·  shevcoteam@gmail.com', M, 30)
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(...GOLD)
-  doc.text('PURCHASE ORDER', W - M, 24, { align: 'right' })
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...GOLD)
+  doc.text('INVOICE', W - M, 24, { align: 'right' })
   doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(70)
-  doc.text(`PO # ${po.po_number || '—'}`, W - M, 31, { align: 'right' })
+  doc.text(`Invoice # ${po.po_number || '—'}`, W - M, 31, { align: 'right' })
   doc.text(`Date ${po.po_date || '—'}`, W - M, 36.5, { align: 'right' })
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.7); doc.line(M, 41, W - M, 41)
 
   // Vendor block
   let y = 50
-  doc.setFontSize(8.5); doc.setTextColor(...DIM); doc.text('VENDOR', M, y)
+  doc.setFontSize(8.5); doc.setTextColor(...DIM); doc.text('BILL TO', M, y)
   doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.setTextColor(20)
   doc.text(po.partner?.company_name || '—', M, y + 6)
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(90)
