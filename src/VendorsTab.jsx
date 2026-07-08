@@ -104,7 +104,7 @@ export default function VendorsTab() {
       {sub === 'queue' && <WorkQueue items={items} partners={partners} onOpen={setDrawerId} />}
       {sub === 'batches' && <BatchesView batches={batches} items={items || []} partners={partners} onReload={loadAll} onOpenItem={setDrawerId} onGeneratePO={(b) => setPoModal({ partnerId: b.partner_id, batchId: b.id, items: (items || []).filter(i => i.batch_id === b.id) })} flash={flash} />}
       {sub === 'partners' && <PartnersView partners={partners} onReload={loadAll} flash={flash} />}
-      {sub === 'pos' && <POsView pos={pos} partners={partners} onNew={() => setPoModal({ partnerId: partners[0]?.id || null, items: [] })} onReload={loadAll} flash={flash} />}
+      {sub === 'pos' && <POsView pos={pos} partners={partners} onNew={() => setPoModal({ partnerId: partners[0]?.id || null, items: [] })} onEdit={(po) => setPoModal({ existing: po, partnerId: po.partner_id })} onReload={loadAll} flash={flash} />}
 
       {newReqOpen && <NewRequestModal partners={partners} onClose={() => setNewReqOpen(false)} onSaved={() => { setNewReqOpen(false); setSub('queue'); loadAll(); flash('Request created — in the Work Queue.') }} />}
       {drawerId && <ItemDrawer itemId={drawerId} batches={batches} onClose={() => setDrawerId(null)} onChanged={loadAll} onGeneratePO={(it) => setPoModal({ partnerId: it.request?.partner_id, items: [it] })} flash={flash} />}
@@ -968,65 +968,81 @@ function NewBatchModal({ partners, onClose, onSaved }) {
 }
 
 // ── POs ──────────────────────────────────────────────────────────────────────
-function POsView({ pos, partners, onNew, onReload, flash }) {
+function POsView({ pos, partners, onNew, onEdit, onReload, flash }) {
   return (
     <>
-      <div className="vend-filters"><div style={{ flex: 1 }} /><button type="button" className="vend-primary" onClick={onNew} disabled={!partners.length}>+ New PO</button></div>
+      <div className="vend-filters"><div style={{ flex: 1 }} /><button type="button" className="vend-primary" onClick={onNew} disabled={!partners.length}>+ New invoice</button></div>
       <div className="vend-table">
-        <div className="vend-row vend-porow vend-row-head"><div>PO #</div><div>Partner</div><div>Date</div><div>Items</div><div>Status</div><div /></div>
-        {pos.length === 0 ? <div className="vend-empty">No POs yet — generate one from an item or a batch.</div>
-          : pos.map(po => (
-            <div key={po.id} className="vend-row vend-porow">
-              <div className="vend-mono vend-strong">{po.po_number}</div><div>{po.partner?.company_name || '—'}</div><div>{po.po_date ? fmtDate(po.po_date) : '—'}</div>
-              <div>{(po.po_items || []).length}</div><div><span className="vend-chip">{statusLabel(po.status)}</span></div>
-              <div className="vend-po-actions">
-                {po.status === 'draft' && <button type="button" onClick={async () => { await updateVendorPO(po.id, { status: 'sent' }); onReload(); flash('PO marked sent.') }}>Send</button>}
-                <button type="button" onClick={() => previewPOPdf(po)}>Preview</button>
-                <button type="button" onClick={() => downloadPOPdf(po)}>⬇ Download</button>
+        <div className="vend-row vend-porow vend-row-head"><div>Invoice #</div><div>Partner</div><div>Date</div><div>Amount</div><div>Status</div><div /></div>
+        {pos.length === 0 ? <div className="vend-empty">No invoices yet — generate one from an item or a batch.</div>
+          : pos.map(po => {
+            const lineSum = (po.po_items || []).reduce((s, li) => s + (li.unit_price != null ? Number(li.unit_price) * (Number(li.quantity) || 1) : 0), 0)
+            const amt = po.custom_amount != null ? Number(po.custom_amount) : lineSum
+            return (
+              <div key={po.id} className="vend-row vend-porow">
+                <div className="vend-mono vend-strong">{po.po_number}</div><div>{po.partner?.company_name || '—'}</div><div>{po.po_date ? fmtDate(po.po_date) : '—'}</div>
+                <div className="vend-mono">{amt > 0 ? `$${amt.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}</div>
+                <div><span className="vend-chip">{statusLabel(po.status)}</span></div>
+                <div className="vend-po-actions">
+                  <button type="button" onClick={() => onEdit(po)}>✎ Open</button>
+                  {po.status === 'draft' && <button type="button" onClick={async () => { await updateVendorPO(po.id, { status: 'sent' }); onReload(); flash('Invoice marked sent.') }}>Send</button>}
+                  <button type="button" onClick={() => previewPOPdf(po)}>Preview</button>
+                  <button type="button" onClick={() => downloadPOPdf(po)}>⬇ Download</button>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
       </div>
     </>
   )
 }
 
-// PO builder — per-line pricing + a professional preview before anything is
-// sent (Paul, 2026-07-08). Lines are editable; the total is the sum of
-// qty × price unless a custom total override is set.
+// Invoice builder — per-line pricing + professional preview. Opens fresh from
+// a batch/item OR loads an EXISTING invoice for editing (seed.existing) so
+// saved lines are always visible and fixable (Paul, 2026-07-08: typed lines
+// looked lost because nothing displayed them after save). Backdrop clicks do
+// NOT close it — typed lines are too easy to lose; use Cancel.
 function POModal({ seed, partners, onClose, onSaved }) {
-  const [partnerId, setPartnerId] = useState(seed.partnerId || partners[0]?.id || '')
-  const [poNumber, setPoNumber] = useState('')
-  const [notes, setNotes] = useState('')
-  const [customAmount, setCustomAmount] = useState('')
+  const ex = seed.existing || null
+  const [partnerId, setPartnerId] = useState(ex?.partner_id || seed.partnerId || partners[0]?.id || '')
+  const [poNumber, setPoNumber] = useState(ex?.po_number || '')
+  const [notes, setNotes] = useState(ex?.notes || '')
+  const [customAmount, setCustomAmount] = useState(ex?.custom_amount != null ? String(ex.custom_amount) : '')
   const [busy, setBusy] = useState(false); const [error, setError] = useState(null)
-  useEffect(() => { nextPONumber().then(setPoNumber) }, [])
-  const [lines, setLines] = useState(() => (seed.items || []).map(it => ({
-    itemId: it.id,
-    description: `${it.vendor_reference || ''} ${it.work_type ? '· ' + statusLabel(it.work_type) : ''}`.trim() || 'Item',
-    quantity: 1, unitPrice: '',
-  })))
+  useEffect(() => { if (!ex) nextPONumber().then(setPoNumber) }, [ex])
+  const [lines, setLines] = useState(() => ex
+    ? (ex.po_items || []).map(li => ({
+        itemId: li.item_id || null, description: li.description || '', quantity: li.quantity || 1,
+        unitPrice: li.unit_price != null ? String(li.unit_price) : '',
+      }))
+    : (seed.items || []).map(it => ({
+        itemId: it.id,
+        description: `${it.vendor_reference || ''} ${it.work_type ? '· ' + statusLabel(it.work_type) : ''}`.trim() || 'Item',
+        quantity: 1, unitPrice: '',
+      })))
   const setLine = (i, patch) => setLines(arr => arr.map((li, j) => j === i ? { ...li, ...patch } : li))
   const lineSum = lines.reduce((s, li) => s + (li.unitPrice !== '' && li.unitPrice != null ? Number(li.unitPrice) * (Number(li.quantity) || 1) : 0), 0)
   const total = customAmount !== '' ? Number(customAmount) : lineSum
   const toPoObject = () => ({
-    po_number: poNumber, po_date: new Date().toISOString().slice(0, 10),
-    partner: partners.find(p => p.id === partnerId) || null,
+    po_number: poNumber, po_date: ex?.po_date || new Date().toISOString().slice(0, 10),
+    partner: partners.find(p => p.id === partnerId) || ex?.partner || null,
     notes, custom_amount: customAmount !== '' ? Number(customAmount) : null,
     po_items: lines.map(li => ({ description: li.description, quantity: Number(li.quantity) || 1, unit_price: li.unitPrice === '' ? null : Number(li.unitPrice) })),
   })
   const save = async (status) => {
     if (!partnerId) { setError('Pick a partner.'); return }
     setBusy(true); setError(null)
-    const res = await createVendorPO({ partnerId, poNumber, batchId: seed.batchId || null, notes, customAmount, poItems: lines, status })
+    const res = ex
+      ? await updateVendorPO(ex.id, { status, poNumber, notes, customAmount, poItems: lines })
+      : await createVendorPO({ partnerId, poNumber, batchId: seed.batchId || null, notes, customAmount, poItems: lines, status })
     setBusy(false)
     if (!res.ok) { setError(res.error); return }
     onSaved()
   }
   return (
-    <div className="vend-backdrop" onClick={() => { if (!busy) onClose() }}>
+    <div className="vend-backdrop">
       <div className="vend-modal" onClick={e => e.stopPropagation()}>
-        <h3 className="vend-modal-title">Generate invoice</h3>
+        <h3 className="vend-modal-title">{ex ? `Edit invoice ${ex.po_number || ''}` : 'Generate invoice'}</h3>
         <div className="vend-grid2">
           <label className="vic-field"><span>Partner</span><select className="vic-input" value={partnerId} onChange={e => setPartnerId(e.target.value)}><option value="">Select…</option>{partners.map(p => <option key={p.id} value={p.id}>{p.company_name}</option>)}</select></label>
           <label className="vic-field"><span>PO number</span><input className="vic-input" value={poNumber} onChange={e => setPoNumber(e.target.value)} /></label>
@@ -1054,8 +1070,18 @@ function POModal({ seed, partners, onClose, onSaved }) {
           <button type="button" className="vend-cancel" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="button" className="vend-cancel" onClick={() => previewPOPdf(toPoObject())} disabled={busy}>👁 Preview</button>
           <button type="button" className="vend-cancel" onClick={() => downloadPOPdf(toPoObject())} disabled={busy}>⬇ Download</button>
-          <button type="button" className="vend-cancel" onClick={() => save('draft')} disabled={busy}>Save draft</button>
-          <button type="button" className="vend-primary" onClick={() => save('sent')} disabled={busy}>Save &amp; send</button>
+          {ex ? (
+            <>
+              {/* Editing keeps the invoice's current status — Save never demotes a sent invoice. */}
+              <button type="button" className="vend-primary" onClick={() => save(ex.status)} disabled={busy}>Save changes</button>
+              {ex.status === 'draft' && <button type="button" className="vend-primary" onClick={() => save('sent')} disabled={busy}>Save &amp; send</button>}
+            </>
+          ) : (
+            <>
+              <button type="button" className="vend-cancel" onClick={() => save('draft')} disabled={busy}>Save draft</button>
+              <button type="button" className="vend-primary" onClick={() => save('sent')} disabled={busy}>Save &amp; send</button>
+            </>
+          )}
         </div>
       </div>
     </div>

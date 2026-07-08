@@ -304,10 +304,12 @@ export async function createVendorPO(input = {}) {
   const poItems = (input.poItems || []).filter(Boolean)
   if (poItems.length) {
     const rows = poItems.map(pi => ({
-      po_id: po.id, item_id: pi.itemId || null, description: pi.description || null, quantity: pi.quantity || 1,
+      po_id: po.id, item_id: pi.itemId || null, description: pi.description || null, quantity: Number(pi.quantity) || 1,
       unit_price: pi.unitPrice != null && pi.unitPrice !== '' ? Number(pi.unitPrice) : null,
     }))
-    await supabase.from('vendor_po_items').insert(rows)
+    // Surface a line-insert failure — swallowing it makes typed lines "vanish".
+    const { error: itemsErr } = await supabase.from('vendor_po_items').insert(rows)
+    if (itemsErr) return { ok: false, error: `Invoice saved but its lines failed: ${itemsErr.message}`, po }
   }
   if (po.status === 'sent') await addVendorEvent({ requestId: null, itemId: null, eventType: 'email_sent', actor: 'Staff', detail: `PO ${poNumber} sent` })
   return { ok: true, po }
@@ -316,10 +318,28 @@ export async function updateVendorPO(id, patch = {}) {
   if (!id) return { ok: false, error: 'Missing id' }
   const row = {}
   if (patch.status !== undefined) row.status = patch.status
+  if (patch.poNumber !== undefined) row.po_number = patch.poNumber?.trim() || null
   if (patch.notes !== undefined) row.notes = patch.notes?.trim() || null
   if (patch.customAmount !== undefined) row.custom_amount = patch.customAmount === '' ? null : Number(patch.customAmount)
-  const { error } = await supabase.from('vendor_pos').update(row).eq('id', id)
-  if (error) return wrapErr(error)
+  if (Object.keys(row).length) {
+    const { error } = await supabase.from('vendor_pos').update(row).eq('id', id)
+    if (error) return wrapErr(error)
+  }
+  // Full line replace (edit-invoice flow) — delete + re-insert, and CHECK the
+  // insert error: a silent line-insert failure looks like "my lines never
+  // saved" (Paul, 2026-07-08).
+  if (patch.poItems !== undefined) {
+    const { error: delErr } = await supabase.from('vendor_po_items').delete().eq('po_id', id)
+    if (delErr) return wrapErr(delErr)
+    const rows = (patch.poItems || []).filter(Boolean).map(pi => ({
+      po_id: id, item_id: pi.itemId || null, description: pi.description || null, quantity: Number(pi.quantity) || 1,
+      unit_price: pi.unitPrice != null && pi.unitPrice !== '' ? Number(pi.unitPrice) : null,
+    }))
+    if (rows.length) {
+      const { error: insErr } = await supabase.from('vendor_po_items').insert(rows)
+      if (insErr) return wrapErr(insErr)
+    }
+  }
   return { ok: true }
 }
 
