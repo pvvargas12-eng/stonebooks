@@ -3991,6 +3991,10 @@ export async function seedComponentsForTradeJob(request) {
     label: track === 'door' ? 'Door' : 'Die',
     size: item.stone_size || null, color: item.color || null,
     current_phase: INITIAL_PHASE[track], sort_order: 0,
+    // Staff explicitly chose to track it — that IS pulling it onto the floor.
+    // Seeding into the queue made the Trade Board and floor disagree (audit
+    // 2026-07-08: phase 'cut' but invisible on the board).
+    on_floor: true,
     phase_changed_at: new Date().toISOString(),
   })
   if (error) return { ok: false, error: error.message }

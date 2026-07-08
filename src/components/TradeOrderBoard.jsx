@@ -22,7 +22,7 @@ import {
 } from '../lib/vendorsData'
 import {
   getCurrentStaffName, uploadProofLayout, createProofVersion,
-  overrideComponentPhase, getComponentsForJobs, seedComponentsForTradeJob, setJobOverallStatus,
+  setComponentOnFloor, getComponentsForJobs, seedComponentsForTradeJob, setJobOverallStatus,
 } from '../lib/stonebooksData'
 import { trackPhases, phaseLabel as compPhaseLabel } from '../lib/jobComponents'
 
@@ -161,7 +161,10 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   // dealer's live tracker too).
   const setProd = (r, comp, phase) => withBusy(r.id, async () => {
     const who = await actor()
-    const res = await overrideComponentPhase(comp.id, phase, { actor: who, source: 'trade_board' })
+    // setComponentOnFloor(true, phase) = move the phase AND make sure the piece
+    // is ON the Production floor board — a phase set from here must be visible
+    // there (the audit mismatch: phase moved but the piece sat in the queue).
+    const res = await setComponentOnFloor(comp.id, true, { actor: who, phase, source: 'trade_board' })
     if (res && res.ok === false) { console.warn('[trade] production:', res.error); return }
     await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'production_status', detail: `Production → ${compPhaseLabel(phase)}`, actor: who, actorRole: 'staff' })
   })
