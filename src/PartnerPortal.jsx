@@ -624,7 +624,10 @@ function POList({ pos }) {
               <div key={p.id} className="vp-po-row">
                 <div className="vp-mono">{p.po_number || '—'}</div>
                 <div>{p.po_date ? fmtDate(p.po_date) : '—'}</div>
-                <div><span className="vp-chip" style={{ background: p.status === 'sent' ? '#e8f5ee' : '#f4f2ee', borderColor: p.status === 'sent' ? '#7ac4a0' : '#ddd9d2', color: p.status === 'sent' ? '#1f6b46' : '#9a9a92' }}>{p.status === 'sent' ? 'Sent' : 'Draft'}</span></div>
+                <div><span className="vp-chip" style={p.status === 'paid'
+                  ? { background: '#e8f5ee', borderColor: '#7ac4a0', color: '#1f6b46', fontWeight: 700 }
+                  : { background: p.status === 'sent' ? '#e8f5ee' : '#f4f2ee', borderColor: p.status === 'sent' ? '#7ac4a0' : '#ddd9d2', color: p.status === 'sent' ? '#1f6b46' : '#9a9a92' }}>
+                  {p.status === 'paid' ? 'Paid ✓' : p.status === 'sent' ? 'Sent' : 'Draft'}</span></div>
                 <div>{amt != null ? `$${amt.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}</div>
               </div>
             )

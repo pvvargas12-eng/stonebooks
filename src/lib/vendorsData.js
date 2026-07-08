@@ -343,6 +343,37 @@ export async function updateVendorPO(id, patch = {}) {
   return { ok: true }
 }
 
+// Delete an invoice outright (lines first — no FK cascade assumed).
+export async function deleteVendorPO(id) {
+  if (!id) return { ok: false, error: 'Missing id' }
+  const { error: liErr } = await supabase.from('vendor_po_items').delete().eq('po_id', id)
+  if (liErr) return wrapErr(liErr)
+  const { error } = await supabase.from('vendor_pos').delete().eq('id', id)
+  if (error) return wrapErr(error)
+  return { ok: true }
+}
+
+// Payment received against an invoice → status 'paid' + the payment details
+// kept on the row (Paul, 2026-07-08: "add payment received and it would mark
+// it as paid").
+export async function recordVendorPOPayment(id, { amount, method = 'check', ref = '', date = null, actor = null } = {}) {
+  if (!id) return { ok: false, error: 'Missing id' }
+  if (amount == null || amount === '' || !(Number(amount) > 0)) return { ok: false, error: 'Enter the amount received.' }
+  const payment = {
+    amount: Number(amount), method, ref: ref?.trim() || null,
+    date: date || new Date().toISOString().slice(0, 10),
+    recordedBy: actor || null, at: new Date().toISOString(),
+  }
+  const { data: po, error } = await supabase.from('vendor_pos')
+    .update({ status: 'paid', payment }).eq('id', id).select('po_number, partner_id').single()
+  if (error) return wrapErr(error)
+  await addVendorEvent({
+    requestId: null, itemId: null, eventType: 'status_changed', actor: actor || 'Staff',
+    detail: `Invoice ${po?.po_number || ''} PAID — $${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2 })} by ${method}${ref ? ` (#${ref.trim()})` : ''}`,
+  }).catch(() => {})
+  return { ok: true }
+}
+
 // ── Partner portal: identity + invites (PHASE 3) ─────────────────────────────
 // Resolves the CURRENT auth user to a partner mapping. Returns
 // { partnerId, partner } for a portal user, or null for staff (no mapping).

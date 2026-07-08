@@ -18,6 +18,7 @@ import {
   uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, addVendorEvent, listVendorEvents,
   listVendorBatches, createVendorBatch, updateVendorBatch, setItemBatch,
   listVendorPOs, createVendorPO, updateVendorPO, nextPONumber,
+  deleteVendorPO, recordVendorPOPayment,
   invitePartnerUser, listPartnerUsers,
   listTradeUpdates, markTradeUpdatesSeen, getTradeUpdatesCount, decideTradeRush,
   listTradeIssues, setTradeIssueStatus,
@@ -969,6 +970,8 @@ function NewBatchModal({ partners, onClose, onSaved }) {
 
 // ── POs ──────────────────────────────────────────────────────────────────────
 function POsView({ pos, partners, onNew, onEdit, onReload, flash }) {
+  const [payFor, setPayFor] = useState(null)     // po being paid
+  const [deleteArm, setDeleteArm] = useState(null) // po.id armed for delete
   return (
     <>
       <div className="vend-filters"><div style={{ flex: 1 }} /><button type="button" className="vend-primary" onClick={onNew} disabled={!partners.length}>+ New invoice</button></div>
@@ -978,22 +981,79 @@ function POsView({ pos, partners, onNew, onEdit, onReload, flash }) {
           : pos.map(po => {
             const lineSum = (po.po_items || []).reduce((s, li) => s + (li.unit_price != null ? Number(li.unit_price) * (Number(li.quantity) || 1) : 0), 0)
             const amt = po.custom_amount != null ? Number(po.custom_amount) : lineSum
+            const paid = po.status === 'paid'
             return (
               <div key={po.id} className="vend-row vend-porow">
                 <div className="vend-mono vend-strong">{po.po_number}</div><div>{po.partner?.company_name || '—'}</div><div>{po.po_date ? fmtDate(po.po_date) : '—'}</div>
                 <div className="vend-mono">{amt > 0 ? `$${amt.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}</div>
-                <div><span className="vend-chip">{statusLabel(po.status)}</span></div>
+                <div>
+                  <span className={`vend-chip${paid ? ' vend-chip-paid' : ''}`}
+                    title={paid && po.payment ? `$${Number(po.payment.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })} by ${po.payment.method}${po.payment.ref ? ` #${po.payment.ref}` : ''} on ${po.payment.date}` : undefined}>
+                    {paid ? 'Paid ✓' : statusLabel(po.status)}
+                  </span>
+                </div>
                 <div className="vend-po-actions">
                   <button type="button" onClick={() => onEdit(po)}>✎ Open</button>
                   {po.status === 'draft' && <button type="button" onClick={async () => { await updateVendorPO(po.id, { status: 'sent' }); onReload(); flash('Invoice marked sent.') }}>Send</button>}
+                  {!paid && <button type="button" className="vend-po-pay" onClick={() => setPayFor(po)}>$ Payment</button>}
                   <button type="button" onClick={() => previewPOPdf(po)}>Preview</button>
-                  <button type="button" onClick={() => downloadPOPdf(po)}>⬇ Download</button>
+                  <button type="button" onClick={() => downloadPOPdf(po)}>⬇ PDF</button>
+                  {deleteArm === po.id ? (
+                    <button type="button" className="vend-po-del armed" onClick={async () => { const r = await deleteVendorPO(po.id); setDeleteArm(null); if (r.ok) { onReload(); flash('Invoice deleted.') } else flash(r.error) }}>
+                      Really delete?
+                    </button>
+                  ) : (
+                    <button type="button" className="vend-po-del" title="Delete this invoice" onClick={() => setDeleteArm(po.id)}>✕</button>
+                  )}
                 </div>
               </div>
             )
           })}
       </div>
+      {payFor && <POPayModal po={payFor} onClose={() => setPayFor(null)} onSaved={() => { setPayFor(null); onReload(); flash('Payment recorded — invoice marked PAID.') }} />}
     </>
+  )
+}
+
+// Payment received against an invoice → marks it Paid, keeps the details.
+function POPayModal({ po, onClose, onSaved }) {
+  const lineSum = (po.po_items || []).reduce((s, li) => s + (li.unit_price != null ? Number(li.unit_price) * (Number(li.quantity) || 1) : 0), 0)
+  const due = po.custom_amount != null ? Number(po.custom_amount) : lineSum
+  const [amount, setAmount] = useState(due > 0 ? String(due) : '')
+  const [method, setMethod] = useState('check')
+  const [ref, setRef] = useState('')
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [busy, setBusy] = useState(false); const [error, setError] = useState(null)
+  const save = async () => {
+    setBusy(true); setError(null)
+    const actor = await getCurrentStaffName().catch(() => 'Staff')
+    const r = await recordVendorPOPayment(po.id, { amount, method, ref, date, actor })
+    setBusy(false)
+    if (!r.ok) { setError(r.error); return }
+    onSaved()
+  }
+  return (
+    <div className="vend-backdrop">
+      <div className="vend-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 440 }}>
+        <h3 className="vend-modal-title">Payment received — {po.po_number}</h3>
+        <div className="vend-grid2">
+          <label className="vic-field"><span>Amount</span><input className="vic-input" type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} autoFocus /></label>
+          <label className="vic-field"><span>Method</span>
+            <select className="vic-input" value={method} onChange={e => setMethod(e.target.value)}>
+              <option value="check">Check</option><option value="zelle">Zelle</option>
+              <option value="cash">Cash</option><option value="other">Other</option>
+            </select>
+          </label>
+          <label className="vic-field"><span>{method === 'check' ? 'Check #' : 'Reference (optional)'}</span><input className="vic-input" value={ref} onChange={e => setRef(e.target.value)} placeholder={method === 'check' ? 'e.g. 1042' : '—'} /></label>
+          <label className="vic-field"><span>Date received</span><input className="vic-input" type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        </div>
+        {error && <div className="vend-error">{error}</div>}
+        <div className="vend-modal-actions">
+          <button type="button" className="vend-cancel" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="vend-primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : '✓ Mark paid'}</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1240,7 +1300,14 @@ const VEND_CSS = `
   .vend-table { background: #fff; border: 0.5px solid #e6e3dd; border-radius: 12px; overflow: hidden; }
   .vend-row { display: grid; grid-template-columns: 1.3fr 90px 100px 130px 130px 100px 100px 70px; gap: 10px; align-items: center; padding: 11px 16px; border-bottom: 0.5px solid #f1efeb; font-size: 13px; }
   .vend-prow { grid-template-columns: 1.4fr 1fr 110px 1.3fr 110px 70px 70px; }
-  .vend-porow { grid-template-columns: 130px 1.4fr 110px 70px 100px 120px; }
+  /* Partner column stays flexible but the actions column gets real room —
+     the old 120px squeezed 5 buttons off the right edge (Paul, 2026-07-08). */
+  .vend-porow { grid-template-columns: 120px minmax(140px, 1fr) 90px 100px 90px minmax(330px, max-content); }
+  .vend-po-actions { justify-content: flex-end; flex-wrap: wrap; }
+  .vend-chip-paid { background: #e8f5ee !important; border-color: #7ac4a0 !important; color: #1f6b46 !important; font-weight: 700; }
+  .vend-po-pay { border-color: #2d7a4f !important; color: #1f6b46 !important; background: #f2faf5 !important; font-weight: 700; }
+  .vend-po-del { border-color: rgba(179,38,30,.4) !important; color: #b3261e !important; background: #fff !important; }
+  .vend-po-del.armed { background: #b3261e !important; color: #fff !important; border-color: #b3261e !important; font-weight: 700; }
   .vend-row:last-child { border-bottom: none; }
   .vend-row-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #8a8a85; font-weight: 600; }
   .vend-strong { font-weight: 600; color: #1e2d3d; }
