@@ -18,6 +18,7 @@ import {
   vendorFileSignedUrl, addVendorEvent, listVendorEvents, listVendorPOs,
   listTradeInvoices, listTradeOrders,
   TRADE_NOTIFY_PREFS, updatePartnerNotificationPrefs,
+  getPartnerTeamNames, updatePartnerTeamNames,
   submitTradeIssue, listTradeIssues,
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
@@ -41,12 +42,10 @@ const STATUS_TONE = {
 }
 const OPEN_STATUSES = ['submitted', 'waiting_on_info', 'ready_to_work', 'in_progress', 'design_uploaded']
 
-// Stable list-keys for the new-request item cards without touching render purity.
-let _keySeq = 1
-const nextKey = () => _keySeq++
+// One stone per order (Paul, 2026-07-08) — the form carries a single item card.
 const blankItem = (workType = 'design') => ({
   workType, vendorReference: '', stoneSize: '', baseSize: '', color: '',
-  cemetery: '', deceasedFamilyName: '', itemNotes: '', _files: [], _key: 0,
+  cemetery: '', deceasedFamilyName: '', itemNotes: '', location: '', notesAlign: 'left', _files: [], _key: 0,
 })
 
 function PartnerStatusChip({ status }) {
@@ -243,19 +242,26 @@ function NewRequestForm({ partnerId, partner, onDone }) {
   const [items, setItems] = useState([blankItem('design')])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  // Who's submitting — bubbles from the names managed in Settings. Fetched
+  // fresh so a name added in Settings shows up here without a re-login.
+  const [teamNames, setTeamNames] = useState([])
+  const [submittedBy, setSubmittedBy] = useState('')
+  useEffect(() => {
+    let alive = true
+    getPartnerTeamNames(partnerId).then(names => { if (alive) setTeamNames(names) })
+    return () => { alive = false }
+  }, [partnerId])
 
   const toggleSvc = (code) => setServices(prev => {
     const n = new Set(prev); if (n.has(code)) n.delete(code); else n.add(code); return n
   })
 
   const setItem = (idx, next) => setItems(arr => arr.map((it, i) => i === idx ? next : it))
-  const dupItem = (idx) => setItems(arr => { const c = { ...arr[idx], _files: [...(arr[idx]._files || [])], _key: nextKey() }; const n = [...arr]; n.splice(idx + 1, 0, c); return n })
-  const rmItem = (idx) => setItems(arr => arr.filter((_, i) => i !== idx))
-  const addItem = () => setItems(arr => [...arr, { ...blankItem('design'), _key: nextKey() }])
 
   const submit = async () => {
     if (!familyName.trim()) { setError('Enter the family name — it is how everyone tracks this order.'); return }
     if (rush && !rushNeedBy) { setError('Rush orders need the date you need it by.'); return }
+    if (teamNames.length > 0 && !submittedBy.trim()) { setError('Tap your name below — who is submitting this order?'); return }
     // Single-service sanity check (Paul): design-only and blast-only orders are
     // easy to mis-click — confirm before submitting.
     const svcList = [...services]
@@ -268,7 +274,8 @@ function NewRequestForm({ partnerId, partner, onDone }) {
     const res = await createVendorRequest({
       partnerId, source: 'partner', requestName, neededBy: neededBy || null, rush, generalNotes,
       familyName, dealerOrderNumber, services: [...services], serviceCustom, rushNeedBy: rushNeedBy || null,
-      createdBy: partner?.contact_person || partner?.company_name || 'Partner',
+      submittedBy: submittedBy || null,
+      createdBy: submittedBy || partner?.contact_person || partner?.company_name || 'Partner',
       items: items.map(({ _files, _key, ...rest }) => rest),  // eslint-disable-line no-unused-vars
     })
     if (!res.ok) { setBusy(false); setError(res.error); return }
@@ -288,7 +295,7 @@ function NewRequestForm({ partnerId, partner, onDone }) {
   return (
     <div className="vp-section vp-newreq">
       <div className="vp-section-h">New order</div>
-      <p className="vp-newreq-lede">Everything you used to email — family name, your order number, the drawing — plus the details that keep your order moving. Add one card per stone.</p>
+      <p className="vp-newreq-lede">Everything you used to email — family name, your order number, the drawing — plus the details that keep your order moving. One stone per order.</p>
       <style>{`
         .vp-svcrow { display: flex; flex-wrap: wrap; gap: 7px; margin: 4px 0 12px; }
         .vp-svc { font: inherit; font-size: 12.5px; font-weight: 600; border: 1px solid #d8d2c4; border-radius: 999px; padding: 5px 14px; background: #fff; color: #6a6a62; cursor: pointer; }
@@ -323,11 +330,27 @@ function NewRequestForm({ partnerId, partner, onDone }) {
 
       <div className="vp-items">
         {items.map((it, idx) => (
-          <VendorItemCard key={it._key} item={it} index={idx} onChange={(n) => setItem(idx, n)} onDuplicate={() => dupItem(idx)} onRemove={() => rmItem(idx)} canRemove={items.length > 1}
-            hideWorkType hideReference />
+          <VendorItemCard key={it._key} item={it} index={idx} onChange={(n) => setItem(idx, n)} onDuplicate={null} onRemove={() => {}} canRemove={false}
+            hideWorkType hideReference hideOptional showLocation notesCenterOption />
         ))}
       </div>
-      <button type="button" className="vp-additem" onClick={addItem}>+ Add another stone (one stone per item)</button>
+
+      {/* Submitted by — tap a bubble. Names are managed in Settings. */}
+      <div className="vic-field" style={{ marginTop: 14 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>Submitted by</span>
+        {teamNames.length > 0 ? (
+          <div className="vp-svcrow" style={{ marginBottom: 4 }}>
+            {teamNames.map(n => (
+              <button key={n} type="button" className={`vp-svc${submittedBy === n ? ' on' : ''}`} onClick={() => setSubmittedBy(submittedBy === n ? '' : n)}>{n}</button>
+            ))}
+          </div>
+        ) : (
+          <>
+            <input className="vic-input" style={{ maxWidth: 280 }} value={submittedBy} onChange={e => setSubmittedBy(e.target.value)} placeholder="Your name" />
+            <span style={{ fontSize: 12, color: '#8a8a85', marginTop: 3 }}>Tip: add your team's names in Settings and they show up here as one-tap bubbles.</span>
+          </>
+        )}
+      </div>
 
       {error && <div className="vp-error">{error}</div>}
       <div className="vp-newreq-actions">
@@ -490,6 +513,26 @@ function PartnerSettings({ partner }) {
   const [prefs, setPrefs] = useState(() => ({ ...(partner?.notification_prefs || {}) }))
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Team names — the "submitted by" bubbles on the order form.
+  const [names, setNames] = useState(null)
+  const [newName, setNewName] = useState('')
+  const [namesSaved, setNamesSaved] = useState(false)
+  useEffect(() => {
+    let alive = true
+    getPartnerTeamNames(partner?.id).then(list => { if (alive) setNames(list) })
+    return () => { alive = false }
+  }, [partner?.id])
+  const saveNames = async (next) => {
+    setNames(next); setNamesSaved(false)
+    const r = await updatePartnerTeamNames(partner?.id, next)
+    if (r.ok) { setNames(r.names); setNamesSaved(true); setTimeout(() => setNamesSaved(false), 2000) }
+  }
+  const addName = () => {
+    const n = newName.trim()
+    if (!n) return
+    setNewName('')
+    saveNames([...(names || []), n])
+  }
   const toggle = async (key) => {
     const next = { ...prefs, [key]: prefs[key] === false ? true : false }
     // Normalize: true = default, store only the mutes.
@@ -514,6 +557,32 @@ function PartnerSettings({ partner }) {
         {row('Email', partner?.email)}
         {row('Address', partner?.address)}
         {row('Terms', partner?.payment_terms)}
+      </div>
+
+      {/* Team names — one-tap "submitted by" bubbles on the New Order form. */}
+      <div style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '14px 18px', marginTop: 14, maxWidth: 520 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: '#979387', marginBottom: 6 }}>
+          Team names {namesSaved && <span style={{ color: '#2d7a4f', textTransform: 'none', letterSpacing: 0 }}>· saved ✓</span>}
+        </div>
+        <p style={{ fontSize: 12.5, color: '#8a8a85', margin: '0 0 10px' }}>
+          Add the people who place orders. On the New Order form they show up as one-tap bubbles under "Submitted by."
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 10 }}>
+          {names === null ? <span style={{ fontSize: 13, color: '#8a8a85' }}>Loading…</span>
+            : names.length === 0 ? <span style={{ fontSize: 13, color: '#8a8a85', fontStyle: 'italic' }}>No names yet.</span>
+            : names.map(n => (
+              <span key={n} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, border: '1px solid #d8c89a', background: '#fdf8ec', color: '#9A7209', borderRadius: 999, padding: '5px 8px 5px 14px' }}>
+                {n}
+                <button type="button" onClick={() => saveNames(names.filter(x => x !== n))} title={`Remove ${n}`}
+                  style={{ font: 'inherit', border: 'none', background: 'none', color: '#b3a06a', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+              </span>
+            ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input className="vic-input" style={{ maxWidth: 240 }} value={newName} onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addName() }} placeholder="e.g. Maria" />
+          <button type="button" className="vp-primary" onClick={addName} disabled={!newName.trim()}>Add name</button>
+        </div>
       </div>
 
       <div style={{ background: '#fff', border: '0.5px solid rgba(0,0,0,0.09)', borderRadius: 12, padding: '14px 18px', marginTop: 14, maxWidth: 520 }}>
@@ -547,14 +616,19 @@ function POList({ pos }) {
       {pos.length === 0 ? <div className="vp-empty">No purchase orders yet.</div> : (
         <div className="vp-po-table">
           <div className="vp-po-row vp-po-head"><div>PO #</div><div>Date</div><div>Status</div><div>Amount</div></div>
-          {pos.map(p => (
-            <div key={p.id} className="vp-po-row">
-              <div className="vp-mono">{p.po_number || '—'}</div>
-              <div>{p.po_date ? fmtDate(p.po_date) : '—'}</div>
-              <div><span className="vp-chip" style={{ background: p.status === 'sent' ? '#e8f5ee' : '#f4f2ee', borderColor: p.status === 'sent' ? '#7ac4a0' : '#ddd9d2', color: p.status === 'sent' ? '#1f6b46' : '#9a9a92' }}>{p.status === 'sent' ? 'Sent' : 'Draft'}</span></div>
-              <div>{p.custom_amount != null ? `$${Number(p.custom_amount).toLocaleString()}` : '—'}</div>
-            </div>
-          ))}
+          {pos.map(p => {
+            // Custom override wins; otherwise sum the priced lines.
+            const lineSum = (p.po_items || []).reduce((s, li) => s + (li.unit_price != null ? Number(li.unit_price) * (Number(li.quantity) || 1) : 0), 0)
+            const amt = p.custom_amount != null ? Number(p.custom_amount) : (lineSum || null)
+            return (
+              <div key={p.id} className="vp-po-row">
+                <div className="vp-mono">{p.po_number || '—'}</div>
+                <div>{p.po_date ? fmtDate(p.po_date) : '—'}</div>
+                <div><span className="vp-chip" style={{ background: p.status === 'sent' ? '#e8f5ee' : '#f4f2ee', borderColor: p.status === 'sent' ? '#7ac4a0' : '#ddd9d2', color: p.status === 'sent' ? '#1f6b46' : '#9a9a92' }}>{p.status === 'sent' ? 'Sent' : 'Draft'}</span></div>
+                <div>{amt != null ? `$${amt.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}</div>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

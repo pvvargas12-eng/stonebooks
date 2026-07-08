@@ -714,6 +714,9 @@ function StaffLoginGate() {
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" autoComplete="current-password" style={gateInput} />
           {err && <div style={{ color: '#b54040', fontSize: 13, marginBottom: 12 }}>{err}</div>}
           <button type="submit" className="btn btn-navy" disabled={busy} style={{ width: '100%', padding: '12px', fontSize: 13 }}>{busy ? 'Signing in…' : 'Sign In'}</button>
+          <div style={{ marginTop: 16, fontSize: 12.5, color: 'var(--text-mid)', textAlign: 'center' }}>
+            Dealer? Sign in at <a href="/trade" style={{ color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>Stonebooks Trade →</a>
+          </div>
         </form>
       </div>
     </>

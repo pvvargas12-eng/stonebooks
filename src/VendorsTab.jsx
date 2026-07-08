@@ -979,6 +979,7 @@ function POsView({ pos, partners, onNew, onReload, flash }) {
               <div>{(po.po_items || []).length}</div><div><span className="vend-chip">{statusLabel(po.status)}</span></div>
               <div className="vend-po-actions">
                 {po.status === 'draft' && <button type="button" onClick={async () => { await updateVendorPO(po.id, { status: 'sent' }); onReload(); flash('PO marked sent.') }}>Send</button>}
+                <button type="button" onClick={() => previewPOPdf(po)}>Preview</button>
                 <button type="button" onClick={() => downloadPOPdf(po)}>PDF</button>
               </div>
             </div>
@@ -988,6 +989,9 @@ function POsView({ pos, partners, onNew, onReload, flash }) {
   )
 }
 
+// PO builder — per-line pricing + a professional preview before anything is
+// sent (Paul, 2026-07-08). Lines are editable; the total is the sum of
+// qty × price unless a custom total override is set.
 function POModal({ seed, partners, onClose, onSaved }) {
   const [partnerId, setPartnerId] = useState(seed.partnerId || partners[0]?.id || '')
   const [poNumber, setPoNumber] = useState('')
@@ -995,11 +999,24 @@ function POModal({ seed, partners, onClose, onSaved }) {
   const [customAmount, setCustomAmount] = useState('')
   const [busy, setBusy] = useState(false); const [error, setError] = useState(null)
   useEffect(() => { nextPONumber().then(setPoNumber) }, [])
-  const poItems = (seed.items || []).map(it => ({ itemId: it.id, description: `${it.vendor_reference || ''} ${it.work_type ? '· ' + statusLabel(it.work_type) : ''}`.trim(), quantity: 1 }))
+  const [lines, setLines] = useState(() => (seed.items || []).map(it => ({
+    itemId: it.id,
+    description: `${it.vendor_reference || ''} ${it.work_type ? '· ' + statusLabel(it.work_type) : ''}`.trim() || 'Item',
+    quantity: 1, unitPrice: '',
+  })))
+  const setLine = (i, patch) => setLines(arr => arr.map((li, j) => j === i ? { ...li, ...patch } : li))
+  const lineSum = lines.reduce((s, li) => s + (li.unitPrice !== '' && li.unitPrice != null ? Number(li.unitPrice) * (Number(li.quantity) || 1) : 0), 0)
+  const total = customAmount !== '' ? Number(customAmount) : lineSum
+  const toPoObject = () => ({
+    po_number: poNumber, po_date: new Date().toISOString().slice(0, 10),
+    partner: partners.find(p => p.id === partnerId) || null,
+    notes, custom_amount: customAmount !== '' ? Number(customAmount) : null,
+    po_items: lines.map(li => ({ description: li.description, quantity: Number(li.quantity) || 1, unit_price: li.unitPrice === '' ? null : Number(li.unitPrice) })),
+  })
   const save = async (status) => {
     if (!partnerId) { setError('Pick a partner.'); return }
     setBusy(true); setError(null)
-    const res = await createVendorPO({ partnerId, poNumber, batchId: seed.batchId || null, notes, customAmount, poItems, status })
+    const res = await createVendorPO({ partnerId, poNumber, batchId: seed.batchId || null, notes, customAmount, poItems: lines, status })
     setBusy(false)
     if (!res.ok) { setError(res.error); return }
     onSaved()
@@ -1012,14 +1029,28 @@ function POModal({ seed, partners, onClose, onSaved }) {
           <label className="vic-field"><span>Partner</span><select className="vic-input" value={partnerId} onChange={e => setPartnerId(e.target.value)}><option value="">Select…</option>{partners.map(p => <option key={p.id} value={p.id}>{p.company_name}</option>)}</select></label>
           <label className="vic-field"><span>PO number</span><input className="vic-input" value={poNumber} onChange={e => setPoNumber(e.target.value)} /></label>
         </div>
-        <div className="vend-po-lines">{poItems.length === 0 ? <div className="vend-dim">No line items (generated from an item or batch).</div> : poItems.map((pi, i) => <div key={i} className="vend-po-line">{pi.description || 'Item'}<span>×{pi.quantity}</span></div>)}</div>
+        <div className="vend-po-editor">
+          <div className="vend-po-erow vend-po-ehead"><div>Description</div><div>Qty</div><div>Price</div><div>Amount</div><div /></div>
+          {lines.length === 0 ? <div className="vend-dim" style={{ padding: '8px 0' }}>No line items yet — add one below.</div> : lines.map((li, i) => (
+            <div key={i} className="vend-po-erow">
+              <input className="vic-input" value={li.description} onChange={e => setLine(i, { description: e.target.value })} />
+              <input className="vic-input" type="number" min="1" value={li.quantity} onChange={e => setLine(i, { quantity: e.target.value })} />
+              <input className="vic-input" type="number" step="0.01" placeholder="0.00" value={li.unitPrice} onChange={e => setLine(i, { unitPrice: e.target.value })} />
+              <div className="vend-po-eamt">{li.unitPrice !== '' ? `$${(Number(li.unitPrice) * (Number(li.quantity) || 1)).toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}</div>
+              <button type="button" className="vend-mini-x" onClick={() => setLines(arr => arr.filter((_, j) => j !== i))}>remove</button>
+            </div>
+          ))}
+          <button type="button" className="vend-po-addline" onClick={() => setLines(arr => [...arr, { itemId: null, description: '', quantity: 1, unitPrice: '' }])}>+ Add line</button>
+          <div className="vend-po-total">Total <b>${total.toLocaleString('en-US', { minimumFractionDigits: 2 })}</b>{customAmount !== '' && <span className="vend-dim"> (custom override)</span>}</div>
+        </div>
         <div className="vend-grid2">
-          <label className="vic-field"><span>Custom amount (optional)</span><input className="vic-input" type="number" value={customAmount} onChange={e => setCustomAmount(e.target.value)} placeholder="—" /></label>
+          <label className="vic-field"><span>Custom total override (optional)</span><input className="vic-input" type="number" value={customAmount} onChange={e => setCustomAmount(e.target.value)} placeholder="—" /></label>
         </div>
         <label className="vic-field"><span>Notes</span><textarea className="vic-input" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></label>
         {error && <div className="vend-error">{error}</div>}
         <div className="vend-modal-actions">
           <button type="button" className="vend-cancel" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="vend-cancel" onClick={() => previewPOPdf(toPoObject())} disabled={busy}>👁 Preview</button>
           <button type="button" className="vend-cancel" onClick={() => save('draft')} disabled={busy}>Save draft</button>
           <button type="button" className="vend-primary" onClick={() => save('sent')} disabled={busy}>Send PO</button>
         </div>
@@ -1044,22 +1075,90 @@ function loadJsPDF() {
   return _jsPDFPromise
 }
 
-async function downloadPOPdf(po) {
+// Professional PO document — letterhead, vendor block, priced line-item table,
+// total. This is what gets emailed/printed, so it has to look like an invoice
+// (Paul, 2026-07-08). Shared by download AND preview.
+const money = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+async function buildPOPdf(po) {
   const jsPDF = await loadJsPDF()
   const doc = new jsPDF({ unit: 'mm', format: 'letter' })
-  let y = 20
-  doc.setFontSize(18); doc.text('Shevchenko Monuments', 20, y); y += 7
-  doc.setFontSize(11); doc.setTextColor(110); doc.text('Purchase Order', 20, y); doc.setTextColor(0); y += 12
-  doc.setFontSize(12)
-  doc.text(`PO #: ${po.po_number || '—'}`, 20, y); doc.text(`Date: ${po.po_date || '—'}`, 130, y); y += 7
-  doc.text(`Partner: ${po.partner?.company_name || '—'}`, 20, y); y += 10
-  doc.setFontSize(10); doc.setTextColor(110); doc.text('DESCRIPTION', 20, y); doc.text('QTY', 175, y); doc.setTextColor(0); y += 2
-  doc.line(20, y, 195, y); y += 6
-  for (const li of (po.po_items || [])) { doc.text(String(li.description || 'Item').slice(0, 90), 20, y); doc.text(String(li.quantity || 1), 178, y); y += 7 }
+  const W = 215.9, M = 18
+  const GOLD = [154, 114, 9], NAVY = [30, 45, 61], DIM = [125, 120, 110]
+
+  // Letterhead
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(19); doc.setTextColor(...NAVY)
+  doc.text('Shevchenko Monuments, LLC.', M, 24)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...DIM)
+  doc.text('329 S Florida Grove Rd, Perth Amboy, NJ 08861  ·  732-442-1286  ·  shevcoteam@gmail.com', M, 30)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(...GOLD)
+  doc.text('PURCHASE ORDER', W - M, 24, { align: 'right' })
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(70)
+  doc.text(`PO # ${po.po_number || '—'}`, W - M, 31, { align: 'right' })
+  doc.text(`Date ${po.po_date || '—'}`, W - M, 36.5, { align: 'right' })
+  doc.setDrawColor(...GOLD); doc.setLineWidth(0.7); doc.line(M, 41, W - M, 41)
+
+  // Vendor block
+  let y = 50
+  doc.setFontSize(8.5); doc.setTextColor(...DIM); doc.text('VENDOR', M, y)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.setTextColor(20)
+  doc.text(po.partner?.company_name || '—', M, y + 6)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(90)
+  let vy = y + 11.5
+  for (const line of [po.partner?.contact_person, po.partner?.address, [po.partner?.phone, po.partner?.email].filter(Boolean).join('  ·  ')].filter(Boolean)) {
+    doc.text(String(line), M, vy); vy += 4.8
+  }
+  y = Math.max(vy + 8, 74)
+
+  // Line-item table
+  const colQty = 138, colPrice = 166, colAmt = W - M
+  doc.setFillColor(246, 243, 236)
+  doc.rect(M, y - 5, W - M * 2, 8, 'F')
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(...DIM)
+  doc.text('DESCRIPTION', M + 2, y); doc.text('QTY', colQty, y, { align: 'center' })
+  doc.text('UNIT PRICE', colPrice, y, { align: 'right' }); doc.text('AMOUNT', colAmt - 2, y, { align: 'right' })
+  y += 8
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
+  let lineSum = 0
+  for (const li of (po.po_items || [])) {
+    const qty = Number(li.quantity) || 1
+    const hasPrice = li.unit_price != null
+    const amt = hasPrice ? Number(li.unit_price) * qty : null
+    if (hasPrice) lineSum += amt
+    const descLines = doc.splitTextToSize(String(li.description || 'Item'), colQty - M - 8)
+    if (y + descLines.length * 5 > 250) { doc.addPage(); y = 24 }
+    doc.text(descLines, M + 2, y)
+    doc.text(String(qty), colQty, y, { align: 'center' })
+    doc.text(hasPrice ? money(li.unit_price) : '—', colPrice, y, { align: 'right' })
+    doc.text(amt != null ? money(amt) : '—', colAmt - 2, y, { align: 'right' })
+    y += descLines.length * 5 + 3
+    doc.setDrawColor(235, 231, 222); doc.setLineWidth(0.2); doc.line(M, y - 2.2, W - M, y - 2.2)
+  }
+
+  // Total — custom override wins when set.
+  const total = po.custom_amount != null ? Number(po.custom_amount) : lineSum
   y += 4
-  if (po.custom_amount != null) { doc.setFontSize(12); doc.text(`Amount: $${Number(po.custom_amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}`, 20, y); y += 8 }
-  if (po.notes) { doc.setFontSize(10); doc.setTextColor(80); doc.text(doc.splitTextToSize(`Notes: ${po.notes}`, 175), 20, y) }
+  doc.setDrawColor(...GOLD); doc.setLineWidth(0.5); doc.line(colPrice - 30, y - 2, W - M, y - 2)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...NAVY)
+  doc.text('TOTAL', colPrice - 28, y + 4)
+  doc.text(money(total), colAmt - 2, y + 4, { align: 'right' })
+  y += 14
+
+  if (po.notes) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(80)
+    doc.text(doc.splitTextToSize(`Notes: ${po.notes}`, W - M * 2), M, y)
+    y += 10
+  }
+  doc.setFontSize(8.5); doc.setTextColor(...DIM)
+  doc.text('Thank you — Shevchenko Monuments, est. 1919', M, 262)
+  return doc
+}
+async function downloadPOPdf(po) {
+  const doc = await buildPOPdf(po)
   doc.save(`${po.po_number || 'PO'}.pdf`)
+}
+async function previewPOPdf(po) {
+  const doc = await buildPOPdf(po)
+  window.open(doc.output('bloburl'), '_blank', 'noopener')
 }
 
 const VEND_CSS = `
@@ -1165,6 +1264,14 @@ const VEND_CSS = `
   .vend-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1e2d3d; color: #fff; font-size: 13px; padding: 10px 18px; border-radius: 8px; z-index: 1200; box-shadow: 0 8px 24px rgba(15,20,25,0.24); }
   .vend-po-lines { display: flex; flex-direction: column; gap: 4px; }
   .vend-po-line { display: flex; justify-content: space-between; font-size: 13px; color: #1e2d3d; padding: 4px 0; border-bottom: 0.5px solid #f1efeb; }
+  .vend-po-editor { border: 0.5px solid #e6e3dd; border-radius: 10px; padding: 10px 12px; margin: 4px 0 12px; }
+  .vend-po-erow { display: grid; grid-template-columns: 1fr 60px 90px 90px 52px; gap: 8px; align-items: center; padding: 4px 0; }
+  .vend-po-ehead { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #979387; }
+  .vend-po-erow .vic-input { padding: 6px 8px; font-size: 13px; }
+  .vend-po-eamt { font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; color: #1e2d3d; }
+  .vend-po-erow button.vend-mini-x { font: inherit; font-size: 11px; color: #b54040; background: none; border: none; cursor: pointer; text-align: right; }
+  .vend-po-addline { font: inherit; font-size: 12.5px; font-weight: 600; color: #9A7209; background: none; border: none; cursor: pointer; padding: 6px 0 2px; }
+  .vend-po-total { display: flex; justify-content: flex-end; gap: 10px; align-items: baseline; font-size: 14px; border-top: 0.5px solid #e6e3dd; margin-top: 6px; padding-top: 8px; }
   .vend-po-actions, .vend-batch-actions { display: flex; gap: 6px; }
   .vend-po-actions button { font: inherit; font-size: 12px; padding: 4px 10px; border: 0.5px solid #e6e3dd; background: #fff; border-radius: 6px; cursor: pointer; }
   @media (max-width: 800px) { .vend-grid2 { grid-template-columns: 1fr; } .vend-detail { grid-template-columns: 1fr; } }

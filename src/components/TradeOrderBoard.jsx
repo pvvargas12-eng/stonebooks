@@ -184,10 +184,17 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   const requestChanges = (r) => withBusy(r.id, async () => {
     const who = await actor()
     const note = (changesFor?.note || '').trim()
+    // Attachments ride along (Paul, 2026-07-08) — the dealer can drop a marked-up
+    // photo or reference file right in the change request; it lands in the
+    // order's Files list where staff see it.
+    const files = changesFor?.files || []
+    for (const f of files) {
+      await uploadVendorFile(f, { partnerId: r.partner_id, requestId: r.id, uploaderRole: staffView ? 'staff' : 'partner', kind: 'upload' })
+    }
     await updateTradeOrder(r.id, { designPhase: 'in_progress' })
     await logTradeEvent({
       requestId: r.id, partnerId: r.partner_id, type: 'changes_requested',
-      detail: `Changes requested${note ? `: "${note}"` : ''}`,
+      detail: `Changes requested${note ? `: "${note}"` : ''}${files.length ? ` · ${files.length} attachment${files.length === 1 ? '' : 's'}` : ''}`,
       actor: who, actorRole: staffView ? 'staff' : 'partner',
     })
     setChangesFor(null)
@@ -236,10 +243,29 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   const [trackerById, setTrackerById] = useState({})
   const [layoutsById, setLayoutsById] = useState({})
   const [photosById, setPhotosById] = useState({})
+  const [filesById, setFilesById] = useState({})   // non-photo attachments (order files + change-request uploads)
   const [sigModal, setSigModal] = useState(null)   // { mode: 'approve'|'dropoff'|'pickup', order, proofId? }
-  const [changesFor, setChangesFor] = useState(null) // { id, note } — request-changes note box
+  const [changesFor, setChangesFor] = useState(null) // { id, note, files: File[] } — request-changes box
+  const [lightbox, setLightbox] = useState(null)   // { url, version } — large layout viewer
   const photoInputRef = useRef(null)
   const photoForRef = useRef(null)
+  const changesFileRef = useRef(null)
+
+  const addChangesFiles = (list) => setChangesFor(c => c ? { ...c, files: [...(c.files || []), ...Array.from(list || [])] } : c)
+
+  // Real download (not just open-in-tab) — fetch → blob → anchor click.
+  const downloadLayout = async (url, version) => {
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const objUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objUrl
+      a.download = `layout-V${version}${blob.type.includes('png') ? '.png' : '.jpg'}`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(objUrl), 4000)
+    } catch { window.open(url, '_blank', 'noopener') }
+  }
 
   const refreshDetail = useCallback((id) => {
     listTradeOrderEvents(id).then(ev => setEventsById(m => ({ ...m, [id]: ev })))
@@ -249,6 +275,10 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
       const photos = (rows || []).filter(a => a.kind === 'completion_photo')
       const withUrls = await Promise.all(photos.map(async p => ({ ...p, url: await vendorFileSignedUrl(p.file_path) })))
       setPhotosById(m => ({ ...m, [id]: withUrls }))
+      // Everything else — the dealer's order files + change-request attachments.
+      const uploads = (rows || []).filter(a => a.kind !== 'completion_photo')
+      const uploadUrls = await Promise.all(uploads.map(async f => ({ ...f, url: await vendorFileSignedUrl(f.file_path) })))
+      setFilesById(m => ({ ...m, [id]: uploadUrls }))
     })
   }, [])
 
@@ -412,7 +442,9 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                         {(layoutsById[r.id] || []).map(v => (
                           <div key={v.id} className={`sb-tb-layout${v.is_current ? ' cur' : ''}`}>
                             {v.image_url
-                              ? <a href={v.image_url} target="_blank" rel="noreferrer"><img src={v.image_url} alt={`Layout V${v.version}`} className="sb-tb-layimg" /></a>
+                              ? <button type="button" className="sb-tb-layimgbtn" title="Click to enlarge" onClick={() => setLightbox({ url: v.image_url, version: v.version })}>
+                                  <img src={v.image_url} alt={`Layout V${v.version}`} className="sb-tb-layimg" />
+                                </button>
                               : <span className="sb-tb-layimg sb-tb-layimg-none">V{v.version}</span>}
                             <div className="sb-tb-layinfo">
                               <b>V{v.version}{v.is_current ? ' · current' : ''}</b>
@@ -421,19 +453,37 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                                   : v.sent_at ? `Sent for approval ${fmtD(v.sent_at)}`
                                   : `Uploaded ${fmtD(v.uploaded_at)}`}
                               </span>
+                              {v.image_url && (
+                                <span style={{ display: 'flex', gap: 10 }}>
+                                  <button type="button" className="sb-tb-linkbtn" onClick={() => setLightbox({ url: v.image_url, version: v.version })}>🔍 Preview</button>
+                                  <button type="button" className="sb-tb-linkbtn" onClick={() => downloadLayout(v.image_url, v.version)}>⬇ Download</button>
+                                </span>
+                              )}
                             </div>
                             {v.is_current && !v.approved_at && (
                               <span className="sb-tb-layactions">
                                 <button type="button" className="sb-tb-acceptbtn" disabled={busy} onClick={() => setSigModal({ mode: 'approve', order: r, proofId: v.id })}>✓ Approve &amp; sign</button>
-                                <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setChangesFor({ id: r.id, note: '' })}>Request changes</button>
+                                <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setChangesFor({ id: r.id, note: '', files: [] })}>Request changes</button>
                               </span>
                             )}
                           </div>
                         ))}
                         {changesFor?.id === r.id && (
-                          <div className="sb-tb-changes">
+                          <div className="sb-tb-changes"
+                            onDragOver={e => e.preventDefault()}
+                            onDrop={e => { e.preventDefault(); addChangesFiles(e.dataTransfer.files) }}>
                             <textarea rows={2} placeholder='What needs to change? e.g. "date should read 1941"' value={changesFor.note}
-                              onChange={e => setChangesFor({ id: r.id, note: e.target.value })} />
+                              onChange={e => setChangesFor(c => ({ ...c, id: r.id, note: e.target.value }))} />
+                            {/* Attachments — mark-ups, reference photos. Drag & drop works too. */}
+                            <div className="sb-tb-changes-attach">
+                              <button type="button" className="sb-tb-linkbtn" onClick={() => changesFileRef.current?.click()}>📎 Add attachment</button>
+                              <span className="sb-tb-dim">drag &amp; drop or tap</span>
+                              {(changesFor.files || []).map((f, i) => (
+                                <span key={i} className="sb-tb-changes-chip">{f.name}
+                                  <button type="button" onClick={() => setChangesFor(c => ({ ...c, files: c.files.filter((_, j) => j !== i) }))}>×</button>
+                                </span>
+                              ))}
+                            </div>
                             <div className="sb-tb-modal-actions">
                               <button type="button" className="sb-tb-linkbtn" onClick={() => setChangesFor(null)}>Cancel</button>
                               <button type="button" className="sb-tb-acceptbtn" disabled={busy || !changesFor.note.trim()} onClick={() => requestChanges(r)}>Send change request</button>
@@ -449,12 +499,28 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                           <div key={it.id} className="sb-tb-item">
                             <b>{it.deceased_family_name || it.vendor_reference || tradeServiceLabel(it.work_type)}</b>
                             <span className="sb-tb-dim">
-                              {[it.stone_size && `Stone ${it.stone_size}`, it.base_size && `Base ${it.base_size}`, it.color, it.cemetery].filter(Boolean).join(' · ') || '—'}
+                              {[it.stone_size && `Stone ${it.stone_size}`, it.base_size && `Base ${it.base_size}`, it.location && `Location ${it.location}`, it.color, it.cemetery].filter(Boolean).join(' · ') || '—'}
                             </span>
-                            {it.item_notes && <span className="sb-tb-note">{it.item_notes}</span>}
+                            {it.item_notes && (
+                              <span className="sb-tb-note" style={it.notes_align === 'center'
+                                ? { display: 'block', textAlign: 'center', whiteSpace: 'pre-wrap', fontFamily: 'Georgia, serif', fontStyle: 'normal', background: '#faf8f2', border: '0.5px solid #e8e2d2', borderRadius: 8, padding: '8px 10px' }
+                                : undefined}>{it.item_notes}</span>
+                            )}
                           </div>
                         ))}
                         {r.general_notes && <div className="sb-tb-note" style={{ marginTop: 6 }}>{r.general_notes}</div>}
+                        {r.submitted_by && <div className="sb-tb-dim" style={{ marginTop: 6 }}>Submitted by {r.submitted_by}</div>}
+                        {(filesById[r.id] || []).length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div className="sb-tb-dl">Files</div>
+                            {(filesById[r.id] || []).map(f => (
+                              <div key={f.id} style={{ fontSize: 12.5 }}>
+                                <a href={f.url} target="_blank" rel="noreferrer" style={{ color: '#9A7209' }}>{f.file_name || 'File'}</a>
+                                <span className="sb-tb-dim"> · {f.uploader_role === 'partner' ? 'dealer' : 'staff'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div className="sb-tb-detail-actions">
                           {staffView && (!r.accepted_at || r.needs_reaccept) && (
                             <button type="button" className="sb-tb-acceptbtn" disabled={busy} onClick={() => accept(r)}
@@ -557,8 +623,25 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
         <TradeSignModal mode={sigModal.mode} busy={busyId === sigModal.order.id}
           onCancel={() => setSigModal(null)} onDone={onSigDone} />
       )}
+
+      {/* Layout lightbox — big, easy to read, with download (Paul, 2026-07-08). */}
+      {lightbox && (
+        <div className="sb-tb-modal-overlay" onClick={() => setLightbox(null)}>
+          <div className="sb-tb-lightbox" onClick={e => e.stopPropagation()}>
+            <div className="sb-tb-lightbox-bar">
+              <b>Layout V{lightbox.version}</b>
+              <span style={{ flex: 1 }} />
+              <button type="button" className="sb-tb-linkbtn" onClick={() => downloadLayout(lightbox.url, lightbox.version)}>⬇ Download</button>
+              <button type="button" className="sb-tb-linkbtn" onClick={() => window.open(lightbox.url, '_blank', 'noopener')}>Open full size ↗</button>
+              <button type="button" className="sb-tb-linkbtn" onClick={() => setLightbox(null)}>✕ Close</button>
+            </div>
+            <img src={lightbox.url} alt={`Layout V${lightbox.version}`} className="sb-tb-lightbox-img" />
+          </div>
+        </div>
+      )}
       <input ref={photoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
       <input ref={layoutInputRef} type="file" accept="image/jpeg,image/png" style={{ display: 'none' }} onChange={onPickLayout} />
+      <input ref={changesFileRef} type="file" multiple style={{ display: 'none' }} onChange={e => { addChangesFiles(e.target.files); e.target.value = '' }} />
     </div>
   )
 }
@@ -805,8 +888,15 @@ const TB_CSS = `
   .sb-tb-layout { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 0.5px solid #ece8df; flex-wrap: wrap; }
   .sb-tb-layout:first-of-type { border-top: none; }
   .sb-tb-layout.cur { background: #fdfbf4; }
-  .sb-tb-layimg { width: 74px; height: 54px; object-fit: cover; border: 0.5px solid #ddd6c6; border-radius: 6px; background: #f4f1e9; }
+  .sb-tb-layimg { width: 150px; height: 108px; object-fit: cover; border: 0.5px solid #ddd6c6; border-radius: 8px; background: #f4f1e9; display: block; }
+  .sb-tb-layimgbtn { border: none; background: none; padding: 0; cursor: zoom-in; }
   .sb-tb-layimg-none { display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #a09a8c; }
+  .sb-tb-lightbox { background: #fff; border-radius: 14px; padding: 14px 16px; max-width: 94vw; max-height: 92vh; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 24px 60px rgba(0,0,0,.35); }
+  .sb-tb-lightbox-bar { display: flex; align-items: center; gap: 14px; font-size: 14px; color: #1e2d3d; flex-wrap: wrap; }
+  .sb-tb-lightbox-img { max-width: 90vw; max-height: 78vh; object-fit: contain; border: 0.5px solid #ddd6c6; border-radius: 8px; background: #f4f1e9; }
+  .sb-tb-changes-attach { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border: 0.5px dashed #d8d2c4; border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
+  .sb-tb-changes-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: #f4f2ee; border-radius: 6px; padding: 3px 8px; }
+  .sb-tb-changes-chip button { font: inherit; border: none; background: none; cursor: pointer; color: #8a8a85; font-size: 14px; padding: 0; }
   .sb-tb-layinfo { display: flex; flex-direction: column; gap: 1px; font-size: 13px; min-width: 0; }
   .sb-tb-layactions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
   .sb-tb-changes { padding: 8px 0; }

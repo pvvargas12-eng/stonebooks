@@ -75,6 +75,7 @@ export async function createVendorRequest(input = {}) {
     service_custom: input.serviceCustom?.trim() || null,
     rush_need_by: input.rush ? (input.rushNeedBy || input.neededBy || null) : null,
     rush_status: input.rush ? 'pending' : 'none',
+    submitted_by: input.submittedBy?.trim() || null,
   }
   const { data: req, error: reqErr } = await supabase.from('vendor_requests').insert(reqRow).select().single()
   if (reqErr) return wrapErr(reqErr)
@@ -89,6 +90,8 @@ export async function createVendorRequest(input = {}) {
     cemetery: it.cemetery?.trim() || null,
     deceased_family_name: it.deceasedFamilyName?.trim() || null,
     item_notes: it.itemNotes?.trim() || null,
+    location: it.location?.trim() || null,
+    notes_align: it.notesAlign === 'center' ? 'center' : null,
     status: 'submitted',
   }))
   const { data: created, error: itemErr } = await supabase.from('vendor_items').insert(itemRows).select()
@@ -300,7 +303,10 @@ export async function createVendorPO(input = {}) {
   if (error) return wrapErr(error)
   const poItems = (input.poItems || []).filter(Boolean)
   if (poItems.length) {
-    const rows = poItems.map(pi => ({ po_id: po.id, item_id: pi.itemId || null, description: pi.description || null, quantity: pi.quantity || 1 }))
+    const rows = poItems.map(pi => ({
+      po_id: po.id, item_id: pi.itemId || null, description: pi.description || null, quantity: pi.quantity || 1,
+      unit_price: pi.unitPrice != null && pi.unitPrice !== '' ? Number(pi.unitPrice) : null,
+    }))
     await supabase.from('vendor_po_items').insert(rows)
   }
   if (po.status === 'sent') await addVendorEvent({ requestId: null, itemId: null, eventType: 'email_sent', actor: 'Staff', detail: `PO ${poNumber} sent` })
@@ -522,6 +528,24 @@ export async function updatePartnerNotificationPrefs(partnerId, prefs) {
   const { error } = await supabase.from('partners')
     .update({ notification_prefs: prefs || {}, updated_at: new Date().toISOString() }).eq('id', partnerId)
   return error ? wrapErr(error) : { ok: true }
+}
+
+// ── Team names — who at the dealer can be picked as "submitted by" ───────────
+// Managed in Trade Settings, rendered as pick-bubbles above Submit. Fetched
+// fresh (not from the login context) so names added in Settings show up on the
+// order form without a re-login.
+export async function getPartnerTeamNames(partnerId) {
+  if (!partnerId) return []
+  const { data, error } = await supabase.from('partners').select('team_names').eq('id', partnerId).maybeSingle()
+  if (error) { console.warn('[trade] team names:', error.message); return [] }
+  return Array.isArray(data?.team_names) ? data.team_names.filter(n => typeof n === 'string' && n.trim()) : []
+}
+export async function updatePartnerTeamNames(partnerId, names) {
+  if (!partnerId) return { ok: false, error: 'Missing company' }
+  const clean = [...new Set((names || []).map(n => String(n).trim()).filter(Boolean))]
+  const { error } = await supabase.from('partners')
+    .update({ team_names: clean, updated_at: new Date().toISOString() }).eq('id', partnerId)
+  return error ? wrapErr(error) : { ok: true, names: clean }
 }
 
 export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {

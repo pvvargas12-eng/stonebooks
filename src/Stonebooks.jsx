@@ -374,6 +374,13 @@ export default function Stonebooks() {
     return () => { cancelled = true }
   }, [user?.id])
 
+  // Dealers live at /trade, full stop (Paul, 2026-07-08) — send them to the
+  // Trade front door so they always see Trade branding, including the sign-in
+  // screen after sign-out. Effect, not render body (React 19 purity lint).
+  useEffect(() => {
+    if (portal) window.location.replace('/trade')
+  }, [portal])
+
   // Staff-only: keep the Vendors nav badge current. Reloads on tab change and
   // every 60s. Slice 6: the badge now counts EVERY unseen dealer action (new
   // order, layout approved, changes requested, stone dropped off, …) — not
@@ -531,9 +538,16 @@ export default function Stonebooks() {
     )
   }
 
-  // Partner-mapped auth user → external partner portal (NOT the staff app).
+  // Partner-mapped auth user → the effect above is redirecting to /trade;
+  // hold on a splash so the staff app never flashes for a dealer.
   if (portal) {
-    return <PartnerPortal context={portal} onSignOut={() => { setPortal(null); setUser(null) }} />
+    return (
+      <>
+        <style>{themeCSS}</style>
+        <style>{shellStyles}</style>
+        <div className="sb-loading">Opening Stonebooks Trade…</div>
+      </>
+    )
   }
 
   // Sales Mode opens as a full-screen overlay. A fresh sale first shows the

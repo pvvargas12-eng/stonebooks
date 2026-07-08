@@ -27,7 +27,12 @@ const NOTE_PLACEHOLDER = {
 // hideWorkType / hideReference — the Stonebooks Trade order form picks services
 // and the order # at the ORDER level, so its item cards suppress the per-item
 // legacy work-type tiles and the duplicate reference field (Paul, 2026-07-07).
-export default function VendorItemCard({ item, index, onChange, onDuplicate, onRemove, canRemove = true, hideWorkType = false, hideReference = false }) {
+// Trade round 2 (Paul, 2026-07-08): hideOptional kills the cemetery/family
+// toggle (family name lives at the order level), showLocation adds a Location
+// field next to Base size, notesCenterOption adds a Left/Centered toggle on the
+// notes box so a typed inscription reads like a stone preview. onDuplicate may
+// be null — one stone per order on the Trade form, so no Duplicate button.
+export default function VendorItemCard({ item, index, onChange, onDuplicate, onRemove, canRemove = true, hideWorkType = false, hideReference = false, hideOptional = false, showLocation = false, notesCenterOption = false }) {
   const [showOptional, setShowOptional] = useState(!!(item.cemetery || item.deceasedFamilyName))
   const fileRef = useRef(null)
   const wt = item.workType || 'design'
@@ -45,7 +50,7 @@ export default function VendorItemCard({ item, index, onChange, onDuplicate, onR
       <div className="vic-head">
         <span className="vic-num">Item {index + 1}</span>
         <div className="vic-head-actions">
-          <button type="button" className="vic-mini" onClick={onDuplicate}>Duplicate</button>
+          {onDuplicate && <button type="button" className="vic-mini" onClick={onDuplicate}>Duplicate</button>}
           {canRemove && <button type="button" className="vic-mini vic-mini-danger" onClick={onRemove}>Remove</button>}
         </div>
       </div>
@@ -78,6 +83,12 @@ export default function VendorItemCard({ item, index, onChange, onDuplicate, onR
           <span>Base size</span>
           <input className="vic-input" value={item.baseSize || ''} onChange={e => set({ baseSize: e.target.value })} placeholder="L × W × T" />
         </label>
+        {showLocation && (
+          <label className="vic-field">
+            <span>Location</span>
+            <input className="vic-input" value={item.location || ''} onChange={e => set({ location: e.target.value })} placeholder="e.g. cemetery, section, plot" />
+          </label>
+        )}
       </div>
 
       {/* Attachments for THIS item */}
@@ -96,21 +107,31 @@ export default function VendorItemCard({ item, index, onChange, onDuplicate, onR
         )}
       </div>
 
-      {/* Notes — prominent */}
+      {/* Notes — prominent. The Centered toggle makes a typed inscription
+          (family name / first name / dates) read like a layout preview. */}
       <label className="vic-notes">
-        <span className="vic-notes-label">Item notes / instructions</span>
-        <textarea className="vic-notes-input" rows={4} value={item.itemNotes || ''} onChange={e => set({ itemNotes: e.target.value })} placeholder={NOTE_PLACEHOLDER[wt] || NOTE_PLACEHOLDER.other} />
+        <span className="vic-notes-label" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          Item notes / instructions
+          {notesCenterOption && (
+            <span className="vic-align">
+              <button type="button" className={`vic-align-btn${(item.notesAlign || 'left') === 'left' ? ' on' : ''}`} onClick={() => set({ notesAlign: 'left' })}>Left</button>
+              <button type="button" className={`vic-align-btn${item.notesAlign === 'center' ? ' on' : ''}`} onClick={() => set({ notesAlign: 'center' })} title="Center the text so it reads like a stone layout preview">Centered</button>
+            </span>
+          )}
+        </span>
+        <textarea className="vic-notes-input" rows={4} value={item.itemNotes || ''} onChange={e => set({ itemNotes: e.target.value })} placeholder={NOTE_PLACEHOLDER[wt] || NOTE_PLACEHOLDER.other}
+          style={notesCenterOption && item.notesAlign === 'center' ? { textAlign: 'center', fontFamily: 'Georgia, serif', letterSpacing: '0.02em' } : undefined} />
       </label>
 
       {/* Optional details */}
-      {showOptional ? (
+      {!hideOptional && (showOptional ? (
         <div className="vic-grid">
           <label className="vic-field"><span>Cemetery</span><input className="vic-input" value={item.cemetery || ''} onChange={e => set({ cemetery: e.target.value })} placeholder="optional" /></label>
           <label className="vic-field"><span>Deceased / family name</span><input className="vic-input" value={item.deceasedFamilyName || ''} onChange={e => set({ deceasedFamilyName: e.target.value })} placeholder="optional" /></label>
         </div>
       ) : (
         <button type="button" className="vic-optional-toggle" onClick={() => setShowOptional(true)}>+ Add cemetery / family name</button>
-      )}
+      ))}
     </div>
   )
 }
@@ -140,5 +161,8 @@ export const VENDOR_ITEM_CARD_CSS = `
   .vic-notes-label { font-size: 12px; font-weight: 700; color: #6b5d2f; text-transform: uppercase; letter-spacing: 0.04em; }
   .vic-notes-input { font: inherit; font-size: 14px; line-height: 1.5; padding: 10px; border: 0.5px solid #e0d6b0; border-radius: 8px; background: #fff; resize: vertical; }
   .vic-optional-toggle { font: inherit; font-size: 13px; color: #9A7209; background: none; border: none; cursor: pointer; padding: 0; align-self: flex-start; }
+  .vic-align { display: inline-flex; border: 0.5px solid #e0d6b0; border-radius: 999px; overflow: hidden; background: #fff; }
+  .vic-align-btn { font: inherit; font-size: 11px; font-weight: 600; padding: 3px 12px; border: none; background: transparent; color: #8a8a85; cursor: pointer; text-transform: none; letter-spacing: 0; }
+  .vic-align-btn.on { background: #9A7209; color: #fff; }
   @media (max-width: 700px) { .vic-grid { grid-template-columns: 1fr; } .vic-tiles { grid-template-columns: repeat(2, 1fr); } }
 `
