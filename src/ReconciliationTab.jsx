@@ -12,7 +12,7 @@
 // (draft/scoping/quoted) and terminal (closed/cancelled) are never in this set.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
-import { listAllOrders, closeOrder, bulkCloseOrders } from './lib/stonebooksData'
+import { listAllOrders, closeOrder, bulkCloseOrders, setOrderFamilyName } from './lib/stonebooksData'
 import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
 
@@ -110,7 +110,11 @@ export default function ReconciliationTab({ onOpenOrder }) {
         <Card label="Close candidates" value={c.closeCandidate} tone="red" sub="not on schedule" />
         <Card label="Unmatched schedule" value={c.unmatchedSchedule} tone="neutral" sub="jobs with no open order" />
         <Card label="Surname backfill" value={backfillNeeded} tone="info" sub="blank primary_lastname → customer.last_name" />
+        <Card label="Needs family name" value={result.rows.filter(r => r.surnameSource !== 'order').length} tone="warn" sub="no family name on the order — fix below" />
       </div>
+
+      {/* Needs family name — rapid fix workbench (Paul, 2026-07-08) */}
+      {!loading && <NeedsFamilyName rows={result.rows.filter(r => r.surnameSource !== 'order')} orders={orders} onOpenOrder={onOpenOrder} />}
 
       {/* Buckets */}
       {!loading && (
@@ -156,6 +160,86 @@ export default function ReconciliationTab({ onOpenOrder }) {
         </>
       )}
     </div>
+  )
+}
+
+// Rapid family-name fixer: filter by service type, glance at the order's key
+// facts, type (or accept the customer-name suggestion), Save, next. Writes
+// deceased[0].lastName — the generated primary_lastname recomputes, so the
+// Production floor / boards pick the name up immediately.
+const SVC_LABEL = {
+  NEW_STONE: 'New Stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze', BRONZE_MARKER: 'Bronze',
+  MAUSOLEUM: 'Mausoleum', MAUSOLEUM_DOOR: 'Mausoleum', REPAIR: 'Repair', ACID_WASH: 'Acid Wash',
+  CIVIC_MEMORIAL: 'Civic', ADD_PHOTO: 'Photo', OTHER: 'Other',
+}
+const svcLabel = (s) => SVC_LABEL[s] || (s ? String(s).replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase()) : '')
+function NeedsFamilyName({ rows, orders, onOpenOrder }) {
+  const [svcFilter, setSvcFilter] = useState('all')
+  const [drafts, setDrafts] = useState({})   // orderId -> typed name
+  const [state, setState] = useState({})     // orderId -> 'busy' | 'done' | error string
+  const orderById = useMemo(() => new Map(orders.map(o => [o.id, o])), [orders])
+
+  // Distinct service chips present in this population.
+  const svcChips = useMemo(() => {
+    const set = new Set()
+    for (const r of rows) for (const s of (orderById.get(r.orderId)?.service_types || [])) set.add(s)
+    return [...set].sort()
+  }, [rows, orderById])
+
+  const visible = rows.filter(r => svcFilter === 'all' || (orderById.get(r.orderId)?.service_types || []).includes(svcFilter))
+
+  const save = async (r) => {
+    const o = orderById.get(r.orderId)
+    const name = (drafts[r.orderId] ?? (r.surnameSource === 'customer' ? (o?.customer?.last_name || '') : '')).trim()
+    if (!name) { setState(s => ({ ...s, [r.orderId]: 'Type the family name first.' })); return }
+    setState(s => ({ ...s, [r.orderId]: 'busy' }))
+    const res = await setOrderFamilyName(r.orderId, name)
+    setState(s => ({ ...s, [r.orderId]: res.ok ? 'done' : (res.error || 'Save failed') }))
+  }
+
+  if (rows.length === 0) return null
+  return (
+    <section className="sb-recon-bucket sb-recon-fam">
+      <div className="sb-recon-bucket-head"><span className="sb-recon-dot warn" /> <strong>Needs family name</strong> <span className="sb-recon-n">{rows.length}</span></div>
+      <div className="sb-recon-bucket-hint">No family name on the order itself. Type it (customer name is pre-filled when we have one) and Save — the floor and boards pick it up instantly.</div>
+      <div className="sb-recon-fam-chips">
+        <button type="button" className={`sb-recon-fam-chip${svcFilter === 'all' ? ' on' : ''}`} onClick={() => setSvcFilter('all')}>All · {rows.length}</button>
+        {svcChips.map(s => (
+          <button key={s} type="button" className={`sb-recon-fam-chip${svcFilter === s ? ' on' : ''}`} onClick={() => setSvcFilter(s)}>
+            {svcLabel(s)} · {rows.filter(r => (orderById.get(r.orderId)?.service_types || []).includes(s)).length}
+          </button>
+        ))}
+      </div>
+      <div className="sb-recon-fam-list">
+        {visible.map(r => {
+          const o = orderById.get(r.orderId)
+          const st = state[r.orderId]
+          const suggestion = r.surnameSource === 'customer' ? (o?.customer?.last_name || '') : ''
+          const custFull = [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
+          return (
+            <div key={r.orderId} className={`sb-recon-fam-row${st === 'done' ? ' done' : ''}`}>
+              <input className="sb-recon-fam-input" placeholder="Family name…"
+                value={drafts[r.orderId] ?? suggestion}
+                disabled={st === 'busy' || st === 'done'}
+                onChange={e => setDrafts(d => ({ ...d, [r.orderId]: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') save(r) }} />
+              <span className="sb-recon-fam-meta">
+                <strong>{o?.order_number || '—'}</strong>
+                {' · '}{(o?.service_types || []).map(svcLabel).join(', ') || 'no service'}
+                {o?.cemetery?.name ? ` · ${o.cemetery.name}` : ''}
+                {custFull ? ` · customer: ${custFull}` : ' · no customer name'}
+              </span>
+              {st === 'done'
+                ? <span className="sb-recon-fam-ok">✓ Saved</span>
+                : <button type="button" className="sb-recon-fam-save" disabled={st === 'busy'} onClick={() => save(r)}>{st === 'busy' ? '…' : 'Save'}</button>}
+              <button type="button" className="sb-recon-open" onClick={() => onOpenOrder?.(r.orderId)}>Open ↗</button>
+              {st && st !== 'busy' && st !== 'done' && <span className="sb-recon-fam-err">{st}</span>}
+            </div>
+          )
+        })}
+        {visible.length === 0 && <div className="sb-recon-bucket-hint">Nothing matches this service filter.</div>}
+      </div>
+    </section>
   )
 }
 
@@ -284,4 +368,18 @@ const RECON_CSS = `
   .sb-recon-exec-btn { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #b3261e; background: #b3261e; color: #fff; cursor: pointer; }
   .sb-recon-exec-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .sb-recon-locked { font-size: 12px; color: #8a5a12; }
+  .sb-recon-fam { border: 1px solid #e6c98a; background: #fffdf6; }
+  .sb-recon-fam-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
+  .sb-recon-fam-chip { font: inherit; font-size: 12px; font-weight: 600; border: 1px solid #ddd6c6; background: #fff; border-radius: 999px; padding: 4px 12px; cursor: pointer; color: #6b6256; }
+  .sb-recon-fam-chip.on { background: #9a7209; border-color: #9a7209; color: #fff; }
+  .sb-recon-fam-list { display: flex; flex-direction: column; gap: 6px; max-height: 480px; overflow-y: auto; }
+  .sb-recon-fam-row { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #eee7d8; border-radius: 8px; padding: 7px 10px; flex-wrap: wrap; }
+  .sb-recon-fam-row.done { opacity: 0.55; }
+  .sb-recon-fam-input { font: inherit; font-size: 13.5px; font-weight: 700; padding: 6px 10px; border: 1px solid #d8d2c6; border-radius: 7px; width: 180px; }
+  .sb-recon-fam-meta { flex: 1; font-size: 12px; color: #6b6256; min-width: 240px; }
+  .sb-recon-fam-save { font: inherit; font-size: 12px; font-weight: 700; border: none; background: #2d7a4f; color: #fff; border-radius: 7px; padding: 6px 14px; cursor: pointer; }
+  .sb-recon-fam-save:disabled { opacity: 0.5; }
+  .sb-recon-fam-ok { font-size: 12px; font-weight: 700; color: #2d7a4f; padding: 0 6px; }
+  .sb-recon-fam-err { font-size: 11.5px; color: #b3261e; width: 100%; }
+  .sb-recon-open { font: inherit; font-size: 12px; border: 1px solid #d8d2c6; background: #fff; border-radius: 7px; padding: 5px 10px; cursor: pointer; color: #6b6256; }
 `

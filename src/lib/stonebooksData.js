@@ -1204,6 +1204,25 @@ export async function listCompletionPhotos(orderId) {
 // Close an order — terminal status. Called after the completion/thank-you email
 // is sent AND the balance is paid in full (the caller enforces the paid check;
 // we never close an order that still owes money).
+// Set/replace the order's family name (Reconcile quick-fix, Paul 2026-07-08).
+// primary_lastname is GENERATED ALWAYS from deceased[0].lastName — write the
+// jsonb, never the column (see the audit lesson in CLAUDE.md).
+export async function setOrderFamilyName(orderId, lastName) {
+  const name = (lastName || '').trim()
+  if (!orderId || !name) return { ok: false, error: 'Enter the family name.' }
+  const { data: row, error: getErr } = await supabase.from('orders')
+    .select('id, deceased').eq('id', orderId).eq('tenant_id', TENANT_ID).single()
+  if (getErr || !row) return { ok: false, error: getErr?.message || 'Order not found' }
+  const deceased = Array.isArray(row.deceased) ? [...row.deceased] : []
+  if (deceased.length === 0) deceased.push({ lastName: name })
+  else deceased[0] = { ...deceased[0], lastName: name }
+  const { error } = await supabase.from('orders')
+    .update({ deceased, updated_at: new Date().toISOString() })
+    .eq('id', orderId).eq('tenant_id', TENANT_ID)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function closeOrder(orderId) {
   if (!orderId) return { ok: false, error: 'Missing order' }
   const { error } = await supabase.from('orders')
@@ -3999,7 +4018,7 @@ export async function getProductionComponents() {
   const { data, error } = await supabase.from('job_components')
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
-      order:orders(id, order_number, primary_lastname, permit_status, cemetery:cemeteries(name)),
+      order:orders(id, order_number, primary_lastname, permit_status, customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name)`)
     .order('track', { ascending: true }).order('sort_order', { ascending: true })
   if (error) { console.warn('[components] floor:', error.message); return [] }

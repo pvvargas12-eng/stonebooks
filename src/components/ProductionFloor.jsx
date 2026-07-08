@@ -32,7 +32,9 @@ const niceCase = (s) => {
   if (!s || s !== s.toUpperCase() || !/[A-Z]/.test(s)) return s
   return s.toLowerCase().replace(/(^|[\s\-'])(\p{L})/gu, (m, sep, ch) => sep + ch.toUpperCase())
 }
-const famOf = (c) => niceCase(c.order?.primary_lastname || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—')
+// Order surname first, then the CUSTOMER's last name (many old orders never
+// got a family name on the order itself — fix them in Reconcile), cemetery last.
+const famOf = (c) => niceCase(c.order?.primary_lastname || c.order?.customer?.last_name || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—')
 const orderNoOf = (c) => c.order?.order_number || c.cemetery_order?.order_number || ''
 const cemOf = (c) => c.order?.cemetery?.name || c.cemetery_order?.cemetery_name || ''
 // Read-only permit context from existing truth (orders.permit_status).
