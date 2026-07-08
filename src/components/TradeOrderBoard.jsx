@@ -406,7 +406,10 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                           )}
                         </div>
                         {(layoutsById[r.id] || []).length === 0 && <div className="sb-tb-dim">No layout yet — upload the first version.</div>}
-                        {layoutsById[r.id].map(v => (
+                        {/* Guarded — for staff this section renders BEFORE the
+                            layouts fetch resolves (the crash Paul hit: undefined
+                            .map → blank screen on expanding a fresh order). */}
+                        {(layoutsById[r.id] || []).map(v => (
                           <div key={v.id} className={`sb-tb-layout${v.is_current ? ' cur' : ''}`}>
                             {v.image_url
                               ? <a href={v.image_url} target="_blank" rel="noreferrer"><img src={v.image_url} alt={`Layout V${v.version}`} className="sb-tb-layimg" /></a>
