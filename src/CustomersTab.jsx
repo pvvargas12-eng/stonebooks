@@ -15,6 +15,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   listAllCustomers, listArchivedCustomers, listOrdersForCustomer, fetchAllPaged,
   createCustomer, archiveCustomer, unarchiveCustomer, deleteCustomer,
+  updateCustomer, updateCustomerNotes,
   getJobs,
   rowGrandTotal, rowTotalPaid, statusInfo,
   customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative, maskPhoneInput, phoneDigits,
@@ -798,12 +799,17 @@ function CustomerRow({ customer: c, indexInFiltered, selected, onToggle, onOpen 
 // CustomerDetail — preserved from prior design (existing flow per sprint spec)
 // =============================================================================
 
-function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }) {
+function CustomerDetail({ customer: customerProp, onBack, onArchived, onDeleted, onOpenOrder }) {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(null)
   const [err, setErr] = useState(null)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  // Saved edits merge over the prop so the header/cards update immediately;
+  // the parent list refreshes on back (Paul, 2026-07-08 — editable customers).
+  const [localPatch, setLocalPatch] = useState(null)
+  const customer = customerProp ? { ...customerProp, ...(localPatch || {}) } : customerProp
 
   // Customer Profile sheet — most-recent live order (else any order, else none)
   // with the customer attached so order-derived fields pre-fill; blanks when
@@ -812,7 +818,8 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
     const byRecent = (a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
     const pick = [...orders].filter(o => !o.archived).sort(byRecent)[0] || [...orders].sort(byRecent)[0] || null
     return pick ? { ...pick, customer } : { customer }
-  }, [orders, customer])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, customerProp, localPatch])
 
   useEffect(() => {
     if (!customer?.id) return
@@ -890,6 +897,9 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
           </div>
         </div>
         <div className="sb-cust-detail-actions">
+          <button type="button" className="sb-btn-secondary" onClick={() => setEditOpen(o => !o)}>
+            {editOpen ? 'Close editor' : '✎ Edit customer'}
+          </button>
           <button type="button" className="sb-btn-secondary" onClick={() => setProfileOpen(true)}>
             View / print customer profile
           </button>
@@ -916,6 +926,14 @@ function CustomerDetail({ customer, onBack, onArchived, onDeleted, onOpenOrder }
       </div>
 
       {err && <div className="sb-msg sb-msg-err" style={{ marginTop: 8 }}>{err}</div>}
+
+      {editOpen && (
+        <EditCustomerForm
+          customer={customer}
+          onCancel={() => setEditOpen(false)}
+          onSaved={(patch) => { setLocalPatch(p => ({ ...(p || {}), ...patch })); setEditOpen(false) }}
+        />
+      )}
 
       <div className="sb-metric-grid" style={{ marginTop: 24 }}>
         <Metric label="Orders" value={orders.length} />
@@ -1115,6 +1133,71 @@ function CustomerEmailSection({ customer }) {
         </div>
       )}
     </>
+  )
+}
+
+// Edit the customer record in place (Paul, 2026-07-08). Contact fields save
+// through the whitelisted updateCustomer; notes go through updateCustomerNotes
+// (notes isn't in the contact whitelist). onSaved receives the snake_case
+// patch so the detail view updates without a refetch.
+function EditCustomerForm({ customer, onCancel, onSaved }) {
+  const [form, setForm] = useState({
+    firstName: customer.first_name || '', lastName: customer.last_name || '',
+    phonePrimary: customer.phone_primary || '', phoneAlt: customer.phone_alt || '',
+    email: customer.email || '', emailAlt: customer.email_alt || '',
+    addressLine1: customer.address_line1 || '', addressLine2: customer.address_line2 || '',
+    city: customer.city || '', state: customer.state || '', zip: customer.zip || '',
+    notes: customer.notes || '',
+  })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!form.firstName.trim() && !form.lastName.trim()) { setErr('First or last name required'); return }
+    setBusy(true); setErr(null)
+    const patch = {
+      first_name: form.firstName.trim(), last_name: form.lastName.trim(),
+      phone_primary: form.phonePrimary || null, phone_alt: form.phoneAlt || null,
+      email: form.email.trim() || null, email_alt: form.emailAlt.trim() || null,
+      address_line1: form.addressLine1.trim() || null, address_line2: form.addressLine2.trim() || null,
+      city: form.city.trim() || null, state: form.state.trim() || null, zip: form.zip.trim() || null,
+    }
+    const r = await updateCustomer(customer.id, patch)
+    if (!r.ok) { setBusy(false); setErr(r.error); return }
+    const notes = form.notes.trim() || null
+    if (notes !== (customer.notes || null)) {
+      const rn = await updateCustomerNotes(customer.id, notes)
+      if (!rn.ok) { setBusy(false); setErr(rn.error); return }
+    }
+    setBusy(false)
+    onSaved({ ...patch, notes })
+  }
+
+  return (
+    <form className="sb-card sb-add-form" onSubmit={submit} style={{ marginTop: 16 }}>
+      <div className="sb-section-label" style={{ marginTop: 0 }}>Edit customer</div>
+      <div className="sb-form-grid">
+        <Field label="First name"><input className="sb-input" value={form.firstName} onChange={e => set('firstName', e.target.value)} autoFocus /></Field>
+        <Field label="Last name"><input className="sb-input" value={form.lastName} onChange={e => set('lastName', e.target.value)} /></Field>
+        <Field label="Phone"><input className="sb-input" value={maskPhoneInput(form.phonePrimary)} onChange={e => set('phonePrimary', phoneDigits(e.target.value))} placeholder="(732) 555-0123" /></Field>
+        <Field label="Phone (alt)"><input className="sb-input" value={maskPhoneInput(form.phoneAlt)} onChange={e => set('phoneAlt', phoneDigits(e.target.value))} /></Field>
+        <Field label="Email"><input type="email" className="sb-input" value={form.email} onChange={e => set('email', e.target.value)} /></Field>
+        <Field label="Email (alt)"><input type="email" className="sb-input" value={form.emailAlt} onChange={e => set('emailAlt', e.target.value)} /></Field>
+        <Field label="Address" wide><input className="sb-input" value={form.addressLine1} onChange={e => set('addressLine1', e.target.value)} /></Field>
+        <Field label="Address line 2" wide><input className="sb-input" value={form.addressLine2} onChange={e => set('addressLine2', e.target.value)} /></Field>
+        <Field label="City"><input className="sb-input" value={form.city} onChange={e => set('city', e.target.value)} /></Field>
+        <Field label="State"><input className="sb-input" value={form.state} onChange={e => set('state', e.target.value)} /></Field>
+        <Field label="ZIP"><input className="sb-input" value={form.zip} onChange={e => set('zip', e.target.value)} /></Field>
+        <Field label="Notes" wide><textarea className="sb-input" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></Field>
+      </div>
+      {err && <div className="sb-msg sb-msg-err">{err}</div>}
+      <div className="sb-form-actions">
+        <button type="submit" className="sb-btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+        <button type="button" className="sb-btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+      </div>
+    </form>
   )
 }
 
