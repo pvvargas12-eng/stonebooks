@@ -1104,82 +1104,101 @@ function loadJsPDF() {
   return _jsPDFPromise
 }
 
-// Professional billing document — letterhead, bill-to block, priced line-item
-// table, total. Paul bills dealers with these, so the header reads INVOICE
-// (his words: "these batches are Invoices not Purchase orders", 2026-07-08).
+// Invoice document — strict black & white per Paul (2026-07-08): solid black
+// table header, every other line shaded light gray, heavy rules, bold amounts.
 // Shared by download AND preview.
 const money = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
 async function buildPOPdf(po) {
   const jsPDF = await loadJsPDF()
   const doc = new jsPDF({ unit: 'mm', format: 'letter' })
-  const W = 215.9, M = 18
-  const GOLD = [154, 114, 9], NAVY = [30, 45, 61], DIM = [125, 120, 110]
+  const W = 215.9, M = 16, RIGHT = W - M, TABLE_W = W - M * 2
+  const INK = 25, MUTE = 115, ZEBRA = 242
 
-  // Letterhead
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(19); doc.setTextColor(...NAVY)
-  doc.text('Shevchenko Monuments, LLC.', M, 24)
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...DIM)
-  doc.text('329 S Florida Grove Rd, Perth Amboy, NJ 08861  ·  732-442-1286  ·  shevcoteam@gmail.com', M, 30)
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(...GOLD)
-  doc.text('INVOICE', W - M, 24, { align: 'right' })
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(70)
-  doc.text(`Invoice # ${po.po_number || '—'}`, W - M, 31, { align: 'right' })
-  doc.text(`Date ${po.po_date || '—'}`, W - M, 36.5, { align: 'right' })
-  doc.setDrawColor(...GOLD); doc.setLineWidth(0.7); doc.line(M, 41, W - M, 41)
+  // ── Letterhead ──────────────────────────────────────────────────────────
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15.5); doc.setTextColor(INK)
+  doc.text('SHEVCHENKO MONUMENTS, LLC.', M, 22)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(MUTE)
+  doc.text('329 S Florida Grove Rd, Perth Amboy, NJ 08861', M, 27.4)
+  doc.text('732-442-1286   ·   shevcoteam@gmail.com', M, 31.6)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(26); doc.setTextColor(INK)
+  doc.text('INVOICE', RIGHT, 25, { align: 'right' })
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(70)
+  doc.text(`No. ${po.po_number || '—'}`, RIGHT, 31.4, { align: 'right' })
+  doc.text(`Date: ${po.po_date || '—'}`, RIGHT, 36.2, { align: 'right' })
+  doc.setDrawColor(INK); doc.setLineWidth(0.8); doc.line(M, 41.5, RIGHT, 41.5)
 
-  // Vendor block
+  // ── Bill to ─────────────────────────────────────────────────────────────
   let y = 50
-  doc.setFontSize(8.5); doc.setTextColor(...DIM); doc.text('BILL TO', M, y)
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.setTextColor(20)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(7.8); doc.setTextColor(MUTE)
+  doc.text('BILL TO', M, y)
+  doc.setFontSize(11.5); doc.setTextColor(INK)
   doc.text(po.partner?.company_name || '—', M, y + 6)
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(90)
-  let vy = y + 11.5
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80)
+  let vy = y + 11
   for (const line of [po.partner?.contact_person, po.partner?.address, [po.partner?.phone, po.partner?.email].filter(Boolean).join('  ·  ')].filter(Boolean)) {
-    doc.text(String(line), M, vy); vy += 4.8
+    doc.text(String(line), M, vy); vy += 4.6
   }
-  y = Math.max(vy + 8, 74)
+  y = Math.max(vy + 7, 72)
 
-  // Line-item table
-  const colQty = 138, colPrice = 166, colAmt = W - M
-  doc.setFillColor(246, 243, 236)
-  doc.rect(M, y - 5, W - M * 2, 8, 'F')
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(...DIM)
-  doc.text('DESCRIPTION', M + 2, y); doc.text('QTY', colQty, y, { align: 'center' })
-  doc.text('UNIT PRICE', colPrice, y, { align: 'right' }); doc.text('AMOUNT', colAmt - 2, y, { align: 'right' })
-  y += 8
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
+  // ── Line-item table — black header bar, zebra rows ──────────────────────
+  const colDescX = M + 3, qtyC = 142, priceR = 174, amtR = RIGHT - 3
+  const descMaxW = qtyC - colDescX - 12
+  const HEAD_H = 8.4
+  const tableHead = () => {
+    doc.setFillColor(INK); doc.rect(M, y, TABLE_W, HEAD_H, 'F')
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(255)
+    const by = y + 5.6
+    doc.text('DESCRIPTION', colDescX, by)
+    doc.text('QTY', qtyC, by, { align: 'center' })
+    doc.text('UNIT PRICE', priceR, by, { align: 'right' })
+    doc.text('AMOUNT', amtR, by, { align: 'right' })
+    y += HEAD_H
+  }
+  tableHead()
   let lineSum = 0
-  for (const li of (po.po_items || [])) {
+  const items = po.po_items || []
+  items.forEach((li, idx) => {
     const qty = Number(li.quantity) || 1
     const hasPrice = li.unit_price != null
     const amt = hasPrice ? Number(li.unit_price) * qty : null
     if (hasPrice) lineSum += amt
-    const descLines = doc.splitTextToSize(String(li.description || 'Item'), colQty - M - 8)
-    if (y + descLines.length * 5 > 250) { doc.addPage(); y = 24 }
-    doc.text(descLines, M + 2, y)
-    doc.text(String(qty), colQty, y, { align: 'center' })
-    doc.text(hasPrice ? money(li.unit_price) : '—', colPrice, y, { align: 'right' })
-    doc.text(amt != null ? money(amt) : '—', colAmt - 2, y, { align: 'right' })
-    y += descLines.length * 5 + 3
-    doc.setDrawColor(235, 231, 222); doc.setLineWidth(0.2); doc.line(M, y - 2.2, W - M, y - 2.2)
-  }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5)
+    const descLines = doc.splitTextToSize(String(li.description || 'Item'), descMaxW)
+    const rowH = Math.max(8.2, descLines.length * 4.4 + 3.8)
+    if (y + rowH > 246) { doc.addPage(); y = 20; tableHead(); doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5) }
+    if (idx % 2 === 1) { doc.setFillColor(ZEBRA); doc.rect(M, y, TABLE_W, rowH, 'F') }
+    const ty = y + 5.5
+    doc.setTextColor(INK)
+    doc.text(descLines, colDescX, ty)
+    doc.text(String(qty), qtyC, ty, { align: 'center' })
+    doc.text(hasPrice ? money(li.unit_price) : '—', priceR, ty, { align: 'right' })
+    doc.setFont('helvetica', 'bold')
+    doc.text(amt != null ? money(amt) : '—', amtR, ty, { align: 'right' })
+    y += rowH
+  })
+  doc.setDrawColor(INK); doc.setLineWidth(0.3); doc.line(M, y, RIGHT, y)
 
-  // Total — custom override wins when set.
+  // ── Total due — custom override wins when set ───────────────────────────
   const total = po.custom_amount != null ? Number(po.custom_amount) : lineSum
-  y += 4
-  doc.setDrawColor(...GOLD); doc.setLineWidth(0.5); doc.line(colPrice - 30, y - 2, W - M, y - 2)
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...NAVY)
-  doc.text('TOTAL', colPrice - 28, y + 4)
-  doc.text(money(total), colAmt - 2, y + 4, { align: 'right' })
-  y += 14
+  y += 9
+  if (y > 238) { doc.addPage(); y = 26 }
+  doc.setDrawColor(INK); doc.setLineWidth(0.8); doc.line(134, y, RIGHT, y)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(INK)
+  doc.text('TOTAL DUE', 134, y + 7.6)
+  doc.text(money(total), amtR, y + 7.6, { align: 'right' })
+  y += 18
 
   if (po.notes) {
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(80)
-    doc.text(doc.splitTextToSize(`Notes: ${po.notes}`, W - M * 2), M, y)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(80)
+    doc.text(doc.splitTextToSize(String(po.notes), TABLE_W), M, y)
     y += 10
   }
-  doc.setFontSize(8.5); doc.setTextColor(...DIM)
-  doc.text('Thank you — Shevchenko Monuments, est. 1919', M, 262)
+
+  // ── Footer ──────────────────────────────────────────────────────────────
+  doc.setDrawColor(190); doc.setLineWidth(0.2); doc.line(M, 258, RIGHT, 258)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(MUTE)
+  doc.text('Thank you for your business  ·  Shevchenko Monuments, est. 1919', M, 263)
+  doc.text('Make checks payable to Shevchenko Monuments, LLC.', RIGHT, 263, { align: 'right' })
   return doc
 }
 async function downloadPOPdf(po) {
