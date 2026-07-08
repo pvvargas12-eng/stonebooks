@@ -59,6 +59,9 @@ import {
   uploadProofSignature,
   getProofSignatureSignedUrl,
   addJobEvent,
+  createApprovalLink,
+  sendShopEmail,
+  logOrderActivity,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
 import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
@@ -708,6 +711,9 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
   // Approval-sheet preview modal (Stage 2 Commit 3) — mirrors the contract
   // preview iframe: generate the doc, render a blob URL, offer download/print.
   const [sheet, setSheet] = useState({ open: false, url: null, err: null, busy: false, doc: null, filename: '' })
+  // E-sign approval by email (Paul, 2026-07-08) — declared up here with the
+  // other hooks; the flow itself lives next to the approval-sheet handlers.
+  const [esign, setEsign] = useState(null)  // { step:'gen'|'email'|'err', url, to, subject, body, busy, error, sent }
 
   useEffect(() => {
     if (!jobId) return
@@ -1161,6 +1167,46 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
       if (s.url) URL.revokeObjectURL(s.url)
       return { open: false, url: null, err: null, busy: false, doc: null, filename: '' }
     })
+  }
+
+  // ── E-sign approval by email (Paul, 2026-07-08 — bronze approval flow) ──────
+  // Generates the token approval link (same /approve/<token> docusign the order
+  // page uses), then shows an email PREVIEW — nothing sends until Send is hit.
+  const sendESignApproval = async () => {
+    const v = currentVersion
+    if (!v || !order?.id) return
+    if (v.approved_at) { setEsign({ step: 'err', error: 'This version is already approved.' }); return }
+    setEsign({ step: 'gen', busy: true })
+    try {
+      const balance = rowBalanceDue(order)
+      const { die, base } = computeDieBaseTrade(order)
+      const fallbackImageUrl = versions.find(vv => vv.layout_image_url)?.layout_image_url || null
+      const { doc, sigRect } = await generateApprovalSheetPDF(v, { order: { ...order, cemetery }, balance, die, base, fallbackImageUrl, returnDoc: true })
+      const pdfBase64 = doc.output('datauristring').split(',')[1]
+      const res = await createApprovalLink({ orderId: order.id, proofVersionId: v.id, pdfBase64, sigFieldRects: sigRect })
+      if (!res.ok) { setEsign({ step: 'err', error: res.error || 'Could not create the approval link.' }); return }
+      const fam = order?.primary_lastname || order?.customer?.last_name || 'your'
+      setEsign({
+        step: 'email', url: res.url, busy: false, error: null, sent: false,
+        to: order?.customer?.email || '',
+        subject: `Layout approval — ${fam}`,
+        body: `Hello,\n\nYour design is ready for your review and approval. Please open the link below, review it, and approve it (or request changes):\n\n${res.url}\n\nThank you,\nShevchenko Monuments\n732-442-1286`,
+      })
+    } catch (e) {
+      setEsign({ step: 'err', error: e?.message || 'Failed to prepare the approval.' })
+    }
+  }
+  const sendESignEmail = async () => {
+    if (!esign || esign.busy || esign.sent) return
+    const to = (esign.to || '').trim()
+    if (!to) { setEsign(s => ({ ...s, error: 'Enter the customer email.' })); return }
+    setEsign(s => ({ ...s, busy: true, error: null }))
+    const r = await sendShopEmail({ to, subject: esign.subject, text: esign.body, orderId: order?.id || null, customerId: order?.customer_id || null })
+    if (!r.ok) { setEsign(s => ({ ...s, busy: false, error: r.error || 'Send failed.' })); return }
+    setEsign(s => ({ ...s, busy: false, sent: true }))
+    const who = await getCurrentStaffName()
+    if (order?.id) logOrderActivity(order.id, { type: 'change', field: 'Approval link', newValue: 'emailed', note: `Approval link emailed to ${to} (from Design Hub)`, actor: who }).catch(() => {})
+    if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: `Approval link emailed to ${to}`, createdBy: who }).catch(() => {})
   }
   const downloadSheet = () => { if (sheet.doc) sheet.doc.save(sheet.filename) }
   const printSheet = () => {
@@ -1646,7 +1692,8 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                 </div>
               )}
 
-              {/* Approval sheet — rendered PDF preview + download/print. */}
+              {/* Approval sheet — rendered PDF preview + download/print, and the
+                  e-sign-by-email flow (link + email preview + send). */}
               <div className="sb-design-sheet-row">
                 <button
                   type="button"
@@ -1655,7 +1702,19 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                 >
                   Preview approval sheet
                 </button>
+                <button
+                  type="button"
+                  className="sb-design-action-btn"
+                  disabled={esign?.step === 'gen'}
+                  onClick={sendESignApproval}
+                  title="Create the e-sign approval link and preview the email before sending"
+                >
+                  {esign?.step === 'gen' ? 'Preparing…' : '✉ Email for e-sign approval'}
+                </button>
               </div>
+              {esign?.step === 'err' && (
+                <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">{esign.error}</div>
+              )}
             </div>
           ) : (
             <div className="sb-design-no-upload">No layout uploaded yet</div>
@@ -1941,6 +2000,52 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
                 {changeModal.busy ? 'Recording…' : 'Record change request'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* E-sign email preview — the link is created; NOTHING sends until Send. */}
+      {esign?.step === 'email' && (
+        <div className="sb-design-modal-overlay sb-print-hide" onClick={() => { if (!esign.busy) setEsign(null) }}>
+          <div className="sb-design-sheet-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+            <div className="sb-design-modal-title">Email the approval link — preview</div>
+            {esign.sent ? (
+              <div style={{ padding: '18px 4px' }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#2d7a4f', marginBottom: 6 }}>✓ Sent to {esign.to}</div>
+                <div style={{ fontSize: 13, color: '#6b6256', lineHeight: 1.5 }}>
+                  You'll get an email at the shop inbox the moment they approve &amp; sign — or request changes.
+                </div>
+                <div style={{ marginTop: 14 }}>
+                  <button type="button" className="sb-design-action-btn" onClick={() => setEsign(null)}>Done</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '6px 2px' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, fontWeight: 700, color: '#6b6256' }}>
+                  TO
+                  <input value={esign.to} onChange={e => setEsign(s => ({ ...s, to: e.target.value }))}
+                    style={{ font: 'inherit', fontSize: 14, padding: '8px 10px', border: '1px solid #d8d2c6', borderRadius: 8 }} placeholder="customer@email.com" />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, fontWeight: 700, color: '#6b6256' }}>
+                  SUBJECT
+                  <input value={esign.subject} onChange={e => setEsign(s => ({ ...s, subject: e.target.value }))}
+                    style={{ font: 'inherit', fontSize: 14, padding: '8px 10px', border: '1px solid #d8d2c6', borderRadius: 8 }} />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, fontWeight: 700, color: '#6b6256' }}>
+                  MESSAGE
+                  <textarea rows={8} value={esign.body} onChange={e => setEsign(s => ({ ...s, body: e.target.value }))}
+                    style={{ font: 'inherit', fontSize: 13.5, lineHeight: 1.5, padding: '10px', border: '1px solid #d8d2c6', borderRadius: 8, resize: 'vertical' }} />
+                </label>
+                {esign.error && <div className="sb-design-upload-msg sb-design-upload-msg-error" role="alert">{esign.error}</div>}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" className="sb-design-action-btn" disabled={esign.busy} onClick={() => setEsign(null)}>Cancel</button>
+                  <button type="button" className="sb-design-action-btn" disabled={esign.busy} onClick={sendESignEmail}
+                    style={{ background: '#2d7a4f', borderColor: '#2d7a4f', color: '#fff', fontWeight: 700 }}>
+                    {esign.busy ? 'Sending…' : 'Send email'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

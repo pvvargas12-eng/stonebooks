@@ -26,6 +26,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { PDFDocument, StandardFonts, rgb } from 'https://esm.sh/pdf-lib@1.17.1'
+import { getValidGoogleToken, base64UrlEncode } from '../_shared/google.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -52,6 +53,39 @@ async function sha256Hex(input: string | Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data)
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
+// Shop notification (Paul, 2026-07-08: "i want a notification when complete").
+// Emails the connected shop mailbox via the same Gmail plumbing gmail-send
+// uses. Best-effort — a notification failure NEVER breaks the signing.
+async function notifyShop(orderId: string | null, subject: string, body: string) {
+  try {
+    const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
+    const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    const CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID') ?? ''
+    const CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET') ?? ''
+    if (!CLIENT_ID || !CLIENT_SECRET) return
+    const { accessToken, connectedEmail } = await getValidGoogleToken({
+      supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    })
+    const headerLines = [
+      `From: ${connectedEmail}`,
+      `To: ${connectedEmail}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: 7bit',
+    ]
+    if (orderId) headerLines.push(`X-Stonebooks-Order-Id: ${orderId}`)
+    const raw = base64UrlEncode(`${headerLines.join('\r\n')}\r\n\r\n${body}`)
+    await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw }),
+    })
+  } catch (e) {
+    console.error('[approve-submit] notify failed:', (e as Error).message)
+  }
+}
+
 function wrapText(text: string, max: number): string[] {
   const words = (text || '').split(/\s+/); const lines: string[] = []; let line = ''
   for (const w of words) {
@@ -104,6 +138,11 @@ Deno.serve(async (req) => {
     if (link.status !== 'expired') await admin.from('approval_links').update({ status: 'expired' }).eq('id', link.id)
     return json({ error: 'expired' }, 410)
   }
+
+  // Order label for the shop notification.
+  const { data: ordRow } = await admin
+    .from('orders').select('order_number, primary_lastname').eq('id', link.order_id).maybeSingle()
+  const famLabel = `${ordRow?.primary_lastname || 'Order'}${ordRow?.order_number ? ` (${ordRow.order_number})` : ''}`
 
   // ── REQUEST CHANGES branch (Phase 1) ────────────────────────────────────────
   // No PDF, no signature, no signed-bucket write. Record the rejection to the
@@ -164,6 +203,10 @@ Deno.serve(async (req) => {
       status: 'changes_requested', changes_requested_at: nowIso, change_notes: changeNotes,
       signer_name: signerName || null, signer_ip: reqIp, signer_user_agent: reqUa,
     }).eq('id', link.id)
+
+    await notifyShop(link.order_id,
+      `⚠ Changes requested — ${famLabel}`,
+      `The customer requested changes on the approval proof:\n\n"${changeNotes}"\n\nRequested by: ${signerName || 'Customer'}\n\nOpen Stonebooks → Orders → ${ordRow?.order_number || 'the order'} to upload the next version and re-send.`)
 
     return json({ ok: true, status: 'changes_requested' })
   }
@@ -290,6 +333,10 @@ Deno.serve(async (req) => {
     status: 'signed', signed_at: signedAtIso,
     signer_name: signerName, signer_ip: signerIp, signer_user_agent: userAgent, consent_at: signedAtIso,
   }).eq('id', link.id)
+
+  await notifyShop(link.order_id,
+    `✓ APPROVED — ${famLabel} signed by ${signerName}`,
+    `The customer approved & signed the proof.\n\nSigned by: ${signerName}\nAt: ${signedAtIso}\n\nThe signed packet is pinned on the order (Design & layout → View signed approval).`)
 
   const { data: signedUrlData } = await admin.storage.from(PRIVATE_BUCKET).createSignedUrl(signedPath, 600)
   return json({ ok: true, status: 'signed', signed_url: signedUrlData?.signedUrl || '' })

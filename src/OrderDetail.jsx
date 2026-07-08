@@ -29,6 +29,7 @@ import {
   createApprovalLink, getApprovalLinksForOrder, revokeApprovalLink,
   ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
   getProofVersions, getProofSignatureSignedUrl, updateProofVersion,
+  uploadProofLayout, createProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
   hydrateEmailAttachment, renameEmailAttachment, copyEmailAttachmentToOrder, classifyAttachment, ATTACH_KIND_LABELS,
   setOrderPermit, needsSignedContract, hardDeleteOrder,
@@ -258,7 +259,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [stoneDraft, setStoneDraft] = useState(null)    // { status, vendor } — reuses milestone STONE_STATUS
   const [vendorList, setVendorList] = useState([])      // ordering_vendors (persistent stone suppliers)
   const [designNotesDraft, setDesignNotesDraft] = useState('')   // internal design notes (current proof)
-  const [emailLinkBusy, setEmailLinkBusy] = useState(false)
   const [emailLinkMsg, setEmailLinkMsg] = useState(null)
   const [payDraft, setPayDraft] = useState(null)        // quick add-payment (Financial card ⋯)
   // Activity log (#4)
@@ -535,6 +535,28 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     openPreview('Approval (signed).pdf', r.url, 'application/pdf', false)
   }
   const refreshApprovalLinks = async () => setApprovalLinks(await getApprovalLinksForOrder(orderId))
+
+  // Upload a proof image (bronze plaque layout, monument layout, anything the
+  // customer signs off on) RIGHT HERE on the order — no Design Hub detour
+  // (Paul, 2026-07-08, bronze approval). Becomes the next proof version.
+  const proofFileRef = useRef(null)
+  const [proofUpBusy, setProofUpBusy] = useState(false)
+  const onPickProofImage = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (!job?.id) { setActionNote('No production job yet — sign the order first (proof versions live on the job).'); return }
+    setProofUpBusy(true); setActionNote(null)
+    const who = await getCurrentStaffName()
+    const up = await uploadProofLayout(job.id, file)
+    if (!up.ok) { setProofUpBusy(false); setActionNote(`Upload failed — ${up.error}.`); return }
+    const { error } = await createProofVersion({ jobId: job.id, layoutImageUrl: up.url, uploadedBy: who })
+    if (error) { setProofUpBusy(false); setActionNote(`Could not create the proof version — ${error.message}.`); return }
+    await refreshProofs()
+    setProofUpBusy(false)
+    setActionNote('Proof uploaded — now hit "Send for approval" and email the link. ✓')
+    logOrderActivity(orderId, { type: 'change', field: 'Proof', newValue: 'uploaded', note: 'Proof image uploaded from the order (bronze/layout)', actor: who }).then(() => refreshActivity()).catch(() => {})
+  }
 
   // Generate the UNSIGNED packet client-side + create a token link (server-side).
   const handleSendForApproval = async () => {
@@ -853,23 +875,21 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     logOrderActivity(orderId, { type: 'change', field: 'Design notes', newValue: 'updated', note: 'Internal design notes edited', actor: await getCurrentStaffName() }).then(() => refreshActivity()).catch(() => {})
     return { ok: true }
   }
-  // Email the active approval link to the customer (real send via the shop Gmail).
-  const emailApprovalLink = async () => {
-    if (emailLinkBusy) return
+  // Email the active approval link — opens the COMPOSER prefilled so Paul can
+  // preview/edit before sending (2026-07-08: "i want to preview the email then
+  // hit send"). The composer's Send does the real send + logging.
+  const emailApprovalLink = () => {
     const active = approvalLinks.find(l => (l.displayStatus === 'pending' || l.displayStatus === 'viewed') && l.share_url)
     const url = active?.share_url || sentLink
     if (!url) { setEmailLinkMsg({ type: 'err', text: 'No active approval link — use “Send for approval” first.' }); return }
-    if (!cust?.email) { setEmailLinkMsg({ type: 'err', text: 'No customer email on file.' }); return }
-    setEmailLinkBusy(true); setEmailLinkMsg(null)
+    setEmailLinkMsg(null)
     const surname = order.primary_lastname || cust.last_name || 'your'
-    const body = `Hello,\n\nYour monument layout is ready for your review and approval. Please open the link below, review the design, and approve it (or request changes):\n\n${url}\n\nThank you,\nShevchenko Monuments`
-    const r = await sendShopEmail({ to: cust.email, subject: `Monument layout approval — ${surname}`, text: body, orderId, customerId: order.customer_id })
-    setEmailLinkBusy(false)
-    if (!r.ok) { setEmailLinkMsg({ type: 'err', text: r.error || 'Email failed.' }); return }
-    setEmailLinkMsg({ type: 'ok', text: `Approval link emailed to ${cust.email}.` })
-    const staff = await getCurrentStaffName()
-    logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'emailed', note: `Approval link emailed to ${cust.email}`, actor: staff }).then(() => refreshActivity()).catch(() => {})
-    if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: `Approval link emailed to ${cust.email}`, createdBy: staff }).catch(() => {})
+    setEmailModal({
+      to: cust?.email || '',
+      subject: `Layout approval — ${surname}`,
+      body: `Hello,\n\nYour design is ready for your review and approval. Please open the link below, review it, and approve it (or request changes):\n\n${url}\n\nThank you,\nShevchenko Monuments\n732-442-1286`,
+      busy: false, error: null, sent: false,
+    })
   }
 
   // ── Financial quick add-payment (Financial card ⋯) ──────────────────────────
@@ -1748,8 +1768,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <div className="sb-od-cqe-divider">Customer approval</div>
               <CqeNote>Generate / copy / revoke the approval link on the card. Email it directly here:</CqeNote>
               {emailLinkMsg && <div className={emailLinkMsg.type === 'ok' ? 'sb-od-cqe-okmsg' : 'sb-cqe-err'}>{emailLinkMsg.text}</div>}
-              <button type="button" className="sb-cqe-btn" onClick={emailApprovalLink} disabled={emailLinkBusy}>
-                {emailLinkBusy ? 'Emailing…' : 'Email approval link to customer'}
+              <button type="button" className="sb-cqe-btn" onClick={emailApprovalLink}>
+                {'Email approval link (preview first)'}
               </button>
               {signedApproval && (
                 <button type="button" className="sb-cqe-btn" onClick={previewSignedApproval}>View signed approval</button>
@@ -1792,10 +1812,22 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               )
             })()}
 
-            {/* Send for approval (Phase 4) — token link for the customer. */}
+            {/* Send for approval (Phase 4) — token link for the customer.
+                Bronze flow (Paul, 2026-07-08): upload the bronze proof image
+                right here → Send for approval → Email (preview) → notified
+                by email when they sign or request changes. */}
             <div className="sb-od-approval-send">
+              <input ref={proofFileRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={onPickProofImage} />
+              <button type="button" className="sb-od-btn" disabled={proofUpBusy} onClick={() => proofFileRef.current?.click()}
+                title="Upload a bronze plaque or layout image as the next proof version">
+                {proofUpBusy ? 'Uploading…' : '⤴ Upload proof (bronze / layout)'}
+              </button>
               <button type="button" className="sb-od-btn sb-od-btn-primary" disabled={sendBusy} onClick={handleSendForApproval}>
                 {sendBusy ? 'Generating…' : 'Send for approval'}
+              </button>
+              <button type="button" className="sb-od-btn" onClick={emailApprovalLink}
+                title="Opens the email composer prefilled with the approval link — preview, then hit Send">
+                ✉ Email link…
               </button>
               {sentLink && (
                 <div className="sb-od-approval-link">
