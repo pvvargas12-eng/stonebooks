@@ -22,7 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
-  closeOrder, photoAttachment,
+  closeOrder, photoAttachment, setJobOverallStatus,
   updateOrderPayment, voidOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
@@ -443,6 +443,32 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
 
   const pipelineTasks = activity.filter(a => a.type === 'task')
+
+  // Complete & close (Paul, 2026-07-08) — the override door under the pipeline.
+  // No matter what's still unchecked: the job leaves every work queue
+  // (overall_status 'completed' is in JOB_CLOSED) and the order goes terminal.
+  const [closeArm, setCloseArm] = useState(false)
+  const [closeBusy, setCloseBusy] = useState(false)
+  const completeAndClose = async () => {
+    if (closeBusy) return
+    setCloseBusy(true); setActionNote(null)
+    const actor = await getCurrentStaffName()
+    if (job?.id) {
+      const jr = await setJobOverallStatus(job.id, 'completed', 'Completed & closed from the order pipeline (remaining milestones overridden)')
+      if (!jr.ok) { setCloseBusy(false); setCloseArm(false); setActionNote(`Could not complete the job — ${jr.error}.`); return }
+    }
+    const r = await closeOrder(orderId)
+    if (!r.ok) { setCloseBusy(false); setCloseArm(false); setActionNote(`Could not close the order — ${r.error}.`); return }
+    await logOrderActivity(orderId, {
+      type: 'change', field: 'Status', newValue: 'Closed',
+      note: 'Order completed & closed — job removed from work queues (unfinished items overridden)',
+      actor,
+    })
+    setOrder(o => (o ? { ...o, status: 'closed' } : o))
+    await refreshJob(); refreshActivity()
+    setCloseBusy(false); setCloseArm(false)
+    setActionNote('Order completed & closed — off the work queues. ✓')
+  }
 
   // ── Activity log (#4) handlers ──────────────────────────────────────────────
   const handleAddActivity = async () => {
@@ -2209,6 +2235,34 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               onAddTask={handleAddRailTask}
               onRemoveTask={(tk) => setDelTask(tk)}
             />
+
+            {/* Complete & close — works even with items unchecked. */}
+            {order.status !== 'closed' && order.status !== 'cancelled' && (
+              <div style={{ marginTop: 14, background: '#fff', border: '1px solid #e3ddcf', borderRadius: 10, padding: '12px 14px' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', marginBottom: 4 }}>Complete &amp; close the order</div>
+                <div style={{ fontSize: 12, color: '#8a8472', lineHeight: 1.45, marginBottom: 10 }}>
+                  Marks the whole job complete and closes the order — even if items above aren't checked off.
+                  It comes off the Jobs tab and every work queue.
+                </div>
+                {closeArm ? (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button" disabled={closeBusy} onClick={completeAndClose}
+                      style={{ font: 'inherit', fontSize: 12.5, fontWeight: 700, border: 'none', background: '#2d7a4f', color: '#fff', borderRadius: 7, padding: '7px 14px', cursor: 'pointer' }}>
+                      {closeBusy ? 'Closing…' : 'Yes — complete & close'}
+                    </button>
+                    <button type="button" disabled={closeBusy} onClick={() => setCloseArm(false)}
+                      style={{ font: 'inherit', fontSize: 12.5, fontWeight: 600, border: '1px solid #d8d2c4', background: '#fff', color: '#6a6a62', borderRadius: 7, padding: '7px 14px', cursor: 'pointer' }}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setCloseArm(true)}
+                    style={{ font: 'inherit', fontSize: 12.5, fontWeight: 700, border: '1px solid #2d7a4f', background: '#fff', color: '#2d7a4f', borderRadius: 7, padding: '7px 14px', cursor: 'pointer', width: '100%' }}>
+                    ✓ Complete &amp; close order
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

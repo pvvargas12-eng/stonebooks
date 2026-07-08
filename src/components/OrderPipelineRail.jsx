@@ -32,6 +32,11 @@ export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMile
   const [addPhase, setAddPhase] = useState('production')
   const [addText, setAddText] = useState('')
   const [adding, setAdding] = useState(false)
+  // Multi-select mode (Paul, 2026-07-08) — check several milestones, mark them
+  // done in one shot instead of tapping each one open.
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const tasksByPhase = (code) => tasks.filter(t => (t.field || 'production') === code)
 
@@ -40,6 +45,18 @@ export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMile
     setBusyKey(key)
     await onUpdateMilestone(key, status)
     setBusyKey(null); setOpenKey(null)
+  }
+
+  const toggleSelected = (key) => setSelected(prev => {
+    const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n
+  })
+  const exitSelect = () => { setSelectMode(false); setSelected(new Set()) }
+  const bulkComplete = async () => {
+    if (!onUpdateMilestone || selected.size === 0 || bulkBusy) return
+    setBulkBusy(true)
+    for (const key of selected) await onUpdateMilestone(key, 'done')
+    setBulkBusy(false)
+    exitSelect()
   }
 
   const submitTask = async () => {
@@ -56,8 +73,25 @@ export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMile
 
       <div className="sb-opr-head">
         <span className="sb-opr-title">Pipeline</span>
-        <span className="sb-opr-pct">{pipe.overallPct}%</span>
+        <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10 }}>
+          {onUpdateMilestone && pipe.hasJob && (
+            <button type="button" className={`sb-opr-selbtn${selectMode ? ' on' : ''}`}
+              onClick={() => selectMode ? exitSelect() : setSelectMode(true)}
+              title="Check several items, then mark them done at once">
+              {selectMode ? 'Cancel' : '☑ Select'}
+            </button>
+          )}
+          <span className="sb-opr-pct">{pipe.overallPct}%</span>
+        </span>
       </div>
+      {selectMode && (
+        <div className="sb-opr-bulkbar">
+          <span>{selected.size} selected</span>
+          <button type="button" className="sb-opr-bulkgo" disabled={selected.size === 0 || bulkBusy} onClick={bulkComplete}>
+            {bulkBusy ? 'Marking…' : `✓ Mark ${selected.size || ''} done`}
+          </button>
+        </div>
+      )}
       <div className="sb-opr-bar"><div className="sb-opr-bar-fill" style={{ width: `${pipe.overallPct}%` }} /></div>
       {!pipe.hasJob && (
         <div className="sb-opr-preview-note">Preview — milestones activate when the order is signed and a job is created.</div>
@@ -85,20 +119,27 @@ export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMile
             const t = tone(it.status)
             const isOpen = openKey === `${phase.code}:${it.key}`
             const tappable = !it.readOnly && !!onUpdateMilestone
+            // Select mode: tap toggles the checkbox (done items can't be re-selected).
+            const selectable = selectMode && tappable && it.status !== 'done'
+            const isSel = selected.has(it.key)
             return (
               <div key={it.key} className={`sb-opr-row${it.readOnly ? ' sb-opr-row-ro' : ''}`}>
                 <button
                   type="button"
-                  className="sb-opr-row-main"
-                  disabled={!tappable || busyKey === it.key}
-                  onClick={() => tappable && setOpenKey(isOpen ? null : `${phase.code}:${it.key}`)}
-                  title={tappable ? 'Set status' : t.label}
+                  className={`sb-opr-row-main${isSel ? ' sb-opr-row-sel' : ''}`}
+                  disabled={selectMode ? !selectable : (!tappable || busyKey === it.key)}
+                  onClick={() => selectMode
+                    ? (selectable && toggleSelected(it.key))
+                    : (tappable && setOpenKey(isOpen ? null : `${phase.code}:${it.key}`))}
+                  title={selectMode ? (selectable ? 'Select' : t.label) : (tappable ? 'Set status' : t.label)}
                 >
-                  <span className="sb-opr-dot" style={{ background: t.fg }}>{it.status === 'done' ? '✓' : ''}</span>
+                  {selectMode
+                    ? <span className={`sb-opr-check${isSel ? ' on' : ''}`}>{isSel ? '✓' : ''}</span>
+                    : <span className="sb-opr-dot" style={{ background: t.fg }}>{it.status === 'done' ? '✓' : ''}</span>}
                   <span className="sb-opr-label">{it.label}</span>
                   {it.derived && <span className="sb-opr-from" title="Added from this order's contents">from order</span>}
                 </button>
-                {isOpen && tappable && (
+                {isOpen && tappable && !selectMode && (
                   <div className="sb-opr-actions">
                     <button type="button" className="sb-opr-act sb-opr-act-done" onClick={() => setStatus(it.key, 'done')}>Done</button>
                     <button type="button" className="sb-opr-act sb-opr-act-prog" onClick={() => setStatus(it.key, 'in_progress')}>In progress</button>
@@ -172,4 +213,12 @@ const CSS = `
 .sb-opr-add-text { flex: 1 1 auto; min-width: 0; border: 1px solid #d8d2c4; border-radius: 5px; padding: 4px 7px; font: inherit; font-size: 12px; }
 .sb-opr-add-btn { border: 1px solid #9a7209; background: #9a7209; color: #fff; border-radius: 5px; padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .sb-opr-add-btn:disabled { opacity: 0.5; cursor: default; }
+.sb-opr-selbtn { border: 1px solid #d8d2c4; background: #fff; border-radius: 5px; padding: 2px 9px; font-size: 11px; font-weight: 700; color: #6a6a62; cursor: pointer; }
+.sb-opr-selbtn.on { border-color: #9a7209; color: #9a7209; background: #fdf8ec; }
+.sb-opr-bulkbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: #fdf8ec; border: 1px solid #e8d9a8; border-radius: 7px; padding: 6px 9px; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: #6b5d2f; }
+.sb-opr-bulkgo { border: none; background: #2d7a4f; color: #fff; border-radius: 6px; padding: 4px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.sb-opr-bulkgo:disabled { opacity: 0.45; cursor: default; }
+.sb-opr-check { flex: 0 0 15px; width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid #b8b2a4; background: #fff; color: #fff; font-size: 11px; line-height: 13px; text-align: center; }
+.sb-opr-check.on { background: #2d7a4f; border-color: #2d7a4f; }
+.sb-opr-row-sel { background: #f2f8f3; }
 `
