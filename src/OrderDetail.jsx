@@ -22,7 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
-  closeOrder, photoAttachment, setJobOverallStatus,
+  closeOrder, photoAttachment, setJobOverallStatus, setOrderFamilyName,
   updateOrderPayment, voidOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
@@ -449,6 +449,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // (overall_status 'completed' is in JOB_CLOSED) and the order goes terminal.
   const [closeArm, setCloseArm] = useState(false)
   const [closeBusy, setCloseBusy] = useState(false)
+  // Quick family-name edit on the header (Paul, 2026-07-08) — state lives up
+  // here with the other hooks (the loading/error returns come later).
+  const [famEdit, setFamEdit] = useState(null)   // null closed | string draft
+  const [famBusy, setFamBusy] = useState(false)
   const completeAndClose = async () => {
     if (closeBusy) return
     setCloseBusy(true); setActionNote(null)
@@ -1180,6 +1184,23 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     (order.primary_lastname && String(order.primary_lastname).trim()) ||
     (cust.last_name && String(cust.last_name).trim().toUpperCase()) ||
     customerName(cust) || '—'
+
+  // Quick family-name save — writes deceased[0].lastName via
+  // setOrderFamilyName; the generated primary_lastname recomputes, so every
+  // board picks it up.
+  const saveFamilyName = async () => {
+    const name = (famEdit || '').trim()
+    if (!name || famBusy) return
+    setFamBusy(true)
+    const r = await setOrderFamilyName(orderId, name)
+    if (!r.ok) { setFamBusy(false); setActionNote(`Could not save the family name — ${r.error}.`); return }
+    await logOrderActivity(orderId, {
+      type: 'change', field: 'Family name', oldValue: familyName, newValue: name,
+      note: `Family name: ${familyName} → ${name}`, actor: await getCurrentStaffName(),
+    })
+    await refreshOrder(); refreshActivity()
+    setFamBusy(false); setFamEdit(null)
+  }
   const primaryDeceased = deceasedName(deceased[0])
 
 
@@ -1415,7 +1436,31 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 <Pill severity={paymentTone(pressure.paymentState)}>{paymentLabel(pressure.paymentState)}</Pill>
               )}
             </div>
-            <h1 className="sb-od-title">{familyName}</h1>
+            {famEdit === null ? (
+              <h1 className="sb-od-title">
+                {familyName}
+                <button type="button" title="Edit the family name"
+                  onClick={() => setFamEdit(order.primary_lastname || cust.last_name || '')}
+                  style={{ font: 'inherit', fontSize: 15, background: 'none', border: 'none', cursor: 'pointer', color: '#9a7209', marginLeft: 10, verticalAlign: 'middle' }}>
+                  ✎
+                </button>
+              </h1>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0' }}>
+                <input autoFocus value={famEdit} onChange={e => setFamEdit(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') saveFamilyName(); if (e.key === 'Escape') setFamEdit(null) }}
+                  placeholder="Family name"
+                  style={{ font: 'inherit', fontSize: 22, fontWeight: 700, padding: '4px 10px', border: '1.5px solid #9a7209', borderRadius: 8, width: 280 }} />
+                <button type="button" disabled={famBusy || !(famEdit || '').trim()} onClick={saveFamilyName}
+                  style={{ font: 'inherit', fontSize: 13, fontWeight: 700, background: '#2d7a4f', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', cursor: 'pointer' }}>
+                  {famBusy ? 'Saving…' : 'Save'}
+                </button>
+                <button type="button" disabled={famBusy} onClick={() => setFamEdit(null)}
+                  style={{ font: 'inherit', fontSize: 13, background: 'none', border: '1px solid #d8d2c6', borderRadius: 7, padding: '8px 14px', cursor: 'pointer', color: '#6b6256' }}>
+                  Cancel
+                </button>
+              </div>
+            )}
             <div className="sb-od-subtitle">
               {primaryDeceased ? <>In memory of {primaryDeceased}{deceased.length > 1 ? ` +${deceased.length - 1}` : ''}</> : <span className="sb-od-missing">No deceased recorded</span>}
             </div>
