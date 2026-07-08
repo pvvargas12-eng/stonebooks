@@ -20,7 +20,11 @@ import {
   uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, notifyTradeDealer,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
-import { getCurrentStaffName, uploadProofLayout, createProofVersion } from '../lib/stonebooksData'
+import {
+  getCurrentStaffName, uploadProofLayout, createProofVersion,
+  overrideComponentPhase, getComponentsForJobs, seedComponentsForTradeJob, setJobOverallStatus,
+} from '../lib/stonebooksData'
+import { trackPhases, phaseLabel as compPhaseLabel } from '../lib/jobComponents'
 
 const TABS = [
   { code: 'active',   label: 'Active' },
@@ -55,6 +59,9 @@ const servicesOf = (r) => {
   return kinds.map(tradeServiceLabel).join(' + ') || '—'
 }
 const deadlineOf = (r) => (r.rush_status === 'approved' && r.rush_need_by) ? r.rush_need_by : (r.needed_by || r.rush_need_by || null)
+// Design-only orders: the job IS the design + approval — stone status and
+// production don't apply, and approval completes the order (Paul, 2026-07-08).
+const isDesignOnly = (r) => (r.services || []).length > 0 && (r.services || []).every(s => s === 'design')
 
 const humanizeEvent = (t) => String(t || '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
 
@@ -79,6 +86,23 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     listTradeOrders({ partnerId, scope: 'all' }).then(rows => { if (alive) setOrders(rows) })
     return () => { alive = false }
   }, [partnerId, nonce])
+
+  // Production column (staff) — reads the SAME job_components rows the
+  // Production floor board moves, so the two surfaces can never disagree.
+  const [compsByJob, setCompsByJob] = useState({})
+  useEffect(() => {
+    if (!staffView || !orders) return
+    const ids = orders.map(r => r.job_id).filter(Boolean)
+    if (!ids.length) { setCompsByJob({}); return }
+    let alive = true
+    getComponentsForJobs(ids).then(rows => {
+      if (!alive) return
+      const m = {}
+      for (const c of rows) if (!m[c.job_id]) m[c.job_id] = c   // primary piece (die/door)
+      setCompsByJob(m)
+    })
+    return () => { alive = false }
+  }, [staffView, orders])
 
   const actor = useCallback(async () => {
     if (!staffView) return actorName || 'Dealer'
@@ -122,8 +146,28 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
       designApprovedAt: code === 'approved' ? new Date().toISOString() : null,
     })
     await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'design_phase', detail: `Design phase → ${label}`, actor: who, actorRole: staffView ? 'staff' : 'partner' })
+    // Design-only: approval IS completion — the whole job was the design.
+    if (code === 'approved' && isDesignOnly(r)) {
+      await updateTradeOrder(r.id, { status: 'completed' })
+      if (r.job_id) await setJobOverallStatus(r.job_id, 'completed', 'Design-only trade order — design approved = complete')
+      await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'completed', detail: 'Design approved — design-only order completed', actor: who, actorRole: 'staff' })
+    }
     // Layout going out for review pulls the dealer in by email (deep link).
     if (staffView && code === 'sent_draft') notifyTradeDealer(r.id, 'layout_ready').catch(() => {})
+  })
+
+  // Production column write — moves the SAME piece the Production floor tracks
+  // (overrideComponentPhase rolls up to the job milestones, which drive the
+  // dealer's live tracker too).
+  const setProd = (r, comp, phase) => withBusy(r.id, async () => {
+    const who = await actor()
+    const res = await overrideComponentPhase(comp.id, phase, { actor: who, source: 'trade_board' })
+    if (res && res.ok === false) { console.warn('[trade] production:', res.error); return }
+    await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'production_status', detail: `Production → ${compPhaseLabel(phase)}`, actor: who, actorRole: 'staff' })
+  })
+  const setupProd = (r) => withBusy(r.id, async () => {
+    const res = await seedComponentsForTradeJob(r)
+    if (!res.ok) console.warn('[trade] seed component:', res.error)
   })
 
   const setStone = (r, code) => withBusy(r.id, async () => {
@@ -354,6 +398,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
             <span>Service</span>
             <span>Design phase</span>
             <span>Stone status</span>
+            {staffView && <span>Production</span>}
             <span>Started</span>
             <span>Deadline</span>
           </div>
@@ -380,7 +425,9 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                     )}
                   </span>
                   <span onClick={e => e.stopPropagation()}>
-                    {staffView ? (
+                    {isDesignOnly(r) ? (
+                      <span className="sb-tb-dim" title="Design-only order — no stone involved">— design only</span>
+                    ) : staffView ? (
                       <select className={`sb-tb-status sb-tb-t-${st.tone}`} value={r.stone_status || 'not_here'} disabled={busy} onChange={e => setStone(r, e.target.value)}>
                         {TRADE_STONE_STATUSES.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                       </select>
@@ -392,6 +439,26 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                       </button>
                     )}
                   </span>
+                  {staffView && (
+                    <span onClick={e => e.stopPropagation()}>
+                      {isDesignOnly(r) ? (
+                        <span className="sb-tb-dim" title="Design-only — complete when the design is approved">—</span>
+                      ) : !r.job_id ? (
+                        <span className="sb-tb-dim" title="Accept the order first — production tracking starts with the job">—</span>
+                      ) : compsByJob[r.job_id] ? (
+                        <select className="sb-tb-status sb-tb-t-blue" value={compsByJob[r.job_id].current_phase} disabled={busy}
+                          title="Two-way with the Jobs Production floor — moving it there shows here and vice versa"
+                          onChange={e => setProd(r, compsByJob[r.job_id], e.target.value)}>
+                          {trackPhases(compsByJob[r.job_id].track).map(p => <option key={p} value={p}>{compPhaseLabel(p)}</option>)}
+                        </select>
+                      ) : (
+                        <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setupProd(r)}
+                          title="Put this piece on the production floor so its status can be tracked here and in Jobs">
+                          + Track production
+                        </button>
+                      )}
+                    </span>
+                  )}
                   <span className="sb-tb-date">{fmtD(r.accepted_at || r.created_at)}</span>
                   {deadlineCell(r)}
                 </div>
@@ -798,7 +865,7 @@ const TB_CSS = `
 
   .sb-tb-board { background: #fff; border: 0.5px solid rgba(0,0,0,0.09); border-radius: 12px; overflow: hidden; }
   .sb-tb-head, .sb-tb-row { display: grid; grid-template-columns: minmax(150px,1.6fr) minmax(90px,1fr) minmax(120px,1.1fr) minmax(140px,1.2fr) minmax(140px,1.2fr) minmax(84px,.8fr) minmax(90px,.9fr); gap: 10px; align-items: center; padding: 10px 14px; }
-  .sb-tb-head.staff, .sb-tb-row.staff { grid-template-columns: minmax(130px,1.4fr) minmax(110px,1fr) minmax(80px,.9fr) minmax(110px,1fr) minmax(130px,1.2fr) minmax(130px,1.2fr) minmax(80px,.8fr) minmax(90px,.9fr); }
+  .sb-tb-head.staff, .sb-tb-row.staff { grid-template-columns: minmax(120px,1.3fr) minmax(100px,.9fr) minmax(75px,.8fr) minmax(100px,.9fr) minmax(125px,1.1fr) minmax(115px,1fr) minmax(140px,1.2fr) minmax(72px,.7fr) minmax(84px,.8fr); }
   .sb-tb-head { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #979387; border-bottom: 1px solid #ece8df; }
   .sb-tb-rowwrap { border-top: 0.5px solid #f0ede6; }
   .sb-tb-rowwrap:first-of-type { border-top: none; }

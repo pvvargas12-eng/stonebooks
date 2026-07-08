@@ -34,7 +34,7 @@ const niceCase = (s) => {
 }
 // Order surname first, then the CUSTOMER's last name (many old orders never
 // got a family name on the order itself — fix them in Reconcile), cemetery last.
-const famOf = (c) => niceCase(c.order?.primary_lastname || c.order?.customer?.last_name || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—')
+const famOf = (c) => niceCase(c.order?.primary_lastname || c.order?.customer?.last_name || c.vendor_request?.family_name || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—')
 const orderNoOf = (c) => c.order?.order_number || c.cemetery_order?.order_number || ''
 const cemOf = (c) => c.order?.cemetery?.name || c.cemetery_order?.cemetery_name || ''
 // Read-only permit context from existing truth (orders.permit_status).

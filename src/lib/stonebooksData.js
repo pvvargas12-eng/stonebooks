@@ -9,7 +9,7 @@ import { supabase } from './supabase'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
 import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
-  isValidPhase, nextPhase, prevPhase, phaseLabel, QC_PHASE } from './jobComponents'
+  isValidPhase, nextPhase, prevPhase, phaseLabel, QC_PHASE, INITIAL_PHASE } from './jobComponents'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
 export const NJ_TAX_RATE = 0.06625
@@ -3975,6 +3975,40 @@ export async function seedComponentsForCemeteryOrder(cemeteryOrderId) {
   return { ok: true, seeded: toInsert.length }
 }
 
+// Trade orders (vendor_requests): one production piece per job, seeded on
+// demand from the Trade Board's Production column (Paul, 2026-07-08). Track
+// follows the services: doors → door track, everything else → new_stone.
+export async function seedComponentsForTradeJob(request) {
+  if (!request?.job_id) return { ok: false, error: 'No job yet — Accept the order first.' }
+  const { data: existing } = await supabase.from('job_components').select('id').eq('job_id', request.job_id).limit(1)
+  if (existing?.length) return { ok: true, seeded: 0 }
+  const services = request.services || []
+  const track = services.includes('doors') ? 'door' : 'new_stone'
+  const item = (request.items || [])[0] || {}
+  const { error } = await supabase.from('job_components').insert({
+    tenant_id: _COMP_TENANT, job_id: request.job_id, vendor_request_id: request.id,
+    track, component_type: track === 'door' ? 'door' : 'die',
+    label: track === 'door' ? 'Door' : 'Die',
+    size: item.stone_size || null, color: item.color || null,
+    current_phase: INITIAL_PHASE[track], sort_order: 0,
+    phase_changed_at: new Date().toISOString(),
+  })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, seeded: 1 }
+}
+
+// Batched component read for a board full of jobs (one query, not N).
+export async function getComponentsForJobs(jobIds = []) {
+  const ids = [...new Set((jobIds || []).filter(Boolean))]
+  if (!ids.length) return []
+  const { data, error } = await supabase.from('job_components')
+    .select('id, job_id, track, component_type, label, current_phase, sort_order, qc_issue')
+    .in('job_id', ids)
+    .order('sort_order', { ascending: true })
+  if (error) { console.warn('[components] byJobs:', error.message); return [] }
+  return data || []
+}
+
 // Read components for a parent (order / cemetery_order / job).
 export async function getJobComponents({ orderId, cemeteryOrderId, jobId } = {}) {
   let q = supabase.from('job_components').select('*')
@@ -4019,7 +4053,8 @@ export async function getProductionComponents() {
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
       order:orders(id, order_number, primary_lastname, permit_status, customer:customers(last_name), cemetery:cemeteries(name)),
-      cemetery_order:cemetery_orders(id, order_number, cemetery_name)`)
+      cemetery_order:cemetery_orders(id, order_number, cemetery_name),
+      vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
     .order('track', { ascending: true }).order('sort_order', { ascending: true })
   if (error) { console.warn('[components] floor:', error.message); return [] }
   // Drop components whose job is closed/cancelled (phantoms after reconciliation).
