@@ -172,11 +172,12 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
         const up = await uploadTradeSignature(m.order.partner_id, m.order.id, dataUrl)
         if (up.ok) sigPath = up.path
       }
-      if (m.mode === 'approve') {
-        await approveTradeLayout(m.order.id, m.proofId, { partnerId: m.order.partner_id, sigPath, approver: who, actorRole: role })
-      } else {
-        await signTradeReceipt(m.order, m.mode, { where, signerRole: role, signerName: who, sigPath })
-      }
+      // Surface failures — an approve that silently no-ops looks like a dead
+      // button (the constraint bug Paul hit: RPC threw, screen never changed).
+      const res = m.mode === 'approve'
+        ? await approveTradeLayout(m.order.id, m.proofId, { partnerId: m.order.partner_id, sigPath, approver: who, actorRole: role })
+        : await signTradeReceipt(m.order, m.mode, { where, signerRole: role, signerName: who, sigPath })
+      if (res && res.ok === false) window.alert(`That didn't save: ${res.error || 'unknown error'}. Try again or contact Shevchenko.`)
       refreshDetail(m.order.id)
     })
   }
@@ -191,7 +192,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     for (const f of files) {
       await uploadVendorFile(f, { partnerId: r.partner_id, requestId: r.id, uploaderRole: staffView ? 'staff' : 'partner', kind: 'upload' })
     }
-    await updateTradeOrder(r.id, { designPhase: 'in_progress' })
+    await updateTradeOrder(r.id, { designPhase: 'changes_requested' })
     await logTradeEvent({
       requestId: r.id, partnerId: r.partner_id, type: 'changes_requested',
       detail: `Changes requested${note ? `: "${note}"` : ''}${files.length ? ` · ${files.length} attachment${files.length === 1 ? '' : 's'}` : ''}`,
@@ -818,6 +819,7 @@ const TB_CSS = `
   .sb-tb-rushq { background: #fdf3e2; color: #8a5a12; border: 0.5px solid #e6b667; }
   .sb-tb-t-gray  { background: #f1eee5; color: #6a6a62; }
   .sb-tb-t-blue  { background: #eaf1fb; color: #1d5fa8; }
+  .sb-tb-t-red   { background: #fbedec; color: #b3261e; }
   .sb-tb-t-amber { background: #fbf3df; color: #8a5a12; }
   .sb-tb-t-green { background: #e9f4ec; color: #2f7d4f; }
   .sb-tb-status { font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 8px; border: 0.5px solid #d8d2c4; border-radius: 8px; cursor: pointer; max-width: 100%; }

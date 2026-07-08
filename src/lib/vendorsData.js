@@ -417,10 +417,11 @@ export const TRADE_SERVICES = [
   { code: 'custom',  label: 'Custom' },
 ]
 export const TRADE_DESIGN_PHASES = [
-  { code: 'not_created', label: 'Not created', tone: 'gray' },
-  { code: 'in_progress', label: 'In progress', tone: 'blue' },
-  { code: 'sent_draft',  label: 'Sent draft',  tone: 'amber' },
-  { code: 'approved',    label: 'Approved',    tone: 'green' },
+  { code: 'not_created',       label: 'Not created',       tone: 'gray' },
+  { code: 'in_progress',       label: 'In progress',       tone: 'blue' },
+  { code: 'changes_requested', label: 'Changes requested', tone: 'red' },
+  { code: 'sent_draft',        label: 'Sent draft',        tone: 'amber' },
+  { code: 'approved',          label: 'Approved',          tone: 'green' },
 ]
 export const TRADE_STONE_STATUSES = [
   { code: 'not_here', label: 'Not here', tone: 'gray' },
