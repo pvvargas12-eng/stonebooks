@@ -705,11 +705,33 @@ export function MonumentCard({ order, update, updatePricing }) {
     update({ shape: t.shapeCodes[0], standardSizeCode: null, width: null, depth: null, thickness: null, height: null, customShape: code === 'custom' ? order.customShape : null })
   }
   const onShape = (code) => update({ shape: code, standardSizeCode: null, width: null, depth: null, thickness: null, height: null })
-  // Picking a standard color clears any custom-color upcharge so it can't linger.
-  const onColor = (code) => {
-    update({ graniteColor: code })
-    if (code !== 'custom') updatePricing({ customColorName: '', customColorPct: null })
+
+  // Granite color = write-or-select combo (input + datalist), same as the
+  // Stonebooks Trade form (Paul, 2026-07-08 — the plain select "wasn't
+  // working"). Typed text that matches a catalog label picks that color;
+  // anything else becomes a custom color with the typed name.
+  const colorDisplay = order.graniteColor === 'custom'
+    ? (order.pricing?.customColorName ?? '')
+    : order.graniteColor
+      ? (GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || order.graniteColor)
+      : ''
+  const onColorText = (text) => {
+    const t = text.trim()
+    if (!t) { update({ graniteColor: null }); updatePricing({ customColorName: '', customColorPct: null }); return }
+    const match = GRANITE_COLORS.find(c => c.label.toLowerCase() === t.toLowerCase())
+    if (match) {
+      update({ graniteColor: match.code })
+      updatePricing({ customColorName: '', customColorPct: null })
+    } else {
+      update({ graniteColor: 'custom' })
+      updatePricing({ customColorName: text })
+    }
   }
+  const selColor = order.graniteColor && order.graniteColor !== 'custom'
+    ? GRANITE_COLORS.find(c => c.code === order.graniteColor) : null
+  const colorHint = order.graniteColor === 'custom'
+    ? 'Custom color — set the % upcharge below.'
+    : selColor?.premium > 0 ? `${selColor.label}: +${Math.round(selColor.premium * 100)}% premium` : 'Pick from the list or type any color.'
   const onSize = (code) => {
     if (code === 'custom' || code === '') { update({ standardSizeCode: null }); return }
     const std = shapeObj?.standardSizes.find(s => s.code === code)
@@ -733,25 +755,21 @@ export function MonumentCard({ order, update, updatePricing }) {
         <SelectField label="Finish / polish" value={order.polishLevel} onChange={v => update({ polishLevel: v })}
           options={POLISH_LEVELS.map(p => ({ value: p.code, label: p.label }))} placeholder="Select polish…"
           hint="Spec only — no price effect." />
-        <SelectField label="Granite color" value={order.graniteColor} onChange={v => onColor(v)}
-          options={[
-            ...getActiveStoneColors().map(c => ({ value: c.code, label: `${c.label}${c.premium > 0 ? ` (+${Math.round(c.premium * 100)}%)` : ''}` })),
-            // A saved order carrying a deactivated/legacy color keeps it selectable
-            // so opening the form doesn't silently blank the field.
-            ...(order.graniteColor && order.graniteColor !== 'custom' && !getActiveStoneColors().some(c => c.code === order.graniteColor)
-              ? [{ value: order.graniteColor, label: `${GRANITE_COLORS.find(c => c.code === order.graniteColor)?.label || order.graniteColor} (no longer offered)` }]
-              : []),
-            { value: 'custom', label: 'Custom…' },
-          ]}
-          placeholder="Select color…" />
+        <Field label="Granite color" hint={colorHint}>
+          <input className="of-input" list="of-granite-colors" value={colorDisplay}
+            onChange={e => onColorText(e.target.value)} placeholder="Select or type any color" />
+          <datalist id="of-granite-colors">
+            {getActiveStoneColors().map(c => (
+              <option key={c.code} value={c.label}>{c.premium > 0 ? `+${Math.round(c.premium * 100)}%` : ''}</option>
+            ))}
+          </datalist>
+        </Field>
       </Grid>
 
       {order.graniteColor === 'custom' && (
         <div className="of-sub">
-          <span className="of-sub-title">Custom color</span>
+          <span className="of-sub-title">Custom color — “{order.pricing?.customColorName || '…'}”</span>
           <Grid cols={2}>
-            <TextField label="Color name" value={order.pricing?.customColorName ?? ''}
-              onChange={v => updatePricing({ customColorName: v })} placeholder="e.g. Tropical Green" />
             <NumberField label="% increase" value={order.pricing?.customColorPct} suffix="%"
               onChange={v => updatePricing({ customColorPct: v })} hint="Manual upcharge on the base stone" />
           </Grid>
