@@ -4059,6 +4059,29 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
   return r
 }
+// Pull a piece onto the board (optionally straight into a phase column) or
+// send it back to the queue log. The board only shows on_floor pieces —
+// staff hand-pick what's actually being worked (Paul, 2026-07-08).
+export async function setComponentOnFloor(id, on, { actor = null, phase = null, source = 'board' } = {}) {
+  const c = await _loadComponent(id)
+  if (!c) return { ok: false, error: 'Component not found' }
+  const patch = { on_floor: !!on }
+  if (on && phase && phase !== c.current_phase) {
+    if (!isValidPhase(c.track, phase)) return { ok: false, error: 'Bad phase for this track' }
+    patch.previous_phase = c.current_phase
+    patch.current_phase = phase
+    patch.phase_changed_at = new Date().toISOString()
+  }
+  const r = await _patchComponent(id, patch)
+  if (!r.ok) return r
+  await _componentEvent(c, on ? 'component_brought_to_floor' : 'component_returned_to_queue', {
+    note: on ? `Pulled onto the floor${phase ? ` at ${phaseLabel(phase)}` : ''}` : 'Returned to the queue',
+    payload: { phase: phase || c.current_phase }, actor, source,
+  })
+  if (on && phase && c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  return r
+}
+
 export async function advanceComponent(id, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (c.current_phase === QC_PHASE) return { ok: false, error: 'At Quality Check — use Approve or Deny.' }

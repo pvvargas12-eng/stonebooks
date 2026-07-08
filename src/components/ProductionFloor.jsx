@@ -15,16 +15,24 @@ import {
   getProductionComponents, getJobComponents, getCurrentStaffName,
   advanceComponent, reverseComponent, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
-  setComponentBlocker, setComponentNotes, permitStatusLabel,
+  setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
 } from '../lib/stonebooksData'
 import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 
-const TRACK_ORDER = ['new_stone', 'inscription', 'door', 'bronze']
+const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
+// Tab labels per Paul (2026-07-08) — plural, his words.
+const TAB_LABEL = { new_stone: 'New Stone', inscription: 'Inscription', bronze: 'Bronze Markers', door: 'Mausoleum Doors' }
 const TYPE_LABEL = { die: 'Die', base: 'Base', inscription: 'Inscription', door: 'Door', bronze: 'Bronze' }
 const DAY_MS = 86400000
 
-const famOf = (c) => c.order?.primary_lastname || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—'
+// Family names arrive however they were typed on the order — some ALL CAPS.
+// Normalize purely for display: only rewrite strings that are entirely upper.
+const niceCase = (s) => {
+  if (!s || s !== s.toUpperCase() || !/[A-Z]/.test(s)) return s
+  return s.toLowerCase().replace(/(^|[\s\-'])(\p{L})/gu, (m, sep, ch) => sep + ch.toUpperCase())
+}
+const famOf = (c) => niceCase(c.order?.primary_lastname || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—')
 const orderNoOf = (c) => c.order?.order_number || c.cemetery_order?.order_number || ''
 const cemOf = (c) => c.order?.cemetery?.name || c.cemetery_order?.cemetery_name || ''
 // Read-only permit context from existing truth (orders.permit_status).
@@ -95,10 +103,20 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
 }
 
 // ── Full board (Production tab) ──────────────────────────────────────────────
+// Hand-picked board (Paul, 2026-07-08): one track per TAB, the board shows only
+// pieces staff pulled up (on_floor). The full backlog lives in the Queue log —
+// searchable, never automatic. Every column has "+ Add" to search the queue and
+// drop a piece straight into that column.
 export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   const [components, setComponents] = useState(null)
   const [todayMs, setTodayMs] = useState(0)
   const [err, setErr] = useState(null)
+  const [track, setTrack] = useState('new_stone')
+  const [queueOpen, setQueueOpen] = useState(false)
+  const [queueQ, setQueueQ] = useState('')
+  const [addCol, setAddCol] = useState(null)   // phase code the "+ Add" modal targets
+  const [addQ, setAddQ] = useState('')
+  const [busyId, setBusyId] = useState(null)
 
   const load = useCallback(async () => {
     try {
@@ -110,6 +128,28 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const loading = components == null
+  const inTrack = (components || []).filter(c => c.track === track)
+  const floor = inTrack.filter(c => c.on_floor)
+  const queue = inTrack.filter(c => !c.on_floor)
+  const phases = trackPhases(track)
+  const counts = phases.map(p => floor.filter(c => c.current_phase === p).length)
+  const bnIdx = counts.indexOf(Math.max(...counts))
+
+  const matches = (c, q) => {
+    const t = q.trim().toLowerCase()
+    if (!t) return true
+    return [famOf(c), orderNoOf(c), cemOf(c), c.size, c.color].filter(Boolean).join(' ').toLowerCase().includes(t)
+  }
+
+  const pullUp = async (c, phase) => {
+    setBusyId(c.id); setErr(null)
+    const actor = await getCurrentStaffName()
+    const r = await setComponentOnFloor(c.id, true, { actor, phase })
+    setBusyId(null)
+    if (r && r.ok === false) { setErr(r.error); return }
+    setAddCol(null); setAddQ('')
+    load()
+  }
 
   return (
     <div className="jobcc">
@@ -117,44 +157,108 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       <header className="jobcc-cmd">
         <div className="jobcc-cmd-left">
           <h1 className="jobcc-title">Production floor</h1>
-          <div className="jobcc-purpose">Each physical piece on its own track — advance, reverse, QC. A Die can be Blast while its Base is Cut.</div>
+          <div className="jobcc-purpose">Only the pieces you pull up. + Add on any column searches the queue; nothing lands here automatically.</div>
         </div>
         <div className="jobcc-cmd-right">
-          <div className="jobcc-actions"><button type="button" className="jobcc-btn" onClick={load}>Refresh</button></div>
+          <div className="jobcc-actions">
+            <button type="button" className={`jobcc-btn${queueOpen ? ' pf-qbtn-on' : ''}`} onClick={() => setQueueOpen(o => !o)}>
+              Queue log · {loading ? '—' : queue.length}
+            </button>
+            <button type="button" className="jobcc-btn" onClick={load}>Refresh</button>
+          </div>
         </div>
       </header>
+
+      {/* Track tabs */}
+      <div className="pf-tabs">
+        {TRACK_ORDER.map(t => {
+          const n = (components || []).filter(c => c.track === t && c.on_floor).length
+          return (
+            <button key={t} type="button" className={`pf-tab${track === t ? ' on' : ''}`}
+              onClick={() => { setTrack(t); setQueueOpen(false); setAddCol(null) }}>
+              {TAB_LABEL[t]} <span className="pf-tab-n">{loading ? '' : n}</span>
+            </button>
+          )
+        })}
+      </div>
+
       {err && <div className="jobcc-err">{err}</div>}
-      {loading ? <div className="jobcc-empty">Loading…</div>
-        : (components.length === 0
-          ? <div className="jobcc-empty jobcc-empty-ok">No components yet — seed them from the Dashboard's Production-floor panel.</div>
-          : TRACK_ORDER.map(track => {
-            const inTrack = components.filter(c => c.track === track)
-            if (inTrack.length === 0) return null
-            const phases = trackPhases(track)
-            const counts = phases.map(p => inTrack.filter(c => c.current_phase === p).length)
-            const bnIdx = counts.indexOf(Math.max(...counts))
-            return (
-              <section key={track} className="pf-board-track">
-                <div className="pf-board-track-head"><span className="pf-board-track-label">{TRACK_LABEL[track]}</span><span className="jobcc-panel-count">{inTrack.length}</span></div>
-                <div className="pf-cols">
-                  {phases.map((p, i) => {
-                    const cards = inTrack.filter(c => c.current_phase === p)
-                    return (
-                      <div key={p} className={`pf-col ${i === bnIdx && counts[i] > 0 ? 'pf-col-bn' : ''}`}>
-                        <div className="pf-col-head"><span className="pf-col-l">{phaseLabel(p)}</span><span className="pf-col-n">{cards.length}</span></div>
-                        <div className="pf-col-body">
-                          {cards.map(c => (
-                            <ComponentCard key={c.id} comp={c} todayMs={todayMs} onChanged={load}
-                              onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
+
+      {/* Queue log — the full backlog, searchable. Bring up = first column. */}
+      {queueOpen && (
+        <div className="pf-queue">
+          <div className="pf-queue-head">
+            <input className="pf-input pf-queue-search" type="search" placeholder="Search family, order #, cemetery…" value={queueQ} onChange={e => setQueueQ(e.target.value)} autoFocus />
+            <span className="pf-queue-count">{queue.filter(c => matches(c, queueQ)).length} of {queue.length} in the queue</span>
+          </div>
+          <div className="pf-queue-list">
+            {queue.filter(c => matches(c, queueQ)).slice(0, 60).map(c => (
+              <div key={c.id} className="pf-queue-row">
+                <span className="pf-queue-fam">{famOf(c)}</span>
+                <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
+                <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, phases[0])}>
+                  {busyId === c.id ? '…' : '⤒ Bring up'}
+                </button>
+              </div>
+            ))}
+            {queue.filter(c => matches(c, queueQ)).length === 0 && <div className="pf-queue-empty">Nothing in the queue matches.</div>}
+          </div>
+        </div>
+      )}
+
+      {loading ? <div className="jobcc-empty">Loading…</div> : (
+        <section className="pf-board-track">
+          <div className="pf-cols">
+            {phases.map((p, i) => {
+              const cards = floor.filter(c => c.current_phase === p)
+              return (
+                <div key={p} className={`pf-col ${i === bnIdx && counts[i] > 0 ? 'pf-col-bn' : ''}`}>
+                  <div className="pf-col-head">
+                    <span className="pf-col-l">{phaseLabel(p)}</span>
+                    <span className="pf-col-headr">
+                      <span className="pf-col-n">{cards.length}</span>
+                      <button type="button" className="pf-col-add" title={`Search the queue and add a piece to ${phaseLabel(p)}`}
+                        onClick={() => { setAddCol(addCol === p ? null : p); setAddQ('') }}>+ Add</button>
+                    </span>
+                  </div>
+                  <div className="pf-col-body">
+                    {cards.length === 0 && <div className="pf-col-empty">—</div>}
+                    {cards.map(c => (
+                      <ComponentCard key={c.id} comp={c} todayMs={todayMs} onChanged={load}
+                        onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
+                    ))}
+                  </div>
                 </div>
-              </section>
-            )
-          }))}
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* "+ Add" — search the queue, drop the piece straight into this column. */}
+      {addCol && (
+        <div className="pf-modal-overlay" onClick={() => setAddCol(null)}>
+          <div className="pf-modal" onClick={e => e.stopPropagation()}>
+            <div className="pf-modal-title">Add to “{phaseLabel(addCol)}”</div>
+            <input className="pf-input" type="search" placeholder="Search family, order #, cemetery…" value={addQ} onChange={e => setAddQ(e.target.value)} autoFocus />
+            <div className="pf-queue-list" style={{ maxHeight: '46vh' }}>
+              {queue.filter(c => matches(c, addQ)).slice(0, 40).map(c => (
+                <div key={c.id} className="pf-queue-row">
+                  <span className="pf-queue-fam">{famOf(c)}</span>
+                  <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
+                  <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, addCol)}>
+                    {busyId === c.id ? '…' : 'Add →'}
+                  </button>
+                </div>
+              ))}
+              {queue.filter(c => matches(c, addQ)).length === 0 && <div className="pf-queue-empty">No queue pieces match — everything else is already on the board.</div>}
+            </div>
+            <div className="pf-card-form-actions" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+              <button type="button" className="pf-btn" onClick={() => setAddCol(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -237,6 +341,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
       {menu && !mode && (
         <div className="pf-menu">
           <button type="button" onClick={() => openMode('override')}>Override phase</button>
+          {comp.on_floor && <button type="button" onClick={() => run(a => setComponentOnFloor(comp.id, false, { actor: a }))}>↩ Return to queue</button>}
           {comp.blocker
             ? <button type="button" onClick={() => run(a => setComponentBlocker(comp.id, null, { actor: a }))}>Clear blocker</button>
             : <button type="button" onClick={() => openMode('block')}>Mark blocked</button>}
@@ -384,6 +489,30 @@ const PF_CSS = `
   .pf-funnel-note { font-size: 11.5px; color: #6f7a8a; }
   .pf-funnel-link { font: inherit; font-size: 11.5px; background: none; border: none; color: #8b95a5; cursor: pointer; text-decoration: underline; padding: 0; }
   .pf-funnel-link:hover { color: #f4f6fa; }
+
+  .pf-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .pf-tab { font: inherit; font-size: 12.5px; font-weight: 700; padding: 7px 16px; border-radius: 999px; border: 1px solid #232a35; background: #11151c; color: #8b95a5; cursor: pointer; }
+  .pf-tab:hover { border-color: #3a4452; color: #c7cedb; }
+  .pf-tab.on { background: #1a2230; border-color: #3a4452; color: #f4f6fa; }
+  .pf-tab-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6f7a8a; margin-left: 4px; }
+  .pf-tab.on .pf-tab-n { color: #fbbf24; }
+  .pf-qbtn-on { border-color: #5a4a1e !important; color: #fbbf24 !important; }
+  .pf-col-headr { display: inline-flex; align-items: baseline; gap: 8px; }
+  .pf-col-add { font: inherit; font-size: 10.5px; font-weight: 700; border: 1px solid #2a313c; background: #1a212b; color: #8b95a5; border-radius: 5px; padding: 1px 7px; cursor: pointer; }
+  .pf-col-add:hover { color: #f4f6fa; border-color: #3a4452; }
+  .pf-col-empty { font-size: 11px; color: #3a4452; text-align: center; padding: 8px 0; }
+  .pf-queue { background: #11151c; border: 1px solid #5a4a1e; border-radius: 10px; padding: 12px; margin-bottom: 16px; }
+  .pf-queue-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .pf-queue-search { max-width: 340px; }
+  .pf-queue-count { font-size: 11.5px; color: #8b95a5; }
+  .pf-queue-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .pf-queue-row { display: flex; align-items: center; gap: 10px; background: #151a22; border: 1px solid #232a35; border-radius: 7px; padding: 6px 10px; }
+  .pf-queue-fam { font-size: 12.5px; font-weight: 700; color: #f4f6fa; min-width: 110px; }
+  .pf-queue-meta { flex: 1; font-size: 11px; color: #8b95a5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pf-queue-empty { font-size: 12px; color: #6f7a8a; padding: 10px; text-align: center; }
+  .pf-modal-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(5,8,12,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .pf-modal { background: #11151c; border: 1px solid #3a4452; border-radius: 12px; width: min(640px, 96vw); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+  .pf-modal-title { font-size: 14px; font-weight: 700; color: #f4f6fa; }
 
   .pf-board-track { margin-bottom: 22px; }
   .pf-board-track-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
