@@ -30,6 +30,7 @@ import {
   orderTypeLabel, orderCategory, ORDER_CATEGORIES,
   // Permit (orders.permit_status — single source of truth, shared with Permit Hub)
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
+  paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
   logOrderActivity, getCurrentStaffName,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
@@ -1321,7 +1322,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
 
       {/* Payment — editable manual override (orders.payment_status) */}
       <div onClick={e => e.stopPropagation()}>
-        <select className="sb-tw-inline" value={o._payment || 'quoted'} disabled={busy} onChange={e => onInlinePayment(o, e.target.value)}>
+        <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${paymentStatusTone(o._payment || 'quoted')}`} value={o._payment || 'quoted'} disabled={busy} onChange={e => onInlinePayment(o, e.target.value)}>
           {PAYMENT_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
         </select>
       </div>
@@ -1329,7 +1330,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Design (inline → milestone) */}
       <div onClick={e => e.stopPropagation()}>
         {hasJob ? (
-          <select className="sb-tw-inline" value={o._design || 'not_created'} disabled={busy} onChange={e => onInlineDesign(o, e.target.value)}>
+          <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${designStatusTone(o._design || 'not_created')}`} value={o._design || 'not_created'} disabled={busy} onChange={e => onInlineDesign(o, e.target.value)}>
             {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
         ) : <span className="sb-crm-muted">—</span>}
@@ -1338,7 +1339,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Stone (inline → milestone) */}
       <div onClick={e => e.stopPropagation()}>
         {hasJob ? (
-          <select className="sb-tw-inline" value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
+          <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${stoneStatusTone(o._stone || 'not_ordered')}`} value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
             {STONE_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
         ) : <span className="sb-crm-muted">—</span>}
@@ -1360,7 +1361,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Foundation (inline → milestone) */}
       <div onClick={e => e.stopPropagation()}>
         {hasJob ? (
-          <select className="sb-tw-inline" value={o._fdn || 'na'} disabled={busy} onChange={e => onInlineFdn(o, e.target.value)}>
+          <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${fdnStatusTone(o._fdn || 'na')}`} value={o._fdn || 'na'} disabled={busy} onChange={e => onInlineFdn(o, e.target.value)}>
             {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
         ) : <span className="sb-crm-muted">—</span>}
@@ -1369,10 +1370,10 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Contract (signed_at) — an explicit signed/not-signed status (settable on
           EVERY order) + the exact date. Commits on blur/Enter only. */}
       <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-        <select className="sb-tw-inline" value={o.signed_at ? 'signed' : 'unsigned'} disabled={busy}
+        <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${contractSignedTone(!!o.signed_at)}`} value={o.signed_at ? 'signed' : 'unsigned'} disabled={busy}
           onChange={e => onInlineSigned(o, e.target.value === 'signed')}>
-          <option value="unsigned">Not signed</option>
-          <option value="signed">Contract signed</option>
+          <option value="unsigned">Unsigned</option>
+          <option value="signed">Signed ✓</option>
         </select>
         <InlineDateField value={toDateInput(o.signed_at)} disabled={busy}
           onCommit={v => onInlineDate(o, 'signed_at', v)} ariaLabel="Contract date" />

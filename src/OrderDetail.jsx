@@ -42,6 +42,8 @@ import {
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
+  paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
+  permitStatusTone,
 } from './lib/stonebooksData'
 import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeRow, CqeNote } from './components/CardQuickEdit'
 import { orderHasBase, buildBaseSpec, buildDieSpec, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
@@ -119,10 +121,6 @@ const permitTone = (s) => ({
 const DESIGN_6 = {
   not_created: 'Not created', drafted: 'Drafted', needs_sending: 'Needs sending to customer',
   sent: 'Sent to customer', approved: 'Approved', revision: 'Revision needed',
-}
-const DESIGN_6_TONE = {
-  not_created: 'bronze', drafted: 'bronze', needs_sending: 'amber',
-  sent: 'blue', approved: 'green', revision: 'amber',
 }
 function deriveDesign6(job, proofVers) {
   const proof = (proofVers || []).find(p => p.is_current) || (proofVers || [])[0]
@@ -1734,26 +1732,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               Orders table columns, adjustable right here. Same write paths too. */}
           <div className="sb-od-status-edit">
             <label className="sb-od-sc"><b>Payment</b>
-              <select value={derivePaymentStatus(order)} onChange={e => inlinePayment(e.target.value)}>
+              <select className={`sb-od-tone-${paymentStatusTone(derivePaymentStatus(order))}`} value={derivePaymentStatus(order)} onChange={e => inlinePayment(e.target.value)}>
                 {PAYMENT_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
               </select>
             </label>
             <label className="sb-od-sc"><b>Design</b>
               {job ? (
-                <select value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)}>
+                <select className={`sb-od-tone-${designStatusTone(deriveDesignStatus(job))}`} value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)}>
                   {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
               ) : <span className="sb-od-sc-na">no job yet</span>}
             </label>
             <label className="sb-od-sc"><b>Stone</b>
               {job ? (
-                <select value={deriveStoneStatus(job)} onChange={e => inlineStone(e.target.value)}>
+                <select className={`sb-od-tone-${stoneStatusTone(deriveStoneStatus(job))}`} value={deriveStoneStatus(job)} onChange={e => inlineStone(e.target.value)}>
                   {STONE_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
               ) : <span className="sb-od-sc-na">no job yet</span>}
             </label>
             <label className="sb-od-sc"><b>Permit</b>
-              <select value={order.permit_status || 'unknown'} onChange={e => inlinePermit(e.target.value)}>
+              <select className={`sb-od-tone-${permitStatusTone(order.permit_status || 'unknown')}`} value={order.permit_status || 'unknown'} onChange={e => inlinePermit(e.target.value)}>
                 {!PERMIT_SELECTABLE.has(order.permit_status) && (
                   <option value={order.permit_status || 'unknown'} disabled>{permitStatusLabel(order.permit_status || 'unknown')}</option>
                 )}
@@ -1762,16 +1760,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </label>
             <label className="sb-od-sc"><b>Foundation</b>
               {job ? (
-                <select value={deriveFdnStatus(job)} onChange={e => inlineFdn(e.target.value)}>
+                <select className={`sb-od-tone-${fdnStatusTone(deriveFdnStatus(job))}`} value={deriveFdnStatus(job)} onChange={e => inlineFdn(e.target.value)}>
                   {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
               ) : <span className="sb-od-sc-na">no job yet</span>}
             </label>
             <label className="sb-od-sc"><b>Contract</b>
               <span className="sb-od-sc-pair">
-                <select value={order.signed_at ? 'signed' : 'unsigned'} onChange={e => inlineSigned(e.target.value === 'signed')}>
-                  <option value="unsigned">Not signed</option>
-                  <option value="signed">Contract signed</option>
+                <select className={`sb-od-tone-${contractSignedTone(!!order.signed_at)}`} value={order.signed_at ? 'signed' : 'unsigned'} onChange={e => inlineSigned(e.target.value === 'signed')}>
+                  <option value="unsigned">Unsigned</option>
+                  <option value="signed">Signed ✓</option>
                 </select>
                 <ODDateField value={order.signed_at ? String(order.signed_at).slice(0, 10) : ''}
                   onCommit={v => inlineDateField('signed_at', v)} ariaLabel="Contract date" />
@@ -1990,19 +1988,17 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             {reapprovalText && (
               <div className="sb-od-reapproval">{reapprovalText}</div>
             )}
-            {/* Status is CHANGEABLE right here (Paul, 2026-07-10) — same dropdown +
-                write path as the Orders table Design column. The pill carries the
-                richer 6-label derive. Stone spec / inscription rows removed —
-                they were duplicates of the Monument card. */}
+            {/* ONE adjustable status box (Paul, 2026-07-10) — same dropdown + write
+                path as the Orders table Design column; the chip color follows the
+                selected status. Stone spec / inscription rows removed — they were
+                duplicates of the Monument card. */}
             <Field label="Design status" value={
-              <span className="sb-od-design-status-row">
-                <Pill severity={DESIGN_6_TONE[design6]}>{DESIGN_6[design6]}</Pill>
-                {job && (
-                  <select className="sb-od-sc-select" value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)} aria-label="Set design status">
-                    {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
-                  </select>
-                )}
-              </span>
+              job ? (
+                <select className={`sb-od-sc-select sb-od-tone-${designStatusTone(deriveDesignStatus(job))}`}
+                  value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)} aria-label="Set design status">
+                  {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                </select>
+              ) : <Pill severity="bronze">No job yet</Pill>
             } />
             {_currentProof?.notes && <Field label="Internal design notes" value={_currentProof.notes} />}
             {(() => {
@@ -3225,8 +3221,15 @@ const OD_CSS = `
   .sb-od-status-edit { display: flex; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 0.5px solid #E9E4D8; flex-wrap: wrap; align-items: flex-end; }
   .sb-od-sc { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .sb-od-sc > b { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; }
-  .sb-od-sc select, .sb-od-sc-select { font: inherit; font-size: 12.5px; padding: 5px 7px; border: 0.5px solid #d8d6d1; border-radius: 7px; background: #fff; color: #1a1a17; max-width: 170px; }
+  .sb-od-sc select, .sb-od-sc-select { font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 8px; border: 0.5px solid #d8d6d1; border-radius: 8px; background: #fff; color: #1a1a17; max-width: 180px; cursor: pointer; }
   .sb-od-sc select:focus, .sb-od-sc-select:focus { outline: none; border-color: #9A7209; }
+  /* Chip tones — SAME vocabulary as the Orders table (sb-tw-perm-*): good=green,
+     warn=amber, info=blue, bad=red, neutral=quiet. */
+  .sb-od-tone-good    { background: #e7f6ee; border-color: #8fceb0; color: #15724a; }
+  .sb-od-tone-warn    { background: #fdf3e2; border-color: #e6b667; color: #8a5a12; }
+  .sb-od-tone-info    { background: #eaf1fb; border-color: #9bb8e6; color: #234c8a; }
+  .sb-od-tone-bad     { background: #fbedec; border-color: #e39b95; color: #b3261e; }
+  .sb-od-tone-neutral { background: #fff; border-color: #d8d6d1; color: #4a4a45; }
   .sb-od-sc-date { font: inherit; font-size: 12px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 7px; background: #fff; color: #1a1a17; }
   .sb-od-sc-date:focus { outline: none; border-color: #9A7209; }
   .sb-od-sc-pair { display: flex; flex-direction: column; gap: 4px; }
@@ -3239,7 +3242,6 @@ const OD_CSS = `
   .sb-od-stone-green { color: #2d7a4f; background: rgba(45,122,79,0.08); border-color: rgba(45,122,79,0.4); }
 
   /* Design/Proof card — inline status select + proof drop zone */
-  .sb-od-design-status-row { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .sb-od-proof-drop { margin-top: 12px; border: 1.5px dashed #cfc7b4; border-radius: 10px; background: #FBFAF7; padding: 16px 14px; text-align: center; font-size: 12.5px; color: #8a8a85; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
   .sb-od-proof-drop:hover { border-color: #9A7209; color: #6a4d0c; }
   .sb-od-proof-drop.over { border-color: #9A7209; background: rgba(154,114,9,0.07); color: #6a4d0c; }

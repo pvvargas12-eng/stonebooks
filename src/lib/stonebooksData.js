@@ -1703,6 +1703,18 @@ export const designStatusLabel  = (c) => _statusLabel(DESIGN_STATUS, c)
 export const stoneStatusLabel   = (c) => _statusLabel(STONE_STATUS, c)
 export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 
+// Chip tones for the status dropdowns (Paul, 2026-07-10 — color-coded like the
+// approved v2 mockup): good = done/positive (green), warn = needs attention
+// (amber), info = mid-flight (blue), neutral = not started / unset. Rendered by
+// the sb-tw-perm-* chip CSS in OrdersTab and sb-od-tone-* in OrderDetail —
+// ONE tone vocabulary across the table and the status overview card.
+export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : 'neutral'
+export const designStatusTone   = (c) => c === 'layout_approved' ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'neutral'
+export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted') ? 'good'
+  : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'neutral'
+export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : 'neutral'
+export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
+
 // Write plans — flip the milestone ladder so the derived status is deterministic.
 function _designPlan(code) {
   switch (code) {
