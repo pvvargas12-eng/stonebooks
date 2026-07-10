@@ -39,9 +39,12 @@ import {
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel as sharedPermitStatusLabel,
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
+  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
+  derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
+  setOrderDesignStatus, setOrderFdnStatus,
 } from './lib/stonebooksData'
 import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeRow, CqeNote } from './components/CardQuickEdit'
-import { dimsFromWDT, dieDisplayInches, orderHasBase, buildBaseSpec, buildDieSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
+import { orderHasBase, buildBaseSpec, buildDieSpec, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
 import { MonumentCard, OF_CSS } from './OrderForm'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
@@ -75,14 +78,29 @@ const PAY_TYPES = [
 // existing milestone-backed STONE_STATUS codes (no new status field, no collision
 // with the schedule import / job milestones). 'ordered' carries a vendor.
 const STONE_SIMPLE = [
-  { code: 'not_ordered', label: 'Needs order' },
+  { code: 'not_ordered', label: 'Not ordered' },
+  { code: 'ordered',     label: 'Ordered' },
   { code: 'in_stock',    label: 'In stock' },
-  { code: 'ordered',     label: 'Ordered from →' },
 ]
+// Paul's color contract (2026-07-10): red = not ordered, blue = ordered, green = in stock.
+const STONE_SIMPLE_TONE = { not_ordered: 'red', ordered: 'blue', in_stock: 'green' }
+// Piece readiness rank — the combined (job-level) status is the LEAST-ready piece.
+const STONE_SIMPLE_RANK = { not_ordered: 0, ordered: 1, in_stock: 2 }
+const stoneSimpleLabel = (s) => (STONE_SIMPLE.find(x => x.code === s) || {}).label || '—'
 const NEW_VENDOR = '__new__'
+// Does a camelCase order draft include a base? (single-source orderHasBase)
+const draftHasBase = (o) => !!o && orderHasBase(o.baseConfig, SHAPES.find(s => s.code === o.shape))
 // Collapse the 7-state derive into the 3 ordering choices (anything past "ordered"
 // still reads as Ordered here; full production stages live on the Jobs tab).
 const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : s === 'in_stock' ? 'in_stock' : 'ordered'
+// Contract date → +5 months due-date autofill for new stones (same rule as the
+// Orders table's inline signed handler).
+const plusFiveMonthsISO = (isoDate) => {
+  const [y, m, d] = String(isoDate || '').split('-').map(Number)
+  if (!y || !m || !d) return null
+  const dt = new Date(y, m - 1 + 5, d)
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
 // Permit label = the shared 5-code vocabulary (legacy 'required' → "Permit Needed").
 const permitStatusLabel = (s) => sharedPermitStatusLabel(s || 'unknown')
 // Pill tone for the permit status (maps onto OrderDetail's Pill tones).
@@ -115,6 +133,31 @@ function deriveDesign6(job, proofVers) {
   if (msInProg('proof_changes_requested')) return 'revision'
   if (proof.sent_at) return 'sent'
   return proof.layout_image_url ? 'needs_sending' : 'drafted'
+}
+
+// Commit-on-blur date input (same discipline as the Orders table's InlineDateField):
+// a native date input fires onChange per segment, so hold the typed value locally
+// and only commit on blur / Enter with a complete, plausible year.
+function ODDateField({ value, onCommit, ariaLabel, disabled }) {
+  const [local, setLocal] = useState(value || '')
+  const focusedRef = useRef(false)
+  useEffect(() => { if (!focusedRef.current) setLocal(value || '') }, [value])
+  const commit = () => {
+    focusedRef.current = false
+    const v = local
+    if (v === '') { if (value) onCommit(''); return }
+    const [y, m, d] = v.split('-').map(Number)
+    if (!y || !m || !d || y < 1900 || y > 2200) { setLocal(value || ''); return }
+    if (v !== (value || '')) onCommit(v)
+  }
+  return (
+    <input type="date" className="sb-od-sc-date" value={local} disabled={disabled}
+      onFocus={() => { focusedRef.current = true }}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      aria-label={ariaLabel} />
+  )
 }
 
 const stageTone = (status) => {
@@ -399,6 +442,69 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const refreshActivity = async () => setActivity(await getOrderActivity(orderId))
   const refreshJob = async () => { const j = await getJobByOrderId(orderId); setJob(j) }
 
+  // ── Inline status setters (status overview card + Design/Proof card) ────────
+  // SAME write paths as the Orders table dropdowns — Payment/Permit/Contract are
+  // order columns, Design/Stone/FDN flip the job milestone ladder — so the two
+  // surfaces can never disagree.
+  const inlinePayment = async (code) => {
+    const r = await bulkUpdateOrders([orderId], { payment_status: code })
+    if (r.ok) await refreshOrder()
+  }
+  const inlineDesign = async (code) => {
+    if (!job?.id) return
+    const r = await setOrderDesignStatus(job.id, code)
+    if (r.ok) await refreshJob()
+  }
+  const inlineStone = async (code) => {
+    if (!job?.id) return
+    const r = await setOrderStoneStatus(job.id, code)
+    if (r.ok) await refreshJob()
+  }
+  const inlineFdn = async (code) => {
+    if (!job?.id) return
+    const r = await setOrderFdnStatus(job.id, code)
+    if (r.ok) await refreshJob()
+  }
+  const inlinePermit = async (code) => {
+    const today = todayISO()
+    const patch = { permit_status: code }
+    if (code === 'submitted' && !order.permit_filed_at) patch.permit_filed_at = today
+    if (code === 'approved' && !order.permit_approved_at) patch.permit_approved_at = today
+    const prev = order.permit_status || 'unknown'
+    const r = await setOrderPermit(orderId, patch)
+    if (!r.ok) return
+    await refreshOrder()
+    logOrderActivity(orderId, { type: 'change', field: 'Permit status', oldValue: permitStatusLabel(prev), newValue: permitStatusLabel(code), note: 'Permit status changed', actor: await getCurrentStaffName() }).then(() => refreshActivity()).catch(() => {})
+  }
+  const isNewStoneOrder = (order?.service_types || []).includes('NEW_STONE')
+  const inlineSigned = async (signed) => {
+    const patch = {}
+    if (signed) {
+      const d = order.signed_at ? String(order.signed_at).slice(0, 10) : todayISO()
+      patch.signed_at = `${d}T00:00:00`
+      if (['draft', 'scoping', 'quoted'].includes(order.status)) patch.status = 'contracted'
+      if (isNewStoneOrder && !order.target_completion_date) { const due = plusFiveMonthsISO(d); if (due) patch.target_completion_date = due }
+    } else {
+      patch.signed_at = null
+    }
+    const r = await bulkUpdateOrders([orderId], patch)
+    if (r.ok) await refreshOrder()
+  }
+  const inlineDateField = async (field, value) => {
+    const patch = {}
+    if (field === 'signed_at') {
+      patch.signed_at = value ? `${value}T00:00:00` : null
+      if (value && isNewStoneOrder && !order.target_completion_date) {
+        const due = plusFiveMonthsISO(value)
+        if (due) patch.target_completion_date = due
+      }
+    } else {
+      patch.target_completion_date = value || null
+    }
+    const r = await bulkUpdateOrders([orderId], patch)
+    if (r.ok) await refreshOrder()
+  }
+
   // ── Pipeline rail handlers ──────────────────────────────────────────────────
   const milestoneStatusLabel = (s) => s === 'done' ? 'Done' : s === 'in_progress' ? 'In progress' : s === 'blocked' ? 'Blocked' : 'Not started'
 
@@ -541,9 +647,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // (Paul, 2026-07-08, bronze approval). Becomes the next proof version.
   const proofFileRef = useRef(null)
   const [proofUpBusy, setProofUpBusy] = useState(false)
-  const onPickProofImage = async (e) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
+  const [proofDragOver, setProofDragOver] = useState(false)
+  const uploadProofImageFile = async (file) => {
     if (!file) return
     if (!job?.id) { setActionNote('No production job yet — sign the order first (proof versions live on the job).'); return }
     setProofUpBusy(true); setActionNote(null)
@@ -554,8 +659,32 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (error) { setProofUpBusy(false); setActionNote(`Could not create the proof version — ${error.message}.`); return }
     await refreshProofs()
     setProofUpBusy(false)
-    setActionNote('Proof uploaded — now hit "Send for approval" and email the link. ✓')
+    setActionNote('Proof uploaded. Send it for approval, or Mark approved if the family already signed off.')
     logOrderActivity(orderId, { type: 'change', field: 'Proof', newValue: 'uploaded', note: 'Proof image uploaded from the order (bronze/layout)', actor: who }).then(() => refreshActivity()).catch(() => {})
+  }
+  const onPickProofImage = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    await uploadProofImageFile(file)
+  }
+  const onDropProofImage = async (e) => {
+    e.preventDefault(); setProofDragOver(false)
+    const file = [...(e.dataTransfer?.files || [])].find(f => /^image\//.test(f.type))
+    if (!file) { setActionNote('Drop an image file (JPG / PNG / WebP).'); return }
+    await uploadProofImageFile(file)
+  }
+  // Mark the current proof approved WITHOUT the customer-link round-trip — for
+  // layouts the family already approved on paper / in person (Paul, 2026-07-10).
+  const markProofApproved = async () => {
+    const v = proofVers.find(p => p.is_current) || proofVers[0]
+    if (!v) { setActionNote('No proof to approve — upload a layout first.'); return }
+    const staff = await getCurrentStaffName()
+    const r = await updateProofVersion(v.id, { approved_at: new Date().toISOString(), approved_by_name: staff })
+    if (!r.ok) { setActionNote(`Could not mark approved — ${r.error}.`); return }
+    if (job?.id) await setOrderDesignStatus(job.id, 'layout_approved')
+    await refreshProofs(); await refreshJob()
+    setActionNote(`Proof v${v.version_number} marked approved.`)
+    logOrderActivity(orderId, { type: 'change', field: 'Design status', newValue: 'Layout approved', note: `Proof v${v.version_number} marked approved from the order (no customer link)`, actor: staff }).then(() => refreshActivity()).catch(() => {})
   }
 
   // Generate the UNSIGNED packet client-side + create a token link (server-side).
@@ -798,10 +927,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // baseTextOverride) ride on baseConfig and never change pricing.
   const seedMonDraft = () => {
     setMonDraft(rowToOrder(order, order.customer, order.cemetery))
-    // Stone status (reuses the milestone-derived STONE_STATUS) + chosen vendor.
+    // Die + Base each carry their own ordering status (Paul, 2026-07-10 — sometimes
+    // the die is here and the base isn't, and vice versa). Stored on the order
+    // (die_stone_status / base_stone_status); legacy orders without them seed from
+    // the milestone-derived combined status.
     const cur = job ? stoneToSimple(deriveStoneStatus(job)) : 'not_ordered'
     setStoneDraft({
-      status: cur, vendor: order.stone_vendor || '', newVendor: '',
+      die: order.die_stone_status || cur,
+      base: order.base_stone_status || cur,
+      vendor: order.stone_vendor || '', newVendor: '',
       // Purchase record (Paul, 2026-07-07): the date the stone was ordered
       // (backdatable) + the supplier's acknowledgement (# / note + optional file).
       orderedDate: order.stone_ordered_date || '',
@@ -826,17 +960,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       base_config: d.baseConfig || {},
       pricing: d.pricing || {},
     }
-    // Stone Status — resolve a brand-new vendor first (persists for reuse), then
-    // store the chosen supplier on the order (only meaningful when "ordered").
+    // Die/Base statuses — entering an ordered DATE advances any piece still at
+    // "not ordered" to Ordered automatically (you dated the order you placed).
+    const hasBase = draftHasBase(d)
+    const advance = (s) => (stoneDraft?.orderedDate && s === 'not_ordered') ? 'ordered' : (s || 'not_ordered')
+    const dieS = advance(stoneDraft?.die)
+    const baseS = hasBase ? advance(stoneDraft?.base) : null
+    patch.die_stone_status = dieS
+    patch.base_stone_status = baseS
+    // Vendor — resolve a brand-new vendor first (persists for reuse), then store
+    // the chosen supplier on the order (meaningful while either piece is "ordered").
+    const anyOrdered = dieS === 'ordered' || baseS === 'ordered'
     let vendor = (stoneDraft?.vendor || '').trim()
-    if (stoneDraft?.status === 'ordered' && stoneDraft.vendor === NEW_VENDOR) {
+    if (anyOrdered && stoneDraft?.vendor === NEW_VENDOR) {
       const nv = (stoneDraft.newVendor || '').trim()
       if (!nv) return { ok: false, error: 'Enter the new vendor name.' }
       const vr = await addOrderingVendor(nv)
       if (!vr.ok) return vr
       vendor = vr.vendor.name
     }
-    patch.stone_vendor = stoneDraft?.status === 'ordered' ? (vendor || null) : null
+    patch.stone_vendor = anyOrdered ? (vendor || null) : null
     // Purchase record persists regardless of later status moves — the fact the
     // stone was ordered on a date, with an acknowledgement, is history.
     patch.stone_ordered_date = stoneDraft?.orderedDate || null
@@ -844,13 +987,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     patch.stone_purchase_ack_url = stoneDraft?.ackUrl || null
     const r = await bulkUpdateOrders([orderId], patch)
     if (!r.ok) return r
-    // Stone status reuses the milestone-backed setter (same source as the Orders
-    // table + schedule). Needs a job; no-op when the order has none yet. Entering
-    // an ordered DATE on a not-ordered stone advances it to Ordered automatically.
+    // Combined job-level stone status = the LEAST-ready piece; reuses the
+    // milestone-backed setter (same source as the Orders table + schedule).
+    // Needs a job; no-op when the order has none yet.
     if (job?.id && stoneDraft) {
+      const pieces = [dieS, baseS].filter(Boolean)
+      const combined = pieces.reduce((a, b) => (STONE_SIMPLE_RANK[b] < STONE_SIMPLE_RANK[a] ? b : a))
       const cur = stoneToSimple(deriveStoneStatus(job))
-      const target = (stoneDraft.orderedDate && stoneDraft.status === 'not_ordered') ? 'ordered' : stoneDraft.status
-      if (target !== cur) await setOrderStoneStatus(job.id, target)
+      if (combined !== cur) await setOrderStoneStatus(job.id, combined)
     }
     await refreshOrder(); await refreshJob?.()
     const staff = await getCurrentStaffName()
@@ -1187,9 +1331,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const cust = order.customer || {}
   const cem = order.cemetery || {}
   const deceased = Array.isArray(order.deceased) ? order.deceased : []
-  const insc = order.inscription || {}
   const baseConfig = order.base_config || {}
-  const addOns = Array.isArray(order.add_ons) ? order.add_ons.filter(a => a && (a.code || a.label)) : []
 
   const pressure = computeOrderPressure(order, job, job?.milestones)
   // Permit derived values
@@ -1267,10 +1409,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     { id: 'od-email', label: 'Email traffic' },
   ]
 
-  // Monument die size — ALWAYS three values, L × W × H (feet-inches). Single-source
-  // column-pick via dieDisplayInches so this can never drift from the other surfaces.
-  const _die = dieDisplayInches(order)
-  const dims = dimsFromWDT({ w: _die[0], d: _die[1], t: _die[2] })
   // Base presence via single-source orderHasBase (not the include-only check that
   // dropped a configured base). Render the real spec via buildBaseSpec when present.
   const _baseShape = SHAPES.find(s => s.code === order.shape)
@@ -1286,8 +1424,6 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const monumentLine = [_dieLine, _baseLine && `on ${_baseLine}`].filter(Boolean).join(' · ')
 
   // Derived statuses from the related job's milestones (read-only)
-  const proofMs = milestoneStatus(job, ['proof_created', 'bronze_proof_created', 'proof_sent', 'bronze_proof_sent', 'proof_approved', 'bronze_proof_approved'])
-  const proofLabel = proofMs ? humanize(proofMs.replace('bronze_', '')) : null
   const design6 = deriveDesign6(job, proofVers)          // 6-label design status
   const _currentProof = proofVers.find(p => p.is_current) || proofVers[0] || null
   const foundationMs = milestoneStatus(job, ['foundation_poured', 'foundation_cured'])
@@ -1594,6 +1730,58 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <div className="sb-od-status-kv"><b>Balance</b><span className={balance > 0 ? 'sb-od-status-due' : ''}>{balance > 0 ? `${fmtUSD(balance)} due` : 'Paid in full'}</span></div>
             <div className="sb-od-status-kv"><b>Target</b><span>{order.target_completion_date ? fmtDate(order.target_completion_date) : '—'}</span></div>
           </div>
+          {/* Inline status controls (Paul, 2026-07-10) — the SAME dropdowns as the
+              Orders table columns, adjustable right here. Same write paths too. */}
+          <div className="sb-od-status-edit">
+            <label className="sb-od-sc"><b>Payment</b>
+              <select value={derivePaymentStatus(order)} onChange={e => inlinePayment(e.target.value)}>
+                {PAYMENT_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </select>
+            </label>
+            <label className="sb-od-sc"><b>Design</b>
+              {job ? (
+                <select value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)}>
+                  {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                </select>
+              ) : <span className="sb-od-sc-na">no job yet</span>}
+            </label>
+            <label className="sb-od-sc"><b>Stone</b>
+              {job ? (
+                <select value={deriveStoneStatus(job)} onChange={e => inlineStone(e.target.value)}>
+                  {STONE_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                </select>
+              ) : <span className="sb-od-sc-na">no job yet</span>}
+            </label>
+            <label className="sb-od-sc"><b>Permit</b>
+              <select value={order.permit_status || 'unknown'} onChange={e => inlinePermit(e.target.value)}>
+                {!PERMIT_SELECTABLE.has(order.permit_status) && (
+                  <option value={order.permit_status || 'unknown'} disabled>{permitStatusLabel(order.permit_status || 'unknown')}</option>
+                )}
+                {PERMIT_STATUS_OPTIONS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </select>
+            </label>
+            <label className="sb-od-sc"><b>Foundation</b>
+              {job ? (
+                <select value={deriveFdnStatus(job)} onChange={e => inlineFdn(e.target.value)}>
+                  {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                </select>
+              ) : <span className="sb-od-sc-na">no job yet</span>}
+            </label>
+            <label className="sb-od-sc"><b>Contract</b>
+              <span className="sb-od-sc-pair">
+                <select value={order.signed_at ? 'signed' : 'unsigned'} onChange={e => inlineSigned(e.target.value === 'signed')}>
+                  <option value="unsigned">Not signed</option>
+                  <option value="signed">Contract signed</option>
+                </select>
+                <ODDateField value={order.signed_at ? String(order.signed_at).slice(0, 10) : ''}
+                  onCommit={v => inlineDateField('signed_at', v)} ariaLabel="Contract date" />
+              </span>
+            </label>
+            <label className="sb-od-sc"><b>Due date</b>
+              <ODDateField value={order.target_completion_date ? String(order.target_completion_date).slice(0, 10) : ''}
+                onCommit={v => inlineDateField('target', v)} ariaLabel="Due date" />
+            </label>
+          </div>
         </div>
 
         {/* ── SECTIONS with left-rail nav ───────────────────────────────────── */}
@@ -1673,11 +1861,23 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   carries a vendor from the persistent ordering_vendors list. */}
               {stoneDraft && (
                 <>
-                  <CqeSelect label="Stone status" value={stoneDraft.status}
-                    options={STONE_SIMPLE.map(s => ({ code: s.code, label: s.label }))}
-                    onChange={v => setStoneDraft(d => ({ ...d, status: v }))} />
-                  {!job && <CqeNote>Stone status needs a production job to record (created when the order is signed). The vendor still saves.</CqeNote>}
-                  {stoneDraft.status === 'ordered' && (
+                  {/* Die + Base each have their own ordering status — sometimes the
+                      die is here and the base isn't, and vice versa. Red = not
+                      ordered, blue = ordered, green = in stock. */}
+                  <CqeRow cols={draftHasBase(monDraft) ? 2 : 1}>
+                    <CqeSelect label="Die status" value={stoneDraft.die}
+                      className={`sb-od-stone-sel sb-od-stone-${STONE_SIMPLE_TONE[stoneDraft.die] || 'red'}`}
+                      options={STONE_SIMPLE.map(s => ({ code: s.code, label: s.label }))}
+                      onChange={v => setStoneDraft(d => ({ ...d, die: v }))} />
+                    {draftHasBase(monDraft) && (
+                      <CqeSelect label="Base status" value={stoneDraft.base}
+                        className={`sb-od-stone-sel sb-od-stone-${STONE_SIMPLE_TONE[stoneDraft.base] || 'red'}`}
+                        options={STONE_SIMPLE.map(s => ({ code: s.code, label: s.label }))}
+                        onChange={v => setStoneDraft(d => ({ ...d, base: v }))} />
+                    )}
+                  </CqeRow>
+                  {!job && <CqeNote>Die/base statuses save on the order now; the pipeline picks them up once the production job exists (created when the order is signed).</CqeNote>}
+                  {(stoneDraft.die === 'ordered' || (draftHasBase(monDraft) && stoneDraft.base === 'ordered')) && (
                     <>
                       <CqeSelect label="Ordered from" value={stoneDraft.vendor || ''}
                         options={[
@@ -1731,10 +1931,23 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     override-aware. Inscription removed from this card per spec. */}
                 <Field label="Spec" value={monumentLine || null} />
                 <Field label="Base" value={baseSummary} />
-                <Field label="Stone status" hint={job ? null : 'no production job yet'}
-                  value={job
-                    ? `${STONE_SIMPLE.find(s => s.code === stoneToSimple(deriveStoneStatus(job)))?.label || '—'}${order.stone_vendor ? ` · ${order.stone_vendor}` : ''}`
-                    : (order.stone_vendor || null)} />
+                {/* Die + Base ordering statuses — red not ordered / blue ordered /
+                    green in stock (Paul, 2026-07-10). */}
+                {(() => {
+                  const fallback = job ? stoneToSimple(deriveStoneStatus(job)) : null
+                  const dieS = order.die_stone_status || fallback
+                  const baseS = order.base_stone_status || fallback
+                  const pill = (s) => s ? <Pill severity={STONE_SIMPLE_TONE[s] || 'bronze'}>{stoneSimpleLabel(s)}</Pill> : null
+                  return (
+                    <>
+                      <Field label="Die status" value={pill(dieS)} hint={dieS ? null : 'set via ⋯'} />
+                      {orderHasBase(baseConfig, _baseShape) && (
+                        <Field label="Base status" value={pill(baseS)} hint={baseS ? null : 'set via ⋯'} />
+                      )}
+                      <Field label="Vendor" value={order.stone_vendor || null} />
+                    </>
+                  )
+                })()}
                 <Field label="Stone ordered" value={order.stone_ordered_date ? fmtDate(order.stone_ordered_date) : null}
                   hint={order.stone_ordered_date ? null : 'date not recorded — add it via ⋯'} />
                 <Field label="Purchase ack" value={(order.stone_purchase_ack || order.stone_purchase_ack_url) ? (
@@ -1747,11 +1960,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 ) : null} />
               </>
             )}
-            <Field label="Deceased" value={deceased.length
-              ? deceased.map((d, i) => <div key={i}>{deceasedName(d) || '—'}</div>) : null} />
-            <Field label="Add-ons" value={addOns.length
-              ? addOns.map((a, i) => <div key={a.code || i}>{a.label || humanize(a.code)}{a.qty > 1 ? ` × ${a.qty}` : ''}</div>) : null} />
-            <Field label="Proof / approval" value={proofLabel} hint={job ? null : 'no production job yet'} />
+            {/* Deceased / Add-ons / Proof removed from this box (Paul, 2026-07-10) —
+                deceased & add-ons live on the contract/line items, proof lives on
+                the Design/Proof card. */}
           </Section>
 
           {/* 3a2 — Production status — reads/writes the SAME job_components the Jobs
@@ -1777,13 +1988,22 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             </CardQuickEdit>
           }>
             {reapprovalText && (
-              <div className="sb-od-reapproval">⚠ {reapprovalText}</div>
+              <div className="sb-od-reapproval">{reapprovalText}</div>
             )}
-            <Field label="Design status" value={<Pill severity={DESIGN_6_TONE[design6]}>{DESIGN_6[design6]}</Pill>} />
-            <Field label="Shape" value={humanize(order.shape)} />
-            <Field label="Stone color" value={displayGraniteColor(order) || humanize(order.granite_color)} />
-            <Field label="Die size" value={dims} />
-            <Field label="Inscription" value={[insc.epitaph, insc.customNotes].filter(Boolean).join(' · ')} />
+            {/* Status is CHANGEABLE right here (Paul, 2026-07-10) — same dropdown +
+                write path as the Orders table Design column. The pill carries the
+                richer 6-label derive. Stone spec / inscription rows removed —
+                they were duplicates of the Monument card. */}
+            <Field label="Design status" value={
+              <span className="sb-od-design-status-row">
+                <Pill severity={DESIGN_6_TONE[design6]}>{DESIGN_6[design6]}</Pill>
+                {job && (
+                  <select className="sb-od-sc-select" value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)} aria-label="Set design status">
+                    {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                  </select>
+                )}
+              </span>
+            } />
             {_currentProof?.notes && <Field label="Internal design notes" value={_currentProof.notes} />}
             {(() => {
               const proof = proofVers.find(p => p.is_current) || proofVers[0]
@@ -1807,6 +2027,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     <div><strong>Proof v{proof.version_number}</strong>{proof.is_current ? ' · current' : ''}</div>
                     <div>{statusText}</div>
                     {proof.layout_image_url && <button type="button" className="sb-od-link" onClick={viewProof}>View proof</button>}
+                    {!proof.approved_at && (
+                      <button type="button" className="sb-od-link sb-od-mark-approved" onClick={markProofApproved}
+                        title="Already approved by the family (paper / in person)? Mark it approved — no customer link needed.">
+                        Mark approved
+                      </button>
+                    )}
                   </div>
                 </div>
               )
@@ -1816,18 +2042,29 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 Bronze flow (Paul, 2026-07-08): upload the bronze proof image
                 right here → Send for approval → Email (preview) → notified
                 by email when they sign or request changes. */}
-            <div className="sb-od-approval-send">
+            {/* Drop zone works at ANY status — drop an already-approved layout,
+                then hit "Mark approved" on it (Paul, 2026-07-10). */}
+            <div
+              className={`sb-od-proof-drop${proofDragOver ? ' over' : ''}`}
+              onDragOver={e => { e.preventDefault(); setProofDragOver(true) }}
+              onDragLeave={() => setProofDragOver(false)}
+              onDrop={onDropProofImage}
+              onClick={() => proofFileRef.current?.click()}
+              role="button" tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') proofFileRef.current?.click() }}
+            >
               <input ref={proofFileRef} type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={onPickProofImage} />
-              <button type="button" className="sb-od-btn" disabled={proofUpBusy} onClick={() => proofFileRef.current?.click()}
-                title="Upload a bronze plaque or layout image as the next proof version">
-                {proofUpBusy ? 'Uploading…' : '⤴ Upload proof (bronze / layout)'}
-              </button>
+              {proofUpBusy
+                ? 'Uploading…'
+                : 'Drop a layout image here (or click to browse) — becomes the next proof version'}
+            </div>
+            <div className="sb-od-approval-send">
               <button type="button" className="sb-od-btn sb-od-btn-primary" disabled={sendBusy} onClick={handleSendForApproval}>
                 {sendBusy ? 'Generating…' : 'Send for approval'}
               </button>
               <button type="button" className="sb-od-btn" onClick={emailApprovalLink}
                 title="Opens the email composer prefilled with the approval link — preview, then hit Send">
-                ✉ Email link…
+                Email link…
               </button>
               {sentLink && (
                 <div className="sb-od-approval-link">
@@ -2983,6 +3220,30 @@ const OD_CSS = `
   .sb-od-ovpill-red { color: #B3261E; background: rgba(179,38,30,0.08); }
   .sb-od-ovpill-amber { color: #8a5a12; background: rgba(183,121,31,0.1); }
   .sb-od-ovpill-blue { color: #1D6FA8; background: rgba(29,111,168,0.09); }
+
+  /* Inline status controls on the overview card (same dropdowns as the table) */
+  .sb-od-status-edit { display: flex; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 0.5px solid #E9E4D8; flex-wrap: wrap; align-items: flex-end; }
+  .sb-od-sc { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .sb-od-sc > b { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; }
+  .sb-od-sc select, .sb-od-sc-select { font: inherit; font-size: 12.5px; padding: 5px 7px; border: 0.5px solid #d8d6d1; border-radius: 7px; background: #fff; color: #1a1a17; max-width: 170px; }
+  .sb-od-sc select:focus, .sb-od-sc-select:focus { outline: none; border-color: #9A7209; }
+  .sb-od-sc-date { font: inherit; font-size: 12px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 7px; background: #fff; color: #1a1a17; }
+  .sb-od-sc-date:focus { outline: none; border-color: #9A7209; }
+  .sb-od-sc-pair { display: flex; flex-direction: column; gap: 4px; }
+  .sb-od-sc-na { font-size: 12px; color: #a09a8c; font-style: italic; padding: 6px 0; }
+
+  /* Die/Base stone-status color contract: red not ordered / blue ordered / green in stock */
+  .sb-od-stone-sel { font-weight: 600; }
+  .sb-od-stone-red   { color: #B3261E; background: rgba(179,38,30,0.07); border-color: rgba(179,38,30,0.4); }
+  .sb-od-stone-blue  { color: #1D6FA8; background: rgba(29,111,168,0.07); border-color: rgba(29,111,168,0.4); }
+  .sb-od-stone-green { color: #2d7a4f; background: rgba(45,122,79,0.08); border-color: rgba(45,122,79,0.4); }
+
+  /* Design/Proof card — inline status select + proof drop zone */
+  .sb-od-design-status-row { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .sb-od-proof-drop { margin-top: 12px; border: 1.5px dashed #cfc7b4; border-radius: 10px; background: #FBFAF7; padding: 16px 14px; text-align: center; font-size: 12.5px; color: #8a8a85; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+  .sb-od-proof-drop:hover { border-color: #9A7209; color: #6a4d0c; }
+  .sb-od-proof-drop.over { border-color: #9A7209; background: rgba(154,114,9,0.07); color: #6a4d0c; }
+  .sb-od-mark-approved { color: #2d7a4f; font-weight: 600; }
   .sb-od-pay-run { font-size: 11.5px; color: #8a8a85; font-variant-numeric: tabular-nums; }
   .sb-od-email-modal-head { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
   .sb-od-email-modal-body { font-size: 13.5px; color: #333; white-space: pre-wrap; word-break: break-word; max-height: 48vh; overflow-y: auto; border: 0.5px solid #f1efeb; border-radius: 10px; padding: 14px; background: #fcfbf9; }

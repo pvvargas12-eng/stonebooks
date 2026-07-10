@@ -50,12 +50,6 @@ function addonMatches(order, re) {
   const a = addons(order)
   return Array.isArray(a) && a.some(x => re.test(`${x?.code || ''} ${x?.label || ''}`.toLowerCase()))
 }
-function hasInscriptionContent(order) {
-  const ins = order?.inscription || {}
-  if (ins.epitaph || ins.carveText) return true
-  const dec = Array.isArray(order?.deceased) ? order.deceased : []
-  return dec.some(d => d && (d.firstName || d.lastName || d.inscriptionName))
-}
 function hasFoundationWork(order) {
   return !!(order?.pricing?.foundationCalc)
 }
@@ -86,14 +80,9 @@ export const DERIVATION_RULES = [
       { key: 'derived_order_photo', label: 'Order photo', group: 'photo', team: 'design' },
     ],
   },
-  {
-    id: 'inscription_proof',
-    label: 'Inscription content',
-    predicate: (o) => hasInscriptionContent(o),
-    milestones: [
-      { key: 'derived_layout_proof', label: 'Layout proof', group: 'design', team: 'design' },
-    ],
-  },
+  // 'Layout proof' derived step REMOVED (Paul, 2026-07-10) — design/proof state
+  // lives on the Design/Proof card; the rail must not duplicate it. Existing
+  // derived_layout_proof job rows auto-hide via the activeDerivedKeys filter.
   {
     id: 'foundation',
     label: 'Foundation work',

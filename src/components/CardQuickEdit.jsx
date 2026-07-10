@@ -85,11 +85,11 @@ export function CqeArea({ label, value, onChange, placeholder, rows = 2, hint })
     </label>
   )
 }
-export function CqeSelect({ label, value, onChange, options, hint }) {
+export function CqeSelect({ label, value, onChange, options, hint, className }) {
   return (
     <label className="sb-cqe-field">
       <span className="sb-cqe-lab">{label}{hint && <em> {hint}</em>}</span>
-      <select className="sb-cqe-input" value={value ?? ''} onChange={e => onChange(e.target.value)}>
+      <select className={`sb-cqe-input${className ? ` ${className}` : ''}`} value={value ?? ''} onChange={e => onChange(e.target.value)}>
         {options.map(o => <option key={o.code} value={o.code} disabled={o.disabled}>{o.label}</option>)}
       </select>
     </label>
