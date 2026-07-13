@@ -21,6 +21,7 @@ import { loadSalesOptions } from './lib/salesOptions'
 import { setSelectedHub } from './lib/workspaceState'
 import PricingSettings from './components/PricingSettings'
 import SalesOptionsSettings from './components/SalesOptionsSettings'
+import FieldAppSettings from './components/FieldAppSettings'
 import SalesMode from './SalesMode'
 import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
@@ -732,6 +733,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
             { k: 'pricing',      l: 'Pricing' },
             { k: 'sales-options', l: 'Sales Options' },
             { k: 'integrations', l: 'Integrations' },
+            { k: 'field-app',    l: 'Field app' },
             { k: 'account',      l: 'Account' },
             { k: 'shop',         l: 'Shop info' },
             { k: 'staff',        l: 'Staff' },
@@ -752,6 +754,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {section === 'pricing'      && <PricingSettings user={user} canEdit={isOwner(user)} />}
           {section === 'sales-options' && <SalesOptionsSettings canEdit={isOwner(user)} />}
           {section === 'integrations' && <><IntegrationsSettings /><EmailSignatureSettings /></>}
+          {section === 'field-app'  && <FieldAppSettings />}
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
           {section === 'staff'      && <StaffSettings />}
