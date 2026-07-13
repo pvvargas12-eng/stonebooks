@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -11198,6 +11198,8 @@ function ContinueLater({ order, update, onDepositLogged }) {
           source of truth, no new column. */}
       <DesignerHandoffSection order={order} update={update} />
 
+      <OrderAttachmentsSection order={order} />
+
       <Section title="Estimate PDF" eyebrow="Print or email to the customer">
         <PdfDownloadButton order={order} />
       </Section>
@@ -11231,6 +11233,80 @@ function ContinueLater({ order, update, onDepositLogged }) {
 // Reuses order.designPreferences (set in step 7) — both surfaces edit the
 // same field. Stays editable after contract signing on purpose: production
 // info changes do not affect what the customer signed.
+// General order attachments — photos of the monument, paperwork, reference
+// shots. Available on ANY saved order, lead or contracted (attachments are a
+// working record, not a contract artifact). Same bucket + path as the Order
+// Detail attachments list (orders-attachments-public / attachments/{orderId}/),
+// so files attached in either surface show in both.
+function OrderAttachmentsSection({ order }) {
+  const [files, setFiles] = useState(null)      // null = loading, [] = empty
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const fileRef = useRef(null)
+
+  const refresh = useCallback(() => {
+    if (!order.id) return
+    listOrderAttachments(order.id).then(setFiles).catch(() => setFiles([]))
+  }, [order.id])
+  useEffect(() => { refresh() }, [refresh])
+
+  const onPick = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || busy) return
+    setBusy(true); setErr(null)
+    const res = await uploadAttachment(file, order.id)
+    setBusy(false)
+    if (!res.ok) { setErr(res.error || 'Upload failed.'); return }
+    refresh()
+  }
+
+  const onRemove = async (f) => {
+    if (!window.confirm(`Remove "${f.name}" from this order?`)) return
+    setBusy(true); setErr(null)
+    const res = await deleteOrderAttachment(f.path)
+    setBusy(false)
+    if (!res.ok) { setErr(res.error || 'Delete failed.'); return }
+    refresh()
+  }
+
+  const isImage = (name) => /\.(jpe?g|png|gif|webp|heic|bmp)$/i.test(name || '')
+
+  return (
+    <Section title="Attachments" eyebrow="Photos of the monument, paperwork, reference shots — attach any time, lead or not">
+      {!order.id ? (
+        <div className="sm-helper">Save the order first (add a customer or service), then attach files.</div>
+      ) : (
+        <>
+          <input ref={fileRef} type="file" accept="image/*,.pdf,.doc,.docx,.heic" style={{ display: 'none' }} onChange={onPick} />
+          <button type="button" className="sm-btn sm-btn-navy" disabled={busy}
+            onClick={() => fileRef.current?.click()}>
+            {busy ? 'Working…' : '+ Attach photo or file'}
+          </button>
+          {err && <div className="sm-helper" style={{ color: '#b3261e', marginTop: 8 }}>{err}</div>}
+          {files === null ? (
+            <div className="sm-helper" style={{ marginTop: 10 }}>Loading attachments…</div>
+          ) : files.length === 0 ? (
+            <div className="sm-helper" style={{ marginTop: 10 }}>Nothing attached yet.</div>
+          ) : (
+            <div className="sm-attach-list">
+              {files.map(f => (
+                <div key={f.path} className="sm-attach-row">
+                  {isImage(f.name)
+                    ? <a href={f.url} target="_blank" rel="noreferrer"><img className="sm-attach-thumb" src={f.url} alt={f.name} loading="lazy" /></a>
+                    : <span className="sm-attach-fileicon" aria-hidden="true">FILE</span>}
+                  <a className="sm-attach-name" href={f.url} target="_blank" rel="noreferrer">{f.name}</a>
+                  <button type="button" className="sm-attach-remove" disabled={busy} onClick={() => onRemove(f)}>Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Section>
+  )
+}
+
 function DesignerHandoffSection({ order, update }) {
   const designs = order.designs || []
   const thumb = (url) => {
@@ -14105,6 +14181,27 @@ export const salesModeStyles = `
   color: #5e3a0e;
 }
 .sm-need-signature-flag-icon { font-size: 16px; line-height: 1.2; flex-shrink: 0; }
+/* Wizard attachments list (saved step) */
+.sm-attach-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.sm-attach-row {
+  display: flex; align-items: center; gap: 12px;
+  background: #fff; border: 1px solid #e4e0d6; border-radius: 8px; padding: 8px 12px;
+}
+.sm-attach-thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 6px; display: block; }
+.sm-attach-fileicon {
+  width: 52px; height: 52px; display: flex; align-items: center; justify-content: center;
+  background: #f2efe8; border-radius: 6px; font-size: 10px; font-weight: 700; color: #8a8578;
+  letter-spacing: 0.06em; flex-shrink: 0;
+}
+.sm-attach-name { flex: 1; min-width: 0; font-size: 13.5px; color: #1f3a5f; text-decoration: none; overflow-wrap: anywhere; }
+.sm-attach-name:hover { text-decoration: underline; }
+.sm-attach-remove {
+  background: none; border: none; color: #b3261e; font: inherit; font-size: 12.5px;
+  cursor: pointer; padding: 4px 6px; flex-shrink: 0;
+}
+.sm-attach-remove:hover { text-decoration: underline; }
+.sm-attach-remove:disabled { opacity: 0.5; cursor: default; }
+
 /* LEAD (no deposit) flag — deliberately the loudest element on the saved page. */
 .sm-lead-flag {
   background: #fdecea;
