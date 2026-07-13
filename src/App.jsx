@@ -8,6 +8,7 @@ import Stonebooks from './Stonebooks'
 import CatalogTab from './CatalogTab'
 import SignPage from './SignPage'
 import ApprovePage from './ApprovePage'
+import FieldApp from './field/FieldApp'
 
 // ── BUILD MODE ROUTING ───────────────────────────────────────────
 // Two deployments from one repo:
@@ -494,6 +495,13 @@ const getApproveToken = () => {
   const m = window.location.pathname.match(/^\/approve\/([^/?#]+)/)
   return m ? decodeURIComponent(m[1]) : null
 }
+// /field — STONEBOOKS FIELD, the phone-first crew surface (installs, production,
+// orders, inventory). Staff auth, own components, ZERO desktop chrome — the
+// desktop app is untouched by this route.
+const isFieldRoute = () => {
+  if (typeof window === 'undefined') return false
+  return window.location.pathname.replace(/\/+$/, '') === '/field'
+}
 
 export default function App() {
   // Trade params on any non-/trade path (old-format invite links, emails sent
@@ -516,6 +524,9 @@ export default function App() {
   }
   if (isTradeRoute()) {
     return <TradePortalStandalone />
+  }
+  if (isFieldRoute()) {
+    return <FieldApp />
   }
   if (isCatalogRoute()) {
     return <CatalogStandalone />
