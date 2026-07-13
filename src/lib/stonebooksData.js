@@ -1639,6 +1639,7 @@ export const FDN_STATUS = [
   { code: 'na',       label: 'N/A' },
   { code: 'need_map', label: 'Need map' },
   { code: 'not_in',   label: 'FDN not in' },
+  { code: 'drop_off', label: 'Drop Off' },
   { code: 'dug',      label: 'FDN dug' },
   { code: 'poured',   label: 'FDN poured' },
   { code: 'in',       label: 'FDN in' },
@@ -1694,6 +1695,9 @@ export function deriveFdnStatus(job) {
   if (_msDone(job, 'foundation_in')) return 'in'
   if (_msDone(job, 'foundation_poured')) return 'poured'
   if (_msDone(job, 'foundation_dug')) return 'dug'
+  // Drop Off rides the (previously unused) foundation_scheduled milestone —
+  // the foundation order was dropped off at the cemetery, waiting on them.
+  if (_msDone(job, 'foundation_scheduled')) return 'drop_off'
   if (_msDone(job, 'foundation_need_map')) return 'need_map'
   return 'not_in'
 }
@@ -1712,7 +1716,7 @@ export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : 'neutra
 export const designStatusTone   = (c) => c === 'layout_approved' ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'neutral'
 export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted') ? 'good'
   : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'neutral'
-export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : 'neutral'
+export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : 'neutral'
 export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
 
 // Write plans — flip the milestone ladder so the derived status is deterministic.
@@ -1744,6 +1748,7 @@ function _fdnPlan(code) {
     case 'na':       return { notNeeded: FDN_KEYS }
     case 'not_in':   return { done: ['foundation_needed'], notStarted: ['foundation_need_map', 'foundation_scheduled', 'foundation_dug', 'foundation_poured', 'foundation_in'] }
     case 'need_map': return { done: ['foundation_needed', 'foundation_need_map'], notStarted: ['foundation_scheduled', 'foundation_dug', 'foundation_poured', 'foundation_in'] }
+    case 'drop_off': return { done: ['foundation_needed', 'foundation_need_map', 'foundation_scheduled'], notStarted: ['foundation_dug', 'foundation_poured', 'foundation_in'] }
     case 'dug':      return { done: ['foundation_needed', 'foundation_need_map', 'foundation_scheduled', 'foundation_dug'], notStarted: ['foundation_poured', 'foundation_in'] }
     case 'poured':   return { done: ['foundation_needed', 'foundation_need_map', 'foundation_scheduled', 'foundation_dug', 'foundation_poured'], notStarted: ['foundation_in'] }
     case 'in':       return { done: FDN_KEYS, notStarted: [] }

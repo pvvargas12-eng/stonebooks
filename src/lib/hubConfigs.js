@@ -29,7 +29,7 @@ const PRODUCTION_HUB = {
     { code: 'to_order',   label: 'To order',        match: (it) => deriveStoneStatus(_job(it)) === 'not_ordered' },
     { code: 'in_prod',    label: 'In production',   match: (it) => ['ordered', 'in_stock', 'needs_pickup', 'needs_stencil_cut', 'needs_blasting'].includes(deriveStoneStatus(_job(it))) },
     { code: 'blasted',    label: 'Blasted',         match: (it) => deriveStoneStatus(_job(it)) === 'blasted' },
-    { code: 'foundation', label: 'Foundation',      match: (it) => ['need_map', 'not_in', 'dug', 'poured'].includes(deriveFdnStatus(_job(it))) },
+    { code: 'foundation', label: 'Foundation',      match: (it) => ['need_map', 'not_in', 'drop_off', 'dug', 'poured'].includes(deriveFdnStatus(_job(it))) },
     { code: 'stuck',      label: 'Stuck',           match: (it) => it.pressure?.blocker?.kind === 'production_blocked' },
   ],
   statusFor: (it) => {
@@ -48,7 +48,7 @@ const PRODUCTION_HUB = {
     else if (['ordered', 'in_stock', 'needs_pickup'].includes(stone)) out.push({ key: 'stone', label: 'Stone not yet received' })
     if (it.pressure?.blocker?.kind === 'production_blocked') out.push({ key: 'stuck', label: it.pressure.blocker.label || 'Production stalled' })
     const fdn = deriveFdnStatus(job)
-    if (['need_map', 'not_in', 'dug'].includes(fdn)) out.push({ key: 'fdn', label: `Foundation: ${fdnStatusLabel(fdn)}` })
+    if (['need_map', 'not_in', 'drop_off', 'dug'].includes(fdn)) out.push({ key: 'fdn', label: `Foundation: ${fdnStatusLabel(fdn)}` })
     return out
   },
 }
@@ -64,7 +64,7 @@ const INSTALLATION_HUB = {
     { code: 'attention',  label: 'Needs attention', match: (it) => it.urgent === true },
     { code: 'ready',      label: 'Ready to set',    match: (it) => isReadyToSet(_order(it), _job(it)) },
     { code: 'blocked',    label: 'Blocked',         match: (it) => !!setBlockReason(_order(it), _job(it)) && milestoneDone(_job(it), 'production_completed') },
-    { code: 'foundation', label: 'Foundation',      match: (it) => ['need_map', 'not_in', 'dug', 'poured'].includes(deriveFdnStatus(_job(it))) },
+    { code: 'foundation', label: 'Foundation',      match: (it) => ['need_map', 'not_in', 'drop_off', 'dug', 'poured'].includes(deriveFdnStatus(_job(it))) },
     { code: 'doors',      label: 'Doors',           match: (it) => _job(it)?.job_type === 'mausoleum_door' },
   ],
   statusFor: (it) => {
