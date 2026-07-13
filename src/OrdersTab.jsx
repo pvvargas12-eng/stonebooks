@@ -1293,6 +1293,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
           <span className="sb-crm-primary sb-ord-cust-name">{titleCaseName(o._familyName)}</span>
+          {isLeadRow(o) && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
         {blocker && (
@@ -1451,11 +1452,18 @@ function OrdersBoard({ columns, loading, onOpen, onMove, toast, onDismissToast, 
   )
 }
 
+// LEAD = no real money down (the money half of leads.js isOrderRow) and not a
+// terminal status. Rendered LOUD on rows/cards — a stone might get ordered
+// with $0 collected. Deposit-but-unsigned is NOT flagged here (the Unsigned
+// badge owns that case).
+const isLeadRow = (o) => (o._paid ?? 0) <= 0 && !['closed', 'cancelled', 'archived'].includes(o.status)
+
 // One board card — same signals as the table row: severity stripe, blocker
 // pill, Call flag, Unsigned badge. Click (or Enter) opens OrderDetail.
 function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOpen }) {
   const blocker = o._pressure?.blocker || null
   const unsigned = !o.signed_at && CONTRACTED_STATUSES.includes(o.status)
+  const lead = isLeadRow(o)
   return (
     <div className={`sb-kb-card${blocker ? ` sb-tw-sev-${blocker.severity}` : ''}${dragging ? ' sb-kb-dragging' : ''}`}
       draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd}
@@ -1471,8 +1479,9 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
         {o._total > 0 ? fmtUSD(o._total) : '—'}
         {o._balance > 0 && <span className="sb-kb-card-owes"> · owes {fmtUSD(o._balance)}</span>}
       </div>
-      {(blocker || unsigned || o._pressure?.needsCall) && (
+      {(blocker || unsigned || lead || o._pressure?.needsCall) && (
         <div className="sb-ord-blockline">
+          {lead && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
           {unsigned && <span className="sb-ord-bpill sb-ord-bpill-red">Unsigned</span>}
           {o._pressure?.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
@@ -1523,6 +1532,9 @@ const TW_CSS = `
   .sb-ord-bpill-blue  { color: #1D6FA8; background: rgba(29,111,168,0.09); }
   .sb-ord-callpill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
     color: #B3261E; border: 0.5px solid rgba(179,38,30,0.4); border-radius: 999px; padding: 1px 8px; }
+  /* LEAD pill — solid red, the loudest badge on any row/card. */
+  .sb-ord-leadpill { font-size: 10px; font-weight: 800; letter-spacing: 0.07em;
+    color: #fff; background: #B3261E; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
 
   /* ── 2-tier filter header ─────────────────────────────────────────────── */
   .sb-ord-tier1 { align-items: center; gap: 10px; }

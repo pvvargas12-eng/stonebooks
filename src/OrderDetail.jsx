@@ -1339,6 +1339,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const paid = rowTotalPaid(order)
   const balance = rowBalanceDue(order)
   const stage = statusInfo(order.status)
+  // Paul's rule (leads.js isOrderRow): an ORDER is signed/contracted WITH money
+  // down. The LOUD marker keys on the money half — no real (locked, non-voided)
+  // payment = STILL A LEAD, no matter the status, because stones sometimes get
+  // ordered before any money lands. Signed-but-unpaid still reads LEAD on
+  // purpose. Terminal states excluded.
+  const isLead = paid <= 0 && !['closed', 'cancelled', 'archived'].includes(order.status)
 
   const familyName =
     (order.primary_lastname && String(order.primary_lastname).trim()) ||
@@ -1585,6 +1591,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           <div className="sb-od-header-main">
             <div className="sb-od-header-top">
               <span className="sb-od-ordernum sb-crm-mono">{order.order_number || 'DRAFT'}</span>
+              {isLead && <span className="sb-od-lead-pill">LEAD — NO DEPOSIT</span>}
               <Pill severity={stageTone(order.status)}>{stage.label}</Pill>
               {paymentLabel(pressure.paymentState) && (
                 <Pill severity={paymentTone(pressure.paymentState)}>{paymentLabel(pressure.paymentState)}</Pill>
@@ -1624,6 +1631,18 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <div className={`sb-od-balance-value${balance > 0 ? '' : ' sb-od-balance-clear'}`}>{fmtUSD(balance)}</div>
           </div>
         </header>
+
+        {/* ── LEAD BANNER — loud, above everything: no money down yet ────────── */}
+        {isLead && (
+          <div className="sb-od-lead-banner">
+            <span className="sb-od-lead-banner-title">STILL A LEAD — NO DEPOSIT RECEIVED</span>
+            <span className="sb-od-lead-banner-sub">
+              {order.signed_at
+                ? 'Contract is signed but $0 has been collected. Not an active customer yet.'
+                : 'Nothing signed, nothing collected. Anything ordered for this job is at our risk.'}
+            </span>
+          </div>
+        )}
 
         {/* ── QUICK-GLANCE STRIP — read the instant the order opens ──────────── */}
         <div className="sb-od-glance">
@@ -2954,6 +2973,19 @@ const OD_CSS = `
   .sb-od-balance-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #8a8a85; }
   .sb-od-balance-value { font-size: 26px; font-weight: 600; color: #B54040; margin-top: 2px; }
   .sb-od-balance-value.sb-od-balance-clear { color: #1D9E75; }
+
+  /* LEAD (no deposit) — deliberately the loudest thing on the page. */
+  .sb-od-lead-pill {
+    font-size: 11px; font-weight: 800; letter-spacing: 0.08em; color: #fff;
+    background: #B3261E; border-radius: 999px; padding: 4px 12px; white-space: nowrap;
+  }
+  .sb-od-lead-banner {
+    display: flex; flex-direction: column; gap: 3px;
+    background: #fdecea; border: 1.5px solid #B3261E; border-left-width: 6px;
+    border-radius: 10px; padding: 12px 16px; margin: 0 0 16px;
+  }
+  .sb-od-lead-banner-title { font-size: 15px; font-weight: 800; letter-spacing: 0.05em; color: #B3261E; }
+  .sb-od-lead-banner-sub { font-size: 13px; color: #7a2a25; }
 
   .sb-od-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
   .sb-od-actions-spacer { flex: 1 1 24px; }

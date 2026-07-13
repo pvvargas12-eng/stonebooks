@@ -11037,6 +11037,27 @@ function ContinueLater({ order, update, onDepositLogged }) {
         </p>
       </div>
 
+      {/* LEAD flag — loudest thing on the saved page. No real (locked,
+          non-voided) money down = still a LEAD, not an active customer, even
+          if the contract is signed or a stone is already ordered. */}
+      {(() => {
+        const realPaid = (Array.isArray(order.payments) ? order.payments : [])
+          .filter(p => p && !p.voided && (p.locked ?? true))
+          .reduce((s, p) => s + (Number(p.amount) || 0), 0)
+        const terminal = ['closed', 'cancelled', 'archived'].includes(order.status)
+        if (realPaid > 0 || terminal) return null
+        return (
+          <div className="sm-lead-flag">
+            <div className="sm-lead-flag-title">STILL A LEAD — NO DEPOSIT RECEIVED</div>
+            <div className="sm-lead-flag-sub">
+              {order.signedAt
+                ? 'Contract is signed but $0 has been collected. Not an active customer yet.'
+                : 'Nothing collected on this order. Anything ordered for this job is at our risk.'}
+            </div>
+          </div>
+        )
+      })()}
+
       <div className="sm-card" style={{ marginBottom: 16 }}>
         <QuoteStatusBlock status={qStatus} onSend={sendQuote} disabled={!order.id} hint="Save the order before sending it for quote approval." />
       </div>
@@ -14084,6 +14105,22 @@ export const salesModeStyles = `
   color: #5e3a0e;
 }
 .sm-need-signature-flag-icon { font-size: 16px; line-height: 1.2; flex-shrink: 0; }
+/* LEAD (no deposit) flag — deliberately the loudest element on the saved page. */
+.sm-lead-flag {
+  background: #fdecea;
+  border: 1.5px solid #b3261e;
+  border-left: 6px solid #b3261e;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 16px;
+}
+.sm-lead-flag-title {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #b3261e;
+}
+.sm-lead-flag-sub { font-size: 13.5px; color: #7a2a25; margin-top: 3px; }
 .sm-color-swatch {
   width: 100%; aspect-ratio: 4/3;
   background: #f0ede6;
