@@ -61,7 +61,11 @@ export async function fetchSalesOptions(category, { force = false } = {}) {
     .eq('category', category)
     .order('sort_order', { ascending: true })
   if (error) throw error
-  _cache.set(category, data || [])
+  // Never cache an empty result. A pre-auth fetch against the RLS-locked table
+  // returns 0 rows with NO error; caching that would pin the failure for the
+  // session (reapplyStoneColors re-applies from this cache). A truly empty
+  // category just re-fetches — cheap and safe.
+  if (data && data.length > 0) _cache.set(category, data)
   return data || []
 }
 
@@ -69,6 +73,11 @@ export async function fetchSalesOptions(category, { force = false } = {}) {
 // place. Never removes entries — a color absent from sales_options (or
 // deactivated) stays available for legacy-order lookups.
 export function applyStoneColorsToCatalog(rows) {
+  // Zero rows means the fetch didn't really see the table (pre-auth RLS, bad
+  // filter, wiped seed) — NEVER interpret it as "deactivate every color".
+  // Leave the catalog as-is; getActiveStoneColors treats isActive:undefined
+  // as active, so the hardcoded colors keep the picker working.
+  if (!rows || rows.length === 0) return
   const bySortOrder = new Map()
   for (const r of rows) {
     bySortOrder.set(r.value, r.sort_order ?? 0)
@@ -107,10 +116,22 @@ export function applyStoneColorsToCatalog(rows) {
 export function loadSalesOptions({ force = false } = {}) {
   if (_stoneColorsPromise && !force) return _stoneColorsPromise
   _stoneColorsPromise = fetchSalesOptions('stone_color', { force })
-    .then(rows => { applyStoneColorsToCatalog(rows); return rows })
+    .then(rows => {
+      if (!rows || rows.length === 0) {
+        // Silent-empty result (pre-auth RLS or missing seed): fall back to the
+        // hardcoded catalog and allow a retry — don't memoize the miss.
+        console.warn('loadSalesOptions: 0 stone_color rows — keeping hardcoded catalog')
+        for (const c of GRANITE_COLORS) { if (c.isActive == null) c.isActive = true }
+        _stoneColorsPromise = null
+        return null
+      }
+      applyStoneColorsToCatalog(rows)
+      return rows
+    })
     .catch(err => {
       console.error('loadSalesOptions:', err?.message || err)
       for (const c of GRANITE_COLORS) { if (c.isActive == null) c.isActive = true }
+      _stoneColorsPromise = null
       return null
     })
   return _stoneColorsPromise

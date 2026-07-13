@@ -411,11 +411,17 @@ export default function Stonebooks() {
     return () => { cancelled = true; clearInterval(id) }
   }, [user?.id, portal, tab])
 
-  // Load owner-set pricing overrides once at startup so the New Order form
-  // prices at the configured values (falls back to constant defaults silently).
-  // Sales options load AFTER the pricing config so the settings-managed color
-  // list/premiums overlay deterministically (sales_options is the color truth).
-  useEffect(() => { loadPricingConfig().then(() => loadSalesOptions()) }, [])
+  // Load owner-set pricing overrides once the user is authenticated so the New
+  // Order form prices at the configured values (falls back to constant defaults
+  // silently). Sales options load AFTER the pricing config so the settings-
+  // managed color list/premiums overlay deterministically (sales_options is the
+  // color truth). MUST wait for user?.id — both tables are RLS-locked to staff,
+  // and a pre-auth fetch returns 0 rows silently (which used to blank the
+  // stone-color picker for the whole session).
+  useEffect(() => {
+    if (!user?.id) return
+    loadPricingConfig().then(() => loadSalesOptions())
+  }, [user?.id])
 
   // Capture the Gmail OAuth return — the gmail-oauth-callback Edge Function
   // redirects back here with ?gmail=connected&email=… on success. Persist the
