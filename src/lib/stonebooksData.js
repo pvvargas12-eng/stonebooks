@@ -3992,7 +3992,7 @@ export async function syncJobToOrderType(orderId, serviceTypes) {
   if (!orderId) return { ok: false, error: 'No orderId' }
   const { data: job, error: jobErr } = await supabase
     .from('jobs')
-    .select('id, job_type, service_kind')
+    .select('id, job_type, service_kind, retemplate_stash')
     .eq('order_id', orderId)
     .maybeSingle()
   if (jobErr) return { ok: false, error: jobErr.message }
@@ -4022,8 +4022,26 @@ export async function syncJobToOrderType(orderId, serviceTypes) {
   const tenantId = (oldMs || [])[0]?.tenant_id || 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
 
   const nowIso = new Date().toISOString()
+  // Flip-flop protection (audit A4): stash the outgoing type's non-default
+  // statuses so toggling the type away and BACK restores the progress the
+  // re-template would otherwise wipe forever. Restoring consumes the entry.
+  const stash = (job.retemplate_stash && typeof job.retemplate_stash === 'object') ? { ...job.retemplate_stash } : {}
+  const snapshot = {}
+  for (const m of (oldMs || [])) {
+    if ((m.status && m.status !== 'not_started') || m.note || m.due_date) {
+      snapshot[m.milestone_key] = { status: m.status, status_date: m.status_date || null, note: m.note || null, due_date: m.due_date || null }
+    }
+  }
+  if (Object.keys(snapshot).length) stash[job.job_type] = { savedAt: nowIso, statuses: snapshot }
+  const restored = stash[newJobType]?.statuses || null
+  if (restored) delete stash[newJobType]
+
   const newRows = allMilestones.map((m, idx) => {
+    // Live basics first (contract/payment/permit/foundation — same work on any
+    // type), then the stashed state when this type was active before.
     const carried = RETEMPLATE_CARRY_RE.test(m.key) ? byKey.get(m.key) : null
+    const fromStash = !carried && restored ? restored[m.key] : null
+    const src = carried || fromStash || null
     return {
       tenant_id: tenantId,
       job_id: job.id,
@@ -4031,10 +4049,10 @@ export async function syncJobToOrderType(orderId, serviceTypes) {
       label: m.label,
       group: m.group,
       team: m.team || null,
-      status: carried?.status || m.default_status || 'not_started',
-      status_date: carried?.status_date || null,
-      note: carried?.note || null,
-      due_date: carried?.due_date || null,
+      status: src?.status || m.default_status || 'not_started',
+      status_date: src?.status_date || null,
+      note: src?.note || null,
+      due_date: src?.due_date || null,
       sort_order: idx,
       requires: m.requires || [],
       is_decision: !!m.is_decision,
@@ -4056,12 +4074,12 @@ export async function syncJobToOrderType(orderId, serviceTypes) {
 
   const { error: updErr } = await supabase
     .from('jobs')
-    .update({ job_type: newJobType, service_kind: newServiceKind, template_id: primaryTemplate.id, last_update_at: nowIso })
+    .update({ job_type: newJobType, service_kind: newServiceKind, template_id: primaryTemplate.id, retemplate_stash: Object.keys(stash).length ? stash : null, last_update_at: nowIso })
     .eq('id', job.id)
   if (updErr) return { ok: false, error: updErr.message }
 
   try {
-    await addJobNote(job.id, `Job type changed ${job.job_type} → ${newJobType} — checklist re-templated (contract, payment, permit, foundation progress carried over).`)
+    await addJobNote(job.id, `Job type changed ${job.job_type} → ${newJobType} — checklist re-templated (contract, payment, permit, foundation progress carried over${restored ? '; earlier ' + newJobType + ' progress restored' : ''}).`)
   } catch { /* audit note is best-effort */ }
 
   return { ok: true, changed: true, jobType: newJobType }
