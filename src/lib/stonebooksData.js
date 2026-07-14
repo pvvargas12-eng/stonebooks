@@ -1802,6 +1802,41 @@ export function setBlockReason(order, job) {
 }
 export function isReadyToSet(order, job) { return setBlockReason(order, job) === null }
 
+// ── FOUNDATION WORK-LIST ─────────────────────────────────────────────────────
+// The hand-picked list of foundations we're actually going to dig/pour (out of
+// the full needs-a-foundation pool). Membership only — status stays milestone-
+// derived via deriveFdnStatus/setOrderFdnStatus so the Installation gates and
+// the field app read the same truth. Table: foundation_list (job_id unique).
+
+export async function getFoundationList() {
+  const { data, error } = await supabase
+    .from('foundation_list')
+    .select('*')
+    .order('created_at', { ascending: true })
+  if (error) { console.error('getFoundationList:', error); return [] }
+  return data || []
+}
+
+export async function addToFoundationList(jobId) {
+  const added_by = await getCurrentStaffName()
+  const { error } = await supabase
+    .from('foundation_list')
+    .insert({ job_id: jobId, added_by })
+  // Unique violation = already on the list; treat as success so a double-tap
+  // in the picker can't error out.
+  if (error && error.code !== '23505') return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function removeFromFoundationList(jobId) {
+  const { error } = await supabase
+    .from('foundation_list')
+    .delete()
+    .eq('job_id', jobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────
 // Append a payment to the order's payments[] JSONB. Money records are
 // APPEND-ONLY here: this never edits or deletes an existing payment (voiding /

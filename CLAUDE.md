@@ -27,6 +27,17 @@ Phone-first crew app at **/field** (`src/field/`, own route in App.jsx's dispatc
 - **Migration `20260713_field_mode.sql` ✅ APPLIED to prod via Management API:** `orders.field_location` jsonb + `inventory_items`/`inventory_events` (spare event-ledger tables with full RLS parity — **currently unused**; field inventory uses `inventory_stock`. Paul declined the drop; decide keep-vs-drop later).
 - Same-day commits also shipped: sales_options pre-auth wipe fix (colors picker), FDN **Drop Off** rung (rides `foundation_scheduled`, no migration), **LEAD — NO DEPOSIT** loud treatment (OrderDetail banner+pill, OrdersTab rows/cards, wizard saved-step flag; keys on locked non-voided payments only), wizard general **Attachments** section (saved step, same bucket/path as OrderDetail).
 
+## Sprint FOUNDATIONS-LIST (2026-07-14) — SHIPPED
+
+Jobs › **Foundations** tab — the hand-picked foundation work queue (the ~15 we're actually digging/pouring, out of the ~300 that need one). New file `src/FoundationsBoard.jsx`; tab wired in `JobsTab.jsx` (JOBS_TABS + body branch between Installation and Permits); data helpers in `stonebooksData.js` after `isReadyToSet`.
+
+- **Migration `20260714_foundation_list.sql` ✅ APPLIED to prod via Management API:** `foundation_list` table (`job_id` unique FK → jobs, cascade; `added_by`, `sort_order`) + three-role RLS parity (authenticated-all, restrictive `is_staff()`, anon false). Membership only — **status stays milestone-derived** (`deriveFdnStatus`/`setOrderFdnStatus`), so the Installation gates, field app, and this board all read the same truth; "Ready" here IS `foundation_in`.
+- **Board (dark `.fdncc-*`, jobcc palette):** KPI cards (To dig / Dug / Poured / Ready, list-scoped) → picker panel ("Needs a foundation" pool = FDN ladder open + not `Cemetery Foundation`; search + cemetery filter, first-60 cap with narrow hint) → the list **grouped by cemetery** (one block = one dig run). Row: family (opens JobDetail), section (`composeGraveLocation`), base size (`buildBaseSpec(rowToOrder(...))`), Strip/need-map/drop-off side tags, **4-stage tap stepper** (Not started → Dug → Poured → Ready; need_map/drop_off read as stage 0 with a warn tag), Pin spot, Remove.
+- **Status taps are optimistic:** `orderStatusWritePlan('fdn', code)` mirrored locally (`applyFdnPlanLocally`) instead of refetching 1000 jobs per tap.
+- **GPS pins ride `orders.field_location`** (same jsonb as the field app's Mark exact spot) — `PinSpotForm` = GPS + note, preserves an existing pin photo; "Open pin" → maps.apple.com daddr link. Desktop-browser GPS denial degrades to note-only with a "drop the pin from your phone" hint.
+- `addToFoundationList` treats a 23505 unique violation as success (double-tap safe).
+- **Deferred:** /field Foundations screen (same list, phone-first) — Paul said desktop tab first, fast-follow if wanted. Foundation-cure gating (7-day window) remains parked under Phase 4 backlog.
+
 ## CURRENT STATE (as of d11d3c4)
 - HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
 - Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates
