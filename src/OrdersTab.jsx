@@ -923,7 +923,10 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     }
     patchOrderLocal(o.id, patch)
     const r = await bulkUpdateOrders([o.id], patch)
-    if (!r.ok) reload()
+    if (!r.ok) { reload(); return }
+    // Signing guarantees the job exists (Paul, 2026-07-14 — the inline toggle
+    // used to stamp signed_at with no job, leaving dead status cells).
+    if (signed && !o._job) { await createJobFromOrder(o.id, { source: 'inline_signed' }); reload() }
   }
   const inlineTotal = async (o, raw) => {
     const trimmed = String(raw ?? '').trim()

@@ -379,8 +379,16 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     getOrderById(orderId).then(async (o) => {
       if (cancelled) return
       if (!o) { setErr('Order not found.'); setLoading(false); return }
-      const j = await getJobByOrderId(orderId)
+      let j = await getJobByOrderId(orderId)
       if (cancelled) return
+      // Self-heal (Paul, 2026-07-14 — Yager E-26-0316): a SIGNED order must
+      // have a job. Inline signing used to stamp signed_at without creating
+      // one; opening the order now fixes it on the spot (idempotent).
+      if (o?.signed_at && !j) {
+        const jr = await createJobFromOrder(orderId, { source: 'auto_heal_signed' })
+        if (jr.ok) j = jr.job
+        if (cancelled) return
+      }
       setOrder(o); setJob(j); setLoading(false)
       // Secondary loads (notes + attachment sources + emails + outgoing permit
       // expenses) — non-blocking. Email is the CUSTOMER's full thread (same shown in
@@ -565,7 +573,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       patch.signed_at = null
     }
     const r = await bulkUpdateOrders([orderId], patch)
-    if (r.ok) await refreshOrder()
+    if (r.ok) {
+      await refreshOrder()
+      // Signing guarantees the job exists (idempotent — the wizard's rule,
+      // now enforced on the inline toggle too).
+      if (signed && !job?.id) { await createJobFromOrder(orderId, { source: 'inline_signed' }); await refreshJob() }
+    }
   }
   const inlineDateField = async (field, value) => {
     const patch = {}
@@ -579,7 +592,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       patch.target_completion_date = value || null
     }
     const r = await bulkUpdateOrders([orderId], patch)
-    if (r.ok) await refreshOrder()
+    if (r.ok) {
+      await refreshOrder()
+      if (field === 'signed_at' && value && !job?.id) { await createJobFromOrder(orderId, { source: 'inline_signed' }); await refreshJob() }
+    }
   }
 
   // ── Pipeline rail handlers ──────────────────────────────────────────────────
@@ -1413,6 +1429,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const res = await bulkUpdateOrders([orderId], patch)
     if (!res.ok) { setActionNote(res.error || 'Could not mark contracted.'); return }
     setOrder(o => ({ ...o, ...patch }))
+    // Signing guarantees the job exists — same rule as the wizard + inline toggle.
+    if (!job?.id) { await createJobFromOrder(orderId, { source: 'mark_contracted' }); await refreshJob() }
     logOrderActivity(orderId, { type: 'change', field: 'Contract', oldValue: 'unsigned', newValue: `signed ${d}`, note: 'Marked as contracted', actor: await getCurrentStaffName().catch(() => null) }).catch(() => {})
     setActionNote('Marked as contracted.')
     // Auto deposit-invoice draft (pipeline quick strike): signing should
