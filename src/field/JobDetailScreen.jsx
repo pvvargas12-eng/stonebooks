@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import {
   getOrderById, getJobByOrderId, getJob,
-  STONE_STATUS, FDN_STATUS, deriveStoneStatus, deriveFdnStatus, stoneStatusOptions,
+  STONE_STATUS, FDN_STATUS, deriveStoneStatus, deriveFdnStatus, stoneStatusOptions, statusDimApplies,
   setOrderStoneStatus, setOrderFdnStatus,
   getProofVersions, getProofVersionsByOrder,
   uploadOrderAttachment, customerName, getCurrentStaffName, fmtUSD, rowBalanceDue,
@@ -162,6 +162,9 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
       {/* Ladders */}
       {job ? (
         <>
+          {/* Ladders only where the dimension exists for this job type (audit
+              B2 — inscriptions/repairs have no stone or foundation to tap). */}
+          {statusDimApplies('stone', job) && (
           <StatusLadder title="Stone — tap the true state" options={stoneStatusOptions(job)}
             current={deriveStoneStatus(job)} busy={busy}
             onSet={async (code, prev) => {
@@ -173,6 +176,8 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
                 await setOrderStoneStatus(job.id, prev); await reloadJob()
               })
             }} />
+          )}
+          {statusDimApplies('fdn', job) && (
           <StatusLadder title="Foundation" options={FDN_STATUS}
             current={deriveFdnStatus(job)} busy={busy}
             onSet={async (code, prev) => {
@@ -184,6 +189,7 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
                 await setOrderFdnStatus(job.id, prev); await reloadJob()
               })
             }} />
+          )}
           <button type="button" className="fl-btn fl-btn-gold" onClick={() => onComplete({ jobId: job.id, orderId: order.id })}>
             Finish job — final photo
           </button>

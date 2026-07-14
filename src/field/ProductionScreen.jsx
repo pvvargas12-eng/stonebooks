@@ -6,17 +6,20 @@
 // happens on the Job detail ladder (with UNDO); this list is for finding.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
-import { getJobs, deriveStoneStatus, stoneStatusLabel, stoneStatusTone, deriveFdnStatus, customerName } from '../lib/stonebooksData'
+import { getJobs, deriveStoneStatus, stoneStatusLabel, stoneStatusTone, deriveFdnStatus, customerName, statusDimApplies } from '../lib/stonebooksData'
 import { isLeadRaw, toneCls } from './fieldShared'
 
+// Stone buckets only apply to jobs that HAVE a stone dimension (audit B2 —
+// inscriptions/repairs were polluting "To order"). Bronze 'received' = in the
+// shop, done — grouped with Blasted.
 const IN_SHOP = ['ordered', 'in_stock', 'needs_pickup', 'needs_stencil_cut', 'needs_blasting']
 const FDN_OPEN = ['need_map', 'not_in', 'drop_off', 'dug', 'poured']
 
 const FILTERS = [
   { code: 'all',        label: 'All',            match: () => true },
-  { code: 'to_order',   label: 'To order',       match: (j) => deriveStoneStatus(j) === 'not_ordered' },
-  { code: 'in_shop',    label: 'In shop',        match: (j) => IN_SHOP.includes(deriveStoneStatus(j)) },
-  { code: 'blasted',    label: 'Blasted',        match: (j) => deriveStoneStatus(j) === 'blasted' },
+  { code: 'to_order',   label: 'To order',       match: (j) => statusDimApplies('stone', j) && deriveStoneStatus(j) === 'not_ordered' },
+  { code: 'in_shop',    label: 'In shop',        match: (j) => statusDimApplies('stone', j) && IN_SHOP.includes(deriveStoneStatus(j)) },
+  { code: 'blasted',    label: 'Blasted',        match: (j) => statusDimApplies('stone', j) && ['blasted', 'received'].includes(deriveStoneStatus(j)) },
   { code: 'foundation', label: 'Foundation',     match: (j) => FDN_OPEN.includes(deriveFdnStatus(j)) },
 ]
 
@@ -62,7 +65,8 @@ export default function ProductionScreen({ onOpenJob }) {
       {list.map(j => {
         const o = j.order
         const fam = (o.primary_lastname || customerName(j.customer) || '—').toUpperCase()
-        const stone = deriveStoneStatus(j)
+        const stoneApplies = statusDimApplies('stone', j)
+        const stone = stoneApplies ? deriveStoneStatus(j) : null
         const spec = [o.order_number, o.shape, o.granite_color].filter(Boolean).join(' · ')
         return (
           <button key={j.id} type="button" className="fl-row fl-row-flex"
@@ -71,7 +75,7 @@ export default function ProductionScreen({ onOpenJob }) {
               <div className="fl-fam">{fam}{isLeadRaw(o) && <span className="fl-chip fl-c-lead" style={{ marginLeft: 8, verticalAlign: 'middle' }}>LEAD</span>}</div>
               <div className="fl-spec">{spec || '—'}</div>
             </div>
-            <span className={`fl-chip ${toneCls(stoneStatusTone(stone))}`}>{stoneStatusLabel(stone).toUpperCase()}</span>
+            {stoneApplies && <span className={`fl-chip ${toneCls(stoneStatusTone(stone))}`}>{stoneStatusLabel(stone).toUpperCase()}</span>}
             <span className="fl-chev">&#8250;</span>
           </button>
         )
