@@ -252,6 +252,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
         <OutgoingView
           loading={outgoing === null || bills === null}
           payments={outgoing || []} bills={bills || []} monthPrefix={monthPrefix}
+          orders={orders || []}
           onAddBill={() => setAddBill(true)} onAddOutgoing={() => setAddOutgoing(true)}
           onPayBill={(instance) => setPayBill(instance)}
         />
@@ -395,8 +396,25 @@ function billInstancesForMonth(bills, payments, monthPrefix) {
 }
 
 // ── Outgoing view ────────────────────────────────────────────────────────────
-function OutgoingView({ loading, payments, bills, monthPrefix, onAddBill, onAddOutgoing, onPayBill }) {
+function OutgoingView({ loading, payments, bills, monthPrefix, orders = [], onAddBill, onAddOutgoing, onPayBill }) {
   const instances = useMemo(() => billInstancesForMonth(bills, payments, monthPrefix), [bills, payments, monthPrefix])
+  // Family name per linked order — permit rows display "Cemetery — Family" and
+  // every order-linked row is searchable by family name (Paul, 2026-07-14).
+  const famByOrderId = useMemo(() => {
+    const m = new Map()
+    for (const o of orders) if (o.id && o.primary_lastname) m.set(o.id, String(o.primary_lastname).trim())
+    return m
+  }, [orders])
+  const [q, setQ] = useState('')
+  const shownPayments = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (!needle) return payments
+    return payments.filter(p => [
+      p.payee, p.reference, p.notes, p.category, p.created_by,
+      p.order_id ? famByOrderId.get(p.order_id) : null,
+      p.amount != null ? String(p.amount) : null,
+    ].filter(Boolean).join(' ').toLowerCase().includes(needle))
+  }, [payments, q, famByOrderId])
   const dueThisMonth = useMemo(
     () => instances.filter(i => i.status === 'due').reduce((s, i) => s + (i.expected || 0), 0),
     [instances])
@@ -412,6 +430,9 @@ function OutgoingView({ loading, payments, bills, monthPrefix, onAddBill, onAddO
       </div>
 
       <div className="sb-pay-controls">
+        <input type="search" className="sb-pay-input" style={{ maxWidth: 340 }}
+          placeholder="Search payee, family, check #, amount…"
+          value={q} onChange={e => setQ(e.target.value)} />
         <div style={{ flex: 1 }} />
         <button type="button" className="sb-pay-log-btn sb-pay-log-ghost" onClick={onAddBill}>+ Add bill</button>
         <button type="button" className="sb-pay-log-btn" onClick={onAddOutgoing}>+ Add outgoing payment</button>
@@ -444,23 +465,35 @@ function OutgoingView({ loading, payments, bills, monthPrefix, onAddBill, onAddO
       </div>
 
       {/* Outgoing payments ledger */}
-      <div className="sb-pay-subhead">Outgoing payments</div>
+      <div className="sb-pay-subhead">
+        Outgoing payments
+        {q.trim() && <span className="sb-pay-subhead-note"> · {shownPayments.length} matching “{q.trim()}”</span>}
+      </div>
       <div className="sb-pay-table">
         <div className="sb-pay-row sb-pay-out-row sb-pay-row-head">
           <div>Date</div><div>Payee</div><div>Category</div><div>Method</div><div className="num">Amount</div><div>Reference</div>
         </div>
         {loading ? <div className="sb-pay-empty">Loading…</div>
-          : payments.length === 0 ? <div className="sb-pay-empty">No outgoing payments yet. (If this stays empty after logging one, the outgoing_payments / recurring_bills migrations may still need to be applied.)</div>
-          : payments.map(o => (
-            <div key={o.id} className="sb-pay-row sb-pay-out-row">
-              <div>{o.paid_date ? fmtDate(o.paid_date) : '—'}</div>
-              <div className="sb-pay-name">{o.payee}{o.order_id && <span className="sb-pay-tag">order cost</span>}{o.recurring_bill_id && <span className="sb-pay-tag sb-pay-tag-bill">bill</span>}</div>
-              <div>{o.category || '—'}</div>
-              <div>{outMethodLabel(o.method)}</div>
-              <div className="num sb-pay-amt">{fmtUSD(Number(o.amount) || 0)}</div>
-              <div className="sb-pay-ref">{o.reference || '—'}</div>
-            </div>
-          ))}
+          : shownPayments.length === 0 ? <div className="sb-pay-empty">{q.trim() ? 'No outgoing payments match this search.' : 'No outgoing payments yet. (If this stays empty after logging one, the outgoing_payments / recurring_bills migrations may still need to be applied.)'}</div>
+          : shownPayments.map(o => {
+            const fam = o.order_id ? famByOrderId.get(o.order_id) : null
+            return (
+              <div key={o.id} className="sb-pay-row sb-pay-out-row">
+                <div>{o.paid_date ? fmtDate(o.paid_date) : '—'}</div>
+                <div className="sb-pay-name">
+                  {o.payee}
+                  {/* Permit fees read "Cemetery — Family" so payments are findable by family. */}
+                  {fam && (o.category || '').toLowerCase() === 'permits' && <span className="sb-pay-fam"> — {fam}</span>}
+                  {o.order_id && <span className="sb-pay-tag">order cost</span>}
+                  {o.recurring_bill_id && <span className="sb-pay-tag sb-pay-tag-bill">bill</span>}
+                </div>
+                <div>{o.category || '—'}</div>
+                <div>{outMethodLabel(o.method)}</div>
+                <div className="num sb-pay-amt">{fmtUSD(Number(o.amount) || 0)}</div>
+                <div className="sb-pay-ref">{o.reference || '—'}</div>
+              </div>
+            )
+          })}
       </div>
     </>
   )
@@ -926,6 +959,7 @@ const PAY_CSS = `
   .sb-pay-pill-due { color: #5e3a0e; background: #fbe5b8; }
   .sb-pay-pill-paid { color: #2d7a4f; background: #e6f4ec; }
   .sb-pay-tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #6b6b66; background: #f0eeea; padding: 1px 6px; border-radius: 999px; margin-left: 8px; }
+  .sb-pay-fam { font-weight: 600; color: #6a4d0c; }
   .sb-pay-tag-bill { color: #4a3a8a; background: #ece9f7; }
   .sb-pay-optional { font-weight: 400; text-transform: none; letter-spacing: 0; color: #a0a09a; margin-left: 6px; }
   .sb-pay-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #333; margin-bottom: 12px; }

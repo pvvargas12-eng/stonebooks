@@ -142,7 +142,9 @@ const CQE_CSS = `
   .sb-od-cqe-divider { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
     color: #9A7209; border-top: 1px solid #ece8df; padding-top: 10px; margin-top: 4px; }
   .sb-od-cqe-paid { display: flex; flex-direction: column; gap: 3px; }
-  .sb-od-cqe-paid-row { font-size: 12px; color: #15724a; background: #e7f6ee; border-radius: 6px; padding: 5px 8px; }
+  .sb-od-cqe-paid-row { font-size: 12px; color: #15724a; background: #e7f6ee; border-radius: 6px; padding: 5px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .sb-od-cqe-paid-x { border: none; background: none; color: #b3261e; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; flex-shrink: 0; }
+  .sb-od-cqe-paid-x:disabled { opacity: 0.4; cursor: default; }
   .sb-od-cqe-fee-btn { width: 100%; justify-content: center; margin-top: 2px; border-color: #c9a23a; color: #6a4d0c; background: #fdf6e7; }
   .sb-od-cqe-fee-btn:hover:not(:disabled) { background: #f8edd3; }
   .sb-od-cqe-okmsg { font-size: 12px; color: #15724a; background: #e7f6ee; border-radius: 7px; padding: 7px 8px; }

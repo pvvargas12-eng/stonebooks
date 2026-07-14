@@ -38,6 +38,7 @@ import {
   updateCustomer, bulkUpdateOrders,
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel as sharedPermitStatusLabel,
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
+  deleteOutgoingPayment, permitOutgoingKey,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, setOrderManualBlocker, missingCheckRef,
@@ -989,6 +990,38 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       actor: staff,
     }).then(() => refreshActivity()).catch(() => {})
     if (job?.id) addJobEvent(job.id, { eventType: 'permit_expense_recorded', note: `Permit fee ${fmtUSD(amt)}${filing.ck ? ` ck #${filing.ck}` : ''} → ${payee || 'cemetery'} (outgoing)`, payload: { amount: amt, check: filing.ck, payee }, createdBy: staff }).catch(() => {})
+  }
+
+  // Remove a recorded permit fee — deletes the outgoing_payments row (so it
+  // leaves Payments › Outgoing too) AND drops the matching filing from
+  // orders.permit[] so the Permit Hub's filed bucket agrees. One truth, no
+  // orphans (Paul, 2026-07-14: a wrong permit fee must be removable).
+  const removePermitFee = async (p) => {
+    if (feeBusy) return
+    const label = `${fmtUSD(p.amount)}${p.reference ? ` ck #${p.reference}` : ''}`
+    if (!window.confirm(`Remove this permit fee — ${label}? It also comes off Payments › Outgoing.`)) return
+    setFeeBusy(true); setFeeMsg(null)
+    const r = await deleteOutgoingPayment(p.id)
+    if (!r.ok) { setFeeBusy(false); setFeeMsg({ type: 'err', text: r.error || 'Could not remove the fee.' }); return }
+    const arr = Array.isArray(order.permit) ? order.permit : []
+    const key = p.source_permit_key || null
+    const nextArr = arr.filter(f => {
+      if (key) return permitOutgoingKey(orderId, f) !== key
+      // Legacy row without a source key — match on the visible facts.
+      const sameCk = (f.ck ? String(f.ck).trim() : null) === (p.reference || null)
+      const sameAmt = Number(f.amount) === Number(p.amount)
+      return !(sameCk && sameAmt)
+    })
+    if (nextArr.length !== arr.length) await setOrderPermit(orderId, { permit: nextArr })
+    setFeeBusy(false)
+    await refreshOrder(); await loadPermitExpenses()
+    const staff = await getCurrentStaffName()
+    logOrderActivity(orderId, {
+      type: 'change', field: 'Permit expense', newValue: 'removed',
+      note: `Permit fee ${label} removed — outgoing expense deleted`,
+      actor: staff,
+    }).then(() => refreshActivity()).catch(() => {})
+    if (job?.id) addJobEvent(job.id, { eventType: 'permit_expense_removed', note: `Permit fee ${label} removed (outgoing expense deleted)`, payload: { amount: Number(p.amount), check: p.reference || null }, createdBy: staff }).catch(() => {})
   }
 
   // ── Monument quick-edit (reuses the New Order MonumentCard verbatim) ─────────
@@ -2302,7 +2335,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     {permitExpenses.length > 0 && (
                       <div className="sb-od-cqe-paid">
                         {permitExpenses.map(p => (
-                          <div key={p.id} className="sb-od-cqe-paid-row">✓ {fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)} → {p.payee}</div>
+                          <div key={p.id} className="sb-od-cqe-paid-row">
+                            <span>✓ {fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)} → {p.payee}</span>
+                            <button type="button" className="sb-od-cqe-paid-x" disabled={feeBusy}
+                              title="Remove this permit fee (also deletes it from Payments › Outgoing)"
+                              onClick={() => removePermitFee(p)}>×</button>
+                          </div>
                         ))}
                       </div>
                     )}
