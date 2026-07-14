@@ -216,7 +216,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const updateInsc = (patch) => setOrder(o => ({ ...o, inscription: { ...o.inscription, ...patch } }))
 
   const changeType = (k) => {
-    if (k === type || isEdit) return
+    if (k === type) return
     setType(k)
     update({ serviceTypes: ORDER_TYPES[k].serviceTypes })
     // Bronze marker is discriminated by pricing.bronze — seed it so the bronze
@@ -295,6 +295,13 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     const toSave = { ...order, serviceTypes: cfg.serviceTypes, signedAt, status, payments }
     const res = await saveOrder(toSave)
     if (!res?.ok) { setBusy(false); setErr(res?.error?.message || res?.reason || 'Could not save the order'); return }
+    // Type changed on an existing order → saveOrder re-templated the job's
+    // checklist. Surface a failure loudly (the order itself saved fine).
+    if (res.jobTypeSync && res.jobTypeSync.ok === false) {
+      setBusy(false)
+      setErr(`Order saved, but switching the job checklist failed: ${res.jobTypeSync.error}. Save again to retry.`)
+      return
+    }
     const savedId = res.order?.id || orderId
     // Capture the new id + the deposit into local state so a retry after a
     // downstream failure (job create / backfill) UPDATES this order instead of
@@ -365,8 +372,8 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             <div className="of-typeseg">
               {TYPE_KEYS.map(k => (
                 <button key={k} type="button" className={`of-typebtn${type === k ? ' on' : ''}`}
-                  onClick={() => changeType(k)} disabled={isEdit}
-                  title={isEdit ? 'Type is fixed on an existing order' : ''}>
+                  onClick={() => changeType(k)}
+                  title={isEdit && type !== k ? 'Changing type re-templates the job checklist (contract, payment, permit, foundation progress carries over)' : ''}>
                   {ORDER_TYPES[k].label}
                 </button>
               ))}

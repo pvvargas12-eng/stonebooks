@@ -3916,6 +3916,96 @@ async function buildMilestoneListForOrder(serviceTypes) {
   return { primaryTemplate, allMilestones: merged, jobType: primaryJobType }
 }
 
+// ── JOBS: sync job type to the order's service types (re-template) ──────────
+// The job-type pickers (New Order form pills, wizard Step-1 cards) are
+// editable on EXISTING orders now (Paul, 2026-07-14 — workers picked the
+// wrong type and had to duplicate orders). Called from saveOrder's update
+// branch: when the derived job_type (or service_kind) changed, the job's
+// milestone checklist is REPLACED from the new type's template. The basics
+// carry over — contract, deposit/payment, permit, foundation — since that
+// work is type-independent; type-specific progress (design/stone/production)
+// deliberately resets. No job on the order yet → no-op (the job created at
+// signing picks up the new type naturally).
+const RETEMPLATE_CARRY_RE = /^(contract_|deposit_|paid_in_full$|permit_|foundation_)/
+export async function syncJobToOrderType(orderId, serviceTypes) {
+  if (!orderId) return { ok: false, error: 'No orderId' }
+  const { data: job, error: jobErr } = await supabase
+    .from('jobs')
+    .select('id, job_type, service_kind')
+    .eq('order_id', orderId)
+    .maybeSingle()
+  if (jobErr) return { ok: false, error: jobErr.message }
+  if (!job) return { ok: true, changed: false }
+
+  const st = Array.isArray(serviceTypes) ? serviceTypes : []
+  const newJobType = jobTypeForServiceTypes(st)
+  if (!newJobType) return { ok: true, changed: false }
+  const newServiceKind = newJobType === 'cleaning_repair'
+    ? (st.includes('REPAIR') ? 'repair' : st.includes('ACID_WASH') ? 'acid_wash' : null)
+    : null
+  if (job.job_type === newJobType && (job.service_kind || null) === newServiceKind) {
+    return { ok: true, changed: false }
+  }
+
+  const { primaryTemplate, allMilestones } = await buildMilestoneListForOrder(st)
+  if (!primaryTemplate) return { ok: false, error: 'No active milestone template for the new job type' }
+
+  // Snapshot the current checklist — feeds the carry-over AND the
+  // restore-on-failure path below.
+  const { data: oldMs, error: oldErr } = await supabase
+    .from('job_milestones')
+    .select('*')
+    .eq('job_id', job.id)
+  if (oldErr) return { ok: false, error: oldErr.message }
+  const byKey = new Map((oldMs || []).map(m => [m.milestone_key, m]))
+  const tenantId = (oldMs || [])[0]?.tenant_id || 'a1b2c3d4-e5f6-7890-abcd-ef0123456789'
+
+  const nowIso = new Date().toISOString()
+  const newRows = allMilestones.map((m, idx) => {
+    const carried = RETEMPLATE_CARRY_RE.test(m.key) ? byKey.get(m.key) : null
+    return {
+      tenant_id: tenantId,
+      job_id: job.id,
+      milestone_key: m.key,
+      label: m.label,
+      group: m.group,
+      team: m.team || null,
+      status: carried?.status || m.default_status || 'not_started',
+      status_date: carried?.status_date || null,
+      note: carried?.note || null,
+      due_date: carried?.due_date || null,
+      sort_order: idx,
+      requires: m.requires || [],
+      is_decision: !!m.is_decision,
+      cascades_to: m.cascades_to || [],
+      is_customer_visible: !!m.is_customer_visible,
+      updated_at: nowIso,
+    }
+  })
+
+  // Replace the checklist. If the insert fails, put the old rows back so the
+  // job is never left milestone-less.
+  const { error: delErr } = await supabase.from('job_milestones').delete().eq('job_id', job.id)
+  if (delErr) return { ok: false, error: delErr.message }
+  const { error: insErr } = await supabase.from('job_milestones').insert(newRows)
+  if (insErr) {
+    if ((oldMs || []).length) await supabase.from('job_milestones').insert(oldMs)
+    return { ok: false, error: `Re-template failed (old checklist restored): ${insErr.message}` }
+  }
+
+  const { error: updErr } = await supabase
+    .from('jobs')
+    .update({ job_type: newJobType, service_kind: newServiceKind, template_id: primaryTemplate.id, last_update_at: nowIso })
+    .eq('id', job.id)
+  if (updErr) return { ok: false, error: updErr.message }
+
+  try {
+    await addJobNote(job.id, `Job type changed ${job.job_type} → ${newJobType} — checklist re-templated (contract, payment, permit, foundation progress carried over).`)
+  } catch { /* audit note is best-effort */ }
+
+  return { ok: true, changed: true, jobType: newJobType }
+}
+
 // ── JOBS: createJobFromOrder ─────────────────────────────────────────────────
 // Idempotent: if a job already exists for this order, returns that job
 // with alreadyExisted:true and writes NO new event.

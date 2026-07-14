@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -1548,10 +1548,18 @@ export async function saveOrder(order) {
     const { data, error } = await writeOrder((row) => supabase.from('orders').update(row).eq('id', order.id).select().single())
     if (error) { console.error('updateOrder error:', error); return { ok: false, error } }
     await _ensureOrderCustomerLink(data, customerId)
+    // Job-type sync — the type pickers are editable on existing orders now.
+    // When the derived job_type changed, the job's checklist re-templates
+    // (basics carried over). Non-fatal: the order itself is already saved, and
+    // a failed sync self-heals on the next save (job_type still differs).
+    // The result rides on the return so the New Order form can surface errors.
+    let jobTypeSync = null
+    try { jobTypeSync = await syncJobToOrderType(order.id, order.serviceTypes) }
+    catch (e) { jobTypeSync = { ok: false, error: e?.message || 'Job type sync failed' } }
     // Recompute order-content-derived milestones on save (idempotent; no-ops when
     // there's no job). Fire-and-forget so it never slows the save.
     if (order.signedAt) ensureDerivedMilestones(order.id).catch(() => {})
-    return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes }
+    return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes, jobTypeSync }
   }
 
   // New order: writeOrder() generates the order number into the row.
