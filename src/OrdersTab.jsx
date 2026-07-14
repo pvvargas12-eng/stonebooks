@@ -351,16 +351,29 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Archived fetches archived=true. So the fetch axis is just live-vs-archived.
   useEffect(() => {
     let cancelled = false
+    // The All tab means literally everything (Paul, 2026-07-14): live AND
+    // archived merged in one list. Otherwise the fetch axis stays live-vs-
+    // archived by the primary chip.
+    const wantEverything = view === 'all'
     const fetchAxis = primaryView === 'archived' ? 'archived' : 'live'
     const oKey = ORDERS_KEY(fetchAxis)
     const archived = primaryView === 'archived'
     // Only show the spinner when a dataset isn't already cached — a cached
     // re-entry stays instant. cachedFetch returns cached data within the TTL and
     // refetches in the background otherwise.
-    if (peekCache(oKey) === undefined || peekCache(JOBS_KEY) === undefined) setLoading(true)
+    const ordersCached = wantEverything
+      ? peekCache(ORDERS_KEY('live')) !== undefined && peekCache(ORDERS_KEY('archived')) !== undefined
+      : peekCache(oKey) !== undefined
+    if (!ordersCached || peekCache(JOBS_KEY) === undefined) setLoading(true)
     setLoadErr(null)
+    const ordersPromise = wantEverything
+      ? Promise.all([
+          cachedFetch(ORDERS_KEY('live'), () => listAllOrders({ archived: false, limit: 2000, select: ORDERS_BOARD_SELECT })),
+          cachedFetch(ORDERS_KEY('archived'), () => listAllOrders({ archived: true, limit: 2000, select: ORDERS_BOARD_SELECT })),
+        ]).then(([live, arch]) => [...(live || []), ...(arch || [])])
+      : cachedFetch(oKey, () => listAllOrders({ archived, limit: 2000, select: ORDERS_BOARD_SELECT }))
     Promise.all([
-      cachedFetch(oKey, () => listAllOrders({ archived, limit: 2000, select: ORDERS_BOARD_SELECT })),
+      ordersPromise,
       cachedFetch(JOBS_KEY, () => getJobs({ includeClosed: true, limit: 2000 })),
     ])
       .then(([rows, jobs]) => {
@@ -369,7 +382,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       })
       .catch(e => { if (!cancelled) { setLoadErr(e?.message || 'Failed to load orders'); setLoading(false) } })
     return () => { cancelled = true }
-  }, [primaryView, reloadNonce])
+  }, [primaryView, view, reloadNonce])
 
   const reload = useCallback(() => { invalidateCache('orders:board'); invalidateCache(JOBS_KEY); setReloadNonce(n => n + 1) }, [])
 
@@ -468,8 +481,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     let list = enriched
     // PRIMARY axis (archived handled at fetch): Active = non-terminal status, Closed
     // = terminal (closed/cancelled). Archived fetch returns archived rows (any status).
-    if (primaryView === 'active') list = list.filter(o => !TERMINAL_STATUSES.has(o.status))
-    else if (primaryView === 'closed') list = list.filter(o => TERMINAL_STATUSES.has(o.status))
+    // The All tab skips the partition entirely — active + closed + archived together.
+    if (view !== 'all') {
+      if (primaryView === 'active') list = list.filter(o => !TERMINAL_STATUSES.has(o.status))
+      else if (primaryView === 'closed') list = list.filter(o => TERMINAL_STATUSES.has(o.status))
+    }
     // Workflow / permit queue deep-link (from a hub dashboard) — shared classifiers.
     if (queueFilter) list = list.filter(o => {
       if (queueFilter.startsWith('permit_')) return permitBuckets(o, o._job).includes(queueFilter)
@@ -496,16 +512,18 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       o.customer?.phone_primary, o.customer?.email, o.cemetery?.name, o.cemetery?.city, o.sales_rep,
     ].filter(Boolean).join(' ').toLowerCase().includes(needle))
     return list
-  }, [enriched, primaryView, queueFilter, quickView, pipelineFilters, paymentFilters,
+  }, [enriched, primaryView, view, queueFilter, quickView, pipelineFilters, paymentFilters,
       cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
 
   // Orders · Leads · All partition — Paul's rule: an ORDER is contracted/signed
   // AND deposit paid; everything else (incl. contracted-but-no-deposit) is a lead.
-  // A non-empty search ALWAYS shows the combined set so a name match surfaces.
+  // Search respects the highlighted tab (Paul, 2026-07-14): Orders searches
+  // orders only, Leads searches leads only, All searches everything.
   const preCategory = useMemo(() => {
-    const showAll = search.trim().length > 0 || view === 'all'
-    return showAll ? preView : preView.filter(o => isOrderRow(o, o._paid))
-  }, [preView, view, search])
+    if (view === 'all') return preView
+    if (view === 'leads') return preView.filter(o => !isOrderRow(o, o._paid))
+    return preView.filter(o => isOrderRow(o, o._paid))
+  }, [preView, view])
 
   // ── Pipeline strip + hot-chip counts — computed on the BASE scope (view
   // partition + primary axis + search only), so tiles/chips behave like the
@@ -976,7 +994,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <h1 className="sb-crm-head-title">Sales</h1>
             <div className="sb-crm-head-count">
               <strong>{loading ? '—' : filtered.length}</strong> {filtered.length === 1 ? 'order' : 'orders'}
-              {searching && <> · matching “{search.trim()}” (leads + orders)</>}
+              {searching && <> · matching “{search.trim()}” ({view === 'all' ? 'everything — active, closed + archived' : view})</>}
               {!searching && primaryView !== 'active' && <> · {PRIMARY_VIEWS.find(v => v.code === primaryView)?.label}</>}
               {!searching && categoryFilter && <> · {ORDER_CATEGORIES.find(c => c.code === categoryFilter)?.label}</>}
             </div>
@@ -1029,12 +1047,18 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         {/* TIER 1 — primary axis (the main toggle) + always-visible Owes balance +
             More filters + cemetery. */}
         <div className="sb-crm-chip-row sb-ord-tier1">
-          <div className="sb-ord-segmented" role="tablist" aria-label="Order state">
-            {PRIMARY_VIEWS.map(v => (
-              <button key={v.code} type="button" role="tab" aria-selected={primaryView === v.code}
-                className={`sb-ord-seg${primaryView === v.code ? ' on' : ''}`} onClick={() => onPrimaryView(v.code)}>{v.label}</button>
-            ))}
-          </div>
+          {view === 'all' ? (
+            /* The All tab overrides the state axis — everything shows, and each
+               row carries its own Active/Closed/Archived scope pill instead. */
+            <span className="sb-ord-allnote">Everything — active, closed + archived</span>
+          ) : (
+            <div className="sb-ord-segmented" role="tablist" aria-label="Order state">
+              {PRIMARY_VIEWS.map(v => (
+                <button key={v.code} type="button" role="tab" aria-selected={primaryView === v.code}
+                  className={`sb-ord-seg${primaryView === v.code ? ' on' : ''}`} onClick={() => onPrimaryView(v.code)}>{v.label}</button>
+              ))}
+            </div>
+          )}
           <FilterChip active={owesBalance} onClick={() => setOwesBalance(v => !v)}>Owes balance</FilterChip>
           {stripData.needsCall > 0 && (
             <button type="button" className={`sb-ord-hotchip${needsCallOnly ? ' on' : ''}`} onClick={() => setNeedsCallOnly(v => !v)}>
@@ -1185,6 +1209,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             pageRows.map((o) => (
               <OrderRow key={o.id} order={o} grid={grid} indexInFiltered={filteredIds.indexOf(o.id)}
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
+                showScope={view === 'all'}
                 onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn} onInlinePermit={inlinePermit}
                 onInlineDate={inlineDate} onInlineSigned={inlineSigned} onInlineTotal={inlineTotal} busy={false} />
@@ -1282,7 +1307,7 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
   )
 }
 
-function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlinePermit, onInlineDate, onInlineSigned, onInlineTotal, busy }) {
+function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlinePermit, onInlineDate, onInlineSigned, onInlineTotal, busy, showScope = false }) {
   const hasJob = !!o._job
   const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
 
@@ -1302,6 +1327,18 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
           {isLeadRow(o) && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
+        {/* All-tab scope pill — mixed results scan visually: green active, red
+            closed, gray archived (Paul, 2026-07-14). */}
+        {showScope && (() => {
+          const state = o.archived ? 'archived' : TERMINAL_STATUSES.has(o.status) ? 'closed' : 'active'
+          const kind = isOrderRow(o, o._paid) ? 'Order' : 'Lead'
+          const label = { archived: 'Archived', closed: 'Closed', active: 'Active' }[state]
+          return (
+            <div className="sb-ord-scopeline">
+              <span className={`sb-ord-scopepill sb-ord-scopepill-${state}`}>{kind} · {label}</span>
+            </div>
+          )
+        })()}
         {(blocker || o.manual_blocker) && (
           <div className="sb-ord-blockline">
             {/* Manual blocker first — a human set it on purpose. Its kind chip
@@ -1549,6 +1586,13 @@ const TW_CSS = `
     border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
   .sb-ord-bpill-red   { color: #B3261E; background: rgba(179,38,30,0.08); }
   .sb-ord-bpill-amber { color: #8a5a12; background: rgba(183,121,31,0.1); }
+  .sb-ord-allnote { font-size: 12.5px; font-weight: 600; color: #6a6a66; padding: 6px 2px; white-space: nowrap; }
+  .sb-ord-scopeline { margin-top: 3px; }
+  .sb-ord-scopepill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
+  .sb-ord-scopepill-active   { color: #15724a; background: rgba(29,158,117,0.11); }
+  .sb-ord-scopepill-closed   { color: #B3261E; background: rgba(179,38,30,0.10); }
+  .sb-ord-scopepill-archived { color: #6a6a66; background: #f0eee9; }
   .sb-ord-bpill-blue  { color: #1D6FA8; background: rgba(29,111,168,0.09); }
   .sb-ord-callpill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
     color: #B3261E; border: 0.5px solid rgba(179,38,30,0.4); border-radius: 999px; padding: 1px 8px; }
