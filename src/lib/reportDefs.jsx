@@ -181,6 +181,58 @@ function StatGrid({ stats, onClick }) {
 }
 
 // ── Reports ──────────────────────────────────────────────────────────────────
+// Money pulse — the collected / owed tiles that used to live on the Today tab
+// (moved here 2026-07-14: "Today is for work, not accounting").
+const MONEY_PULSE = {
+  id: 'money_pulse',
+  title: 'Money pulse',
+  why: 'Collected in the range, what is owed to you, and who owes it — the Today tab’s old money strip, now living with the other money reports.',
+  group: 'money',
+  daily: true,
+  compute(bundle, ctx) {
+    const { range } = ctx
+    const startIso = range.start.toISOString().slice(0, 10)
+    const endIso = range.end.toISOString().slice(0, 10)
+    let collected = 0, collectedCount = 0
+    let outstanding = 0, owingCount = 0
+    const owers = []
+    for (const o of (bundle.orders || [])) {
+      if (o.archived) continue
+      const pays = Array.isArray(o.payments) ? o.payments : []
+      for (const p of pays) {
+        if (!p || p.voided || (p.locked ?? true) === false) continue
+        const r = String(p.receivedAt || p.createdAt || '').slice(0, 10)
+        if (r >= startIso && r <= endIso) { collected += Number(p.amount) || 0; collectedCount++ }
+      }
+      if (SOLD_STATUSES.includes(o.status)) {
+        const bal = rowBalanceDue(o)
+        if (bal > 0) { outstanding += bal; owingCount++; owers.push({ o, bal }) }
+      }
+    }
+    owers.sort((a, b) => b.bal - a.bal)
+    const stats = [
+      { label: `collected · ${range.label.toLowerCase()}`, value: collected, fmt: fmtUSD },
+      { label: 'payments in', value: collectedCount },
+      { label: 'owed to you', value: outstanding, fmt: fmtUSD },
+      { label: 'orders owing', value: owingCount },
+    ]
+    return {
+      health: 'neutral', value: collected,
+      csv: {
+        filename: 'money-pulse',
+        headers: ['Family', 'Order #', 'Balance due'],
+        rows: owers.map(({ o, bal }) => [orderName(o), o.order_number || '', (Math.round(bal * 100) / 100).toFixed(2)]),
+      },
+      body: (
+        <>
+          <StatGrid stats={stats} onClick={() => ctx.onDrill({ title: 'Orders with a balance due', ids: owers.map(x => x.o.id), kind: 'orders' })} />
+          <div className="rb-note" style={{ marginTop: 8 }}>Moved from the Today tab — Today shows work; money lives here.</div>
+        </>
+      ),
+    }
+  },
+}
+
 const RECEIVABLES_AGING = {
   id: 'receivables_aging', group: 'money', daily: true,
   title: 'Receivables Aging',
@@ -657,6 +709,7 @@ const INSTALL_EFFICIENCY = {
 
 // Registry. (Daily Command = those with daily:true; Library = all, grouped.)
 export const REPORTS = [
+  MONEY_PULSE,
   MONEY_AT_RISK,
   REVENUE_LIMBO,
   OPEN_QUOTES_AGE,

@@ -67,6 +67,18 @@ Multi-service orders end-to-end (Paul: "some orders are inscription AND acid was
 - **Display:** `orderTypeLabels(order, job)` (plural) — Orders-table Job Type cell stacks one label per line; OrderDetail header + Type field join with ' / '.
 - **NOT undoable in one click** (modal says so); the archived originals keep full history + a pointer note.
 
+## Sprint TODAY-GOD-MODE (2026-07-14) — SHIPPED
+
+Full TodayTab rebuild as the failsafe screen (Paul-approved concept artifact). Doctrine: every commitment is a RECORD (owner + age + status); a loop leaves only by resolution or snooze-to-date; approvals are PROVEN sent against the outbound mail record; "Needs you" prints the rule per row.
+
+- **Migration `20260714_shop_tasks.sql` ✅ APPLIED:** `shop_tasks` (assignee, optional order_id, due_date, status open|done, snoozed_until) + `shop_task_replies` (author/body/handled_at — reply = inbox item for the other side until handled) + `approval_links.emailed_at/emailed_to`. Three-role RLS parity on both tables.
+- **Staff identity:** `STAFF_NAMES` (Lonnie, Catherina, Denise, Chelsea, Paul, Collin, Alex, Sabina, Leo) + `get/setActiveStaffUser` (localStorage `sb_active_staff`); **`getCurrentStaffName` prefers the picked person** — every actor stamp app-wide names who really did it. Picker = "I am" pill row atop Today.
+- **Approval email proof:** OrderDetail's composer stamps `approval_links.emailed_at/emailed_to` on real send (both Send-for-approval and Email-link paths carry `approvalLinkId`); `listAllApprovalLinks` + `getApprovalEmailEvidence` (outbound messages containing '/approve/', matched by share_url) drive the Today "Approvals out" panel — green "Email verified — sent X to Y" vs red "NO EMAIL ON RECORD". Real-data audit that motivated it: 7 links ever, only Hutchinson ×2 ever emailed; Medina ×4 since Jun 29 + Yager never emailed.
+- **New TodayTab** (`src/TodayTab.jsx`, `.sb-td2-*`, old money-briefing版 replaced): I-am switcher → Open-loops ledger (approvals/calls/tasks/promises/permits + total) → Self-check (5 client-side audit checks: signed-no-job, approvals-never-emailed, links-expiring-48h, check-payments-no-ref, jobs-stale-14d; Fix buttons deep-link) → Yesterday band (batches+tasks planned/done/slipped, slipped chips) → Needs-you (rule text per row: approval-never-emailed, viewed-no-answer≥3d, red pressure blockers, manual flags, unsigned>14d) → Approvals-out (verified) → Today's schedule + Tomorrow (work_batches ±1 day) → Shop pulse (in-shop / ready-to-set / foundations-list / calls-owed) → Tasks ("task me" capture with assignee+optional order+due; replies inbox for the active user; All / By-employee views; done/reply/snooze-to-tomorrow/delete).
+- **Money moved to Reports:** new `MONEY_PULSE` report (money group, daily-pinned) — collected in range, payments in, owed, orders owing + CSV of owers. Today carries a "Money moved out" marker.
+- **Deep-link:** Today's Open-order buttons use new `onOpenOrderDetail` prop (Stonebooks wires `setOrderDetailId + setTab('orders')`).
+- **Deferred:** permit-ledger cross-check in Self-check (needs an RPC — jsonb cross-join too heavy client-side); loop-chip drill-through filters; weather chip.
+
 ## CURRENT STATE (as of d11d3c4)
 - HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
 - Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates
