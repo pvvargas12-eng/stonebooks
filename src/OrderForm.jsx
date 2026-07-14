@@ -26,6 +26,7 @@ import {
   getOrderById, getJobByOrderId, createJobFromOrder,
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
   autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone, applyDepositMilestones,
+  missingCheckRef,
 } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
@@ -190,7 +191,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const [signedDate, setSignedDate] = useState(() => todayISODate())
 
   // Deposit captured at entry — becomes the first payment in payments[].
-  const [deposit, setDeposit] = useState({ amount: '', method: 'check', date: todayISODate() })
+  const [deposit, setDeposit] = useState({ amount: '', method: 'check', date: todayISODate(), ref: '' })
 
   // A stale "manual total override" must never silently diverge from the line
   // items: any edit that changes the priced contents clears it, so the displayed
@@ -284,10 +285,16 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     // New order only, and only the first time (order.id is set after the first
     // successful save) — so a retry-after-partial-failure won't double-add it.
     if (!isEdit && !order.id && Number.isFinite(depAmt) && depAmt > 0) {
+      // Check deposits must carry the check number — same rule as every other
+      // payment surface.
+      if (missingCheckRef(deposit.method, deposit.ref)) {
+        setBusy(false); setErr('Check number is required for the check deposit — fill it in under Financial.')
+        return
+      }
       payments = [...payments, {
         id: (crypto?.randomUUID?.() || `pay-${Date.now()}`),
         amount: depAmt, method: deposit.method, type: 'deposit',
-        ref: null, receivedAt: deposit.date, createdAt: new Date().toISOString(),
+        ref: deposit.ref.trim() || null, receivedAt: deposit.date, createdAt: new Date().toISOString(),
         createdBy: null, note: null, locked: true,
         voided: false, voidedReason: null, voidedAt: null, voidedBy: null,
       }]
@@ -1631,6 +1638,11 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, update, updateP
             </Field>
             <SelectField label="Method" value={deposit.method} onChange={v => setDeposit(d => ({ ...d, method: v }))}
               options={[{ value: 'cash', label: 'Cash' }, { value: 'check', label: 'Check' }, { value: 'card', label: 'Card' }, { value: 'zelle', label: 'Zelle' }, { value: 'other', label: 'Other' }]} />
+            <Field label={deposit.method === 'zelle' ? 'Zelle confirmation #' : deposit.method === 'check' ? 'Check number (required)' : 'Reference (optional)'}>
+              <input className="of-input" type="text" value={deposit.ref}
+                onChange={e => setDeposit(d => ({ ...d, ref: e.target.value }))}
+                placeholder={deposit.method === 'check' ? 'e.g. 4421' : ''} />
+            </Field>
             <Field label="Date">
               <input className="of-input" type="date" value={deposit.date} onChange={e => setDeposit(d => ({ ...d, date: e.target.value }))} />
             </Field>

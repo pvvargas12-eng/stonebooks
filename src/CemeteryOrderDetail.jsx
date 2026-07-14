@@ -23,6 +23,7 @@ import {
   fmtUSD,
   fmtDate,
   fmtRelative,
+  missingCheckRef,
 } from './lib/stonebooksData'
 import { ReceiptActions, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
@@ -141,7 +142,8 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
     setPayOpen(true)
   }
   const payAmt = Number(pay.amount)
-  const payValid = Number.isFinite(payAmt) && payAmt > 0
+  const payRefMissing = missingCheckRef(pay.method, pay.reference)
+  const payValid = Number.isFinite(payAmt) && payAmt > 0 && !payRefMissing
   const overpay = payValid && payAmt > balance + 0.005
   const afterPaid = paidTotal + (payValid ? payAmt : 0)
   const submitPay = async () => {
@@ -169,6 +171,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   }
   const saveEditPay = async () => {
     if (!editPay) return
+    if (missingCheckRef(editPay.method, editPay.reference)) { setPayRowErr('Check number is required for check payments.'); return }
     setPayRowBusy(editPay.id); setPayRowErr(null)
     const res = await updateFinancialRecord(editPay.id, {
       amount: Number(editPay.amount), payment_method: editPay.method,
@@ -388,7 +391,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
                 {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
             </label>
-            <label className="cod-modal-field">Reference (optional)
+            <label className="cod-modal-field">{pay.method === 'check' ? 'Check number (required)' : 'Reference (optional)'}
               <input value={pay.reference} onChange={e => setPay(p => ({ ...p, reference: e.target.value }))} placeholder="Check # / confirmation" />
             </label>
             <label className="cod-modal-field">Date

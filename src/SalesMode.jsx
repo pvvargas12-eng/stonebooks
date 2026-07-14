@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -11487,6 +11487,10 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
   // touches the legacy depositAmount/balanceAmount fields anymore (orderToRow
   // mirrors them from payments[] on write). One row editable at a time.
   const [editingId, setEditingId] = useState(null)
+  // Check payments must carry the check number — the id of the draft whose
+  // submit was refused for a missing ref (error renders in that editor row,
+  // self-clears once the ref is typed).
+  const [checkRefErrId, setCheckRefErrId] = useState(null)
 
   // Phase 2.1 — track which drafts are "fresh" (added via Add payment) vs
   // "re-opened" (from Edit-unlock). Fresh drafts can be deleted on Cancel;
@@ -11613,6 +11617,9 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
   // Phase 2.1 — submit a draft: flip locked false → true. This is the explicit
   // commit step; only now does the payment count toward totals + get a receipt.
   const submitPayment = (id) => {
+    const draft = (order.payments || []).find(p => p.id === id)
+    if (draft && missingCheckRef(draft.method, draft.ref)) { setCheckRefErrId(id); return }
+    setCheckRefErrId(null)
     const newPayments = (order.payments || []).map(p =>
       p.id === id ? { ...p, locked: true } : p
     )
@@ -11768,11 +11775,11 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
                       ]}
                     />
                   </Field>
-                  <Field label={payment.method === 'zelle' ? 'Zelle confirmation #' : 'Reference (check #, last 4, etc.)'}>
+                  <Field label={payment.method === 'zelle' ? 'Zelle confirmation #' : payment.method === 'check' ? 'Check number (required)' : 'Reference (last 4, etc.)'}>
                     <TextInput
                       value={payment.ref || ''}
                       onChange={v => updatePayment(payment.id, { ref: v })}
-                      placeholder={payment.method === 'zelle' ? 'e.g. 1234567890' : 'check #4421'}
+                      placeholder={payment.method === 'zelle' ? 'e.g. 1234567890' : payment.method === 'check' ? 'e.g. 4421' : ''}
                     />
                   </Field>
                   <Field label="Date received">
@@ -11795,6 +11802,11 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
                     />
                   </Field>
                 </div>
+                {checkRefErrId === payment.id && missingCheckRef(payment.method, payment.ref) && (
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: '#b3261e', marginTop: 6 }}>
+                    Check number is required for check payments.
+                  </div>
+                )}
                 <div className="sm-payment-row-actions">
                   <button type="button" className="sm-link-btn sm-link-btn-danger" onClick={() => cancelDraft(payment.id)}>
                     {freshDraftIds.has(payment.id) ? 'Cancel' : 'Cancel edit'}

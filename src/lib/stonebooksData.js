@@ -3046,7 +3046,16 @@ export function fmtUSD(n, opts = {}) {
     if (num >= 1000)    return `$${(num / 1000).toFixed(1)}k`
     return `$${num.toFixed(0)}`
   }
-  return '$' + num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+  // Money always shows exact cents — never rounded (Paul, 2026-07-14). The
+  // opts.short KPI abbreviation above is the only sanctioned compact form.
+  return '$' + num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// Check payments must carry the check number — enforced at every surface that
+// records a payment (wizard tracker, New Order deposit, OrderDetail modal,
+// Payments tab, cemetery orders, vendor POs).
+export function missingCheckRef(method, ref) {
+  return method === 'check' && !String(ref || '').trim()
 }
 
 export function fmtPhone(s) {

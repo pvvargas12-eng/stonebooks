@@ -23,6 +23,7 @@ import {
   listRecurringBills, createRecurringBill, OUTGOING_CATEGORIES,
   fmtUSD, fmtDate, customerName, getCurrentStaffName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
+  missingCheckRef,
 } from './lib/stonebooksData'
 import { ReceiptActions, rowToOrder, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
@@ -523,6 +524,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
     if (!pick) { setError('Pick an order first.'); return }
     const amt = Number(amount)
     if (!Number.isFinite(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
+    if (missingCheckRef(method, ref)) { setError('Check number is required for check payments.'); setConfirm(false); return }
     if (!confirm) { setConfirm(true); setError(null); return }
     setBusy(true); setError(null)
     const createdBy = collectedBy || await getCurrentStaffName()
@@ -596,7 +598,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
           {refLabel ? (
             <div className="sb-pay-field">
               <label>{refLabel}</label>
-              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
+              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder={method === 'check' ? 'required' : 'optional'} />
             </div>
           ) : <div className="sb-pay-field" />}
           <div className="sb-pay-field">
@@ -658,6 +660,7 @@ function LogOutgoingModal({ orders, onClose, onLogged }) {
     if (!payee.trim()) { setError('Enter a payee.'); return }
     const amt = Number(amount)
     if (!Number.isFinite(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
+    if (missingCheckRef(method, ref)) { setError('Check number is required for check payments.'); setConfirm(false); return }
     if (!confirm) { setConfirm(true); setError(null); return }
     setBusy(true); setError(null)
     const createdBy = await getCurrentStaffName()
@@ -699,7 +702,7 @@ function LogOutgoingModal({ orders, onClose, onLogged }) {
           {refLabel && (
             <div className="sb-pay-field" style={{ gridColumn: '1 / -1' }}>
               <label>{refLabel}</label>
-              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
+              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder={method === 'check' ? 'required' : 'optional'} />
             </div>
           )}
         </div>
@@ -837,6 +840,7 @@ function PayBillModal({ instance, onClose, onPaid }) {
   const submit = async () => {
     const amt = Number(amount)
     if (!Number.isFinite(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
+    if (missingCheckRef(method, ref)) { setError('Check number is required for check payments.'); return }
     setBusy(true); setError(null)
     const createdBy = await getCurrentStaffName()
     const res = await recordOutgoingPayment({
@@ -871,7 +875,7 @@ function PayBillModal({ instance, onClose, onPaid }) {
           {refLabel && (
             <div className="sb-pay-field">
               <label>{refLabel}</label>
-              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder="optional" />
+              <input className="sb-pay-input" value={ref} onChange={e => setRef(e.target.value)} placeholder={method === 'check' ? 'required' : 'optional'} />
             </div>
           )}
         </div>

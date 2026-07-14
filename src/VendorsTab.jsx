@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { fmtDate, getCurrentStaffName, sendOrderEmail, sendShopEmail } from './lib/stonebooksData'
+import { fmtDate, getCurrentStaffName, sendOrderEmail, sendShopEmail, missingCheckRef } from './lib/stonebooksData'
 import PartnerPortal from './PartnerPortal'
 import {
   listPartners, createPartner, updatePartner,
@@ -1025,6 +1025,7 @@ function POPayModal({ po, onClose, onSaved }) {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [busy, setBusy] = useState(false); const [error, setError] = useState(null)
   const save = async () => {
+    if (missingCheckRef(method, ref)) { setError('Check number is required for check payments.'); return }
     setBusy(true); setError(null)
     const actor = await getCurrentStaffName().catch(() => 'Staff')
     const r = await recordVendorPOPayment(po.id, { amount, method, ref, date, actor })

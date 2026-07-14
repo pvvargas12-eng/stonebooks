@@ -40,7 +40,7 @@ import {
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
-  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, setOrderManualBlocker,
+  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, setOrderManualBlocker, missingCheckRef,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
@@ -1267,6 +1267,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!payModal || payModal.busy) return
     const amount = Number(payModal.amount)
     if (!Number.isFinite(amount) || amount <= 0) { setPayModal(m => ({ ...m, error: 'Enter an amount greater than zero.' })); return }
+    if (missingCheckRef(payModal.method, payModal.ref)) { setPayModal(m => ({ ...m, confirm: false, error: 'Check number is required for check payments.' })); return }
     // Money safety — explicit confirm step before the record is written.
     if (!payModal.confirm) { setPayModal(m => ({ ...m, confirm: true, error: null })); return }
     setPayModal(m => ({ ...m, busy: true, error: null }))
@@ -1297,6 +1298,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
   const saveEditPay = async () => {
     if (!editPay) return
+    if (missingCheckRef(editPay.method, editPay.ref)) { setPayRowErr('Check number is required for check payments.'); return }
     setPayRowBusy(editPay.id); setPayRowErr(null)
     const res = await updateOrderPayment(orderId, editPay.id, {
       amount: Number(editPay.amount), method: editPay.method,
@@ -2860,7 +2862,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               </select>
             </label>
             <label className="sb-od-modal-field">
-              <span>{payModal.method === 'zelle' ? 'Zelle confirmation #' : 'Reference / check #'} <em className="sb-od-opt">optional</em></span>
+              <span>
+                {payModal.method === 'zelle' ? 'Zelle confirmation #' : payModal.method === 'check' ? 'Check number' : 'Reference #'}
+                {payModal.method !== 'check' && <> <em className="sb-od-opt">optional</em></>}
+              </span>
               <input type="text" className="sb-od-note-input" value={payModal.ref} disabled={payModal.confirm}
                 onChange={e => setPayModal(m => ({ ...m, ref: e.target.value }))} placeholder="e.g. 1042" />
             </label>
