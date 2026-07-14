@@ -1324,21 +1324,22 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
           <span className="sb-crm-primary sb-ord-cust-name">{titleCaseName(o._familyName)}</span>
-          {isLeadRow(o) && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
-        {/* All-tab scope pill — mixed results scan visually: green active, red
-            closed, gray archived (Paul, 2026-07-14). */}
-        {showScope && (() => {
-          const state = o.archived ? 'archived' : TERMINAL_STATUSES.has(o.status) ? 'closed' : 'active'
-          const kind = isOrderRow(o, o._paid) ? 'Order' : 'Lead'
-          const label = { archived: 'Archived', closed: 'Closed', active: 'Active' }[state]
-          return (
-            <div className="sb-ord-scopeline">
-              <span className={`sb-ord-scopepill sb-ord-scopepill-${state}`}>{kind} · {label}</span>
-            </div>
-          )
-        })()}
+        {/* Pills live UNDER the name, never beside it — the wide LEAD banner
+            was flex-crushing the name span to zero width (Paul, 2026-07-14:
+            banners below the family name are fine; hiding the name never is). */}
+        {(isLeadRow(o) || showScope) && (
+          <div className="sb-ord-scopeline">
+            {isLeadRow(o) && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
+            {showScope && (() => {
+              const state = o.archived ? 'archived' : TERMINAL_STATUSES.has(o.status) ? 'closed' : 'active'
+              const kind = isOrderRow(o, o._paid) ? 'Order' : 'Lead'
+              const label = { archived: 'Archived', closed: 'Closed', active: 'Active' }[state]
+              return <span className={`sb-ord-scopepill sb-ord-scopepill-${state}`}>{kind} · {label}</span>
+            })()}
+          </div>
+        )}
         {(blocker || o.manual_blocker) && (
           <div className="sb-ord-blockline">
             {/* Manual blocker first — a human set it on purpose. Its kind chip
@@ -1587,7 +1588,7 @@ const TW_CSS = `
   .sb-ord-bpill-red   { color: #B3261E; background: rgba(179,38,30,0.08); }
   .sb-ord-bpill-amber { color: #8a5a12; background: rgba(183,121,31,0.1); }
   .sb-ord-allnote { font-size: 12.5px; font-weight: 600; color: #6a6a66; padding: 6px 2px; white-space: nowrap; }
-  .sb-ord-scopeline { margin-top: 3px; }
+  .sb-ord-scopeline { margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .sb-ord-scopepill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
     border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
   .sb-ord-scopepill-active   { color: #15724a; background: rgba(29,158,117,0.11); }
