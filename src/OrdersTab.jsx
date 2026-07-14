@@ -219,9 +219,9 @@ function payRank(o) {
 // Status-dimension progress ranks (workflow order). Null/absent → -1 so
 // not-started/no-job rows group together at the top of an ascending sort.
 const _PAY_DIM_RANK    = { quoted: 0, deposit: 1, paid_in_full: 2 }
-const _DESIGN_DIM_RANK = { not_created: 0, layout_created: 1, needs_adjustments: 2, layout_approved: 3 }
-const _STONE_DIM_RANK  = { not_ordered: 0, ordered: 1, in_stock: 2, needs_pickup: 3, needs_stencil_cut: 4, needs_blasting: 5, blasted: 6 }
-const _FDN_DIM_RANK    = { na: 0, not_in: 1, need_map: 2, dug: 3, poured: 4, in: 5 }
+const _DESIGN_DIM_RANK = { not_created: 0, layout_created: 1, needs_adjustments: 2, layout_approved: 3, cut: 4 }
+const _STONE_DIM_RANK  = { not_ordered: 0, ordered: 1, in_stock: 2, needs_pickup: 3, needs_stencil_cut: 4, needs_blasting: 5, blasted: 6, received: 6 }
+const _FDN_DIM_RANK    = { na: 0, not_in: 1, need_map: 2, drop_off: 2, dug: 3, poured: 4, in: 5 }
 const dimRank = (map, v) => (v != null && map[v] != null ? map[v] : -1)
 
 // Furthest-done milestone on a job → { key, label }.
@@ -454,9 +454,12 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         _missingInfo: missingInfo,
         _isNewStone: isNewStone,
         _payment: derivePaymentStatus(o),
-        _design: job ? deriveDesignStatus(job) : null,
-        _stone: job ? deriveStoneStatus(job) : null,
-        _fdn: job ? deriveFdnStatus(job) : null,
+        // Null where the dimension doesn't exist for this job type (audit F8) —
+        // sorting then groups the em-dash rows together instead of interleaving
+        // them by a hidden derived value. Cells already gate on statusDimApplies.
+        _design: (job && statusDimApplies('design', job, o)) ? deriveDesignStatus(job) : null,
+        _stone: (job && statusDimApplies('stone', job, o)) ? deriveStoneStatus(job) : null,
+        _fdn: (job && statusDimApplies('fdn', job, o)) ? deriveFdnStatus(job) : null,
         _contractTotal: orderContractTotal(o),
         _setBlock: setBlock,
         _serviceTypesUp: new Set((o.service_types || []).map(s => String(s).toUpperCase())),

@@ -295,7 +295,7 @@ function JobsListView({ onOpenJob }) {
     let cancelled = false
     setLoading(true)
     setLoadErr(null)
-    getJobs({ includeClosed: statusFilter === 'closed', limit: 1000 })
+    getJobs({ includeClosed: statusFilter === 'closed', limit: 2000 })
       .then(rows => {
         if (cancelled) return
         // Workflow #3 fix: 'cancelled' jobs were leaking into Active because

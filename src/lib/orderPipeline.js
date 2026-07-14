@@ -162,6 +162,10 @@ export function orderJobType(order) {
 export function cemeteryHandlesFoundation(order, milestones = []) {
   const ft = order?.foundation_type || order?.foundationType
   if (ft === 'Cemetery Foundation') return true
+  // When the order explicitly says WE pour it, the drop-off milestone shape
+  // must never collapse our dig/pour ladder (audit B4) — a mid-flight
+  // scheduled-but-not-dug state on our own foundation is just in progress.
+  if (ft === 'Our Foundation' || ft === 'Strip') return false
   const done = (k) => milestones.some(m => m.milestone_key === k && m.status === 'done')
   return done('foundation_scheduled') && !done('foundation_dug') && !done('foundation_poured') && !done('foundation_in')
 }

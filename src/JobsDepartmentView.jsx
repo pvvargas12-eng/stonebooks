@@ -140,7 +140,7 @@ export default function JobsDepartmentView({
     setLoading(true)
     try {
       const [jobData, orderData, proofMap, proofOrderIds] = await Promise.all([
-        getJobs({ includeClosed: false, limit: 1000 }),
+        getJobs({ includeClosed: false, limit: 2000 }),
         listAllOrders({ limit: 500 }),
         getCurrentProofsByJob(),
         getOrdersWithCurrentProof(),

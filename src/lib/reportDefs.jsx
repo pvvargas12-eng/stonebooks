@@ -28,6 +28,9 @@ export const REPORT_GROUPS = [
 
 const ESTIMATE_STATUSES = ['scoping', 'quoted']
 const daysBetween = (fromIso, toMs) => fromIso ? Math.max(0, Math.floor((toMs - new Date(fromIso).getTime()) / 86400000)) : 0
+// CSV money cells — exact cents, never whole-dollar rounding (Paul, 2026-07-14:
+// money never rounds anywhere; exports must tie to the on-screen figures).
+const csvMoney = (n) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2)
 
 const JOB_CLOSED = ['closed', 'cancelled', 'archived', 'paid', 'completed']
 const isActiveJob = (j) => j && !JOB_CLOSED.includes(j.overall_status)
@@ -203,7 +206,7 @@ const RECEIVABLES_AGING = {
     const health = total === 0 ? 'green' : healthFrom(share, { red: 0.25, yellow: 0.10, invert: true })
     return {
       health, value: total,
-      csv: { filename: 'receivables-aging', headers: ['Bucket', 'Amount', 'Count'], rows: buckets.map(b => [b.label, Math.round(b.value), b.count]) },
+      csv: { filename: 'receivables-aging', headers: ['Bucket', 'Amount', 'Count'], rows: buckets.map(b => [b.label, csvMoney(b.value), b.count]) },
       body: <BucketBars buckets={buckets} total={total} onDrill={ctx.onDrill} />,
     }
   },
@@ -236,7 +239,7 @@ const OPEN_QUOTES_AGE = {
     const health = total === 0 ? 'green' : healthFrom(share, { red: 0.4, yellow: 0.2, invert: true })
     return {
       health, value: total,
-      csv: { filename: 'open-quotes-by-age', headers: ['Age bucket', 'Amount', 'Count'], rows: buckets.map(b => [b.label, Math.round(b.value), b.count]) },
+      csv: { filename: 'open-quotes-by-age', headers: ['Age bucket', 'Amount', 'Count'], rows: buckets.map(b => [b.label, csvMoney(b.value), b.count]) },
       body: <BucketBars buckets={buckets} total={total} onDrill={ctx.onDrill} />,
     }
   },
@@ -274,7 +277,7 @@ const MONEY_AT_RISK = {
     const health = healthFrom(total, { red: 50000, yellow: 15000, invert: true })
     return {
       health, value: total,
-      csv: { filename: 'money-at-risk', headers: ['Risk type', 'Amount', 'Count'], rows: segments.map(s => [s.label, Math.round(s.value), s.count]) },
+      csv: { filename: 'money-at-risk', headers: ['Risk type', 'Amount', 'Count'], rows: segments.map(s => [s.label, csvMoney(s.value), s.count]) },
       body: <StackBar segments={segments} onDrill={ctx.onDrill} />,
     }
   },
@@ -304,7 +307,7 @@ const REVENUE_LIMBO = {
     if (!buckets.length) return { health: 'green', value: 0, body: <div className="rb-empty">No signed work parked in a stage right now.</div> }
     return {
       health, value: total,
-      csv: { filename: 'revenue-in-limbo', headers: ['Stage', 'Amount', 'Jobs'], rows: buckets.map(b => [b.label, Math.round(b.value), b.count]) },
+      csv: { filename: 'revenue-in-limbo', headers: ['Stage', 'Amount', 'Jobs'], rows: buckets.map(b => [b.label, csvMoney(b.value), b.count]) },
       body: <BucketBars buckets={buckets} total={total} onDrill={ctx.onDrill} />,
     }
   },
@@ -336,7 +339,7 @@ const BOTTLENECK_RADAR = {
     const health = healthFrom(worstAvg, { red: 21, yellow: 10, invert: true })
     return {
       health, value: worstAvg,
-      csv: { filename: 'bottleneck-radar', headers: ['Stage', 'Jobs', '$ in stage', 'Avg days', 'Oldest days'], rows: rows.map(r => [r.label, r.count, Math.round(r.value), r.avgDays, r.oldest]) },
+      csv: { filename: 'bottleneck-radar', headers: ['Stage', 'Jobs', '$ in stage', 'Avg days', 'Oldest days'], rows: rows.map(r => [r.label, r.count, csvMoney(r.value), r.avgDays, r.oldest]) },
       body: <StageTable rows={rows} onDrill={ctx.onDrill} />,
     }
   },
@@ -378,7 +381,7 @@ const CUSTOMER_WAITING = {
     return {
       health, value: noContact,
       note: null,
-      csv: { filename: 'customer-waiting', headers: ['Waiting for', '$ value', 'Customers'], rows: buckets.map(b => [b.label, Math.round(b.value), b.count]) },
+      csv: { filename: 'customer-waiting', headers: ['Waiting for', '$ value', 'Customers'], rows: buckets.map(b => [b.label, csvMoney(b.value), b.count]) },
       body: (
         <>
           <BucketBars buckets={buckets.map(b => ({ ...b, drillTitle: b.label }))} onDrill={ctx.onDrill} />
@@ -451,7 +454,7 @@ const TRUE_PROFIT_JOB = {
     ]
     return {
       health: med == null ? 'neutral' : healthFrom(med, { red: 20, yellow: 35 }), value: med,
-      csv: { filename: 'true-profit-by-job', headers: ['Job', 'Sale', 'Cost', 'Gross', 'Margin%', '$/day', 'Days'], rows: rows.map(r => [r.name, Math.round(r.sale), Math.round(r.cost), Math.round(r.gross), r.margin < 0 ? '' : r.margin, r.perDay, r.days]) },
+      csv: { filename: 'true-profit-by-job', headers: ['Job', 'Sale', 'Cost', 'Gross', 'Margin%', '$/day', 'Days'], rows: rows.map(r => [r.name, csvMoney(r.sale), csvMoney(r.cost), csvMoney(r.gross), r.margin < 0 ? '' : r.margin, r.perDay, r.days]) },
       body: (
         <>
           <SortableTable columns={columns} rows={rows} grid="1.4fr 86px 78px 86px 66px 78px" initialSort={{ key: 'perDay', dir: 'desc' }} onDrill={ctx.onDrill} />
@@ -496,7 +499,7 @@ const PROFIT_JOB_TYPE = {
     ]
     return {
       health: 'neutral', value: rows.reduce((s, r) => s + r.revenue, 0),
-      csv: { filename: 'profit-by-job-type', headers: ['Type', 'Jobs', 'Revenue', 'Avg profit', 'Margin%', 'Avg cycle days'], rows: rows.map(r => [r.type, r.n, Math.round(r.revenue), r.avgProfit, r.margin < 0 ? '' : r.margin, r.avgCycle]) },
+      csv: { filename: 'profit-by-job-type', headers: ['Type', 'Jobs', 'Revenue', 'Avg profit', 'Margin%', 'Avg cycle days'], rows: rows.map(r => [r.type, r.n, csvMoney(r.revenue), r.avgProfit, r.margin < 0 ? '' : r.margin, r.avgCycle]) },
       body: <SortableTable columns={columns} rows={rows} grid="1.2fr 56px 96px 96px 70px 72px" initialSort={{ key: 'revenue', dir: 'desc' }} onDrill={ctx.onDrill} />,
     }
   },
@@ -540,7 +543,7 @@ const CEMETERY_PROFIT = {
     ]
     return {
       health: 'neutral', value: rows.reduce((s, r) => s + r.profit, 0),
-      csv: { filename: 'cemetery-profitability', headers: ['Cemetery', 'Jobs', 'Revenue', 'Profit', 'Margin%', 'Avg permit days', 'Avg order-to-install days'], rows: rows.map(r => [r.cemetery, r.n, Math.round(r.revenue), Math.round(r.profit), r.margin < 0 ? '' : r.margin, r.permitDays ?? '', r.installDays ?? '']) },
+      csv: { filename: 'cemetery-profitability', headers: ['Cemetery', 'Jobs', 'Revenue', 'Profit', 'Margin%', 'Avg permit days', 'Avg order-to-install days'], rows: rows.map(r => [r.cemetery, r.n, csvMoney(r.revenue), csvMoney(r.profit), r.margin < 0 ? '' : r.margin, r.permitDays ?? '', r.installDays ?? '']) },
       body: (
         <>
           <SortableTable columns={columns} rows={rows} grid="1.3fr 50px 90px 88px 64px 70px 96px" initialSort={{ key: 'profit', dir: 'desc' }} onDrill={ctx.onDrill} />
@@ -582,7 +585,7 @@ const STUCK_JOBS = {
     if (total === 0) return { health: 'green', value: 0, body: <div className="rb-empty">Nothing stuck — every active job has moved in the last 3 days.</div> }
     return {
       health, value: over14,
-      csv: { filename: 'stuck-jobs', headers: ['No-movement bucket', '$ value', 'Jobs'], rows: buckets.map(b => [b.label, Math.round(b.value), b.count]) },
+      csv: { filename: 'stuck-jobs', headers: ['No-movement bucket', '$ value', 'Jobs'], rows: buckets.map(b => [b.label, csvMoney(b.value), b.count]) },
       body: (
         <>
           <BucketBars buckets={buckets} onDrill={ctx.onDrill} />
@@ -641,7 +644,7 @@ const INSTALL_EFFICIENCY = {
     ]
     return {
       health: healthFrom(installsPerTrip, { red: 1, yellow: 1.5 }), value: installsPerTrip,
-      csv: { filename: 'install-efficiency', headers: ['Trips', 'Total installs', 'Installs/trip', 'Total revenue', 'Revenue/trip', 'Total profit', 'Profit/trip'], rows: [[n, totalInstalls, installsPerTrip.toFixed(2), Math.round(totalRev), Math.round(totalRev / n), Math.round(profit), Math.round(profit / n)]] },
+      csv: { filename: 'install-efficiency', headers: ['Trips', 'Total installs', 'Installs/trip', 'Total revenue', 'Revenue/trip', 'Total profit', 'Profit/trip'], rows: [[n, totalInstalls, installsPerTrip.toFixed(2), csvMoney(totalRev), csvMoney(totalRev / n), csvMoney(profit), csvMoney(profit / n)]] },
       body: (
         <>
           <StatGrid stats={stats} onClick={() => ctx.onDrill({ title: 'Jobs on install/delivery trips', ids: jobIds, kind: 'jobs' })} />

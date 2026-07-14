@@ -48,7 +48,7 @@ export default function FoundationsBoard({ onOpenJob }) {
     setLoading(true)
     setErr(null)
     try {
-      const [js, fl] = await Promise.all([getJobs({ limit: 1000 }), getFoundationList()])
+      const [js, fl] = await Promise.all([getJobs({ limit: 2000 }), getFoundationList()])
       setJobs(js || [])
       setList(fl || [])
     } catch (e) {

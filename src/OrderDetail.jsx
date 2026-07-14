@@ -96,7 +96,9 @@ const NEW_VENDOR = '__new__'
 const draftHasBase = (o) => !!o && orderHasBase(o.baseConfig, SHAPES.find(s => s.code === o.shape))
 // Collapse the 7-state derive into the 3 ordering choices (anything past "ordered"
 // still reads as Ordered here; full production stages live on the Jobs tab).
-const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : s === 'in_stock' ? 'in_stock' : 'ordered'
+// Bronze 'received' = physically here → In stock, so re-saving this panel can
+// never silently knock a received bronze back to merely ordered (audit F3).
+const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : (s === 'in_stock' || s === 'received') ? 'in_stock' : 'ordered'
 // Contract date → +5 months due-date autofill for new stones (same rule as the
 // Orders table's inline signed handler).
 const plusFiveMonthsISO = (isoDate) => {
@@ -1012,18 +1014,25 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const label = `${fmtUSD(p.amount)}${p.reference ? ` ck #${p.reference}` : ''}`
     if (!window.confirm(`Remove this permit fee — ${label}? It also comes off Payments › Outgoing.`)) return
     setFeeBusy(true); setFeeMsg(null)
-    const r = await deleteOutgoingPayment(p.id)
-    if (!r.ok) { setFeeBusy(false); setFeeMsg({ type: 'err', text: r.error || 'Could not remove the fee.' }); return }
+    // Find the matching orders.permit[] filing BEFORE deleting the ledger row,
+    // so a match problem is visible up front instead of orphaning the filing
+    // (audit B5). Key match first; if the stored key doesn't line up (jsonb
+    // amount serialization can differ), fall back to check# + amount facts.
     const arr = Array.isArray(order.permit) ? order.permit : []
     const key = p.source_permit_key || null
-    const nextArr = arr.filter(f => {
-      if (key) return permitOutgoingKey(orderId, f) !== key
-      // Legacy row without a source key — match on the visible facts.
-      const sameCk = (f.ck ? String(f.ck).trim() : null) === (p.reference || null)
+    const factsMatch = (f) => {
+      const sameCk = (f.ck != null && String(f.ck).trim() !== '' ? String(f.ck).trim() : null) === (p.reference || null)
       const sameAmt = Number(f.amount) === Number(p.amount)
-      return !(sameCk && sameAmt)
-    })
-    if (nextArr.length !== arr.length) await setOrderPermit(orderId, { permit: nextArr })
+      return sameCk && sameAmt
+    }
+    let nextArr = key ? arr.filter(f => permitOutgoingKey(orderId, f) !== key) : arr.filter(f => !factsMatch(f))
+    if (key && nextArr.length === arr.length) nextArr = arr.filter(f => !factsMatch(f))
+    const r = await deleteOutgoingPayment(p.id)
+    if (!r.ok) { setFeeBusy(false); setFeeMsg({ type: 'err', text: r.error || 'Could not remove the fee.' }); return }
+    if (nextArr.length !== arr.length) {
+      const pr = await setOrderPermit(orderId, { permit: nextArr })
+      if (!pr.ok) { setFeeBusy(false); setFeeMsg({ type: 'err', text: `Expense deleted, but the permit log entry could not be updated — ${pr.error || 'unknown error'}. Fix it via the permit log.` }); await loadPermitExpenses(); return }
+    }
     setFeeBusy(false)
     await refreshOrder(); await loadPermitExpenses()
     const staff = await getCurrentStaffName()
@@ -1167,6 +1176,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!payDraft) return { ok: false, error: 'Nothing to record.' }
     const amount = Number(payDraft.amount)
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'Enter an amount greater than zero.' }
+    if (missingCheckRef(payDraft.method, payDraft.ref)) return { ok: false, error: 'Check number is required for check payments.' }
     const createdBy = payDraft.collectedBy || await getCurrentStaffName()
     const res = await recordOrderPayment(orderId, {
       amount, method: payDraft.method, type: payDraft.type,

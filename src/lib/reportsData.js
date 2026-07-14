@@ -30,7 +30,7 @@ export async function loadReportsData() {
   const [orders, jobs, outgoing, promises, batches] = await Promise.all([
     fetchAllPaged(() => supabase.from('orders').select(REPORT_ORDER_SELECT)
       .or('archived.is.null,archived.eq.false').order('created_at', { ascending: false })).catch(() => []),
-    getJobs({ includeClosed: true, limit: 1000 }).catch(() => []),
+    getJobs({ includeClosed: true, limit: 2000 }).catch(() => []),
     listOutgoingPayments().catch(() => []),
     getAllOpenPromises({ includeResolved: true }).catch(() => []),
     getBatches({}).catch(() => []),

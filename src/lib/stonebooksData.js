@@ -1846,8 +1846,10 @@ function _bronzeStonePlan(code) {
   const KEYS = ['bronze_ordered', 'bronze_received']
   switch (code) {
     case 'not_ordered': return { done: [], notStarted: KEYS }
-    case 'in_stock':
     case 'ordered':     return { done: ['bronze_ordered'], notStarted: ['bronze_received'] }
+    // in_stock = physically here — for a bronze that IS received (audit F3:
+    // the simplified die/base panel writes in_stock and must not downgrade).
+    case 'in_stock':
     case 'needs_pickup':
     case 'needs_stencil_cut':
     case 'needs_blasting':

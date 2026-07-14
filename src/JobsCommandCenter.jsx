@@ -57,7 +57,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
   const load = useCallback(async () => {
     const token = ++reqRef.current
     try {
-      const data = await getJobs({ includeClosed: false, limit: 1000 })
+      const data = await getJobs({ includeClosed: false, limit: 2000 })
       if (token !== reqRef.current) return
       setJobs((data || []).filter(j => j.overall_status !== 'cancelled'))
       setErr(null)
