@@ -1,5 +1,7 @@
 # Stonebooks audit — 2026-07-14
 
+> **FIX STATUS (same day):** A1 backfilled (46 rows / $51,431.80 into outgoing_payments, `created_by='system: permit backfill 2026-07-14'`; PARISER 2028→2026 date fixed; 0 ck-bearing filings still missing). A2/A3/A4/B1/B2/B3/B4/B5/F8 + limits + CSV cents fixed in commits `a86cb91`, `585eb11`, `fbdffd7`, `747db02`. STILL OPEN (needs Paul): ~27 no-check-number permit filings (unverifiable — hand entry), 11 legacy check payments missing numbers (list below), ck 2857 double-claim (E-26-0003 vs E-26-0004), blank family names ×3, 2 signed orders without jobs (self-heal on first status touch), QueuesTab new_stone-only scope (pre-existing design), DesignHub lacks the Cut option (cosmetic).
+
 Scope: prod data integrity (via Management API) + two code sweeps (status/milestone consistency across surfaces; money paths + UI dead ends) at HEAD `7ff0044`. Findings ranked. No fixes applied — detection only.
 
 ## CRITICAL — money / phantom data
