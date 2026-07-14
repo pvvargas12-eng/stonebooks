@@ -1626,6 +1626,9 @@ export const DESIGN_STATUS = [
   { code: 'layout_created',    label: 'Layout created' },
   { code: 'needs_adjustments', label: 'Needs adjustments' },
   { code: 'layout_approved',   label: 'Layout approved' },
+  // Inscription-only terminal stage — the stencil is cut. Hidden on other job
+  // types via designStatusOptions().
+  { code: 'cut',               label: 'Cut' },
 ]
 export const STONE_STATUS = [
   { code: 'not_ordered',       label: 'Not ordered' },
@@ -1686,17 +1689,53 @@ export function derivePaymentStatus(order) {
 const DESIGN_VOCABS = [
   { created: 'proof_created', sent: null, changes: 'proof_changes_requested', approved: 'proof_approved' },
   { created: 'bronze_layout_created', sent: 'bronze_proof_sent', changes: null, approved: 'bronze_proof_approved' },
-  { created: 'layout_created', sent: 'proof_sent', changes: null, approved: 'proof_approved' },
+  // Inscription — design ends at the CUT stencil (Paul, 2026-07-14).
+  { created: 'layout_created', sent: 'proof_sent', changes: null, approved: 'proof_approved', cut: 'stencil_cut', cutPre: ['stencil_created'] },
 ]
 const _designVocabForKeys = (keys) => DESIGN_VOCABS.find(v => keys.includes(v.created)) || null
+const _designVocabForJobType = (jt) =>
+  jt === 'bronze' ? DESIGN_VOCABS[1] : jt === 'inscription' ? DESIGN_VOCABS[2] : DESIGN_VOCABS[0]
 
 export function deriveDesignStatus(job) {
   const keys = _msList(job).map(m => m.milestone_key)
   const v = _designVocabForKeys(keys) || DESIGN_VOCABS[0]
+  if (v.cut && _msDone(job, v.cut)) return 'cut'
   if (_msDone(job, v.approved)) return 'layout_approved'
   if (v.changes && _msDone(job, v.changes)) return 'needs_adjustments'
   if (_msDone(job, v.created) || (v.sent && _msDone(job, v.sent))) return 'layout_created'
   return 'not_created'
+}
+
+// The Design dropdown options a given job/order should offer: needs_adjustments
+// only where the vocabulary carries a changes key; Cut only for inscription.
+// Works pre-job too (vocab from the order's service types) so jobless orders
+// still show the right choices.
+export function designStatusOptions(job, order = null) {
+  let v = job ? _designVocabForKeys(_jobMilestoneKeys(job)) : null
+  if (!v) v = _designVocabForJobType(job?.job_type || jobTypeForServiceTypes(order?.service_types || order?.serviceTypes || []))
+  return DESIGN_STATUS.filter(s =>
+    s.code === 'needs_adjustments' ? !!v.changes
+    : s.code === 'cut' ? !!v.cut
+    : true)
+}
+
+// Which status dimensions exist for a job type at all — inscriptions carve an
+// EXISTING stone (no stone order, no foundation); acid wash / repair have no
+// design, stone, or foundation work (Paul, 2026-07-14). Cells render an em
+// dash where a dimension doesn't apply.
+const STATUS_DIMS_BY_TYPE = {
+  new_stone:       { design: true,  stone: true,  fdn: true },
+  other:           { design: true,  stone: true,  fdn: true },
+  bronze:          { design: true,  stone: true,  fdn: true },
+  mausoleum_door:  { design: true,  stone: false, fdn: false },
+  inscription:     { design: true,  stone: false, fdn: false },
+  cleaning_repair: { design: false, stone: false, fdn: false },
+}
+export function statusDimApplies(dim, job, order = null) {
+  const jt = job?.job_type
+    || jobTypeForServiceTypes(order?.service_types || order?.serviceTypes || [])
+    || 'new_stone'
+  return !!((STATUS_DIMS_BY_TYPE[jt] || STATUS_DIMS_BY_TYPE.new_stone)[dim])
 }
 // Bronze jobs track stone with their own two keys (bronze_ordered /
 // bronze_received) — the stone_* ladder doesn't exist on them, so the
@@ -1757,7 +1796,7 @@ export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 // hasn't begun should look like it's waiting on someone, same red as the
 // CALL chip. Mid-flight = info/warn, done = good, true N/A stays neutral.
 export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : c === 'quoted' ? 'bad' : 'neutral'
-export const designStatusTone   = (c) => c === 'layout_approved' ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'bad'
+export const designStatusTone   = (c) => (c === 'layout_approved' || c === 'cut') ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'bad'
 export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'received') ? 'good'
   : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'bad'
 export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : c === 'na' ? 'neutral' : 'bad'
@@ -1767,17 +1806,23 @@ export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
 // Plans are built against the job's vocabulary. Vocabs without a changes key
 // (bronze, inscription) map needs_adjustments to created+sent done — honest
 // (proof went out, not approved), and the derived status reads layout_created.
+// Inscription's cut stage flips stencil_created + stencil_cut on top.
 function _designPlan(code, v = DESIGN_VOCABS[0]) {
-  const all = [v.created, v.sent, v.changes, v.approved].filter(Boolean)
+  const cutKeys = v.cut ? [...(v.cutPre || []), v.cut] : []
+  const preCut = [v.created, v.sent, v.changes, v.approved].filter(Boolean)
+  const all = [...preCut, ...cutKeys]
   switch (code) {
     case 'not_created':       return { done: [], notStarted: all }
     case 'layout_created':    return { done: [v.created], notStarted: all.filter(k => k !== v.created) }
     case 'needs_adjustments': return v.changes
-      ? { done: [v.created, v.changes], notStarted: [v.approved] }
-      : { done: [v.created, v.sent].filter(Boolean), notStarted: [v.approved] }
+      ? { done: [v.created, v.changes], notStarted: [v.approved, ...cutKeys] }
+      : { done: [v.created, v.sent].filter(Boolean), notStarted: [v.approved, ...cutKeys] }
     case 'layout_approved':   return v.changes
-      ? { done: [v.created, v.approved], notStarted: [] }
-      : { done: all, notStarted: [] }
+      ? { done: [v.created, v.approved], notStarted: cutKeys }
+      : { done: preCut, notStarted: cutKeys }
+    case 'cut':               return v.cut
+      ? { done: all.filter(k => k !== v.changes), notStarted: [] }
+      : null
     default: return null
   }
 }
@@ -1851,7 +1896,9 @@ const DESIGN_SEED_ROWS = [
   { milestone_key: 'proof_approved',          label: 'Layout approved by customer', sort_order: 5 },
 ]
 export async function setOrderDesignStatus(jobId, code) {
-  if (!jobId || !_designPlan(code)) return { ok: false, error: 'Invalid status change' }
+  // Validate the CODE here (not the default-vocab plan — 'cut' only exists on
+  // the inscription vocabulary, resolved below from the job's actual keys).
+  if (!jobId || !DESIGN_STATUS.some(s => s.code === code)) return { ok: false, error: 'Invalid status change' }
   const { data, error } = await supabase
     .from('job_milestones')
     .select('milestone_key')
@@ -1867,7 +1914,9 @@ export async function setOrderDesignStatus(jobId, code) {
     v = DESIGN_VOCABS[0]
     seeded = true
   }
-  const res = await _applyMilestonePlan(jobId, _designPlan(code, v))
+  const plan = _designPlan(code, v)
+  if (!plan) return { ok: false, error: 'That status doesn’t apply to this job type' }
+  const res = await _applyMilestonePlan(jobId, plan)
   return res.ok ? { ok: true, seeded } : res
 }
 // Stone writes resolve the job's vocabulary first (bronze vs standard) —

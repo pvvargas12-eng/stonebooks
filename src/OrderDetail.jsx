@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  getOrderById, getJobByOrderId,
+  getOrderById, getJobByOrderId, createJobFromOrder, designStatusOptions, statusDimApplies,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   fmtUSD, fmtDate, fmtPhone, statusInfo, jobStatusInfo, customerName,
   computeOrderPressure, getNextRequiredAction,
@@ -507,19 +507,30 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const r = await bulkUpdateOrders([orderId], { payment_status: code })
     if (r.ok) await refreshOrder()
   }
+  // No job yet doesn't block a status edit — the first set quietly creates the
+  // job (allowUnsigned) and applies to it (Paul, 2026-07-14).
+  const ensureJobId = async () => {
+    if (job?.id) return job.id
+    const jr = await createJobFromOrder(orderId, { source: 'order_detail_status', allowUnsigned: true })
+    if (!jr.ok) { setActionNote(`Could not create the job — ${jr.error}.`); return null }
+    return jr.job?.id || null
+  }
   const inlineDesign = async (code) => {
-    if (!job?.id) return
-    const r = await setOrderDesignStatus(job.id, code)
+    const jid = await ensureJobId()
+    if (!jid) return
+    const r = await setOrderDesignStatus(jid, code)
     if (r.ok) await refreshJob()
   }
   const inlineStone = async (code) => {
-    if (!job?.id) return
-    const r = await setOrderStoneStatus(job.id, code)
+    const jid = await ensureJobId()
+    if (!jid) return
+    const r = await setOrderStoneStatus(jid, code)
     if (r.ok) await refreshJob()
   }
   const inlineFdn = async (code) => {
-    if (!job?.id) return
-    const r = await setOrderFdnStatus(job.id, code)
+    const jid = await ensureJobId()
+    if (!jid) return
+    const r = await setOrderFdnStatus(jid, code)
     if (r.ok) await refreshJob()
   }
   const inlinePermit = async (code) => {
@@ -1863,20 +1874,23 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 {PAYMENT_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
               </select>
             </label>
-            <label className="sb-od-sc"><b>Design</b>
-              {job ? (
-                <select className={`sb-od-tone-${designStatusTone(deriveDesignStatus(job))}`} value={deriveDesignStatus(job)} onChange={e => inlineDesign(e.target.value)}>
-                  {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+            {/* Dimensions render only where they exist for this job type
+                (inscriptions: no stone/foundation; acid wash & repair: none of
+                the three). No job yet doesn't block — the first set creates it. */}
+            {statusDimApplies('design', job, order) && (
+              <label className="sb-od-sc"><b>Design</b>
+                <select className={`sb-od-tone-${designStatusTone(job ? deriveDesignStatus(job) : 'not_created')}`} value={job ? deriveDesignStatus(job) : 'not_created'} onChange={e => inlineDesign(e.target.value)}>
+                  {designStatusOptions(job, order).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
-              ) : <span className="sb-od-sc-na">no job yet</span>}
-            </label>
-            <label className="sb-od-sc"><b>Stone / Bronze</b>
-              {job ? (
-                <select className={`sb-od-tone-${stoneStatusTone(deriveStoneStatus(job))}`} value={deriveStoneStatus(job)} onChange={e => inlineStone(e.target.value)}>
+              </label>
+            )}
+            {statusDimApplies('stone', job, order) && (
+              <label className="sb-od-sc"><b>Stone / Bronze</b>
+                <select className={`sb-od-tone-${stoneStatusTone(job ? deriveStoneStatus(job) : 'not_ordered')}`} value={job ? deriveStoneStatus(job) : 'not_ordered'} onChange={e => inlineStone(e.target.value)}>
                   {stoneStatusOptions(job).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
-              ) : <span className="sb-od-sc-na">no job yet</span>}
-            </label>
+              </label>
+            )}
             <label className="sb-od-sc"><b>Permit</b>
               <select className={`sb-od-tone-${permitStatusTone(order.permit_status || 'unknown')}`} value={order.permit_status || 'unknown'} onChange={e => inlinePermit(e.target.value)}>
                 {!PERMIT_SELECTABLE.has(order.permit_status) && (
@@ -1885,13 +1899,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 {PERMIT_STATUS_OPTIONS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
               </select>
             </label>
-            <label className="sb-od-sc"><b>Foundation</b>
-              {job ? (
-                <select className={`sb-od-tone-${fdnStatusTone(deriveFdnStatus(job))}`} value={deriveFdnStatus(job)} onChange={e => inlineFdn(e.target.value)}>
+            {statusDimApplies('fdn', job, order) && (
+              <label className="sb-od-sc"><b>Foundation</b>
+                <select className={`sb-od-tone-${fdnStatusTone(job ? deriveFdnStatus(job) : 'not_in')}`} value={job ? deriveFdnStatus(job) : 'not_in'} onChange={e => inlineFdn(e.target.value)}>
                   {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
-              ) : <span className="sb-od-sc-na">no job yet</span>}
-            </label>
+              </label>
+            )}
             <label className="sb-od-sc"><b>Contract</b>
               <span className="sb-od-sc-pair">
                 <select className={`sb-od-tone-${contractSignedTone(!!order.signed_at)}`} value={order.signed_at ? 'signed' : 'unsigned'} onChange={e => inlineSigned(e.target.value === 'signed')}>

@@ -24,6 +24,7 @@ import {
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions, manualBlockerKindLabel,
+  designStatusOptions, statusDimApplies, createJobFromOrder,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
@@ -797,29 +798,42 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     const r = await bulkUpdateOrders([o.id], { payment_status: code })
     if (!r.ok) reload()
   }
+  // No job yet is NOT a blocker — statuses stay adjustable while the order is
+  // still being worked up (Paul, 2026-07-14). Setting one on a jobless order
+  // quietly creates the job (allowUnsigned, same as the New Order form) and
+  // applies the status to it.
+  const ensureJobForStatus = async (o) => {
+    if (o._job) return o._job
+    const jr = await createJobFromOrder(o.id, { source: 'inline_status', allowUnsigned: true })
+    if (!jr.ok) { reload(); return null }
+    return jr.job
+  }
   const inlineDesign = async (o, code) => {
-    if (!o._job) return
+    const j = await ensureJobForStatus(o)
+    if (!j) return
     // Pass the job so the optimistic plan uses ITS design vocabulary (bronze/
     // inscription templates carry different keys than the proof_* trio).
-    patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code, o._job))
-    const r = await setOrderDesignStatus(o._job.id, code)
+    if (o._job) patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code, o._job))
+    const r = await setOrderDesignStatus(j.id, code)
     // seeded = the write had to create the design milestones (template had
-    // none) — the local row predates them, so resync from the server.
-    if (!r.ok || r.seeded) reload()
+    // none); !o._job = the job itself is brand new — resync either way.
+    if (!r.ok || r.seeded || !o._job) reload()
   }
   const inlineStone = async (o, code) => {
-    if (!o._job) return
+    const j = await ensureJobForStatus(o)
+    if (!j) return
     // Pass the job so the optimistic plan matches the server write's
     // vocabulary (bronze jobs flip bronze_* keys, not stone_*).
-    patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code, o._job))
-    const r = await setOrderStoneStatus(o._job.id, code)
-    if (!r.ok) reload()
+    if (o._job) patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code, o._job))
+    const r = await setOrderStoneStatus(j.id, code)
+    if (!r.ok || !o._job) reload()
   }
   const inlineFdn = async (o, code) => {
-    if (!o._job) return
-    patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code))
-    const r = await setOrderFdnStatus(o._job.id, code)
-    if (!r.ok) reload()
+    const j = await ensureJobForStatus(o)
+    if (!j) return
+    if (o._job) patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code, o._job))
+    const r = await setOrderFdnStatus(j.id, code)
+    if (!r.ok || !o._job) reload()
   }
   // Permit — writes orders.permit_status (single source of truth; Permit Hub +
   // Cemetery & Grave card read the same field). Auto-stamps the submitted/approved
@@ -1380,18 +1394,21 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
         </select>
       </div>
 
-      {/* Design (inline → milestone) */}
+      {/* Design (inline → milestone; jobless orders create the job on first
+          set). Hidden entirely where the dimension doesn't exist (acid wash /
+          repair have no design work). */}
       <div onClick={e => e.stopPropagation()}>
-        {hasJob ? (
+        {statusDimApplies('design', o._job, o) ? (
           <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${designStatusTone(o._design || 'not_created')}`} value={o._design || 'not_created'} disabled={busy} onChange={e => onInlineDesign(o, e.target.value)}>
-            {DESIGN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+            {designStatusOptions(o._job, o).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
         ) : <span className="sb-crm-muted">—</span>}
       </div>
 
-      {/* Stone (inline → milestone) */}
+      {/* Stone (inline → milestone) — inscriptions carve an existing stone,
+          acid wash / repair order nothing: no stone dimension. */}
       <div onClick={e => e.stopPropagation()}>
-        {hasJob ? (
+        {statusDimApplies('stone', o._job, o) ? (
           <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${stoneStatusTone(o._stone || 'not_ordered')}`} value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
             {stoneStatusOptions(o._job).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
@@ -1411,9 +1428,10 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
         </select>
       </div>
 
-      {/* Foundation (inline → milestone) */}
+      {/* Foundation (inline → milestone) — inscriptions / acid wash / repair
+          never pour one. */}
       <div onClick={e => e.stopPropagation()}>
-        {hasJob ? (
+        {statusDimApplies('fdn', o._job, o) ? (
           <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${fdnStatusTone(o._fdn || 'na')}`} value={o._fdn || 'na'} disabled={busy} onChange={e => onInlineFdn(o, e.target.value)}>
             {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
