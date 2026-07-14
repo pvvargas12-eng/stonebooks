@@ -34,7 +34,7 @@ import {
   hydrateEmailAttachment, renameEmailAttachment, copyEmailAttachmentToOrder, classifyAttachment, ATTACH_KIND_LABELS,
   setOrderPermit, needsSignedContract, hardDeleteOrder,
   setOrderQuoteStatus, appendQuoteEvent,
-  orderTypeLabel,
+  orderTypeLabel, orderTypeLabels,
   updateCustomer, bulkUpdateOrders,
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel as sharedPermitStatusLabel,
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
@@ -1520,7 +1520,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
   // Quick-glance values (the three things to read the instant the order opens).
   const plotShort = composeGraveLocation(order)
-  const orderType = orderTypeLabel(order, job)
+  const orderType = orderTypeLabels(order, job).join(' / ')
   // #4 — service orders shouldn't render an empty Monument card; label + scope it.
   const svcTypes = order.service_types || []
   const isStoneOrder = svcTypes.some(c => ['NEW_STONE', 'BRONZE', 'CIVIC_MEMORIAL', 'MAUSOLEUM'].includes(c))
@@ -2083,7 +2083,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               {monDraft && <MonumentCard order={monDraft} update={monUpdate} updatePricing={monUpdatePricing} />}
             </CardQuickEdit>
           ) : null}>
-            <Field label="Type" value={orderTypeLabel(order, job)} />
+            <Field label="Type" value={orderTypeLabels(order, job).join(' / ')} />
             {isStoneOrder && (
               <>
                 {/* ONE clean composed spec line (size · top · polish · color · on base),

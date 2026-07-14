@@ -110,6 +110,40 @@ const ADDON_SETS = {
   repair:                 ['acid_wash'],
 }
 
+// Multi-type combos (Paul, 2026-07-14 — e.g. Inscription + Acid wash on one
+// order). Every derived facet is the union across the selected type keys.
+const comboServiceTypes = (keys) => {
+  const out = []
+  for (const k of keys) for (const s of (ORDER_TYPES[k]?.serviceTypes || [])) if (!out.includes(s)) out.push(s)
+  return out
+}
+const comboSections = (keys) => {
+  const out = []
+  for (const k of keys) for (const s of (ORDER_TYPES[k]?.sections || [])) if (!out.includes(s)) out.push(s)
+  return out
+}
+// Deceased-card flavor: the richest selected type wins.
+const comboDeceasedVariant = (keys) =>
+  (keys.includes('new_monument') || keys.includes('bronze')) ? 'monument'
+    : keys.includes('additional_inscription') ? 'inscription' : 'repair'
+const comboAddonKinds = (keys) => {
+  const out = []
+  for (const k of keys) for (const a of (ADDON_SETS[k] || [])) if (!out.includes(a)) out.push(a)
+  return out
+}
+// Edit-mode: infer the SET of form types from the order's service types (an
+// order can carry several); falls back to the single job/legacy inference.
+function inferTypes(job, order) {
+  const st = (order?.serviceTypes || []).map(s => String(s).toUpperCase())
+  const out = []
+  if (st.includes('NEW_STONE') || st.includes('CIVIC_MEMORIAL') || st.includes('MAUSOLEUM')) out.push('new_monument')
+  if (st.includes('BRONZE')) out.push('bronze')
+  if (st.includes('INSCRIPTION') || st.includes('ADD_PHOTO')) out.push('additional_inscription')
+  if (st.includes('REPAIR')) out.push('repair')
+  if (st.includes('ACID_WASH')) out.push('acid_wash')
+  return out.length ? out : [inferType(job, order)]
+}
+
 // Edit-mode: infer the form type from the existing job/order.
 function inferType(job, order) {
   if (job?.job_type === 'cleaning_repair') return job.service_kind === 'acid_wash' ? 'acid_wash' : 'repair'
@@ -174,7 +208,8 @@ function deriveStatus(currentStatus, markSigned, stageKey) {
 // =============================================================================
 export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const isEdit = !!orderId
-  const [type, setType] = useState('new_monument')
+  // Multiple job types can be active at once (e.g. Inscription + Acid wash).
+  const [types, setTypes] = useState(['new_monument'])
   const [order, setOrder] = useState(() => ({ ...makeBlankOrder(), serviceTypes: ORDER_TYPES.new_monument.serviceTypes }))
   const [jobId, setJobId] = useState(null)
   const [loading, setLoading] = useState(isEdit)
@@ -217,12 +252,14 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const updateInsc = (patch) => setOrder(o => ({ ...o, inscription: { ...o.inscription, ...patch } }))
 
   const changeType = (k) => {
-    if (k === type) return
-    setType(k)
-    update({ serviceTypes: ORDER_TYPES[k].serviceTypes })
+    const on = types.includes(k)
+    if (on && types.length === 1) return   // always at least one type
+    const next = on ? types.filter(x => x !== k) : [...types, k]
+    setTypes(next)
+    update({ serviceTypes: comboServiceTypes(next) })
     // Bronze marker is discriminated by pricing.bronze — seed it so the bronze
     // line shows immediately (and isBronzeMarker is true) before a size is picked.
-    if (k === 'bronze') updatePricing({ bronze: order.pricing?.bronze || {} })
+    if (k === 'bronze' && !on) updatePricing({ bronze: order.pricing?.bronze || {} })
   }
 
   // Edit load — fetch order + job, convert to wizard shape, infer type.
@@ -234,24 +271,26 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
       const ord = rowToOrder(row, row.customer, row.cemetery)
       setOrder(ord)
       setJobId(job?.id || null)
-      setType(inferType(job, ord))
+      setTypes(inferTypes(job, ord))
       if (row.signed_at) { setMarkSigned(true); setSignedDate(String(row.signed_at).slice(0, 10)) }
       setLoading(false)
     })
     return () => { cancelled = true }
   }, [orderId, isEdit])
 
-  // Milestone template for the current type (drives the status checklist).
+  // Milestone template for the current type mix (drives the status checklist —
+  // getOrderMilestoneTemplate merges secondary-service milestones already).
   useEffect(() => {
-    const cfg = ORDER_TYPES[type]
-    if (!cfg) return
+    const svc = comboServiceTypes(types)
+    if (!svc.length) return
     let cancelled = false
-    getOrderMilestoneTemplate(cfg.serviceTypes).then(ms => { if (!cancelled) setTemplateMs(ms || []) })
+    getOrderMilestoneTemplate(svc).then(ms => { if (!cancelled) setTemplateMs(ms || []) })
     return () => { cancelled = true }
-  }, [type])
+  }, [types])
 
-  const cfg = ORDER_TYPES[type]
-  const sections = cfg.sections
+  const serviceTypesSel = comboServiceTypes(types)
+  const sections = comboSections(types)
+  const deceasedVariant = comboDeceasedVariant(types)
 
   // ── Pricing (single source: orderRates / priceOrderTotals) ───────────────
   // Phase 4 — ONE pipeline. priceOrderTotals returns the folded, override-applied
@@ -299,7 +338,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
         voided: false, voidedReason: null, voidedAt: null, voidedBy: null,
       }]
     }
-    const toSave = { ...order, serviceTypes: cfg.serviceTypes, signedAt, status, payments }
+    const toSave = { ...order, serviceTypes: serviceTypesSel, signedAt, status, payments }
     const res = await saveOrder(toSave)
     if (!res?.ok) { setBusy(false); setErr(res?.error?.message || res?.reason || 'Could not save the order'); return }
     // Type changed on an existing order → saveOrder re-templated the job's
@@ -373,14 +412,17 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
         </header>
 
         <div className="of-body">
-          {/* Job type */}
+          {/* Job type — MULTI-SELECT: tap to toggle; an order can carry several
+              (e.g. Inscription + Acid wash). At least one stays on. */}
           <div className="of-typebar">
             <span className="of-typebar-label">Job type</span>
             <div className="of-typeseg">
               {TYPE_KEYS.map(k => (
-                <button key={k} type="button" className={`of-typebtn${type === k ? ' on' : ''}`}
+                <button key={k} type="button" className={`of-typebtn${types.includes(k) ? ' on' : ''}`}
                   onClick={() => changeType(k)}
-                  title={isEdit && type !== k ? 'Changing type re-templates the job checklist (contract, payment, permit, foundation progress carries over)' : ''}>
+                  title={types.includes(k)
+                    ? (types.length > 1 ? 'On — tap to remove this type' : 'On')
+                    : 'Tap to add this type to the order (checklist gains its workflow)'}>
                   {ORDER_TYPES[k].label}
                 </button>
               ))}
@@ -394,7 +436,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             {sections.includes('monument') && <div className="of-span-2"><MonumentCard order={order} update={update} updatePricing={updatePricing} /></div>}
             {sections.includes('bronze') && <div className="of-span-2"><BronzeCard order={order} updatePricing={updatePricing} /></div>}
             {/* Deceased FIRST so its data exists to populate the engraving text. */}
-            {sections.includes('deceased') && <DeceasedCard order={order} update={update} updateInsc={updateInsc} variant={cfg.deceasedVariant} />}
+            {sections.includes('deceased') && <DeceasedCard order={order} update={update} updateInsc={updateInsc} variant={deceasedVariant} />}
             {sections.includes('inscription_type') && <InscriptionTypeCard order={order} updateInsc={updateInsc} />}
             {/* Auto-populated engraving text (same generator as the wizard) — only
                 for inscription orders, right after the type, before engraver notes. */}
@@ -411,7 +453,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             {sections.includes('acidwash') && <AcidWashCard order={order} update={update} updatePricing={updatePricing} />}
 
             {sections.includes('attachments') && <AttachmentsCard order={order} updatePricing={updatePricing} />}
-            {sections.includes('addons') && <div className="of-span-2"><AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={ADDON_SETS[type] || []} /></div>}
+            {sections.includes('addons') && <div className="of-span-2"><AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={comboAddonKinds(types)} /></div>}
             {sections.includes('finance') && (
               <div className="of-span-2"><FinanceCard order={order} lineItems={lineItems} totals={totals} displayedTotal={displayedTotal}
                 update={update} updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}

@@ -24,7 +24,7 @@ import {
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions, manualBlockerKindLabel,
-  designStatusOptions, statusDimApplies, createJobFromOrder,
+  designStatusOptions, statusDimApplies, createJobFromOrder, combineOrders, orderTypeLabels,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
@@ -635,6 +635,18 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
   const selectedOrders = useMemo(() => enriched.filter(o => selectedIds.has(o.id)), [enriched, selectedIds])
 
+  // Combine gate (Paul, 2026-07-14): 2+ selected, all the SAME customer and
+  // family name, none archived — mirrors combineOrders' server-side re-check.
+  const combinable = useMemo(() => {
+    if (selectedOrders.length < 2) return null
+    const first = selectedOrders[0]
+    const fam = (o) => String(o.primary_lastname || '').trim().toUpperCase()
+    const ok = selectedOrders.every(o => !o.archived
+      && (o.customer_id || null) === (first.customer_id || null)
+      && fam(o) === fam(first))
+    return ok ? selectedOrders : null
+  }, [selectedOrders])
+
   // Toasts removed entirely (no undo toast on any action, single or bulk).
   // Inline edits are optimistic and resync on failure; bulk ops reload. Kept as
   // a no-op so the many call sites don't each need touching.
@@ -650,6 +662,23 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }
 
   const ids = () => [...selectedIds]
+  // Combine into one order — the signed (or oldest) order absorbs the rest.
+  const askCombine = () => {
+    const list = combinable
+    if (!list) return
+    const signed = list.filter(o => o.signed_at).sort((a, b) => String(a.signed_at).localeCompare(String(b.signed_at)))
+    const primary = signed[0] || [...list].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
+    const others = list.filter(o => o.id !== primary.id)
+    setConfirm({
+      title: `Combine ${list.length} orders into ${primary.order_number || 'this order'}?`,
+      body: `${others.map(o => `${o.order_number} (${orderTypeLabel(o)})`).join(', ')} will be absorbed into ${primary.order_number}: service types, payments, and totals merge onto the one order, and its pipeline gains every workflow. The absorbed orders are archived with a pointer note. This cannot be undone in one click.`,
+      run: () => runBulk(async () => {
+        const r = await combineOrders(primary.id, others.map(o => o.id))
+        if (!r.ok) window.alert(`Could not combine — ${r.error}`)
+        return r
+      }),
+    })
+  }
   const askArchive = () => setConfirm({
     title: `Archive ${selectedIds.size} order${selectedIds.size === 1 ? '' : 's'}?`,
     body: 'Archiving hides them from the active list. Payments, pricing, status, and milestones are untouched.',
@@ -1162,6 +1191,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               {allMatchingSelected && <span className="sb-tw-allnote">all matching</span>}
             </div>
             <div className="sb-tw-bulk-actions">
+              {combinable && <button type="button" className="sb-tw-bbtn" disabled={busy} onClick={askCombine} title="Merge these orders (same family + customer) into one — types, payments, totals, and pipeline">Combine into one order</button>}
               {canArchive && <button type="button" className="sb-tw-bbtn" disabled={busy} onClick={askArchive}>Archive</button>}
               {canRestore && <button type="button" className="sb-tw-bbtn" disabled={busy} onClick={askRestore}>Restore</button>}
               <BulkSelect label="Set status" disabled={busy} options={ORDER_STATUSES.filter(s => s.code !== 'archived').map(s => ({ value: s.code, label: s.label }))} onPick={askSetStatus} />
@@ -1386,8 +1416,12 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Order # */}
       <div style={{ minWidth: 0 }}><span className="sb-crm-secondary sb-crm-mono" style={{ fontSize: 12 }}>{o.order_number || 'DRAFT'}</span></div>
 
-      {/* Job Type */}
-      <div><span className="sb-crm-secondary">{orderTypeLabel(o)}</span></div>
+      {/* Job Type — combined orders stack each service type on its own line */}
+      <div>
+        {orderTypeLabels(o).map(l => (
+          <div key={l}><span className="sb-crm-secondary">{l}</span></div>
+        ))}
+      </div>
 
       {/* Cemetery */}
       <div><span style={{ fontSize: 13 }}>{o.cemetery?.name || <span className="sb-crm-muted">—</span>}</span></div>

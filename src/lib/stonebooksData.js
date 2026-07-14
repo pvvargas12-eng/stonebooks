@@ -3716,6 +3716,21 @@ const _JOB_TYPE_LABEL = {
 const _humanizeType = (s) =>
   (s == null || s === '') ? null : String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
+// All of an order's service-type labels, one per type (combined orders show
+// each on its own line in the Job Type column — Paul, 2026-07-14). Falls back
+// to the single orderTypeLabel for empty/OTHER cases.
+export function orderTypeLabels(order, job) {
+  const svc = order?.service_types ?? order?.serviceTypes ?? []
+  const codes = Array.isArray(svc) ? svc.map(s => String(s).toUpperCase()) : []
+  if (codes.length < 2 || codes.includes('OTHER')) return [orderTypeLabel(order, job)]
+  const labels = []
+  for (const c of codes) {
+    const l = _SERVICE_TYPE_LABEL[c] || _humanizeType(c)
+    if (l && !labels.includes(l)) labels.push(l)
+  }
+  return labels.length ? labels : [orderTypeLabel(order, job)]
+}
+
 export function orderTypeLabel(order, job) {
   const o = order || {}
   const svc = o.service_types ?? o.serviceTypes ?? []
@@ -4083,6 +4098,112 @@ export async function syncJobToOrderType(orderId, serviceTypes) {
   } catch { /* audit note is best-effort */ }
 
   return { ok: true, changed: true, jobType: newJobType }
+}
+
+// ── COMBINE ORDERS (Paul, 2026-07-14) ────────────────────────────────────────
+// Merge several orders for the SAME customer + family into one (e.g. an
+// inscription order + an acid wash order for the same stone). The primary
+// order absorbs everything; the others are archived (which drops them and
+// their jobs off every work surface) with a pointer note.
+//   • service_types: union (primary's first — keeps its job_type primary)
+//   • payments[]: concatenated (each carried payment notes its source order)
+//   • money: each other order's engine grand total becomes ONE manual line
+//     item on the primary, so the combined total is exactly the sum — no
+//     re-pricing, no double-count
+//   • job checklist: syncJobToOrderType re-templates to the union (both
+//     workflows on one pipeline); any milestones the other orders' jobs had
+//     DONE are marked done on the primary job (max-progress merge)
+// NOT undoable in one click — the confirm dialog says so. The archived
+// originals keep their full history for reference.
+export async function combineOrders(primaryId, otherIds = []) {
+  const ids = [...new Set((otherIds || []).filter(x => x && x !== primaryId))]
+  if (!primaryId || !ids.length) return { ok: false, error: 'Pick at least two orders.' }
+
+  const { data: rows, error } = await supabase.from('orders').select('*').in('id', [primaryId, ...ids])
+  if (error) return { ok: false, error: error.message }
+  const primary = (rows || []).find(r => r.id === primaryId)
+  const others = (rows || []).filter(r => r.id !== primaryId)
+  if (!primary || others.length !== ids.length) return { ok: false, error: 'Some of the selected orders could not be loaded.' }
+
+  // Server-side re-check of the UI gate: same customer + same family name.
+  const fam = (r) => String(r.primary_lastname || '').trim().toUpperCase()
+  for (const o of others) {
+    if ((o.customer_id || null) !== (primary.customer_id || null) || fam(o) !== fam(primary)) {
+      return { ok: false, error: `${o.order_number || 'An order'} has a different customer or family name — combine only works within one family.` }
+    }
+    if (o.archived) return { ok: false, error: `${o.order_number} is archived — restore it first.` }
+  }
+
+  // Union of service types, primary's first.
+  const svc = [...(primary.service_types || [])]
+  for (const o of others) for (const s of (o.service_types || [])) if (!svc.includes(s)) svc.push(s)
+
+  // Concatenate payments; stamp each carried payment with its source order.
+  const payments = [...(Array.isArray(primary.payments) ? primary.payments : [])]
+  for (const o of others) {
+    for (const p of (Array.isArray(o.payments) ? o.payments : [])) {
+      payments.push({ ...p, note: [p.note, `combined from ${o.order_number}`].filter(Boolean).join(' · ') })
+    }
+  }
+
+  // Money: one manual line item per absorbed order (exact engine total).
+  const addOns = [...(Array.isArray(primary.add_ons) ? primary.add_ons : [])]
+  for (const o of others) {
+    const t = rowGrandTotal(o)
+    if (t > 0) addOns.push({ id: `combined-${String(o.id).slice(0, 8)}`, kind: 'other', code: 'other', label: `Combined from ${o.order_number} — ${orderTypeLabel(o)}`, price: t })
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const stamp = (txt) => `[COMBINED ${today}] ${txt}`
+  const primaryNotes = [primary.notes, ...others.map(o => stamp(`${o.order_number} (${orderTypeLabel(o)}) merged into this order.`))].filter(Boolean).join('\n')
+
+  // Jobs: capture the other jobs' DONE milestone keys before anything moves.
+  const { data: jobs, error: jErr } = await supabase.from('jobs').select('id, order_id').in('order_id', [primaryId, ...ids])
+  if (jErr) return { ok: false, error: jErr.message }
+  const primaryJob = (jobs || []).find(j => j.order_id === primaryId) || null
+  const otherJobs = (jobs || []).filter(j => j.order_id !== primaryId)
+  let doneKeys = []
+  if (otherJobs.length) {
+    const { data: oms } = await supabase.from('job_milestones').select('milestone_key, status').in('job_id', otherJobs.map(j => j.id))
+    doneKeys = [...new Set((oms || []).filter(m => m.status === 'done').map(m => m.milestone_key))]
+  }
+
+  // 1 — primary order absorbs types, money, payments.
+  const { error: upErr } = await supabase.from('orders')
+    .update({ service_types: svc, payments, add_ons: addOns, notes: primaryNotes })
+    .eq('id', primaryId)
+  if (upErr) return { ok: false, error: upErr.message }
+
+  // 2 — the primary job's checklist re-templates to the union (both workflows).
+  if (primaryJob) {
+    const sr = await syncJobToOrderType(primaryId, svc)
+    if (!sr.ok) return { ok: false, error: `Order combined, but the job checklist merge failed — ${sr.error}. Re-save the order to retry.` }
+    // 3 — max-progress merge: anything the absorbed jobs had done stays done.
+    if (doneKeys.length) {
+      await supabase.from('job_milestones')
+        .update({ status: 'done', status_date: today, updated_at: new Date().toISOString() })
+        .eq('job_id', primaryJob.id)
+        .in('milestone_key', doneKeys)
+        .neq('status', 'done')
+    }
+  }
+
+  // 4 — archive the absorbed orders (drops them + their jobs off every work
+  // surface; history preserved). Their jobs are NOT deleted — no cascade risk.
+  for (const o of others) {
+    await supabase.from('orders')
+      .update({ archived: true, notes: [o.notes, stamp(`Combined into ${primary.order_number} — see that order.`)].filter(Boolean).join('\n') })
+      .eq('id', o.id)
+  }
+
+  // Activity trail on every order involved (best-effort).
+  const actor = await getCurrentStaffName().catch(() => null)
+  logOrderActivity(primaryId, { type: 'change', field: 'Combined', newValue: others.map(o => o.order_number).join(', '), note: `Absorbed ${others.map(o => `${o.order_number} (${orderTypeLabel(o)})`).join(', ')} — service types, payments, and totals merged`, actor }).catch(() => {})
+  for (const o of others) {
+    logOrderActivity(o.id, { type: 'change', field: 'Combined', newValue: primary.order_number, note: `Combined into ${primary.order_number}; this order was archived`, actor }).catch(() => {})
+  }
+
+  return { ok: true, count: others.length, primaryNumber: primary.order_number, serviceTypes: svc }
 }
 
 // ── JOBS: createJobFromOrder ─────────────────────────────────────────────────

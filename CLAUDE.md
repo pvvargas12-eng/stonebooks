@@ -57,6 +57,16 @@ Four Paul directives in one pass (separate commits): status master-overrides on 
 - **Editable job type** — OrderForm's type pills are no longer `disabled={isEdit}`; the wizard's Step-1 cards were never locked. **`syncJobToOrderType(orderId, serviceTypes)`** (stonebooksData, after buildMilestoneListForOrder) runs in **saveOrder's update branch** (non-fatal; result returned as `res.jobTypeSync`, surfaced as an error by OrderForm): when derived job_type/service_kind changed, the job's checklist is REPLACED from the new template with **carry-over of `contract_* / deposit_* / paid_in_full / permit_* / foundation_*`** (Paul's "fresh checklist, keep the basics"); design/stone/production progress resets by design. Restore-on-failure re-inserts the old rows; jobs row gets new job_type/service_kind/template_id + an addJobNote audit line. No job yet → no-op.
 - **Note:** the FOUNDATIONS-LIST board + Installation gates read the same milestones, so Paul's master-override rule holds: FDN "in" drops the job off every foundations-needed surface.
 
+## Sprint COMBINED-ORDERS (2026-07-14) — SHIPPED
+
+Multi-service orders end-to-end (Paul: "some orders are inscription AND acid wash").
+
+- **`combineOrders(primaryId, otherIds)`** (stonebooksData, after syncJobToOrderType) — merges same-customer+same-family orders into the primary (signed first, else oldest): service_types union (primary first, keeps its job_type), payments[] concatenated (each stamped `combined from E-26-XXXX`), each absorbed order's engine grand total becomes ONE manual `kind:'other'` add-on line (exact money, no re-pricing/double-count), notes stamped. Primary job re-templates to the union via syncJobToOrderType (pipeline gains both workflows) + max-progress merge (absorbed jobs' DONE milestone keys marked done on the primary job). Absorbed orders are **archived** (not deleted; their jobs left in place — archived orders' jobs are already filtered off every surface), activity logged on all. Server re-checks the same-customer/family gate.
+- **OrdersTab bulk bar: "Combine into one order"** — appears when 2+ selected rows share customer_id + primary_lastname (none archived); confirm modal names the primary + absorbed; runs through the standard runBulk/confirm; errors alert loudly.
+- **OrderForm multi-select job type** — the type pills TOGGLE (min 1). Combo helpers (comboServiceTypes/Sections/DeceasedVariant/AddonKinds) union each facet; `inferTypes` seeds the full set from order.serviceTypes on edit. Template preview + save use the union (getOrderMilestoneTemplate already merges secondary-service milestones). Wizard Step 1 was already multi-select.
+- **Display:** `orderTypeLabels(order, job)` (plural) — Orders-table Job Type cell stacks one label per line; OrderDetail header + Type field join with ' / '.
+- **NOT undoable in one click** (modal says so); the archived originals keep full history + a pointer note.
+
 ## CURRENT STATE (as of d11d3c4)
 - HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
 - Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates
