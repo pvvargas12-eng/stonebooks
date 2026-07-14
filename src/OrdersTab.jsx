@@ -23,7 +23,7 @@ import {
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
-  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
+  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
@@ -791,7 +791,9 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }
   const inlineStone = async (o, code) => {
     if (!o._job) return
-    patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code))
+    // Pass the job so the optimistic plan matches the server write's
+    // vocabulary (bronze jobs flip bronze_* keys, not stone_*).
+    patchJobMilestonesLocal(o.id, orderStatusWritePlan('stone', code, o._job))
     const r = await setOrderStoneStatus(o._job.id, code)
     if (!r.ok) reload()
   }
@@ -1155,7 +1157,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <span onMouseDown={startColResize(7)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone stage">Stone{sortCaret('stone')}</button>
+              <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone / bronze stage">Stone / Bronze{sortCaret('stone')}</button>
               <span onMouseDown={startColResize(8)} style={COL_RESIZE} />
             </div>
             <div style={{ position: 'relative', minWidth: 0 }}>
@@ -1345,7 +1347,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       <div onClick={e => e.stopPropagation()}>
         {hasJob ? (
           <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${stoneStatusTone(o._stone || 'not_ordered')}`} value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
-            {STONE_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+            {stoneStatusOptions(o._job).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
         ) : <span className="sb-crm-muted">—</span>}
       </div>

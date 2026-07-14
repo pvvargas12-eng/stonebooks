@@ -1634,6 +1634,10 @@ export const STONE_STATUS = [
   { code: 'needs_stencil_cut', label: 'Needs stencil cut' },
   { code: 'needs_blasting',    label: 'Needs blasting' },
   { code: 'blasted',           label: 'Blasted' },
+  // Bronze-only terminal state (bronze markers aren't stencilled/blasted —
+  // ordered, then received in the shop). Hidden from non-bronze dropdowns
+  // via stoneStatusOptions(job).
+  { code: 'received',          label: 'Received' },
 ]
 export const FDN_STATUS = [
   { code: 'na',       label: 'N/A' },
@@ -1693,7 +1697,19 @@ export function deriveDesignStatus(job) {
   if (_msDone(job, v.created) || (v.sent && _msDone(job, v.sent))) return 'layout_created'
   return 'not_created'
 }
+// Bronze jobs track stone with their own two keys (bronze_ordered /
+// bronze_received) — the stone_* ladder doesn't exist on them, so the
+// standard derive/plan was a silent no-op (same disease the Design dropdown
+// had). Detect by the keys actually on the job.
+const _jobMilestoneKeys = (job) => _msList(job).map(m => m.milestone_key)
+const _isBronzeStoneJob = (keys) => keys.includes('bronze_ordered') && !keys.includes('stone_ordered')
+
 export function deriveStoneStatus(job) {
+  if (_isBronzeStoneJob(_jobMilestoneKeys(job))) {
+    if (_msDone(job, 'bronze_received')) return 'received'
+    if (_msDone(job, 'bronze_ordered')) return 'ordered'
+    return 'not_ordered'
+  }
   if (_msDone(job, 'production_completed')) return 'blasted'
   if (_msDone(job, 'stencil_cut')) return 'needs_blasting'
   if (_msDone(job, 'stone_received')) return 'needs_stencil_cut'
@@ -1701,6 +1717,15 @@ export function deriveStoneStatus(job) {
   if (_msDone(job, 'stone_in_stock')) return 'in_stock'
   if (_msDone(job, 'stone_ordered')) return 'ordered'
   return 'not_ordered'
+}
+
+// The Stone / Bronze dropdown options a given job should offer. Bronze jobs
+// get the 3-step ladder; everything else keeps the standard 7 (and never
+// sees the bronze-only 'received' code).
+const _BRONZE_STONE_CODES = new Set(['not_ordered', 'ordered', 'received'])
+export function stoneStatusOptions(job) {
+  const bronze = job && _isBronzeStoneJob(_jobMilestoneKeys(job))
+  return STONE_STATUS.filter(s => (bronze ? _BRONZE_STONE_CODES.has(s.code) : s.code !== 'received'))
 }
 export function deriveFdnStatus(job) {
   const present = FDN_KEYS.filter(k => _msHas(job, k))
@@ -1729,7 +1754,7 @@ export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 // ONE tone vocabulary across the table and the status overview card.
 export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : 'neutral'
 export const designStatusTone   = (c) => c === 'layout_approved' ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'neutral'
-export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted') ? 'good'
+export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'received') ? 'good'
   : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'neutral'
 export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : 'neutral'
 export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
@@ -1763,6 +1788,22 @@ function _stonePlan(code) {
     case 'needs_stencil_cut': return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received'], notStarted: ['stencil_cut', 'production_started', 'production_completed'] }
     case 'needs_blasting':    return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut'], notStarted: ['production_started', 'production_completed'] }
     case 'blasted':           return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed'], notStarted: [] }
+    default: return null
+  }
+}
+// Bronze jobs' two-key ladder. Standard-only codes a stale UI might send are
+// aliased to the closest bronze state so a write can never silently no-op.
+function _bronzeStonePlan(code) {
+  const KEYS = ['bronze_ordered', 'bronze_received']
+  switch (code) {
+    case 'not_ordered': return { done: [], notStarted: KEYS }
+    case 'in_stock':
+    case 'ordered':     return { done: ['bronze_ordered'], notStarted: ['bronze_received'] }
+    case 'needs_pickup':
+    case 'needs_stencil_cut':
+    case 'needs_blasting':
+    case 'blasted':
+    case 'received':    return { done: KEYS, notStarted: [] }
     default: return null
   }
 }
@@ -1825,7 +1866,19 @@ export async function setOrderDesignStatus(jobId, code) {
   const res = await _applyMilestonePlan(jobId, _designPlan(code, v))
   return res.ok ? { ok: true, seeded } : res
 }
-export function setOrderStoneStatus(jobId, code)  { return _applyMilestonePlan(jobId, _stonePlan(code)) }
+// Stone writes resolve the job's vocabulary first (bronze vs standard) —
+// same key-fetch-first pattern as setOrderDesignStatus.
+export async function setOrderStoneStatus(jobId, code) {
+  if (!jobId) return { ok: false, error: 'Invalid status change' }
+  const { data, error } = await supabase
+    .from('job_milestones')
+    .select('milestone_key')
+    .eq('job_id', jobId)
+  if (error) return { ok: false, error: error.message }
+  const keys = (data || []).map(r => r.milestone_key)
+  const plan = _isBronzeStoneJob(keys) ? _bronzeStonePlan(code) : _stonePlan(code)
+  return _applyMilestonePlan(jobId, plan)
+}
 export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(jobId, _fdnPlan(code)) }
 
 // The write plan for a dimension+code — lets a caller mirror the milestone flip
@@ -1838,7 +1891,9 @@ export function orderStatusWritePlan(dimension, code, job = null) {
     const v = (job && _designVocabForKeys(_msList(job).map(m => m.milestone_key))) || DESIGN_VOCABS[0]
     return _designPlan(code, v)
   }
-  if (dimension === 'stone')  return _stonePlan(code)
+  if (dimension === 'stone') {
+    return (job && _isBronzeStoneJob(_jobMilestoneKeys(job))) ? _bronzeStonePlan(code) : _stonePlan(code)
+  }
   if (dimension === 'fdn')    return _fdnPlan(code)
   return null
 }
@@ -1850,7 +1905,11 @@ export function setBlockReason(order, job) {
   // Honor the manual Payment override (derivePaymentStatus) so the office's
   // "Paid in full" clears the gate even on imported orders with no stored total.
   if (derivePaymentStatus(order) !== 'paid_in_full') return 'Not paid in full'
-  if (!_msDone(job, 'production_completed')) return 'Not blasted'
+  // Bronze markers aren't blasted — the shop-readiness signal is the bronze
+  // arriving. Everything else keeps the production_completed gate.
+  if (_isBronzeStoneJob(_jobMilestoneKeys(job))) {
+    if (!_msDone(job, 'bronze_received')) return 'Bronze not received'
+  } else if (!_msDone(job, 'production_completed')) return 'Not blasted'
   const fdn = deriveFdnStatus(job)
   if (!(fdn === 'in' || fdn === 'na')) return 'FDN not in'
   const permitRequired = permitNeeded(order)

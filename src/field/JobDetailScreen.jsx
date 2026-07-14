@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import {
   getOrderById, getJobByOrderId, getJob,
-  STONE_STATUS, FDN_STATUS, deriveStoneStatus, deriveFdnStatus,
+  STONE_STATUS, FDN_STATUS, deriveStoneStatus, deriveFdnStatus, stoneStatusOptions,
   setOrderStoneStatus, setOrderFdnStatus,
   getProofVersions, getProofVersionsByOrder,
   uploadOrderAttachment, customerName, getCurrentStaffName, fmtUSD, rowBalanceDue,
@@ -162,7 +162,7 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
       {/* Ladders */}
       {job ? (
         <>
-          <StatusLadder title="Stone — tap the true state" options={STONE_STATUS}
+          <StatusLadder title="Stone — tap the true state" options={stoneStatusOptions(job)}
             current={deriveStoneStatus(job)} busy={busy}
             onSet={async (code, prev) => {
               setBusy(true)

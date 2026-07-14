@@ -39,7 +39,7 @@ import {
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel as sharedPermitStatusLabel,
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
-  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS,
+  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
@@ -1762,10 +1762,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 </select>
               ) : <span className="sb-od-sc-na">no job yet</span>}
             </label>
-            <label className="sb-od-sc"><b>Stone</b>
+            <label className="sb-od-sc"><b>Stone / Bronze</b>
               {job ? (
                 <select className={`sb-od-tone-${stoneStatusTone(deriveStoneStatus(job))}`} value={deriveStoneStatus(job)} onChange={e => inlineStone(e.target.value)}>
-                  {STONE_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+                  {stoneStatusOptions(job).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                 </select>
               ) : <span className="sb-od-sc-na">no job yet</span>}
             </label>
