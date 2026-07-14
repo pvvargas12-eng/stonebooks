@@ -56,6 +56,7 @@ import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
+import { CONTRACTED_STATUSES } from './lib/leads'
 import { buildPipeline } from './lib/orderPipeline'
 import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
@@ -513,6 +514,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // job (allowUnsigned) and applies to it (Paul, 2026-07-14).
   const ensureJobId = async () => {
     if (job?.id) return job.id
+    // LEADS never auto-create jobs (audit A3) — see OrdersTab.ensureJobForStatus.
+    const isLead = !order?.signed_at && !(CONTRACTED_STATUSES.includes(order?.status) && rowTotalPaid(order) > 0)
+    if (isLead) {
+      setActionNote('Still a lead — statuses activate once there’s a signed contract or a deposit.')
+      return null
+    }
     const jr = await createJobFromOrder(orderId, { source: 'order_detail_status', allowUnsigned: true })
     if (!jr.ok) { setActionNote(`Could not create the job — ${jr.error}.`); return null }
     return jr.job?.id || null

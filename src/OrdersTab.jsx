@@ -807,6 +807,15 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // applies the status to it.
   const ensureJobForStatus = async (o) => {
     if (o._job) return o._job
+    // LEADS never auto-create jobs (audit A3) — an unsigned, no-deposit order
+    // becoming a live job would surface as phantom shop work in Jobs, the
+    // hubs, the field app, and the scheduler. Signed or deposit-bearing
+    // orders create the job quietly, as before.
+    if (!o.signed_at && !isOrderRow(o, o._paid)) {
+      window.alert('Still a lead — statuses activate once there’s a signed contract or a deposit. Nothing was saved.')
+      reload()
+      return null
+    }
     const jr = await createJobFromOrder(o.id, { source: 'inline_status', allowUnsigned: true })
     if (!jr.ok) { reload(); return null }
     return jr.job
