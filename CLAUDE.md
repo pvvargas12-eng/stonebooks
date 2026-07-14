@@ -38,6 +38,15 @@ Jobs › **Foundations** tab — the hand-picked foundation work queue (the ~15 
 - `addToFoundationList` treats a 23505 unique violation as success (double-tap safe).
 - **Deferred:** /field Foundations screen (same list, phone-first) — Paul said desktop tab first, fast-follow if wanted. Foundation-cure gating (7-day window) remains parked under Phase 4 backlog.
 
+## Fix: Design status dropdown on non-new_stone jobs (2026-07-14)
+
+The Design dropdown (OrdersTab / OrderDetail / DesignHub) silently no-op'd on **bronze** and half-worked on **inscription** jobs: `deriveDesignStatus`/`_designPlan` were hardcoded to the new_stone `proof_*` trio, but templates carry different keys — bronze: `bronze_layout_created / bronze_proof_sent / bronze_proof_approved`; inscription: `layout_created / proof_sent / proof_approved` (no created/changes keys); cleaning_repair + mausoleum_door: **no design milestones at all**. Milestone UPDATEs `.in()` matched zero rows → ok:true, nothing changed.
+
+- **`DESIGN_VOCABS`** in stonebooksData.js — vocabulary detected from the keys ON the job (not job_type). Derive + `_designPlan(code, vocab)` + `orderStatusWritePlan('design', code, job)` (new third arg; OrdersTab passes `o._job` for the optimistic mirror) are all vocabulary-aware.
+- **`setOrderDesignStatus` is key-fetch-first** and **seeds the standard proof_* trio** (group/team `design`, canonical labels/sort) when a job has no design vocabulary — returns `{ ok, seeded }`; `seeded` tells optimistic callers (OrdersTab) to `reload()`. 23505 on seed = concurrent seeder, proceed.
+- Vocabs without a changes key map `needs_adjustments` → created+sent done (derived status then reads `layout_created` — known snap-back, accepted).
+- **Same latent bug exists for the STONE dropdown on bronze jobs** (`stone_*` plan vs `bronze_ordered`/`bronze_received`) — NOT fixed in this pass (one thing at a time); flag for a follow-up.
+
 ## CURRENT STATE (as of d11d3c4)
 - HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
 - Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates

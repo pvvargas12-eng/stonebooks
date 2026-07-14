@@ -1672,10 +1672,25 @@ export function derivePaymentStatus(order) {
   if (paid > 0) return 'deposit'
   return 'quoted'
 }
+// Design-status milestone vocabularies. new_stone/other templates carry the
+// proof_* trio, but bronze and inscription templates carry their OWN keys —
+// the original proof_*-only derive/write made the Design dropdown a silent
+// no-op on those jobs (the milestone UPDATE matched zero rows). Detection is
+// by the keys actually ON the job (not job_type) so template versions stay
+// safe. Order matters: proof_created wins when both vocabularies coexist.
+const DESIGN_VOCABS = [
+  { created: 'proof_created', sent: null, changes: 'proof_changes_requested', approved: 'proof_approved' },
+  { created: 'bronze_layout_created', sent: 'bronze_proof_sent', changes: null, approved: 'bronze_proof_approved' },
+  { created: 'layout_created', sent: 'proof_sent', changes: null, approved: 'proof_approved' },
+]
+const _designVocabForKeys = (keys) => DESIGN_VOCABS.find(v => keys.includes(v.created)) || null
+
 export function deriveDesignStatus(job) {
-  if (_msDone(job, 'proof_approved')) return 'layout_approved'
-  if (_msDone(job, 'proof_changes_requested')) return 'needs_adjustments'
-  if (_msDone(job, 'proof_created')) return 'layout_created'
+  const keys = _msList(job).map(m => m.milestone_key)
+  const v = _designVocabForKeys(keys) || DESIGN_VOCABS[0]
+  if (_msDone(job, v.approved)) return 'layout_approved'
+  if (v.changes && _msDone(job, v.changes)) return 'needs_adjustments'
+  if (_msDone(job, v.created) || (v.sent && _msDone(job, v.sent))) return 'layout_created'
   return 'not_created'
 }
 export function deriveStoneStatus(job) {
@@ -1720,12 +1735,20 @@ export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off'
 export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
 
 // Write plans — flip the milestone ladder so the derived status is deterministic.
-function _designPlan(code) {
+// Plans are built against the job's vocabulary. Vocabs without a changes key
+// (bronze, inscription) map needs_adjustments to created+sent done — honest
+// (proof went out, not approved), and the derived status reads layout_created.
+function _designPlan(code, v = DESIGN_VOCABS[0]) {
+  const all = [v.created, v.sent, v.changes, v.approved].filter(Boolean)
   switch (code) {
-    case 'not_created':       return { done: [], notStarted: ['proof_created', 'proof_changes_requested', 'proof_approved'] }
-    case 'layout_created':    return { done: ['proof_created'], notStarted: ['proof_changes_requested', 'proof_approved'] }
-    case 'needs_adjustments': return { done: ['proof_created', 'proof_changes_requested'], notStarted: ['proof_approved'] }
-    case 'layout_approved':   return { done: ['proof_created', 'proof_approved'], notStarted: [] }
+    case 'not_created':       return { done: [], notStarted: all }
+    case 'layout_created':    return { done: [v.created], notStarted: all.filter(k => k !== v.created) }
+    case 'needs_adjustments': return v.changes
+      ? { done: [v.created, v.changes], notStarted: [v.approved] }
+      : { done: [v.created, v.sent].filter(Boolean), notStarted: [v.approved] }
+    case 'layout_approved':   return v.changes
+      ? { done: [v.created, v.approved], notStarted: [] }
+      : { done: all, notStarted: [] }
     default: return null
   }
 }
@@ -1772,14 +1795,49 @@ async function _applyMilestonePlan(jobId, plan) {
   for (const step of steps) { const { error } = await step; if (error) return { ok: false, error: error.message } }
   return { ok: true }
 }
-export function setOrderDesignStatus(jobId, code) { return _applyMilestonePlan(jobId, _designPlan(code)) }
+// Design writes resolve the job's vocabulary first (one cheap key fetch). If
+// the template carries NO design milestones at all (cleaning_repair, door),
+// seed the standard proof_* trio so the status is trackable — then apply.
+// Returns { ok, seeded } — seeded=true tells optimistic callers to refetch
+// (their local job row doesn't have the new milestone rows yet).
+const DESIGN_SEED_ROWS = [
+  { milestone_key: 'proof_created',           label: 'Layout created',              sort_order: 3 },
+  { milestone_key: 'proof_changes_requested', label: 'Changes requested',           sort_order: 5 },
+  { milestone_key: 'proof_approved',          label: 'Layout approved by customer', sort_order: 5 },
+]
+export async function setOrderDesignStatus(jobId, code) {
+  if (!jobId || !_designPlan(code)) return { ok: false, error: 'Invalid status change' }
+  const { data, error } = await supabase
+    .from('job_milestones')
+    .select('milestone_key')
+    .eq('job_id', jobId)
+  if (error) return { ok: false, error: error.message }
+  let v = _designVocabForKeys((data || []).map(r => r.milestone_key))
+  let seeded = false
+  if (!v) {
+    const rows = DESIGN_SEED_ROWS.map(r => ({ ...r, job_id: jobId, group: 'design', team: 'design', status: 'not_started' }))
+    const { error: seedErr } = await supabase.from('job_milestones').insert(rows)
+    // 23505 = another writer seeded first; the rows exist, proceed.
+    if (seedErr && seedErr.code !== '23505') return { ok: false, error: seedErr.message }
+    v = DESIGN_VOCABS[0]
+    seeded = true
+  }
+  const res = await _applyMilestonePlan(jobId, _designPlan(code, v))
+  return res.ok ? { ok: true, seeded } : res
+}
 export function setOrderStoneStatus(jobId, code)  { return _applyMilestonePlan(jobId, _stonePlan(code)) }
 export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(jobId, _fdnPlan(code)) }
 
 // The write plan for a dimension+code — lets a caller mirror the milestone flip
 // in LOCAL state (optimistic update) instead of refetching after an inline edit.
-export function orderStatusWritePlan(dimension, code) {
-  if (dimension === 'design') return _designPlan(code)
+// Design plans vary by the job's milestone vocabulary — pass the job so the
+// optimistic mirror flips the same keys the server write does. Without a job
+// the standard proof_* plan is returned (correct for new_stone/other only).
+export function orderStatusWritePlan(dimension, code, job = null) {
+  if (dimension === 'design') {
+    const v = (job && _designVocabForKeys(_msList(job).map(m => m.milestone_key))) || DESIGN_VOCABS[0]
+    return _designPlan(code, v)
+  }
   if (dimension === 'stone')  return _stonePlan(code)
   if (dimension === 'fdn')    return _fdnPlan(code)
   return null

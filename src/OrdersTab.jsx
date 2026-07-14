@@ -781,9 +781,13 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   }
   const inlineDesign = async (o, code) => {
     if (!o._job) return
-    patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code))
+    // Pass the job so the optimistic plan uses ITS design vocabulary (bronze/
+    // inscription templates carry different keys than the proof_* trio).
+    patchJobMilestonesLocal(o.id, orderStatusWritePlan('design', code, o._job))
     const r = await setOrderDesignStatus(o._job.id, code)
-    if (!r.ok) reload()
+    // seeded = the write had to create the design milestones (template had
+    // none) — the local row predates them, so resync from the server.
+    if (!r.ok || r.seeded) reload()
   }
   const inlineStone = async (o, code) => {
     if (!o._job) return
