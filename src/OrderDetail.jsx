@@ -42,6 +42,7 @@ import {
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef,
+  markApprovalLinkEmailed,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
@@ -835,6 +836,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         to: _cust.email || '',
         subject: `Layout approval — ${surname}`,
         body: `Hello,\n\nYour design is ready for your review and approval. Please open the link below, review it, and approve it (or request changes):\n\n${res.url}\n\nThank you,\nShevchenko Monuments\n732-442-1286`,
+        approvalLinkId: res.linkId || null,
         busy: false, error: null, sent: false,
       })
     } catch (e) {
@@ -1201,6 +1203,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       to: cust?.email || '',
       subject: `Layout approval — ${surname}`,
       body: `Hello,\n\nYour design is ready for your review and approval. Please open the link below, review it, and approve it (or request changes):\n\n${url}\n\nThank you,\nShevchenko Monuments\n732-442-1286`,
+      approvalLinkId: active?.id || null,
       busy: false, error: null, sent: false,
     })
   }
@@ -1313,6 +1316,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     }
     const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments })
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
+    // Approval emails stamp the link the moment they ACTUALLY send — the
+    // Today tab's Approvals panel reads this as hard proof (Paul, 2026-07-14).
+    if (emailModal.approvalLinkId) markApprovalLinkEmailed(emailModal.approvalLinkId, to).catch(() => {})
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
     if (order?.customer_id || orderId) setEmails((await getMessageThread({ customerId: order?.customer_id, orderId })).messages || [])
     // Auto-close only when paid in full — never close an order that still owes.

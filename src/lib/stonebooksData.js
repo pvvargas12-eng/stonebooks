@@ -2897,6 +2897,130 @@ export const manualBlockerKindLabel = (c) =>
 export const manualBlockerChipText = (mb) =>
   mb?.kind === 'custom' ? (mb.label || 'Flagged') : manualBlockerKindLabel(mb?.kind)
 
+// ── STAFF IDENTITY (one shared login, everyone picks themselves) ─────────────
+// Persisted per device; becomes the actor stamp on every write (payments,
+// notes, tasks, milestones) via getCurrentStaffName's override below.
+export const STAFF_NAMES = ['Lonnie', 'Catherina', 'Denise', 'Chelsea', 'Paul', 'Collin', 'Alex', 'Sabina', 'Leo']
+const ACTIVE_STAFF_KEY = 'sb_active_staff'
+export function getActiveStaffUser() {
+  try { const v = localStorage.getItem(ACTIVE_STAFF_KEY); return STAFF_NAMES.includes(v) ? v : null } catch { return null }
+}
+export function setActiveStaffUser(name) {
+  try {
+    if (name && STAFF_NAMES.includes(name)) localStorage.setItem(ACTIVE_STAFF_KEY, name)
+    else localStorage.removeItem(ACTIVE_STAFF_KEY)
+  } catch { /* storage unavailable — stamps fall back to the auth display name */ }
+}
+
+// ── SHOP TASKS ("don't tell me, task me") ────────────────────────────────────
+// Free-standing tasks with an assignee and an OPTIONAL order link — distinct
+// from order_activity tasks, which physically require an order. Replies form
+// the notification loop: a reply is an inbox item for the other side until
+// it's marked handled.
+export async function listShopTasks({ doneWithinDays = 7 } = {}) {
+  const cutoff = new Date(Date.now() - doneWithinDays * 86400000).toISOString()
+  const { data, error } = await supabase
+    .from('shop_tasks')
+    .select('*, order:orders(id, order_number, primary_lastname)')
+    .or(`status.eq.open,done_at.gte.${cutoff}`)
+    .order('due_date', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true })
+  if (error) { console.warn('[tasks] listShopTasks:', error.message); return [] }
+  return data || []
+}
+export async function addShopTask({ title, assignee, orderId = null, dueDate = null, createdBy = null }) {
+  const t = (title || '').trim()
+  if (!t) return { ok: false, error: 'Type the task.' }
+  if (!assignee) return { ok: false, error: 'Pick who it goes to.' }
+  const { data, error } = await supabase.from('shop_tasks')
+    .insert({ title: t, assignee, order_id: orderId || null, due_date: dueDate || null, created_by: createdBy || null })
+    .select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, task: data }
+}
+export async function setShopTaskDone(id, done, by = null) {
+  if (!id) return { ok: false, error: 'Missing task' }
+  const patch = done
+    ? { status: 'done', done_at: new Date().toISOString(), done_by: by, updated_at: new Date().toISOString() }
+    : { status: 'open', done_at: null, done_by: null, updated_at: new Date().toISOString() }
+  const { error } = await supabase.from('shop_tasks').update(patch).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function snoozeShopTask(id, untilDate) {
+  if (!id) return { ok: false, error: 'Missing task' }
+  const { error } = await supabase.from('shop_tasks').update({ snoozed_until: untilDate || null, updated_at: new Date().toISOString() }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function deleteShopTask(id) {
+  if (!id) return { ok: false, error: 'Missing task' }
+  const { error } = await supabase.from('shop_tasks').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function listTaskReplies(taskIds) {
+  const ids = (taskIds || []).filter(Boolean)
+  if (!ids.length) return []
+  const { data, error } = await supabase.from('shop_task_replies')
+    .select('*').in('task_id', ids).order('created_at', { ascending: true })
+  if (error) { console.warn('[tasks] listTaskReplies:', error.message); return [] }
+  return data || []
+}
+export async function addTaskReply(taskId, body, author) {
+  const b = (body || '').trim()
+  if (!taskId || !b) return { ok: false, error: 'Type the reply.' }
+  const { data, error } = await supabase.from('shop_task_replies')
+    .insert({ task_id: taskId, body: b, author: author || null }).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, reply: data }
+}
+export async function markReplyHandled(id, by = null) {
+  if (!id) return { ok: false, error: 'Missing reply' }
+  const { error } = await supabase.from('shop_task_replies')
+    .update({ handled_at: new Date().toISOString(), handled_by: by }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// ── APPROVALS — global view + hard email verification ───────────────────────
+// Every approval link ever minted, with the order joined. displayStatus adds
+// lazy expiry like getApprovalLinksForOrder.
+export async function listAllApprovalLinks() {
+  const { data, error } = await supabase
+    .from('approval_links')
+    .select('id, order_id, status, expires_at, viewed_at, signed_at, revoked_at, changes_requested_at, created_at, share_url, emailed_at, emailed_to, order:orders(id, order_number, primary_lastname, customer:customers(email))')
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[approval] listAllApprovalLinks:', error.message); return [] }
+  const now = Date.now()
+  return (data || []).map(r => {
+    let displayStatus = r.status
+    if ((r.status === 'pending' || r.status === 'viewed') && r.expires_at && new Date(r.expires_at).getTime() < now) displayStatus = 'expired'
+    return { ...r, displayStatus }
+  })
+}
+// Outbound emails that carried ANY approval URL — matched client-side against
+// each link's share_url so pre-stamp sends still verify.
+export async function getApprovalEmailEvidence() {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('body_text, to_emails, created_at')
+    .eq('direction', 'outbound')
+    .ilike('body_text', '%/approve/%')
+    .order('created_at', { ascending: false })
+    .limit(400)
+  if (error) { console.warn('[approval] email evidence:', error.message); return [] }
+  return data || []
+}
+// Stamped by the composer the moment an approval email actually SENDS.
+export async function markApprovalLinkEmailed(linkId, to) {
+  if (!linkId) return { ok: false }
+  const { error } = await supabase.from('approval_links')
+    .update({ emailed_at: new Date().toISOString(), emailed_to: to || null }).eq('id', linkId)
+  if (error) { console.warn('[approval] markApprovalLinkEmailed:', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
 export async function setOrderManualBlocker(orderId, blocker) {
   if (!orderId) return { ok: false, error: 'Missing order' }
   let value = null
@@ -11704,6 +11828,10 @@ export async function getProofSignatureSignedUrl(path, expiresIn = 300) {
 // (Stonebooks.jsx). Identity isn't prop-drilled to deep surfaces, so resolve it
 // at the data layer. Falls back to 'Staff' when there's no per-user identity.
 export async function getCurrentStaffName() {
+  // One shared login — the Today tab's "I am" picker wins (per device), so
+  // every actor stamp names the person, not the account (Paul, 2026-07-14).
+  const picked = getActiveStaffUser()
+  if (picked) return picked
   try {
     const { data: { user } = {} } = await supabase.auth.getUser()
     if (!user) return 'Staff'
