@@ -2818,6 +2818,34 @@ export const PERMIT_STATUS_TONE = {
   unknown: 'neutral',
 }
 export function permitStatusTone(code) { return PERMIT_STATUS_TONE[code] || 'neutral' }
+
+// ── MANUAL BLOCKER (staff-set) ───────────────────────────────────────────────
+// orders.manual_blocker jsonb — a human-declared flag, distinct from the
+// derived computeOrderPressure blockers: pick Needs call / Needs email, write
+// a brief note. Renders as red kind chip + amber note chip on Orders rows,
+// board cards, and the order detail status card.
+export const MANUAL_BLOCKER_KINDS = [
+  { code: 'needs_call',  label: 'Needs call' },
+  { code: 'needs_email', label: 'Needs email' },
+]
+export const manualBlockerKindLabel = (c) =>
+  (MANUAL_BLOCKER_KINDS.find(k => k.code === c) || {}).label || c
+
+export async function setOrderManualBlocker(orderId, blocker) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  let value = null
+  if (blocker && blocker.kind) {
+    value = {
+      kind: blocker.kind,
+      note: (blocker.note || '').trim() || null,
+      setAt: new Date().toISOString(),
+      setBy: await getCurrentStaffName(),
+    }
+  }
+  const { error } = await supabase.from('orders').update({ manual_blocker: value }).eq('id', orderId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, value }
+}
 export const PERMIT_QUEUES = [
   { code: 'permit_required',  label: 'Permits required' },
   { code: 'permit_submitted', label: 'Permits submitted' },

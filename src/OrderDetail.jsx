@@ -40,6 +40,7 @@ import {
   createPermitOutgoingPayment, listOutgoingPayments, addJobEvent,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
+  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, setOrderManualBlocker,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
@@ -136,6 +137,63 @@ function deriveDesign6(job, proofVers) {
 // Commit-on-blur date input (same discipline as the Orders table's InlineDateField):
 // a native date input fires onChange per segment, so hold the typed value locally
 // and only commit on blur / Enter with a complete, plausible year.
+// Manual blocker control (status card) — Needs call / Needs email + a brief
+// note, written to orders.manual_blocker. Chips echo on Orders rows + board
+// cards; here it's click-to-edit with an explicit Clear.
+function ManualBlockerControl({ order, onSaved }) {
+  const [editing, setEditing] = useState(false)
+  const [kind, setKind] = useState('needs_call')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const mb = order.manual_blocker || null
+
+  const openEdit = () => {
+    setKind(mb?.kind || 'needs_call')
+    setNote(mb?.note || '')
+    setEditing(true)
+  }
+  const save = async () => {
+    setBusy(true)
+    const r = await setOrderManualBlocker(order.id, { kind, note })
+    setBusy(false)
+    if (r.ok) { setEditing(false); onSaved?.() }
+  }
+  const clear = async () => {
+    setBusy(true)
+    const r = await setOrderManualBlocker(order.id, null)
+    setBusy(false)
+    if (r.ok) { setEditing(false); onSaved?.() }
+  }
+
+  if (editing) {
+    return (
+      <span className="sb-od-mb-edit">
+        <select value={kind} onChange={e => setKind(e.target.value)} disabled={busy} aria-label="Blocker kind">
+          {MANUAL_BLOCKER_KINDS.map(k => <option key={k.code} value={k.code}>{k.label}</option>)}
+        </select>
+        <input type="text" value={note} maxLength={80} disabled={busy}
+          placeholder="Brief blocker — e.g. confirm plot with sexton"
+          onChange={e => setNote(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save() }} />
+        <span className="sb-od-mb-edit-actions">
+          <button type="button" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+          <button type="button" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
+          {mb && <button type="button" className="sb-od-mb-clear" onClick={clear} disabled={busy}>Clear</button>}
+        </span>
+      </span>
+    )
+  }
+  if (mb) {
+    return (
+      <button type="button" className="sb-od-mb-chip" onClick={openEdit}
+        title={`Set by ${mb.setBy || 'staff'}${mb.setAt ? ' · ' + String(mb.setAt).slice(0, 10) : ''} — click to edit`}>
+        {manualBlockerKindLabel(mb.kind)}{mb.note ? ` — ${mb.note}` : ''}
+      </button>
+    )
+  }
+  return <button type="button" className="sb-od-mb-add" onClick={openEdit}>+ Add blocker</button>
+}
+
 function ODDateField({ value, onCommit, ariaLabel, disabled }) {
   const [local, setLocal] = useState(value || '')
   const focusedRef = useRef(false)
@@ -1798,6 +1856,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               <ODDateField value={order.target_completion_date ? String(order.target_completion_date).slice(0, 10) : ''}
                 onCommit={v => inlineDateField('target', v)} ariaLabel="Due date" />
             </label>
+            <label className="sb-od-sc"><b>Blocker</b>
+              <ManualBlockerControl order={order} onSaved={refreshOrder} />
+            </label>
           </div>
         </div>
 
@@ -3266,6 +3327,18 @@ const OD_CSS = `
   .sb-od-sc-date:focus { outline: none; border-color: #9A7209; }
   .sb-od-sc-pair { display: flex; flex-direction: column; gap: 4px; }
   .sb-od-sc-na { font-size: 12px; color: #a09a8c; font-style: italic; padding: 6px 0; }
+
+  /* Manual blocker (status card) — red kind chip like the Orders CALL pill */
+  .sb-od-mb-chip { font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #B3261E; background: rgba(179,38,30,0.06); border: 0.5px solid rgba(179,38,30,0.4); border-radius: 999px; padding: 4px 10px; cursor: pointer; text-align: left; }
+  .sb-od-mb-chip:hover { background: rgba(179,38,30,0.12); }
+  .sb-od-mb-add { font: inherit; font-size: 12px; font-weight: 600; color: #8a8a85; background: none; border: 1px dashed #cfc7b4; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+  .sb-od-mb-add:hover { color: #6a4d0c; border-color: #9A7209; }
+  .sb-od-mb-edit { display: flex; flex-direction: column; gap: 6px; }
+  .sb-od-mb-edit select, .sb-od-mb-edit input { font: inherit; font-size: 12.5px; padding: 5px 8px; border: 0.5px solid #d8d6d1; border-radius: 7px; background: #fff; }
+  .sb-od-mb-edit-actions { display: flex; gap: 6px; }
+  .sb-od-mb-edit-actions button { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px; border: 0.5px solid #d8d6d1; background: #fff; cursor: pointer; }
+  .sb-od-mb-edit-actions button:hover { background: #f6f4ef; }
+  .sb-od-mb-clear { color: #B3261E; }
 
   /* Die/Base stone-status color contract: red not ordered / blue ordered / green in stock */
   .sb-od-stone-sel { font-weight: 600; }

@@ -23,7 +23,7 @@ import {
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
-  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
+  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions, manualBlockerKindLabel,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
@@ -1302,13 +1302,21 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
           {isLeadRow(o) && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
-        {blocker && (
+        {(blocker || o.manual_blocker) && (
           <div className="sb-ord-blockline">
-            <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>
-            {o._pressure.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
+            {/* Manual blocker first — a human set it on purpose. Its kind chip
+                replaces the derived Call chip (no double red pills). */}
+            {o.manual_blocker && (
+              <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
+                {manualBlockerKindLabel(o.manual_blocker.kind)}
+              </span>
+            )}
+            {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
+            {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
+            {!o.manual_blocker && o._pressure.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
           </div>
         )}
-        {!blocker && o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
+        {!blocker && !o.manual_blocker && o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
       </button>
 
       {/* Order # */}
@@ -1485,12 +1493,18 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
         {o._total > 0 ? fmtUSD(o._total) : '—'}
         {o._balance > 0 && <span className="sb-kb-card-owes"> · owes {fmtUSD(o._balance)}</span>}
       </div>
-      {(blocker || unsigned || lead || o._pressure?.needsCall) && (
+      {(blocker || unsigned || lead || o.manual_blocker || o._pressure?.needsCall) && (
         <div className="sb-ord-blockline">
           {lead && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
+          {o.manual_blocker && (
+            <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
+              {manualBlockerKindLabel(o.manual_blocker.kind)}
+            </span>
+          )}
+          {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
           {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
           {unsigned && <span className="sb-ord-bpill sb-ord-bpill-red">Unsigned</span>}
-          {o._pressure?.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
+          {!o.manual_blocker && o._pressure?.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
         </div>
       )}
     </div>
