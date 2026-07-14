@@ -45,7 +45,7 @@ export const BATCH_KIND_CHIP = {
   errand:          { label: 'ERRAND',    cls: 'fl-k-fdn' },
 }
 
-const TONE_CLS = { good: 'fl-c-good', warn: 'fl-c-warn', info: 'fl-c-info', neutral: 'fl-c-neutral' }
+const TONE_CLS = { good: 'fl-c-good', warn: 'fl-c-warn', info: 'fl-c-info', neutral: 'fl-c-neutral', bad: 'fl-c-bad' }
 export const toneCls = (tone) => TONE_CLS[tone] || 'fl-c-neutral'
 
 export function fmtDayLabel(iso) {

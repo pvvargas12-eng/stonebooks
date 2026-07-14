@@ -1752,11 +1752,14 @@ export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 // (amber), info = mid-flight (blue), neutral = not started / unset. Rendered by
 // the sb-tw-perm-* chip CSS in OrdersTab and sb-od-tone-* in OrderDetail —
 // ONE tone vocabulary across the table and the status overview card.
-export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : 'neutral'
-export const designStatusTone   = (c) => c === 'layout_approved' ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'neutral'
+// Not-started states read RED (tone 'bad') — Paul, 2026-07-14: work that
+// hasn't begun should look like it's waiting on someone, same red as the
+// CALL chip. Mid-flight = info/warn, done = good, true N/A stays neutral.
+export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : c === 'quoted' ? 'bad' : 'neutral'
+export const designStatusTone   = (c) => c === 'layout_approved' ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'bad'
 export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'received') ? 'good'
-  : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'neutral'
-export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : 'neutral'
+  : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'bad'
+export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : c === 'na' ? 'neutral' : 'bad'
 export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
 
 // Write plans — flip the milestone ladder so the derived status is deterministic.

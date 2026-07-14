@@ -112,6 +112,7 @@ export const FIELD_CSS = `
   .fl-c-warn { background: rgba(184,132,42,0.16); color: #8A5A12; }
   .fl-c-info { background: rgba(29,111,168,0.12); color: #185F8F; }
   .fl-c-neutral { background: #EEEAE0; color: #6B6456; }
+  .fl-c-bad { background: rgba(179,38,30,0.10); color: #B3261E; }
   .fl-c-lead { background: #B3261E; color: #fff; }
   .fl-kind { font-size: 9.5px; font-weight: 800; letter-spacing: 0.09em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
   .fl-k-set { background: rgba(29,158,117,0.12); color: #14775A; }
