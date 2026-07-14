@@ -19,7 +19,7 @@ const STATUS_TONE = {
 }
 const tone = (s) => STATUS_TONE[s] || STATUS_TONE.not_started
 
-export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMilestone, onOpenPhase, onAddTask, onRemoveTask }) {
+export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMilestone, onOpenPhase, onAddTask, onRemoveTask, onSetTaskStatus }) {
   const pipe = buildPipeline(order, job)
   // Customer/staff requested layout changes — read the live signal directly off
   // the job milestones so the Design-phase flag is independent of where the
@@ -144,19 +144,43 @@ export default function OrderPipelineRail({ order, job, tasks = [], onUpdateMile
                     <button type="button" className="sb-opr-act sb-opr-act-done" onClick={() => setStatus(it.key, 'done')}>Done</button>
                     <button type="button" className="sb-opr-act sb-opr-act-prog" onClick={() => setStatus(it.key, 'in_progress')}>In progress</button>
                     <button type="button" className="sb-opr-act sb-opr-act-clear" onClick={() => setStatus(it.key, 'not_started')}>Clear</button>
+                    {/* Remove = marks the milestone not_needed, so it drops off
+                        this rail AND every work queue / Jobs-tab surface (they
+                        all read the same milestone). Reversible from JobDetail. */}
+                    <button type="button" className="sb-opr-act sb-opr-act-remove"
+                      title="Remove this line — marks it not needed on the job (undo from the job's milestone list)"
+                      onClick={() => setStatus(it.key, 'not_needed')}>Remove</button>
                   </div>
                 )}
               </div>
             )
           })}
 
-          {tasksByPhase(phase.code).map(tk => (
-            <div key={tk.id} className="sb-opr-row sb-opr-task">
-              <span className="sb-opr-dot" style={{ background: tk.task_status === 'done' ? '#2d7a4f' : '#9a7209' }}>{tk.task_status === 'done' ? '✓' : '•'}</span>
-              <span className="sb-opr-label">{tk.note}{tk.assignee ? ` · ${tk.assignee}` : ''}</span>
-              <button type="button" className="sb-opr-task-x" title="Remove task" onClick={() => onRemoveTask?.(tk)}>×</button>
-            </div>
-          ))}
+          {tasksByPhase(phase.code).map(tk => {
+            const tkOpen = openKey === `task:${tk.id}`
+            const tkTone = tk.task_status === 'done' ? '#2d7a4f' : tk.task_status === 'in_progress' ? '#1d4ed8' : '#9a7209'
+            return (
+              <div key={tk.id} className="sb-opr-row sb-opr-taskwrap">
+                <div className="sb-opr-task">
+                  <button type="button" className="sb-opr-row-main" title="Set task status"
+                    onClick={() => setOpenKey(tkOpen ? null : `task:${tk.id}`)}>
+                    <span className="sb-opr-dot" style={{ background: tkTone }}>{tk.task_status === 'done' ? '✓' : '•'}</span>
+                    <span className="sb-opr-label" style={tk.task_status === 'done' ? { textDecoration: 'line-through', color: '#8a8a85' } : undefined}>
+                      {tk.note}{tk.assignee ? ` · ${tk.assignee}` : ''}
+                    </span>
+                  </button>
+                  <button type="button" className="sb-opr-task-x" title="Remove task" onClick={() => onRemoveTask?.(tk)}>×</button>
+                </div>
+                {tkOpen && onSetTaskStatus && (
+                  <div className="sb-opr-actions">
+                    <button type="button" className="sb-opr-act sb-opr-act-done" onClick={async () => { await onSetTaskStatus(tk, 'done'); setOpenKey(null) }}>Done</button>
+                    <button type="button" className="sb-opr-act sb-opr-act-prog" onClick={async () => { await onSetTaskStatus(tk, 'in_progress'); setOpenKey(null) }}>In progress</button>
+                    <button type="button" className="sb-opr-act sb-opr-act-clear" onClick={async () => { await onSetTaskStatus(tk, 'open'); setOpenKey(null) }}>Reopen</button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </section>
       ))}
 
@@ -205,6 +229,7 @@ const CSS = `
 .sb-opr-act-done { border-color: #2d7a4f; color: #2d7a4f; }
 .sb-opr-act-prog { border-color: #1d4ed8; color: #1d4ed8; }
 .sb-opr-act-clear { border-color: #b0aba0; color: #8a8a85; }
+.sb-opr-act-remove { border-color: #b3261e; color: #b3261e; margin-left: auto; }
 .sb-opr-task .sb-opr-dot { font-size: 11px; }
 .sb-opr-task { display: flex; align-items: center; gap: 7px; padding: 3px 2px; }
 .sb-opr-task-x { border: none; background: none; color: #b3261e; cursor: pointer; font-size: 15px; line-height: 1; }

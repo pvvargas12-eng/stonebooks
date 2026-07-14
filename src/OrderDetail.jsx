@@ -562,7 +562,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
 
   // ── Pipeline rail handlers ──────────────────────────────────────────────────
-  const milestoneStatusLabel = (s) => s === 'done' ? 'Done' : s === 'in_progress' ? 'In progress' : s === 'blocked' ? 'Blocked' : 'Not started'
+  const milestoneStatusLabel = (s) => s === 'done' ? 'Done' : s === 'in_progress' ? 'In progress' : s === 'blocked' ? 'Blocked' : s === 'not_needed' ? 'Removed (not needed)' : 'Not started'
 
   // Tap a rail milestone → real updateMilestone path (auto-overrides readiness
   // gating frictionlessly) + order_activity log so the order timeline reflects it.
@@ -601,6 +601,21 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!delTask) return
     await deleteOrderActivity(delTask.id)
     setDelTask(null)
+    refreshActivity()
+  }
+
+  // Rail task status (done / in_progress / open). Mirrors toggleTask's layout-
+  // signal sync so a Layout task behaves the same from either surface.
+  const handleRailTaskStatus = async (tk, status) => {
+    await setOrderTaskStatus(tk.id, status)
+    if (tk.kind === 'layout') {
+      if (status === 'done') {
+        const otherOpenLayout = activity.some(t => t.type === 'task' && t.id !== tk.id && t.kind === 'layout' && t.task_status !== 'done')
+        if (!otherOpenLayout && order?.waiting_on === 'reviewing_layout') await updateOrderLeadFields(orderId, { waiting_on: null })
+      } else {
+        await updateOrderLeadFields(orderId, { waiting_on: 'reviewing_layout' })
+      }
+    }
     refreshActivity()
   }
 
@@ -666,7 +681,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     // manual value); re-opening a Layout task restores it. Reuses the lead-fields path.
     if (a.kind === 'layout') {
       if (becomingDone) {
-        const otherOpenLayout = activity.some(t => t.type === 'task' && t.id !== a.id && t.kind === 'layout' && t.task_status === 'open')
+        const otherOpenLayout = activity.some(t => t.type === 'task' && t.id !== a.id && t.kind === 'layout' && t.task_status !== 'done')
         if (!otherOpenLayout && order?.waiting_on === 'reviewing_layout') await updateOrderLeadFields(orderId, { waiting_on: null })
       } else {
         await updateOrderLeadFields(orderId, { waiting_on: 'reviewing_layout' })
@@ -2626,6 +2641,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               onOpenPhase={handleOpenPhase}
               onAddTask={handleAddRailTask}
               onRemoveTask={(tk) => setDelTask(tk)}
+              onSetTaskStatus={handleRailTaskStatus}
             />
 
             {/* Complete & close — works even with items unchecked. */}

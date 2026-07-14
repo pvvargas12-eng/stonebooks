@@ -153,6 +153,19 @@ export function orderJobType(order) {
   return 'new_stone'
 }
 
+// ── Foundation ownership ─────────────────────────────────────────────────────
+// The dig/pour ladder only belongs on the rail when WE do the foundation
+// (Paul, 2026-07-14). Cemetery-poured foundations collapse to one drop-off
+// line. Signals: orders.foundation_type = 'Cemetery Foundation', or the
+// Drop Off state on the milestone ladder (foundation_scheduled done with our
+// dig/pour/in untouched — the same shape deriveFdnStatus reads as drop_off).
+export function cemeteryHandlesFoundation(order, milestones = []) {
+  const ft = order?.foundation_type || order?.foundationType
+  if (ft === 'Cemetery Foundation') return true
+  const done = (k) => milestones.some(m => m.milestone_key === k && m.status === 'done')
+  return done('foundation_scheduled') && !done('foundation_dug') && !done('foundation_poured') && !done('foundation_in')
+}
+
 // ── buildPipeline — the rail's data model ───────────────────────────────────
 // Returns { phases:[{ code,label,items:[{key,label,status,derived,readOnly,...}],
 // done,total,pct }], overallPct, overallDone, overallTotal, hasJob }.
@@ -171,6 +184,9 @@ export function buildPipeline(order, job) {
     const activeDerivedKeys = new Set(deriveMilestones(order).map(d => d.key))
     const hasEtching = addonMatches(order, /etch|laser/)
     const hasPhotoItem = hasEtching || addonMatches(order, /porcelain|cameo|\bphoto\b/)
+    // Cemetery-poured foundation → hide the whole dig/pour ladder; one
+    // read-only drop-off line stands in for it (pushed after the loop).
+    const cemFdn = cemeteryHandlesFoundation(order, milestones)
     for (const m of milestones) {
       const key = m.milestone_key
       if (SALES_REPRESENTED_KEYS.has(key)) continue
@@ -179,6 +195,7 @@ export function buildPipeline(order, job) {
       if (m.group === 'permit' || /permit|cemetery_rule/i.test(key)) continue
       // Design starts at the layout — "is a design needed?" is not a step.
       if (key === 'design_needed') continue
+      if (cemFdn && (m.group === 'foundation' || /^foundation_/.test(key) || key === 'derived_set_foundation')) continue
       // Content-derived steps only while the order still carries that content.
       if (isDerivedKey(key) && !activeDerivedKeys.has(key)) continue
       if ((m.group === 'etching' || /etch/i.test(key)) && !hasEtching) continue
@@ -191,11 +208,22 @@ export function buildPipeline(order, job) {
         group: m.group, team: m.team,
       })
     }
+    if (cemFdn) {
+      const done = (k) => milestones.some(m => m.milestone_key === k && m.status === 'done')
+      byPhase.installation.push({
+        key: 'fdn_cemetery_dropoff',
+        label: 'Foundation — cemetery pours it (drop off)',
+        status: done('foundation_in') ? 'done' : done('foundation_scheduled') ? 'in_progress' : 'not_started',
+        derived: false, readOnly: true,
+      })
+    }
   } else {
     // Pre-signing PREVIEW: config base + derived, read-only, not tappable.
     const base = (ORDER_TYPE_CONFIG[orderJobType(order)] || ORDER_TYPE_CONFIG.new_stone).base
+    const cemFdnPreview = cemeteryHandlesFoundation(order, [])
     for (const b of base) {
       if (SALES_REPRESENTED_KEYS.has(b.key) || b.phase === 'sales') continue
+      if (cemFdnPreview && /^foundation_/.test(b.key)) continue
       byPhase[b.phase]?.push({ key: b.key, label: b.label, status: 'not_started', derived: false, readOnly: true, preview: true })
     }
     for (const d of deriveMilestones(order)) {

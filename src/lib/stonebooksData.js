@@ -1350,7 +1350,8 @@ export async function getOpenTasksList(orderIds) {
     .select('id, order_id, note, due_date, task_status, assignee, kind, created_at')
     .in('order_id', ids)
     .eq('type', 'task')
-    .eq('task_status', 'open')
+    // in_progress is still OPEN work (rail tasks gained the status 2026-07-14).
+    .in('task_status', ['open', 'in_progress'])
   if (error) { console.warn('[leads] getOpenTasksList:', error.message); return [] }
   return data || []
 }
