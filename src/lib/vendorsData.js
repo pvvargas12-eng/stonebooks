@@ -600,7 +600,25 @@ export async function updatePartnerTeamNames(partnerId, names) {
   return error ? wrapErr(error) : { ok: true, names: clean }
 }
 
-export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {
+// Build the branded dealer-email HTML from an (editable) subject/body + the
+// deep-link button. Shared by the direct send and the previewed send.
+export function buildTradeDealerHtml({ subject, body, cta, link }) {
+  return (
+    `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
+    `<p style="margin:0 0 4px"><b>${subject}</b></p><p style="margin:0;white-space:pre-wrap">${body}</p>` +
+    `<p style="margin:18px 0"><a href="${link}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">${cta} →</a></p>` +
+    `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments</p></div>`
+  )
+}
+// Send a (possibly staff-edited) dealer email draft.
+export async function sendTradeDealerEmail({ to, subject, body, cta, link }) {
+  if (!to || !String(to).trim()) return { ok: false, error: 'Enter the dealer email.' }
+  return sendShopEmail({ to: String(to).trim(), subject, html: buildTradeDealerHtml({ subject, body, cta, link }), text: `${body}\n\n${cta}: ${link}` })
+}
+
+// draft:true returns the prepared email WITHOUT sending — the trade board's
+// composer shows it for review first (Paul, 2026-07-14: every email previews).
+export async function notifyTradeDealer(requestId, kind, { extra = '', draft = false } = {}) {
   try {
     const { data: r } = await supabase.from('vendor_requests')
       .select('id, family_name, dealer_order_number, rush_need_by, partner:partners(id, company_name, email, notification_prefs)')
@@ -609,7 +627,8 @@ export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {
     if (!to) return { ok: false, error: 'No company email on file' }
     // Respect the dealer's Settings toggles (false = muted; absent = on).
     const prefs = r?.partner?.notification_prefs || {}
-    if (prefs[NOTIFY_PREF_KEY[kind] || kind] === false) return { ok: true, muted: true }
+    const muted = prefs[NOTIFY_PREF_KEY[kind] || kind] === false
+    if (muted && !draft) return { ok: true, muted: true }
     const fam = r.family_name || 'your order'
     const num = r.dealer_order_number ? ` (${r.dealer_order_number})` : ''
     const link = `${window.location.origin}/trade?trade=${r.id}`
@@ -625,12 +644,8 @@ export async function notifyTradeDealer(requestId, kind, { extra = '' } = {}) {
     const m = M[kind]
     if (!m) return { ok: false, error: `Unknown notify kind ${kind}` }
     const body = `${m.b}${extra ? ` ${extra}` : ''}`
-    const html =
-      `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
-      `<p style="margin:0 0 4px"><b>${m.s}</b></p><p style="margin:0">${body}</p>` +
-      `<p style="margin:18px 0"><a href="${link}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">${m.cta} →</a></p>` +
-      `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments</p></div>`
-    await sendShopEmail({ to, subject: m.s, html, text: `${body}\n\n${m.cta}: ${link}` })
+    if (draft) return { ok: true, muted, draft: { to, subject: m.s, body, cta: m.cta, link } }
+    await sendShopEmail({ to, subject: m.s, html: buildTradeDealerHtml({ subject: m.s, body, cta: m.cta, link }), text: `${body}\n\n${m.cta}: ${link}` })
     return { ok: true }
   } catch (e) {
     console.warn('[trade] notifyTradeDealer:', e?.message)

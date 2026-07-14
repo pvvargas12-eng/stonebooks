@@ -41,7 +41,7 @@ import {
   deleteOutgoingPayment, permitOutgoingKey,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
-  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, setOrderManualBlocker, missingCheckRef,
+  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
@@ -147,20 +147,25 @@ function deriveDesign6(job, proofVers) {
 function ManualBlockerControl({ order, onSaved }) {
   const [editing, setEditing] = useState(false)
   const [kind, setKind] = useState('needs_call')
+  const [flagLabel, setFlagLabel] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
   const mb = order.manual_blocker || null
 
   const openEdit = () => {
     setKind(mb?.kind || 'needs_call')
+    setFlagLabel(mb?.label || '')
     setNote(mb?.note || '')
+    setErr(null)
     setEditing(true)
   }
   const save = async () => {
-    setBusy(true)
-    const r = await setOrderManualBlocker(order.id, { kind, note })
+    setBusy(true); setErr(null)
+    const r = await setOrderManualBlocker(order.id, { kind, label: flagLabel, note })
     setBusy(false)
     if (r.ok) { setEditing(false); onSaved?.() }
+    else setErr(r.error || 'Could not save the blocker.')
   }
   const clear = async () => {
     setBusy(true)
@@ -175,10 +180,17 @@ function ManualBlockerControl({ order, onSaved }) {
         <select value={kind} onChange={e => setKind(e.target.value)} disabled={busy} aria-label="Blocker kind">
           {MANUAL_BLOCKER_KINDS.map(k => <option key={k.code} value={k.code}>{k.label}</option>)}
         </select>
+        {kind === 'custom' && (
+          <input type="text" value={flagLabel} maxLength={24} disabled={busy}
+            placeholder="Flag name — e.g. WAITING ON VA"
+            onChange={e => setFlagLabel(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') save() }} />
+        )}
         <input type="text" value={note} maxLength={80} disabled={busy}
           placeholder="Brief blocker — e.g. confirm plot with sexton"
           onChange={e => setNote(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') save() }} />
+        {err && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#b3261e' }}>{err}</span>}
         <span className="sb-od-mb-edit-actions">
           <button type="button" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
           <button type="button" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
@@ -191,7 +203,7 @@ function ManualBlockerControl({ order, onSaved }) {
     return (
       <button type="button" className="sb-od-mb-chip" onClick={openEdit}
         title={`Set by ${mb.setBy || 'staff'}${mb.setAt ? ' · ' + String(mb.setAt).slice(0, 10) : ''} — click to edit`}>
-        {manualBlockerKindLabel(mb.kind)}{mb.note ? ` — ${mb.note}` : ''}
+        {manualBlockerChipText(mb)}{mb.note ? ` — ${mb.note}` : ''}
       </button>
     )
   }
@@ -397,7 +409,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
-        o.customer_id ? getMessageThread({ customerId: o.customer_id }).then(r => r.messages || []) : Promise.resolve([]),
+        (o.customer_id || o.id) ? getMessageThread({ customerId: o.customer_id, orderId: o.id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
         getOrderActivity(orderId),
         getSignedContract(orderId),
@@ -812,9 +824,19 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       if (!res.ok) { setActionNote(`Could not create approval link — ${res.error}`); return }
       setSentLink(res.url)
       const _staff = await getCurrentStaffName()
-      await logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'sent', note: 'Approval link sent', actor: _staff })
-      if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: 'Approval link generated / sent', createdBy: _staff }).catch(() => {})
+      // HONEST log: creating the link emails NOBODY (the old 'sent' wording
+      // made it look like a silent send — Paul, 2026-07-14). The composer
+      // below is where the actual email happens, previewed and editable.
+      await logOrderActivity(orderId, { type: 'change', field: 'Approval link', newValue: 'created', note: 'Approval link created — email composer opened (nothing sent yet)', actor: _staff })
       refreshApprovalLinks(); refreshActivity()
+      const _cust = order.customer || {}
+      const surname = order.primary_lastname || _cust.last_name || 'your'
+      setEmailModal({
+        to: _cust.email || '',
+        subject: `Layout approval — ${surname}`,
+        body: `Hello,\n\nYour design is ready for your review and approval. Please open the link below, review it, and approve it (or request changes):\n\n${res.url}\n\nThank you,\nShevchenko Monuments\n732-442-1286`,
+        busy: false, error: null, sent: false,
+      })
     } catch (e) {
       setSendBusy(false); setActionNote(`Could not create approval link — ${e?.message || 'error'}`)
     }
@@ -1292,7 +1314,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments })
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
-    if (order?.customer_id) setEmails((await getMessageThread({ customerId: order.customer_id })).messages || [])
+    if (order?.customer_id || orderId) setEmails((await getMessageThread({ customerId: order?.customer_id, orderId })).messages || [])
     // Auto-close only when paid in full — never close an order that still owes.
     if (isCloseout) {
       if (balance <= 0) {

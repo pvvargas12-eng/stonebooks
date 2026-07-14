@@ -17,7 +17,7 @@ import {
   listTradeOrders, updateTradeOrder, logTradeEvent, listTradeOrderEvents,
   decideTradeRush, acceptTradeOrder, deleteTradeOrder, getTradeTracker,
   getTradeLayouts, uploadTradeSignature, approveTradeLayout, signTradeReceipt,
-  uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, notifyTradeDealer,
+  uploadVendorFile, listVendorAttachments, vendorFileSignedUrl, notifyTradeDealer, sendTradeDealerEmail,
   TRADE_SERVICES, TRADE_DESIGN_PHASES, TRADE_STONE_STATUSES, tradeServiceLabel,
 } from '../lib/vendorsData'
 import {
@@ -138,6 +138,23 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
   // ── Actions (every one logs the shared activity event) ─────────────────────
   const withBusy = async (id, fn) => { setBusyId(id); try { await fn() } finally { setBusyId(null); reload() } }
 
+  // Dealer emails PREVIEW before sending (Paul, 2026-07-14 — no more silent
+  // auto-sends). Prepares the draft and opens the composer; staff edit, then
+  // Send (or close to skip). Muted kinds (dealer Settings) never open.
+  const [emailDraft, setEmailDraft] = useState(null)  // { to, subject, body, cta, link, busy, error } | null
+  const openDealerEmail = async (requestId, kind) => {
+    const d = await notifyTradeDealer(requestId, kind, { draft: true })
+    if (!d?.ok || !d.draft || d.muted) return
+    setEmailDraft({ ...d.draft, busy: false, error: null })
+  }
+  const sendDealerEmail = async () => {
+    if (!emailDraft || emailDraft.busy) return
+    setEmailDraft(m => ({ ...m, busy: true, error: null }))
+    const r = await sendTradeDealerEmail(emailDraft)
+    if (!r.ok) { setEmailDraft(m => ({ ...m, busy: false, error: r.error || 'Send failed.' })); return }
+    setEmailDraft(null)
+  }
+
   const setPhase = (r, code) => withBusy(r.id, async () => {
     const who = await actor()
     const label = TRADE_DESIGN_PHASES.find(p => p.code === code)?.label || code
@@ -152,8 +169,9 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
       if (r.job_id) await setJobOverallStatus(r.job_id, 'completed', 'Design-only trade order — design approved = complete')
       await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'completed', detail: 'Design approved — design-only order completed', actor: who, actorRole: 'staff' })
     }
-    // Layout going out for review pulls the dealer in by email (deep link).
-    if (staffView && code === 'sent_draft') notifyTradeDealer(r.id, 'layout_ready').catch(() => {})
+    // Layout going out for review pulls the dealer in by email (deep link) —
+    // PREVIEWED in the composer first, never auto-sent.
+    if (staffView && code === 'sent_draft') openDealerEmail(r.id, 'layout_ready').catch(() => {})
   })
 
   // Production column write — moves the SAME piece the Production floor tracks
@@ -256,7 +274,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     if (!file || !r) return
     await withBusy(r.id, async () => {
       await uploadVendorFile(file, { partnerId: r.partner_id, requestId: r.id, uploaderRole: staffView ? 'staff' : 'partner', kind: 'completion_photo' })
-      if (staffView) notifyTradeDealer(r.id, 'photo').catch(() => {})
+      if (staffView) openDealerEmail(r.id, 'photo').catch(() => {})
       refreshDetail(r.id)
     })
   }
@@ -282,8 +300,8 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
         : { orderId: r.id, layoutImageUrl: up.url, uploadedBy: who })
       if (error) { console.warn('[trade] proof version:', error.message); return }
       await updateTradeOrder(r.id, { designPhase: 'sent_draft' })
-      await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'layout_sent', detail: 'Layout uploaded — sent for approval', actor: who, actorRole: 'staff' })
-      notifyTradeDealer(r.id, 'layout_ready').catch(() => {})
+      await logTradeEvent({ requestId: r.id, partnerId: r.partner_id, type: 'layout_sent', detail: 'Layout uploaded — approval email drafted for review', actor: who, actorRole: 'staff' })
+      openDealerEmail(r.id, 'layout_ready').catch(() => {})
       refreshDetail(r.id)
     })
   }
@@ -693,6 +711,41 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
       {sigModal && (
         <TradeSignModal mode={sigModal.mode} busy={busyId === sigModal.order.id}
           onCancel={() => setSigModal(null)} onDone={onSigDone} />
+      )}
+
+      {/* Dealer email composer — EVERY dealer email previews here before it
+          sends (Paul, 2026-07-14). Close = don't send. */}
+      {emailDraft && (
+        <div className="sb-tb-modal-overlay" onClick={() => { if (!emailDraft.busy) setEmailDraft(null) }}>
+          <div className="sb-tb-lightbox" style={{ maxWidth: 560, padding: 18 }} onClick={e => e.stopPropagation()}>
+            <div className="sb-tb-lightbox-bar" style={{ marginBottom: 10 }}>
+              <b>Email the dealer — review before sending</b>
+              <span style={{ flex: 1 }} />
+              <button type="button" className="sb-tb-linkbtn" onClick={() => { if (!emailDraft.busy) setEmailDraft(null) }}>✕ Don’t send</button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>To
+                <input style={{ display: 'block', width: '100%', font: 'inherit', fontSize: 13.5, padding: '8px 10px', border: '0.5px solid #d8d2c4', borderRadius: 7, marginTop: 3 }}
+                  value={emailDraft.to} onChange={e => setEmailDraft(m => ({ ...m, to: e.target.value }))} disabled={emailDraft.busy} />
+              </label>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>Subject
+                <input style={{ display: 'block', width: '100%', font: 'inherit', fontSize: 13.5, padding: '8px 10px', border: '0.5px solid #d8d2c4', borderRadius: 7, marginTop: 3 }}
+                  value={emailDraft.subject} onChange={e => setEmailDraft(m => ({ ...m, subject: e.target.value }))} disabled={emailDraft.busy} />
+              </label>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#6a6a62' }}>Message
+                <textarea rows={5} style={{ display: 'block', width: '100%', font: 'inherit', fontSize: 13.5, padding: '8px 10px', border: '0.5px solid #d8d2c4', borderRadius: 7, marginTop: 3, resize: 'vertical' }}
+                  value={emailDraft.body} onChange={e => setEmailDraft(m => ({ ...m, body: e.target.value }))} disabled={emailDraft.busy} />
+              </label>
+              <div style={{ fontSize: 12, color: '#8a8a85' }}>A “{emailDraft.cta}” button linking to their order is added automatically.</div>
+              {emailDraft.error && <div style={{ fontSize: 12.5, fontWeight: 600, color: '#b3261e' }}>{emailDraft.error}</div>}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+                <button type="button" className="sb-tb-linkbtn" disabled={emailDraft.busy} onClick={() => setEmailDraft(null)}>Don’t send</button>
+                <button type="button" style={{ font: 'inherit', fontSize: 13, fontWeight: 700, padding: '8px 18px', borderRadius: 8, border: 'none', background: '#9A7209', color: '#fff', cursor: 'pointer', opacity: emailDraft.busy ? 0.6 : 1 }}
+                  disabled={emailDraft.busy} onClick={sendDealerEmail}>{emailDraft.busy ? 'Sending…' : 'Send email'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Layout lightbox — big, easy to read, with download (Paul, 2026-07-08). */}

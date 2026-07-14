@@ -388,9 +388,14 @@ export async function getInboxThreads(folder = 'INBOX', { limit = 500 } = {}) {
 // chronological). order_id is never used to filter. Falls back to thread-by-key
 // for unmatched mail (no customer). gmailMessageId + threadKey are returned so a
 // reply can set In-Reply-To / References.
-export async function getMessageThread({ customerId, threadKey } = {}) {
+export async function getMessageThread({ customerId, orderId, threadKey } = {}) {
   let q = supabase.from('messages').select('id, gmail_message_id, thread_key, direction, from_email, to_emails, subject, body_text, body_html, has_attachments, attachments, sent_at, received_at, created_at, is_read')
-  if (customerId) q = q.eq('customer_id', customerId)
+  // Match by customer OR order (Paul, 2026-07-14 — sends that carried only an
+  // order_id, e.g. approval links to a non-matching address, must still show
+  // on the order's Email traffic).
+  if (customerId && orderId) q = q.or(`customer_id.eq.${customerId},order_id.eq.${orderId}`)
+  else if (customerId) q = q.eq('customer_id', customerId)
+  else if (orderId) q = q.eq('order_id', orderId)
   else if (threadKey) q = q.eq('thread_key', threadKey)
   else return { ok: true, messages: [] }
   const { data, error } = await q.order('created_at', { ascending: true })
@@ -501,7 +506,10 @@ export function classifyAttachment({ filename, contentType } = {}) {
 // thread is the latest, so latestDirection drives "needs reply" (we owe a
 // response when the newest message is inbound). Counts are computed the same
 // way the UI filters, so each sidebar badge always matches its list.
-export async function getEmailThreadsWorkspace({ limit = 1000 } = {}) {
+// limit 3000 (was 1000): outbound rows have received_at NULL and sort after
+// every inbound row, so a tight limit could push outbound-only threads out of
+// the Sent bucket entirely (audit 2026-07-14).
+export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
   const cols = 'id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))'
   const fetchRows = (withJunk) => supabase.from('messages')
     .select(withJunk ? `${cols}, is_junk` : cols)
@@ -1687,7 +1695,8 @@ export function derivePaymentStatus(order) {
 // by the keys actually ON the job (not job_type) so template versions stay
 // safe. Order matters: proof_created wins when both vocabularies coexist.
 const DESIGN_VOCABS = [
-  { created: 'proof_created', sent: null, changes: 'proof_changes_requested', approved: 'proof_approved' },
+  // New stone — design ends at the CUT stencil too (Paul, 2026-07-14).
+  { created: 'proof_created', sent: null, changes: 'proof_changes_requested', approved: 'proof_approved', cut: 'stencil_cut', cutPre: ['stencil_created'] },
   { created: 'bronze_layout_created', sent: 'bronze_proof_sent', changes: null, approved: 'bronze_proof_approved' },
   // Inscription — design ends at the CUT stencil (Paul, 2026-07-14).
   { created: 'layout_created', sent: 'proof_sent', changes: null, approved: 'proof_approved', cut: 'stencil_cut', cutPre: ['stencil_created'] },
@@ -2879,16 +2888,25 @@ export function permitStatusTone(code) { return PERMIT_STATUS_TONE[code] || 'neu
 export const MANUAL_BLOCKER_KINDS = [
   { code: 'needs_call',  label: 'Needs call' },
   { code: 'needs_email', label: 'Needs email' },
+  // Custom flag — the operator names it (label carried on the blocker).
+  { code: 'custom',      label: 'Custom flag' },
 ]
 export const manualBlockerKindLabel = (c) =>
   (MANUAL_BLOCKER_KINDS.find(k => k.code === c) || {}).label || c
+// Chip text: custom flags show THEIR name, not the generic kind label.
+export const manualBlockerChipText = (mb) =>
+  mb?.kind === 'custom' ? (mb.label || 'Flagged') : manualBlockerKindLabel(mb?.kind)
 
 export async function setOrderManualBlocker(orderId, blocker) {
   if (!orderId) return { ok: false, error: 'Missing order' }
   let value = null
   if (blocker && blocker.kind) {
+    if (blocker.kind === 'custom' && !(blocker.label || '').trim()) {
+      return { ok: false, error: 'Name the custom flag.' }
+    }
     value = {
       kind: blocker.kind,
+      label: blocker.kind === 'custom' ? blocker.label.trim() : null,
       note: (blocker.note || '').trim() || null,
       setAt: new Date().toISOString(),
       setBy: await getCurrentStaffName(),

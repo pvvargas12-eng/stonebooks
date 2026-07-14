@@ -23,7 +23,7 @@ import {
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
-  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions, manualBlockerKindLabel,
+  PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions, manualBlockerKindLabel, manualBlockerChipText,
   designStatusOptions, statusDimApplies, createJobFromOrder, combineOrders, orderTypeLabels,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
@@ -1405,7 +1405,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
                 replaces the derived Call chip (no double red pills). */}
             {o.manual_blocker && (
               <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
-                {manualBlockerKindLabel(o.manual_blocker.kind)}
+                {manualBlockerChipText(o.manual_blocker)}
               </span>
             )}
             {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
@@ -1603,7 +1603,7 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
           {lead && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {o.manual_blocker && (
             <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
-              {manualBlockerKindLabel(o.manual_blocker.kind)}
+              {manualBlockerChipText(o.manual_blocker)}
             </span>
           )}
           {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
