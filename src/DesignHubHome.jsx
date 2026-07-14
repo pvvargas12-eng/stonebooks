@@ -28,7 +28,7 @@ import {
   designStateFor, orderIsEstimateLayout,
   setOrderDesignStatus, addOrderTask, setOrderTaskStatus, getOpenTasksList,
   getCurrentStaffName,
-  getProofVersionsByOrder, uploadProofLayout, createProofVersion,
+  getProofVersionsByOrder, getProofVersions, uploadProofLayout, createProofVersion,
 } from './lib/stonebooksData'
 
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
@@ -226,15 +226,19 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
 
   const toggleTile = (code) => setActiveTile(t => (t === code ? null : code))
 
-  // ── Estimate-layout uploader (order-scoped; reuses uploadProofLayout +
-  // createProofVersion with an orderId — NOT the job-scoped DesignPacket). ──────
-  const [uploadFor, setUploadFor] = useState(null)   // the lead order | null
+  // ── Layout uploader (Paul, 2026-07-14: upload from the hub, any row) ─────────
+  // Job rows upload a JOB-scoped proof version (same plumbing as the packet);
+  // order-only rows (estimates, or signed orders whose job hasn't been created
+  // yet) upload ORDER-scoped — createJobFromOrder carries it onto the job.
+  const [uploadFor, setUploadFor] = useState(null)   // { order, job|null } | null
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadErr, setUploadErr] = useState(null)
-  const [orderProof, setOrderProof] = useState(null) // current order-scoped proof
-  const openUploader = useCallback(async (order) => {
-    setUploadFor(order); setUploadErr(null); setOrderProof(null)
-    const vers = await getProofVersionsByOrder(order.id).catch(() => [])
+  const [orderProof, setOrderProof] = useState(null) // current proof for the target
+  const openUploader = useCallback(async (order, job = null) => {
+    setUploadFor({ order, job }); setUploadErr(null); setOrderProof(null)
+    const vers = job
+      ? await getProofVersions(job.id).catch(() => [])
+      : await getProofVersionsByOrder(order.id).catch(() => [])
     setOrderProof(vers.find(v => v.is_current) || vers[0] || null)
   }, [])
   const closeUploader = () => { if (!uploadBusy) { setUploadFor(null); setUploadErr(null); setOrderProof(null) } }
@@ -243,16 +247,35 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     e.target.value = ''
     if (!file || !uploadFor) return
     setUploadBusy(true); setUploadErr(null)
-    const up = await uploadProofLayout(uploadFor.id, file, { scope: 'order' })
+    const { order, job } = uploadFor
+    const up = job
+      ? await uploadProofLayout(job.id, file, { scope: 'job' })
+      : await uploadProofLayout(order.id, file, { scope: 'order' })
     if (!up.ok) { setUploadErr(up.error || 'Upload failed.'); setUploadBusy(false); return }
     const me = await getCurrentStaffName().catch(() => null)
-    const { error } = await createProofVersion({ orderId: uploadFor.id, layoutImageUrl: up.url, uploadedBy: me })
+    const { error } = await createProofVersion(job
+      ? { jobId: job.id, layoutImageUrl: up.url, uploadedBy: me }
+      : { orderId: order.id, layoutImageUrl: up.url, uploadedBy: me })
     setUploadBusy(false)
     if (error) { setUploadErr(error.message || 'Could not save the layout.'); return }
     setUploadFor(null); setOrderProof(null)
     await onReload?.()
   }, [uploadFor, onReload])
   const hasLayout = (orderId) => !!(currentProofOrderIds && currentProofOrderIds.has(orderId))
+
+  // ── Search safety net (Paul, 2026-07-14: "yager won't come up ANYWHERE") ────
+  // A search that misses the job rows falls back to matching ORDERS — signed
+  // orders whose job doesn't exist yet, leads, anything — so a family name
+  // typed here always finds its record.
+  const fallbackRows = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (tab !== 'layouts' || !q) return []
+    const seen = new Set(layoutRows.map(r => r.order?.id).filter(Boolean))
+    return (orders || [])
+      .filter(o => o && !o.archived && !seen.has(o.id))
+      .filter(o => [familyOf(o), customerOf(o), o.order_number].filter(Boolean).join(' ').toLowerCase().includes(q))
+      .slice(0, 20)
+  }, [tab, search, orders, layoutRows])
 
   return (
     <div className="sb-dh2">
@@ -346,6 +369,11 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     <span className={`sb-dh2-age sb-dh2-age-${r.urgency}`}>{r.ageDays != null ? `${r.ageDays}d` : '—'}</span>
                   )}
                   <span className="sb-dh2-row-spacer" />
+                  <button type="button" className="sb-dh2-createbtn"
+                    onClick={e => { e.stopPropagation(); openUploader(r.order, r.job) }}
+                    title="Upload the layout image right here — becomes the next proof version">
+                    Upload layout
+                  </button>
                   <select
                     className="sb-dh2-statusbox"
                     value={r.state}
@@ -358,6 +386,29 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Search safety net — orders the job list doesn't cover (signed but
+              job not created yet, leads, etc.) so a searched family ALWAYS
+              surfaces. Opening the order self-heals a missing job. */}
+          {fallbackRows.length > 0 && (
+            <>
+              <div className="sb-dh2-fallback-note">Not in the design list — found in Orders:</div>
+              <div className="sb-dh2-rows">
+                {fallbackRows.map(o => (
+                  <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id) }} role="button" tabIndex={0}>
+                    <span className="sb-dh2-fam">{familyOf(o)}</span>
+                    <span className="sb-dh2-est-meta">{o.order_number || '—'}</span>
+                    <span className="sb-dh2-pill sb-dh2-pill-amber">{o.signed_at ? 'No design job yet — open to fix' : 'Lead / estimate'}</span>
+                    {hasLayout(o.id) && <span className="sb-dh2-pill sb-dh2-pill-green">Layout ✓</span>}
+                    <span className="sb-dh2-row-spacer" />
+                    <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); openUploader(o) }}>
+                      {hasLayout(o.id) ? 'Update layout' : 'Upload layout'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </>
       ) : (
@@ -391,8 +442,10 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
       {uploadFor && (
         <div className="sb-dh2-modal-overlay" onClick={closeUploader}>
           <div className="sb-dh2-modal" onClick={e => e.stopPropagation()}>
-            <div className="sb-dh2-modal-title">Estimate layout · {familyOf(uploadFor)}</div>
-            <div className="sb-dh2-modal-sub">Attach a layout to this estimate. It carries onto the job when the contract is signed.</div>
+            <div className="sb-dh2-modal-title">{uploadFor.job ? 'Layout' : 'Estimate layout'} · {familyOf(uploadFor.order)}</div>
+            <div className="sb-dh2-modal-sub">{uploadFor.job
+              ? 'Uploads as the next proof version on this job — same as dropping it on the design packet.'
+              : 'Attach a layout to this order. It carries onto the job when the contract is signed.'}</div>
             {orderProof?.layout_image_url && (
               <div className="sb-dh2-modal-thumbwrap">
                 <img src={orderProof.layout_image_url} alt="Current layout" className="sb-dh2-modal-thumb" />
@@ -493,6 +546,7 @@ const CSS = `
   .sb-dh2-est-meta { font-size: 12.5px; color: #8a8a85; font-variant-numeric: tabular-nums; }
   .sb-dh2-createbtn { font: inherit; font-size: 12.5px; font-weight: 600; border-radius: 7px; cursor: pointer; padding: 6px 12px; border: 0.5px solid #9A7209; background: #9A7209; color: #fff; }
   .sb-dh2-empty { padding: 40px 16px; text-align: center; color: #8a8a85; font-size: 14px; background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 12px; font-style: italic; }
+  .sb-dh2-fallback-note { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8472; margin: 14px 2px 8px; }
 
   @media (max-width: 720px) {
     .sb-dh2 { padding: 16px 16px 48px; }
