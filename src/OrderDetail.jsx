@@ -20,7 +20,7 @@ import {
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
-  listShopTasksForOrder, deleteShopTask,
+  listShopTasksForOrder, deleteShopTask, getChangeRequestThread,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   closeOrder, photoAttachment, setJobOverallStatus, setOrderFamilyName,
@@ -368,6 +368,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // Pipeline rail task-remove confirm (× with confirm)
   const [delTask, setDelTask] = useState(null)   // shop_tasks task row (legacy view) | null
   const [checkJobOpen, setCheckJobOpen] = useState(false)   // check-job modal (site inspection task)
+  // The design change-request loop: what the family (or staff) asked to change
+  // + staff replies, chronological. Refetched whenever approvalLinks refreshes.
+  const [designThread, setDesignThread] = useState([])
   // Signed contract (#C)
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
   const [signedApproval, setSignedApproval] = useState(null)   // { path, signedAt } | null (Phase 3)
@@ -464,7 +467,24 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       setEmailModal({ to: order?.customer?.email || '', subject: '', body: '', busy: false, error: null, sent: false })
       onConsumeInitialAction?.()
     }
+    // Design Hub deep-link — land ON the Design/proof card, not the page top.
+    if (initialAction === 'design' && order && !initialActionRef.current) {
+      initialActionRef.current = true
+      requestAnimationFrame(() => document.getElementById('od-design')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+      onConsumeInitialAction?.()
+    }
   }, [initialAction, order, onConsumeInitialAction])
+
+  // Change-request thread (customer notes from approval links + internal
+  // revision events + staff replies). approvalLinks in the deps so a fresh
+  // rejection surfaces as soon as the links refresh.
+  useEffect(() => {
+    let alive = true
+    getChangeRequestThread({ orderId, jobId: job?.id || null })
+      .then(t => { if (alive) setDesignThread(t || []) })
+      .catch(() => { /* thread is additive — the card still works without it */ })
+    return () => { alive = false }
+  }, [orderId, job?.id, approvalLinks])
 
   const refreshNotes = async () => setNotes(await getOrderNotes(orderId))
   const refreshUploads = async () => setUploads(await listOrderAttachments(orderId))
@@ -2224,6 +2244,25 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             {reapprovalText && (
               <div className="sb-od-reapproval">{reapprovalText}</div>
             )}
+            {/* THE CHANGE LOOP — what the family (or staff) asked to change,
+                loud and first. This text was stored all along
+                (approval_links.change_notes / job_events) but never rendered
+                (Paul, 2026-07-15: "i cant see the changes requested"). */}
+            {designThread.length > 0 && (
+              <div className="sb-od-changes-panel">
+                <div className="sb-od-changes-head">Changes requested</div>
+                {designThread.slice(0, 6).map(e => (
+                  <div key={e.id} className={`sb-od-change-entry${e.kind === 'reply' ? ' reply' : ''}`}>
+                    <span className="sb-od-change-by">
+                      {e.kind === 'reply' ? `${e.by} replied` : `${e.by} requested changes`}
+                      {e.versionNumber ? ` (v${e.versionNumber})` : ''}
+                      {e.at ? ` · ${fmtDate(e.at)}` : ''}
+                    </span>
+                    <span className="sb-od-change-note">“{e.note}”</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {/* ONE adjustable status box (Paul, 2026-07-10) — same dropdown + write
                 path as the Orders table Design column; the chip color follows the
                 selected status. Stone spec / inscription rows removed — they were
@@ -2298,6 +2337,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 title="Opens the email composer prefilled with the approval link — preview, then hit Send">
                 Email link…
               </button>
+              <button type="button" className="sb-od-btn" onClick={() => handleOpenPhase('design')}
+                title="The Design hub — layout queue, proof versions, design tasks">
+                Open Design hub
+              </button>
               {sentLink && (
                 <div className="sb-od-approval-link">
                   <input className="sb-od-note-input" readOnly value={sentLink} onFocus={e => e.target.select()} />
@@ -2318,6 +2361,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                       <div key={l.id} className="sb-od-approval-row">
                         <span className={`sb-od-approval-badge sb-od-approval-${l.displayStatus}`}>{lab}</span>
                         <span className="sb-od-approval-when">{when ? fmtDate(when) : ''}</span>
+                        {l.viewed_at && l.displayStatus !== 'viewed' && (
+                          <span className="sb-od-approval-when" title="When the family opened the link">viewed {fmtDate(l.viewed_at)}</span>
+                        )}
                         {canCopy && (
                           <>
                             <button type="button" className="sb-od-link" onClick={() => navigator.clipboard?.writeText(l.share_url)}>Copy link</button>
@@ -2326,6 +2372,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                         )}
                         {(l.displayStatus === 'pending' || l.displayStatus === 'viewed') && (
                           <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => handleRevokeLink(l.id)}>Revoke</button>
+                        )}
+                        {l.displayStatus === 'changes_requested' && l.change_notes && (
+                          <span className="sb-od-approval-note">“{String(l.change_notes).trim()}”</span>
                         )}
                       </div>
                     )
@@ -3368,11 +3417,18 @@ const OD_CSS = `
   .sb-od-design-noimg { font-size: 11px; color: #9a958c; }
   .sb-od-design-meta { flex: 1 1 auto; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
   .sb-od-reapproval { font-size: 12.5px; font-weight: 600; color: #7a4a12; background: #fdf2e9; border: 1px solid #e0a85f; border-radius: 7px; padding: 7px 10px; margin-bottom: 10px; }
+  .sb-od-changes-panel { background: #fbeaea; border: 1px solid #e7b3ad; border-left: 4px solid #b3261e; border-radius: 8px; padding: 10px 13px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .sb-od-changes-head { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #b3261e; }
+  .sb-od-change-entry { display: flex; flex-direction: column; gap: 2px; }
+  .sb-od-change-entry.reply { padding-left: 14px; border-left: 2px solid rgba(179,38,30,0.25); }
+  .sb-od-change-by { font-size: 11.5px; font-weight: 700; color: #7a2a25; }
+  .sb-od-change-note { font-size: 13.5px; color: #2a2a2a; line-height: 1.45; }
+  .sb-od-approval-note { flex-basis: 100%; font-size: 12.5px; color: #7a2a25; background: #fbeaea; border-radius: 6px; padding: 5px 9px; }
   .sb-od-approval-send { margin-top: 14px; padding-top: 12px; border-top: 1px solid #ece8df; }
   .sb-od-approval-link { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .sb-od-approval-link .sb-od-note-input { flex: 1 1 220px; min-width: 0; font-size: 12.5px; }
   .sb-od-approval-status { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
-  .sb-od-approval-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .sb-od-approval-row { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
   .sb-od-approval-when { color: #9a958c; font-size: 12px; flex: 1 1 auto; }
   .sb-od-approval-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 999px; }
   .sb-od-approval-pending { background: #fef6e7; color: #8a6308; }

@@ -24,7 +24,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
-  getLatestChangeRequestNotes,
+  getLatestChangeRequestNotes, listAllApprovalLinks,
   designStateFor, orderIsEstimateLayout,
   setOrderDesignStatus, addOrderTask, setOrderTaskStatus, getOpenTasksList,
   getCurrentStaffName,
@@ -128,6 +128,33 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     for (const r of layoutRows) c[r.state]++
     return c
   }, [layoutRows])
+
+  // Approval-link pulse per order (sent / viewed / approved / changes
+  // requested) — the loop status Paul couldn't see from the hub. Latest link
+  // per order wins (listAllApprovalLinks is newest-first).
+  const [approvalByOrder, setApprovalByOrder] = useState({})
+  useEffect(() => {
+    let alive = true
+    listAllApprovalLinks().then(links => {
+      if (!alive) return
+      const m = {}
+      for (const l of (links || [])) if (l.order_id && !m[l.order_id]) m[l.order_id] = l
+      setApprovalByOrder(m)
+    }).catch(() => { /* badges are additive */ })
+    return () => { alive = false }
+  }, [])
+  const APPROVAL_LAB = { pending: 'Sent', viewed: 'Viewed by family', signed: 'Approved', changes_requested: 'Changes requested', expired: 'Link expired', revoked: 'Revoked' }
+  const approvalBadge = (orderId) => {
+    const l = approvalByOrder[orderId]
+    if (!l) return null
+    const s = l.displayStatus || l.status
+    const when = l.changes_requested_at || l.signed_at || l.viewed_at || l.emailed_at || l.created_at
+    return (
+      <span className={`sb-dh2-linkbadge sb-dh2-link-${s}`} title={when ? new Date(when).toLocaleDateString() : ''}>
+        {APPROVAL_LAB[s] || s}
+      </span>
+    )
+  }
 
   // Revision notes (the customer's words) for revision rows + tasks.
   const [changeNotes, setChangeNotes] = useState({})
@@ -358,21 +385,35 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 <div
                   key={r.job.id}
                   className={`sb-dh2-row sb-dh2-row-${r.urgency}`}
-                  onClick={() => { rememberScroll(); onOpenJob?.(r.job.id, 'design') }}
+                  onClick={() => {
+                    rememberScroll()
+                    // Land on the ORDER's Design/proof card (the actionable
+                    // surface: proof, approval link, change requests) — not
+                    // the job packet (Paul, 2026-07-15).
+                    if (r.order?.id) onOpenOrder?.(r.order.id, 'design')
+                    else onOpenJob?.(r.job.id, 'design')
+                  }}
                   role="button"
                   tabIndex={0}
+                  title="Open this order's design details"
                 >
                   <span className="sb-dh2-fam">{familyOf(r.order)}</span>
                   {r.state === 'revision' ? (
-                    <span className="sb-dh2-pill sb-dh2-pill-amber" title={changeNotes[r.job.id] || ''}>Adjustment needed</span>
+                    <span className="sb-dh2-pill sb-dh2-pill-amber">Adjustment needed</span>
                   ) : (
                     <span className={`sb-dh2-age sb-dh2-age-${r.urgency}`}>{r.ageDays != null ? `${r.ageDays}d` : '—'}</span>
                   )}
+                  {r.order?.id && approvalBadge(r.order.id)}
                   <span className="sb-dh2-row-spacer" />
                   <button type="button" className="sb-dh2-createbtn"
                     onClick={e => { e.stopPropagation(); openUploader(r.order, r.job) }}
                     title="Upload the layout image right here — becomes the next proof version">
                     Upload layout
+                  </button>
+                  <button type="button" className="sb-dh2-jobbtn"
+                    onClick={e => { e.stopPropagation(); rememberScroll(); onOpenJob?.(r.job.id, 'design') }}
+                    title="The production job's design packet">
+                    Job packet
                   </button>
                   <select
                     className="sb-dh2-statusbox"
@@ -383,6 +424,9 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                   >
                     {STATUS_BOX.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                   </select>
+                  {r.state === 'revision' && changeNotes[r.job.id] && (
+                    <span className="sb-dh2-changenote">“{changeNotes[r.job.id]}”</span>
+                  )}
                 </div>
               ))}
             </div>
@@ -396,11 +440,12 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
               <div className="sb-dh2-fallback-note">Not in the design list — found in Orders:</div>
               <div className="sb-dh2-rows">
                 {fallbackRows.map(o => (
-                  <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id) }} role="button" tabIndex={0}>
+                  <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id, 'design') }} role="button" tabIndex={0}>
                     <span className="sb-dh2-fam">{familyOf(o)}</span>
                     <span className="sb-dh2-est-meta">{o.order_number || '—'}</span>
                     <span className="sb-dh2-pill sb-dh2-pill-amber">{o.signed_at ? 'No design job yet — open to fix' : 'Lead / estimate'}</span>
                     {hasLayout(o.id) && <span className="sb-dh2-pill sb-dh2-pill-green">Layout ✓</span>}
+                    {approvalBadge(o.id)}
                     <span className="sb-dh2-row-spacer" />
                     <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); openUploader(o) }}>
                       {hasLayout(o.id) ? 'Update layout' : 'Upload layout'}
@@ -423,10 +468,11 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
           ) : (
             <div className="sb-dh2-rows">
               {estimateRows.map(o => (
-                <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id) }} role="button" tabIndex={0}>
+                <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id, 'design') }} role="button" tabIndex={0}>
                   <span className="sb-dh2-fam">{familyOf(o)}</span>
                   <span className="sb-dh2-est-meta">{o.order_number || 'estimate'}</span>
                   {hasLayout(o.id) && <span className="sb-dh2-pill sb-dh2-pill-green">Layout ✓</span>}
+                  {approvalBadge(o.id)}
                   <span className="sb-dh2-row-spacer" />
                   <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); openUploader(o) }}>
                     {hasLayout(o.id) ? 'Update layout' : 'Create estimate layout'}
@@ -527,6 +573,15 @@ const CSS = `
   .sb-dh2-age-soon { color: #8b6418; background: rgba(184,132,42,.16); }
   .sb-dh2-pill { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
   .sb-dh2-pill-amber { color: #8b6418; background: rgba(184,132,42,.16); }
+  .sb-dh2-linkbadge { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
+  .sb-dh2-link-pending { color: #1d6fa8; background: rgba(29,111,168,.12); }
+  .sb-dh2-link-viewed { color: #5b3e96; background: rgba(91,62,150,.12); }
+  .sb-dh2-link-signed { color: #1d7a55; background: rgba(29,122,85,.14); }
+  .sb-dh2-link-changes_requested { color: #b3261e; background: rgba(179,38,30,.12); }
+  .sb-dh2-link-expired, .sb-dh2-link-revoked { color: #8a8a85; background: rgba(0,0,0,.06); }
+  .sb-dh2-changenote { flex-basis: 100%; font-size: 12.5px; color: #7a2a25; background: rgba(179,38,30,.07); border-radius: 6px; padding: 5px 10px; margin-top: 4px; }
+  .sb-dh2-jobbtn { font: inherit; font-size: 12px; font-weight: 600; border-radius: 7px; cursor: pointer; padding: 6px 10px; border: 0.5px solid #c9c2b0; background: #fff; color: #6b6256; }
+  .sb-dh2-jobbtn:hover { border-color: #9A7209; color: #9A7209; }
   .sb-dh2-pill-green { color: #38704f; background: rgba(56,122,79,.12); }
 
   .sb-dh2-modal-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(15,20,25,.5); display: flex; align-items: center; justify-content: center; padding: 24px; }
