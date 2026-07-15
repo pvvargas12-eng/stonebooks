@@ -18,10 +18,12 @@ import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
 import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount } from './lib/stonebooksData'
 import { loadPricingConfig } from './lib/orderRates'
 import { loadSalesOptions } from './lib/salesOptions'
+import { loadEmployees } from './lib/employees'
 import { setSelectedHub } from './lib/workspaceState'
 import PricingSettings from './components/PricingSettings'
 import SalesOptionsSettings from './components/SalesOptionsSettings'
 import FieldAppSettings from './components/FieldAppSettings'
+import StaffSettings from './components/StaffSettings'
 import SalesMode from './SalesMode'
 import CemeteryOrderWizard from './CemeteryOrderWizard'
 import CustomersTab from './CustomersTab'
@@ -422,6 +424,7 @@ export default function Stonebooks() {
   useEffect(() => {
     if (!user?.id) return
     loadPricingConfig().then(() => loadSalesOptions())
+    loadEmployees()
   }, [user?.id])
 
   // Capture the Gmail OAuth return — the gmail-oauth-callback Edge Function
@@ -757,7 +760,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {section === 'field-app'  && <FieldAppSettings />}
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
-          {section === 'staff'      && <StaffSettings />}
+          {section === 'staff'      && <StaffSettings canEdit={isOwner(user)} />}
           {section === 'about'      && <AboutSettings />}
         </div>
       </div>
@@ -959,14 +962,6 @@ function ShopSettings() {
       <SettingsRow label="Phone"><div className="sb-readonly">732-442-1286</div></SettingsRow>
       <SettingsRow label="Tax rate"><div className="sb-readonly">NJ 6.625%</div></SettingsRow>
       <div className="sb-helper">Editable shop info coming next — for now these are hardcoded.</div>
-    </>
-  )
-}
-
-function StaffSettings() {
-  return (
-    <>
-      <div className="sb-helper">Staff management coming next. For now, contact your administrator (Pauly) to add or remove staff accounts.</div>
     </>
   )
 }

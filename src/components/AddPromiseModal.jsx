@@ -22,7 +22,7 @@ import {
   refreshEntityIndex,
   buildResults,
 } from '../lib/commandSurface'
-import { TEAM_ROSTER, DEFAULT_PROMISE_MAKER } from '../lib/team'
+import { TEAM_ROSTER, getDefaultPromiseMaker } from '../lib/team'
 
 export default function AddPromiseModal({
   open,
@@ -40,7 +40,7 @@ export default function AddPromiseModal({
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
 
-  const [promisedBy, setPromisedBy] = useState(DEFAULT_PROMISE_MAKER)
+  const [promisedBy, setPromisedBy] = useState(getDefaultPromiseMaker)
   const [promisedDate, setPromisedDate] = useState(todayLocalISO())
   const [notes, setNotes] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -53,7 +53,7 @@ export default function AddPromiseModal({
     setQuery('')
     setResults([])
     setSelectedJob(isPinned ? { id: pinnedJobId, label: pinnedJobLabel || 'this job' } : null)
-    setPromisedBy(DEFAULT_PROMISE_MAKER)
+    setPromisedBy(getDefaultPromiseMaker())
     setPromisedDate(todayLocalISO())
     setNotes('')
     setError(null)
