@@ -78,7 +78,8 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const openOrder = onOpenOrderDetail || onOpenOrder
 
   const [me, setMe] = useState(() => getActiveStaffUser())
-  const pickMe = (name) => { setActiveStaffUser(name); setMe(name) }
+  // Picking yourself ALSO pivots the whole center to your tasks (Paul's rule).
+  const pickMe = (name) => { setActiveStaffUser(name); setMe(name); setWhoSel(new Set([`p:${name}`])) }
 
   const [staff, setStaff] = useState(() => [...STAFF_NAMES])
   const [loading, setLoading] = useState(true)
@@ -90,7 +91,13 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
 
   const [view, setView] = useState('list')          // list | board | people | dash
   const [dayFilter, setDayFilter] = useState('all') // all | overdue | nodate | <iso>
-  const [whoFilter, setWhoFilter] = useState('all') // all | <name> | dept:<name>
+  // Multi-select who-filter: tokens 'p:<name>' / 'd:<dept>' — any combo
+  // (Chelsea + Paul + Design). Empty set = everyone. Defaults to YOU once
+  // the "I am" picker knows who you are.
+  const [whoSel, setWhoSel] = useState(() => {
+    const m = getActiveStaffUser()
+    return new Set(m ? [`p:${m}`] : [])
+  })
   const [typeFilter, setTypeFilter] = useState('all')
   const [showDone, setShowDone] = useState(false)
   const [openTaskId, setOpenTaskId] = useState(null) // expanded row (thread/edit)
@@ -135,13 +142,19 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     doneToday: doneRecent.filter(t => String(t.done_at || '').slice(0, 10) === todayISO).length,
   }), [live, doneRecent, isOverdue, todayISO])
 
-  // ── Filters (shared by List view; board/people/dash use who+type only) ─────
+  // ── Filters (shared by every view) ──────────────────────────────────────────
   const matchesWho = useCallback((t) => {
-    if (whoFilter === 'all') return true
-    if (whoFilter.startsWith('dept:')) return t.assignee_kind === 'department' && t.assignee === whoFilter.slice(5)
-    return t.assignee === whoFilter
-  }, [whoFilter])
+    if (whoSel.size === 0) return true
+    return t.assignee_kind === 'department'
+      ? whoSel.has(`d:${t.assignee}`)
+      : whoSel.has(`p:${t.assignee}`)
+  }, [whoSel])
   const matchesType = useCallback((t) => typeFilter === 'all' || (t.task_type || 'general') === typeFilter, [typeFilter])
+  const toggleWho = (token) => setWhoSel(prev => {
+    const next = new Set(prev)
+    if (next.has(token)) next.delete(token); else next.add(token)
+    return next
+  })
 
   const filteredLive = useMemo(() => live.filter(t => matchesWho(t) && matchesType(t)), [live, matchesWho, matchesType])
   const filteredDone = useMemo(() => doneRecent.filter(t => matchesWho(t) && matchesType(t)), [doneRecent, matchesWho, matchesType])
@@ -215,19 +228,6 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
 
   if (loading) return <div className="sb-tcc"><style>{CSS}</style><div className="sb-tcc-empty">Loading the command center…</div></div>
 
-  const whoOptions = (
-    <>
-      <option value="all">Everyone</option>
-      {me && <option value={me}>Me ({me})</option>}
-      <optgroup label="People">
-        {staff.filter(n => n !== me).map(n => <option key={n} value={n}>{n}</option>)}
-      </optgroup>
-      <optgroup label="Departments">
-        {DEPARTMENTS.map(d => <option key={d} value={`dept:${d}`}>{d}</option>)}
-      </optgroup>
-    </>
-  )
-
   return (
     <div className="sb-tcc">
       <style>{CSS}</style>
@@ -282,12 +282,25 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
         </div>
       )}
 
-      <div className="sb-tcc-filters">
-        <select value={whoFilter} onChange={e => setWhoFilter(e.target.value)}>{whoOptions}</select>
-        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
-          <option value="all">All types</option>
-          {TASK_TYPES.map(t => <option key={t.code} value={t.code}>{t.label}</option>)}
-        </select>
+      <div className="sb-tcc-whorow">
+        <span className="lab">Show</span>
+        <button type="button" className={`wchip${whoSel.size === 0 ? ' on' : ''}`} onClick={() => setWhoSel(new Set())}>Everyone</button>
+        {staff.map(n => (
+          <button key={n} type="button" className={`wchip${whoSel.has(`p:${n}`) ? ' on' : ''}`} onClick={() => toggleWho(`p:${n}`)}>
+            {n === me ? `Me (${n})` : n}
+          </button>
+        ))}
+        <span className="wdiv" />
+        {DEPARTMENTS.map(d => (
+          <button key={d} type="button" className={`wchip dept${whoSel.has(`d:${d}`) ? ' on' : ''}`} onClick={() => toggleWho(`d:${d}`)}>{d}</button>
+        ))}
+      </div>
+
+      <div className="sb-tcc-typerow">
+        <button type="button" className={`ttab${typeFilter === 'all' ? ' on' : ''}`} onClick={() => setTypeFilter('all')}>All types</button>
+        {TASK_TYPES.map(t => (
+          <button key={t.code} type="button" className={`ttab${typeFilter === t.code ? ' on' : ''}`} onClick={() => setTypeFilter(t.code)}>{t.label}</button>
+        ))}
         {view === 'list' && (
           <label className="donechk">
             <input type="checkbox" checked={showDone} onChange={e => setShowDone(e.target.checked)} /> show recently done
@@ -394,7 +407,8 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
       )}
 
       {view === 'dash' && (
-        <Dashboard me={me} staff={staff} tasks={tasks} live={live} todayISO={todayISO} isOverdue={isOverdue} />
+        <Dashboard me={me} staff={staff} tasks={tasks} live={live} todayISO={todayISO} isOverdue={isOverdue}
+          onDrill={(token) => { setWhoSel(new Set([token])); setView('list') }} />
       )}
     </div>
   )
@@ -580,17 +594,20 @@ function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpa
 
   return (
     <div className={`sb-tcc-trow${t.status === 'done' ? ' done' : ''}${over ? ' over' : ''}`}>
-      <div className="main">
+      <div className="main" onClick={onToggleExpand} role="button" tabIndex={0}
+        title="Open this task — comment, edit, attach, jump to the record"
+        onKeyDown={e => { if (e.key === 'Enter') onToggleExpand() }}>
         <input type="checkbox" checked={t.status === 'done'} disabled={busy}
+          onClick={e => e.stopPropagation()}
           onChange={() => onStatus(t, t.status === 'done' ? 'open' : 'done')} aria-label="Done" />
-        <button type="button" className="txt" onClick={onToggleExpand} title="Open thread & details">
+        <span className="txt">
           {t.title}
           {attachments.length > 0 && <span className="meta"> · {attachments.length} file{attachments.length === 1 ? '' : 's'}</span>}
           {replies.length > 0 && <span className="meta"> · {replies.length} repl{replies.length === 1 ? 'y' : 'ies'}</span>}
-        </button>
+        </span>
         <span className={`tbadge ${TYPE_CLS[typeCode] || 'gen'}`}>{taskTypeLabel(typeCode)}</span>
         {t.order && (
-          <button type="button" className="oc" onClick={() => onOpenOrder?.(t.order.id)}>
+          <button type="button" className="oc" onClick={e => { e.stopPropagation(); onOpenOrder?.(t.order.id) }}>
             {t.order.order_number || famOf(t.order)}
           </button>
         )}
@@ -601,21 +618,21 @@ function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpa
         {t.status !== 'done' && (
           <button type="button" className={`pendbtn${t.status === 'pending' ? ' on' : ''}`} disabled={busy}
             title="Pending = worked on / waiting on something"
-            onClick={() => onStatus(t, t.status === 'pending' ? 'open' : 'pending')}>
+            onClick={e => { e.stopPropagation(); onStatus(t, t.status === 'pending' ? 'open' : 'pending') }}>
             {t.status === 'pending' ? 'Pending' : 'Mark pending'}
           </button>
         )}
-        {t.status !== 'done' && <button type="button" className="rbtn" title="Push to tomorrow — it comes back" onClick={() => onSnooze(t)}>→ tmrw</button>}
-        <button type="button" className="xbtn" title="Delete task" onClick={() => onDelete(t)}>×</button>
+        {t.status !== 'done' && <button type="button" className="rbtn" title="Push to tomorrow — it comes back" onClick={e => { e.stopPropagation(); onSnooze(t) }}>→ tmrw</button>}
+        <button type="button" className="xbtn" title="Delete task" onClick={e => { e.stopPropagation(); onDelete(t) }}>×</button>
       </div>
       {expanded && (
-        <TaskDetail t={t} me={me} staff={staff} replies={replies} onChanged={onChanged} />
+        <TaskDetail t={t} me={me} staff={staff} replies={replies} onChanged={onChanged} onOpenOrder={onOpenOrder} />
       )}
     </div>
   )
 }
 
-function TaskDetail({ t, me, staff, replies, onChanged }) {
+function TaskDetail({ t, me, staff, replies, onChanged, onOpenOrder }) {
   const [title, setTitle] = useState(t.title)
   const [assignee, setAssignee] = useState(t.assignee)
   const [due, setDue] = useState(t.due_date || '')
@@ -680,6 +697,14 @@ function TaskDetail({ t, me, staff, replies, onChanged }) {
 
   return (
     <div className="sb-tcc-detail">
+      {t.order && (
+        <div className="jumprow">
+          <button type="button" className="act solid" onClick={() => onOpenOrder?.(t.order.id)}>
+            Open {isLeadOrder(t.order) ? 'lead' : 'order'} — {t.order.primary_lastname || t.order.order_number || ''}
+          </button>
+          <span className="jumphint">the record this task lives on</span>
+        </div>
+      )}
       {(details.cemeteryName || details.cemetery) && (
         <div className="cemline">Cemetery: <b>{details.cemeteryName || details.cemetery}</b>{details.notes ? ` — ${details.notes}` : ''}</div>
       )}
@@ -782,7 +807,7 @@ function BoardCard({ t, todayISO, dragIdRef, onClick, overdue = false, compact =
 // ═══════════════════════════════════════════════════════════════════════════
 // Dashboard — what YOU assigned, and where every person stands.
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({ me, staff, tasks, live, todayISO, isOverdue }) {
+function Dashboard({ me, staff, tasks, live, todayISO, isOverdue, onDrill }) {
   const weekAgoISO = useMemo(() => {
     const d = new Date(todayISO + 'T00:00:00'); d.setDate(d.getDate() - 7); return isoOf(d)
   }, [todayISO])
@@ -827,7 +852,10 @@ function Dashboard({ me, staff, tasks, live, todayISO, isOverdue }) {
         <h2>Tasks you assigned, by person <span className="why-note">live + done this week</span></h2>
         {perPerson.length === 0 && <div className="sb-tcc-empty">You haven't assigned any tasks yet.</div>}
         {perPerson.map(({ name, dept, c, total }) => (
-          <div key={name} className="prow">
+          <div key={name} className="prow click" role="button" tabIndex={0}
+            title={`See ${name}'s task list`}
+            onClick={() => onDrill?.(dept ? `d:${name}` : `p:${name}`)}
+            onKeyDown={e => { if (e.key === 'Enter') onDrill?.(dept ? `d:${name}` : `p:${name}`) }}>
             <span className="pname">{name}{dept ? ' (dept)' : ''}</span>
             <span className="pbar">
               {c.overdue > 0 && <span className="seg red" style={{ width: `${(c.overdue / total) * 100}%` }} />}
@@ -925,9 +953,18 @@ const CSS = `
   .sb-tcc-inbox .lab{font:700 10.5px/1 var(--sb-font-mono,monospace);letter-spacing:.12em;text-transform:uppercase;color:#1D6FA8}
   .sb-tcc-inbox .msg{flex:1;min-width:220px;font-size:13px;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 
-  .sb-tcc-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-  .sb-tcc-filters select{font:inherit;font-size:13px;padding:8px 11px;border:1px solid #DAD4C2;border-radius:9px;background:#FDFCF9}
-  .sb-tcc .donechk{font-size:12.5px;color:#79735F;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .sb-tcc-whorow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .sb-tcc-whorow .lab{font:700 10.5px/1 var(--sb-font-mono,monospace);letter-spacing:.14em;text-transform:uppercase;color:#A39C87;margin-right:4px}
+  .sb-tcc .wchip{font:600 12px/1 inherit;font-family:inherit;border:1px solid rgba(26,30,36,.12);background:#fff;color:#79735F;border-radius:999px;padding:6px 12px;cursor:pointer}
+  .sb-tcc .wchip:hover{color:#1A1E24}
+  .sb-tcc .wchip.on{background:#9A7209;color:#fff;border-color:#9A7209;font-weight:700}
+  .sb-tcc .wchip.dept{border-style:dashed}
+  .sb-tcc .wchip.dept.on{background:#5B3E96;border-color:#5B3E96;border-style:solid}
+  .sb-tcc .wdiv{width:1px;height:20px;background:rgba(26,30,36,.14);margin:0 4px}
+  .sb-tcc-typerow{display:flex;align-items:center;gap:2px;flex-wrap:wrap;margin-bottom:10px;background:#ECE6D8;border-radius:10px;padding:3px;width:fit-content;max-width:100%}
+  .sb-tcc .ttab{font:600 12.5px/1 inherit;font-family:inherit;border:none;background:none;color:#7a756a;border-radius:8px;padding:8px 13px;cursor:pointer;white-space:nowrap}
+  .sb-tcc .ttab.on{background:#fff;color:#9A7209;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .sb-tcc .donechk{font-size:12.5px;color:#79735F;display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;padding-right:8px}
 
   .sb-tcc-days{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
   .sb-tcc .dchip{font-family:inherit;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:74px;background:#fff;border:1px solid rgba(26,30,36,.12);border-radius:11px;padding:8px 12px;cursor:pointer}
@@ -944,11 +981,11 @@ const CSS = `
 
   .sb-tcc-trow{border-top:1px solid rgba(26,30,36,.07)}
   .sb-tcc-trow:first-child{border-top:none}
-  .sb-tcc-trow .main{display:flex;align-items:center;gap:10px;padding:11px 18px;flex-wrap:wrap}
+  .sb-tcc-trow .main{display:flex;align-items:center;gap:10px;padding:11px 18px;flex-wrap:wrap;cursor:pointer}
+  .sb-tcc-trow .main:hover{background:#FBFAF6}
   .sb-tcc-trow.over .main{box-shadow:inset 4px 0 0 #B3261E}
   .sb-tcc-trow input[type=checkbox]{width:16px;height:16px;accent-color:#9A7209;cursor:pointer;flex:0 0 auto}
-  .sb-tcc-trow .txt{flex:1;min-width:160px;font:inherit;font-size:14px;text-align:left;background:none;border:none;padding:0;cursor:pointer;color:#1A1E24}
-  .sb-tcc-trow .txt:hover{color:#9A7209}
+  .sb-tcc-trow .txt{flex:1;min-width:160px;font-size:14px;text-align:left;color:#1A1E24}
   .sb-tcc-trow .meta{font-size:11.5px;color:#79735F}
   .sb-tcc-trow.done .txt{color:#A39C87;text-decoration:line-through}
   .sb-tcc .tbadge{font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;border-radius:999px;padding:3px 9px;white-space:nowrap}
@@ -970,6 +1007,8 @@ const CSS = `
   .sb-tcc .xbtn{font:700 15px/1 inherit;font-family:inherit;color:#B3261E;background:none;border:none;cursor:pointer;padding:2px 4px}
 
   .sb-tcc-detail{background:#FBFAF6;border-top:1px dashed rgba(26,30,36,.12);padding:12px 18px 14px;display:flex;flex-direction:column;gap:10px}
+  .sb-tcc-detail .jumprow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .sb-tcc-detail .jumphint{font-size:11.5px;color:#A39C87}
   .sb-tcc-detail .cemline{font-size:13px;color:#1D7A55;background:#E7F4EC;border-radius:8px;padding:8px 12px}
   .sb-tcc-detail .editrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .sb-tcc-detail .editrow input[type=text]{flex:1;min-width:200px}
@@ -1025,6 +1064,8 @@ const CSS = `
 
   .sb-tcc-bars{padding-bottom:14px}
   .sb-tcc .prow{display:flex;align-items:center;gap:12px;padding:9px 18px;border-top:1px solid rgba(26,30,36,.06)}
+  .sb-tcc .prow.click{cursor:pointer}
+  .sb-tcc .prow.click:hover{background:#FBFAF6}
   .sb-tcc .prow .pname{font-weight:700;min-width:120px;font-size:13px}
   .sb-tcc .prow .pbar{flex:1;display:flex;height:9px;border-radius:5px;overflow:hidden;background:#F1EEE5}
   .sb-tcc .seg.red{background:#D4574E}.sb-tcc .seg.blue{background:#4C90C4}
