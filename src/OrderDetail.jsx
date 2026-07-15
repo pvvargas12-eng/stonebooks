@@ -1334,9 +1334,33 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // ── Email (Gmail Phase 2) ──────────────────────────────────────────────────
   const openEmailComposer = () => {
     setActionNote(null)
-    setEmailModal({ to: order?.customer?.email || '', subject: '', body: '', busy: false, error: null, sent: false })
+    setEmailModal({ to: order?.customer?.email || '', subject: '', body: '', attach: [], busy: false, error: null, sent: false })
   }
   const closeEmailComposer = () => setEmailModal(m => (m && m.busy ? m : null))
+
+  // Composer attachments (Paul 2026-07-15): pick from the order's files or
+  // upload new — a new upload goes through uploadOrderAttachment, so it lands
+  // in the order's attachment list too (same rule as task attachments).
+  const emailFileRef = useRef(null)
+  const toggleEmailAttach = (f) => setEmailModal(m => {
+    if (!m) return m
+    const list = m.attach || []
+    const on = list.some(a => a.path === f.path)
+    return { ...m, attach: on ? list.filter(a => a.path !== f.path) : [...list, { name: f.name, url: f.url, path: f.path }] }
+  })
+  const onEmailFilesChosen = async (e) => {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (!files.length) return
+    setEmailModal(m => (m ? { ...m, uploading: true, error: null } : m))
+    for (const file of files) {
+      const r = await uploadOrderAttachment(orderId, file)
+      if (!r.ok) { setEmailModal(m => (m ? { ...m, uploading: false, error: `Upload failed — ${r.error}` } : m)); return }
+      setEmailModal(m => (m ? { ...m, attach: [...(m.attach || []), { name: r.name, url: r.url, path: r.path }] } : m))
+    }
+    refreshUploads()
+    setEmailModal(m => (m ? { ...m, uploading: false } : m))
+  }
   const handleSendEmail = async () => {
     if (!emailModal) return
     const to = (emailModal.to || '').trim()
@@ -1358,6 +1382,22 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         const a = await photoAttachment(p.url, p.name)
         if (a) attachments.push(a)
       }
+    }
+    // Picked/uploaded composer attachments ride along with any closeout photos.
+    const picked = emailModal.attach || []
+    if (picked.length) {
+      attachments = attachments || []
+      for (const f of picked) {
+        const a = await photoAttachment(f.url, f.name)
+        if (!a) { setEmailModal(m => ({ ...m, busy: false, error: `Could not read ${f.name} — remove it and try again.` })); return }
+        attachments.push(a)
+      }
+    }
+    // Gmail relay hard cap (serverless body ~4.5MB): keep total under ~3.5MB.
+    const totalB64 = (attachments || []).reduce((s, a) => s + (a.contentBase64?.length || 0), 0)
+    if (totalB64 > 4_800_000) {
+      setEmailModal(m => ({ ...m, busy: false, error: 'Attachments are too large for one email (about 3.5MB max) — remove some and send the rest separately.' }))
+      return
     }
     const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments })
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
@@ -3002,6 +3042,40 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   <textarea className="sb-od-note-input" rows={6} value={emailModal.body}
                     onChange={e => setEmailModal(m => ({ ...m, body: e.target.value }))} placeholder="Write your message…" />
                 </label>
+                <div className="sb-od-modal-field">
+                  <span>Attachments</span>
+                  <div className="sb-od-email-attachrow">
+                    {(emailModal.attach || []).map((a, i) => (
+                      <span key={a.path || i} className="sb-od-email-fchip">
+                        {a.name}
+                        <button type="button" title="Remove from this email (stays on the order)"
+                          onClick={() => setEmailModal(m => ({ ...m, attach: (m.attach || []).filter((_, j) => j !== i) }))}>×</button>
+                      </span>
+                    ))}
+                    <button type="button" className="sb-od-link"
+                      onClick={() => setEmailModal(m => ({ ...m, attachPick: !m.attachPick }))}>
+                      {emailModal.attachPick ? 'Hide order files' : '+ From order files'}
+                    </button>
+                    <button type="button" className="sb-od-link" disabled={emailModal.uploading}
+                      onClick={() => emailFileRef.current?.click()}>
+                      {emailModal.uploading ? 'Uploading…' : '+ Upload new'}
+                    </button>
+                    <input ref={emailFileRef} type="file" multiple style={{ display: 'none' }} onChange={onEmailFilesChosen} />
+                  </div>
+                  {emailModal.attachPick && (
+                    <div className="sb-od-email-picklist">
+                      {uploads.length === 0 && <span className="sb-od-empty-inline">No files on this order yet — use Upload new.</span>}
+                      {uploads.map(f => {
+                        const on = (emailModal.attach || []).some(a => a.path === f.path)
+                        return (
+                          <button key={f.path} type="button" className={`sb-od-email-fpick${on ? ' on' : ''}`}
+                            onClick={() => toggleEmailAttach(f)}>{f.name}</button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  <span className="sb-od-email-attachhint">New uploads also land in the order's attachments.</span>
+                </div>
                 {emailModal.error && (
                   <div className="sb-msg sb-msg-err" style={{ marginBottom: 4 }}>{emailModal.error}</div>
                 )}
@@ -3013,8 +3087,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     {emailModal.polishing ? 'Polishing…' : 'Polish with AI'}
                   </button>
                   <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={handleSendEmail}
-                    disabled={emailModal.busy || emailModal.polishing || !emailModal.to.trim() || !emailModal.subject.trim()}>
-                    {emailModal.busy ? 'Sending…' : 'Send'}
+                    disabled={emailModal.busy || emailModal.polishing || emailModal.uploading || !emailModal.to.trim() || !emailModal.subject.trim()}>
+                    {emailModal.busy ? 'Sending…' : (emailModal.attach || []).length ? `Send with ${emailModal.attach.length} file${emailModal.attach.length === 1 ? '' : 's'}` : 'Send'}
                   </button>
                 </div>
               </>
@@ -3417,6 +3491,13 @@ const OD_CSS = `
   .sb-od-design-noimg { font-size: 11px; color: #9a958c; }
   .sb-od-design-meta { flex: 1 1 auto; font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
   .sb-od-reapproval { font-size: 12.5px; font-weight: 600; color: #7a4a12; background: #fdf2e9; border: 1px solid #e0a85f; border-radius: 7px; padding: 7px 10px; margin-bottom: 10px; }
+  .sb-od-email-attachrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sb-od-email-fchip { font-size: 12px; background: #f6f3ec; border: 1px solid rgba(26,30,36,0.1); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 7px; }
+  .sb-od-email-fchip button { font: 700 13px/1 inherit; font-family: inherit; background: none; border: none; cursor: pointer; color: #b3261e; padding: 0; }
+  .sb-od-email-picklist { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; padding: 9px; background: #fbfaf6; border: 1px dashed rgba(26,30,36,0.16); border-radius: 8px; }
+  .sb-od-email-fpick { font: 600 12px/1 inherit; font-family: inherit; background: #fff; border: 1px solid #dad4c2; border-radius: 8px; padding: 7px 11px; cursor: pointer; color: #79735f; }
+  .sb-od-email-fpick.on { border-color: #9A7209; color: #9A7209; background: #f4ebd4; }
+  .sb-od-email-attachhint { display: block; font-size: 11px; color: #a39c87; margin-top: 6px; }
   .sb-od-changes-panel { background: #fbeaea; border: 1px solid #e7b3ad; border-left: 4px solid #b3261e; border-radius: 8px; padding: 10px 13px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
   .sb-od-changes-head { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #b3261e; }
   .sb-od-change-entry { display: flex; flex-direction: column; gap: 2px; }
