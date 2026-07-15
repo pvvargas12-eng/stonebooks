@@ -43,7 +43,7 @@ import {
   getActivePromisesForJob,
   // JobsListView dependencies (computeOrderPressure consumed inside
   // enrichJob in ./lib/jobsRow, no longer imported here directly).
-  getJobs,
+  getJobs, getJobLinkIds,
   orderTypeLabel,
 } from './lib/stonebooksData'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
@@ -103,6 +103,8 @@ export default function JobsTab({
   // opens the order form (used by the Permit hub's order detail).
   onOpenQueue,
   onEditOrder,
+  // Job-view kill (2026-07-15): cemetery-door jobs (no order) route here.
+  onOpenCemeteryOrder,
 }) {
   // Tab state — the Jobs tab opens on the Dashboard command center and the
   // hubs are tabs (Inventory-tab pattern). Persisted so a refresh re-opens the
@@ -117,10 +119,19 @@ export default function JobsTab({
   // affordance in DesignHubHome can open JobDetail with the Design Packet
   // tab pre-selected. Defaults to 'job'; callers that route from other
   // surfaces leave the default in place.
-  const [defaultDetailTab, setDefaultDetailTab] = useState('job')
+  const [defaultDetailTab, setDefaultDetailTab] = useState('design')
+  // Job view KILLED (Paul 2026-07-15): a job click means "take me to the
+  // record" — order-linked jobs open the ORDER page, cemetery-door jobs open
+  // the CEMETERY ORDER. Only tab='design' (Design hub / "Open related job")
+  // still opens the job-scoped Design packet; jobs with no parent fall back
+  // to the packet too.
   const handleOpenJob = (jobId, tab = 'job') => {
-    setDefaultDetailTab(tab)
-    setSelectedJobId(jobId)
+    if (tab === 'design') { setDefaultDetailTab('design'); setSelectedJobId(jobId); return }
+    getJobLinkIds(jobId).then(l => {
+      if (l?.order_id && onOpenOrderDetail) onOpenOrderDetail(l.order_id)
+      else if (l?.cemetery_order_id && onOpenCemeteryOrder) onOpenCemeteryOrder(l.cemetery_order_id)
+      else { setDefaultDetailTab('design'); setSelectedJobId(jobId) }
+    }).catch(() => { setDefaultDetailTab('design'); setSelectedJobId(jobId) })
   }
 
   // The Command Surface used to set `initialQueue` (e.g. "stones", "layouts")
@@ -616,7 +627,11 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer, defaultTab = 'j
   // routing (Phase 2B will pass 'design' when the click came from Design Hub);
   // Phase 2A always defaults to 'job' so the existing operational read is
   // preserved for every other entry point.
-  const [detailTab, setDetailTab] = useState(defaultTab)
+  // Job view KILLED (Paul 2026-07-15): JobDetail is packet-only now. The
+  // milestone-ladder render below the packet return is unreachable — job
+  // clicks route to the order / cemetery-order page instead (handleOpenJob).
+  const [detailTab] = useState('design')
+  const setDetailTab = () => {}   // no-op — the [Job view] tab pair is gone
   // Bulk orders feed projectJobDates so stone milestones linked to a PO
   // project against the supplier's quoted ETA instead of the default 30d.
   // One fetch on mount; refreshes whenever the job reloads (post-cascade).
@@ -772,7 +787,7 @@ function JobDetail({ jobId, onBack, onOpenOrder, onOpenCustomer, defaultTab = 'j
           job={job}
           onBack={onBack}
           tab={detailTab}
-          onChangeTab={setDetailTab}
+          onChangeTab={undefined /* packet-only — hides the [Job view | Design packet] pill pair */}
           onReload={loadJob}
         />
         {/* Modals stay mounted across tabs so an in-flight override/promise

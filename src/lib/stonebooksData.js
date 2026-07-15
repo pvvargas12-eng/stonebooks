@@ -6411,6 +6411,16 @@ const JOBS_ORDER_EMBED =
   'grave_location, plot_section, plot_block, plot_lot, plot_row, plot_space, plot_grave, plot_level, ' +
   'field_location, deceased, ' + ORDER_PRICING_COLUMNS
 
+// One-row lookup for click routing (Job view killed 2026-07-15): a job click
+// resolves to its parent record — order, cemetery order, or neither.
+export async function getJobLinkIds(jobId) {
+  if (!jobId) return null
+  const { data, error } = await supabase
+    .from('jobs').select('id, order_id, cemetery_order_id').eq('id', jobId).maybeSingle()
+  if (error) { console.warn('[jobs] getJobLinkIds:', error.message); return null }
+  return data || null
+}
+
 export async function getJobs({ teamFilter, statusFilter, includeClosed = false, limit = 500 } = {}) {
   let q = supabase
     .from('jobs')
