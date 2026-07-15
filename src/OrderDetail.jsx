@@ -717,24 +717,28 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const pipelineTasks = orderTasks
 
   // Complete & close (Paul, 2026-07-08) — the override door under the pipeline.
-  // No matter what's still unchecked: the job leaves every work queue
-  // (overall_status 'completed' is in JOB_CLOSED) and the order goes terminal.
+  // No matter what's still unchecked: the job leaves every work queue and the
+  // order goes terminal. Job status is 'closed' — the ONLY terminal code the
+  // jobs_overall_status_check DB constraint accepts ('completed' was never a
+  // valid code; the button silently failed on it since it shipped — found
+  // 2026-07-15, every job in prod was still 'active').
   const [closeArm, setCloseArm] = useState(false)
   const [closeBusy, setCloseBusy] = useState(false)
+  const [closeErr, setCloseErr] = useState(null)   // rendered INLINE at the button, not just the top-of-page note
   // Quick family-name edit on the header (Paul, 2026-07-08) — state lives up
   // here with the other hooks (the loading/error returns come later).
   const [famEdit, setFamEdit] = useState(null)   // null closed | string draft
   const [famBusy, setFamBusy] = useState(false)
   const completeAndClose = async () => {
     if (closeBusy) return
-    setCloseBusy(true); setActionNote(null)
+    setCloseBusy(true); setActionNote(null); setCloseErr(null)
     const actor = await getCurrentStaffName()
     if (job?.id) {
-      const jr = await setJobOverallStatus(job.id, 'completed', 'Completed & closed from the order pipeline (remaining milestones overridden)')
-      if (!jr.ok) { setCloseBusy(false); setCloseArm(false); setActionNote(`Could not complete the job — ${jr.error}.`); return }
+      const jr = await setJobOverallStatus(job.id, 'closed', 'Completed & closed from the order pipeline (remaining milestones overridden)')
+      if (!jr.ok) { setCloseBusy(false); setCloseArm(false); setCloseErr(`Could not complete the job — ${jr.error}.`); return }
     }
     const r = await closeOrder(orderId)
-    if (!r.ok) { setCloseBusy(false); setCloseArm(false); setActionNote(`Could not close the order — ${r.error}.`); return }
+    if (!r.ok) { setCloseBusy(false); setCloseArm(false); setCloseErr(`Could not close the order — ${r.error}.`); return }
     await logOrderActivity(orderId, {
       type: 'change', field: 'Status', newValue: 'Closed',
       note: 'Order completed & closed — job removed from work queues (unfinished items overridden)',
@@ -2899,10 +2903,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                     </button>
                   </div>
                 ) : (
-                  <button type="button" onClick={() => setCloseArm(true)}
+                  <button type="button" onClick={() => { setCloseErr(null); setCloseArm(true) }}
                     style={{ font: 'inherit', fontSize: 12.5, fontWeight: 700, border: '1px solid #2d7a4f', background: '#fff', color: '#2d7a4f', borderRadius: 7, padding: '7px 14px', cursor: 'pointer', width: '100%' }}>
                     ✓ Complete &amp; close order
                   </button>
+                )}
+                {closeErr && (
+                  <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: '#b3261e', background: '#fbeaea', border: '1px solid #e7b3ad', borderRadius: 7, padding: '7px 10px' }}>
+                    {closeErr}
+                  </div>
                 )}
               </div>
             )}
