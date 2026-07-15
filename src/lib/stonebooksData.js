@@ -374,7 +374,7 @@ export async function getInboxThreads(folder = 'INBOX', { limit = 500 } = {}) {
         name: name || r.from_email || (r.to_emails || [])[0] || 'Unknown',
         contact: c?.email || addr,
         latestSubject: r.subject || '(no subject)',
-        latestSnippet: r.snippet || (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        latestSnippet: r.snippet || '',
         latestDate: r.received_at || r.sent_at || r.created_at,
         unread: 0,
       })
@@ -510,7 +510,11 @@ export function classifyAttachment({ filename, contentType } = {}) {
 // every inbound row, so a tight limit could push outbound-only threads out of
 // the Sent bucket entirely (audit 2026-07-14).
 export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
-  const cols = 'id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))'
+  // body_text deliberately NOT selected — full bodies for 3000 messages were
+  // the tab's biggest payload (perf pass 2026-07-15). The stored snippet
+  // column covers the list preview; opening a thread fetches bodies via
+  // getMessageThread.
+  const cols = 'id, direction, from_email, to_emails, subject, snippet, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))'
   const fetchRows = (withJunk) => supabase.from('messages')
     .select(withJunk ? `${cols}, is_junk` : cols)
     .order('received_at', { ascending: false, nullsFirst: false })
@@ -536,7 +540,7 @@ export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
         name: (name && properName(name)) || r.from_email || (r.to_emails || [])[0] || 'Unknown',
         contact: c?.email || addr,
         latestSubject: r.subject || '(no subject)',
-        latestSnippet: r.snippet || (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        latestSnippet: r.snippet || '',
         latestDate: r.received_at || r.sent_at || r.created_at,
         latestDirection: r.direction,
         orderNumber: r.order?.order_number || null,

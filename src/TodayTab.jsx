@@ -112,7 +112,13 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     setLoading(true); setErr(null)
     try {
       const [os, ts] = await Promise.all([
-        listAllOrders({ archived: false, limit: 2000 }),
+        // Trimmed select — Today only needs identity + lead-detection fields
+        // for the link picker and task chips. The default select drags every
+        // heavy jsonb (deceased/designs/pricing/…) across for 2000 rows.
+        listAllOrders({
+          archived: false, limit: 2000,
+          select: 'id, order_number, primary_lastname, status, signed_at, archived, cemetery_id, customer:customers(first_name, last_name), cemetery:cemeteries(id, name)',
+        }),
         listShopTasks(),
       ])
       setOrders(os || [])
