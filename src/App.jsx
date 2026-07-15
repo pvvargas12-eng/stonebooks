@@ -1,14 +1,21 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { supabase } from './lib/supabase'
 import { getSession, onAuthStateChange, signInWithPassword, signOut } from './lib/auth'
 import { tradeSignup, getMyPartnerContext } from './lib/vendorsData'
-import PartnerPortal from './PartnerPortal'
-import SalesMode from './SalesMode'
 import Stonebooks from './Stonebooks'
-import CatalogTab from './CatalogTab'
-import SignPage from './SignPage'
-import ApprovePage from './ApprovePage'
-import FieldApp from './field/FieldApp'
+
+// ── Code-split routes (perf pass 2026-07-15) ────────────────────────────────
+// Everything except the staff app itself loads on demand — SalesMode alone
+// was pinning ~900KB of source into the entry chunk via this file's old
+// static import.
+const PartnerPortal = lazy(() => import('./PartnerPortal'))
+const SalesMode = lazy(() => import('./SalesMode'))
+const CatalogTab = lazy(() => import('./CatalogTab'))
+const SignPage = lazy(() => import('./SignPage'))
+const ApprovePage = lazy(() => import('./ApprovePage'))
+const FieldApp = lazy(() => import('./field/FieldApp'))
+
+const RouteFallback = () => <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontFamily: 'system-ui, sans-serif' }}>Loading…</div>
 
 // ── BUILD MODE ROUTING ───────────────────────────────────────────
 // Two deployments from one repo:
@@ -516,17 +523,17 @@ export default function App() {
   }
   const signToken = getSignToken()
   if (signToken) {
-    return <SignPage token={signToken} />
+    return <Suspense fallback={<RouteFallback />}><SignPage token={signToken} /></Suspense>
   }
   const approveToken = getApproveToken()
   if (approveToken) {
-    return <ApprovePage token={approveToken} />
+    return <Suspense fallback={<RouteFallback />}><ApprovePage token={approveToken} /></Suspense>
   }
   if (isTradeRoute()) {
     return <TradePortalStandalone />
   }
   if (isFieldRoute()) {
-    return <FieldApp />
+    return <Suspense fallback={<RouteFallback />}><FieldApp /></Suspense>
   }
   if (isCatalogRoute()) {
     return <CatalogStandalone />
@@ -583,7 +590,7 @@ function TradePortalStandalone() {
       </>
     )
   }
-  return <PartnerPortal context={ctx} onSignOut={() => { signOut(); setAuthed(false) }} />
+  return <Suspense fallback={<RouteFallback />}><PartnerPortal context={ctx} onSignOut={() => { signOut(); setAuthed(false) }} /></Suspense>
 }
 
 // Trade-branded dealer sign-in (the /trade front door).
@@ -634,9 +641,9 @@ function CatalogStandalone() {
     return (<><style>{css}</style><div className="loading" style={{ minHeight: '100vh' }}><div className="spinner" />Loading…</div></>)
   }
   if (!authed) return <CatalogLoginGate />
-  if (seed) return <SalesMode onClose={() => setSeed(null)} seedDesign={seed} />
+  if (seed) return <Suspense fallback={<RouteFallback />}><SalesMode onClose={() => setSeed(null)} seedDesign={seed} /></Suspense>
   // CatalogTab renders its own top bar (brand + Settings gear) and full-height shell.
-  return <CatalogTab onStartOrder={setSeed} />
+  return <Suspense fallback={<RouteFallback />}><CatalogTab onStartOrder={setSeed} /></Suspense>
 }
 
 // ── PRIVATE-APP LOGIN GATE ───────────────────────────────────────
@@ -1139,7 +1146,7 @@ function CustomerApp() {
       )}
 
       {/* SALES MODE — full-screen wizard from SalesMode.jsx */}
-      {page === 'sales' && <SalesMode onClose={() => setPage('home')} />}
+      {page === 'sales' && <Suspense fallback={<RouteFallback />}><SalesMode onClose={() => setPage('home')} /></Suspense>}
 
       {/* CONTRACT - placeholder */}
       {page === 'contract' && (

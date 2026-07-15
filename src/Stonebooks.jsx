@@ -9,42 +9,48 @@
 //   - Sales Mode launch (lives inside Stonebooks)
 // =============================================================================
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
 import {
   getUser, signInWithPassword, signInWithMagicLink, signOut,
   onAuthStateChange, updatePassword,
 } from './lib/auth'
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
 import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount } from './lib/stonebooksData'
-import { loadPricingConfig } from './lib/orderRates'
 import { loadSalesOptions } from './lib/salesOptions'
 import { loadEmployees } from './lib/employees'
 import { setSelectedHub } from './lib/workspaceState'
-import PricingSettings from './components/PricingSettings'
 import SalesOptionsSettings from './components/SalesOptionsSettings'
 import FieldAppSettings from './components/FieldAppSettings'
 import StaffSettings from './components/StaffSettings'
-import SalesMode from './SalesMode'
-import CemeteryOrderWizard from './CemeteryOrderWizard'
-import CustomersTab from './CustomersTab'
-import OrdersTab from './OrdersTab'
-import CemeteryOrdersTab from './CemeteryOrdersTab'
-import JobsTab from './JobsTab'
-import SchedulerTab from './SchedulerTab'
-import ReportsTab from './ReportsTab'
-import ProfitTab from './ProfitTab'
-import PaymentsTab from './PaymentsTab'
-import VendorsTab from './VendorsTab'
-import InventoryTab from './InventoryTab'
-import PartnerPortal from './PartnerPortal'
 import { getMyPartnerContext, getTradeUpdatesCount } from './lib/vendorsData'
-import EmailTab from './EmailTab'
-import FixLog from './FixLog'
-import ReconciliationTab from './ReconciliationTab'
-import OrderForm from './OrderForm'
 // Sprint J1-P1 Today Commit B — Today extracted to its own file as part of
 // the sectioning refactor. Stonebooks.jsx no longer holds Today's UI.
 import TodayTab from './TodayTab'
+
+// ── Code-split tabs (perf pass 2026-07-15) ──────────────────────────────────
+// Every tab except Today (the landing surface) loads on first visit instead
+// of shipping in the entry bundle — the app was one ~2MB chunk before this.
+// loadPricingConfig moved to a dynamic import for the same reason: it drags
+// the ~1MB orderRates chunk, which now rides with the tabs that price things.
+const SalesMode = lazy(() => import('./SalesMode'))
+const CemeteryOrderWizard = lazy(() => import('./CemeteryOrderWizard'))
+const CustomersTab = lazy(() => import('./CustomersTab'))
+const OrdersTab = lazy(() => import('./OrdersTab'))
+const CemeteryOrdersTab = lazy(() => import('./CemeteryOrdersTab'))
+const JobsTab = lazy(() => import('./JobsTab'))
+const SchedulerTab = lazy(() => import('./SchedulerTab'))
+const ReportsTab = lazy(() => import('./ReportsTab'))
+const ProfitTab = lazy(() => import('./ProfitTab'))
+const PaymentsTab = lazy(() => import('./PaymentsTab'))
+const VendorsTab = lazy(() => import('./VendorsTab'))
+const InventoryTab = lazy(() => import('./InventoryTab'))
+const EmailTab = lazy(() => import('./EmailTab'))
+const FixLog = lazy(() => import('./FixLog'))
+const ReconciliationTab = lazy(() => import('./ReconciliationTab'))
+const OrderForm = lazy(() => import('./OrderForm'))
+const PricingSettings = lazy(() => import('./components/PricingSettings'))
+
+const TabFallback = () => <div className="sb-loading">Loading…</div>
 
 // Stonebooks v2 — Workspace transition W-0 + W-1. The Command Surface is the
 // first keystone primitive: a ⌘K / Ctrl+K / "/" overlay that finds entities
@@ -423,7 +429,9 @@ export default function Stonebooks() {
   // stone-color picker for the whole session).
   useEffect(() => {
     if (!user?.id) return
-    loadPricingConfig().then(() => loadSalesOptions())
+    // Dynamic import keeps the heavy orderRates chunk out of the entry
+    // bundle; the load ORDER (pricing → sales options) is preserved.
+    import('./lib/orderRates').then(m => m.loadPricingConfig()).then(() => loadSalesOptions())
     loadEmployees()
   }, [user?.id])
 
@@ -564,10 +572,10 @@ export default function Stonebooks() {
   // order-type chooser; resuming an order (salesKind preset to 'family') skips it.
   if (salesOpen) {
     if (salesKind === 'family') {
-      return <SalesMode onClose={closeSales} initialOrderId={salesOrderId} />
+      return <Suspense fallback={<TabFallback />}><SalesMode onClose={closeSales} initialOrderId={salesOrderId} /></Suspense>
     }
     if (salesKind === 'cemetery') {
-      return <CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} />
+      return <Suspense fallback={<TabFallback />}><CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} /></Suspense>
     }
     return (
       <OrderTypeChooser
@@ -583,11 +591,13 @@ export default function Stonebooks() {
   // Orders list. OrdersTab opens OrderDetail for initialSelectedId = orderDetailId.
   if (orderFormOpen) {
     return (
-      <OrderForm
-        orderId={orderFormId}
-        onClose={closeOrderForm}
-        onSaved={(savedId) => { closeOrderForm(); if (savedId) setOrderDetailId(savedId); setTab('orders') }}
-      />
+      <Suspense fallback={<TabFallback />}>
+        <OrderForm
+          orderId={orderFormId}
+          onClose={closeOrderForm}
+          onSaved={(savedId) => { closeOrderForm(); if (savedId) setOrderDetailId(savedId); setTab('orders') }}
+        />
+      </Suspense>
     )
   }
 
@@ -671,6 +681,7 @@ export default function Stonebooks() {
         )}
 
         <main className="sb-main">
+          <Suspense fallback={<TabFallback />}>
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} />}
@@ -692,6 +703,7 @@ export default function Stonebooks() {
           {tab === 'reconcile' && <ReconciliationTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}
           {tab === 'settings'  && <SettingsTab user={user} profile={profile} theme={theme} setTheme={setTheme} onProfileChange={reloadProfile} />}
+          </Suspense>
         </main>
       </div>
 
