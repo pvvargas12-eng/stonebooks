@@ -21,9 +21,8 @@ import {
   rowGrandTotal, rowTotalPaid, fmtUSD, fmtDate, fmtPhone, statusInfo,
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
-  bulkArchiveOrders, hardDeleteOrder, TASK_KINDS,
+  bulkArchiveOrders, hardDeleteOrder, TASK_KINDS, STAFF_NAMES,
 } from '../lib/stonebooksData'
-import { SALES_REPS } from '../SalesMode'
 import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES } from '../lib/leads'
 
 const pad = (n) => String(n).padStart(2, '0')
@@ -62,10 +61,11 @@ const jobTypeLabel = (o) => {
 // kind='layout', OR orders.waiting_on === 'reviewing_layout'. No keyword matching.
 
 const SORT_OPTIONS = [
-  { code: 'due',    label: 'Due date (overdue first)' },
-  { code: 'newest', label: 'Newest lead' },
-  { code: 'oldest', label: 'Oldest lead' },
-  { code: 'value',  label: 'Highest $ first' },
+  { code: 'due',      label: 'Due date (overdue first)' },
+  { code: 'assignee', label: 'Assigned to (A–Z)' },
+  { code: 'newest',   label: 'Newest lead' },
+  { code: 'oldest',   label: 'Oldest lead' },
+  { code: 'value',    label: 'Highest $ first' },
 ]
 const urgRank = (u) => (u === 'overdue' ? 0 : u === 'today' ? 1 : u === 'future' ? 2 : 3)
 
@@ -98,7 +98,7 @@ const leadSortVal = (r, key) => {
   }
 }
 
-export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChanged }) {
+export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChanged, onAddCheckJob }) {
   const [todayISO, setTodayISO] = useState('')
   const [tasks, setTasks] = useState([])              // open tasks across leads
   const [completedTasks, setCompletedTasks] = useState([])
@@ -142,6 +142,12 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     for (const t of tasks) if (t.kind === 'layout') s.add(t.order_id)
     return s
   }, [tasks])
+  // Leads with an OPEN check job — "we still owe this one a site visit".
+  const checkJobByLead = useMemo(() => {
+    const s = new Set()
+    for (const t of tasks) if (t.kind === 'check_job') s.add(t.order_id)
+    return s
+  }, [tasks])
   const assigneeByLead = useMemo(() => {
     const m = new Map()
     for (const t of tasks) if (t.assignee && !m.has(t.order_id)) m.set(t.order_id, t.assignee)
@@ -165,7 +171,9 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
       sortKey === 'newest' ? (a, b) => (b.lead.created_at || '').localeCompare(a.lead.created_at || '')
         : sortKey === 'oldest' ? (a, b) => (a.lead.created_at || '').localeCompare(b.lead.created_at || '')
           : sortKey === 'value' ? (a, b) => (b.value || 0) - (a.value || 0)
-            : byDue
+            : sortKey === 'assignee' ? (a, b) =>
+              String(a.task.assignee || '￿').localeCompare(String(b.task.assignee || '￿')) || byDue(a, b)
+              : byDue
     return [...rows].sort(cmp)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, leadById, todayISO, sortKey])
@@ -189,6 +197,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
       // signature, or signed without a dollar down.
       stall: CONTRACTED_STATUSES.includes(o.status) && !o.signed_at ? 'unsigned'
         : o.signed_at ? 'nodeposit' : null,
+      checkJob: checkJobByLead.has(o.id),
       value: rowGrandTotal(o),
       cemetery: o.cemetery?.name || '—',
       started: o.created_at || null,
@@ -202,7 +211,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
       if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mult
       return String(va).localeCompare(String(vb)) * mult
     })
-  }, [leads, layoutByLead, assigneeByLead, lastTouch, leadSort])
+  }, [leads, layoutByLead, checkJobByLead, assigneeByLead, lastTouch, leadSort])
 
   const toggleLeadSort = (key) => setLeadSort(s =>
     s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'quote' || key === 'started' || key === 'contact' ? 'desc' : 'asc' })
@@ -279,6 +288,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     const items = [
       { label: 'Open lead', onClick: () => { setMenuKey(null); onOpenDetail?.(lead.id) } },
       { label: task && !completed ? 'Add another reminder' : 'Set reminder', onClick: () => openReminder(lead.id) },
+      { label: 'Add check job', onClick: () => { setMenuKey(null); onAddCheckJob?.(lead) } },
     ]
     if (task && !completed) items.push({ label: 'Mark done', onClick: () => markDone(task) })
     if (task && completed) items.push({ label: 'Re-open task', onClick: () => reopenTask(task) })
@@ -351,6 +361,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                   </td>
                   <td className="sb-lt-c-rem">
                     {task.kind === 'layout' && <span className="sb-lt-kindchip">Layout</span>}
+                    {task.kind === 'check_job' && <span className="sb-lt-kindchip sb-lt-checkchip">Check job</span>}
                     <button type="button" className="sb-lt-link sb-lt-rem" onClick={() => onOpenDetail?.(lead.id)}>{task.note}</button>
                     {task.assignee && <span className="sb-lt-assignee"> · {task.assignee}</span>}
                     {completed && <span className="sb-lt-donetag">Completed ✓</span>}
@@ -406,6 +417,7 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                           <span className="sb-lt-statuschip" style={{ color: r.status.color }}><span className="sb-lt-statusdot" style={{ background: r.status.color }} />{r.status.label}</span>
                           {r.stall === 'unsigned' && <span className="sb-lt-stall sb-lt-stall-red" title="Contracted status but no signature on file — get it signed or move it back">Unsigned contract</span>}
                           {r.stall === 'nodeposit' && <span className="sb-lt-stall sb-lt-stall-amber" title="Signed but no deposit recorded — becomes an Order once money is down">No deposit</span>}
+                          {r.checkJob && <span className="sb-lt-stall sb-lt-stall-green" title="Open check job — someone still has to drive out and inspect before we quote">Check job</span>}
                         </td>
                         <td className="sb-lt-c-center">{r.design ? <span className="sb-lt-yes">Yes</span> : <span className="sb-lt-dash">—</span>}</td>
                         <td className="sb-lt-c-num">{r.value > 0 ? fmtUSD(r.value) : '—'}</td>
@@ -449,7 +461,7 @@ function ReminderEditor({ lead, defaultDue, onSave, onCancel }) {
       <input className="sb-lt-input sb-lt-input-date" type="date" value={due} onChange={e => setDue(e.target.value)} />
       <select className="sb-lt-input sb-lt-input-sel" value={assignee} onChange={e => setAssignee(e.target.value)} title="Assign to">
         <option value="">Unassigned</option>
-        {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
+        {STAFF_NAMES.map(r => <option key={r} value={r}>{r}</option>)}
       </select>
       <button type="button" className="sb-lt-savebtn" disabled={!label.trim()} onClick={() => onSave(label, due, assignee, kind)}>Add</button>
       <button type="button" className="sb-lt-cancelbtn" onClick={onCancel}>Cancel</button>
@@ -564,6 +576,8 @@ const CSS = `
 .sb-lt-stall { display: inline-block; margin-left: 7px; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 2px 7px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; vertical-align: middle; }
 .sb-lt-stall-red { color: #b3261e; background: #fbeaea; border: 1px solid #f0c9c6; }
 .sb-lt-stall-amber { color: #7a4a12; background: #fdf2e9; border: 1px solid #eed9be; }
+.sb-lt-stall-green { color: #1d7a55; background: #e7f4ec; border: 1px solid #bfe0cd; }
+.sb-lt-checkchip { color: #1d7a55; background: #e7f4ec; }
 .sb-lt-dash { color: #c2bdb2; }
 .sb-lt-nocontact { font-size: 12px; font-weight: 600; color: #b3261e; }
 

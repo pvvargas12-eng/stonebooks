@@ -13,8 +13,8 @@
 // =============================================================================
 
 import { useState, useEffect, useRef } from 'react'
-import { makeBlankOrder, saveOrder, searchCemeteries, rowToCemetery, SALES_REPS } from '../SalesMode'
-import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName, TASK_KINDS } from '../lib/stonebooksData'
+import { makeBlankOrder, saveOrder, searchCemeteries, rowToCemetery } from '../SalesMode'
+import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName, TASK_KINDS, STAFF_NAMES } from '../lib/stonebooksData'
 
 // Today as YYYY-MM-DD. Call only in event handlers / effects (never in render).
 const todayISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
@@ -79,7 +79,9 @@ export default function NewLeadModal({ onClose, onSaved }) {
     setCemResults([]); setCemOpen(false)
   }
 
-  const save = async () => {
+  // withCheckJob: "Save + check job" — saves the lead the exact same way, then
+  // asks the parent to open the check-job modal on the fresh lead.
+  const save = async (withCheckJob = false) => {
     if (!canSave) return
     setBusy(true); setErr(null)
     const { firstName, lastName } = splitName(name)
@@ -117,7 +119,12 @@ export default function NewLeadModal({ onClose, onSaved }) {
       }
     }
     setBusy(false)
-    onSaved?.(orderId)
+    onSaved?.(orderId, withCheckJob === true ? {
+      checkJob: true,
+      label: name.trim(),
+      cemeteryId: cemeteryId || null,
+      cemeteryName: cemetery.trim() || null,
+    } : undefined)
   }
 
   return (
@@ -211,7 +218,7 @@ export default function NewLeadModal({ onClose, onSaved }) {
                 <span className="nl-label">Assign to</span>
                 <select className="nl-input nl-select" value={assignee} onChange={e => setAssignee(e.target.value)}>
                   <option value="">Unassigned</option>
-                  {SALES_REPS.map(r => <option key={r} value={r}>{r}</option>)}
+                  {STAFF_NAMES.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </label>
             </div>
@@ -222,7 +229,11 @@ export default function NewLeadModal({ onClose, onSaved }) {
 
         <div className="nl-actions">
           <button type="button" className="nl-btn" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="button" className="nl-btn nl-btn-primary" onClick={save} disabled={!canSave}>
+          <button type="button" className="nl-btn" onClick={() => save(true)} disabled={!canSave}
+            title="Save the lead, then set up who drives out to inspect before we quote">
+            {busy ? 'Saving…' : 'Save + check job'}
+          </button>
+          <button type="button" className="nl-btn nl-btn-primary" onClick={() => save(false)} disabled={!canSave}>
             {busy ? 'Saving…' : 'Save lead'}
           </button>
         </div>

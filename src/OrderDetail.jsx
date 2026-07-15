@@ -20,6 +20,7 @@ import {
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
+  listShopTasksForOrder, deleteShopTask,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   closeOrder, photoAttachment, setJobOverallStatus, setOrderFamilyName,
@@ -61,6 +62,20 @@ import { CONTRACTED_STATUSES } from './lib/leads'
 import { buildPipeline } from './lib/orderPipeline'
 import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
+import CheckJobModal from './components/CheckJobModal.jsx'
+
+// A shop_tasks row wearing the legacy order_activity task shape, so the
+// pipeline rail + activity timeline render tasks unchanged (tasks moved to
+// shop_tasks — the ONE task store — on 20260715).
+const taskViewRow = (t) => ({
+  ...t,
+  type: 'task',
+  note: t.title,
+  task_status: t.status === 'pending' ? 'in_progress' : t.status,
+  kind: t.task_type,
+  actor: t.tasked_by || t.created_by || null,
+  field: t.details?.phase || null,
+})
 import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles, buildContractDefaults } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import ContractEditor from './components/ContractEditor'
@@ -351,7 +366,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [delAttach, setDelAttach] = useState(null)
   const [delAttachBusy, setDelAttachBusy] = useState(false)
   // Pipeline rail task-remove confirm (× with confirm)
-  const [delTask, setDelTask] = useState(null)   // order_activity task row | null
+  const [delTask, setDelTask] = useState(null)   // shop_tasks task row (legacy view) | null
+  const [checkJobOpen, setCheckJobOpen] = useState(false)   // check-job modal (site inspection task)
   // Signed contract (#C)
   const [signedContract, setSignedContract] = useState(null)   // { path, signedAt } | null
   const [signedApproval, setSignedApproval] = useState(null)   // { path, signedAt } | null (Phase 3)
@@ -379,6 +395,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const [payDraft, setPayDraft] = useState(null)        // quick add-payment (Financial card ⋯)
   // Activity log (#4)
   const [activity, setActivity] = useState([])
+  // shop_tasks rows for this order, wearing the legacy order_activity task
+  // shape (note / task_status / kind / field) so the rail + timeline render
+  // unchanged. Tasks live in shop_tasks since 20260715 — the ONE task store.
+  const [orderTasks, setOrderTasks] = useState([])
   const [actNote, setActNote] = useState('')
   const [taskForm, setTaskForm] = useState({ note: '', assignee: '', dueDate: '', kind: 'general' })
   const [actBusy, setActBusy] = useState(false)
@@ -406,20 +426,21 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       // Secondary loads (notes + attachment sources + emails + outgoing permit
       // expenses) — non-blocking. Email is the CUSTOMER's full thread (same shown in
       // every order of theirs), keyed by the order's customer_id.
-      const [nts, ups, pvs, ems, cps, acts, sc, sa, al, outp] = await Promise.all([
+      const [nts, ups, pvs, ems, cps, acts, tks, sc, sa, al, outp] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
         j?.id ? getProofVersions(j.id) : Promise.resolve([]),
         (o.customer_id || o.id) ? getMessageThread({ customerId: o.customer_id, orderId: o.id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
         getOrderActivity(orderId),
+        listShopTasksForOrder(orderId),
         getSignedContract(orderId),
         getApprovalSigned(orderId),
         getApprovalLinksForOrder(orderId),
         listOutgoingPayments(),
       ])
       if (cancelled) return
-      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setSignedContract(sc); setSignedApproval(sa); setApprovalLinks(al)
+      setNotes(nts); setUploads(ups); setProofVers(pvs); setEmails(ems); setCompletionPhotos(cps); setActivity(acts); setOrderTasks((tks || []).map(taskViewRow)); setSignedContract(sc); setSignedApproval(sa); setApprovalLinks(al)
       setPermitExpenses((outp || []).filter(p => p.order_id === orderId && (p.category || '').toLowerCase() === 'permits'))
       // Inject order-content-derived milestones on load (idempotent). If the set
       // changed, re-fetch the job so the rail shows the live milestones.
@@ -520,7 +541,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (r.ok) refreshUploads()
   }
   const refreshOrder = async () => { const o = await getOrderById(orderId); if (o) setOrder(o) }
-  const refreshActivity = async () => setActivity(await getOrderActivity(orderId))
+  const refreshActivity = async () => {
+    const [acts, tks] = await Promise.all([getOrderActivity(orderId), listShopTasksForOrder(orderId)])
+    setActivity(acts)
+    setOrderTasks((tks || []).map(taskViewRow))
+  }
   const refreshJob = async () => { const j = await getJobByOrderId(orderId); setJob(j) }
 
   // ── Inline status setters (status overview card + Design/Proof card) ────────
@@ -643,13 +668,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
 
   const handleAddRailTask = async (phase, text) => {
     const actor = await getCurrentStaffName()
-    await logOrderActivity(orderId, { type: 'task', note: text, field: phase, taskStatus: 'open', actor })
+    await addOrderTask(orderId, { note: text, actor, phase })
     refreshActivity()
   }
 
   const confirmRemoveTask = async () => {
     if (!delTask) return
-    await deleteOrderActivity(delTask.id)
+    await deleteShopTask(delTask.id, await getCurrentStaffName())
     setDelTask(null)
     refreshActivity()
   }
@@ -660,7 +685,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     await setOrderTaskStatus(tk.id, status)
     if (tk.kind === 'layout') {
       if (status === 'done') {
-        const otherOpenLayout = activity.some(t => t.type === 'task' && t.id !== tk.id && t.kind === 'layout' && t.task_status !== 'done')
+        const otherOpenLayout = orderTasks.some(t => t.id !== tk.id && t.kind === 'layout' && t.task_status !== 'done')
         if (!otherOpenLayout && order?.waiting_on === 'reviewing_layout') await updateOrderLeadFields(orderId, { waiting_on: null })
       } else {
         await updateOrderLeadFields(orderId, { waiting_on: 'reviewing_layout' })
@@ -669,7 +694,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     refreshActivity()
   }
 
-  const pipelineTasks = activity.filter(a => a.type === 'task')
+  const pipelineTasks = orderTasks
 
   // Complete & close (Paul, 2026-07-08) — the override door under the pipeline.
   // No matter what's still unchecked: the job leaves every work queue
@@ -731,7 +756,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     // manual value); re-opening a Layout task restores it. Reuses the lead-fields path.
     if (a.kind === 'layout') {
       if (becomingDone) {
-        const otherOpenLayout = activity.some(t => t.type === 'task' && t.id !== a.id && t.kind === 'layout' && t.task_status !== 'done')
+        const otherOpenLayout = orderTasks.some(t => t.id !== a.id && t.kind === 'layout' && t.task_status !== 'done')
         if (!otherOpenLayout && order?.waiting_on === 'reviewing_layout') await updateOrderLeadFields(orderId, { waiting_on: null })
       } else {
         await updateOrderLeadFields(orderId, { waiting_on: 'reviewing_layout' })
@@ -1887,6 +1912,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           <button type="button" className="sb-od-btn" onClick={openEmailComposer}>Send email</button>
           <span className="sb-od-actions-spacer" />
           <button type="button" className="sb-od-btn" onClick={focusNote}>Add note</button>
+          <button type="button" className="sb-od-btn" onClick={() => setCheckJobOpen(true)}
+            title="Somebody drives out and inspects before we quote the repair">
+            Add check job
+          </button>
           <button type="button" className="sb-od-btn" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
             {uploadBusy ? 'Uploading…' : 'Upload attachment'}
           </button>
@@ -2578,11 +2607,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
               </div>
             )}
 
-            {activity.length === 0 ? (
+            {activity.length === 0 && orderTasks.length === 0 ? (
               <div className="sb-od-empty-inline">No activity yet.</div>
             ) : (
               <div className="sb-od-act-list">
-                {activity.map(a => (
+                {[...activity, ...orderTasks]
+                  .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+                  .map(a => (
                   <div key={a.id} className={`sb-od-act-row sb-od-act-${a.type}`}>
                     <div className="sb-od-act-main">
                       {a.type === 'change' && <span className="sb-od-act-text"><strong>{a.field}</strong>: {a.old_value} → {a.new_value}</span>}
@@ -2854,7 +2885,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
         <div className="sb-od-modal-overlay" onClick={() => setDelTask(null)}>
           <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Remove task" onClick={e => e.stopPropagation()}>
             <div className="sb-od-modal-title">Remove this task?</div>
-            <p className="sb-od-danger-summary"><strong>{delTask.note}</strong> will be removed from the pipeline and the activity log. This can’t be undone.</p>
+            <p className="sb-od-danger-summary"><strong>{delTask.note}</strong> will be removed from the pipeline and the task command center (a "deleted by" trail is kept).</p>
             <div className="sb-od-modal-actions">
               <button type="button" className="sb-od-btn" onClick={() => setDelTask(null)}>Cancel</button>
               <button type="button" className="sb-od-danger-btn" onClick={confirmRemoveTask}>Remove</button>
@@ -2941,6 +2972,20 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             )}
           </div>
         </div>
+      )}
+
+      {/* Add check job — a site-inspection task linked to this order. */}
+      {checkJobOpen && (
+        <CheckJobModal
+          order={{
+            id: order.id,
+            label: `${order.primary_lastname || order.customer?.last_name || 'Order'}${order.order_number ? ` · ${order.order_number}` : ''}`,
+            cemeteryId: order.cemetery_id || order.cemetery?.id || null,
+            cemeteryName: order.cemetery?.name || null,
+          }}
+          onClose={() => setCheckJobOpen(false)}
+          onSaved={() => { setCheckJobOpen(false); refreshActivity(); setActionNote('Check job added — it’s on the task command center. ✓') }}
+        />
       )}
 
       {/* Record payment — append-only money record with a confirm step. */}

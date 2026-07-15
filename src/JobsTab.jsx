@@ -68,6 +68,7 @@ import JobsDepartmentView from './JobsDepartmentView'
 import JobsCommandCenter from './JobsCommandCenter'
 import ProductionBoard from './components/ProductionFloor'
 import FoundationsBoard from './FoundationsBoard'
+import CheckJobsBoard from './CheckJobsBoard'
 import { getJobsView, setJobsView } from './lib/workspaceState'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
 // view rendered as a tab inside JobDetail. Pure read-arrange of the joined
@@ -161,6 +162,8 @@ export default function JobsTab({
     body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} /></div>
   } else if (tab === 'foundations') {
     body = <div className="sb-crm-container"><FoundationsBoard onOpenJob={handleOpenJob} /></div>
+  } else if (tab === 'checkjobs') {
+    body = <div className="sb-crm-container"><CheckJobsBoard onOpenOrderDetail={onOpenOrderDetail} /></div>
   } else if (tab === 'all') {
     body = <JobsListView onOpenJob={handleOpenJob} />
   } else {
@@ -201,6 +204,7 @@ const JOBS_TABS = [
   { code: 'production',   label: 'Production' },
   { code: 'installation', label: 'Installation' },
   { code: 'foundations',  label: 'Foundations' },
+  { code: 'checkjobs',    label: 'Check jobs' },
   { code: 'permits',      label: 'Permits' },
   { code: 'workflow',     label: 'Workflow' },
   { code: 'all',          label: 'Jobs — All' },

@@ -1301,6 +1301,9 @@ export async function getOrderActivity(orderId) {
     .from('order_activity')
     .select('*')
     .eq('order_id', orderId)
+    // type='task' rows were migrated into shop_tasks (20260715) and are
+    // dormant copies — tasks render from the shop_tasks-backed helpers now.
+    .neq('type', 'task')
     .order('created_at', { ascending: false })
   if (error) { console.warn('[order_activity] read failed (migration pending?):', error.message); return [] }
   return data || []
@@ -1328,68 +1331,81 @@ export async function getRecentFollowupsForOrders(orderIds) {
   return map
 }
 
+// Legacy ⇄ unified status vocabulary. Order-task consumers (LeadsView,
+// OrderDetail rail, DesignHub) still speak open|in_progress|done; shop_tasks
+// speaks open|pending|done.
+const legacyTaskStatus = (s) => (s === 'pending' ? 'in_progress' : s)
+const unifiedTaskStatus = (s) => (s === 'in_progress' ? 'pending' : s)
+// Adapter: a shop_tasks row wearing the legacy order_activity task shape.
+const asLegacyTaskRow = (row) => ({
+  ...row,
+  note: row.title,
+  task_status: legacyTaskStatus(row.status),
+  kind: row.task_type,
+  actor: row.tasked_by || row.created_by,
+})
+
 // Batch: soonest-due OPEN task per order — one query for the Leads queue's
 // task label. Returns { [orderId]: nextOpenTaskRow }. due_date ASC puts dated
 // tasks first (Postgres NULLS LAST on ASC), so a lead's nearest task wins.
+// Reads shop_tasks (the ONE task store) since 20260715.
 export async function getOpenTasksForOrders(orderIds) {
   const ids = [...new Set((orderIds || []).filter(Boolean))]
   if (!ids.length) return {}
   const { data, error } = await supabase
-    .from('order_activity')
-    .select('order_id, note, due_date, task_status, created_at')
+    .from('shop_tasks')
+    .select('id, order_id, title, due_date, status, created_at')
     .in('order_id', ids)
-    .eq('type', 'task')
-    .eq('task_status', 'open')
+    .is('deleted_at', null)
+    .in('status', ['open', 'pending'])
     .order('due_date', { ascending: true })
   if (error) { console.warn('[leads] getOpenTasksForOrders:', error.message); return {} }
   const map = {}
-  for (const row of (data || [])) { if (!map[row.order_id]) map[row.order_id] = row }  // asc → first is soonest
+  for (const row of (data || [])) { if (!map[row.order_id]) map[row.order_id] = asLegacyTaskRow(row) }  // asc → first is soonest
   return map
 }
 
 // All OPEN tasks across a set of orders — one row per task (a lead may carry
 // several). Powers the Leads task table. Returns a flat array; the caller joins
-// each task to its lead by order_id.
+// each task to its lead by order_id. pending (né in_progress) is still OPEN work.
 export async function getOpenTasksList(orderIds) {
   const ids = [...new Set((orderIds || []).filter(Boolean))]
   if (!ids.length) return []
   const { data, error } = await supabase
-    .from('order_activity')
-    .select('id, order_id, note, due_date, task_status, assignee, kind, created_at')
+    .from('shop_tasks')
+    .select('*')
     .in('order_id', ids)
-    .eq('type', 'task')
-    // in_progress is still OPEN work (rail tasks gained the status 2026-07-14).
-    .in('task_status', ['open', 'in_progress'])
+    .is('deleted_at', null)
+    .in('status', ['open', 'pending'])
   if (error) { console.warn('[leads] getOpenTasksList:', error.message); return [] }
-  return data || []
+  return (data || []).map(asLegacyTaskRow)
 }
 
 // All COMPLETED (done) tasks across a set of orders — mirror of getOpenTasksList.
-// Newest-created first. NOTE: order_activity has no completed_at column, so the
-// list can't carry a true completion timestamp (the row's due_date is shown
-// instead); add a completed_at column + write it in setOrderTaskStatus to get one.
+// Newest-completed first (shop_tasks has a real done_at).
 export async function getCompletedTasksList(orderIds) {
   const ids = [...new Set((orderIds || []).filter(Boolean))]
   if (!ids.length) return []
   const { data, error } = await supabase
-    .from('order_activity')
-    .select('id, order_id, note, due_date, task_status, assignee, kind, created_at')
+    .from('shop_tasks')
+    .select('*')
     .in('order_id', ids)
-    .eq('type', 'task')
-    .eq('task_status', 'done')
-    .order('created_at', { ascending: false })
+    .is('deleted_at', null)
+    .eq('status', 'done')
+    .order('done_at', { ascending: false, nullsFirst: false })
   if (error) { console.warn('[leads] getCompletedTasksList:', error.message); return [] }
-  return data || []
+  return (data || []).map(asLegacyTaskRow)
 }
 
 // Count of OPEN tasks due today-or-overdue — powers the "work to do" nav badge.
-// Counts across all orders (tasks are primarily a leads feature); head-only count.
+// Counts every live task in the shop (order-linked or not); head-only count.
 export async function getDueOpenTaskCount(todayISO) {
   if (!todayISO) return 0
   const { count, error } = await supabase
-    .from('order_activity')
+    .from('shop_tasks')
     .select('id', { count: 'exact', head: true })
-    .eq('type', 'task').eq('task_status', 'open')
+    .is('deleted_at', null)
+    .in('status', ['open', 'pending'])
     .lte('due_date', todayISO)
   if (error) { console.warn('[leads] getDueOpenTaskCount:', error.message); return 0 }
   return count || 0
@@ -1428,20 +1444,38 @@ export async function ensureLeadCadence(orderId, days = 5) {
   } catch (e) { console.warn('[leads] ensureLeadCadence:', e?.message); return { ok: false } }
 }
 
-// Task types (order_activity.kind). null = General (legacy + default); 'layout' is
-// the structured "create a layout" task that also drives the Leads Design signal.
-// Extensible — add codes here and they flow through every task-create dropdown.
+// Task kinds shown in the order/lead task-create dropdowns. Kept for backward
+// compat ('layout' still drives the Leads Design signal); both map onto
+// shop_tasks.task_type now.
 export const TASK_KINDS = [
   { code: 'general', label: 'General' },
   { code: 'layout',  label: 'Layout' },
 ]
 
-// Manual task — note + assignee + optional due date + kind; opens as 'open'.
-export async function addOrderTask(orderId, { note, assignee, dueDate, actor, kind } = {}) {
-  return logOrderActivity(orderId, { type: 'task', note, assignee, dueDate, actor, kind, taskStatus: 'open' })
+// Manual task on an order/lead — note + assignee + optional due date + kind.
+// Writes shop_tasks (the ONE task store) so it shows up in the Today command
+// center immediately. task_type: design kinds map to 'design'; otherwise the
+// order's pipeline decides lead vs order (same test as ensureLeadCadence).
+export async function addOrderTask(orderId, { note, assignee, dueDate, actor, kind, phase } = {}) {
+  if (!orderId) return { ok: false }
+  let taskType = (kind === 'design' || kind === 'layout') ? kind : null
+  if (!taskType) {
+    const { data: o } = await supabase
+      .from('orders').select('id, status, signed_at').eq('id', orderId).maybeSingle()
+    taskType = (o && !o.signed_at && ['draft', 'scoping', 'quoted'].includes(o.status)) ? 'lead' : 'order'
+  }
+  const r = await addShopTask({
+    title: note, assignee, dueDate, orderId,
+    createdBy: actor, taskedBy: actor, taskType,
+    details: phase ? { phase } : null,   // pipeline-rail tasks group by phase
+  })
+  if (!r.ok) return r
+  return { ok: true, row: asLegacyTaskRow(r.task), task: r.task }
 }
 
-// Remove an activity/task row (used by the rail's task × and confirm).
+// Remove an activity row (used by the activity feed's × and confirm).
+// NOTE: tasks are NOT activity rows anymore — task deletes go through
+// deleteShopTask (soft delete with a deleted_by trail).
 export async function deleteOrderActivity(activityId) {
   if (!activityId) return { ok: false }
   const { error } = await supabase.from('order_activity').delete().eq('id', activityId)
@@ -1449,12 +1483,11 @@ export async function deleteOrderActivity(activityId) {
   return { ok: true }
 }
 
-// Toggle a task open/done.
-export async function setOrderTaskStatus(activityId, status) {
-  if (!activityId) return { ok: false }
-  const { error } = await supabase.from('order_activity').update({ task_status: status }).eq('id', activityId)
-  if (error) { console.warn('[order_activity] task status update failed:', error.message); return { ok: false, error: error.message } }
-  return { ok: true }
+// Toggle a task's status — accepts the legacy open|in_progress|done vocabulary
+// and writes the unified open|pending|done to shop_tasks.
+export async function setOrderTaskStatus(taskId, status) {
+  if (!taskId) return { ok: false }
+  return setShopTaskStatus(taskId, unifiedTaskStatus(status), await getCurrentStaffName())
 }
 
 // ── Derived milestones (order-content-driven) ───────────────────────────────
@@ -2912,52 +2945,178 @@ export function setActiveStaffUser(name) {
   } catch { /* storage unavailable — stamps fall back to the auth display name */ }
 }
 
-// ── SHOP TASKS ("don't tell me, task me") ────────────────────────────────────
-// Free-standing tasks with an assignee and an OPTIONAL order link — distinct
-// from order_activity tasks, which physically require an order. Replies form
-// the notification loop: a reply is an inbox item for the other side until
-// it's marked handled.
-export async function listShopTasks({ doneWithinDays = 7 } = {}) {
+// ── SHOP TASKS — the ONE task store (Task Command Center) ───────────────────
+// Every task in the shop lives here, wherever it was created: the Today
+// command center, a lead, an order, Design Hub, a check job. Legacy
+// order_activity tasks were backfilled by 20260715_task_command_center.sql,
+// and the order-task helpers (addOrderTask & co., further down) now
+// read/write THIS table — nothing gets lost between surfaces.
+//   • status: open → pending (worked on / blocked, awaiting reply) → done
+//   • tasked_by: who assigned it (defaults to the creator; overridable)
+//   • assignee_kind: 'person' | 'department' (DEPARTMENTS in lib/employees)
+//   • task_type: TASK_TYPES below (soft vocabulary)
+//   • attachments: [{ name, url, path }] — order-linked uploads go into the
+//     order's own attachments/{orderId}/ storage folder, so they show up in
+//     the order attachment list too
+//   • details: per-type payload (check_job: { cemeteryId, cemeteryName })
+// Deleting is a SOFT delete (deleted_at/deleted_by): anyone may delete any
+// task (Paul's rule), so the trail is the safety net.
+// Replies form the notification loop: a reply is an inbox item for the other
+// side until it's marked handled.
+
+export const TASK_TYPES = [
+  { code: 'general',    label: 'General' },
+  { code: 'lead',       label: 'Lead' },
+  { code: 'order',      label: 'Order' },
+  { code: 'design',     label: 'Design' },
+  { code: 'layout',     label: 'Layout' },   // design-family; drives the Leads layout signal
+  { code: 'production', label: 'Production' },
+  { code: 'check_job',  label: 'Check job' },
+]
+export const taskTypeLabel = (code) =>
+  (TASK_TYPES.find(t => t.code === code) || {}).label || 'General'
+
+const TASK_SELECT = '*, order:orders(id, order_number, primary_lastname, status, signed_at)'
+
+export async function listShopTasks({ doneWithinDays = 14 } = {}) {
   const cutoff = new Date(Date.now() - doneWithinDays * 86400000).toISOString()
   const { data, error } = await supabase
     .from('shop_tasks')
-    .select('*, order:orders(id, order_number, primary_lastname)')
-    .or(`status.eq.open,done_at.gte.${cutoff}`)
+    .select(TASK_SELECT)
+    .is('deleted_at', null)
+    .or(`status.in.(open,pending),done_at.gte.${cutoff}`)
     .order('due_date', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: true })
   if (error) { console.warn('[tasks] listShopTasks:', error.message); return [] }
   return data || []
 }
-export async function addShopTask({ title, assignee, orderId = null, dueDate = null, createdBy = null }) {
+
+// Check jobs (site inspections before a repair quote) — powers the Jobs →
+// Check jobs tab. Live ones plus the last month of completed ones.
+export async function listCheckJobTasks({ doneWithinDays = 30 } = {}) {
+  const cutoff = new Date(Date.now() - doneWithinDays * 86400000).toISOString()
+  const { data, error } = await supabase
+    .from('shop_tasks')
+    .select(TASK_SELECT)
+    .eq('task_type', 'check_job')
+    .is('deleted_at', null)
+    .or(`status.in.(open,pending),done_at.gte.${cutoff}`)
+    .order('due_date', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true })
+  if (error) { console.warn('[tasks] listCheckJobTasks:', error.message); return [] }
+  return data || []
+}
+
+// All live tasks on one order — powers the Order Detail task rail.
+export async function listShopTasksForOrder(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('shop_tasks')
+    .select(TASK_SELECT)
+    .eq('order_id', orderId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+  if (error) { console.warn('[tasks] listShopTasksForOrder:', error.message); return [] }
+  return data || []
+}
+
+export async function addShopTask({
+  title, assignee, assigneeKind = 'person', orderId = null, dueDate = null,
+  createdBy = null, taskedBy = null, taskType = 'general',
+  attachments = null, details = null,
+} = {}) {
   const t = (title || '').trim()
   if (!t) return { ok: false, error: 'Type the task.' }
   if (!assignee) return { ok: false, error: 'Pick who it goes to.' }
+  const row = {
+    title: t,
+    assignee,
+    assignee_kind: assigneeKind === 'department' ? 'department' : 'person',
+    order_id: orderId || null,
+    due_date: dueDate || null,
+    created_by: createdBy || null,
+    tasked_by: taskedBy || createdBy || null,
+    task_type: taskType || 'general',
+  }
+  if (attachments && attachments.length) row.attachments = attachments
+  if (details && Object.keys(details).length) row.details = details
   const { data, error } = await supabase.from('shop_tasks')
-    .insert({ title: t, assignee, order_id: orderId || null, due_date: dueDate || null, created_by: createdBy || null })
-    .select().single()
+    .insert(row).select(TASK_SELECT).single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, task: data, row: data }
+}
+
+// Anyone can edit any task — title, assignee, due date, tasked-by, type,
+// attachments, details, order link. Whitelisted patch keys.
+export async function updateShopTask(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing task' }
+  const row = { updated_at: new Date().toISOString() }
+  if ('title' in patch) {
+    const t = (patch.title || '').trim()
+    if (!t) return { ok: false, error: 'Title cannot be empty.' }
+    row.title = t
+  }
+  if ('assignee' in patch) row.assignee = patch.assignee
+  if ('assigneeKind' in patch) row.assignee_kind = patch.assigneeKind === 'department' ? 'department' : 'person'
+  if ('dueDate' in patch) row.due_date = patch.dueDate || null
+  if ('taskedBy' in patch) row.tasked_by = patch.taskedBy || null
+  if ('taskType' in patch) row.task_type = patch.taskType || 'general'
+  if ('attachments' in patch) row.attachments = patch.attachments || []
+  if ('details' in patch) row.details = patch.details || {}
+  if ('orderId' in patch) row.order_id = patch.orderId || null
+  const { data, error } = await supabase.from('shop_tasks')
+    .update(row).eq('id', id).select(TASK_SELECT).single()
   if (error) return { ok: false, error: error.message }
   return { ok: true, task: data }
 }
-export async function setShopTaskDone(id, done, by = null) {
+
+// open | pending | done. Done stamps done_at/done_by; leaving done clears them.
+export async function setShopTaskStatus(id, status, by = null) {
   if (!id) return { ok: false, error: 'Missing task' }
-  const patch = done
-    ? { status: 'done', done_at: new Date().toISOString(), done_by: by, updated_at: new Date().toISOString() }
-    : { status: 'open', done_at: null, done_by: null, updated_at: new Date().toISOString() }
+  if (!['open', 'pending', 'done'].includes(status)) return { ok: false, error: `Bad status: ${status}` }
+  const patch = status === 'done'
+    ? { status, done_at: new Date().toISOString(), done_by: by, updated_at: new Date().toISOString() }
+    : { status, done_at: null, done_by: null, updated_at: new Date().toISOString() }
   const { error } = await supabase.from('shop_tasks').update(patch).eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
 }
+export async function setShopTaskDone(id, done, by = null) {
+  return setShopTaskStatus(id, done ? 'done' : 'open', by)
+}
+
 export async function snoozeShopTask(id, untilDate) {
   if (!id) return { ok: false, error: 'Missing task' }
   const { error } = await supabase.from('shop_tasks').update({ snoozed_until: untilDate || null, updated_at: new Date().toISOString() }).eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
 }
-export async function deleteShopTask(id) {
+
+// Soft delete — anyone may delete any task; deleted_by is the trail.
+export async function deleteShopTask(id, by = null) {
   if (!id) return { ok: false, error: 'Missing task' }
-  const { error } = await supabase.from('shop_tasks').delete().eq('id', id)
+  const { error } = await supabase.from('shop_tasks')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: by, updated_at: new Date().toISOString() })
+    .eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+}
+
+// Upload a task attachment. Order-linked tasks upload into the order's own
+// attachments/{orderId}/ folder (so the file also appears in the order's
+// attachment list); free-standing tasks get attachments/tasks/{taskId}/.
+// Returns { ok, url, path, name } — push it onto the task's attachments[].
+export async function uploadTaskAttachment({ orderId = null, taskId = null } = {}, file) {
+  if (!file) return { ok: false, error: 'Missing file' }
+  if (orderId) return uploadOrderAttachment(orderId, file)
+  const safe = String(file.name || 'file').replace(/[^\w.-]+/g, '_')
+  const path = `attachments/tasks/${taskId || crypto.randomUUID()}/${crypto.randomUUID()}_${safe}`
+  const { error } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (error) return { ok: false, error: error.message }
+  const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  return { ok: true, url: data.publicUrl, path, name: safe }
 }
 export async function listTaskReplies(taskIds) {
   const ids = (taskIds || []).filter(Boolean)

@@ -58,6 +58,7 @@ const JOBS_KEY = 'jobs:all'   // getJobs(includeClosed) — shared with Customer
 import OrderDetail from './OrderDetail.jsx'
 import LeadsView from './components/LeadsView.jsx'
 import NewLeadModal from './components/NewLeadModal.jsx'
+import CheckJobModal from './components/CheckJobModal.jsx'
 import { isOrderRow, CONTRACTED_STATUSES } from './lib/leads'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -291,6 +292,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const [needsCallOnly, setNeedsCallOnly] = useState(false)     // hot chip — pressure.needsCall
   const [unsignedOnly, setUnsignedOnly] = useState(false)       // hot chip — contracted, no signature on file
   const [cemeteryFilter, setCemeteryFilter] = useState('')
+  const [repFilter, setRepFilter] = useState('')          // "Created by" — orders.sales_rep (Dad keeps forgetting which orders he started)
   const [quickView, setQuickView] = useState(null)           // 'needs_info' | 'deposit_only' | null (More filters)
   const [queueFilter, setQueueFilter] = useState(null)   // workflow-queue code from the Queues dashboard
   const [sortKey, setSortKey] = useState('createdDesc')   // default: newest by creation date
@@ -324,6 +326,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const sortCaret = (key) => (sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓')
   const [search, setSearch] = useState('')
   const [newLeadOpen, setNewLeadOpen] = useState(false)   // first-call lead intake modal
+  const [checkJobFor, setCheckJobFor] = useState(null)    // { id, label, cemeteryId, cemeteryName } | null — check-job modal context
 
   // ── Kanban board (opens from the pipeline strip, remembers last choice) ────
   const [boardOpen, setBoardOpen] = useState(() => { try { return localStorage.getItem(BOARD_OPEN_KEY) === '1' } catch { return false } })
@@ -503,6 +506,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     if (pipelineFilters.size) list = list.filter(o => pipelineFilters.has(o.status))
     if (paymentFilters.size)  list = list.filter(o => paymentFilters.has(o._pressure.paymentState))
     if (cemeteryFilter) list = list.filter(o => o.cemetery?.id === cemeteryFilter)
+    if (repFilter) list = list.filter(o => (o.sales_rep || '') === repFilter)
     if (hasDeposit) list = list.filter(o => o._paid > 0)
     if (owesBalance) list = list.filter(o => o._balance > 0)
     if (needsAttentionOnly) list = list.filter(o => {
@@ -517,7 +521,15 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     ].filter(Boolean).join(' ').toLowerCase().includes(needle))
     return list
   }, [enriched, primaryView, view, queueFilter, quickView, pipelineFilters, paymentFilters,
-      cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
+      cemeteryFilter, repFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
+
+  // Distinct "Created by" values actually on orders (covers legacy rep names
+  // that are no longer on the roster).
+  const repOptions = useMemo(() => {
+    const s = new Set()
+    for (const o of orders) if (o.sales_rep) s.add(o.sales_rep)
+    return [...s].sort((a, b) => a.localeCompare(b))
+  }, [orders])
 
   // Orders · Leads · All partition — Paul's rule: an ORDER is contracted/signed
   // AND deposit paid; everything else (incl. contracted-but-no-deposit) is a lead.
@@ -593,7 +605,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
 
   // Reset page + clear stale selection when the filtered set changes shape.
   useEffect(() => { setPage(0) }, [view, primaryView, categoryFilter, queueFilter, quickView, pipelineFilters,
-    paymentFilters, cemeteryFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
+    paymentFilters, cemeteryFilter, repFilter, hasDeposit, owesBalance, needsAttentionOnly, needsCallOnly, unsignedOnly, search])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const pageRows = useMemo(() => filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE), [filtered, page])
@@ -1030,11 +1042,33 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <button type="button" className="sb-crm-btn-primary" onClick={() => setNewLeadOpen(true)}>+ New Lead</button>
             </div>
           </div>
-          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} onConvert={convertLead} onChanged={reload} />
+          <LeadsView orders={orders} onOpenDetail={(id) => setSelectedOrderId(id)} onOpenOrder={onOpenOrder} onConvert={convertLead} onChanged={reload}
+            onAddCheckJob={(lead) => setCheckJobFor({
+              id: lead.id,
+              label: `${lead.primary_lastname || lead.customer?.last_name || 'Lead'}${lead.order_number ? ` · ${lead.order_number}` : ''}`,
+              cemeteryId: lead.cemetery_id || lead.cemetery?.id || null,
+              cemeteryName: lead.cemetery?.name || null,
+            })} />
         </div>
         {newLeadOpen && (
           <NewLeadModal onClose={() => setNewLeadOpen(false)}
-            onSaved={() => { setNewLeadOpen(false); reload() }} />
+            onSaved={(orderId, opts) => {
+              setNewLeadOpen(false); reload()
+              // "Save + check job" hands the fresh lead straight to the check-job modal.
+              if (opts?.checkJob && orderId) {
+                setCheckJobFor({
+                  id: orderId,
+                  label: opts.label || 'New lead',
+                  cemeteryId: opts.cemeteryId || null,
+                  cemeteryName: opts.cemeteryName || null,
+                })
+              }
+            }} />
+        )}
+        {checkJobFor && (
+          <CheckJobModal order={checkJobFor}
+            onClose={() => setCheckJobFor(null)}
+            onSaved={() => { setCheckJobFor(null); reload() }} />
         )}
       </div>
     )
@@ -1135,6 +1169,12 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <select className="sb-crm-sort sb-ord-cemsel" value={cemeteryFilter} onChange={e => setCemeteryFilter(e.target.value)}>
               <option value="">All cemeteries</option>
               {cemeteryOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          )}
+          {repOptions.length > 0 && (
+            <select className="sb-crm-sort sb-ord-cemsel" value={repFilter} onChange={e => setRepFilter(e.target.value)} title="Filter by who started the order">
+              <option value="">Created by: anyone</option>
+              {repOptions.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           )}
         </div>
