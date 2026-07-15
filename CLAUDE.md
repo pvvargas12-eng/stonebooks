@@ -101,6 +101,13 @@ Paul-approved perf pass (analysis-first per his hard rule after a past data-loss
 - **TodayTab select trimmed** (identity/lead fields only); **getEmailThreadsWorkspace drops body_text** (snippet column covers the list; bodies load on thread open); **`messages(received_at desc)` index APPLIED** (`20260715_perf_indexes.sql`) — prod pg_indexes audit showed orders/jobs already carry their hot-path indexes (created OUTSIDE the migrations folder — don't trust migration files for index existence, query pg_indexes).
 - **Not touched (deliberately):** computeOrderPressure/enrichment (already O(n)+memoized); Payments/Customers fetchAllPaged `deceased` selects (display-risk vs small win — revisit only if still slow).
 
+## Fix: design change-request loop visible (2026-07-15)
+
+Paul: customers' requested changes were invisible; Design Hub rows went to the job packet, not design details. **The feedback was stored all along** — `approval_links.change_notes` + `changes_requested_at` + the `changes_requested` status (all applied to prod OUT-OF-BAND, no migration file documents them; base migration constrains status to pending/viewed/signed/expired/revoked — the live check constraint differs) and `job_events` `proof_changes_requested`; read helpers `getLatestChangeRequestNote(s)`/`getChangeRequestThread` existed unused-by-the-card.
+
+- OrderDetail Design/proof card: "Changes requested" red panel at top (full thread via getChangeRequestThread, deps on approvalLinks); change_notes inline on rejected link rows (`getApprovalLinksForOrder` now selects it); persistent "Open Design hub" button; `initialAction='design'` scrolls to `#od-design`.
+- DesignHubHome: row click → `onOpenOrder(id,'design')` (order design card, deep-linked) with a secondary "Job packet" button preserving the old JobDetail path; per-row approval-link badge (latest link per order via listAllApprovalLinks); revision rows show the customer's note as text (was title-tooltip only). Stonebooks JobsTab wiring passes `(id, action)` through onOpenOrderDetail.
+
 ## CURRENT STATE (as of d11d3c4)
 - HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
 - Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates
