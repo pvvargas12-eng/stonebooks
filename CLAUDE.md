@@ -92,6 +92,15 @@ Full Today rebuild as the TASK COMMAND CENTER (Paul: dad's sticky-note crisis; "
 - **Sales tab:** Leads task table sortable by **Assigned to**; orders toolbar gained **"Created by"** filter over `orders.sales_rep` (distinct values actually on orders). Lead/NewLead assignee pickers now use the live roster (STAFF_NAMES) instead of SALES_REPS.
 - **Deferred (Paul will spec):** auto-tasking rules (e.g. closeout photo upload → auto-task Admin to close out the order).
 
+## Sprint PERF-1 (2026-07-15) — SHIPPED
+
+Paul-approved perf pass (analysis-first per his hard rule after a past data-loss incident: READ-ONLY investigation → report → approval → slices). NO stored data touched anywhere.
+
+- **Bundle split:** React.lazy every tab (Stonebooks.jsx; Today stays static) + every route (App.jsx — its static SalesMode import was pinning the wizard into entry). `loadPricingConfig` → dynamic import (order preserved: pricing → salesOptions). **Entry chunk 1,988KB → 631KB (gzip 480 → 172).**
+- **getJobs narrowed** (the shared hotspot — Orders/Jobs/Customers all mount it): `order:orders(*)` ×3 traversals → single embed of `JOBS_ORDER_EMBED` (audited exhaustive consumer column list + ORDER_PRICING_COLUMNS contract; deceased/field_location/plot_*/target_completion_end_date are load-bearing — NOT in ORDERS_BOARD_SELECT) with customer/cemetery nested inside, hoisted top-level in the flatten. Select validated against prod PostgREST (200).
+- **TodayTab select trimmed** (identity/lead fields only); **getEmailThreadsWorkspace drops body_text** (snippet column covers the list; bodies load on thread open); **`messages(received_at desc)` index APPLIED** (`20260715_perf_indexes.sql`) — prod pg_indexes audit showed orders/jobs already carry their hot-path indexes (created OUTSIDE the migrations folder — don't trust migration files for index existence, query pg_indexes).
+- **Not touched (deliberately):** computeOrderPressure/enrichment (already O(n)+memoized); Payments/Customers fetchAllPaged `deceased` selects (display-risk vs small win — revisit only if still slow).
+
 ## CURRENT STATE (as of d11d3c4)
 - HEAD: d11d3c4 PROFIT-VISUAL + loading-hang fix, pushed, Vercel green
 - Migrations applied to prod A–K: service_kind, mausoleum_door template (corrected teams), [C dropped via G], door_index, dropped jobs.order_id unique, cemetery_orders + jobs.cemetery_order_id XOR, dropped orders.mausoleum_door_intake, cemetery_orders overrides/toggles, financial_records ledger (RESTRICT FKs), profit dimensions + job_cost_estimates

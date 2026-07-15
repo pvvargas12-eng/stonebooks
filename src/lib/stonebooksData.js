@@ -6395,15 +6395,29 @@ export async function createJobsFromCemeteryOrder(cemeteryOrderId) {
 //   statusFilter: array of overall_status codes to keep.
 //   includeClosed: default false; closed jobs hidden unless asked.
 
+// Every orders column any getJobs consumer actually reads (exhaustive audit
+// 2026-07-15: jobsRowHelpers/enrichJob, JobsCommandCenter, JobsDepartmentView,
+// FoundationsBoard, ProductionFloor, SchedulerTab, todaySignals, reportDefs,
+// field screens). The old `order:orders(*)` dragged every jsonb — designs,
+// design_snapshot — across for ~2000 jobs on three different tabs.
+//  • ORDER_PRICING_COLUMNS is the engine contract — NEVER hand-trim it
+//    (the Illuzzi partial-row bug).
+//  • deceased → job-row family label; field_location → GPS pins; plot_* →
+//    composeGraveLocation; target_completion_end_date → mausoleum signal.
+const JOBS_ORDER_EMBED =
+  'id, order_number, status, archived, created_at, updated_at, signed_at, pricing_locked_at, ' +
+  'target_completion_date, target_completion_end_date, primary_lastname, sales_rep, ' +
+  'payments, deposit_amount, balance_amount, permit_required, permit_status, manual_blocker, ' +
+  'grave_location, plot_section, plot_block, plot_lot, plot_row, plot_space, plot_grave, plot_level, ' +
+  'field_location, deceased, ' + ORDER_PRICING_COLUMNS
+
 export async function getJobs({ teamFilter, statusFilter, includeClosed = false, limit = 500 } = {}) {
   let q = supabase
     .from('jobs')
     .select(`
       *,
       milestones:job_milestones(*),
-      order:orders(*),
-      customer:orders(customer:customers(*)),
-      cemetery:orders(cemetery:cemeteries(*))
+      order:orders(${JOBS_ORDER_EMBED}, customer:customers(id, first_name, last_name), cemetery:cemeteries(id, name))
     `)
     .order('last_update_at', { ascending: false })
     .limit(limit)
@@ -6426,26 +6440,15 @@ export async function getJobs({ teamFilter, statusFilter, includeClosed = false,
 
   const rows = live.map(j => {
     const order = j.order || null
-    // Unnest customer + cemetery via a second fetch path; Supabase's PostgREST
-    // can sometimes return either shape depending on relationship hints. Be
-    // defensive.
-    let customer = null, cemetery = null
-    if (Array.isArray(j.customer) && j.customer.length) {
-      customer = j.customer[0]?.customer || null
-    } else if (j.customer && j.customer.customer) {
-      customer = j.customer.customer
-    }
-    if (Array.isArray(j.cemetery) && j.cemetery.length) {
-      cemetery = j.cemetery[0]?.cemetery || null
-    } else if (j.cemetery && j.cemetery.cemetery) {
-      cemetery = j.cemetery.cemetery
-    }
+    // customer + cemetery ride the single order embed now (the old build
+    // traversed orders three separate times); hoist them to the top level —
+    // the shape every consumer reads.
     return {
       ...j,
       milestones: (j.milestones || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
       order,
-      customer,
-      cemetery,
+      customer: order?.customer || null,
+      cemetery: order?.cemetery || null,
     }
   })
 
