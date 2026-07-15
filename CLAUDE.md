@@ -148,7 +148,7 @@ React + Supabase. Internal use only.
 
 - Frontend: React (Vite), single-page app
 - Backend: Supabase (Postgres + Auth + Storage)
-- Hosting: Vercel — auto-deploy is wired and healthy; every push to `main` triggers a Production build (last verified deploy `b8f08bc`, 2026-05-27). The old `shevchenko-catalog.vercel.app` URL is stale; current deploys publish under the `stonebooks-*.vercel.app` project.
+- Hosting: Vercel — auto-deploy is wired and healthy; every push to `main` triggers a Production build (last verified deploy `2ee3164`, 2026-07-15). **URL gotchas:** `shevchenko-catalog.vercel.app` AND `stonebooks.vercel.app` are both STALE sibling projects — neither updates on push (cost a false "deploy failed" alarm 2026-07-15). The live project is under the `pvvargas12-1236s-projects` Vercel team; its per-deploy `stonebooks-*-pvvargas12-1236s-projects.vercel.app` URLs are SSO-protected. **To verify a deploy without the dashboard: query the GitHub deployments API** (`repos/pvvargas12-eng/stonebooks/deployments` + statuses; the git token in Windows Credential Manager target `git:https://github.com` works as a Bearer token) — `state=success` on env=Production is the signal.
 - Key file: `src/SalesMode.jsx` is ~11k lines and holds the sales wizard
 
 ## What's shipped
