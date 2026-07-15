@@ -24,7 +24,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
-  getLatestChangeRequestNotes, listAllApprovalLinks,
+  getLatestChangeRequestNotes, listAllApprovalLinks, properName,
   designStateFor, orderIsEstimateLayout,
   setOrderDesignStatus, addOrderTask, setOrderTaskStatus, getOpenTasksList,
   getCurrentStaffName,
@@ -37,8 +37,10 @@ const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(
 const customerOf = (o) => [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
 // Family name for a row — early leads have no carved (deceased) lastname and
 // sometimes only a first-name customer ("Chelsea"), so fall through to the
-// customer's full name, then the order #, before giving up.
-const familyOf = (o) => (o?.primary_lastname || o?.customer?.last_name || customerOf(o) || o?.order_number || '—')
+// customer's full name, then the order #, before giving up. properName gives
+// uniform First-letter casing (KYRIAKATOS → Kyriakatos) without mangling
+// McDonald / O'Brien.
+const familyOf = (o) => properName(o?.primary_lastname || o?.customer?.last_name || customerOf(o) || o?.order_number || '—')
 const msFrom = (iso) => { if (!iso) return null; const t = Date.parse(String(iso).slice(0, 10) + 'T00:00:00'); return Number.isNaN(t) ? null : t }
 
 // Order age (days) from signed_at, falling back to the contract/created date.
@@ -156,6 +158,27 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     }
     return c
   }, [approvalByOrder])
+  // Clicking a pulse stat filters the list to orders in that approval state.
+  const [approvalFilter, setApprovalFilter] = useState(null)
+  const togglePulse = (code) => { setApprovalFilter(f => (f === code ? null : code)); setActiveTile(null) }
+
+  // REACH OUT — an approval sitting in Sent/Viewed for 3+ days with no answer
+  // and no status change is a family waiting on silence (Paul, 2026-07-15).
+  const staleApprovals = useMemo(() => {
+    if (!todayISO) return []
+    const nowMs = Date.parse(todayISO + 'T00:00:00')
+    const out = []
+    for (const l of Object.values(approvalByOrder)) {
+      const s = l.displayStatus || l.status
+      if (s !== 'pending' && s !== 'viewed') continue
+      const last = l.viewed_at || l.emailed_at || l.created_at
+      const ms = Date.parse(last || '')
+      if (Number.isNaN(ms)) continue
+      const days = Math.floor((nowMs - ms) / 86400000)
+      if (days >= 3) out.push({ link: l, days, status: s })
+    }
+    return out.sort((a, b) => b.days - a.days)
+  }, [approvalByOrder, todayISO])
   const approvalBadge = (orderId) => {
     const l = approvalByOrder[orderId]
     if (!l) return null
@@ -212,9 +235,19 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     const m = {}; for (const r of layoutRows) if (r.order?.id) m[r.order.id] = familyOf(r.order); return m
   }, [layoutRows])
 
-  // ── Visible row list (tile filter → search → sort) ─────────────────────────
+  // ── Visible row list (approval filter → tile filter → search → sort) ───────
   const visibleRows = useMemo(() => {
-    let list = activeTile ? layoutRows.filter(r => r.state === activeTile) : layoutRows.filter(r => r.state !== 'approved')
+    let list
+    if (approvalFilter) {
+      // Pulse-stat filter: rows whose LATEST approval link is in that state
+      // (includes approved rows — clicking "Approved" must show them).
+      list = layoutRows.filter(r => {
+        const l = approvalByOrder[r.order?.id]
+        return l && (l.displayStatus || l.status) === approvalFilter
+      })
+    } else {
+      list = activeTile ? layoutRows.filter(r => r.state === activeTile) : layoutRows.filter(r => r.state !== 'approved')
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       list = list.filter(r => [familyOf(r.order), customerOf(r.order), r.order?.order_number].filter(Boolean).join(' ').toLowerCase().includes(q))
@@ -227,7 +260,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
           : sortKey === 'status' ? (a, b) => (STATE_ORDER[a.state] - STATE_ORDER[b.state]) || byUrg(a, b)
             : byUrg
     return [...list].sort(cmp)
-  }, [layoutRows, activeTile, search, sortKey])
+  }, [layoutRows, activeTile, approvalFilter, approvalByOrder, search, sortKey])
 
   // ── Estimate-layout (lead) rows ────────────────────────────────────────────
   const estimateRows = useMemo(() => {
@@ -263,7 +296,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     setAddNote(''); setAddOrderId(''); setAdding(false); setTaskNonce(n => n + 1)
   }, [addNote, addOrderId])
 
-  const toggleTile = (code) => setActiveTile(t => (t === code ? null : code))
+  const toggleTile = (code) => { setActiveTile(t => (t === code ? null : code)); setApprovalFilter(null) }
 
   // ── Layout uploader (Paul, 2026-07-14: upload from the hub, any row) ─────────
   // Job rows upload a JOB-scoped proof version (same plumbing as the packet);
@@ -344,15 +377,43 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
           </div>
 
           {/* APPROVAL PULSE — the customer-loop numbers (latest link per
-              order): how many approvals are out, opened, answered. */}
+              order). CLICK a stat to filter the list to those orders. */}
           <div className="sb-dh2-pulse">
             <span className="sb-dh2-pulse-lab">Approvals</span>
             {[['pending', 'Sent, waiting'], ['viewed', 'Viewed by family'], ['changes_requested', 'Changes requested'], ['signed', 'Approved']].map(([code, lab]) => (
-              <span key={code} className={`sb-dh2-pulse-stat sb-dh2-link-${code}`}>
+              <button key={code} type="button"
+                className={`sb-dh2-pulse-stat sb-dh2-link-${code}${approvalFilter === code ? ' on' : ''}`}
+                onClick={() => togglePulse(code)}
+                title={approvalFilter === code ? 'Clear this filter' : `Show only orders whose approval is ${lab.toLowerCase()}`}>
                 <b>{approvalCounts[code] || 0}</b> {lab}
-              </span>
+              </button>
             ))}
+            {approvalFilter && <button type="button" className="sb-dh2-pulse-clear" onClick={() => setApprovalFilter(null)}>Clear</button>}
           </div>
+
+          {/* REACH OUT — approvals sitting 3+ days in Sent/Viewed with no
+              answer. The family is waiting on silence; call them. */}
+          {staleApprovals.length > 0 && (
+            <div className="sb-dh2-stale">
+              <div className="sb-dh2-stale-head">
+                Reach out — {staleApprovals.length} approval{staleApprovals.length === 1 ? '' : 's'} waiting 3+ days with no answer
+              </div>
+              {staleApprovals.map(({ link, days, status }) => (
+                <div key={link.id} className="sb-dh2-stale-row">
+                  <span className="sb-dh2-stale-fam">{properName(link.order?.primary_lastname || link.order?.order_number || 'Order')}</span>
+                  <span className="sb-dh2-stale-what">
+                    {status === 'viewed'
+                      ? `family OPENED it ${days}d ago and hasn't answered`
+                      : `sent ${days}d ago, never opened`}
+                  </span>
+                  <button type="button" className="sb-dh2-createbtn"
+                    onClick={() => { rememberScroll(); onOpenOrder?.(link.order_id, 'design') }}>
+                    Open order
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* TASK PANEL */}
           <div className="sb-dh2-tasks">
@@ -597,8 +658,16 @@ const CSS = `
   .sb-dh2-pill-amber { color: #8b6418; background: rgba(184,132,42,.16); }
   .sb-dh2-pulse { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #fff; border: 1px solid #ece6d8; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; }
   .sb-dh2-pulse-lab { font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #9a9486; margin-right: 2px; }
-  .sb-dh2-pulse-stat { font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 5px 12px; }
+  .sb-dh2-pulse-stat { font: inherit; font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 5px 12px; border: 1px solid transparent; cursor: pointer; }
   .sb-dh2-pulse-stat b { font-size: 14px; font-weight: 800; margin-right: 3px; }
+  .sb-dh2-pulse-stat:hover { border-color: currentColor; }
+  .sb-dh2-pulse-stat.on { border-color: currentColor; box-shadow: 0 0 0 2px rgba(154,114,9,0.15); font-weight: 800; }
+  .sb-dh2-pulse-clear { font: inherit; font-size: 12px; font-weight: 600; color: #8a8472; background: none; border: none; cursor: pointer; text-decoration: underline; }
+  .sb-dh2-stale { background: #fbeaea; border: 1px solid #e7b3ad; border-left: 4px solid #b3261e; border-radius: 12px; padding: 11px 14px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .sb-dh2-stale-head { font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #b3261e; }
+  .sb-dh2-stale-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .sb-dh2-stale-fam { font-weight: 700; min-width: 110px; }
+  .sb-dh2-stale-what { flex: 1; font-size: 13px; color: #7a2a25; }
   .sb-dh2-linkbadge { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
   .sb-dh2-link-pending { color: #1d6fa8; background: rgba(29,111,168,.12); }
   .sb-dh2-link-viewed { color: #5b3e96; background: rgba(91,62,150,.12); }
