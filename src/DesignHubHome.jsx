@@ -34,8 +34,11 @@ import {
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
 const pad = (n) => String(n).padStart(2, '0')
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` }
-const familyOf = (o) => (o?.primary_lastname || o?.customer?.last_name || '—')
 const customerOf = (o) => [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
+// Family name for a row — early leads have no carved (deceased) lastname and
+// sometimes only a first-name customer ("Chelsea"), so fall through to the
+// customer's full name, then the order #, before giving up.
+const familyOf = (o) => (o?.primary_lastname || o?.customer?.last_name || customerOf(o) || o?.order_number || '—')
 const msFrom = (iso) => { if (!iso) return null; const t = Date.parse(String(iso).slice(0, 10) + 'T00:00:00'); return Number.isNaN(t) ? null : t }
 
 // Order age (days) from signed_at, falling back to the contract/created date.
@@ -144,6 +147,15 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     return () => { alive = false }
   }, [])
   const APPROVAL_LAB = { pending: 'Sent', viewed: 'Viewed by family', signed: 'Approved', changes_requested: 'Changes requested', expired: 'Link expired', revoked: 'Revoked' }
+  // Tile-row numbers: latest link per order, bucketed by its display status.
+  const approvalCounts = useMemo(() => {
+    const c = {}
+    for (const l of Object.values(approvalByOrder)) {
+      const s = l.displayStatus || l.status
+      c[s] = (c[s] || 0) + 1
+    }
+    return c
+  }, [approvalByOrder])
   const approvalBadge = (orderId) => {
     const l = approvalByOrder[orderId]
     if (!l) return null
@@ -331,6 +343,17 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             ))}
           </div>
 
+          {/* APPROVAL PULSE — the customer-loop numbers (latest link per
+              order): how many approvals are out, opened, answered. */}
+          <div className="sb-dh2-pulse">
+            <span className="sb-dh2-pulse-lab">Approvals</span>
+            {[['pending', 'Sent, waiting'], ['viewed', 'Viewed by family'], ['changes_requested', 'Changes requested'], ['signed', 'Approved']].map(([code, lab]) => (
+              <span key={code} className={`sb-dh2-pulse-stat sb-dh2-link-${code}`}>
+                <b>{approvalCounts[code] || 0}</b> {lab}
+              </span>
+            ))}
+          </div>
+
           {/* TASK PANEL */}
           <div className="sb-dh2-tasks">
             <div className="sb-dh2-tasks-head">
@@ -386,16 +409,15 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                   key={r.job.id}
                   className={`sb-dh2-row sb-dh2-row-${r.urgency}`}
                   onClick={() => {
+                    // Row click → the DESIGN PACKET (Paul's expectation,
+                    // 2026-07-15 round 2); the order's design card is the
+                    // secondary button.
                     rememberScroll()
-                    // Land on the ORDER's Design/proof card (the actionable
-                    // surface: proof, approval link, change requests) — not
-                    // the job packet (Paul, 2026-07-15).
-                    if (r.order?.id) onOpenOrder?.(r.order.id, 'design')
-                    else onOpenJob?.(r.job.id, 'design')
+                    onOpenJob?.(r.job.id, 'design')
                   }}
                   role="button"
                   tabIndex={0}
-                  title="Open this order's design details"
+                  title="Open the design packet"
                 >
                   <span className="sb-dh2-fam">{familyOf(r.order)}</span>
                   {r.state === 'revision' ? (
@@ -411,9 +433,9 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     Upload layout
                   </button>
                   <button type="button" className="sb-dh2-jobbtn"
-                    onClick={e => { e.stopPropagation(); rememberScroll(); onOpenJob?.(r.job.id, 'design') }}
-                    title="The production job's design packet">
-                    Job packet
+                    onClick={e => { e.stopPropagation(); rememberScroll(); if (r.order?.id) onOpenOrder?.(r.order.id, 'design') }}
+                    title="The order's Design/proof card — approval links, statuses, change requests">
+                    Order design
                   </button>
                   <select
                     className="sb-dh2-statusbox"
@@ -573,6 +595,10 @@ const CSS = `
   .sb-dh2-age-soon { color: #8b6418; background: rgba(184,132,42,.16); }
   .sb-dh2-pill { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
   .sb-dh2-pill-amber { color: #8b6418; background: rgba(184,132,42,.16); }
+  .sb-dh2-pulse { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #fff; border: 1px solid #ece6d8; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; }
+  .sb-dh2-pulse-lab { font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #9a9486; margin-right: 2px; }
+  .sb-dh2-pulse-stat { font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 5px 12px; }
+  .sb-dh2-pulse-stat b { font-size: 14px; font-weight: 800; margin-right: 3px; }
   .sb-dh2-linkbadge { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
   .sb-dh2-link-pending { color: #1d6fa8; background: rgba(29,111,168,.12); }
   .sb-dh2-link-viewed { color: #5b3e96; background: rgba(91,62,150,.12); }
