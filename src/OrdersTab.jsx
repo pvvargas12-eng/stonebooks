@@ -33,6 +33,7 @@ import {
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
   logOrderActivity, getCurrentStaffName,
+  properName,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
@@ -161,10 +162,9 @@ const DEFAULT_COLS = [
 ]
 const COL_RESIZE = { position: 'absolute', top: 0, right: 0, width: 7, height: '100%', cursor: 'col-resize', userSelect: 'none', zIndex: 2 }
 
-// Display-only title-casing (never alters stored data). Caps the first letter of
-// each word/part — handles spaces, hyphens, apostrophes. "BARRY LEDERMAN" →
-// "Barry Lederman"; "IVANCHENKO" → "Ivanchenko"; "SMITH-JONES" → "Smith-Jones".
-const titleCaseName = (s) => String(s || '').toLowerCase().replace(/(^|[\s'’-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase())
+// Display-only name casing now routes through the canonical properName helper
+// (lib/stonebooksData) — title-cases ALL-CAPS / all-lowercase input, preserves
+// deliberate mixed case (McDonald, O'Brien). Never alters stored data.
 
 // +5 months for a new_stone due-date default (the contract+5mo rule). Pure
 // local date math (no UTC drift): returns 'YYYY-MM-DD' or null.
@@ -810,7 +810,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     const r = await bulkSetOrderStatus([o.id], target)
     if (!r?.ok) {
       patchOrderLocal(o.id, { status: prev })
-      showBoardToast({ error: true, text: `Couldn't move ${titleCaseName(o._familyName)} — nothing was changed.` })
+      showBoardToast({ error: true, text: `Couldn't move ${properName(o._familyName)} — nothing was changed.` })
       return
     }
     logOrderActivity(o.id, {
@@ -822,8 +822,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     const stillLead = !((o._paid ?? 0) > 0)
     showBoardToast({
       text: stillLead
-        ? `${titleCaseName(o._familyName)} is now ${statusInfo(target).label} — stays under Leads until a deposit is recorded.`
-        : `${titleCaseName(o._familyName)} moved to ${statusInfo(target).label}.`,
+        ? `${properName(o._familyName)} is now ${statusInfo(target).label} — stays under Leads until a deposit is recorded.`
+        : `${properName(o._familyName)} moved to ${statusInfo(target).label}.`,
       undo: async () => {
         clearTimeout(boardToastTimer.current); setBoardToast(null)
         patchOrderLocal(o.id, { status: prev })
@@ -1408,7 +1408,7 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
 
 function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlinePermit, onInlineDate, onInlineSigned, onInlineTotal, busy, showScope = false }) {
   const hasJob = !!o._job
-  const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
+  const custName = [o.customer?.first_name, o.customer?.last_name].map(properName).filter(Boolean).join(' ')
 
   const blocker = o._pressure?.blocker || null
   return (
@@ -1422,7 +1422,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Family (click → detail) — carries the blocker pill + call flag */}
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
-          <span className="sb-crm-primary sb-ord-cust-name">{titleCaseName(o._familyName)}</span>
+          <span className="sb-crm-primary sb-ord-cust-name">{properName(o._familyName)}</span>
           {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
         {/* Pills live UNDER the name, never beside it — the wide LEAD banner
@@ -1472,7 +1472,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Customer name (full first + last, title-cased, shown in full — no truncation) */}
       <div style={{ minWidth: 0 }}>
         <span className="sb-crm-secondary" style={{ fontSize: 13, display: 'block', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
-          {custName ? titleCaseName(custName) : <span className="sb-crm-muted">—</span>}
+          {custName || <span className="sb-crm-muted">—</span>}
         </span>
       </div>
 
@@ -1630,7 +1630,7 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
       onClick={() => onOpen(o.id)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(o.id) } }}>
       <div className="sb-kb-card-top">
-        <span className="sb-kb-card-name">{titleCaseName(o._familyName)}</span>
+        <span className="sb-kb-card-name">{properName(o._familyName)}</span>
         <span className="sb-kb-card-num">{o.order_number || 'DRAFT'}</span>
       </div>
       {o.cemetery?.name && <div className="sb-kb-card-cem">{o.cemetery.name}</div>}

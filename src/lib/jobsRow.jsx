@@ -10,7 +10,7 @@
 // defined globally by src/lib/crmTheme.js; no styles ship from this file.
 // =============================================================================
 
-import { fmtUSD, fmtRelative, designStatusLabel, stoneStatusLabel, fdnStatusLabel } from './stonebooksData'
+import { fmtUSD, fmtRelative, designStatusLabel, stoneStatusLabel, fdnStatusLabel, properName } from './stonebooksData'
 import { paymentTone, paymentLabel } from './crmTheme'
 import { Pill, ProgressMicroBar } from './crmComponents.jsx'
 import { ROW_GRID, mapStageToTone, jobTypeLabel } from './jobsRowHelpers'
@@ -37,9 +37,9 @@ export function JobRow({ job: j, onOpen }) {
           aren't stone-shaped — calling an inscription "Stone TBD" misreads
           as missing data when the work is actually well-defined. */}
       <div>
-        <div className="sb-crm-primary">{j._familyName}</div>
+        <div className="sb-crm-primary">{properName(j._familyName)}</div>
         <div className="sb-crm-secondary">
-          {j._deceasedLabel || jobTypeLabel(j.job_type, j._order?.service_types)}
+          {properName(j._deceasedLabel) || jobTypeLabel(j.job_type, j._order?.service_types)}
         </div>
       </div>
 

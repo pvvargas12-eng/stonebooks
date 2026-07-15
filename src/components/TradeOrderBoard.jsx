@@ -23,6 +23,7 @@ import {
 import {
   getCurrentStaffName, uploadProofLayout, createProofVersion,
   setComponentOnFloor, getComponentsForJobs, seedComponentsForTradeJob, setJobOverallStatus,
+  properName,
 } from '../lib/stonebooksData'
 import { trackPhases, phaseLabel as compPhaseLabel } from '../lib/jobComponents'
 
@@ -432,7 +433,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
               <div key={r.id} className={`sb-tb-rowwrap${open ? ' open' : ''}`}>
                 <div className={`sb-tb-row${staffView ? ' staff' : ''}${r.rush_status === 'approved' ? ' sb-tb-row-rush' : ''}`} onClick={() => toggleExpand(r)} role="button" tabIndex={0}
                   onKeyDown={e => { if (e.key === 'Enter') toggleExpand(r) }}>
-                  <span className="sb-tb-fam">{familyOf(r)} {rushPill(r)} {r.needs_reaccept && staffView && <span className="sb-tb-pill sb-tb-rushq" title="Edited after accept — needs re-accept">RE-ACCEPT</span>}</span>
+                  <span className="sb-tb-fam">{properName(familyOf(r))} {rushPill(r)} {r.needs_reaccept && staffView && <span className="sb-tb-pill sb-tb-rushq" title="Edited after accept — needs re-accept">RE-ACCEPT</span>}</span>
                   {staffView && <span className="sb-tb-co">{r.partner?.company_name || '—'}</span>}
                   <span className="sb-tb-num">{orderNumOf(r) || '—'}</span>
                   <span className="sb-tb-svc">{servicesOf(r)}</span>
@@ -586,7 +587,7 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                         <div className="sb-tb-dl">Items</div>
                         {(r.items || []).length === 0 ? <div className="sb-tb-dim">No items.</div> : (r.items || []).map(it => (
                           <div key={it.id} className="sb-tb-item">
-                            <b>{it.deceased_family_name || it.vendor_reference || tradeServiceLabel(it.work_type)}</b>
+                            <b>{properName(it.deceased_family_name) || it.vendor_reference || tradeServiceLabel(it.work_type)}</b>
                             <span className="sb-tb-dim">
                               {[it.stone_size && `Stone ${it.stone_size}`, it.base_size && `Base ${it.base_size}`, it.location && `Location ${it.location}`, it.color, it.cemetery].filter(Boolean).join(' · ') || '—'}
                             </span>

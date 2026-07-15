@@ -21,7 +21,7 @@ import { supabase } from './lib/supabase'
 import {
   fetchAllPaged, recordOrderPayment, recordOutgoingPayment, listOutgoingPayments,
   listRecurringBills, createRecurringBill, OUTGOING_CATEGORIES,
-  fmtUSD, fmtDate, customerName, getCurrentStaffName,
+  fmtUSD, fmtDate, customerName, getCurrentStaffName, properName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
   missingCheckRef,
 } from './lib/stonebooksData'
@@ -330,7 +330,7 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
           : rows.map(r => (
             <div role="button" tabIndex={0} key={r.key} className="sb-pay-row sb-pay-row-data" onClick={() => onOpenOrder?.(r.orderId)} onKeyDown={e => { if (e.key === 'Enter') onOpenOrder?.(r.orderId) }} title="Open order">
               <div>{r.dateISO ? fmtDate(r.dateISO) : '—'}</div>
-              <div className="sb-pay-name">{r.name}</div>
+              <div className="sb-pay-name">{properName(r.name)}</div>
               <div className="sb-pay-mono">{r.orderNumber || '—'}</div>
               <div>{inMethodLabel(r.method)}</div>
               <div className="num sb-pay-amt">{fmtUSD(r.amount)}</div>
@@ -352,7 +352,7 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
           : openBalances.length === 0 ? <div className="sb-pay-empty">No open balances — everything's collected.</div>
           : openBalances.map(b => (
             <div key={b.order.id} className="sb-pay-row sb-pay-bal-row sb-pay-row-data2">
-              <button type="button" className="sb-pay-bal-name" onClick={() => onOpenOrder?.(b.order.id)}>{b.name}</button>
+              <button type="button" className="sb-pay-bal-name" onClick={() => onOpenOrder?.(b.order.id)}>{properName(b.name)}</button>
               <span className="sb-pay-mono">{b.order.order_number || '—'}</span>
               <span className="num sb-pay-amt">{fmtUSD(b.balance)}</span>
               <button type="button" className="sb-pay-bal-log" onClick={() => onLogFor(b.order)}>Log payment</button>
@@ -512,7 +512,7 @@ function EstimatesView({ loading, rows, onOpenOrder, onContact }) {
           : rows.length === 0 ? <div className="sb-pay-empty">No open estimates right now.</div>
           : rows.map(e => (
             <div key={e.order.id} className="sb-pay-row sb-pay-est-row">
-              <button type="button" className="sb-pay-bal-name" onClick={() => onOpenOrder?.(e.order.id)}>{e.name}</button>
+              <button type="button" className="sb-pay-bal-name" onClick={() => onOpenOrder?.(e.order.id)}>{properName(e.name)}</button>
               <span className="sb-pay-mono">{e.order.order_number || '—'}</span>
               <span className="num sb-pay-amt">{fmtUSD(e.value)}</span>
               <span className={`num sb-pay-age ${e.ageDays >= 30 ? 'stale' : ''}`}>{e.ageDays}d</span>
@@ -580,7 +580,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
         {saved ? (
           <>
             <div className="sb-pay-confirm-note" style={{ background: '#e6f4ec', borderColor: '#2d7a4f', color: '#2d7a4f' }}>
-              Recorded {fmtUSD(Number(saved.payment.amount) || 0)} ({inMethodLabel(saved.payment.method)}){pick ? ` against ${orderName(pick)}` : ''}.
+              Recorded {fmtUSD(Number(saved.payment.amount) || 0)} ({inMethodLabel(saved.payment.method)}){pick ? ` against ${properName(orderName(pick))}` : ''}.
             </div>
             <ReceiptActions order={saved.receiptOrder} payment={saved.payment} />
             <div className="sb-pay-modal-actions">
@@ -596,7 +596,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
               <div className="sb-pay-order-results">
                 {matches.map(o => (
                   <button type="button" key={o.id} className="sb-pay-order-result" onClick={() => { setPick(o); setConfirm(false) }}>
-                    <span className="sb-pay-name">{orderName(o)}</span>
+                    <span className="sb-pay-name">{properName(orderName(o))}</span>
                     <span className="sb-pay-mono">{o.order_number || '—'}</span>
                   </button>
                 ))}
@@ -606,7 +606,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
         ) : (
           <div className="sb-pay-picked">
             <div>
-              <div className="sb-pay-name">{orderName(pick)}</div>
+              <div className="sb-pay-name">{properName(orderName(pick))}</div>
               <div className="sb-pay-mono sb-pay-picked-num">{pick.order_number} · balance {fmtUSD(pickBalance)}</div>
             </div>
             <button type="button" className="sb-pay-change" onClick={() => { setPick(null); setConfirm(false) }}>Change</button>
@@ -646,7 +646,7 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
 
         {error && <div className="sb-pay-error">{error}</div>}
         {confirm && !error && (
-          <div className="sb-pay-confirm-note">Record {fmtUSD(Number(amount) || 0)} ({inMethodLabel(method)}) against {pick ? orderName(pick) : 'this order'}?</div>
+          <div className="sb-pay-confirm-note">Record {fmtUSD(Number(amount) || 0)} ({inMethodLabel(method)}) against {pick ? properName(orderName(pick)) : 'this order'}?</div>
         )}
         <div className="sb-pay-modal-actions">
           <button type="button" className="sb-pay-cancel" onClick={onClose} disabled={busy}>Cancel</button>
@@ -745,7 +745,7 @@ function LogOutgoingModal({ orders, onClose, onLogged }) {
           <label>Link to a job / order <span className="sb-pay-optional">optional — makes it a cost on that order</span></label>
           {orderLink ? (
             <div className="sb-pay-picked">
-              <div><div className="sb-pay-name">{orderName(orderLink)}</div><div className="sb-pay-mono sb-pay-picked-num">{orderLink.order_number}</div></div>
+              <div><div className="sb-pay-name">{properName(orderName(orderLink))}</div><div className="sb-pay-mono sb-pay-picked-num">{orderLink.order_number}</div></div>
               <button type="button" className="sb-pay-change" onClick={() => setOrderLink(null)}>Remove</button>
             </div>
           ) : (
@@ -755,7 +755,7 @@ function LogOutgoingModal({ orders, onClose, onLogged }) {
                 <div className="sb-pay-order-results">
                   {matches.map(o => (
                     <button type="button" key={o.id} className="sb-pay-order-result" onClick={() => { setOrderLink(o); setOrderSearch('') }}>
-                      <span className="sb-pay-name">{orderName(o)}</span><span className="sb-pay-mono">{o.order_number || '—'}</span>
+                      <span className="sb-pay-name">{properName(orderName(o))}</span><span className="sb-pay-mono">{o.order_number || '—'}</span>
                     </button>
                   ))}
                 </div>

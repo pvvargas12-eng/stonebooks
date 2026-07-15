@@ -18,6 +18,7 @@ import {
   URGENCY,
   fmtDate,
   customerName,
+  properName,
   teamInfo,
   projectJobDates,
   compareMilestoneDates,
@@ -193,7 +194,7 @@ export default function JobsQueueRow({
 
       <div className="sb-queue-row-identity">
         <div className="sb-queue-row-primary">
-          <span className="sb-queue-row-name">{surname}</span>
+          <span className="sb-queue-row-name">{properName(surname)}</span>
           {orderNum && <span className="sb-queue-row-id">#{orderNum}</span>}
           {row.department && (
             <span className="sb-queue-row-dept" aria-label={`Owned by ${row.department}`}>

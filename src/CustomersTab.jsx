@@ -18,7 +18,7 @@ import {
   updateCustomer, updateCustomerNotes,
   getJobs,
   rowGrandTotal, rowTotalPaid, statusInfo,
-  customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative, maskPhoneInput, phoneDigits,
+  customerName, customerInitials, fmtUSD, fmtDate, fmtPhone, fmtRelative, maskPhoneInput, phoneDigits, properName,
   computeOrderPressure,
   ACTIVE_STATUSES, SOLD_STATUSES,
   bulkArchiveCustomers, bulkRestoreCustomers,
@@ -720,10 +720,10 @@ function CustomerRow({ customer: c, indexInFiltered, selected, onToggle, onOpen 
 
       {/* FAMILY / STONE — click → detail */}
       <button type="button" className="sb-tw-cust" onClick={() => onOpen?.(c.id)}>
-        <div className="sb-crm-primary">{c._familyName}</div>
+        <div className="sb-crm-primary">{properName(c._familyName)}</div>
         <div className="sb-crm-secondary">
           {c._deceasedLabel
-            ? c._deceasedLabel
+            ? properName(c._deceasedLabel)
             : c._primary
               ? 'Stone TBD'                       /* Q10: primary exists but deceased not filled */
               : c._ordersCount > 1 ? `${c._ordersCount} orders on file` : 'No order yet'}
@@ -743,7 +743,7 @@ function CustomerRow({ customer: c, indexInFiltered, selected, onToggle, onOpen 
       {/* CONTACT — actual person you call */}
       <div onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 13, color: CRM.ink }}>
-          {[c.first_name, c.last_name].filter(Boolean).join(' ').trim() || '—'}
+          {[c.first_name, c.last_name].map(properName).filter(Boolean).join(' ').trim() || '—'}
         </div>
         {c.phone_primary && (
           <a className="sb-crm-tel" href={`tel:${c.phone_primary}`}>

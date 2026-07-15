@@ -11,7 +11,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  listCheckJobTasks, setShopTaskStatus, deleteShopTask, getCurrentStaffName, fmtDate,
+  listCheckJobTasks, setShopTaskStatus, deleteShopTask, getCurrentStaffName, fmtDate, properName,
 } from './lib/stonebooksData'
 
 const pad = (n) => String(n).padStart(2, '0')
@@ -60,7 +60,7 @@ export default function CheckJobsBoard({ onOpenOrderDetail }) {
             <span className="cjb-cem">{d.cemeteryName || 'No cemetery set'}</span>
             {t.order && (
               <button type="button" className="cjb-ord" onClick={() => onOpenOrderDetail?.(t.order.id)}>
-                {t.order.primary_lastname || t.order.order_number || 'Open lead/order'}
+                {properName(t.order.primary_lastname) || t.order.order_number || 'Open lead/order'}
               </button>
             )}
             {late && <span className="cjb-late">{daysLate(t.due_date, todayISO)}d late</span>}
