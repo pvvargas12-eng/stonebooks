@@ -1235,12 +1235,26 @@ export async function setOrderFamilyName(orderId, lastName) {
   return { ok: true }
 }
 
+// A closed order's JOB must leave every work queue too — Reconcile and the
+// closeout email used to close only the order, stranding 43 active jobs on
+// closed orders (found 2026-07-15). Best-effort: a jobs miss never fails the
+// order close.
+async function _closeJobsForOrders(orderIds) {
+  const ids = (orderIds || []).filter(Boolean)
+  if (!ids.length) return
+  const { error } = await supabase.from('jobs')
+    .update({ overall_status: 'closed', closed_at: new Date().toISOString(), last_update_at: new Date().toISOString() })
+    .in('order_id', ids).neq('overall_status', 'closed')
+  if (error) console.warn('[jobs] close-with-order:', error.message)
+}
+
 export async function closeOrder(orderId) {
   if (!orderId) return { ok: false, error: 'Missing order' }
   const { error } = await supabase.from('orders')
     .update({ status: 'closed', updated_at: new Date().toISOString() })
     .eq('id', orderId).eq('tenant_id', TENANT_ID)
   if (error) { console.warn('[orders] closeOrder:', error.message); return { ok: false, error: error.message } }
+  await _closeJobsForOrders([orderId])
   return { ok: true }
 }
 
@@ -1253,6 +1267,7 @@ export async function bulkCloseOrders(orderIds = []) {
     .update({ status: 'closed', updated_at: new Date().toISOString() })
     .in('id', ids).eq('tenant_id', TENANT_ID).select('id')
   if (error) { console.warn('[orders] bulkCloseOrders:', error.message); return { ok: false, error: error.message } }
+  await _closeJobsForOrders(ids)
   return { ok: true, count: data?.length || 0 }
 }
 
