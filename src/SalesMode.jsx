@@ -11595,7 +11595,7 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
       createdAt: new Date().toISOString(),                // full ISO, ledger-sort key
       createdBy: order.salesRep || null,
       note: null,
-      locked: false,    // Phase 2.1 — new payments start as drafts
+      locked: true,     // Paul 2026-07-15: owner-review step removed — a recorded payment COUNTS immediately (the Kovacs check sat in draft and the paid-in-full order never left Leads). Draft/Submit plumbing kept dormant for if review ever comes back.
       voided: false,
       voidedReason: null,
       voidedAt: null,
