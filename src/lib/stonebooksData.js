@@ -6,6 +6,7 @@
 // =============================================================================
 
 import { supabase } from './supabase'
+import { pokePushSender } from './pushPoke'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
 import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
@@ -3062,6 +3063,7 @@ export async function addShopTask({
   const { data, error } = await supabase.from('shop_tasks')
     .insert(row).select(TASK_SELECT).single()
   if (error) return { ok: false, error: error.message }
+  pokePushSender()   // near-instant phone notification for the assignee
   return { ok: true, task: data, row: data }
 }
 
@@ -3151,6 +3153,7 @@ export async function addTaskReply(taskId, body, author) {
   const { data, error } = await supabase.from('shop_task_replies')
     .insert({ task_id: taskId, body: b, author: author || null }).select().single()
   if (error) return { ok: false, error: error.message }
+  pokePushSender()   // near-instant phone notification for the other side
   return { ok: true, reply: data }
 }
 export async function markReplyHandled(id, by = null) {

@@ -17,6 +17,7 @@ import { listShopTasks } from '../lib/stonebooksData'
 import { loadEmployees } from '../lib/employees'
 import { useUndoToast, FIELD_CSS } from './fieldUndo'
 import { getFieldWho, setFieldWho, clearFieldWho, pickerCandidates } from './fieldIdentity'
+import { getPushState, enablePush, disablePush, syncPushOnLaunch } from './fieldPush'
 import UndoToast from './UndoToast'
 import TodayScreen from './TodayScreen'
 import TasksScreen from './TasksScreen'
@@ -80,6 +81,47 @@ function WhoPicker({ onPick }) {
       </div>
       <div className="fl-who-note">This sticks on this phone. Every status tap and task will carry your name.</div>
     </div>
+  )
+}
+
+// ── Notifications row in the header menu — the settings surface for push ────
+function NotifMenuRow({ who }) {
+  const [st, setSt] = useState(null)   // null loading | fieldPush state
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    getPushState().then(r => { if (!cancelled) setSt(r.state) })
+    return () => { cancelled = true }
+  }, [])
+  const toggle = async () => {
+    if (busy || st === null) return
+    setBusy(true); setNote(null)
+    if (st === 'on') {
+      await disablePush()
+      setSt('off')
+    } else {
+      const r = await enablePush(who)
+      if (r.ok) setSt('on')
+      else if (r.error === 'denied') setSt('denied')
+      else if (r.error !== 'dismissed') setNote(r.error)
+    }
+    setBusy(false)
+  }
+  if (st === 'unsupported') return null
+  if (st === 'needs-install') {
+    return <div className="fl-menu-note">For notifications, add the app to your Home Screen first (Share → Add to Home Screen).</div>
+  }
+  if (st === 'denied') {
+    return <div className="fl-menu-note">Notifications are blocked for this app — allow them in the phone&#8217;s Settings.</div>
+  }
+  return (
+    <>
+      <button type="button" disabled={busy || st === null} onClick={toggle}>
+        {st === null ? 'Notifications…' : st === 'on' ? 'Notifications: on' : 'Turn on notifications'}
+      </button>
+      {note && <div className="fl-menu-note">{note}</div>}
+    </>
   )
 }
 
@@ -165,6 +207,37 @@ export default function FieldApp() {
   const goTab = (k) => { setDrill(null); setMenuOpen(false); setTab(k) }
   const openTask = useCallback((taskId) => { setDrill(null); setTaskFocus(taskId); setTab('tasks') }, [])
 
+  // FIELD-PUSH upkeep, once identity resolves: refresh this phone's
+  // subscription row (re-keys it when the phone switched person), clear the
+  // home-screen badge, and honor a ?task= deep link — a notification tap that
+  // cold-started the app lands directly on that task.
+  useEffect(() => {
+    if (!who) return
+    syncPushOnLaunch(who)
+    const params = new URLSearchParams(window.location.search)
+    const taskId = params.get('task')
+    if (taskId) {
+      window.history.replaceState(null, '', window.location.pathname)
+      openTask(taskId)
+    }
+  }, [who, openTask])
+
+  // A notification tap while the app is already open arrives as a message
+  // from sw.js (focus + postMessage — no reload).
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onMsg = (e) => {
+      if (!e.data || e.data.type !== 'sb-field-open') return
+      try {
+        const u = new URL(e.data.url, window.location.origin)
+        const taskId = u.searchParams.get('task')
+        if (taskId) openTask(taskId)
+      } catch { /* bad url — ignore */ }
+    }
+    navigator.serviceWorker.addEventListener('message', onMsg)
+    return () => navigator.serviceWorker.removeEventListener('message', onMsg)
+  }, [openTask])
+
   const onCapturePick = (e) => {
     const f = e.target.files && e.target.files[0]
     e.target.value = ''
@@ -211,6 +284,7 @@ export default function FieldApp() {
         {menuOpen && (
           <div className="fl-menu">
             <div className="fl-menu-role">{isOwner ? 'Owner build' : (who.department ? `${who.department} crew` : 'Crew build')}</div>
+            <NotifMenuRow who={who} />
             <button type="button" onClick={() => { setMenuOpen(false); clearFieldWho(); setWho(null) }}>Switch person</button>
             <button type="button" onClick={() => { clearFieldWho(); signOut() }}>Sign out</button>
           </div>

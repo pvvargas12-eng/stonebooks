@@ -3,11 +3,13 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "crons": [
-    { "path": "/api/email/sync", "schedule": "*/3 * * * *" }
+    { "path": "/api/email/sync", "schedule": "*/3 * * * *" },
+    { "path": "/api/push/send", "schedule": "*/5 * * * *" }
   ],
   "functions": {
     "api/email/sync.js": { "maxDuration": 300 },
     "api/email/send.js": { "maxDuration": 30 },
-    "api/email/attachment.js": { "maxDuration": 60 }
+    "api/email/attachment.js": { "maxDuration": 60 },
+    "api/push/send.js": { "maxDuration": 60 }
   }
 }

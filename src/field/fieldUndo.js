@@ -282,6 +282,16 @@ export const FIELD_CSS = `
   .fl-menu-role { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #8A7F6C; padding: 8px 12px 6px; }
   .fl-menu button { display: block; width: 100%; text-align: left; background: none; border: none; font-family: inherit; font-size: 14.5px; font-weight: 600; color: #16150F; padding: 12px; border-radius: 9px; cursor: pointer; min-height: 44px; }
   .fl-menu button:active { background: #F5F3EE; }
+  .fl-menu-note { font-size: 12px; color: #6B6456; padding: 10px 12px; max-width: 230px; line-height: 1.45; }
+
+  /* Push enable card (Today) */
+  .fl-push-card { background: #0F1419; border-radius: 14px; padding: 14px; margin-top: 14px; }
+  .fl-push-title { font-family: Fraunces, Georgia, serif; font-size: 17px; font-weight: 600; color: #F2EDE2; }
+  .fl-push-body { font-size: 12.5px; color: #B9B29E; line-height: 1.5; margin-top: 4px; }
+  .fl-push-err { font-size: 12px; color: #E58B84; margin-top: 8px; }
+  .fl-push-row { display: flex; gap: 8px; margin-top: 12px; }
+  .fl-push-row .fl-btn { margin-bottom: 0; flex: 1; padding: 12px; }
+  .fl-push-row .fl-btn.fl-btn-ghost { background: transparent; color: #B9B29E; border-color: rgba(226,220,206,0.25); }
 
   .fl-who-list { display: flex; flex-direction: column; gap: 8px; }
   .fl-who-row { display: flex; align-items: center; gap: 12px; background: #fff; border: 1px solid #E2DCCE; border-radius: 14px; padding: 11px 14px; font-family: inherit; cursor: pointer; min-height: 60px; text-align: left; }

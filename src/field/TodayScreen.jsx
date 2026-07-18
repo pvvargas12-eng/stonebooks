@@ -15,6 +15,7 @@ import {
   listAllApprovalLinks, fmtUSD, rowBalanceDue,
 } from '../lib/stonebooksData'
 import { familyNameOf, directionsUrl, BATCH_KIND_CHIP, todayISO } from './fieldShared'
+import { getPushState, enablePush, isPushCardDismissed, dismissPushCard } from './fieldPush'
 
 // ── date helpers — only ever called from useMemo bodies / handlers ──────────
 function dueChipFor(t, today) {
@@ -259,6 +260,8 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
       <div className="fl-greet">{greet.part}, {who.name}.</div>
       <div className="fl-greet-sub">{sub}</div>
 
+      <PushCard who={who} />
+
       {isOwner ? (
         <>
           <NeedsYouLane items={needsYou} />
@@ -276,6 +279,63 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
       <MyTasks items={myTasks} doneIds={doneIds} onMarkDone={markDone}
         onOpenTask={onOpenTask} onOpenTab={onOpenTab} onNewTask={onNewTask}
         openCount={myOpenCount} />
+    </div>
+  )
+}
+
+// ── Push enable card — both builds, shows until on / blocked / dismissed ────
+// iOS quirk baked into the flow: Safari only exposes push to an INSTALLED PWA,
+// so a phone still in the browser tab gets Add-to-Home-Screen instructions
+// instead of a button that can't work.
+function PushCard({ who }) {
+  const [st, setSt] = useState(null)          // null loading | fieldPush state
+  const [busy, setBusy] = useState(false)
+  const [cardErr, setCardErr] = useState(null)
+  const [hidden, setHidden] = useState(() => isPushCardDismissed())
+  useEffect(() => {
+    let cancelled = false
+    getPushState().then(r => { if (!cancelled) setSt(r.state) })
+    return () => { cancelled = true }
+  }, [])
+  if (hidden || st === null || st === 'on' || st === 'denied' || st === 'unsupported') return null
+  const dismiss = () => { dismissPushCard(); setHidden(true) }
+  const turnOn = async () => {
+    if (busy) return
+    setBusy(true); setCardErr(null)
+    const r = await enablePush(who)
+    setBusy(false)
+    if (r.ok) setSt('on')
+    else if (r.error === 'denied') setSt('denied')
+    else if (r.error !== 'dismissed') setCardErr(r.error)
+  }
+  return (
+    <div className="fl-push-card">
+      <div className="fl-push-title">Get task alerts on this phone</div>
+      {st === 'needs-install' ? (
+        <>
+          <div className="fl-push-body">
+            First add the app to your Home Screen — tap Share, then
+            &#8220;Add to Home Screen&#8221; — and turn alerts on from there.
+          </div>
+          <div className="fl-push-row">
+            <button type="button" className="fl-btn fl-btn-ghost" onClick={dismiss}>Got it</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="fl-push-body">
+            New tasks and replies land here the moment they&#8217;re sent,
+            plus a morning heads-up on what&#8217;s due.
+          </div>
+          {cardErr && <div className="fl-push-err">{cardErr}</div>}
+          <div className="fl-push-row">
+            <button type="button" className="fl-btn fl-btn-gold" disabled={busy} onClick={turnOn}>
+              {busy ? 'Turning on…' : 'Turn on'}
+            </button>
+            <button type="button" className="fl-btn fl-btn-ghost" onClick={dismiss}>Not now</button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
