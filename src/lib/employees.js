@@ -130,6 +130,7 @@ export async function updateEmployee(id, patch) {
   if ('department' in patch) allowed.department = patch.department || null
   if ('isActive' in patch) allowed.is_active = !!patch.isActive
   if ('sortOrder' in patch) allowed.sort_order = patch.sortOrder
+  if ('isOwner' in patch) allowed.is_owner = !!patch.isOwner   // FIELD-2: owner build flag
   const { error } = await supabase.from('employees').update(allowed).eq('id', id)
   if (error) {
     if (error.code === '23505') return { ok: false, error: 'That name is already on the roster.' }

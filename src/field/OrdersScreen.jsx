@@ -6,7 +6,9 @@ import { supabase } from '../lib/supabase'
 import { rowBalanceDue, fmtUSD, customerName } from '../lib/stonebooksData'
 import { isLeadRaw } from './fieldShared'
 
-export default function OrdersScreen({ onOpenJob }) {
+// FIELD-2: showMoney gates the balance block — the crew build passes false
+// (LEAD pill stays; it carries no amount).
+export default function OrdersScreen({ onOpenJob, showMoney = true }) {
   const [orders, setOrders] = useState(null)
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
@@ -61,9 +63,11 @@ export default function OrdersScreen({ onOpenJob }) {
               <div className="fl-fam">{fam}{isLeadRaw(o) && <span className="fl-chip fl-c-lead" style={{ marginLeft: 8, verticalAlign: 'middle' }}>LEAD</span>}</div>
               <div className="fl-spec">{[o.order_number || 'DRAFT', o.cemetery?.name].filter(Boolean).join(' · ')}</div>
             </div>
-            <div className="fl-inv-qty" style={{ fontSize: 13 }}>
-              <small>BALANCE</small>{fmtUSD(bal)}
-            </div>
+            {showMoney && (
+              <div className="fl-inv-qty" style={{ fontSize: 13 }}>
+                <small>BALANCE</small>{fmtUSD(bal)}
+              </div>
+            )}
             <span className="fl-chev">&#8250;</span>
           </button>
         )

@@ -13,13 +13,15 @@ import {
   STONE_STATUS, FDN_STATUS, deriveStoneStatus, deriveFdnStatus, stoneStatusOptions, statusDimApplies,
   setOrderStoneStatus, setOrderFdnStatus,
   getProofVersions, getProofVersionsByOrder,
-  uploadOrderAttachment, customerName, getCurrentStaffName, fmtUSD, rowBalanceDue,
+  uploadOrderAttachment, customerName, getActiveStaffUser, fmtUSD, rowBalanceDue,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { buildDieSpec, buildBaseSpec, displayGraniteColor, composeGraveLocation } from '../lib/monumentCatalog'
 import { isLeadRaw, directionsUrl } from './fieldShared'
 
-export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, undo }) {
+// FIELD-2: showMoney gates the LEAD banner's balance line — crew builds pass
+// false and get the warning without the amount.
+export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, undo, showMoney = true }) {
   const [order, setOrder] = useState(null)     // raw row + customer/cemetery
   const [job, setJob] = useState(undefined)    // undefined=loading, null=no job
   const [proofImg, setProofImg] = useState(null)
@@ -83,7 +85,7 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
       {lead && (
         <div className="fl-lead-banner">
           <b>STILL A LEAD — NO DEPOSIT RECEIVED</b>
-          <span>Balance {fmtUSD(rowBalanceDue(order))}. Check with the office before leaving product.</span>
+          <span>{showMoney ? `Balance ${fmtUSD(rowBalanceDue(order))}. ` : ''}Check with the office before leaving product.</span>
         </div>
       )}
 
@@ -266,7 +268,7 @@ function MarkSpotForm({ order, onSaved, onCancel, undo }) {
       note: note.trim() || null,
       photoUrl,
       markedAt: new Date().toISOString(),
-      markedBy: getCurrentStaffName() || null,
+      markedBy: getActiveStaffUser() || null,
     }
     const { error } = await supabase.from('orders').update({ field_location: next }).eq('id', order.id)
     setBusy(false)

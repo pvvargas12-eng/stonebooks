@@ -165,6 +165,19 @@ function EmployeeRow({ row, canEdit, busy, run }) {
         <option value="">No department</option>
         {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
       </select>
+      {/* FIELD-2: which build the phone app gives this person */}
+      <label className="sb-emp-owner" title="Owner build shows money on the phone app; crew build never does.">
+        <input
+          type="checkbox"
+          checked={!!row.is_owner}
+          disabled={busy}
+          onChange={e => run(
+            () => updateEmployee(row.id, { isOwner: e.target.checked }),
+            `${row.name} ${e.target.checked ? 'now gets the owner phone app' : 'now gets the crew phone app'}`
+          )}
+        />
+        Owner app
+      </label>
       <button
         type="button"
         className="sb-link sb-link-danger"
@@ -189,6 +202,7 @@ const CSS = `
 .sb-emp-name-ro { flex: 1; max-width: 220px; font-weight: 500; }
 .sb-emp-name-off { flex: 1; max-width: 220px; text-decoration: line-through; }
 .sb-emp-dept { width: 170px; }
+.sb-emp-owner { display: flex; align-items: center; gap: 6px; font-size: 12.5px; opacity: 0.9; white-space: nowrap; cursor: pointer; }
 .sb-emp-dept-tag { width: 170px; opacity: 0.75; font-size: 13px; }
 .sb-emp-add { display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px solid rgba(128,128,128,0.25); }
 .sb-emp-add .sb-input { max-width: 220px; }

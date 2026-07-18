@@ -1,5 +1,16 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint FIELD-2 (2026-07-18) — SHIPPED
+
+Role-aware rebuild of the /field phone PWA to the approved "Stonebooks Field" prototype (design artifact + full specs generated in the 2026-07-18 ultracode session; multi-agent build + adversarially-reviewed, 16 findings fixed pre-commit).
+
+- **Identity + roles:** migration `20260718_field_owner_flag.sql` ✅ APPLIED (employees.is_owner, Paul=true). After the shared staff sign-in, each phone picks its person once (WhoPicker → `sb_active_staff`, the desktop's identity key — every actor stamp app-wide now names the real person). `src/field/fieldIdentity.js` resolves `{name, department, isOwner}`; stale/deactivated names force a re-pick. Settings → Staff gained an "Owner app" checkbox (updateEmployee isOwner patch key).
+- **New shell (FieldApp.jsx):** tabs — crew: Today / Tasks / Jobs / Find; owner: Today / Tasks / Orders / Find; raised gold center action (crew = camera capture → CaptureSheet attach-to-task; owner = NewTaskSheet). Tasks tab carries a red due-badge (mine, due today/overdue, snooze-aware). Tab screens stay mounted (hidden) during a job drill so internal state survives. Old Installs/Production/Orders/Inventory screens all survive under the new chrome.
+- **New screens:** `TodayScreen` (crew: greeting, today's run card with featured next stop + Directions/Open stop + progress, my tasks with check-off; owner: Needs-you lane (proof edits → stale approvals ≥3d → overdue tasks, cap 5, "Nothing needs you." empty), today's runs with live stop dots, This-month money card (collected = separate all-orders payments query, MONEY_PULSE semantics; balance due = paged open-orders fetch), my tasks) · `TasksScreen` (Mine/Everyone/Done, task detail with reply thread + photo attach, check-job checklist card) · `WorkHubScreen` (queue tiles: Installations/Foundations/Check jobs/Production with counts) · `FoundationsScreen` (dig list grouped by cemetery, 4-stage indicator) · `FindScreen` (search + inventory; owner Orders tab) · `fieldSheets.jsx` (NewTaskSheet, CaptureSheet; onChanged bumps the shell's taskRev to refresh screens + badge).
+- **MONEY DOCTRINE:** crew builds render no dollar amounts — OrdersScreen + JobDetailScreen take `showMoney` (owner-only); LEAD banner keeps the warning, drops the figure for crew. (v1 is render-layer gating; query/RLS-layer exclusion is the flagged follow-up.)
+- **Fixed in passing:** JobDetailScreen's sync `getCurrentStaffName()` call (stamped a Promise) → `getActiveStaffUser()`; legacy `.fl-btn-gold/.fl-btn-ghost` modifier collision scoped; `.fl-toast` now layers above sheets (z-70).
+- **NEXT SLICE (specced, not built):** Web Push notifications — sw.js + VAPID + push_subscriptions + Vercel cron sender; per-person passwords via invite links (today all phones share the staff sign-in, then pick person). Full notification copy rulebook + IA in the session memory `project_shevco_field_redesign`.
+
 ## Sprint SALES-OPTIONS (2026-07-06) — SHIPPED
 
 Directive build: settings-managed sales options + gray overhaul + cemetery cleanup + header fix.
