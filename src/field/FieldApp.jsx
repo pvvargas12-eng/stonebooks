@@ -266,10 +266,12 @@ export default function FieldApp() {
   }
 
   const isOwner = who.isOwner
-  // Both builds share the five slots (owner asked for the Work hub back —
-  // FIELD-PUSH follow-up). The old owner ORDERS tab was a duplicate of FIND's
-  // Search seg, which stays the full orders list with money on the owner build.
-  const TAB_DEFS = [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['find', 'FIND']]
+  // Owner runs six slots — Paul wants the Work hub AND one-tap Orders on the
+  // bar. Crew keeps the approved five; their orders search lives under FIND
+  // (money hidden there by the crew build's mode).
+  const TAB_DEFS = isOwner
+    ? [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['orders', 'ORDERS'], ['find', 'FIND']]
+    : [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['find', 'FIND']]
 
   return (
     <div className="fl-shell">
@@ -315,6 +317,9 @@ export default function FieldApp() {
           )}
           {tab === 'jobs' && (
             <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask} />
+          )}
+          {tab === 'orders' && isOwner && (
+            <FindScreen who={who} undo={undo} onOpenJob={openJob} mode="orders" />
           )}
           {tab === 'find' && (
             <FindScreen who={who} undo={undo} onOpenJob={openJob} mode={isOwner ? 'search' : 'all'} />
