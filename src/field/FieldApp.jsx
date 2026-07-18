@@ -266,9 +266,10 @@ export default function FieldApp() {
   }
 
   const isOwner = who.isOwner
-  const TAB_DEFS = isOwner
-    ? [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['orders', 'ORDERS'], ['find', 'FIND']]
-    : [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['find', 'FIND']]
+  // Both builds share the five slots (owner asked for the Work hub back —
+  // FIELD-PUSH follow-up). The old owner ORDERS tab was a duplicate of FIND's
+  // Search seg, which stays the full orders list with money on the owner build.
+  const TAB_DEFS = [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['find', 'FIND']]
 
   return (
     <div className="fl-shell">
@@ -312,11 +313,8 @@ export default function FieldApp() {
               focusTaskId={taskFocus} onFocusConsumed={() => setTaskFocus(null)}
               onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev} />
           )}
-          {tab === 'jobs' && !isOwner && (
+          {tab === 'jobs' && (
             <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask} />
-          )}
-          {tab === 'orders' && isOwner && (
-            <FindScreen who={who} undo={undo} onOpenJob={openJob} mode="orders" />
           )}
           {tab === 'find' && (
             <FindScreen who={who} undo={undo} onOpenJob={openJob} mode={isOwner ? 'search' : 'all'} />

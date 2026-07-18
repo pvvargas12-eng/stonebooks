@@ -2,7 +2,9 @@
 // FindScreen — look anything up (orders search, plus yard inventory)
 // =============================================================================
 // FIELD-2: three builds off one file.
-//   mode 'orders' — owner Orders tab: straight orders search, money shown.
+//   mode 'orders' — straight orders search, money shown (currently unmounted —
+//                   the owner ORDERS tab folded into 'search' when the owner
+//                   build regained the Work hub).
 //   mode 'search' — owner Find tab: Search | Inventory seg, money shown.
 //   mode 'all'    — crew Find tab:  same seg, money hidden (LEAD pill stays).
 // =============================================================================
