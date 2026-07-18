@@ -1,14 +1,15 @@
 // =============================================================================
 // FieldApp.jsx — STONEBOOKS FIELD · the phone-first crew surface (/field)
 // =============================================================================
-// FIELD-2 shell (2026-07-18): role-aware rebuild to the approved prototype.
-// One sign-in, then a per-phone person pick (employees roster); the person's
-// is_owner flag resolves the build. Tabs — crew: Today / Tasks / Jobs / Find;
-// owner: Today / Tasks / Orders / Find; raised gold center action (crew:
-// camera capture -> attach; owner: new task). Shares the Supabase client +
-// stonebooksData helpers with the desktop and NOTHING else; the previous
-// screens (Installs, Production, Orders, Job detail, Complete, Inventory)
-// all survive underneath the new chrome.
+// FIELD-2 shell (2026-07-18): role-aware rebuild to the approved prototype,
+// nav reshaped same-day per Paul. One sign-in, then a per-phone person pick
+// (employees roster); the person's is_owner flag resolves the build. Tabs —
+// crew: Today / Tasks / [camera] / Jobs / Find (raised capture button);
+// owner: Today / Tasks / Jobs / Orders / Find — five plain slots, no center
+// CTA (new tasks come from the Tasks screen / Today's My-tasks card). Shares
+// the Supabase client + stonebooksData helpers with the desktop and NOTHING
+// else; the previous screens (Installs, Production, Orders, Job detail,
+// Complete, Inventory) all survive underneath the new chrome.
 // =============================================================================
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getSession, onAuthStateChange, signInWithPassword, signOut } from '../lib/auth'
@@ -132,7 +133,6 @@ const GLYPH = {
   orders: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3 h8 l4 4 v14 h-12 z" /><path d="M14 3 v4 h4" /><line x1="9" y1="12" x2="15" y2="12" /><line x1="9" y1="16" x2="15" y2="16" /></svg>,
   find: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="10.5" cy="10.5" r="6.5" /><line x1="15.5" y1="15.5" x2="21" y2="21" /></svg>,
   cam: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 8 h3 l2-2.5 h6 L17 8 h3 v11 H4 z" /><circle cx="12" cy="13" r="3.5" /></svg>,
-  plus: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
 }
 
 export default function FieldApp() {
@@ -266,11 +266,12 @@ export default function FieldApp() {
   }
 
   const isOwner = who.isOwner
-  // Owner runs six slots — Paul wants the Work hub AND one-tap Orders on the
-  // bar. Crew keeps the approved five; their orders search lives under FIND
-  // (money hidden there by the crew build's mode).
+  // Owner bar: five plain slots, NO raised center button (Paul's direction —
+  // new tasks are added from the Tasks screen and Today's My-tasks card, not
+  // a center CTA). Crew keeps the raised camera capture; their orders search
+  // lives under FIND (money hidden there by the crew build's mode).
   const TAB_DEFS = isOwner
-    ? [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['orders', 'ORDERS'], ['find', 'FIND']]
+    ? [['today', 'TODAY'], ['tasks', 'TASKS'], ['jobs', 'JOBS'], ['orders', 'ORDERS'], ['find', 'FIND']]
     : [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['find', 'FIND']]
 
   return (
@@ -348,9 +349,9 @@ export default function FieldApp() {
           if (t[0] === 'CENTER') {
             return (
               <div key="center" className="fl-cta-slot">
-                <button type="button" className="fl-cta" aria-label={isOwner ? 'New task' : 'Take a photo'}
-                  onClick={() => { isOwner ? setNewTaskOpen(true) : fileRef.current?.click() }}>
-                  {isOwner ? GLYPH.plus : GLYPH.cam}
+                <button type="button" className="fl-cta" aria-label="Take a photo"
+                  onClick={() => fileRef.current?.click()}>
+                  {GLYPH.cam}
                 </button>
               </div>
             )
