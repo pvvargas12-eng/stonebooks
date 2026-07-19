@@ -2,7 +2,8 @@
 // FindScreen — look anything up (orders search, plus yard inventory)
 // =============================================================================
 // FIELD-2: three builds off one file.
-//   mode 'orders' — owner ORDERS tab: straight orders search, money shown.
+//   mode 'orders' — unmounted legacy (the owner tab became SalesScreen with
+//                   the desktop's Orders | Leads | All views).
 //   mode 'search' — owner Find tab: Search | Inventory seg, money shown.
 //   mode 'all'    — crew Find tab:  same seg, money hidden (LEAD pill stays).
 // =============================================================================

@@ -278,7 +278,15 @@ export default function Stonebooks() {
   // Lead work signal: open tasks due-today-or-overdue, badged on the Sales nav item.
   const [leadTaskCount, setLeadTaskCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
-  const [tab, setTab] = useState('today')
+  // /?tab=payments style deep links — the phone app's MORE screen opens
+  // desktop sections this way. Unknown keys fall back to today.
+  const [tab, setTab] = useState(() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get('tab')
+      if (t && [...NAV_PRIMARY, ...NAV_SECONDARY].some(n => n.key === t)) return t
+    } catch { /* ignore */ }
+    return 'today'
+  })
   const [navCollapsed, setNavCollapsed] = useState(() => { try { return localStorage.getItem('sb_nav_collapsed') === '1' } catch { return false } })
   const [navWidth, setNavWidth] = useState(() => { try { return Number(localStorage.getItem('sb_nav_width')) || 240 } catch { return 240 } })
   const toggleNav = () => setNavCollapsed(c => { const n = !c; try { localStorage.setItem('sb_nav_collapsed', n ? '1' : '0') } catch { /* ignore */ } return n })
