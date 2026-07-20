@@ -52,7 +52,9 @@ const SYNC_SINCE = process.env.EMAIL_SYNC_SINCE || '2025-01-01'
 // hard-cap the whole handler. The function ALWAYS returns within ~HANDLER_BUDGET.
 const HANDLER_BUDGET_MS = 50000 // absolute ceiling — return partial rather than hang
 const CONNECT_TIMEOUT_MS = 12000 // connect()+auth must settle within this
-const STEP_TIMEOUT_MS = 15000   // any single open/fetch/parse step
+const STEP_TIMEOUT_MS = 30000   // any single open/fetch/parse step (Sent Mail's
+                                // SELECT was blowing the old 15s on every run
+                                // 2026-07-20 — Gmail is slow opening big boxes)
 const RUN_BUDGET_MS = 40000     // graceful per-run budget (below the hard cap) — stop, persist cursor, return
 
 // imapflow's own timeouts (belt-and-suspenders; the Promise.race below is the real guard).
@@ -154,7 +156,11 @@ async function upsertParsed(admin, parsed, direction, uid, bodyStructure) {
     customer_id: customerId,
     imap_uid: uid,
     sent_at: direction === 'outbound' ? dateIso : null,
-    received_at: direction === 'inbound' ? dateIso : null,
+    // received_at is the tab's sort/window column for BOTH directions — a
+    // null here made every synced sent message invisible (all 10k of them
+    // sorted behind the 3000-row window; Paul 2026-07-20). dateIso is the
+    // message's own header date either way.
+    received_at: dateIso,
     is_read: direction === 'outbound',          // our own sent mail is "read"; inbound starts unread
   }, { onConflict: 'gmail_message_id', ignoreDuplicates: true })
   return true
@@ -338,7 +344,12 @@ export default async function handler(req, res) {
     console.log('[email/sync] connecting')
     await withTimeout(client.connect(), CONNECT_TIMEOUT_MS, 'connect')
     console.log('[email/sync] connected/authed')
-    for (const mb of MAILBOXES) {
+    // Alternate which mailbox goes first (minute parity): INBOX-first runs
+    // were eating the whole budget and Sent Mail NEVER got a fresh window —
+    // its open timed out on every pass (2026-07-20). Odd minutes lead with
+    // Sent so each box regularly gets the front of the run budget.
+    const boxes = (new Date().getMinutes() % 2 === 1) ? [...MAILBOXES].reverse() : MAILBOXES
+    for (const mb of boxes) {
       if (Date.now() > deadline) { results.push({ mailbox: mb.name, skipped: 'time_budget', more: true }); continue }
       try { results.push(await syncMailbox(client, admin, mb.name, mb.direction, { anchor, deadline })) }
       catch (e) { results.push({ mailbox: mb.name, error: e?.message || String(e) }) }

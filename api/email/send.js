@@ -110,6 +110,9 @@ export default async function handler(req, res) {
         order_id: order_id || null,
         customer_id: custId,
         sent_at: new Date().toISOString(),
+        // The tab windows/sorts on received_at — outbound must carry it too
+        // or sent mail is invisible (Paul, 2026-07-20: "sent never shows up").
+        received_at: new Date().toISOString(),
         is_read: true,
       })
     } catch (e) {
