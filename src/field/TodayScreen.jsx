@@ -79,7 +79,7 @@ const CHECK_GLYPH = (
     strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12.5 l5 5 L20 7" /></svg>
 )
 
-export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTab, onNewTask, refreshKey = 0 }) {
+export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTab, onNewTask, refreshKey = 0, onCapture = null }) {
   const isOwner = !!who?.isOwner
   const [data, setData] = useState(null)     // { batches, tasks, links, orders }
   const [err, setErr] = useState(null)
@@ -275,7 +275,7 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
 
       <MyTasks items={myTasks} doneIds={doneIds} onMarkDone={markDone}
         onOpenTask={onOpenTask} onOpenTab={onOpenTab} onNewTask={onNewTask}
-        openCount={myOpenCount} />
+        openCount={myOpenCount} onCapture={onCapture} />
     </div>
   )
 }
@@ -521,7 +521,7 @@ function FeaturedRun({ run, showDone, onToggleDone, onOpenStop }) {
 }
 
 // ── Shared: my tasks (crew + owner) ─────────────────────────────────────────
-function MyTasks({ items, doneIds, onMarkDone, onOpenTask, onOpenTab, onNewTask, openCount }) {
+function MyTasks({ items, doneIds, onMarkDone, onOpenTask, onOpenTab, onNewTask, openCount, onCapture }) {
   return (
     <>
       <div className="fl-sect">
@@ -567,9 +567,20 @@ function MyTasks({ items, doneIds, onMarkDone, onOpenTask, onOpenTab, onNewTask,
         </div>
       )}
 
-      <button type="button" className="fl-btn-ghost fl-btn-dashed" onClick={onNewTask}>
-        + New task
-      </button>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {onCapture && (
+          <button type="button" className="fl-cam-btn" onClick={onCapture} aria-label="Take a photo">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 8 h3 l2-2.5 h6 L17 8 h3 v11 H4 z" /><circle cx="12" cy="13" r="3.5" />
+            </svg>
+            Photo
+          </button>
+        )}
+        <button type="button" className="fl-btn-ghost fl-btn-dashed" style={{ flex: 1.4 }} onClick={onNewTask}>
+          + New task
+        </button>
+      </div>
     </>
   )
 }

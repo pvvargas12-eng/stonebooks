@@ -10,11 +10,12 @@ import { useState } from 'react'
 import OrdersScreen from './OrdersScreen'
 import InventoryScreen from './InventoryScreen'
 
-export default function FindScreen({ who, undo, onOpenJob, mode }) {
+export default function FindScreen({ who, undo, onOpenJob, mode, showStatus = false }) {
   const [seg, setSeg] = useState('search')
 
   if (mode === 'orders') {
-    return <OrdersScreen onOpenJob={(ids) => onOpenJob(ids, 'orders')} showMoney={true} />
+    return <OrdersScreen onOpenJob={(ids) => onOpenJob(ids, 'orders')} showMoney={true}
+      showStatus={showStatus} who={who} undo={undo} />
   }
 
   const showMoney = mode !== 'all'
