@@ -114,12 +114,32 @@ const deviceMuted = (sub, eventKey) => {
   return !!(pk && sub && sub.prefs && sub.prefs[pk] === false)
 }
 
+// Whole-handler guard: a config typo or runtime surprise must return a
+// READABLE JSON error, never a bare FUNCTION_INVOCATION_FAILED (2026-07-20:
+// the first configured run crashed opaque and cost a debugging round-trip).
 export default async function handler(req, res) {
-  const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-  const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY
-  const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY
-  const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY
-  const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:shevcoteam@gmail.com'
+  try {
+    return await sendHandler(req, res)
+  } catch (e) {
+    console.error('[push/send] crashed:', e)
+    return res.status(500).json({
+      error: 'sender_crashed',
+      detail: e?.message || String(e),
+      at: (e?.stack || '').split('\n')[1]?.trim() || null,
+    })
+  }
+}
+
+// Env values arrive from a dashboard paste — strip whitespace and stray
+// quotes before they reach crypto that throws on malformed input.
+const cleanEnv = (s) => String(s || '').trim().replace(/^["']+|["']+$/g, '')
+
+async function sendHandler(req, res) {
+  const SUPABASE_URL = cleanEnv(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL)
+  const SERVICE_ROLE = cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY)
+  const VAPID_PUBLIC = cleanEnv(process.env.VAPID_PUBLIC_KEY)
+  const VAPID_PRIVATE = cleanEnv(process.env.VAPID_PRIVATE_KEY)
+  const VAPID_SUBJECT = cleanEnv(process.env.VAPID_SUBJECT) || 'mailto:shevcoteam@gmail.com'
   const CRON_SECRET = process.env.CRON_SECRET
 
   // ── Config fetch (public by definition — it's the VAPID *public* key) ──────
