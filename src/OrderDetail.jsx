@@ -29,7 +29,7 @@ import {
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
   createApprovalLink, getApprovalLinksForOrder, revokeApprovalLink,
   ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
-  getProofVersions, getProofSignatureSignedUrl, updateProofVersion,
+  getProofVersions, getProofVersionsByOrder, getProofSignatureSignedUrl, updateProofVersion,
   uploadProofLayout, createProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
   hydrateEmailAttachment, renameEmailAttachment, copyEmailAttachmentToOrder, classifyAttachment, ATTACH_KIND_LABELS,
@@ -432,7 +432,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       const [nts, ups, pvs, ems, cps, acts, tks, sc, sa, al, outp] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
-        j?.id ? getProofVersions(j.id) : Promise.resolve([]),
+        // Leads have no job yet — their estimate layouts are ORDER-scoped
+        // proof versions (Design Hub uploads). Without this fallback a lead's
+        // layouts were invisible here (Paul, 2026-07-20: "I still can't view
+        // the estimate layout I just created").
+        j?.id ? getProofVersions(j.id) : getProofVersionsByOrder(orderId),
         (o.customer_id || o.id) ? getMessageThread({ customerId: o.customer_id, orderId: o.id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
         getOrderActivity(orderId),
@@ -2623,6 +2627,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                       <button type="button" className="sb-od-link sb-od-attach-open" onClick={() => openPreview(a.label, a.href, '', false)}>Preview</button>
                     ) : (
                       <button type="button" className="sb-od-link sb-od-attach-open" onClick={a.onOpen}>Preview</button>
+                    )}
+                    {a.href && (
+                      /* Supabase public URLs honor ?download=<name> with a
+                         Content-Disposition: attachment response. */
+                      <a className="sb-od-link sb-od-attach-open"
+                        href={`${a.href}${a.href.includes('?') ? '&' : '?'}download=${encodeURIComponent((a.label || 'file').replace(/[^\w.() -]+/g, '_'))}`}>
+                        Download
+                      </a>
                     )}
                     {a.signed && (
                       <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setOverrideModal({ reason: '', busy: false, error: null })}>Override</button>

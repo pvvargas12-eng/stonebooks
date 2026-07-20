@@ -311,7 +311,9 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     const vers = job
       ? await getProofVersions(job.id).catch(() => [])
       : await getProofVersionsByOrder(order.id).catch(() => [])
-    setOrderProof(vers.find(v => v.is_current) || vers[0] || null)
+    // Full stack, newest first — the modal doubles as the viewer (Paul,
+    // 2026-07-20: uploaded 2 options and couldn't see or download either).
+    setOrderProof(vers || [])
   }, [])
   const closeUploader = () => { if (!uploadBusy) { setUploadFor(null); setUploadErr(null); setOrderProof(null) } }
   const onPickLayout = useCallback(async (e) => {
@@ -531,7 +533,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     {approvalBadge(o.id)}
                     <span className="sb-dh2-row-spacer" />
                     <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); openUploader(o) }}>
-                      {hasLayout(o.id) ? 'Update layout' : 'Upload layout'}
+                      {hasLayout(o.id) ? 'View / update layout' : 'Upload layout'}
                     </button>
                   </div>
                 ))}
@@ -558,7 +560,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                   {approvalBadge(o.id)}
                   <span className="sb-dh2-row-spacer" />
                   <button type="button" className="sb-dh2-createbtn" onClick={e => { e.stopPropagation(); openUploader(o) }}>
-                    {hasLayout(o.id) ? 'Update layout' : 'Create estimate layout'}
+                    {hasLayout(o.id) ? 'View / update layout' : 'Create estimate layout'}
                   </button>
                 </div>
               ))}
@@ -575,16 +577,24 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             <div className="sb-dh2-modal-sub">{uploadFor.job
               ? 'Uploads as the next proof version on this job — same as dropping it on the design packet.'
               : 'Attach a layout to this order. It carries onto the job when the contract is signed.'}</div>
-            {orderProof?.layout_image_url && (
-              <div className="sb-dh2-modal-thumbwrap">
-                <img src={orderProof.layout_image_url} alt="Current layout" className="sb-dh2-modal-thumb" />
-                <div className="sb-dh2-modal-cur">Current — v{orderProof.version_number}</div>
-              </div>
-            )}
+            {Array.isArray(orderProof) && orderProof.filter(v => v.layout_image_url).map(v => {
+              const fam = String(familyOf(uploadFor.order) || 'layout').replace(/[^\w-]+/g, '_')
+              const dl = `${v.layout_image_url}${v.layout_image_url.includes('?') ? '&' : '?'}download=${encodeURIComponent(`${fam}-layout-v${v.version_number}.jpg`)}`
+              return (
+                <div key={v.id} className="sb-dh2-modal-thumbwrap">
+                  <img src={v.layout_image_url} alt={`Layout v${v.version_number}`} className="sb-dh2-modal-thumb" />
+                  <div className="sb-dh2-modal-verrow">
+                    <span className="sb-dh2-modal-cur">v{v.version_number}{v.is_current ? ' — current' : ''}</span>
+                    <a className="sb-dh2-verlink" href={v.layout_image_url} target="_blank" rel="noreferrer">View full size</a>
+                    <a className="sb-dh2-verlink" href={dl}>Download</a>
+                  </div>
+                </div>
+              )
+            })}
             {uploadErr && <div className="sb-dh2-modal-err">{uploadErr}</div>}
             <label className="sb-dh2-modal-uplabel">
               <input type="file" accept="image/jpeg,image/png" onChange={onPickLayout} disabled={uploadBusy} style={{ display: 'none' }} />
-              <span className="sb-dh2-createbtn">{uploadBusy ? 'Uploading…' : (orderProof ? 'Upload a new version' : 'Upload layout (JPG / PNG)')}</span>
+              <span className="sb-dh2-createbtn">{uploadBusy ? 'Uploading…' : ((Array.isArray(orderProof) && orderProof.length) ? 'Upload a new version' : 'Upload layout (JPG / PNG)')}</span>
             </label>
             <button type="button" className="sb-dh2-modal-cancel" onClick={closeUploader} disabled={uploadBusy}>Close</button>
           </div>
@@ -685,7 +695,10 @@ const CSS = `
   .sb-dh2-modal-sub { font-size: 12.5px; color: #8a8a85; margin: 4px 0 14px; line-height: 1.45; }
   .sb-dh2-modal-thumbwrap { margin-bottom: 14px; }
   .sb-dh2-modal-thumb { width: 100%; max-height: 240px; object-fit: contain; border: 0.5px solid #e4e0d4; border-radius: 8px; background: #faf8f4; }
-  .sb-dh2-modal-cur { font-size: 11.5px; color: #8a8a85; margin-top: 4px; }
+  .sb-dh2-modal-cur { font-size: 11.5px; color: #8a8a85; }
+  .sb-dh2-modal-verrow { display: flex; align-items: center; gap: 14px; margin-top: 5px; }
+  .sb-dh2-verlink { font-size: 12.5px; font-weight: 700; color: #9A7209; text-decoration: none; }
+  .sb-dh2-verlink:hover { text-decoration: underline; }
   .sb-dh2-modal-err { font-size: 12.5px; color: #b3261e; background: rgba(179,38,30,.06); border: 0.5px solid rgba(179,38,30,.3); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
   .sb-dh2-modal-uplabel { display: block; cursor: pointer; margin-bottom: 10px; }
   .sb-dh2-modal-uplabel .sb-dh2-createbtn { display: block; text-align: center; padding: 10px; }
