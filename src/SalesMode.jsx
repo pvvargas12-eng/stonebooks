@@ -7619,15 +7619,16 @@ export async function generateEstimatePDF(order, opts = {}) {
   const deceasedOverride = coLines(co.deceasedBlock)
   let deceasedBarLines = null
   if ((order.deceased?.length || deceasedOverride) && !coHidden.has('deceased')) {
-    // Black banner bar with reversed (white) centered title.
+    // Ink-light header cap (Paul, 2026-07-20: the solid black boxes burned
+    // printer ink — gone on estimates, contracts, and estimate layouts).
+    // Same height/geometry as the old filled bar so the box below is
+    // untouched; on an estimate-layout sheet the table's cap reads
+    // ESTIMATE LAYOUT instead.
     ensure(18)
     y += 2
     const barH = 6.5
-    doc.setFillColor(0, 0, 0)
-    doc.rect(M - 2, y, (W - 2 * M) + 4, barH, 'F')
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255)
-    doc.text('DECEASED INFORMATION', W / 2, y + 4.5, { align: 'center' })
-    doc.setTextColor(...TEXT)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...TEXT)
+    doc.text(opts.layoutImageUrl ? 'ESTIMATE LAYOUT' : 'DECEASED INFORMATION', W / 2, y + 4.5, { align: 'center' })
     y += barH                 // box top border begins immediately at the bar's bottom (flush)
     deceasedBarLines = deceasedOverride
       ? deceasedOverride.map(t => {
@@ -7823,20 +7824,29 @@ export async function generateEstimatePDF(order, opts = {}) {
   // ESTIMATE SHEET (Paul, 2026-07-20): when a layout proof image is passed,
   // render it big on the estimate — the customer sees THEIR layout above the
   // line items (whose per-item rates stay em-dashed) and the final price.
+  // The table's header cap above already reads ESTIMATE LAYOUT. NEVER
+  // stretched: dimensions come from the browser's own decode
+  // (naturalWidth/Height) and one uniform scale factor fits the box.
   // Estimate-only; contracts are unchanged.
   if (!isContract && opts.layoutImageUrl) {
     try {
       const raw = await urlToDataURL(opts.layoutImageUrl)
       if (raw) {
-        const props = doc.getImageProperties(raw)
+        const dims = await new Promise((resolve) => {
+          const im = new Image()
+          im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight })
+          im.onerror = () => resolve(null)
+          im.src = raw
+        })
+        const props = dims && dims.w > 0 && dims.h > 0 ? { width: dims.w, height: dims.h } : doc.getImageProperties(raw)
         const maxW = W - M - M
-        const maxH = 110
+        const maxH = 120
         const scale = Math.min(maxW / props.width, maxH / props.height)
         const iw = props.width * scale
         const ih = props.height * scale
-        sectionHeader('Estimate Layout')
         ensure(ih + 6)
-        doc.addImage(raw, props.fileType || 'JPEG', M + (maxW - iw) / 2, y, iw, ih)
+        const fmt = String(raw).startsWith('data:image/png') ? 'PNG' : 'JPEG'
+        doc.addImage(raw, fmt, M + (maxW - iw) / 2, y, iw, ih)
         y += ih + 6
       }
     } catch (e) { console.warn('estimate layout image failed:', e) }
@@ -8181,13 +8191,13 @@ export async function generateEstimatePDF(order, opts = {}) {
           'This agreement is governed by the laws of the State of New Jersey.',
           'This writing is the entire agreement between the parties; no oral modifications are binding.',
         ]
-    // Black section bar.
+    // Ink-light section header (Paul, 2026-07-20: no solid black bars).
     const tcBarH = 6
-    doc.setFillColor(0, 0, 0)
-    doc.rect(M, y, W - 2 * M, tcBarH, 'F')
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(255, 255, 255)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(...TEXT)
     doc.text('TERMS & CONDITIONS', W / 2, y + 4.2, { align: 'center' })
-    doc.setTextColor(...TEXT)
+    doc.setDrawColor(0, 0, 0)
+    doc.setLineWidth(0.3)
+    doc.line(M, y + tcBarH, W - M, y + tcBarH)
     y += tcBarH + 3
 
     // ~7pt serif, justified, single leading, minimal inter-clause gap.
