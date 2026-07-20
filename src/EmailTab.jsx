@@ -26,6 +26,7 @@ import {
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF } from './SalesMode'
 import { computeDieBaseTrade } from './DesignPacket'
+import { supabase } from './lib/supabase'
 
 // Sidebar buckets. `key` = data-backed + clickable now; `soon` = roadmap only.
 const BUCKET_GROUPS = [
@@ -218,6 +219,32 @@ export default function EmailTab() {
     else { setThreads(res.threads); setCounts(res.counts) }
     setLoading(false)
   }
+
+  // SELF-SYNC (2026-07-20): the Vercel cron silently stopped firing on Jul 14
+  // and the inbox froze for six days — so the tab no longer trusts it. Poke
+  // /api/email/sync on open and every 90s while mounted; when messages moved,
+  // quietly refresh the list. Fire-and-forget, silent on failure — the cron
+  // (whenever it's alive) stays the overnight backstop.
+  useEffect(() => {
+    let cancelled = false
+    let timer = null
+    const poke = async () => {
+      try {
+        const { data } = await supabase.auth.getSession()
+        const token = data?.session?.access_token
+        const r = await fetch('/api/email/sync', { headers: token ? { authorization: `Bearer ${token}` } : {} })
+        const j = await r.json().catch(() => null)
+        const processed = (j?.results || []).reduce((n, m) => n + (m.processed || 0), 0)
+        if (!cancelled && processed > 0) {
+          const res = await getEmailThreadsWorkspace()
+          if (!cancelled && res.ok) { setThreads(res.threads); setCounts(res.counts) }
+        }
+      } catch { /* silent — sync retries on the next tick */ }
+      if (!cancelled) timer = setTimeout(poke, 90000)
+    }
+    poke()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [])
 
   const visible = useMemo(() => {
     const query = q.trim()
