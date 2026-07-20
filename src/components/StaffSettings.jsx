@@ -178,6 +178,22 @@ function EmployeeRow({ row, canEdit, busy, run }) {
         />
         Owner app
       </label>
+      {/* FIELD-3: 4-digit PIN asked at the phone's person picker; blank = no PIN */}
+      <input
+        type="text"
+        inputMode="numeric"
+        className="sb-input sb-emp-pin"
+        placeholder="PIN"
+        title="4-digit PIN the phone app asks for when this person is picked. Blank = no PIN."
+        defaultValue={row.pin || ''}
+        maxLength={4}
+        disabled={busy}
+        onBlur={e => {
+          const v = e.target.value.replace(/\D/g, '')
+          if ((v || null) === (row.pin || null)) { e.target.value = row.pin || ''; return }
+          run(() => updateEmployee(row.id, { pin: v }), v ? `${row.name}'s PIN set` : `${row.name}'s PIN cleared`)
+        }}
+      />
       <button
         type="button"
         className="sb-link sb-link-danger"
@@ -203,6 +219,7 @@ const CSS = `
 .sb-emp-name-off { flex: 1; max-width: 220px; text-decoration: line-through; }
 .sb-emp-dept { width: 170px; }
 .sb-emp-owner { display: flex; align-items: center; gap: 6px; font-size: 12.5px; opacity: 0.9; white-space: nowrap; cursor: pointer; }
+.sb-emp-pin { width: 64px; text-align: center; letter-spacing: 0.2em; }
 .sb-emp-dept-tag { width: 170px; opacity: 0.75; font-size: 13px; }
 .sb-emp-add { display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px solid rgba(128,128,128,0.25); }
 .sb-emp-add .sb-input { max-width: 220px; }

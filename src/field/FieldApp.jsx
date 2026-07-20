@@ -20,7 +20,8 @@ import { listShopTasks } from '../lib/stonebooksData'
 import { loadEmployees } from '../lib/employees'
 import { useUndoToast, FIELD_CSS } from './fieldUndo'
 import { getFieldWho, setFieldWho, clearFieldWho, pickerCandidates } from './fieldIdentity'
-import { getPushState, enablePush, disablePush, syncPushOnLaunch } from './fieldPush'
+import { getPushState, disablePush, syncPushOnLaunch } from './fieldPush'
+import { loadUnreadCount } from '../lib/notificationsFeed'
 import UndoToast from './UndoToast'
 import TodayScreen from './TodayScreen'
 import TasksScreen from './TasksScreen'
@@ -28,6 +29,8 @@ import WorkHubScreen from './WorkHubScreen'
 import FindScreen from './FindScreen'
 import SalesScreen from './SalesScreen'
 import MoreScreen from './MoreScreen'
+import NotificationsScreen from './NotificationsScreen'
+import PermissionSheet from './PermissionSheet'
 import JobDetailScreen from './JobDetailScreen'
 import CompleteScreen from './CompleteScreen'
 import { NewTaskSheet, CaptureSheet } from './fieldSheets'
@@ -65,35 +68,74 @@ function FieldLogin() {
   )
 }
 
-// ── Who picker — once per phone, drives the role ─────────────────────────────
+// ── Who picker — once per phone; PIN when the person has one ─────────────────
+// The PIN is a picker gate (deterrent, not crypto): it closes the
+// "worker taps Paul" hole until real per-person logins land.
 function WhoPicker({ onPick }) {
   const people = pickerCandidates()
+  const [pinFor, setPinFor] = useState(null)   // candidate awaiting PIN
+  const [pin, setPin] = useState('')
+  const [wrong, setWrong] = useState(false)
+
+  const tryPick = (p) => {
+    if (p.pin) { setPinFor(p); setPin(''); setWrong(false) }
+    else onPick(p.name)
+  }
+  const submitPin = () => {
+    if (!pinFor) return
+    if (pin === String(pinFor.pin)) { onPick(pinFor.name) }
+    else { setWrong(true); setPin('') }
+  }
+
+  if (pinFor) {
+    return (
+      <div className="fl-login">
+        <div className="fl-login-brand">STONEBOOKS <em>FIELD</em></div>
+        <div className="fl-login-sub">Enter {pinFor.name}&#8217;s PIN</div>
+        <div className="fl-pin-row">
+          <input className="fl-pin-input" type="password" inputMode="numeric" autoFocus
+            maxLength={4} value={pin} placeholder="&#8226;&#8226;&#8226;&#8226;"
+            onChange={e => { setWrong(false); setPin(e.target.value.replace(/\D/g, '')) }}
+            onKeyDown={e => { if (e.key === 'Enter' && pin.length === 4) submitPin() }} />
+        </div>
+        {wrong && <div className="fl-login-err" style={{ marginTop: 10 }}>Wrong PIN — try again.</div>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <button type="button" className="fl-btn fl-btn-ghost" style={{ flex: 1 }}
+            onClick={() => setPinFor(null)}>Back</button>
+          <button type="button" className="fl-btn fl-btn-gold" style={{ flex: 1, opacity: pin.length === 4 ? 1 : 0.5 }}
+            onClick={submitPin} disabled={pin.length !== 4}>Open</button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="fl-login">
       <div className="fl-login-brand">STONEBOOKS <em>FIELD</em></div>
       <div className="fl-login-sub">Who is holding this phone?</div>
       <div className="fl-who-list">
         {people.map(p => (
-          <button key={p.name} type="button" className="fl-who-row" onClick={() => onPick(p.name)}>
+          <button key={p.name} type="button" className="fl-who-row" onClick={() => tryPick(p)}>
             <span className="fl-who-avatar">{p.name.slice(0, 2).toUpperCase()}</span>
             <span className="fl-who-main">
               <span className="fl-who-name">{p.name}</span>
-              <span className="fl-who-dept">{p.isOwner ? 'Owner' : (p.department || 'Crew')}</span>
+              <span className="fl-who-dept">{p.isOwner ? 'Owner' : (p.department || 'Crew')}{p.pin ? ' · PIN' : ''}</span>
             </span>
             <span className="fl-chev">›</span>
           </button>
         ))}
       </div>
-      <div className="fl-who-note">This sticks on this phone. Every status tap and task will carry your name.</div>
+      <div className="fl-who-note">This sticks on this phone. Every status tap and task will carry your name. Set PINs in Settings, Staff on the desktop.</div>
     </div>
   )
 }
 
 // ── Notifications row in the header menu — the settings surface for push ────
-function NotifMenuRow({ who }) {
+// Turning ON routes through the PermissionSheet (the proper ask, mock preview
+// and all); turning OFF is a plain toggle.
+function NotifMenuRow({ onAskPush }) {
   const [st, setSt] = useState(null)   // null loading | fieldPush state
   const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState(null)
   useEffect(() => {
     let cancelled = false
     getPushState().then(r => { if (!cancelled) setSt(r.state) })
@@ -101,17 +143,14 @@ function NotifMenuRow({ who }) {
   }, [])
   const toggle = async () => {
     if (busy || st === null) return
-    setBusy(true); setNote(null)
     if (st === 'on') {
+      setBusy(true)
       await disablePush()
       setSt('off')
-    } else {
-      const r = await enablePush(who)
-      if (r.ok) setSt('on')
-      else if (r.error === 'denied') setSt('denied')
-      else if (r.error !== 'dismissed') setNote(r.error)
+      setBusy(false)
+      return
     }
-    setBusy(false)
+    onAskPush()
   }
   if (st === 'unsupported') return null
   if (st === 'needs-install') {
@@ -121,12 +160,9 @@ function NotifMenuRow({ who }) {
     return <div className="fl-menu-note">Notifications are blocked for this app — allow them in the phone&#8217;s Settings.</div>
   }
   return (
-    <>
-      <button type="button" disabled={busy || st === null} onClick={toggle}>
-        {st === null ? 'Notifications…' : st === 'on' ? 'Notifications: on' : 'Turn on notifications'}
-      </button>
-      {note && <div className="fl-menu-note">{note}</div>}
-    </>
+    <button type="button" disabled={busy || st === null} onClick={toggle}>
+      {st === null ? 'Notifications…' : st === 'on' ? 'Notifications: on' : 'Turn on notifications'}
+    </button>
   )
 }
 
@@ -138,6 +174,7 @@ const GLYPH = {
   more: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></svg>,
   find: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="10.5" cy="10.5" r="6.5" /><line x1="15.5" y1="15.5" x2="21" y2="21" /></svg>,
   cam: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 8 h3 l2-2.5 h6 L17 8 h3 v11 H4 z" /><circle cx="12" cy="13" r="3.5" /></svg>,
+  bell: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 10 a6 6 0 0 1 12 0 c0 5 2 6 2 6 H4 c0 0 2-1 2-6" /><path d="M10 19.5 a2.2 2.2 0 0 0 4 0" /></svg>,
 }
 
 export default function FieldApp() {
@@ -153,6 +190,10 @@ export default function FieldApp() {
   const [captureFile, setCaptureFile] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [dueBadge, setDueBadge] = useState(0)
+  const [notifOpen, setNotifOpen] = useState(false)   // the bell feed overlay
+  const [unread, setUnread] = useState(0)
+  const [permOpen, setPermOpen] = useState(false)     // the PermissionSheet ask
+  const [pushRev, setPushRev] = useState(0)           // bumps when the sheet closes
   const fileRef = useRef(null)
   const undo = useUndoToast()
 
@@ -188,7 +229,8 @@ export default function FieldApp() {
     return () => { cancelled = true }
   }, [authed])
 
-  // Tab badge: my open tasks due today or overdue. Refreshes on tab change.
+  // Tab badge (my open tasks due today or overdue) + bell unread count.
+  // Refreshes on tab change, task writes, and closing the bell.
   useEffect(() => {
     if (!who) return
     let cancelled = false
@@ -203,29 +245,32 @@ export default function FieldApp() {
       setDueBadge(mine.filter(t => t.due_date && t.due_date <= today &&
         !(t.snoozed_until && String(t.snoozed_until).slice(0, 10) > today)).length)
     })
+    loadUnreadCount(who.name).then(n => { if (!cancelled) setUnread(n || 0) }).catch(() => {})
     return () => { cancelled = true }
-  }, [who, tab, drill, taskRev])
+  }, [who, tab, drill, taskRev, notifOpen])
 
-  const openJob = useCallback((ids, from) => setDrill({ view: 'detail', ...ids, from: from || tab }), [tab])
+  const openJob = useCallback((ids, from) => { setNotifOpen(false); setDrill({ view: 'detail', ...ids, from: from || tab }) }, [tab])
   const openComplete = useCallback((ids) => setDrill(d => ({ ...(d || {}), ...ids, view: 'complete' })), [])
   const closeDrill = useCallback(() => setDrill(d => (d?.view === 'complete' ? { ...d, view: 'detail' } : null)), [])
-  const goTab = (k) => { setDrill(null); setMenuOpen(false); setTab(k) }
-  const openTask = useCallback((taskId) => { setDrill(null); setTaskFocus(taskId); setTab('tasks') }, [])
+  const goTab = (k) => { setDrill(null); setMenuOpen(false); setNotifOpen(false); setTab(k) }
+  const openTask = useCallback((taskId) => { setDrill(null); setNotifOpen(false); setTaskFocus(taskId); setTab('tasks') }, [])
 
   // FIELD-PUSH upkeep, once identity resolves: refresh this phone's
   // subscription row (re-keys it when the phone switched person), clear the
-  // home-screen badge, and honor a ?task= deep link — a notification tap that
-  // cold-started the app lands directly on that task.
+  // home-screen badge, and honor a ?task= / ?order= deep link — a notification
+  // tap that cold-started the app lands directly on that record.
   useEffect(() => {
     if (!who) return
     syncPushOnLaunch(who)
     const params = new URLSearchParams(window.location.search)
     const taskId = params.get('task')
-    if (taskId) {
+    const orderId = params.get('order')
+    if (taskId || orderId) {
       window.history.replaceState(null, '', window.location.pathname)
-      openTask(taskId)
+      if (taskId) openTask(taskId)
+      else openJob({ orderId, jobId: null }, 'today')
     }
-  }, [who, openTask])
+  }, [who, openTask, openJob])
 
   // A notification tap while the app is already open arrives as a message
   // from sw.js (focus + postMessage — no reload).
@@ -236,12 +281,14 @@ export default function FieldApp() {
       try {
         const u = new URL(e.data.url, window.location.origin)
         const taskId = u.searchParams.get('task')
+        const orderId = u.searchParams.get('order')
         if (taskId) openTask(taskId)
+        else if (orderId) openJob({ orderId, jobId: null }, 'today')
       } catch { /* bad url — ignore */ }
     }
     navigator.serviceWorker.addEventListener('message', onMsg)
     return () => navigator.serviceWorker.removeEventListener('message', onMsg)
-  }, [openTask])
+  }, [openTask, openJob])
 
   const onCapturePick = (e) => {
     const f = e.target.files && e.target.files[0]
@@ -285,15 +332,22 @@ export default function FieldApp() {
       <header className="fl-head">
         <div className="fl-head-row">
           <div className="fl-brand">STONEBOOKS <em>FIELD</em></div>
-          <button type="button" className="fl-who-chip" onClick={() => setMenuOpen(m => !m)}>
-            <span className="fl-who-chip-avatar">{who.name.slice(0, 2).toUpperCase()}</span>
-            {who.name}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button type="button" className="fl-bell" aria-label="Notifications"
+              onClick={() => { setMenuOpen(false); setDrill(null); setNotifOpen(v => !v) }}>
+              {GLYPH.bell}
+              {unread > 0 && <span className="fl-bell-badge">{unread > 9 ? '9+' : unread}</span>}
+            </button>
+            <button type="button" className="fl-who-chip" onClick={() => setMenuOpen(m => !m)}>
+              <span className="fl-who-chip-avatar">{who.name.slice(0, 2).toUpperCase()}</span>
+              {who.name}
+            </button>
+          </div>
         </div>
         {menuOpen && (
           <div className="fl-menu">
             <div className="fl-menu-role">{isOwner ? 'Owner build' : (who.department ? `${who.department} crew` : 'Crew build')}</div>
-            <NotifMenuRow who={who} />
+            <NotifMenuRow onAskPush={() => { setMenuOpen(false); setPermOpen(true) }} />
             <button type="button" onClick={() => { setMenuOpen(false); clearFieldWho(); setWho(null) }}>Switch person</button>
             <button type="button" onClick={() => { clearFieldWho(); signOut() }}>Sign out</button>
           </div>
@@ -301,20 +355,26 @@ export default function FieldApp() {
       </header>
 
       <main className="fl-body">
+        {notifOpen && !drill && (
+          <NotificationsScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
+            onBack={() => setNotifOpen(false)} onAskPermission={() => setPermOpen(true)} />
+        )}
         {drill?.view === 'detail' && (
           <JobDetailScreen jobId={drill.jobId} orderId={drill.orderId}
-            onBack={closeDrill} onComplete={openComplete} undo={undo} showMoney={isOwner} />
+            onBack={closeDrill} onComplete={openComplete} undo={undo} showMoney={isOwner}
+            who={who} onTaskChanged={() => setTaskRev(r => r + 1)} />
         )}
         {drill?.view === 'complete' && (
           <CompleteScreen jobId={drill.jobId} orderId={drill.orderId} onBack={closeDrill} />
         )}
-        {/* Tab screens stay MOUNTED (hidden) during a drill so their internal
-            state — WorkHub's open queue, an open task thread, scroll — survives
-            the round trip into a job and back. */}
-        <div style={{ display: drill ? 'none' : undefined }}>
+        {/* Tab screens stay MOUNTED (hidden) during a drill or the bell so
+            their internal state — WorkHub's open queue, an open task thread,
+            scroll — survives the round trip and back. */}
+        <div style={{ display: (drill || notifOpen) ? 'none' : undefined }}>
           {tab === 'today' && (
             <TodayScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
-              onOpenTab={goTab} onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev} />
+              onOpenTab={goTab} onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev}
+              onAskPush={() => setPermOpen(true)} pushRev={pushRev} />
           )}
           {tab === 'tasks' && (
             <TasksScreen who={who} undo={undo} onOpenJob={openJob}
@@ -325,10 +385,10 @@ export default function FieldApp() {
             <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask} />
           )}
           {tab === 'sales' && isOwner && (
-            <SalesScreen onOpenJob={openJob} />
+            <SalesScreen onOpenJob={openJob} who={who} undo={undo} />
           )}
           {tab === 'more' && isOwner && (
-            <MoreScreen />
+            <MoreScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask} />
           )}
           {tab === 'find' && (
             <FindScreen who={who} undo={undo} onOpenJob={openJob} mode={isOwner ? 'search' : 'all'} />
@@ -348,6 +408,11 @@ export default function FieldApp() {
         <CaptureSheet who={who} undo={undo} file={captureFile} onClose={() => setCaptureFile(null)}
           onChanged={() => setTaskRev(r => r + 1)} />
       )}
+      {permOpen && (
+        <PermissionSheet who={who}
+          onClose={() => { setPermOpen(false); setPushRev(r => r + 1) }}
+          onGranted={() => { setPermOpen(false); setPushRev(r => r + 1) }} />
+      )}
 
       <input ref={fileRef} type="file" accept="image/*" capture="environment"
         style={{ display: 'none' }} onChange={onCapturePick} />
@@ -365,7 +430,7 @@ export default function FieldApp() {
             )
           }
           const [key, label] = t
-          const on = (!drill && tab === key) || (drill && drill.from === key)
+          const on = !notifOpen && ((!drill && tab === key) || (drill && drill.from === key))
           return (
             <button key={key} type="button" className={on ? 'on' : ''} onClick={() => goTab(key)}>
               <span className="fl-nav-glyph">

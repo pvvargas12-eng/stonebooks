@@ -19,9 +19,12 @@ import { rowToOrder } from '../SalesMode'
 import { buildDieSpec, buildBaseSpec, displayGraniteColor, composeGraveLocation } from '../lib/monumentCatalog'
 import { isLeadRaw, directionsUrl } from './fieldShared'
 
+import OwnerOrderPanel from './OwnerOrderPanel'
+
 // FIELD-2: showMoney gates the LEAD banner's balance line — crew builds pass
-// false and get the warning without the amount.
-export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, undo, showMoney = true }) {
+// false and get the warning without the amount. FIELD-3 adds the owner panel
+// (payments, approvals, tasks, activity) below the job cards when showMoney.
+export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, undo, showMoney = true, who = null, onTaskChanged = null }) {
   const [order, setOrder] = useState(null)     // raw row + customer/cemetery
   const [job, setJob] = useState(undefined)    // undefined=loading, null=no job
   const [proofImg, setProofImg] = useState(null)
@@ -201,6 +204,12 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
           <div className="fl-eyebrow">Production</div>
           <div style={{ fontSize: 12.5, color: '#8A8267' }}>No production job on this order yet (statuses appear once a job exists).</div>
         </div>
+      )}
+      {/* FIELD-3: the owner suite — contact / payments / approvals / tasks /
+          activity. Only mounted for the owner build; the crew bundle renders
+          nothing here. */}
+      {showMoney && (
+        <OwnerOrderPanel order={order} who={who} undo={undo} onChanged={onTaskChanged} />
       )}
     </div>
   )

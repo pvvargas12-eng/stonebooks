@@ -39,5 +39,6 @@ export function pickerCandidates() {
     name: e.name,
     department: e.department || null,
     isOwner: !!e.is_owner,
+    pin: e.pin || null,   // FIELD-3: 4-digit picker gate (deterrent, not crypto)
   }))
 }

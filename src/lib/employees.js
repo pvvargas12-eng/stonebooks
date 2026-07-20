@@ -131,6 +131,11 @@ export async function updateEmployee(id, patch) {
   if ('isActive' in patch) allowed.is_active = !!patch.isActive
   if ('sortOrder' in patch) allowed.sort_order = patch.sortOrder
   if ('isOwner' in patch) allowed.is_owner = !!patch.isOwner   // FIELD-2: owner build flag
+  if ('pin' in patch) {                                        // FIELD-3: picker PIN (4 digits or clear)
+    const p = String(patch.pin || '').replace(/\D/g, '')
+    if (p && p.length !== 4) return { ok: false, error: 'PIN must be exactly 4 digits.' }
+    allowed.pin = p || null
+  }
   const { error } = await supabase.from('employees').update(allowed).eq('id', id)
   if (error) {
     if (error.code === '23505') return { ok: false, error: 'That name is already on the roster.' }

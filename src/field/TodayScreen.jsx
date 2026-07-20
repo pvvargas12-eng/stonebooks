@@ -15,7 +15,7 @@ import {
   listAllApprovalLinks, fmtUSD, rowBalanceDue,
 } from '../lib/stonebooksData'
 import { familyNameOf, directionsUrl, BATCH_KIND_CHIP, todayISO } from './fieldShared'
-import { getPushState, enablePush, isPushCardDismissed, dismissPushCard } from './fieldPush'
+import { getPushState, isPushCardDismissed, dismissPushCard } from './fieldPush'
 
 // ── date helpers — only ever called from useMemo bodies / handlers ──────────
 function dueChipFor(t, today) {
@@ -80,7 +80,7 @@ const CHECK_GLYPH = (
     strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12.5 l5 5 L20 7" /></svg>
 )
 
-export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTab, onNewTask, refreshKey = 0 }) {
+export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTab, onNewTask, refreshKey = 0, onAskPush = null, pushRev = 0 }) {
   const isOwner = !!who?.isOwner
   const [data, setData] = useState(null)     // { batches, tasks, links, orders }
   const [err, setErr] = useState(null)
@@ -260,7 +260,7 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
       <div className="fl-greet">{greet.part}, {who.name}.</div>
       <div className="fl-greet-sub">{sub}</div>
 
-      <PushCard who={who} />
+      <PushCard onAskPush={onAskPush} pushRev={pushRev} />
 
       {isOwner ? (
         <>
@@ -286,28 +286,19 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
 // ── Push enable card — both builds, shows until on / blocked / dismissed ────
 // iOS quirk baked into the flow: Safari only exposes push to an INSTALLED PWA,
 // so a phone still in the browser tab gets Add-to-Home-Screen instructions
-// instead of a button that can't work.
-function PushCard({ who }) {
+// instead of a button that can't work. "Turn on" opens the shell's
+// PermissionSheet (the proper ask); pushRev bumps when that sheet closes so
+// the card re-checks state and hides itself once granted.
+function PushCard({ onAskPush, pushRev = 0 }) {
   const [st, setSt] = useState(null)          // null loading | fieldPush state
-  const [busy, setBusy] = useState(false)
-  const [cardErr, setCardErr] = useState(null)
   const [hidden, setHidden] = useState(() => isPushCardDismissed())
   useEffect(() => {
     let cancelled = false
     getPushState().then(r => { if (!cancelled) setSt(r.state) })
     return () => { cancelled = true }
-  }, [])
+  }, [pushRev])
   if (hidden || st === null || st === 'on' || st === 'denied' || st === 'unsupported') return null
   const dismiss = () => { dismissPushCard(); setHidden(true) }
-  const turnOn = async () => {
-    if (busy) return
-    setBusy(true); setCardErr(null)
-    const r = await enablePush(who)
-    setBusy(false)
-    if (r.ok) setSt('on')
-    else if (r.error === 'denied') setSt('denied')
-    else if (r.error !== 'dismissed') setCardErr(r.error)
-  }
   return (
     <div className="fl-push-card">
       <div className="fl-push-title">Get task alerts on this phone</div>
@@ -327,10 +318,9 @@ function PushCard({ who }) {
             New tasks and replies land here the moment they&#8217;re sent,
             plus a morning heads-up on what&#8217;s due.
           </div>
-          {cardErr && <div className="fl-push-err">{cardErr}</div>}
           <div className="fl-push-row">
-            <button type="button" className="fl-btn fl-btn-gold" disabled={busy} onClick={turnOn}>
-              {busy ? 'Turning on…' : 'Turn on'}
+            <button type="button" className="fl-btn fl-btn-gold" onClick={onAskPush}>
+              Turn on
             </button>
             <button type="button" className="fl-btn fl-btn-ghost" onClick={dismiss}>Not now</button>
           </div>

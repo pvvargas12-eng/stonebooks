@@ -76,9 +76,23 @@ export async function enablePush(who) {
   const cap = pushCapability()
   if (cap !== 'supported') return { ok: false, error: cap }
   try {
-    const reg = await navigator.serviceWorker.register('/sw.js')
+    await navigator.serviceWorker.register('/sw.js')
     const perm = await Notification.requestPermission()
     if (perm !== 'granted') return { ok: false, error: perm === 'denied' ? 'denied' : 'dismissed' }
+    return await subscribeThisPhone(who)
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : 'Could not turn on notifications.' }
+  }
+}
+
+// Subscribe-only half — assumes Notification.permission is already 'granted'.
+// PermissionSheet calls requestPermission() SYNCHRONOUSLY inside its tap
+// handler (iOS drops the prompt when the call chains off an await) and then
+// hands off here for the subscribe + row upsert.
+export async function subscribeThisPhone(who) {
+  if (!who || !who.name) return { ok: false, error: 'No one is picked on this phone.' }
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js')
     // First-ever enable: subscribe() needs the worker ACTIVE, not just
     // registered — .ready settles once activation lands (instant thereafter).
     await navigator.serviceWorker.ready
