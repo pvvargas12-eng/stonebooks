@@ -75,6 +75,27 @@ export default function FieldAppSettings() {
         </div>
       </div>
 
+      {/* STONEBOOKS SALES — the customer-facing iPad kiosk (FIELD-6). Two doors
+          only: the self-service intake form + the design catalog. No CRM. */}
+      <div style={{ margin: '0 0 18px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#9a8a5e', marginBottom: 4 }}>
+          Stonebooks Sales — customer iPad
+        </div>
+        <p className="sb-settings-note" style={{ margin: '0 0 8px' }}>
+          Hand a customer the iPad and they can do exactly two things: fill out the
+          intake form (becomes a lead) and browse the design catalog. Nothing else is
+          reachable — leaving the intake mid-entry asks for your staff PIN. Set the
+          device up once with a staff sign-in (or your field link); it stays signed in.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <code style={{ fontSize: 13, background: 'rgba(154,114,9,0.08)', border: '1px solid rgba(154,114,9,0.25)', borderRadius: 8, padding: '7px 12px' }}>{url.replace('/field', '/sales')}</code>
+          <button type="button" className="sb-btn"
+            onClick={() => { navigator.clipboard?.writeText(url.replace('/field', '/sales')).catch(() => {}) }}>
+            Copy link
+          </button>
+        </div>
+      </div>
+
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#9a8a5e', marginBottom: 4 }}>
         Send setup instructions
       </div>

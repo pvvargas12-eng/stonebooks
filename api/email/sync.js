@@ -201,6 +201,15 @@ async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } =
   const { data: topRow } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', mailbox).maybeSingle()
   const { data: backRow } = await admin.from('email_sync_state').select('last_uid').eq('mailbox', `${mailbox}:back`).maybeSingle()
   const { data: floorRow } = await admin.from('email_sync_state').select('last_uid, uid_validity').eq('mailbox', `${mailbox}:floor`).maybeSingle()
+  // GAP LANE (Paul, 2026-07-20: "start with recent then work to old") — when
+  // an outage leaves a big hole between topUid and the tail, the newest batch
+  // imports FIRST and the middle of the hole drains DOWNWARD through these
+  // two cursors instead of crawling up from six days ago.
+  const { data: gapHighRow } = await admin.from('email_sync_state').select('last_uid').eq('mailbox', `${mailbox}:gap_high`).maybeSingle()
+  const { data: gapLowRow } = await admin.from('email_sync_state').select('last_uid').eq('mailbox', `${mailbox}:gap_low`).maybeSingle()
+  let gapHigh = gapHighRow?.last_uid != null ? Number(gapHighRow.last_uid) : null
+  let gapLow = gapLowRow?.last_uid != null ? Number(gapLowRow.last_uid) : null
+  let gapTouched = false
   let uidValidity = topRow?.uid_validity != null ? Number(topRow.uid_validity) : null
   let topUid = Number(topRow?.last_uid) || 0
   let backUid = null
@@ -220,20 +229,46 @@ async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } =
     if (backRow == null || backRow.last_uid == null || validityChanged) {
       topUid = tail            // abandon any old forward crawl; new mail only from here
       backUid = tail + 1       // backfill starts at the tail and walks DOWN
+      if (validityChanged) { gapHigh = null; gapLow = null; gapTouched = true }   // UIDs renumbered — the lane is meaningless
     } else {
       backUid = Number(backRow.last_uid) || (tail + 1)
     }
 
     if (box.exists > 0) {
       // 1. NEW arrivals FIRST — this must never be starved by backfill work.
-      // (The floor search below used to run before this step and could eat the
-      // whole run budget, so every run imported nothing. New mail now lands on
-      // the first run after it arrives, always.)
+      // When the hole between topUid and the tail is BIG (cron outage), the
+      // NEWEST batch imports now and the rest of the hole becomes a gap lane
+      // drained downward in step 1.5 — recent mail lands on the first pass
+      // instead of after days of oldest-first crawling.
       if (tail > topUid && processed < MAX_PER_RUN) {
-        const r = await importRange(client, admin, mailbox, direction, `${topUid + 1}:*`, topUid, deadline, processed)
+        const gapActive = gapHigh != null && gapLow != null && gapHigh > gapLow
+        const hole = tail - topUid
+        if (!gapActive && hole > MAX_PER_RUN * 2) {
+          const from = tail - MAX_PER_RUN + 1
+          const r = await importRange(client, admin, mailbox, direction, `${from}:*`, topUid, deadline, processed)
+          processed += r.processed
+          gapHigh = from - 1
+          gapLow = topUid
+          gapTouched = true
+          topUid = Math.max(topUid, r.maxUid, tail)
+          more = true
+        } else {
+          const r = await importRange(client, admin, mailbox, direction, `${topUid + 1}:*`, topUid, deadline, processed)
+          processed += r.processed
+          if (r.maxUid > topUid) topUid = r.maxUid
+          if (r.more) more = true
+        }
+      }
+
+      // 1.5 GAP LANE — drain the outage hole newest-first, one batch per run.
+      if (gapHigh != null && gapLow != null && gapHigh > gapLow &&
+          processed < MAX_PER_RUN && (!deadline || Date.now() < deadline)) {
+        const from = Math.max(gapLow + 1, gapHigh - MAX_PER_RUN + 1)
+        const r = await importRange(client, admin, mailbox, direction, `${from}:${gapHigh}`, 0, deadline, processed)
         processed += r.processed
-        if (r.maxUid > topUid) topUid = r.maxUid
-        if (r.more) more = true
+        gapHigh = from - 1
+        gapTouched = true
+        if (gapHigh > gapLow) more = true
       }
 
       // 2. BACKFILL newest-first — the batch just below the back cursor.
@@ -276,6 +311,10 @@ async function syncMailbox(client, admin, mailbox, direction, { deadline = 0 } =
   }
   if (floorComputed && floorUid != null) {
     await admin.from('email_sync_state').upsert({ mailbox: `${mailbox}:floor`, last_uid: floorUid, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
+  }
+  if (gapTouched) {
+    await admin.from('email_sync_state').upsert({ mailbox: `${mailbox}:gap_high`, last_uid: gapHigh, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
+    await admin.from('email_sync_state').upsert({ mailbox: `${mailbox}:gap_low`, last_uid: gapLow, uid_validity: uidValidity, last_run_at: stamp, updated_at: stamp }, { onConflict: 'mailbox' })
   }
   return { mailbox, processed, more }
 }

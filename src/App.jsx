@@ -14,6 +14,7 @@ const CatalogTab = lazy(() => import('./CatalogTab'))
 const SignPage = lazy(() => import('./SignPage'))
 const ApprovePage = lazy(() => import('./ApprovePage'))
 const FieldApp = lazy(() => import('./field/FieldApp'))
+const SalesKioskApp = lazy(() => import('./SalesKioskApp'))
 
 const RouteFallback = () => <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontFamily: 'system-ui, sans-serif' }}>Loading…</div>
 
@@ -510,6 +511,13 @@ const isFieldRoute = () => {
   return window.location.pathname.replace(/\/+$/, '') === '/field'
 }
 
+// /sales — STONEBOOKS SALES, the customer-facing iPad kiosk (intake + catalog
+// ONLY). Rides the device's persisted staff session; zero CRM chrome.
+const isSalesKioskRoute = () => {
+  if (typeof window === 'undefined') return false
+  return window.location.pathname.replace(/\/+$/, '') === '/sales'
+}
+
 export default function App() {
   // Trade params on any non-/trade path (old-format invite links, emails sent
   // before the /trade route existed, hand-typed links) forward to the Trade
@@ -534,6 +542,9 @@ export default function App() {
   }
   if (isFieldRoute()) {
     return <Suspense fallback={<RouteFallback />}><FieldApp /></Suspense>
+  }
+  if (isSalesKioskRoute()) {
+    return <Suspense fallback={<RouteFallback />}><SalesKioskApp /></Suspense>
   }
   if (isCatalogRoute()) {
     return <CatalogStandalone />

@@ -36,7 +36,7 @@ function cleanId(rawId) {
 
 const displayName = (m) => m.lastname || m.name || cleanId(m.id)
 
-export default function CatalogScreen({ onBack }) {
+export default function CatalogScreen({ onBack, backLabel = 'More' }) {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
@@ -80,7 +80,7 @@ export default function CatalogScreen({ onBack }) {
     <div>
       <button type="button" className="fl-rowline" onClick={onBack}
         style={{ color: '#9A7209', fontWeight: 700, fontSize: 15, minHeight: 44 }}>
-        &#8249; More
+        &#8249; {backLabel}
       </button>
 
       <div className="fl-sect" style={{ margin: '2px 2px 10px' }}>

@@ -205,7 +205,7 @@ export default function IntakeScreen({ who, onClose, onOpenLead }) {
           onPass={() => onClose()} onCancel={() => setGate(null)} />
       )}
       {gate === 'finish' && (
-        <StaffGate who={who} label="Finish and open the lead"
+        <StaffGate who={who} label={onOpenLead ? 'Finish and open the lead' : 'Finish'}
           onPass={finish} onCancel={() => setGate(null)} />
       )}
 
