@@ -1010,10 +1010,12 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     setHasDeposit(false); setNeedsAttentionOnly(false); setQuickView(null)
   }
 
-  // Large, prominent Orders · Leads · All toggle (shown in every view).
+  // Large, prominent All · Orders · Leads toggle (shown in every view).
+  // Paul's order (2026-07-20), matching the /field SalesScreen. The default
+  // view is unchanged — only the chip order.
   const viewTabs = (
     <div className="sb-leads-viewtabs">
-      {[['orders', 'Orders'], ['leads', 'Leads'], ['all', 'All']].map(([code, label]) => (
+      {[['all', 'All'], ['orders', 'Orders'], ['leads', 'Leads']].map(([code, label]) => (
         <button key={code} type="button" className={`sb-leads-viewtab${view === code ? ' on' : ''}`} onClick={() => setView(code)}>{label}</button>
       ))}
     </div>
