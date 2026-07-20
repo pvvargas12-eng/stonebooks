@@ -141,6 +141,13 @@ export async function updateEmployee(id, patch) {
     if (k && k.length < 20) return { ok: false, error: 'Field key too short.' }
     allowed.field_key = k || null
   }
+  if ('fieldTabs' in patch) {                                  // FIELD-7: the person's bottom-bar picks (or reset)
+    const t = patch.fieldTabs
+    if (t != null && (!Array.isArray(t) || t.some(x => typeof x !== 'string'))) {
+      return { ok: false, error: 'Tabs must be a list of tab keys.' }
+    }
+    allowed.field_tabs = t && t.length ? t : null
+  }
   const { error } = await supabase.from('employees').update(allowed).eq('id', id)
   if (error) {
     if (error.code === '23505') return { ok: false, error: 'That name is already on the roster.' }

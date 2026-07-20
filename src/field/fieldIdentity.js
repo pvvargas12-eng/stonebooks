@@ -10,7 +10,10 @@
 import { getActiveStaffUser, setActiveStaffUser } from '../lib/stonebooksData'
 import { getActiveEmployees, getEmployeeRows } from '../lib/employees'
 
-// The resolved identity: { name, department, isOwner } or null when unpicked.
+// The resolved identity — or null when unpicked. FIELD-7 additions: empId
+// (writes back tab prefs to the person's row), fieldKey (their private link,
+// shown in the phone Settings), fieldTabs (their chosen bottom bar; null =
+// role default, resolved in fieldTabs.js).
 export function getFieldWho() {
   const name = getActiveStaffUser()
   if (!name) return null
@@ -23,6 +26,9 @@ export function getFieldWho() {
     name,
     department: row.department || null,
     isOwner: !!row.is_owner,
+    empId: row.id,
+    fieldKey: row.field_key || null,
+    fieldTabs: Array.isArray(row.field_tabs) ? row.field_tabs : null,
   }
 }
 
