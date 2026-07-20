@@ -7846,7 +7846,14 @@ export async function generateEstimatePDF(order, opts = {}) {
         const ih = props.height * scale
         ensure(ih + 6)
         const fmt = String(raw).startsWith('data:image/png') ? 'PNG' : 'JPEG'
-        doc.addImage(raw, fmt, M + (maxW - iw) / 2, y, iw, ih)
+        // THE STRETCH BUG (Paul, 2026-07-20, round 2): buildDoc's one-page
+        // squeeze wrapper multiplies every drawn HEIGHT by S but leaves widths
+        // alone — at S<1 (long estimates) the image squashed vertically.
+        // Pre-scaling the WIDTH by the same S makes the compression uniform:
+        // the image gets smaller with the page, never distorted. (y advances
+        // in logical units — ih logical == ih*S physical, matching the drawn
+        // height exactly.)
+        doc.addImage(raw, fmt, M + (maxW - iw * S) / 2, y, iw * S, ih)
         y += ih + 6
       }
     } catch (e) { console.warn('estimate layout image failed:', e) }
