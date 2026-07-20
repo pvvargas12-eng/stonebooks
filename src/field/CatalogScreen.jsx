@@ -10,7 +10,7 @@
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
 import { fetchMonuments } from '../SalesMode'
-import { designTags } from '../lib/monumentSearch'
+import { designTags, rankDiversify } from '../lib/monumentSearch'
 
 // Same codes DesignStep filters on — m.cats includes the chip's code.
 const SHAPES = [
@@ -66,6 +66,9 @@ export default function CatalogScreen({ onBack }) {
         return hay.includes(needle)
       })
     }
+    // On All, mix the shapes (storage order is slants-first — a capped list
+    // looked like "it only searched slants") and float lastname matches up.
+    if (shape === 'all') pool = rankDiversify(pool, needle)
     return pool
   }, [rows, q, shape])
 

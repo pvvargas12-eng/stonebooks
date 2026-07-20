@@ -44,3 +44,53 @@ export function isVerseTag(tag) {
 export function designTags(tags) {
   return (tags || []).filter(t => t && !isVerseTag(t))
 }
+
+// ── "All" must actually look like all (Paul, 2026-07-20) ─────────────────────
+// The catalog's storage order is A-series-first, and the A-series photos are
+// nearly all slant markers — so any capped "All" list (first 36/40 shown)
+// reads as "it only searched slants". Round-robin across shapes so the first
+// screenful is genuinely mixed, and when there's a search, families whose
+// LASTNAME matches outrank element-only matches (lastname search is the
+// primary use). Deterministic — no randomness (React render purity).
+
+const SHAPE_ORDER = ['slant', 'double-slant', 'upright-single', 'upright-double', 'flat', 'custom-shape']
+
+function shapeOf(m) {
+  const cats = m?.cats || []
+  for (const s of SHAPE_ORDER) if (cats.includes(s)) return s
+  return 'other'
+}
+
+// Stable round-robin: one of each shape in turn until every bucket drains.
+export function diversifyByShape(list) {
+  const buckets = new Map()
+  for (const m of (list || [])) {
+    const s = shapeOf(m)
+    if (!buckets.has(s)) buckets.set(s, [])
+    buckets.get(s).push(m)
+  }
+  if (buckets.size <= 1) return [...(list || [])]
+  const order = [...SHAPE_ORDER, 'other'].filter(s => buckets.has(s))
+  const out = []
+  let i = 0
+  while (out.length < (list || []).length) {
+    const b = buckets.get(order[i % order.length])
+    if (b.length) out.push(b.shift())
+    i++
+  }
+  return out
+}
+
+// Rank search hits (lastname prefix > lastname contains > element/other match),
+// then shape-mix WITHIN each rank so no band is all slants. Empty needle =
+// plain shape mix.
+export function rankDiversify(list, needle) {
+  const q = String(needle || '').trim().toLowerCase()
+  if (!q) return diversifyByShape(list)
+  const bands = [[], [], []]
+  for (const m of (list || [])) {
+    const ln = String(m.lastname || '').toLowerCase()
+    bands[ln.startsWith(q) ? 0 : ln.includes(q) ? 1 : 2].push(m)
+  }
+  return bands.flatMap(diversifyByShape)
+}

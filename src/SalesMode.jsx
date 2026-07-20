@@ -3741,6 +3741,12 @@ function DesignStep({ order, update }) {
     if (searchText.trim()) {
       list = list.filter(m => matchesQuery(m, searchText))
     }
+    // The 'all' tab (and cross-shape symbol pulls) must not read as slants-only
+    // — storage order is A-series slants first and the sections cap what shows.
+    // Shape round-robin + lastname-match ranking (monumentSearch).
+    if (activeCategory === 'all' || hasSymbolFilters) {
+      list = rankDiversify(list, searchText)
+    }
     return list
   }, [allMonuments, activeCategory, matchColor, order.graniteColor, searchText, order.elementFilters])
 
