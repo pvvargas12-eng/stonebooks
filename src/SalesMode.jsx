@@ -37,6 +37,7 @@ import DieOverrideField from './components/DieOverrideField'
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
 import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef } from './lib/stonebooksData'
+import { designTags } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
@@ -3644,10 +3645,13 @@ function DesignStep({ order, update }) {
   }
 
   // Build the structured-only haystack (NO description / verse text — that's
-  // what was causing "Heart" to match "in our hearts" verses).
+  // what was causing "Heart" to match "in our hearts" verses). Tags are ALSO
+  // filtered through monumentSearch.designTags: the verse phrases live inside
+  // the tags array too ("Forever In Our Hearts" is a literal tag), so raw tags
+  // kept the false hearts coming (Paul, 2026-07-20).
   const structuredHaystack = (m) => [
     ...(m.cats || []),
-    ...(m.tags || []),
+    ...designTags(m.tags),
     m.lastname || '',
   ].join(' · ').toLowerCase()
 

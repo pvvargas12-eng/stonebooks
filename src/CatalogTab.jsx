@@ -19,6 +19,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from './lib/supabase'
 import { fetchAllPaged } from './lib/stonebooksData'
+import { designTags } from './lib/monumentSearch'
 
 const IMAGE_BUCKET = 'monument-images'
 const safeFileName = (n) => String(n || 'photo').replace(/[^\w.-]+/g, '_').slice(-80)
@@ -28,6 +29,7 @@ const fullUrl  = (url) => (url && url.includes('drive.google.com') ? url.replace
 
 const titleCase = (s) => String(s || '').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()).trim()
 const specLine = (m) => [m.granite_color, m.carve_type].filter(Boolean).join('  ·  ')
+
 const nameOf = (m) => titleCase(m.lastname) || titleCase(m.name) || 'Untitled'
 
 const friendlyErr = (error, what) =>
@@ -91,7 +93,11 @@ export default function CatalogTab({ onStartOrder }) {
       if (fShape && m.meta?.Type !== fShape) return false
       if (fColor && m.granite_color !== fColor) return false
       if (q) {
-        const hay = `${m.lastname || ''} ${m.name || ''} ${m.granite_color || ''} ${m.description || ''}`.toLowerCase()
+        // Lastname always; design-element tags yes; description/verse NEVER —
+        // "heart" must not match "a heartfelt design" prose or epitaph tags
+        // (Paul, 2026-07-20). Classification lives in lib/monumentSearch.
+        const hay = [m.lastname, m.name, m.granite_color, ...designTags(m.tags)]
+          .filter(Boolean).join(' ').toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -219,7 +225,7 @@ function Gallery({ monuments, filtered, search, setSearch, fShape, setFShape, sh
       </div>
 
       <div className="cat-toolbar">
-        <input className="cat-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, granite, or description" />
+        <input className="cat-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, granite, or design element" />
         <select className="cat-select" value={fShape} onChange={(e) => setFShape(e.target.value)}>
           <option value="">All shapes</option>
           {shapeOptions.map((s) => <option key={s} value={s}>{s}</option>)}

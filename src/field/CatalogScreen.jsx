@@ -10,6 +10,7 @@
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
 import { fetchMonuments } from '../SalesMode'
+import { designTags } from '../lib/monumentSearch'
 
 // Same codes DesignStep filters on — m.cats includes the chip's code.
 const SHAPES = [
@@ -58,7 +59,9 @@ export default function CatalogScreen({ onBack }) {
     const needle = q.trim().toLowerCase()
     if (needle) {
       pool = pool.filter(m => {
-        const hay = [m.lastname, m.name, cleanId(m.id), ...(m.tags || []), ...(m.cats || [])]
+        // Design-element tags only — epitaph/verse tags are excluded so
+        // "heart" finds hearts, not "Forever In Our Hearts" (monumentSearch).
+        const hay = [m.lastname, m.name, cleanId(m.id), ...designTags(m.tags), ...(m.cats || [])]
           .filter(Boolean).join(' · ').toLowerCase()
         return hay.includes(needle)
       })
