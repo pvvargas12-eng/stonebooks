@@ -21,6 +21,8 @@ import LeadsScreen from './LeadsScreen'
 import PermitsScreen from './PermitsScreen'
 import VendorsScreen from './VendorsScreen'
 import CemOrdersScreen from './CemOrdersScreen'
+import CatalogScreen from './CatalogScreen'
+import IntakeScreen from './IntakeScreen'
 
 const I = (paths) => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -29,6 +31,8 @@ const I = (paths) => (
 
 // Native phone-fit screens — the daily owner reads.
 const NATIVE = [
+  { key: 'intake',    nm: 'New lead',        ds: 'Hand the phone to the customer', ic: '<circle cx="9" cy="8" r="3.5"/><path d="M3.5 20 a5.5 5.5 0 0 1 11 0"/><line x1="18" y1="7" x2="18" y2="13"/><line x1="15" y1="10" x2="21" y2="10"/>' },
+  { key: 'catalog',   nm: 'Catalog',         ds: 'Search designs by shape or name', ic: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M3 17 l5-5 4 4 3-3 6 6"/>' },
   { key: 'money',     nm: 'Money',           ds: 'Collected, owed, past 60', ic: '<line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5.5 H9.5 a3 3 0 0 0 0 6 h5 a3 3 0 0 1 0 6 H7"/>' },
   { key: 'schedule',  nm: 'Schedule',        ds: 'Runs by day, bump a run',  ic: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10 h18 M8 3 v4 M16 3 v4"/><circle cx="12" cy="15.5" r="1.6" fill="currentColor" stroke="none"/>' },
   { key: 'approvals', nm: 'Approvals',       ds: 'Proofs out, nudge them',   ic: '<path d="M6 3 h8 l4 4 v14 h-12 z"/><path d="M14 3 v4 h4"/><path d="M9 14 l2 2 4-4.5"/>' },
@@ -42,7 +46,7 @@ const NATIVE = [
 const SCREENS = {
   money: MoneyScreen, schedule: ScheduleScreen, approvals: ApprovalsScreen,
   customers: CustomersScreen, leads: LeadsScreen, permits: PermitsScreen,
-  vendors: VendorsScreen, cemorders: CemOrdersScreen,
+  vendors: VendorsScreen, cemorders: CemOrdersScreen, catalog: CatalogScreen,
 }
 
 // Everything else rides the desktop, full-fat.
@@ -63,6 +67,13 @@ const DESKTOP = [
 
 export default function MoreScreen({ who, undo, onOpenJob, onOpenTask }) {
   const [sub, setSub] = useState(null)
+
+  // The intake takes the WHOLE screen (a customer is holding the device) —
+  // rendered outside the tab chrome; staff exit/finish is gated inside it.
+  if (sub === 'intake') {
+    return <IntakeScreen who={who} onClose={() => setSub(null)}
+      onOpenLead={(orderId) => onOpenJob({ orderId, jobId: null }, 'more')} />
+  }
 
   const Screen = sub ? SCREENS[sub] : null
   if (Screen) {

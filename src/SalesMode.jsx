@@ -1652,6 +1652,7 @@ async function loadOrder(orderId) {
 // a time because Supabase caps at 1000 per request. The result is cached on
 // the module (singleton) so reaching the Design step a second time is instant.
 let _monumentsCache = null
+// Also consumed by the /field CatalogScreen (exported below) — shares this cache.
 async function fetchMonuments() {
   if (_monumentsCache) return _monumentsCache
   let all = []

@@ -313,6 +313,12 @@ export const FIELD_CSS = `
   .fl-pin-row { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
   .fl-pin-input { font-family: "JetBrains Mono", Consolas, monospace; font-size: 22px; letter-spacing: 0.5em; text-align: center; padding: 12px 0 12px 0.5em; border: 1px solid #DAD3C2; border-radius: 12px; background: #fff; width: 100%; box-sizing: border-box; }
   .fl-cam-btn { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; background: #0F1419; color: #E8E2D4; border: none; border-radius: 12px; font-family: inherit; font-size: 14.5px; font-weight: 700; cursor: pointer; flex: 1; }
+  .fl-cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .fl-cat-card { display: flex; flex-direction: column; gap: 6px; background: #fff; border: 1px solid #E2DCCE; border-radius: 14px; padding: 8px; cursor: pointer; font-family: inherit; }
+  .fl-cat-card:active { background: #FBFAF6; }
+  .fl-cat-img { width: 100%; aspect-ratio: 4 / 5; object-fit: cover; border-radius: 9px; background: #F0ECE2; }
+  .fl-cat-noimg { display: flex; align-items: center; justify-content: center; font-size: 12px; color: #A99F8A; }
+  .fl-cat-name { font-size: 13px; font-weight: 800; color: #16150F; padding: 0 3px 3px; text-align: left; }
   .fl-menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
   .fl-menu-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; background: #fff; border: 1px solid #E2DCCE; border-radius: 14px; padding: 13px 14px; min-height: 78px; cursor: pointer; font-family: inherit; text-align: left; }
   .fl-menu-tile:active { background: #FBFAF6; }
