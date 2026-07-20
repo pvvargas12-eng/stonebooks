@@ -1,5 +1,24 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint FIELD-7 (2026-07-20 night) — SHIPPED: production floor, per-person tabs, native phone Settings
+
+Commit 44f49d5 (+ 6d1c881: BOTH Sales views land on All — desktop OrdersTab + field SalesScreen, chip order All·Orders·Leads).
+
+- **ProductionFloorScreen** — bucket lanes (To order / In shop / Blasted / Foundation / Everything; ProductionScreen's exact derivers) → tap a lane → stones with a per-row **STATUS** button opening StatusSheet with ZERO extra fetches (getJobs rows carry job+milestones+order). Refetches once when a dirty sheet closes. Default tab for Production/Installation departments.
+- **Per-person bottom tabs** — `employees.field_tabs` (migration `20260720_field_tabs.sql` ✅ APPLIED) + `src/field/fieldTabs.js` (TAB_REGISTRY today/tasks/production(FLOOR)/jobs/sales(ownerOnly)/find/more; resolveTabs sanitizes: Today first + More last locked, middle ≤4, role-gated, garbage falls back to role defaults). Edited in the phone Settings; saves live-refresh the bar (loadEmployees → setWho). Overflow tabs render as MORE's first tiles ("Not in your bar").
+- **FieldSettingsScreen** (first MORE tile, both builds): identity + switch person, copy MY field link, notification prefs, the tab editor, sign out. **MoreScreen is crew-capable**: overflow + Settings + Catalog for all; money suite (incl. New-lead intake) + desktop deep links owner-only.
+
+## PUSH + LINKS ACTIVATED (2026-07-20 night) — and the day's open threads
+
+- Paul set the 4 Vercel env vars (3 VAPID from Desktop/stonebooks-vapid-keys.txt + `FIELD_LOGIN_EMAIL=pauly_vargas@outlook.com`). Verified live: `/api/push/send?config=1` → 200; `/api/field/redeem` → invalid_key for bogus probes (armed). The sender has a whole-handler JSON crash guard + env cleaning (first configured run FUNCTION_INVOCATION_FAILED opaque — never again).
+- **Session persistence is ROUTE-SCOPED** (`src/lib/supabase.js`): /field + /sales persist (links depend on it); desktop + /trade are in-memory per visit — Paul's explicit call. autoRefreshToken on everywhere.
+- **Push subscriptions re-key by ENDPOINT to whoever the phone is picked as** (syncPushOnLaunch) — a phone that switches person moves its subscription. First sub landed as Collin (digest+payment muted via prefs — the prefs system works).
+- **OPEN: employees.is_owner is TRUE for 7 people** (Paul, Alex, Catherina, Chelsea, Denise, Lonnie, Sabina — flipped the night of 2026-07-20). Owner = money/proof pushes + bell rows + owner phone build. Paul was asked whether intentional — UNRESOLVED. If not intended: uncheck in Settings → Staff + sweep crew `payment` rows from notifications.
+- **OPEN: the Vercel cron died ~Jul 14** (email inbox froze; team is on PRO so not plan limits — root cause unknown; check the dashboard Cron Jobs page / project settings). Meanwhile: EmailTab self-syncs every 90s while open; pokePushSender covers task/reply pushes; the 7am digest depends on SOMETHING invoking the sender after 7am — if crons stay dead, digests only fire on the first poke after 7.
+- **Email sync is newest-first with a gap lane** (`${mailbox}:gap_high/:gap_low` cursors in email_sync_state): outage holes import the newest batch first, middle drains downward. Sent Mail fixed: outbound rows carry received_at (backfilled 10,477; both writers stamp it), STEP_TIMEOUT 30s, mailbox order alternates by minute parity.
+- **Estimate sheets**: layout image renders aspect-true even under the one-page squeeze (width pre-scaled by S — the wrapper multiplies heights only). No solid black bars on any PDF (ink rule, see memory feedback_pdf_style).
+- **Garcia one-click**: his estimate layout predates the auto-stamp — flip his Design status dropdown to "Layout created" once by hand.
+
 ## Sprint FIELD-6 (2026-07-20) — SHIPPED: private field links, flat crew bar, push preferences
 
 Commit 9e6da17. Three Paul directives in one slice:
