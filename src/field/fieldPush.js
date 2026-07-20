@@ -144,3 +144,32 @@ export const isPushCardDismissed = () => {
 export const dismissPushCard = () => {
   try { localStorage.setItem(DISMISS_KEY, '1') } catch { /* ignore */ }
 }
+
+// ── Per-device notification preferences (FIELD-6) ────────────────────────────
+// prefs jsonb on THIS device's push_subscriptions row: { kind: false } mutes
+// that kind's PUSHES on this phone — the in-app bell always keeps everything.
+// Absent key = on. The sender (api/push/send.js) enforces these per send.
+export async function getThisDeviceSubscription() {
+  try {
+    if (!('serviceWorker' in navigator)) return null
+    const reg = await navigator.serviceWorker.getRegistration()
+    const sub = reg ? await reg.pushManager.getSubscription() : null
+    if (!sub) return null
+    const { data, error } = await supabase
+      .from('push_subscriptions')
+      .select('id, endpoint, person_name, prefs')
+      .eq('endpoint', sub.endpoint)
+      .maybeSingle()
+    if (error) { console.warn('[push] getThisDeviceSubscription:', error.message); return null }
+    return data
+  } catch { return null }
+}
+
+export async function saveThisDevicePrefs(endpoint, prefs) {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .update({ prefs: prefs || {} })
+    .eq('endpoint', endpoint)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}

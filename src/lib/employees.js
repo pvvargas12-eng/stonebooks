@@ -136,6 +136,11 @@ export async function updateEmployee(id, patch) {
     if (p && p.length !== 4) return { ok: false, error: 'PIN must be exactly 4 digits.' }
     allowed.pin = p || null
   }
+  if ('fieldKey' in patch) {                                   // FIELD-6: private /field link token (or revoke)
+    const k = patch.fieldKey == null ? null : String(patch.fieldKey).trim()
+    if (k && k.length < 20) return { ok: false, error: 'Field key too short.' }
+    allowed.field_key = k || null
+  }
   const { error } = await supabase.from('employees').update(allowed).eq('id', id)
   if (error) {
     if (error.code === '23505') return { ok: false, error: 'That name is already on the roster.' }

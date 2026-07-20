@@ -101,6 +101,19 @@ const KIND_BY_PREFIX = {
 }
 const kindOf = (key) => KIND_BY_PREFIX[String(key).split(':')[0]] || 'note'
 
+// Per-device mute map (FIELD-6): push_subscriptions.prefs[{prefKey}] === false
+// mutes that kind's PUSHES on that device. Feed rows are untouched — the
+// in-app bell always keeps everything.
+const PREF_BY_PREFIX = {
+  assigned: 'task_assigned', reply: 'task_reply', digest: 'digest',
+  pay: 'payment', changes: 'proofs', signed: 'proofs',
+}
+const prefKeyOf = (key) => PREF_BY_PREFIX[String(key).split(':')[0]] || null
+const deviceMuted = (sub, eventKey) => {
+  const pk = prefKeyOf(eventKey)
+  return !!(pk && sub && sub.prefs && sub.prefs[pk] === false)
+}
+
 export default async function handler(req, res) {
   const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
   const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -384,6 +397,7 @@ export default async function handler(req, res) {
       badgeCount: dueByPerson[e.person] || 0,
     })
     for (const s of (subsByPerson[e.person] || [])) {
+      if (deviceMuted(s, e.key)) continue
       try {
         await webpush.sendNotification(
           { endpoint: s.endpoint, keys: s.keys || {} },

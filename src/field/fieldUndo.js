@@ -307,12 +307,25 @@ export const FIELD_CSS = `
   .fl-nav-glyph { position: relative; }
   .fl-badge { position: absolute; top: -5px; right: -10px; min-width: 16px; height: 16px; border-radius: 8px; background: #B3261E; color: #fff; font-size: 9.5px; font-weight: 800; display: flex; align-items: center; justify-content: center; padding: 0 4px; font-family: "JetBrains Mono", Consolas, monospace; }
 
+  /* ── FIELD-6: flat tab bar, both builds (Paul: "the crew tabs are
+     terrible, only the owner tab is good") — no raised center, quiet
+     labels, gold underline on the active tab. Crew's camera lives on the
+     Today screen now. ── */
+  .fl-nav { padding: 6px 6px calc(12px + env(safe-area-inset-bottom)); gap: 0; }
+  .fl-nav button { padding: 9px 2px 7px; border-radius: 10px; font-size: 9.5px; letter-spacing: 0.08em; color: #8F8770; }
+  .fl-nav button.on { color: #C9A468; background: none; }
+  .fl-nav button.on .fl-nav-glyph::after { content: ''; display: block; width: 18px; height: 3px; border-radius: 2px; background: #9A7209; margin: 3px auto -6px; }
+
   /* ── FIELD-3 grafts: header bell, picker PIN pad, Today camera button ── */
   .fl-bell { position: relative; background: none; border: none; color: #E8E2D4; cursor: pointer; padding: 6px; line-height: 0; }
   .fl-bell-badge { position: absolute; top: 0; right: 0; min-width: 15px; height: 15px; border-radius: 8px; background: #9A7209; color: #fff; font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; padding: 0 3px; font-family: "JetBrains Mono", Consolas, monospace; }
   .fl-pin-row { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
   .fl-pin-input { font-family: "JetBrains Mono", Consolas, monospace; font-size: 22px; letter-spacing: 0.5em; text-align: center; padding: 12px 0 12px 0.5em; border: 1px solid #DAD3C2; border-radius: 12px; background: #fff; width: 100%; box-sizing: border-box; }
   .fl-cam-btn { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; background: #0F1419; color: #E8E2D4; border: none; border-radius: 12px; font-family: inherit; font-size: 14.5px; font-weight: 700; cursor: pointer; flex: 1; }
+  .fl-toggle { width: 44px; height: 26px; border-radius: 13px; background: #DAD3C2; position: relative; flex-shrink: 0; transition: background .15s; }
+  .fl-toggle i { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px rgba(22,21,15,0.25); }
+  .fl-toggle.on { background: #9A7209; }
+  .fl-toggle.on i { left: 21px; }
   .fl-cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .fl-cat-card { display: flex; flex-direction: column; gap: 6px; background: #fff; border: 1px solid #E2DCCE; border-radius: 14px; padding: 8px; cursor: pointer; font-family: inherit; }
   .fl-cat-card:active { background: #FBFAF6; }

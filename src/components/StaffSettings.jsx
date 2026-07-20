@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { listEmployees, addEmployee, updateEmployee, DEPARTMENTS } from '../lib/employees'
+import { makeFieldKey, fieldLinkFor } from '../field/fieldLink'
 
 export default function StaffSettings({ canEdit = false }) {
   const [rows, setRows] = useState(null)      // null = loading
@@ -178,6 +179,7 @@ function EmployeeRow({ row, canEdit, busy, run }) {
         />
         Owner app
       </label>
+      <FieldLinkControl row={row} busy={busy} run={run} />
       {/* FIELD-3: 4-digit PIN asked at the phone's person picker; blank = no PIN */}
       <input
         type="text"
@@ -206,6 +208,47 @@ function EmployeeRow({ row, canEdit, busy, run }) {
         Remove
       </button>
     </div>
+  )
+}
+
+// FIELD-6: the private /field link — create, copy, revoke-by-regenerate.
+// Opening the link signs the phone in silently and pins it to this person;
+// regenerating kills the old link everywhere it was saved (lost phone).
+function FieldLinkControl({ row, busy, run }) {
+  const [copied, setCopied] = useState(false)
+  const [armed, setArmed] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(fieldLinkFor(row.field_key))
+      setCopied(true); setTimeout(() => setCopied(false), 1600)
+    } catch {
+      window.prompt('Copy the link:', fieldLinkFor(row.field_key))
+    }
+  }
+  if (!row.field_key) {
+    return (
+      <button type="button" className="sb-link" disabled={busy}
+        title="A private sign-in link for this person's phone — opening it signs the phone in and pins it to them. No password."
+        onClick={() => run(() => updateEmployee(row.id, { fieldKey: makeFieldKey() }), `${row.name} has a field link — copy and text it to them`)}>
+        Create field link
+      </button>
+    )
+  }
+  return (
+    <>
+      <button type="button" className="sb-link" disabled={busy} onClick={copy}>
+        {copied ? 'Copied' : 'Copy field link'}
+      </button>
+      <button type="button" className={`sb-link${armed ? ' sb-link-danger' : ''}`} disabled={busy}
+        title="Makes a new link and kills the old one everywhere it was saved (lost phone, resend, etc.)"
+        onClick={() => {
+          if (!armed) { setArmed(true); setTimeout(() => setArmed(false), 2500); return }
+          setArmed(false)
+          run(() => updateEmployee(row.id, { fieldKey: makeFieldKey() }), `${row.name}'s old link is dead — copy the new one`)
+        }}>
+        {armed ? 'Tap again — kills old link' : 'New link'}
+      </button>
+    </>
   )
 }
 

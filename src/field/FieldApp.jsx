@@ -20,6 +20,7 @@ import { listShopTasks } from '../lib/stonebooksData'
 import { loadEmployees } from '../lib/employees'
 import { useUndoToast, FIELD_CSS } from './fieldUndo'
 import { getFieldWho, setFieldWho, clearFieldWho, pickerCandidates } from './fieldIdentity'
+import { redeemFieldLinkIfPresent } from './fieldLink'
 import { getPushState, disablePush, syncPushOnLaunch } from './fieldPush'
 import { loadUnreadCount } from '../lib/notificationsFeed'
 import UndoToast from './UndoToast'
@@ -31,6 +32,7 @@ import SalesScreen from './SalesScreen'
 import MoreScreen from './MoreScreen'
 import NotificationsScreen from './NotificationsScreen'
 import PermissionSheet from './PermissionSheet'
+import NotifPrefsSheet from './NotifPrefsSheet'
 import JobDetailScreen from './JobDetailScreen'
 import CompleteScreen from './CompleteScreen'
 import { NewTaskSheet, CaptureSheet } from './fieldSheets'
@@ -132,8 +134,9 @@ function WhoPicker({ onPick }) {
 
 // ── Notifications row in the header menu — the settings surface for push ────
 // Turning ON routes through the PermissionSheet (the proper ask, mock preview
-// and all); turning OFF is a plain toggle.
-function NotifMenuRow({ onAskPush }) {
+// and all); when ON, a second row opens the per-device preference toggles;
+// turning OFF is a plain toggle.
+function NotifMenuRow({ onAskPush, onOpenPrefs }) {
   const [st, setSt] = useState(null)   // null loading | fieldPush state
   const [busy, setBusy] = useState(false)
   useEffect(() => {
@@ -160,9 +163,14 @@ function NotifMenuRow({ onAskPush }) {
     return <div className="fl-menu-note">Notifications are blocked for this app — allow them in the phone&#8217;s Settings.</div>
   }
   return (
-    <button type="button" disabled={busy || st === null} onClick={toggle}>
-      {st === null ? 'Notifications…' : st === 'on' ? 'Notifications: on' : 'Turn on notifications'}
-    </button>
+    <>
+      {st === 'on' && (
+        <button type="button" onClick={onOpenPrefs}>Notification settings</button>
+      )}
+      <button type="button" disabled={busy || st === null} onClick={toggle}>
+        {st === null ? 'Notifications…' : st === 'on' ? 'Notifications: on' : 'Turn on notifications'}
+      </button>
+    </>
   )
 }
 
@@ -193,13 +201,21 @@ export default function FieldApp() {
   const [notifOpen, setNotifOpen] = useState(false)   // the bell feed overlay
   const [unread, setUnread] = useState(0)
   const [permOpen, setPermOpen] = useState(false)     // the PermissionSheet ask
+  const [prefsOpen, setPrefsOpen] = useState(false)   // per-device push toggles
   const [pushRev, setPushRev] = useState(0)           // bumps when the sheet closes
   const fileRef = useRef(null)
   const undo = useUndoToast()
 
   useEffect(() => {
     let cancelled = false
-    getSession().then(s => { if (!cancelled) setAuthed(!!s) })
+    // Private-link sign-in first (FIELD-6): /field#k=<key> mints a persisted
+    // session and pins this phone's person; a stored key self-heals an
+    // expired session. Falls through to the normal session check.
+    ;(async () => {
+      await redeemFieldLinkIfPresent().catch(() => false)
+      const s = await getSession()
+      if (!cancelled) setAuthed(!!s)
+    })()
     const unsub = onAuthStateChange(u => setAuthed(!!u))
     return () => { cancelled = true; unsub() }
   }, [])
@@ -318,13 +334,12 @@ export default function FieldApp() {
   }
 
   const isOwner = who.isOwner
-  // Owner bar (Paul's directives, in order): no raised center button; SALES
-  // (the desktop Sales tab's Orders | Leads | All views) instead of ORDERS;
-  // MORE = every remaining Stonebooks section. Crew keeps the approved five
-  // with the raised camera capture.
+  // Both bars are flat (FIELD-6 — Paul: "the crew tabs are terrible, only
+  // the owner tab is good"): no raised center anywhere. Owner keeps his six;
+  // crew gets four clean slots and the camera lives on the Today screen.
   const TAB_DEFS = isOwner
     ? [['today', 'TODAY'], ['tasks', 'TASKS'], ['jobs', 'JOBS'], ['sales', 'SALES'], ['find', 'FIND'], ['more', 'MORE']]
-    : [['today', 'TODAY'], ['tasks', 'TASKS'], ['CENTER'], ['jobs', 'JOBS'], ['find', 'FIND']]
+    : [['today', 'TODAY'], ['tasks', 'TASKS'], ['jobs', 'JOBS'], ['find', 'FIND']]
 
   return (
     <div className="fl-shell">
@@ -347,7 +362,8 @@ export default function FieldApp() {
         {menuOpen && (
           <div className="fl-menu">
             <div className="fl-menu-role">{isOwner ? 'Owner build' : (who.department ? `${who.department} crew` : 'Crew build')}</div>
-            <NotifMenuRow onAskPush={() => { setMenuOpen(false); setPermOpen(true) }} />
+            <NotifMenuRow onAskPush={() => { setMenuOpen(false); setPermOpen(true) }}
+              onOpenPrefs={() => { setMenuOpen(false); setPrefsOpen(true) }} />
             <button type="button" onClick={() => { setMenuOpen(false); clearFieldWho(); setWho(null) }}>Switch person</button>
             <button type="button" onClick={() => { clearFieldWho(); signOut() }}>Sign out</button>
           </div>
@@ -374,7 +390,8 @@ export default function FieldApp() {
           {tab === 'today' && (
             <TodayScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
               onOpenTab={goTab} onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev}
-              onAskPush={() => setPermOpen(true)} pushRev={pushRev} />
+              onAskPush={() => setPermOpen(true)} pushRev={pushRev}
+              onCapture={!isOwner ? () => fileRef.current?.click() : null} />
           )}
           {tab === 'tasks' && (
             <TasksScreen who={who} undo={undo} onOpenJob={openJob}
@@ -413,22 +430,16 @@ export default function FieldApp() {
           onClose={() => { setPermOpen(false); setPushRev(r => r + 1) }}
           onGranted={() => { setPermOpen(false); setPushRev(r => r + 1) }} />
       )}
+      {prefsOpen && (
+        <NotifPrefsSheet who={who} onClose={() => setPrefsOpen(false)}
+          onAskPush={() => setPermOpen(true)} />
+      )}
 
       <input ref={fileRef} type="file" accept="image/*" capture="environment"
         style={{ display: 'none' }} onChange={onCapturePick} />
 
       <nav className="fl-nav">
         {TAB_DEFS.map(t => {
-          if (t[0] === 'CENTER') {
-            return (
-              <div key="center" className="fl-cta-slot">
-                <button type="button" className="fl-cta" aria-label="Take a photo"
-                  onClick={() => fileRef.current?.click()}>
-                  {GLYPH.cam}
-                </button>
-              </div>
-            )
-          }
           const [key, label] = t
           const on = !notifOpen && ((!drill && tab === key) || (drill && drill.from === key))
           return (
