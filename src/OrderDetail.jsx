@@ -76,7 +76,7 @@ const taskViewRow = (t) => ({
   actor: t.tasked_by || t.created_by || null,
   field: t.details?.phase || null,
 })
-import { generateContractPDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles, buildContractDefaults } from './SalesMode'
+import { generateContractPDF, generateEstimatePDF, generateApprovalSheetPDF, rowToOrder, ReceiptActions, SALES_REPS, salesModeStyles, buildContractDefaults } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import ContractEditor from './components/ContractEditor'
 
@@ -432,11 +432,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       const [nts, ups, pvs, ems, cps, acts, tks, sc, sa, al, outp] = await Promise.all([
         getOrderNotes(orderId),
         listOrderAttachments(orderId),
-        // Leads have no job yet — their estimate layouts are ORDER-scoped
-        // proof versions (Design Hub uploads). Without this fallback a lead's
-        // layouts were invisible here (Paul, 2026-07-20: "I still can't view
-        // the estimate layout I just created").
-        j?.id ? getProofVersions(j.id) : getProofVersionsByOrder(orderId),
+        // Layouts live in TWO scopes: job-scoped proof versions AND
+        // order-scoped ones (Design Hub estimate uploads — which happen even
+        // on orders that already carry a job, e.g. Garcia 2026-07-20). Load
+        // BOTH; job-scoped first so is_current resolution prefers the job's
+        // stack.
+        j?.id
+          ? Promise.all([getProofVersions(j.id), getProofVersionsByOrder(orderId)])
+              .then(([a, b]) => [...(a || []), ...(b || [])])
+          : getProofVersionsByOrder(orderId),
         (o.customer_id || o.id) ? getMessageThread({ customerId: o.customer_id, orderId: o.id }).then(r => r.messages || []) : Promise.resolve([]),
         listCompletionPhotos(orderId),
         getOrderActivity(orderId),
@@ -831,6 +835,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!up.ok) { setProofUpBusy(false); setActionNote(`Upload failed — ${up.error}.`); return }
     const { error } = await createProofVersion({ jobId: job.id, layoutImageUrl: up.url, uploadedBy: who })
     if (error) { setProofUpBusy(false); setActionNote(`Could not create the proof version — ${error.message}.`); return }
+    // A layout now exists → the design status must not read "Not created"
+    // (Paul, 2026-07-20). Only ever stamps UP from not_created — an order
+    // already sent/approved is never dragged backwards by a re-upload.
+    if (deriveDesignStatus(job) === 'not_created') {
+      await setOrderDesignStatus(job.id, 'layout_created').catch(() => {})
+      await refreshJob?.()
+    }
     await refreshProofs()
     setProofUpBusy(false)
     setActionNote('Proof uploaded. Send it for approval, or Mark approved if the family already signed off.')
@@ -1228,7 +1239,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   }
 
   // ── Design / proof quick-edit (internal notes + email the approval link) ─────
-  const refreshProofs = async () => { if (job?.id) setProofVers(await getProofVersions(job.id)) }
+  // Same two-scope union as the initial load — order-scoped estimate layouts
+  // must survive a refresh too.
+  const refreshProofs = async () => {
+    const [a, b] = await Promise.all([
+      job?.id ? getProofVersions(job.id) : Promise.resolve([]),
+      getProofVersionsByOrder(orderId),
+    ])
+    setProofVers([...(a || []), ...(b || [])])
+  }
   const seedDesignDraft = () => {
     const proof = proofVers.find(p => p.is_current) || proofVers[0]
     setDesignNotesDraft(proof?.notes || '')
@@ -1259,6 +1278,23 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       approvalLinkId: active?.id || null,
       busy: false, error: null, sent: false,
     })
+  }
+
+  // ESTIMATE SHEET (Paul, 2026-07-20): the uploaded layout ON a one-page
+  // estimate — the estimate PDF already em-dashes per-item rates and shows
+  // the final price; the layout image renders above the line items.
+  const [sheetBusy, setSheetBusy] = useState(false)
+  const downloadEstimateSheet = async (layoutImageUrl) => {
+    if (sheetBusy) return
+    setSheetBusy(true)
+    try {
+      const camel = rowToOrder(order, order.customer, order.cemetery)
+      const { doc } = await generateEstimatePDF(camel, { returnDoc: true, layoutImageUrl })
+      const base = String(order.primary_lastname || order.order_number || 'estimate').replace(/[^\w-]+/g, '_')
+      doc.save(`${base}-estimate-layout.pdf`)
+    } catch (e) {
+      setActionNote(`Estimate sheet failed — ${e?.message || e}.`)
+    } finally { setSheetBusy(false) }
   }
 
   // ── Financial quick add-payment (Financial card ⋯) ──────────────────────────
@@ -1809,8 +1845,10 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       onOpen: previewSignedApproval, signedApproval: true,
     }] : []),
     ...proofVers.filter(v => v.layout_image_url).map(v => ({
-      key: `proof-${v.id}`, kind: 'Layout proof', label: `Layout v${v.version_number}`,
+      key: `proof-${v.id}`, kind: 'Layout proof',
+      label: `${v.order_id ? 'Estimate layout' : 'Layout'} v${v.version_number}`,
       sub: v.uploaded_at ? fmtDate(v.uploaded_at) : null, href: v.layout_image_url,
+      estimateSheet: v.layout_image_url,
     })),
     ...proofVers.filter(v => v.signature_url).map(v => ({
       key: `sig-${v.id}`, kind: 'Signature', label: `Signature v${v.version_number}`,
@@ -2635,6 +2673,13 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                         href={`${a.href}${a.href.includes('?') ? '&' : '?'}download=${encodeURIComponent((a.label || 'file').replace(/[^\w.() -]+/g, '_'))}`}>
                         Download
                       </a>
+                    )}
+                    {a.estimateSheet && (
+                      <button type="button" className="sb-od-link sb-od-attach-open" disabled={sheetBusy}
+                        title="The layout on a one-page estimate — line items with per-item prices hidden, final price shown"
+                        onClick={() => downloadEstimateSheet(a.estimateSheet)}>
+                        {sheetBusy ? 'Building…' : 'Estimate sheet'}
+                      </button>
                     )}
                     {a.signed && (
                       <button type="button" className="sb-od-link sb-od-attach-del" onClick={() => setOverrideModal({ reason: '', busy: false, error: null })}>Override</button>

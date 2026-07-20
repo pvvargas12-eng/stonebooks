@@ -4690,12 +4690,20 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // index holds and the is_current row carries cleanly. order_id is nulled to keep
   // the XOR owner. Best-effort: a re-link miss must not fail job creation.
   try {
-    const { error: relinkErr } = await supabase
+    const { data: relinked, error: relinkErr } = await supabase
       .from('proof_versions')
       .update({ job_id: job.id, order_id: null })
       .eq('order_id', order.id)
       .is('job_id', null)
+      .select('id')
     if (relinkErr) console.warn('[proof] lead-layout re-link failed:', relinkErr.message)
+    // A carried layout means design work exists — stamp the design status so
+    // the new job doesn't read "Not created" over a finished estimate layout
+    // (Paul, 2026-07-20). Best-effort; never blocks job creation.
+    if ((relinked || []).length > 0) {
+      try { await setOrderDesignStatus(job.id, 'layout_created') }
+      catch (e) { console.warn('[proof] carryover design stamp failed:', e?.message) }
+    }
   } catch (e) { console.warn('[proof] lead-layout re-link failed:', e?.message) }
 
   // 6. Write job_created event.

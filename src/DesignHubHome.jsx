@@ -30,7 +30,9 @@ import {
   getCurrentStaffName,
   getProofVersionsByOrder, getProofVersions, uploadProofLayout, createProofVersion,
   sendShopEmail, markApprovalLinkEmailed, addShopTask,
+  getJobByOrderId, deriveDesignStatus,
 } from './lib/stonebooksData'
+import { generateEstimatePDF, rowToOrder } from './SalesMode'
 
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
 const pad = (n) => String(n).padStart(2, '0')
@@ -367,12 +369,20 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
   const [orderProof, setOrderProof] = useState(null) // current proof for the target
   const openUploader = useCallback(async (order, job = null) => {
     setUploadFor({ order, job }); setUploadErr(null); setOrderProof(null)
-    const vers = job
-      ? await getProofVersions(job.id).catch(() => [])
-      : await getProofVersionsByOrder(order.id).catch(() => [])
-    // Full stack, newest first — the modal doubles as the viewer (Paul,
-    // 2026-07-20: uploaded 2 options and couldn't see or download either).
-    setOrderProof(vers || [])
+    // An "estimate" row can still carry a job (Garcia, 2026-07-20: check-job
+    // era leads). Look one up so the upload lands JOB-scoped where one exists
+    // — order-scoped uploads on jobful orders were invisible on the order.
+    if (!job) {
+      job = await getJobByOrderId(order.id).catch(() => null)
+      if (job) setUploadFor({ order, job })
+    }
+    // BOTH scopes — the modal doubles as the viewer (Paul, 2026-07-20:
+    // uploaded a layout and couldn't see or download it).
+    const [a, b] = await Promise.all([
+      job ? getProofVersions(job.id).catch(() => []) : Promise.resolve([]),
+      getProofVersionsByOrder(order.id).catch(() => []),
+    ])
+    setOrderProof([...(a || []), ...(b || [])])
   }, [])
   const closeUploader = () => { if (!uploadBusy) { setUploadFor(null); setUploadErr(null); setOrderProof(null) } }
   const onPickLayout = useCallback(async (e) => {
@@ -391,10 +401,34 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
       : { orderId: order.id, layoutImageUrl: up.url, uploadedBy: me })
     setUploadBusy(false)
     if (error) { setUploadErr(error.message || 'Could not save the layout.'); return }
+    // A layout now exists → design status reads "Layout created" (Paul,
+    // 2026-07-20). Stamps UP from not_created only — never drags a
+    // sent/approved order backwards.
+    if (job && deriveDesignStatus(job) === 'not_created') {
+      await setOrderDesignStatus(job.id, 'layout_created').catch(() => {})
+    }
     setUploadFor(null); setOrderProof(null)
     await onReload?.()
   }, [uploadFor, onReload])
   const hasLayout = (orderId) => !!(currentProofOrderIds && currentProofOrderIds.has(orderId))
+
+  // ESTIMATE SHEET (Paul, 2026-07-20): the layout ON a one-page estimate —
+  // the estimate PDF already hides per-item rates and shows the final price;
+  // the layout image renders above the line items.
+  const [sheetBusyId, setSheetBusyId] = useState(null)
+  const downloadEstimateSheet = useCallback(async (v) => {
+    if (!uploadFor?.order || sheetBusyId) return
+    setSheetBusyId(v.id); setUploadErr(null)
+    try {
+      const o = uploadFor.order
+      const camel = rowToOrder(o, o.customer, o.cemetery)
+      const { doc } = await generateEstimatePDF(camel, { returnDoc: true, layoutImageUrl: v.layout_image_url })
+      const base = String(o.primary_lastname || o.order_number || 'estimate').replace(/[^\w-]+/g, '_')
+      doc.save(`${base}-estimate-layout.pdf`)
+    } catch (e) {
+      setUploadErr(`Estimate sheet failed — ${e?.message || e}.`)
+    } finally { setSheetBusyId(null) }
+  }, [uploadFor, sheetBusyId])
 
   // ── Search safety net (Paul, 2026-07-14: "yager won't come up ANYWHERE") ────
   // A search that misses the job rows falls back to matching ORDERS — signed
@@ -725,11 +759,21 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                   <div className="sb-dh2-modal-verrow">
                     <span className="sb-dh2-modal-cur">v{v.version_number}{v.is_current ? ' — current' : ''}</span>
                     <a className="sb-dh2-verlink" href={v.layout_image_url} target="_blank" rel="noreferrer">View full size</a>
-                    <a className="sb-dh2-verlink" href={dl}>Download</a>
+                    <a className="sb-dh2-verlink" href={dl}>Download image</a>
+                    <button type="button" className="sb-dh2-verlink sb-dh2-verlink-btn" disabled={sheetBusyId === v.id}
+                      title="The layout on a one-page estimate — line items with per-item prices hidden, final price shown"
+                      onClick={() => downloadEstimateSheet(v)}>
+                      {sheetBusyId === v.id ? 'Building…' : 'Estimate sheet'}
+                    </button>
                   </div>
                 </div>
               )
             })}
+            {uploadFor && !uploadFor.job && Array.isArray(orderProof) && orderProof.length > 0 && (
+              <div className="sb-dh2-modal-sub" style={{ marginTop: -6 }}>
+                This is a pre-contract estimate layout — it carries onto the job automatically at signing.
+              </div>
+            )}
             {uploadErr && <div className="sb-dh2-modal-err">{uploadErr}</div>}
             <label className="sb-dh2-modal-uplabel">
               <input type="file" accept="image/jpeg,image/png" onChange={onPickLayout} disabled={uploadBusy} style={{ display: 'none' }} />
@@ -845,6 +889,8 @@ const CSS = `
   .sb-dh2-modal-verrow { display: flex; align-items: center; gap: 14px; margin-top: 5px; }
   .sb-dh2-verlink { font-size: 12.5px; font-weight: 700; color: #9A7209; text-decoration: none; }
   .sb-dh2-verlink:hover { text-decoration: underline; }
+  .sb-dh2-verlink-btn { background: none; border: none; font: inherit; font-size: 12.5px; font-weight: 700; color: #9A7209; cursor: pointer; padding: 0; }
+  .sb-dh2-verlink-btn:disabled { opacity: 0.6; cursor: default; }
   .sb-dh2-modal-err { font-size: 12.5px; color: #b3261e; background: rgba(179,38,30,.06); border: 0.5px solid rgba(179,38,30,.3); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
   .sb-dh2-modal-uplabel { display: block; cursor: pointer; margin-bottom: 10px; }
   .sb-dh2-modal-uplabel .sb-dh2-createbtn { display: block; text-align: center; padding: 10px; }

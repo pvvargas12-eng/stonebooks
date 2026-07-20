@@ -7820,6 +7820,27 @@ export async function generateEstimatePDF(order, opts = {}) {
   // else (new layout, non-inscription) → NO spec box; pricing is the first box.
 
   // ============================ DESIGN ===================================
+  // ESTIMATE SHEET (Paul, 2026-07-20): when a layout proof image is passed,
+  // render it big on the estimate — the customer sees THEIR layout above the
+  // line items (whose per-item rates stay em-dashed) and the final price.
+  // Estimate-only; contracts are unchanged.
+  if (!isContract && opts.layoutImageUrl) {
+    try {
+      const raw = await urlToDataURL(opts.layoutImageUrl)
+      if (raw) {
+        const props = doc.getImageProperties(raw)
+        const maxW = W - M - M
+        const maxH = 110
+        const scale = Math.min(maxW / props.width, maxH / props.height)
+        const iw = props.width * scale
+        const ih = props.height * scale
+        sectionHeader('Estimate Layout')
+        ensure(ih + 6)
+        doc.addImage(raw, props.fileType || 'JPEG', M + (maxW - iw) / 2, y, iw, ih)
+        y += ih + 6
+      }
+    } catch (e) { console.warn('estimate layout image failed:', e) }
+  }
   // Sprint 3r.2 — contracts no longer render the design reference (per
   // user direction). Estimates still show the PRIMARY design only;
   // alternates are inspiration for the carver and don't appear in either PDF.
