@@ -169,7 +169,16 @@ export default function WeekWorkbench({
         </div>
       </div>
 
-      <BlockedInstalls rows={blockedInstalls} />
+      <BlockedInstalls
+        rows={blockedInstalls}
+        onScheduleAnyway={(row) => setBuilderInit({
+          // Row already carries { job, milestone, completion_milestone_key } —
+          // the exact stop-bundle shape. gate_note marks it as an override in
+          // the builder's stop list.
+          jobs: [{ ...row, gate_note: (row.reasons || [])[0] || null }],
+          defaultKind: 'setting',
+        })}
+      />
 
       <div className="sb-workbench-columns">
         {BATCH_KINDS.map(k => (
@@ -199,13 +208,14 @@ export default function WeekWorkbench({
   )
 }
 
-// Blocked installs — jobs that have reached ready_to_install but are NOT
-// safe to put a crew on the road for (permit not approved / foundation not
-// poured / stone not received). Surfaced loudly above the columns so the
-// scheduler can tell "no installs ready" from "installs ready but blocked —
-// go clear the permit." Read-only: the fix lives in the Permit Hub / job
-// milestones, not here. Hidden entirely when nothing is blocked.
-function BlockedInstalls({ rows }) {
+// Blocked installs — jobs that have reached ready_to_install but fail the
+// set-gate (permit not approved / foundation not poured / stone not received).
+// Surfaced loudly above the columns so the scheduler can tell "no installs
+// ready" from "installs ready but blocked — go clear the permit." SCHED-1:
+// no longer read-only — every row carries "Schedule anyway" (Paul's rule:
+// gates inform, the operator decides). The reason chip rides along into the
+// builder's stop list as the override tag. Hidden when nothing is blocked.
+function BlockedInstalls({ rows, onScheduleAnyway }) {
   if (!rows || rows.length === 0) return null
   return (
     <div className="sb-wb-blocked">
@@ -214,7 +224,8 @@ function BlockedInstalls({ rows }) {
         <span className="sb-wb-blocked-count">{rows.length}</span>
       </div>
       <div className="sb-wb-blocked-rows">
-        {rows.map(({ job, reasons }) => {
+        {rows.map((row) => {
+          const { job, reasons } = row
           const surname = job.order?.primary_lastname
             || customerName(job.order?.customer)
             || 'Unnamed'
@@ -230,6 +241,16 @@ function BlockedInstalls({ rows }) {
                   <span key={r} className="sb-wb-blocked-reason">{r}</span>
                 ))}
               </div>
+              {onScheduleAnyway && (
+                <button
+                  type="button"
+                  className="sb-wb-blocked-anyway"
+                  onClick={() => onScheduleAnyway(row)}
+                  title="Open the batch builder with this stone — the gate reason rides along"
+                >
+                  Schedule anyway →
+                </button>
+              )}
             </div>
           )
         })}
@@ -460,6 +481,19 @@ const localStyles = `
     border-radius: 999px;
     padding: 2px 9px;
   }
+  .sb-wb-blocked-anyway {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--sb-accent, #b8842a);
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    margin-left: auto;
+  }
+  .sb-wb-blocked-anyway:hover { text-decoration: underline; }
 `
 
 if (typeof document !== 'undefined' && !document.getElementById('sb-workbench-styles')) {

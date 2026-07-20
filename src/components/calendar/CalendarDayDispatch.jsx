@@ -10,8 +10,9 @@
 // status without leaving the dispatch sheet.
 // =============================================================================
 
-import { useState, useCallback } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import {
+  addJobsToBatch,
   batchKindInfo,
   customerName,
   fmtDate,
@@ -21,15 +22,40 @@ import {
   reorderBatchStops,
 } from '../../lib/stonebooksData'
 import PromiseBadge from '../scheduler/PromiseBadge'
+import StopSearchPicker from '../scheduler/StopSearchPicker'
 
-export default function CalendarDayDispatch({ batch, promisesByJob, actorName, actorUserId, onCascadeWarning, onRequestUnmark, onUnschedule, onCompleted, onReload }) {
+export default function CalendarDayDispatch({ batch, allJobs, promisesByJob, actorName, actorUserId, onCascadeWarning, onRequestUnmark, onUnschedule, onCompleted, onReload }) {
   const [busyStopId, setBusyStopId] = useState(null)
   const [statusBusy, setStatusBusy] = useState(false)
   const [error, setError] = useState(null)
   const [dragSrcJobId, setDragSrcJobId] = useState(null)
+  // SCHED-1: append-to-this-list. The picker searches every open order; a
+  // pick inserts a link row at the end of the run via addJobsToBatch.
+  const [addOpen, setAddOpen] = useState(false)
+  const [addBusy, setAddBusy] = useState(false)
 
   const kindInfo = batchKindInfo(batch.kind)
   const stops = batch.stops || []
+  const stopJobIds = useMemo(() => new Set(stops.map(s => s.job_id)), [stops])
+  const canAddStops = !!allJobs && batch.status !== 'completed' && batch.status !== 'cancelled'
+    && batch.kind !== 'site_visit' && batch.kind !== 'errand'
+
+  const handleAddStop = async (bundle) => {
+    if (addBusy || !bundle?.job?.id) return
+    setAddBusy(true)
+    setError(null)
+    const res = await addJobsToBatch(batch.id, [{
+      job_id:                   bundle.job.id,
+      source_milestone_key:     bundle.milestone?.milestone_key || null,
+      completion_milestone_key: bundle.completion_milestone_key || null,
+    }])
+    setAddBusy(false)
+    if (!res.ok) {
+      setError(res.error || 'Failed to add the stop.')
+      return
+    }
+    onReload?.()
+  }
   const mileage = batch.mileage || { total_miles: 0, estimated_minutes: 0, leg_miles: [] }
   const isLate = batch.status === 'running_late'
 
@@ -130,6 +156,16 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
           >
             {isLate ? 'Running late ✓' : 'Mark running late'}
           </button>
+          {canAddStops && (
+            <button
+              type="button"
+              className={`sb-dispatch-addstop ${addOpen ? 'sb-dispatch-addstop-on' : ''}`}
+              onClick={() => setAddOpen(v => !v)}
+              title="Add any order to this list"
+            >
+              {addOpen ? 'Close' : '+ Add stop'}
+            </button>
+          )}
           {onUnschedule && (
             <button
               type="button"
@@ -142,6 +178,18 @@ export default function CalendarDayDispatch({ batch, promisesByJob, actorName, a
           )}
         </div>
       </header>
+
+      {addOpen && canAddStops && (
+        <div className="sb-dispatch-addstop-panel">
+          <StopSearchPicker
+            allJobs={allJobs}
+            kind={batch.kind}
+            excludeIds={stopJobIds}
+            onAdd={handleAddStop}
+          />
+          {addBusy && <div className="sb-dispatch-addstop-busy">Adding…</div>}
+        </div>
+      )}
 
       {batch.notes && (
         <div className="sb-dispatch-notes">{batch.notes}</div>
@@ -348,6 +396,32 @@ const localStyles = `
     background: var(--sb-amber, #b8842a);
     border-color: var(--sb-amber, #b8842a);
     color: white;
+  }
+  .sb-dispatch-addstop {
+    background: transparent;
+    border: 0.5px solid var(--sb-accent, #b8842a);
+    color: var(--sb-accent, #b8842a);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: var(--sb-r-sm, 6px);
+    cursor: pointer;
+  }
+  .sb-dispatch-addstop:hover,
+  .sb-dispatch-addstop-on {
+    background: var(--sb-accent, #b8842a);
+    color: white;
+  }
+  .sb-dispatch-addstop-panel {
+    padding: 2px 0 10px;
+    border-bottom: 0.5px solid var(--sb-border);
+    margin-bottom: 10px;
+  }
+  .sb-dispatch-addstop-busy {
+    font-size: 11px;
+    color: var(--sb-text-muted);
+    padding: 4px 2px 0;
   }
   .sb-dispatch-unschedule {
     background: transparent;

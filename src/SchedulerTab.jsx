@@ -454,6 +454,7 @@ export default function SchedulerTab({ variant = 'scheduler', user, profile, onO
           <CalendarDay
             date={anchor}
             batches={dayBatches || batches}
+            allJobs={jobs}
             carryover={carryover}
             promisesByJob={promisesByJob}
             actorName={actorName}

@@ -27,6 +27,7 @@ import CompletionPhotoUploader from '../CompletionPhotoUploader'
 export default function CalendarDay({
   date,
   batches,
+  allJobs,
   carryover,
   promisesByJob,
   actorName,
@@ -166,6 +167,7 @@ export default function CalendarDay({
             <CalendarDayDispatch
               key={b.id}
               batch={b}
+              allJobs={allJobs}
               promisesByJob={promisesByJob}
               actorName={actorName}
               actorUserId={actorUserId}

@@ -19,6 +19,7 @@ import {
 } from '../../lib/stonebooksData'
 import { TEAM_ROSTER } from '../../lib/team'
 import TripSuggestionsPanel from './TripSuggestionsPanel'
+import StopSearchPicker from './StopSearchPicker'
 
 export default function BatchBuilder({
   open,
@@ -89,6 +90,18 @@ export default function BatchBuilder({
   const handleAdd = (job) => {
     if (!job?.id || selectedIds.has(job.id)) return
     setJobs(prev => [...prev, { job }])
+  }
+  // SCHED-1: the any-order picker hands back a full stop bundle — job +
+  // milestone provenance (when the pick legitimately routes for this kind)
+  // + gate_note (when it's an operator override). Same shape the workbench
+  // ticks carry, so the save path below needs no changes.
+  const handleAddBundle = (bundle) => {
+    if (!bundle?.job?.id || selectedIds.has(bundle.job.id)) return
+    setJobs(prev => [...prev, bundle])
+    // First pick with no destination set → adopt that job's cemetery, so the
+    // save button isn't gated on a field the pick already implies.
+    const cemId = bundle.job?.order?.cemetery_id || bundle.job?.order?.cemetery?.id || bundle.job?.cemetery?.id
+    if (!destinationId && cemId) setDestinationId(cemId)
   }
   const handleRemove = (jobId) => {
     setJobs(prev => prev.filter(j => j.job?.id !== jobId))
@@ -242,25 +255,28 @@ export default function BatchBuilder({
 
             <div className="sb-batch-builder-stops">
               <div className="sb-batch-builder-label">Stops</div>
+              {/* SCHED-1: the complete-orders picker — ready list on focus,
+                  EVERY open order searchable, gates shown as chips not walls.
+                  Hidden for ad-hoc kinds (they're calendar-only events). */}
+              {!isAdHoc && (
+                <StopSearchPicker
+                  allJobs={allJobs}
+                  kind={kind}
+                  excludeIds={selectedIds}
+                  onAdd={handleAddBundle}
+                />
+              )}
               {jobs.length === 0 && (
                 <div className="sb-batch-builder-stops-empty">
-                  {/* Branched copy per kind/state: spatial pointer ("from the
-                      panel on the right →") rather than referring to the
-                      panel by its proper name (operator may not know what
-                      "Trip Suggestions" means out of context). For ad-hoc
-                      kinds we explicitly tell the operator no stops needed
-                      so they don't hunt for a way to add one. */}
                   {isAdHoc
                     ? `No stops needed — ${kindInfo.label.toLowerCase()} batches are calendar-only events.`
                     : (requiresDestination && destinationId
-                        ? 'Pick stops from the panel on the right →'
-                        : (requiresDestination
-                            ? 'Set a destination cemetery to see jobs there, or close and tick cards in the workbench.'
-                            : 'Close this modal and tick the cards you want in the workbench.'))}
+                        ? 'Search any order above, or pick from the panel on the right →'
+                        : 'Search any order above — the ready list appears when you tap the box.')}
                 </div>
               )}
               <ul className="sb-batch-builder-stop-list">
-                {jobs.map(({ job }, idx) => {
+                {jobs.map(({ job, gate_note }, idx) => {
                   const surname = job.order?.primary_lastname
                     || customerName(job.order?.customer)
                     || '—'
@@ -272,6 +288,11 @@ export default function BatchBuilder({
                         <span className="sb-batch-builder-stop-name">{surname}</span>
                         {cem && (
                           <span className="sb-batch-builder-stop-cem">{cem}</span>
+                        )}
+                        {/* Operator-override honesty tag: this stop was added
+                            past a gate the columns would have enforced. */}
+                        {gate_note && (
+                          <span className="sb-batch-builder-stop-gate">{gate_note}</span>
                         )}
                       </span>
                       <button
@@ -491,6 +512,17 @@ const localStyles = `
   .sb-batch-builder-stop-cem {
     font-size: 11px;
     color: var(--sb-text-muted);
+  }
+  .sb-batch-builder-stop-gate {
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--sb-amber, #b8842a);
+    border: 0.5px solid var(--sb-amber, #b8842a);
+    border-radius: 999px;
+    padding: 1px 7px;
+    white-space: nowrap;
   }
   .sb-batch-builder-stop-remove {
     background: transparent;

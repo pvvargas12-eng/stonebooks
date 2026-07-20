@@ -10944,15 +10944,40 @@ export async function deleteBatch(id) {
   return { ok: true }
 }
 
-export async function addJobToBatch(batchId, jobId, stop_order = null) {
-  if (!batchId || !jobId) return { ok: false, error: 'Missing batchId or jobId' }
-  const { error } = await supabase.from('work_batch_jobs').insert({
-    batch_id: batchId,
-    job_id:   jobId,
-    stop_order,
-  })
-  if (error) return { ok: false, error: error.message }
-  return { ok: true }
+// Append stops to an EXISTING batch — the "add any order to the install list"
+// path (SCHED-1, 2026-07-20). Paul's rule: the ready columns are the default,
+// but ANY order must be addable to a list. Skips jobs already linked to this
+// batch (whatever their completion state) so a double-tap can't double-book a
+// stop. stop_order continues after the current max so appended stops land at
+// the end of the run; NULL for non-trip kinds (same rule as createBatch).
+// Stops shape matches createBatch: [{ job_id, source_milestone_key,
+// completion_milestone_key }] — NULL keys = no cascade on completion.
+export async function addJobsToBatch(batchId, stops) {
+  if (!batchId) return { ok: false, error: 'Missing batchId' }
+  const wanted = (Array.isArray(stops) ? stops : []).filter(s => s && s.job_id)
+  if (wanted.length === 0) return { ok: false, error: 'No stops to add' }
+  const { data: batch, error: bErr } = await supabase
+    .from('work_batches').select('id, kind').eq('id', batchId).single()
+  if (bErr || !batch) return { ok: false, error: bErr?.message || 'Batch not found' }
+  const { data: existing, error: eErr } = await supabase
+    .from('work_batch_jobs').select('job_id, stop_order').eq('batch_id', batchId)
+  if (eErr) return { ok: false, error: eErr.message }
+  const already = new Set((existing || []).map(r => r.job_id))
+  const fresh = wanted.filter(s => !already.has(s.job_id))
+  if (fresh.length === 0) return { ok: true, added: 0, skipped: wanted.length }
+  const isTrip = batchKindInfo(batch.kind).isField
+  let nextOrder = (existing || []).reduce((m, r) => Math.max(m, r.stop_order || 0), 0)
+  const links = fresh.map(s => ({
+    batch_id:                 batchId,
+    job_id:                   s.job_id,
+    stop_order:               isTrip ? ++nextOrder : null,
+    // Migration L CHECK rejects empty strings — normalize falsy → NULL.
+    source_milestone_key:     s.source_milestone_key     || null,
+    completion_milestone_key: s.completion_milestone_key || null,
+  }))
+  const { error: insErr } = await supabase.from('work_batch_jobs').insert(links)
+  if (insErr) return { ok: false, error: insErr.message }
+  return { ok: true, added: fresh.length, skipped: wanted.length - fresh.length }
 }
 
 export async function removeJobFromBatch(batchId, jobId) {
@@ -11289,6 +11314,77 @@ function routeReadyWork(m, job) {
     if (job.service_kind === 'repair')    return { kind: 'repair',    completion: m.milestone_key, guard: null }
   }
   return null
+}
+
+// ── ANY-ORDER STOP ROUTING (SCHED-1) ────────────────────────────────────────
+// The operator override: given ANY job and a batch kind, work out which
+// milestone keys the stop should carry so the dispatch-tick cascade still
+// fires when the pick happens to be a legitimate route — and an honest
+// readiness verdict for the picker chip when it isn't. Third consumer of the
+// milestone routing above (with READY_WORK_ROUTES + getSchedulableJobs); keep
+// the key names in lockstep.
+//   ready — true when this job would qualify for the kind's scheduler column
+//           (same gates: actionable source milestone, and for setting the
+//           full set-gate via setBlockReason).
+//   note  — the plain-words reason shown when NOT ready ('Not paid in full',
+//           'Not at install stage yet', 'Already installed', …). NULL when
+//           ready or when the kind has no routing at all (ad-hoc kinds).
+// A not-ready pick is still addable — keys are wired wherever they exist so
+// the milestone advances if its requires are satisfied by dispatch day; the
+// (T3) review banner catches the ones that don't.
+export function routeStopForKind(job, kind) {
+  const none = (note) => ({ source_milestone_key: null, completion_milestone_key: null, ready: false, note })
+  if (!job) return none('No job')
+  const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+  const done = (key) => { const m = byKey.get(key); return !!m && (m.status === 'done' || m.status === 'not_needed') }
+  const open = (key) => { const m = byKey.get(key); return !!m && m.status !== 'done' && m.status !== 'not_needed' }
+
+  if (kind === 'setting' || kind === 'delivery') {
+    if (done('installed')) return none('Already installed')
+    const src  = open('ready_to_install') ? 'ready_to_install' : null
+    const comp = byKey.has('installed') ? 'installed' : null
+    const gate = (kind === 'setting') ? setBlockReason(job.order, job) : null
+    const ready = !!src && !gate
+    return {
+      source_milestone_key: src, completion_milestone_key: comp, ready,
+      note: ready ? null : (src ? gate : 'Not at install stage yet'),
+    }
+  }
+  if (kind === 'inscription') {
+    if (!byKey.has('stencil_cut')) return none('No inscription step on this job')
+    if (done('stencil_cut'))       return none('Already inscribed')
+    return { source_milestone_key: 'stencil_cut', completion_milestone_key: null, ready: open('stencil_cut'), note: open('stencil_cut') ? null : 'Stencil step not open yet' }
+  }
+  if (kind === 'blasting') {
+    if (done('production_completed')) return none('Already blasted')
+    const src  = open('production_started') ? 'production_started' : null
+    const comp = byKey.has('production_completed') ? 'production_completed' : null
+    return { source_milestone_key: src, completion_milestone_key: comp, ready: !!src, note: src ? null : 'Not at blasting stage yet' }
+  }
+  if (kind === 'foundation_trip') {
+    if (done('foundation_poured')) return none('Foundation already in')
+    const src = open('foundation_poured') ? 'foundation_poured' : null
+    return { source_milestone_key: src, completion_milestone_key: src ? 'foundation_poured' : null, ready: !!src, note: src ? null : 'No foundation step open' }
+  }
+  if (kind === 'door_trip') {
+    if (open('door_pickup_needed') && !done('door_picked_up'))
+      return { source_milestone_key: 'door_pickup_needed', completion_milestone_key: 'door_picked_up', ready: true, note: null }
+    if (open('door_dropoff_needed') && !done('door_installed'))
+      return { source_milestone_key: 'door_dropoff_needed', completion_milestone_key: 'door_installed', ready: true, note: null }
+    return none('No door leg open')
+  }
+  if (kind === 'acid_wash' || kind === 'repair') {
+    if (job.job_type === 'cleaning_repair' && job.service_kind === kind) {
+      const m = (job.milestones || []).find(x =>
+        x.status !== 'done' && x.status !== 'not_needed' && CLEANING_REPAIR_GROUPS.has(x.group))
+      if (m) return { source_milestone_key: m.milestone_key, completion_milestone_key: m.milestone_key, ready: true, note: null }
+      return none('No open service step')
+    }
+    return none(kind === 'acid_wash' ? 'Not an acid-wash job' : 'Not a repair job')
+  }
+  // Ad-hoc kinds (site_visit / errand) and anything future — no routing, any
+  // stop is fine, no chip.
+  return { source_milestone_key: null, completion_milestone_key: null, ready: true, note: null }
 }
 
 export function getSchedulableJobs(jobs, batches) {
