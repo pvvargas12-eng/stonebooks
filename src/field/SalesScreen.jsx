@@ -12,7 +12,9 @@
 import { useState } from 'react'
 import OrdersScreen from './OrdersScreen'
 
-const VIEWS = [['orders', 'Orders'], ['leads', 'Leads'], ['all', 'All']]
+// Paul's order (2026-07-20): All first, then Orders, then Leads. The default
+// view stays 'orders' — the working list — so the landing fetch stays light.
+const VIEWS = [['all', 'All'], ['orders', 'Orders'], ['leads', 'Leads']]
 
 export default function SalesScreen({ onOpenJob, who, undo }) {
   const [view, setView] = useState('orders')
