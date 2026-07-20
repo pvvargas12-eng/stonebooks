@@ -1,5 +1,18 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint SCHED-1 (2026-07-20 night) — SHIPPED: install lists from the complete order list
+
+Commit 1f3fa46, deploy id 5529038494 verified (live SchedulerTab chunk greps for the picker markers). Paul's rule, now doctrine for every scheduling surface: **the ready list is the default, but ANY order must be addable — gates inform (chips), they never wall.** He hit this as "miscommunication in installation and workflow… can't build install lists."
+
+- **`routeStopForKind(job, kind)`** (stonebooksData, next to READY_WORK_ROUTES — third consumer of the milestone routing, keep in lockstep): any job + batch kind → `{ source_milestone_key, completion_milestone_key, ready, note }`. Keys are wired wherever the milestones exist so dispatch ticks still cascade on override adds; `note` = plain-words gate reason ('Not paid in full', 'Not at install stage yet', 'Already installed'…). Ad-hoc kinds → ready, no keys, no chip.
+- **`addJobsToBatch(batchId, stops)`** (replaced the dead zero-caller `addJobToBatch`): append stops to an EXISTING batch — dupe-safe per batch, `stop_order` continues after max for trip kinds, falsy keys → NULL (Migration L CHECK).
+- **`StopSearchPicker`** (components/scheduler/, shared): focus with empty query → the COMPLETE ready-for-kind list (destination-agnostic, cap 30); type → EVERY open job searchable by lastname/customer/order number/cemetery (prefix > contains > number > cemetery, cap 14). Chips: green READY / amber gate reason. Add hands back the full stop bundle incl. `gate_note`.
+- **BatchBuilder**: picker mounted in the Stops section (hidden for ad-hoc kinds); override stops show the amber `gate_note` tag in the stop list; first pick with no destination adopts that job's cemetery so save isn't gated on a field the pick implies. TripSuggestionsPanel untouched.
+- **Blocked-installs panel** (WeekWorkbench): no longer read-only — per-row **"Schedule anyway →"** seeds BatchBuilder with the row (it already carries the exact stop-bundle shape) + reason as gate_note, kind 'setting'.
+- **Day dispatch sheet**: **"+ Add stop"** in the header (hidden for completed/cancelled/ad-hoc batches) → inline picker → addJobsToBatch → reload. `allJobs` threads SchedulerTab → CalendarDay → CalendarDayDispatch.
+- Field InstallsScreen needs nothing — it reads the same batches.
+- NOT done (deliberate): shop-block (blasting/acid-wash) add-stop parity; foundation_list-style named standing lists (batches with `scheduled_date NULL` in the tray are the current answer).
+
 ## Sprint FIELD-7 (2026-07-20 night) — SHIPPED: production floor, per-person tabs, native phone Settings
 
 Commit 44f49d5 (+ 6d1c881: BOTH Sales views land on All — desktop OrdersTab + field SalesScreen, chip order All·Orders·Leads).
