@@ -17,7 +17,7 @@ import OrdersScreen from './OrdersScreen'
 const VIEWS = [['all', 'All'], ['orders', 'Orders'], ['leads', 'Leads']]
 
 export default function SalesScreen({ onOpenJob, who, undo }) {
-  const [view, setView] = useState('orders')
+  const [view, setView] = useState('all')   // All is the landing (Paul, 2026-07-20)
   return (
     <div>
       <div className="fl-seg">

@@ -269,7 +269,7 @@ const ROW_SORTERS = {
 // ── Component ────────────────────────────────────────────────────────────────
 export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, onOpenHub, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
-  const [view, setView] = useState('orders')   // 'orders' | 'leads' — additive Leads pipeline
+  const [view, setView] = useState('all')   // 'all' | 'orders' | 'leads' — All is the landing (Paul, 2026-07-20)
   // Seed from the cross-mount cache so re-opening Orders renders instantly
   // (default archiveView is 'active'). loading starts false only when both
   // datasets are already cached.
