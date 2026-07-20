@@ -29,6 +29,7 @@ import {
   setOrderDesignStatus, addOrderTask, setOrderTaskStatus, getOpenTasksList,
   getCurrentStaffName,
   getProofVersionsByOrder, getProofVersions, uploadProofLayout, createProofVersion,
+  sendShopEmail, markApprovalLinkEmailed, addShopTask,
 } from './lib/stonebooksData'
 
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
@@ -179,6 +180,51 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     }
     return out.sort((a, b) => b.days - a.days)
   }, [approvalByOrder, todayISO])
+
+  // FOLLOW-UP on a silent approval (Paul, 2026-07-20): a per-row nudge email —
+  // PREVIEW first (nothing auto-sends), rides the normal shop pipeline, then
+  // stamps the link's email evidence (emailed_at/emailed_to) so the Today
+  // "email verified" read stays honest. At 7+ days the row also offers a
+  // one-tap task to Admin to call the family instead.
+  const [followup, setFollowup] = useState(null)   // { link, days, status, to, subject, body, busy, error }
+  const [taskedLinkIds, setTaskedLinkIds] = useState(() => new Set())
+  const openFollowup = useCallback((link, days, status) => {
+    const fam = properName(link.order?.primary_lastname || '') || 'your family'
+    const num = link.order?.order_number || ''
+    const url = link.share_url || ''
+    const body = status === 'viewed'
+      ? `Hello,\n\nWe saw you had a chance to open the layout for ${fam}'s memorial — thank you. When you're ready, you can approve it or ask for any changes here:\n\n${url}\n\nNothing goes to production until you approve it, so please take the time you need. If it's easier, just reply to this email and we'll walk through it together.\n\nThank you.`
+      : `Hello,\n\nA few days ago we sent over the layout for ${fam}'s memorial, and we want to make sure it reached you. You can view it, approve it, or ask for changes here:\n\n${url}\n\nNothing goes to production until you approve it. If anything in the layout should be different, reply to this email and we'll take care of it.\n\nThank you.`
+    setFollowup({
+      link, days, status,
+      to: link.order?.customer?.email || '',
+      subject: `The layout for ${fam}'s memorial${num ? ` — ${num}` : ''}`,
+      body, busy: false, error: null,
+    })
+  }, [])
+  const sendFollowup = useCallback(async () => {
+    if (!followup || followup.busy) return
+    const { link, to, subject, body } = followup
+    if (!to.trim()) { setFollowup(f => ({ ...f, error: 'Add the family email address.' })); return }
+    setFollowup(f => ({ ...f, busy: true, error: null }))
+    const res = await sendShopEmail({ to: to.trim(), subject, text: body, orderId: link.order_id })
+    if (!res?.ok) { setFollowup(f => ({ ...f, busy: false, error: res?.error || 'Could not send.' })); return }
+    await markApprovalLinkEmailed(link.id, to.trim()).catch(() => {})
+    setFollowup(null)
+    await onReload?.()
+  }, [followup, onReload])
+  const taskAdminCall = useCallback(async (link, days) => {
+    if (taskedLinkIds.has(link.id)) return
+    const fam = properName(link.order?.primary_lastname || '') || (link.order?.order_number || 'the family')
+    const actor = await getCurrentStaffName().catch(() => null)
+    const res = await addShopTask({
+      title: `Call ${fam} — layout approval waiting ${days} days`,
+      assignee: 'Admin', assigneeKind: 'department',
+      orderId: link.order_id, dueDate: todayStr(), taskType: 'design',
+      createdBy: actor, taskedBy: actor,
+    })
+    if (res?.ok) setTaskedLinkIds(prev => new Set(prev).add(link.id))
+  }, [taskedLinkIds])
   const approvalBadge = (orderId) => {
     const l = approvalByOrder[orderId]
     if (!l) return null
@@ -261,6 +307,19 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             : byUrg
     return [...list].sort(cmp)
   }, [layoutRows, activeTile, approvalFilter, approvalByOrder, search, sortKey])
+
+  // Pulse-filter safety net (Paul, 2026-07-20: "changes requested doesn't
+  // work"): the pulse COUNTS every order's latest link, but the row list only
+  // covers contracted design-queue jobs — an order outside that queue (lead,
+  // design already approved, non-layout type) matched the count and then
+  // "Nothing matches." These render as order rows below the queue rows.
+  const pulseExtraRows = useMemo(() => {
+    if (!approvalFilter) return []
+    const seen = new Set(layoutRows.map(r => r.order?.id).filter(Boolean))
+    return Object.values(approvalByOrder)
+      .filter(l => (l.displayStatus || l.status) === approvalFilter && l.order_id && !seen.has(l.order_id))
+      .map(l => (orders || []).find(o => o.id === l.order_id) || { id: l.order_id, ...(l.order || {}) })
+  }, [approvalFilter, approvalByOrder, layoutRows, orders])
 
   // ── Estimate-layout (lead) rows ────────────────────────────────────────────
   const estimateRows = useMemo(() => {
@@ -409,6 +468,22 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                       : `sent ${days}d ago, never opened`}
                   </span>
                   <button type="button" className="sb-dh2-createbtn"
+                    title="Preview a nudge email before anything sends"
+                    onClick={() => openFollowup(link, days, status)}>
+                    Follow-up email
+                  </button>
+                  {days >= 7 && (
+                    taskedLinkIds.has(link.id) ? (
+                      <span className="sb-dh2-stale-tasked">Task created</span>
+                    ) : (
+                      <button type="button" className="sb-dh2-jobbtn"
+                        title="One tap: a task to the Admin department to call the family today"
+                        onClick={() => taskAdminCall(link, days)}>
+                        Task admin to call
+                      </button>
+                    )
+                  )}
+                  <button type="button" className="sb-dh2-jobbtn"
                     onClick={() => { rememberScroll(); onOpenOrder?.(link.order_id, 'design') }}>
                     Open order
                   </button>
@@ -463,9 +538,9 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
           </div>
 
           {/* CLEAN ROW LIST */}
-          {visibleRows.length === 0 ? (
+          {visibleRows.length === 0 && pulseExtraRows.length === 0 ? (
             <div className="sb-dh2-empty">{layoutRows.length === 0 ? 'No contracted layouts in scope.' : 'Nothing matches.'}</div>
-          ) : (
+          ) : visibleRows.length === 0 ? null : (
             <div className="sb-dh2-rows">
               {visibleRows.map(r => (
                 <div
@@ -515,6 +590,30 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Pulse-filter safety net — approval states on orders OUTSIDE the
+              contracted layout queue (leads, already-designed, non-layout). */}
+          {pulseExtraRows.length > 0 && (
+            <>
+              <div className="sb-dh2-fallback-note">
+                In this approval state, outside the layout queue:
+              </div>
+              <div className="sb-dh2-rows">
+                {pulseExtraRows.map(o => (
+                  <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id, 'design') }} role="button" tabIndex={0}>
+                    <span className="sb-dh2-fam">{familyOf(o)}</span>
+                    <span className="sb-dh2-est-meta">{o.order_number || (o.signed_at ? '—' : 'Lead / estimate')}</span>
+                    {approvalBadge(o.id)}
+                    <span className="sb-dh2-row-spacer" />
+                    <button type="button" className="sb-dh2-createbtn"
+                      onClick={e => { e.stopPropagation(); rememberScroll(); onOpenOrder?.(o.id, 'design') }}>
+                      Open order
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
           {/* Search safety net — orders the job list doesn't cover (signed but
@@ -567,6 +666,46 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             </div>
           )}
         </>
+      )}
+
+      {/* Follow-up email — PREVIEW, edit, then send. Nothing is automatic. */}
+      {followup && (
+        <div className="sb-dh2-modal-overlay" onClick={() => { if (!followup.busy) setFollowup(null) }}>
+          <div className="sb-dh2-modal sb-dh2-modal-wide" onClick={e => e.stopPropagation()}>
+            <div className="sb-dh2-modal-title">
+              Follow-up · {properName(followup.link.order?.primary_lastname || '') || followup.link.order?.order_number || 'Order'}
+            </div>
+            <div className="sb-dh2-modal-sub">
+              {followup.status === 'viewed'
+                ? `The family opened the layout ${followup.days} days ago and hasn't answered.`
+                : `Sent ${followup.days} days ago, never opened.`}
+              {' '}Review the email, adjust anything, then send. The approval record is stamped on send.
+            </div>
+            <label className="sb-dh2-fu-field">
+              <span>To</span>
+              <input className="sb-dh2-inp" type="email" value={followup.to}
+                onChange={e => setFollowup(f => ({ ...f, to: e.target.value }))} />
+            </label>
+            <label className="sb-dh2-fu-field">
+              <span>Subject</span>
+              <input className="sb-dh2-inp" value={followup.subject}
+                onChange={e => setFollowup(f => ({ ...f, subject: e.target.value }))} />
+            </label>
+            <label className="sb-dh2-fu-field">
+              <span>Message</span>
+              <textarea className="sb-dh2-inp sb-dh2-fu-body" rows={10} value={followup.body}
+                onChange={e => setFollowup(f => ({ ...f, body: e.target.value }))} />
+            </label>
+            <div className="sb-dh2-fu-note">Your email signature is added automatically.</div>
+            {followup.error && <div className="sb-dh2-modal-err">{followup.error}</div>}
+            <div className="sb-dh2-fu-actions">
+              <button type="button" className="sb-dh2-modal-cancel" onClick={() => setFollowup(null)} disabled={followup.busy}>Cancel</button>
+              <button type="button" className="sb-dh2-savebtn" onClick={sendFollowup} disabled={followup.busy || !followup.to.trim()}>
+                {followup.busy ? 'Sending…' : 'Send follow-up'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Order-scoped layout uploader (estimate leads) — reuses the proof plumbing */}
@@ -696,6 +835,13 @@ const CSS = `
   .sb-dh2-modal-thumbwrap { margin-bottom: 14px; }
   .sb-dh2-modal-thumb { width: 100%; max-height: 240px; object-fit: contain; border: 0.5px solid #e4e0d4; border-radius: 8px; background: #faf8f4; }
   .sb-dh2-modal-cur { font-size: 11.5px; color: #8a8a85; }
+  .sb-dh2-modal-wide { max-width: 560px; }
+  .sb-dh2-fu-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .sb-dh2-fu-field > span { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #8a8472; }
+  .sb-dh2-fu-body { resize: vertical; line-height: 1.5; font-size: 13.5px; }
+  .sb-dh2-fu-note { font-size: 12px; color: #8a8a85; margin: 2px 0 10px; }
+  .sb-dh2-fu-actions { display: flex; justify-content: flex-end; gap: 10px; }
+  .sb-dh2-stale-tasked { font-size: 12.5px; font-weight: 700; color: #1D9E75; padding: 6px 4px; white-space: nowrap; }
   .sb-dh2-modal-verrow { display: flex; align-items: center; gap: 14px; margin-top: 5px; }
   .sb-dh2-verlink { font-size: 12.5px; font-weight: 700; color: #9A7209; text-decoration: none; }
   .sb-dh2-verlink:hover { text-decoration: underline; }
