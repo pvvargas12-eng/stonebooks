@@ -1276,18 +1276,52 @@ export async function bulkCloseOrders(orderIds = []) {
 // Fetch a (public) photo URL and return an email-attachment payload
 // [{ filename, contentBase64, contentType }] the /api/email/send endpoint accepts.
 // Returns null on any failure so a missing photo never blocks the send.
+// Downscale an image blob for email (<=1600px, JPEG q0.82). Built from the
+// fetched blob's object URL, so the canvas is never CORS-tainted.
+function _shrinkImageForEmail(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob)
+    const img = new Image()
+    img.onload = () => {
+      const MAX = 1600
+      const scale = Math.min(1, MAX / Math.max(img.naturalWidth || 1, img.naturalHeight || 1))
+      const w = Math.max(1, Math.round(img.naturalWidth * scale))
+      const h = Math.max(1, Math.round(img.naturalHeight * scale))
+      const c = document.createElement('canvas')
+      c.width = w; c.height = h
+      c.getContext('2d').drawImage(img, 0, 0, w, h)
+      URL.revokeObjectURL(url)
+      c.toBlob(b => resolve(b), 'image/jpeg', 0.82)
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+    img.src = url
+  })
+}
+
 export async function photoAttachment(url, filename) {
   try {
     const resp = await fetch(url)
     if (!resp.ok) return null
-    const blob = await resp.blob()
+    let blob = await resp.blob()
+    let name = filename || 'photo.jpg'
+    // Email relay bodies cap around 4.5MB, so full-size phone photos meant
+    // "one attachment per email" (Paul 2026-07-21: four small attachments had
+    // to go as four emails). Images over ~400KB re-encode to <=1600px JPEG —
+    // plenty for email — so several ride together. PDFs/docs pass through.
+    if (/^image\//.test(blob.type || '') && blob.size > 400_000) {
+      const smaller = await _shrinkImageForEmail(blob)
+      if (smaller && smaller.size < blob.size) {
+        blob = smaller
+        name = name.replace(/\.(png|heic|heif|webp|jpeg|jpg|gif|bmp|tiff?)$/i, '') + '.jpg'
+      }
+    }
     const contentBase64 = await new Promise((resolve, reject) => {
       const r = new FileReader()
       r.onloadend = () => resolve(String(r.result).split(',')[1] || '')
       r.onerror = reject
       r.readAsDataURL(blob)
     })
-    return { filename: filename || 'photo.jpg', contentBase64, contentType: blob.type || 'image/jpeg' }
+    return { filename: name, contentBase64, contentType: blob.type || 'image/jpeg' }
   } catch { return null }
 }
 
