@@ -1,5 +1,15 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint FUN-1 (2026-07-21) — SHIPPED: task streak easter egg
+
+Commit 2f01a64, deploy 5540537240, live-verified (3 posters 200 at /easter/*.webp + 27 entry-chunk markers). Paul's spec: 3 tasks in one sitting → funny captions; **5+ → one of his three Chelsea posters pops, random, different every time; NO assigner-aware variants** (he vetoed "assigning as").
+
+- `src/lib/taskStreak.js` — per-DEVICE sitting counter (localStorage `sb_task_streak_v1`, 45-min idle reset). Task 3 always "Task Master engaged."; task 4 shuffled caption (9-line pool incl. Chelsea lines, no-repeat-until-dry, never back-to-back on reshuffle); 5+ always a poster (same rotation rules; prefetch fires at task 4). Emits `CustomEvent('sb-task-streak')`; fails silent everywhere — the egg must never break tasking. Hooked ONLY in addShopTask's success path (the choke point both apps share).
+- `src/components/TaskStreakFun.jsx` — mounted ONCE at App root (renders null until an event; public routes never fire). Desktop: gold-rail toast bottom-right (crown SVG, serif italic caption, count subline). /field: dark #0F1419 capsule, Fraunces gold text + draining bar, parked at bottom 152px — ABOVE the undo capsule's 96px spot so undo is never covered. Photo: centered overlay, tap-anywhere dismiss + 8s auto, count line "N tasks this sitting."
+- Posters live in `public/easter/streak-{queen,overlord,pilot}.webp` (~330-380KB each, extracted from the session transcript's pasted images — NOT in the JS bundle, fetched only when a popup fires).
+- Verified: dev-server DOM checks of all 3 states on / and /field + 10-check headless node test (thresholds, rotation, idle reset, corrupt-storage safety) in the session scratchpad (streak-test.mjs).
+- If Paul wants more later: bigger surprise at 25 was floated and NOT built.
+
 ## Sprint SCHED-1 (2026-07-20 night) — SHIPPED: install lists from the complete order list
 
 Commit 1f3fa46, deploy id 5529038494 verified (live SchedulerTab chunk greps for the picker markers). Paul's rule, now doctrine for every scheduling surface: **the ready list is the default, but ANY order must be addable — gates inform (chips), they never wall.** He hit this as "miscommunication in installation and workflow… can't build install lists."
