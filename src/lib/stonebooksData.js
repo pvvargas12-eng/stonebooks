@@ -2740,9 +2740,10 @@ export function bulkRestoreOrders(ids) {
 export async function hardDeleteOrder(orderId) {
   if (!orderId) return { ok: false, error: 'Missing order id' }
   const { data: ord, error: rErr } = await supabase
-    .from('orders').select('id, order_number, archived').eq('id', orderId).single()
+    .from('orders').select('id, order_number').eq('id', orderId).single()
   if (rErr || !ord) return { ok: false, error: rErr?.message || 'Order not found' }
-  if (!ord.archived) return { ok: false, error: 'This order must be archived before it can be permanently deleted.' }
+  // No archive prerequisite (Paul 2026-07-22: delete must work directly from
+  // Orders and Leads) — the UI carries the typed-DELETE confirmation.
 
   // 1) Jobs + their children.
   const { data: jobs, error: jReadErr } = await supabase.from('jobs').select('id').eq('order_id', orderId)
@@ -2780,6 +2781,21 @@ export async function hardDeleteOrder(orderId) {
   const { error: oErr } = await supabase.from('orders').delete().eq('id', orderId)
   if (oErr) return { ok: false, error: `Failed deleting the order: ${oErr.message}` }
   return { ok: true, orderNumber: ord.order_number }
+}
+
+// Bulk hard delete — sequential hardDeleteOrder per id (each one is itself a
+// multi-table sweep; parallelizing gains little and loses clear error text).
+export async function bulkHardDeleteOrders(orderIds) {
+  const list = [...new Set((orderIds || []).filter(Boolean))]
+  let count = 0
+  const failed = []
+  for (const id of list) {
+    const r = await hardDeleteOrder(id)
+    if (r.ok) count++
+    else failed.push(r.error || 'delete failed')
+  }
+  if (count === 0 && failed.length) return { ok: false, error: failed[0] }
+  return { ok: true, count, failed }
 }
 
 // Remove an order's files from the public attachments bucket. Covers both the
@@ -3101,6 +3117,27 @@ export async function addShopTask({
   pokePushSender()   // near-instant phone notification for the assignee
   recordTaskAssigned()   // the streak easter egg (fire-and-forget, UI-only)
   return { ok: true, task: data, row: data }
+}
+
+// Auto-task when a Shevco form is selected on an order (Paul 2026-07-22):
+// choosing Shevco Foundation/Strip or the Shevco permit form fires an Admin
+// task to go build that form in Permit Builder. Skips when an open task with
+// the same title already exists for the order, so flipping the select twice
+// never double-tasks. The push inside addShopTask is the "auto alert."
+export async function ensurePermitBuildTask(orderId, formLabel, familyLabel) {
+  if (!orderId || !formLabel) return { ok: false, error: 'Missing order/form' }
+  const title = `Create ${formLabel} - ${familyLabel || 'order'} (Permit Builder)`.slice(0, 300)
+  const { data: existing } = await supabase.from('shop_tasks')
+    .select('id, status, deleted_at').eq('order_id', orderId).eq('title', title).limit(10)
+  if ((existing || []).some(t => !t.deleted_at && t.status !== 'done')) {
+    return { ok: true, skipped: true }
+  }
+  const staff = await getCurrentStaffName().catch(() => null)
+  return addShopTask({
+    title, assignee: 'Admin', assigneeKind: 'department',
+    orderId, createdBy: staff, taskedBy: staff,
+    details: { auto: 'shevco_form_selected' },
+  })
 }
 
 // Anyone can edit any task — title, assignee, due date, tasked-by, type,

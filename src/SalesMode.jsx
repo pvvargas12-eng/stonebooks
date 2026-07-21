@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder } from './lib/stonebooksData'
 import { designTags } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -12097,8 +12097,10 @@ function CancelOrderSection({ order, update }) {
     if (ack !== 'DELETE') return
     setBusy('delete'); setErr(null)
     try {
-      const { error } = await supabase.from('orders').delete().eq('id', order.id)
-      if (error) throw new Error(error.message)
+      // Full cascade delete — the raw orders.delete() used to hit the jobs
+      // RESTRICT foreign key and fail on any lead/order that ever had a job.
+      const r = await hardDeleteOrder(order.id)
+      if (!r.ok) throw new Error(r.error)
       // Reload to clear in-memory state and bounce back to dashboard
       window.location.reload()
     } catch (e) {

@@ -28,7 +28,7 @@ import {
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
   getApprovalSigned, approvalSignedFileUrl, removeApprovalSigned,
   createApprovalLink, getApprovalLinksForOrder, revokeApprovalLink,
-  ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity,
+  ensureDerivedMilestones, updateMilestone, updateMilestoneWithOverride, deleteOrderActivity, ensurePermitBuildTask,
   getProofVersions, getProofVersionsByOrder, getProofSignatureSignedUrl, updateProofVersion,
   uploadProofLayout, createProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
@@ -621,6 +621,26 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   // cemetery foundation. 'Our Foundation'/'Strip' = Shevco pours it → the job
   // goes ONTO the shevco foundation work list (foundation_list) and stays in
   // the Foundations board pool; 'Cemetery Foundation' takes it off both.
+  const _permitTaskLabel = () => `${order?.primary_lastname || customerName(order?.customer) || 'order'}${order?.order_number ? ` (${order.order_number})` : ''}`
+  // Permit form — which blank this order's permit uses. Picking the Shevco
+  // form auto-tasks Admin to build it in Permit Builder (Paul 2026-07-22).
+  const savePermitForm = async (v) => {
+    const val = v || null
+    const r = await setOrderPermit(orderId, { permit_form: val })
+    if (!r.ok) return
+    await refreshOrder()
+    const staff = await getCurrentStaffName()
+    logOrderActivity(orderId, {
+      type: 'change', field: 'Permit form',
+      newValue: val === 'shevco' ? 'Shevco permit (our form)' : (val === 'cemetery' ? "Cemetery's own form" : '—'),
+      note: val === 'shevco' ? 'Shevco form — Admin tasked to build it in Permit Builder' : null,
+      actor: staff,
+    }).then(() => refreshActivity()).catch(() => {})
+    if (val === 'shevco') {
+      ensurePermitBuildTask(orderId, 'Shevco permit', _permitTaskLabel())
+        .then(rr => { if (rr?.ok && !rr.skipped) refreshActivity() }).catch(() => {})
+    }
+  }
   const saveFoundationBy = async (v) => {
     const val = v || null
     const r = await setOrderPermit(orderId, { foundation_type: val })
@@ -629,6 +649,12 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (jid) {
       if (val === 'Our Foundation' || val === 'Strip') await addToFoundationList(jid)
       else if (val === 'Cemetery Foundation') await removeFromFoundationList(jid)
+    }
+    // Shevco foundation selected → auto-task Admin to build the Shevco
+    // foundation permit in Permit Builder (Paul 2026-07-22).
+    if (val === 'Our Foundation' || val === 'Strip') {
+      ensurePermitBuildTask(orderId, 'Shevco foundation permit', _permitTaskLabel())
+        .then(r => { if (r?.ok && !r.skipped) refreshActivity() }).catch(() => {})
     }
     await refreshOrder()
     const staff = await getCurrentStaffName()
@@ -1068,6 +1094,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       permit_filed_at: order.permit_filed_at || '',
       permit_approved_at: order.permit_approved_at || '',
       permit_denied_at: order.permit_denied_at || '',
+      permit_form: order.permit_form || '',
     })
     setFeeDraft({ amount: '', payee: cem.name || '', ck: '', date: todayISO(), method: 'check' })
     setFeeMsg(null)
@@ -1082,6 +1109,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
       permit_filed_at: permitDraft.permit_filed_at || null,
       permit_approved_at: permitDraft.permit_approved_at || null,
       permit_denied_at: permitDraft.permit_denied_at || null,
+      permit_form: permitDraft.permit_form || null,
     }
     if (status === 'submitted' && !patch.permit_filed_at) patch.permit_filed_at = today
     if (status === 'approved') {
@@ -1096,6 +1124,11 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     const prev = order.permit_status || 'unknown'
     const r = await setOrderPermit(orderId, patch)
     if (!r.ok) return r
+    // Switched onto the Shevco form here too → same auto-task as the card select.
+    if ((permitDraft.permit_form || null) === 'shevco' && (order.permit_form || null) !== 'shevco') {
+      ensurePermitBuildTask(orderId, 'Shevco permit', _permitTaskLabel())
+        .then(rr => { if (rr?.ok && !rr.skipped) refreshActivity() }).catch(() => {})
+    }
     await refreshOrder()
     const staff = await getCurrentStaffName()
     if (status && status !== prev) {
@@ -2586,6 +2619,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                 return (
                   <>
                     <CqeSelect label="Permit status" value={permitDraft.permit_status} options={permitOpts} onChange={v => setPermitDraft(d => ({ ...d, permit_status: v }))} />
+                    <CqeSelect label="Permit form" value={permitDraft.permit_form || ''} options={[{ code: '', label: '—' }, { code: 'cemetery', label: "Cemetery's own form" }, { code: 'shevco', label: 'Shevco permit (our form)' }]} onChange={v => setPermitDraft(d => ({ ...d, permit_form: v }))} />
                     <CqeRow cols={2}>
                       <CqeDate label="Submitted date" value={permitDraft.permit_filed_at} onChange={v => setPermitDraft(d => ({ ...d, permit_filed_at: v }))} />
                       <CqeDate label="Approved date" value={permitDraft.permit_approved_at} onChange={v => setPermitDraft(d => ({ ...d, permit_approved_at: v }))} />
@@ -2651,6 +2685,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             {/* Foundation lives with the permit (Paul 2026-07-21) — most permits
                 ARE for a cemetery foundation. Shevco/Strip routes the job onto
                 the foundation work list; both selects commit instantly. */}
+            <Field label="Permit form" value={
+              <select className="sb-od-fdn-select" value={order.permit_form || ''}
+                onChange={e => savePermitForm(e.target.value)}>
+                <option value="">—</option>
+                <option value="cemetery">Cemetery's own form</option>
+                <option value="shevco">Shevco permit (our form)</option>
+              </select>
+            } hint={order.permit_form === 'shevco' ? 'Shevco form — Admin is tasked to build it in Permit Builder' : null} />
             <Field label="Foundation by" value={
               <select className="sb-od-fdn-select" value={order.foundation_type || ''}
                 onChange={e => saveFoundationBy(e.target.value)}>

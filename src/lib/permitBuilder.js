@@ -98,6 +98,37 @@ export async function getOrderContext(orderId, customerId) {
   return { attachments: att?.data || [], emails: em?.data || [] }
 }
 
+// Attach the built permit PDF to its order (Paul 2026-07-22: "when you build it
+// it will go in the attachment for that order"). Stable storage path per doc so
+// a rebuilt permit REPLACES its attachment instead of stacking copies; the
+// order_attachments row is upserted to match (storage feeds OrderDetail's list,
+// the table feeds this tab's own Order info panel).
+export async function attachPermitPdfToOrder(doc, pdfBlob, staffName = null) {
+  const orderId = doc?.order_id || doc?.order?.id
+  if (!orderId || !pdfBlob) return { ok: false, error: 'This permit has no order.' }
+  const path = `attachments/${orderId}/permit-${doc.id}.pdf`
+  const name = `Permit - ${(doc.title || 'permit').replace(/[^\w .()-]+/g, '').trim() || 'permit'}.pdf`
+  const { error } = await supabase.storage.from('orders-attachments-public')
+    .upload(path, pdfBlob, { upsert: true, contentType: 'application/pdf' })
+  if (error) return { ok: false, error: error.message }
+  const { data: pub } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  const url = `${pub.publicUrl}?v=${Date.now()}`
+  const { data: existing } = await supabase.from('order_attachments')
+    .select('id').eq('order_id', orderId).eq('storage_path', path).maybeSingle()
+  if (existing?.id) {
+    await supabase.from('order_attachments')
+      .update({ file_url: url, filename: name, size_bytes: pdfBlob.size ?? null })
+      .eq('id', existing.id)
+  } else {
+    await supabase.from('order_attachments').insert({
+      order_id: orderId, category: 'permit', storage_path: path,
+      file_url: url, filename: name, mime_type: 'application/pdf',
+      size_bytes: pdfBlob.size ?? null, uploaded_by: staffName,
+    })
+  }
+  return { ok: true, url, name }
+}
+
 export async function listPermitDocs({ orderId = null, limit = 30 } = {}) {
   let q = supabase.from('permit_docs')
     .select(DOC_EMBED)

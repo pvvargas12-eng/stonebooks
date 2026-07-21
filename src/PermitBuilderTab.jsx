@@ -24,7 +24,7 @@ import {
   listPermitDocs, getPermitDoc, createPermitDoc, updatePermitDoc, deletePermitDoc,
   uploadPermitAsset, rasterizePdfFile, readImageSize,
   AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf,
-  missingAutofill, MISSING_ORDER_WRITEBACK, getOrderContext,
+  missingAutofill, MISSING_ORDER_WRITEBACK, getOrderContext, attachPermitPdfToOrder,
 } from './lib/permitBuilder'
 import PermitCanvas from './components/permit/PermitCanvas'
 
@@ -597,12 +597,24 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     if (!r.ok) { say(r.error, true); return }
     say('Permit saved.')
   }
+  // Every built PDF also lands in the order's attachments (upsert — a rebuild
+  // replaces the previous copy of this same permit, no duplicate stacking).
+  const attachBuiltPdf = async (d) => {
+    if (!doc?.order_id && !doc?.order?.id) return
+    try {
+      const staff = await getCurrentStaffName()
+      const r = await attachPermitPdfToOrder(doc, d.output('blob'), staff)
+      if (r.ok) say('Saved to the order’s attachments too.')
+    } catch { /* the download/print itself already succeeded */ }
+  }
   const download = async () => {
     setBusy(true)
     try {
       await save()
       const fam = (order?.primary_lastname || customerName(order?.customer) || 'permit').replace(/[^\w-]+/g, '_')
-      await exportPermitPdf({ template, docData: data, filename: `${fam}-${(doc.title || 'permit').replace(/[^\w-]+/g, '_')}.pdf` })
+      const d = await exportPermitPdf({ template, docData: data, returnDoc: true })
+      d.save(`${fam}-${(doc.title || 'permit').replace(/[^\w-]+/g, '_')}.pdf`)
+      await attachBuiltPdf(d)
     } catch (e) {
       say(e?.message || 'PDF export failed.', true)
     }
@@ -616,6 +628,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
       await save()
       const d = await exportPermitPdf({ template, docData: data, returnDoc: true })
       window.open(d.output('bloburl'), '_blank')
+      await attachBuiltPdf(d)
     } catch (e) {
       say(e?.message || 'Could not open the print view.', true)
     }

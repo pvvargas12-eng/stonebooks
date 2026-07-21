@@ -274,9 +274,9 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   }
   const deleteLead = async (leadId, name) => {
     setMenuKey(null)
-    if (!window.confirm(`Permanently delete this lead${name ? ` — ${name}` : ''}? This cannot be undone.`)) return
+    const ack = window.prompt(`PERMANENTLY DELETE this lead${name ? ` — ${name}` : ''}?\n\nJobs, tasks, and files on it are erased. This cannot be undone.\n\nType DELETE to confirm.`)
+    if (ack !== 'DELETE') return
     setBusyId(leadId)
-    await bulkArchiveOrders([leadId])              // hardDeleteOrder is archive-gated
     const res = await hardDeleteOrder(leadId)
     setBusyId(null)
     if (!res?.ok) window.alert(res?.error || 'Could not delete the lead.')

@@ -19,7 +19,7 @@ import {
   fmtUSD,
   computeOrderPressure,
   ORDER_STATUSES,
-  bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus,
+  bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus, bulkHardDeleteOrders,
   bulkSetOrderCemetery, bulkSetJobType, bulkSetStage, bulkUpdateOrders,
   classifyOrderQueues, queueLabel, permitBuckets,
   // Orders-redesign status dimensions (one source of truth)
@@ -707,6 +707,22 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       undoFn: () => bulkArchiveOrders(ids()),
     }),
   })
+  // Permanent delete (Paul 2026-07-22: "not only close/archive — delete").
+  // Typed confirmation, no soft modal — this one really erases.
+  const askDelete = () => {
+    const n = selectedIds.size
+    if (!n) return
+    const ack = window.prompt(
+      `PERMANENTLY DELETE ${n} order${n === 1 ? '' : 's'}?\n\n` +
+      'This erases the selected order(s) plus their jobs, tasks, activity, permits, and attachments. ' +
+      'Money already recorded in Payments (outgoing) is kept but unlinked. This cannot be undone.\n\n' +
+      'Type DELETE to confirm.'
+    )
+    if (ack !== 'DELETE') return
+    runBulk(() => bulkHardDeleteOrders(ids()), {
+      successText: r => `Deleted ${r.count} order${r.count === 1 ? '' : 's'}${r.failed?.length ? ` · ${r.failed.length} failed` : ''}.`,
+    })
+  }
   const askSetStatus = (status) => {
     const label = ORDER_STATUSES.find(s => s.code === status)?.label || status
     const snapshot = new Map(selectedOrders.map(o => [o.id, o.status]))
@@ -1238,6 +1254,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
             <div className="sb-tw-bulk-actions">
               {combinable && <button type="button" className="sb-tw-bbtn" disabled={busy} onClick={askCombine} title="Merge these orders (same family + customer) into one — types, payments, totals, and pipeline">Combine into one order</button>}
               {canArchive && <button type="button" className="sb-tw-bbtn" disabled={busy} onClick={askArchive}>Archive</button>}
+              <button type="button" className="sb-tw-bbtn" style={{ color: '#ff8d80', borderColor: 'rgba(255,141,128,.45)' }} disabled={busy} onClick={askDelete}>Delete</button>
               {canRestore && <button type="button" className="sb-tw-bbtn" disabled={busy} onClick={askRestore}>Restore</button>}
               <BulkSelect label="Set status" disabled={busy} options={ORDER_STATUSES.filter(s => s.code !== 'archived').map(s => ({ value: s.code, label: s.label }))} onPick={askSetStatus} />
               <BulkSelect label="Set job type" disabled={busy} options={JOB_TYPES.map(j => ({ value: j.code, label: j.label }))} onPick={askSetJobType} />
