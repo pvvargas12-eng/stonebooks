@@ -2333,7 +2333,15 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
                   const fallback = job ? stoneToSimple(deriveStoneStatus(job)) : null
                   const dieS = order.die_stone_status || fallback
                   const baseS = order.base_stone_status || fallback
-                  const pill = (s) => s ? <Pill severity={STONE_SIMPLE_TONE[s] || 'bronze'}>{stoneSimpleLabel(s)}</Pill> : null
+                  // Paul 2026-07-22: a checkmark rides next to the status —
+                  // blue once the stone is ordered, green once it's arrived.
+                  const CHECK_TINT = { ordered: '#2f6fd6', in_stock: '#2d7a4f' }
+                  const pill = (s) => s ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                      <Pill severity={STONE_SIMPLE_TONE[s] || 'bronze'}>{stoneSimpleLabel(s)}</Pill>
+                      {CHECK_TINT[s] && <span style={{ color: CHECK_TINT[s], fontWeight: 800, fontSize: 15, lineHeight: 1 }}>✓</span>}
+                    </span>
+                  ) : null
                   return (
                     <>
                       <Field label="Die status" value={pill(dieS)} hint={dieS ? null : 'set via ⋯'} />
