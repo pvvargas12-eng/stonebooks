@@ -27,6 +27,7 @@ export const PERMIT_COMPANY = {
   address: '329 S Florida Grove Rd',
   city: 'Perth Amboy, NJ 08861',
   phone: '732-442-1286',
+  fax: '732-697-0418',
   email: 'shevcoteam@gmail.com',
 }
 
@@ -194,12 +195,20 @@ export async function rasterizePdfFile(file, { maxPages = 4, targetWidth = 1700 
 
 const _dec = (order) => Array.isArray(order?.deceased) ? order.deceased : []
 const _decName = (p) => [p?.firstName || p?.first_name, p?.lastName || p?.last_name].filter(Boolean).join(' ').trim()
-const _dims = (c) => {
-  if (!c) return ''
-  const w = c.width ?? c.w, h = c.height ?? c.h, d = c.depth ?? c.d
-  const parts = [w, h, d].filter(v => v !== null && v !== undefined && v !== '')
-  return parts.length ? parts.map(v => `${v}"`).join(' x ') : ''
+// Trade notation — the way Paul writes stone sizes on every permit: 45" → 3-9
+// (feet-inches), 4" → 0-4. Bronze plaques stay plain inches (24 x 12) via _dimsIn.
+const _trade = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  return `${Math.floor(n / 12)}-${Math.round(n % 12)}`
 }
+const _dimParts = (c) => {
+  if (!c) return []
+  const w = c.width ?? c.w, h = c.height ?? c.h, d = c.depth ?? c.d
+  return [w, h, d].filter(v => v !== null && v !== undefined && v !== '')
+}
+const _dims = (c) => _dimParts(c).map(_trade).join(' x ')
+const _dimsIn = (c) => _dimParts(c).join(' x ')
 const _custAddr = (c) => [c?.address || c?.address_line1 || c?.street, [c?.city, c?.state].filter(Boolean).join(', '), c?.zip || c?.zip_code].filter(Boolean).join(', ')
 const _todayUS = () => {
   const d = new Date()
@@ -222,8 +231,20 @@ export const AUTOFILL_FIELDS = [
   { key: 'plot_row',         label: 'Row',                resolve: (o) => o?.plot_row || '' },
   { key: 'plot_grave',       label: 'Grave',              resolve: (o) => o?.plot_grave || o?.plot_space || '' },
   { key: 'grave_location',   label: 'Grave location (full)', resolve: (o) => o?.grave_location || [o?.plot_section && `Sec ${o.plot_section}`, o?.plot_block && `Blk ${o.plot_block}`, o?.plot_lot && `Lot ${o.plot_lot}`, o?.plot_grave && `Gr ${o.plot_grave}`].filter(Boolean).join(' · ') },
-  { key: 'die_size',         label: 'Die size',           resolve: (o) => _dims(o?.die_config || o?.dieConfig) },
-  { key: 'base_size',        label: 'Base size',          resolve: (o) => _dims(o?.base_config || o?.baseConfig) },
+  { key: 'die_size',         label: 'Die size (3-9 x 1-4)',  resolve: (o) => _dims(o?.die_config || o?.dieConfig) },
+  { key: 'base_size',        label: 'Base size (4-0 x 1-6)', resolve: (o) => _dims(o?.base_config || o?.baseConfig) },
+  { key: 'die_size_in',      label: 'Die size in inches (24 x 12)', resolve: (o) => _dimsIn(o?.die_config || o?.dieConfig) },
+  { key: 'die_shape',        label: 'Die size + shape',   resolve: (o) => [_dims(o?.die_config || o?.dieConfig), o?.shape].filter(Boolean).join(' ') },
+  { key: 'base_line',        label: 'Base + size',        resolve: (o) => { const b = _dims(o?.base_config || o?.baseConfig); return b ? `Base ${b}` : '' } },
+  { key: 'monument_full',    label: 'Monument description (full)', resolve: (o) => {
+      const die = _dims(o?.die_config || o?.dieConfig), base = _dims(o?.base_config || o?.baseConfig)
+      return [[o?.shape, o?.granite_color].filter(Boolean).join(', '), die && `die ${die}`, base && `base ${base}`].filter(Boolean).join(' — ')
+    } },
+  { key: 'deceased_grave',   label: 'Deceased + grave location', resolve: (o) => {
+      const name = _decName(_dec(o)[0]) || o?.primary_lastname || ''
+      const loc = o?.grave_location || [o?.plot_block && `Block ${o.plot_block}`, o?.plot_section && `Section ${o.plot_section}`, o?.plot_row && `Row ${o.plot_row}`, o?.plot_lot && `Lot ${o.plot_lot}`, o?.plot_grave && `Grave ${o.plot_grave}`].filter(Boolean).join(' ')
+      return [name, loc].filter(Boolean).join(' - ')
+    } },
   { key: 'monument_desc',    label: 'Monument (shape + color)', resolve: (o) => [o?.shape, o?.granite_color].filter(Boolean).join(', ') },
   { key: 'granite_color',    label: 'Granite color',      resolve: (o) => o?.granite_color || '' },
   { key: 'shape',            label: 'Shape / style',      resolve: (o) => o?.shape || '' },
@@ -233,6 +254,30 @@ export const AUTOFILL_FIELDS = [
   { key: 'company_name',     label: 'Company name',       resolve: () => PERMIT_COMPANY.name },
   { key: 'company_address',  label: 'Company address',    resolve: () => `${PERMIT_COMPANY.address}, ${PERMIT_COMPANY.city}` },
   { key: 'company_phone',    label: 'Company phone',      resolve: () => PERMIT_COMPANY.phone },
+  { key: 'company_fax',      label: 'Company fax',        resolve: () => PERMIT_COMPANY.fax },
+  { key: 'company_email',    label: 'Company email',      resolve: () => PERMIT_COMPANY.email },
+  // Split single dimensions — forms like St. Gertrude ask Width / Thickness /
+  // Height as separate boxes. Trade notation (45" → 3-9).
+  { key: 'die_width',        label: 'Die width',          resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.width ?? c?.w; return v != null && v !== '' ? _trade(v) : '' } },
+  { key: 'die_height',       label: 'Die height',         resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.height ?? c?.h; return v != null && v !== '' ? _trade(v) : '' } },
+  { key: 'die_thickness',    label: 'Die thickness',      resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.depth ?? c?.d; return v != null && v !== '' ? _trade(v) : '' } },
+  { key: 'base_width',       label: 'Base width',         resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.width ?? c?.w; return v != null && v !== '' ? _trade(v) : '' } },
+  { key: 'base_height',      label: 'Base height',        resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.height ?? c?.h; return v != null && v !== '' ? _trade(v) : '' } },
+  { key: 'base_thickness',   label: 'Base thickness',     resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.depth ?? c?.d; return v != null && v !== '' ? _trade(v) : '' } },
+  { key: 'see_reverse',      label: '"See reverse" (fixed)', resolve: () => 'See reverse' },
+  // Inch singles — Beth Israel's Foundation Order wants LENGTH/WIDTH/HEIGHT
+  // "in inches" per piece (their LENGTH = our width, their WIDTH = thickness).
+  { key: 'die_w_in',         label: 'Die length in inches',   resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.width ?? c?.w; return v ?? '' } },
+  { key: 'die_t_in',         label: 'Die width/thick inches', resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.depth ?? c?.d; return v ?? '' } },
+  { key: 'die_h_in',         label: 'Die height in inches',   resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.height ?? c?.h; return v ?? '' } },
+  { key: 'base_w_in',        label: 'Base length in inches',  resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.width ?? c?.w; return v ?? '' } },
+  { key: 'base_t_in',        label: 'Base width/thick inches', resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.depth ?? c?.d; return v ?? '' } },
+  { key: 'base_h_in',        label: 'Base height in inches',  resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.height ?? c?.h; return v ?? '' } },
+  { key: 'deceased_dod',     label: 'Date of death',      resolve: (o) => { const p = _dec(o)[0]; return p?.dateOfDeath || p?.date_of_death || p?.deathDate || '' } },
+  { key: 'customer_street',  label: 'Customer street',    resolve: (o) => o?.customer?.address || o?.customer?.address_line1 || o?.customer?.street || '' },
+  { key: 'customer_city',    label: 'Customer city',      resolve: (o) => o?.customer?.city || '' },
+  { key: 'customer_state',   label: 'Customer state',     resolve: (o) => o?.customer?.state || '' },
+  { key: 'customer_zip',     label: 'Customer zip',       resolve: (o) => o?.customer?.zip || o?.customer?.zip_code || '' },
   { key: 'custom',           label: 'Custom text',        resolve: () => '' },
 ]
 const AUTOFILL_BY_KEY = new Map(AUTOFILL_FIELDS.map(f => [f.key, f]))
