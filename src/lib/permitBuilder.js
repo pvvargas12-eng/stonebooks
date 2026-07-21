@@ -267,6 +267,7 @@ export const AUTOFILL_FIELDS = [
   { key: 'see_reverse',      label: '"See reverse" (fixed)', resolve: () => 'See reverse' },
   { key: 'bronze_mfr',       label: 'Bronze manufacturer',   resolve: () => 'Coldspring' },
   { key: 'bronze_mfr_addr',  label: 'Bronze mfr address',    resolve: () => 'Coldspring, MN' },
+  { key: 'polish_level',     label: 'Finish / polish level', resolve: (o) => o?.polish_level || o?.polishLevel || '' },
   // Inch singles — Beth Israel's Foundation Order wants LENGTH/WIDTH/HEIGHT
   // "in inches" per piece (their LENGTH = our width, their WIDTH = thickness).
   { key: 'die_w_in',         label: 'Die length in inches',   resolve: (o) => { const c = o?.die_config || o?.dieConfig; const v = c?.width ?? c?.w; return v ?? '' } },
