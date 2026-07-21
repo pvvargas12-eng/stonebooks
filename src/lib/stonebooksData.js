@@ -6524,7 +6524,13 @@ const JOBS_ORDER_EMBED =
   'target_completion_date, target_completion_end_date, primary_lastname, sales_rep, ' +
   'payments, deposit_amount, balance_amount, permit_required, permit_status, manual_blocker, ' +
   'grave_location, plot_section, plot_block, plot_lot, plot_row, plot_space, plot_grave, plot_level, ' +
-  'field_location, deceased, ' + ORDER_PRICING_COLUMNS
+  'field_location, deceased, ' +
+  // Admin Command Center columns — permit form/dates, stone ordering, photo
+  // tracker. (service_types/foundation_type/add_ons already ride below with
+  // ORDER_PRICING_COLUMNS — never duplicate a column in this select.)
+  'permit_form, permit_filed_at, permit_denied_at, ' +
+  'die_stone_status, base_stone_status, stone_vendor, stone_ordered_date, stone_purchase_ack, ' +
+  'photo_ordered_at, ' + ORDER_PRICING_COLUMNS
 
 // One-row lookup for click routing (Job view killed 2026-07-15): a job click
 // resolves to its parent record — order, cemetery order, or neither.

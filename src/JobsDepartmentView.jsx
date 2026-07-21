@@ -49,6 +49,7 @@ import { enrichJob, ROW_GRID } from './lib/jobsRowHelpers'
 import DesignHubHome from './DesignHubHome'
 import HubHome from './HubHome'
 import InstallBoard from './components/InstallBoard'
+import AdminCommandCenter from './components/AdminCommandCenter'
 import { HUB_HOME_CONFIGS } from './lib/hubConfigs'
 // The Workflow queues + Permit hub used to be separate top-level tabs. They
 // now live INSIDE the Jobs hub strip as two "section" hubs, reusing the
@@ -124,6 +125,12 @@ export default function JobsDepartmentView({
   const [currentProofOrderIds, setCurrentProofOrderIds] = useState(() => new Set())
   const [loadErr, setLoadErr] = useState(null)
   const [loading, setLoading] = useState(true)
+  // ACC-4 — Admin hub front page: GOD MODE command center vs the classic work
+  // list. Sticky per device.
+  const [adminMode, setAdminMode] = useState(() => {
+    try { return localStorage.getItem('sb_admin_view') || 'command' } catch { return 'command' }
+  })
+  const pickAdminMode = (m) => { setAdminMode(m); try { localStorage.setItem('sb_admin_view', m) } catch { /* ignore */ } }
 
   // Hub-local filters. Cleared on hub switch — chips from one hub don't
   // apply in another (each hub publishes its own filterChips set).
@@ -365,6 +372,26 @@ export default function JobsDepartmentView({
           <div className="sb-crm-container">
             <InstallBoard jobs={jobs || []} onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
           </div>
+        ) : hub === 'admin' ? (
+          adminMode === 'command' ? (
+            <div className="sb-crm-container">
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button type="button" className="sb-crm-btn-primary" onClick={() => pickAdminMode('command')}>Command center</button>
+                <button type="button" className="sb-crm-btn" onClick={() => pickAdminMode('list')}>Work list</button>
+              </div>
+              <AdminCommandCenter jobs={jobs || []} proofsByJob={currentProofsByJob} onOpenOrderDetail={onOpenOrderDetail} />
+            </div>
+          ) : (
+            <>
+              <div className="sb-crm-container" style={{ paddingBottom: 0 }}>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  <button type="button" className="sb-crm-btn" onClick={() => pickAdminMode('command')}>Command center</button>
+                  <button type="button" className="sb-crm-btn-primary" onClick={() => pickAdminMode('list')}>Work list</button>
+                </div>
+              </div>
+              <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS.admin} />
+            </>
+          )
         ) : (
           <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS[hub]} />
         )
