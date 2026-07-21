@@ -24,7 +24,7 @@ import {
   listPermitDocs, getPermitDoc, createPermitDoc, updatePermitDoc, deletePermitDoc,
   uploadPermitAsset, rasterizePdfFile, readImageSize,
   AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf,
-  missingAutofill, MISSING_ORDER_WRITEBACK,
+  missingAutofill, MISSING_ORDER_WRITEBACK, getOrderContext,
 } from './lib/permitBuilder'
 import PermitCanvas from './components/permit/PermitCanvas'
 
@@ -426,13 +426,37 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   const [sources, setSources] = useState(null)
   const layFileRef = useRef(null)
 
+  const [ctx, setCtx] = useState(null)   // { attachments, emails } for the rail
   const load = async () => {
     const d = await getPermitDoc(id)
     if (!d) { say('Permit not found.', true); onBack(); return }
     setDoc(d)
     setData(prev => prev || d.data || { values: {}, extras: [], layout: null, dims: [] })
+    getOrderContext(d.order?.id, d.order?.customer?.id).then(setCtx).catch(() => setCtx({ attachments: [], emails: [] }))
   }
   useEffect(() => { load() }, [id])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Layout sources load eagerly now — the rail shows the thumbnails and the
+  // Insert-layout picker reuses them.
+  useEffect(() => {
+    if (!doc?.order?.id || sources) return
+    ;(async () => {
+      const [byOrder, job] = await Promise.all([
+        getProofVersionsByOrder(doc.order.id).catch(() => []),
+        getJobByOrderId(doc.order.id).catch(() => null),
+      ])
+      const byJob = job?.id ? await getProofVersions(job.id).catch(() => []) : []
+      const seen = new Set()
+      const list = []
+      for (const v of [...(byOrder || []), ...(byJob || [])]) {
+        const url = v?.layout_image_url
+        if (!url || seen.has(url)) continue
+        seen.add(url)
+        list.push({ url, label: `Layout v${v.version_number ?? ''}`.trim() })
+      }
+      setSources(list)
+    })()
+  }, [doc, sources])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const template = doc?.template
   const order = doc?.order
@@ -741,7 +765,10 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
           </div>
         </div>
 
-        <PermitMoneyRail order={order} say={say} onChanged={load} onOpenOrderDetail={onOpenOrderDetail} />
+        <div className="pbt-rail">
+          <OrderInfoSections order={order} ctx={ctx} sources={sources} onInsertLayout={placeLayout} />
+          <PermitMoneyRail order={order} say={say} onChanged={load} onOpenOrderDetail={onOpenOrderDetail} />
+        </div>
       </div>
 
       {pickerOpen && (
@@ -838,7 +865,7 @@ function PermitMoneyRail({ order, say, onChanged, onOpenOrderDetail }) {
   }
 
   return (
-    <aside className="pbt-rail">
+    <div className="pbt-rail-stack">
       <div className="pbt-rail-card">
         <div className="pbt-rail-title">Order</div>
         <div className="pbt-rail-name">{order.primary_lastname || customerName(order.customer) || '—'}</div>
@@ -888,7 +915,131 @@ function PermitMoneyRail({ order, say, onChanged, onOpenOrderDetail }) {
           <div className="pbt-rail-hint">Outgoing expense — never touches the customer balance.</div>
         </div>
       </div>
-    </aside>
+    </div>
+  )
+}
+
+// ── ORDER INFO — everything about the order beside the permit (PB-4) ────────
+// Paul: "on the right side all the order information... attachments email
+// traffic stone size layout... deceased info customer info cemetery info."
+// Native <details> sections — zero state, fast, collapsible.
+
+const _tradeStr = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return v ?? ''
+  return `${Math.floor(n / 12)}-${Math.round(n % 12)}`
+}
+function InfoRow({ label, value }) {
+  if (value === null || value === undefined || value === '') return null
+  return (
+    <div className="pbt-info-row">
+      <span className="pbt-info-label">{label}</span>
+      <span className="pbt-info-value">{value}</span>
+    </div>
+  )
+}
+function OrderInfoSections({ order, ctx, sources, onInsertLayout }) {
+  if (!order) return null
+  const cust = order.customer || {}
+  const cem = order.cemetery || {}
+  const dec = Array.isArray(order.deceased) ? order.deceased : []
+  const notes = Array.isArray(order.staff_notes) ? order.staff_notes : []
+  const custAddr = [cust.address || cust.address_line1, [cust.city, cust.state].filter(Boolean).join(', '), cust.zip].filter(Boolean).join(', ')
+  const dieDims = [order.width_inches, order.height_inches, order.thickness_inches ?? order.depth_inches].filter(v => v != null)
+  const base = order.base_config || {}
+  const baseDims = [base.width ?? base.w, base.height ?? base.h, base.depth ?? base.d].filter(v => v != null)
+  const fmtDT = (iso) => iso ? String(iso).slice(0, 10) : null
+  return (
+    <div className="pbt-info">
+      <details className="pbt-info-sec" open>
+        <summary>Customer</summary>
+        <InfoRow label="Name" value={[cust.first_name, cust.last_name].filter(Boolean).join(' ') || order.primary_lastname} />
+        <InfoRow label="Phone" value={cust.phone_primary || cust.phone} />
+        <InfoRow label="Email" value={cust.email} />
+        <InfoRow label="Address" value={custAddr} />
+      </details>
+      <details className="pbt-info-sec" open>
+        <summary>Deceased</summary>
+        {dec.length === 0 && <div className="pbt-info-empty">None recorded.</div>}
+        {dec.map((p, i) => (
+          <InfoRow key={i} label={`Person ${i + 1}`}
+            value={[[p.firstName || p.first_name, p.lastName || p.last_name].filter(Boolean).join(' '),
+              (p.dateOfDeath || p.date_of_death) ? `d. ${p.dateOfDeath || p.date_of_death}` : null].filter(Boolean).join(' — ')} />
+        ))}
+      </details>
+      <details className="pbt-info-sec" open>
+        <summary>Cemetery and grave</summary>
+        <InfoRow label="Cemetery" value={cem.name} />
+        <InfoRow label="Address" value={[cem.address, cem.city, cem.state].filter(Boolean).join(', ')} />
+        <InfoRow label="Phone" value={cem.phone} />
+        <InfoRow label="Section" value={order.plot_section} />
+        <InfoRow label="Block" value={order.plot_block} />
+        <InfoRow label="Lot" value={order.plot_lot} />
+        <InfoRow label="Row" value={order.plot_row} />
+        <InfoRow label="Grave" value={order.plot_grave || order.plot_space} />
+        <InfoRow label="Location" value={order.grave_location} />
+        <InfoRow label="Permit" value={permitStatusLabel(order.permit_status)} />
+      </details>
+      <details className="pbt-info-sec" open>
+        <summary>Stone</summary>
+        <InfoRow label="Shape" value={[order.shape, order.top_shape].filter(Boolean).join(' · ')} />
+        <InfoRow label="Color" value={order.granite_color} />
+        <InfoRow label="Die" value={dieDims.length ? `${dieDims.map(_tradeStr).join(' x ')}  (${dieDims.join('" x ')}")` : null} />
+        <InfoRow label="Base" value={baseDims.length ? `${baseDims.map(_tradeStr).join(' x ')}  (${baseDims.join('" x ')}")` : null} />
+        <InfoRow label="Polish" value={order.polish_level} />
+        <InfoRow label="Sides" value={order.sides} />
+        <InfoRow label="Total" value={order.contract_total != null ? fmtUSD(order.contract_total) : null} />
+      </details>
+      <details className="pbt-info-sec" open>
+        <summary>Layouts</summary>
+        {!sources && <div className="pbt-info-empty">Loading…</div>}
+        {sources && sources.length === 0 && <div className="pbt-info-empty">No saved layouts.</div>}
+        {sources && sources.length > 0 && (
+          <div className="pbt-info-thumbs">
+            {sources.map(s => (
+              <button key={s.url} type="button" className="pbt-info-thumb" title="Insert into the permit"
+                onClick={() => onInsertLayout?.(s.url)}>
+                <img src={s.url} alt="" />
+                <span>{s.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </details>
+      <details className="pbt-info-sec">
+        <summary>Attachments {ctx ? `(${ctx.attachments.length})` : ''}</summary>
+        {!ctx && <div className="pbt-info-empty">Loading…</div>}
+        {ctx && ctx.attachments.length === 0 && <div className="pbt-info-empty">None.</div>}
+        {ctx && ctx.attachments.map(a => (
+          <a key={a.id} className="pbt-info-link" href={a.file_url} target="_blank" rel="noreferrer">
+            {(a.category || 'file').toUpperCase()} · {a.filename || 'attachment'}
+          </a>
+        ))}
+      </details>
+      <details className="pbt-info-sec">
+        <summary>Email traffic {ctx ? `(${ctx.emails.length})` : ''}</summary>
+        {!ctx && <div className="pbt-info-empty">Loading…</div>}
+        {ctx && ctx.emails.length === 0 && <div className="pbt-info-empty">Nothing linked to this customer.</div>}
+        {ctx && ctx.emails.map(e => (
+          <div key={e.id} className="pbt-info-mail">
+            <span className={`pbt-info-dir ${e.direction === 'outbound' ? 'out' : 'in'}`}>{e.direction === 'outbound' ? 'SENT' : 'IN'}</span>
+            <span className="pbt-info-mail-sub">{e.subject || '(no subject)'}</span>
+            <span className="pbt-info-mail-date">{fmtDT(e.sent_at || e.created_at)}</span>
+          </div>
+        ))}
+      </details>
+      {notes.length > 0 && (
+        <details className="pbt-info-sec">
+          <summary>Notes ({notes.length})</summary>
+          {notes.slice().reverse().map((n, i) => (
+            <div key={i} className="pbt-info-note">
+              <div className="pbt-info-note-meta">{n.by || 'Staff'}{n.at ? ` · ${String(n.at).slice(0, 10)}` : ''}</div>
+              <div>{n.text}</div>
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
   )
 }
 
@@ -998,10 +1149,43 @@ const localStyles = `
   }
   .pbt-dropzone:hover { border-color: #9A7209; color: #9A7209; }
   .pbt-canvaswrap { max-width: 880px; }
-  .pbt-docgrid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
-  @media (max-width: 1080px) { .pbt-docgrid { grid-template-columns: 1fr; } }
+  .pbt-docgrid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+  @media (max-width: 1120px) { .pbt-docgrid { grid-template-columns: 1fr; } }
   .pbt-docmain { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .pbt-rail { display: flex; flex-direction: column; gap: 12px; }
+  .pbt-rail-stack { display: flex; flex-direction: column; gap: 12px; }
+  .pbt-info { display: flex; flex-direction: column; gap: 8px; }
+  .pbt-info-sec {
+    background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #DCD7CB);
+    border-radius: 10px; padding: 4px 14px 8px;
+  }
+  .pbt-info-sec summary {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--sb-text-muted, #888780); padding: 8px 0 6px; cursor: pointer; user-select: none;
+  }
+  .pbt-info-row { display: flex; gap: 10px; padding: 3px 0; font-size: 12.5px; }
+  .pbt-info-label { color: var(--sb-text-muted, #888780); min-width: 70px; flex-shrink: 0; }
+  .pbt-info-value { color: var(--sb-text, #2C2C2A); word-break: break-word; }
+  .pbt-info-empty { font-size: 12px; color: var(--sb-text-muted, #888780); padding: 3px 0 5px; }
+  .pbt-info-thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 2px 0 4px; }
+  .pbt-info-thumb {
+    font: inherit; cursor: pointer; background: var(--sb-surface-muted, #F7F5F0);
+    border: 0.5px solid var(--sb-border, #DCD7CB); border-radius: 8px; padding: 6px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .pbt-info-thumb:hover { border-color: #9A7209; }
+  .pbt-info-thumb img { width: 100%; height: 64px; object-fit: contain; background: #fff; border-radius: 4px; }
+  .pbt-info-thumb span { font-size: 10.5px; color: var(--sb-text, #2C2C2A); }
+  .pbt-info-link { display: block; font-size: 12px; color: #9A7209; padding: 3px 0; text-decoration: none; }
+  .pbt-info-link:hover { text-decoration: underline; }
+  .pbt-info-mail { display: flex; align-items: baseline; gap: 7px; padding: 3px 0; font-size: 12px; }
+  .pbt-info-dir { font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 999px; flex-shrink: 0; }
+  .pbt-info-dir.in { color: #185FA5; border: 0.5px solid #378ADD; }
+  .pbt-info-dir.out { color: #0F6E56; border: 0.5px solid #1D9E75; }
+  .pbt-info-mail-sub { color: var(--sb-text, #2C2C2A); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pbt-info-mail-date { color: var(--sb-text-muted, #888780); font-size: 11px; flex-shrink: 0; }
+  .pbt-info-note { font-size: 12px; color: var(--sb-text, #2C2C2A); padding: 4px 0; border-top: 0.5px solid var(--sb-border, #EEE9DD); white-space: pre-wrap; }
+  .pbt-info-note-meta { font-size: 10.5px; color: var(--sb-text-muted, #888780); }
   .pbt-rail-card { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #DCD7CB); border-radius: 10px; padding: 13px 14px; }
   .pbt-rail-title { font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--sb-text-muted, #888780); margin-bottom: 7px; }
   .pbt-rail-name { font-size: 15px; font-weight: 600; color: var(--sb-text, #2C2C2A); }

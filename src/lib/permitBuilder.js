@@ -77,7 +77,26 @@ export async function updatePermitTemplate(id, patch) {
 
 // ── CRUD — docs ─────────────────────────────────────────────────────────────
 
-const DOC_EMBED = '*, template:permit_templates(id, title, pages, fields, layout_slot), order:orders(id, order_number, primary_lastname, permit_status, permit, customer:customers(*), cemetery:cemeteries(*))'
+// Full order row — the doc editor's right rail shows EVERYTHING (Paul: "all
+// the order information... attachments email traffic stone size layout").
+const DOC_EMBED = '*, template:permit_templates(id, title, pages, fields, layout_slot), order:orders(*, customer:customers(*), cemetery:cemeteries(*))'
+
+// Side context for the rail: attachments + recent email traffic. Fail-soft.
+export async function getOrderContext(orderId, customerId) {
+  const [att, em] = await Promise.all([
+    orderId
+      ? supabase.from('order_attachments')
+          .select('id, category, file_url, filename, mime_type, created_at')
+          .eq('order_id', orderId).order('created_at', { ascending: false }).limit(30)
+      : Promise.resolve({ data: [] }),
+    customerId
+      ? supabase.from('order_emails')
+          .select('id, direction, from_email, subject, snippet, sent_at, created_at')
+          .eq('customer_id', customerId).order('created_at', { ascending: false }).limit(8)
+      : Promise.resolve({ data: [] }),
+  ])
+  return { attachments: att?.data || [], emails: em?.data || [] }
+}
 
 export async function listPermitDocs({ orderId = null, limit = 30 } = {}) {
   let q = supabase.from('permit_docs')
