@@ -1,5 +1,17 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint PB-2 (2026-07-21) — SHIPPED: 36 permit templates live from Paul's two zips
+
+Commits 596353c/646ed33 (batch 1: 15 templates + dup-cemetery copies) + d3303b5 (batch 2: 12 more). **All mapped by eye from Paul's blanks + filled examples; geometry = fractions of page images in `public/permit-forms/<slug>/pN.png` (1700px wide, mostly 2200 tall; MapleGrove 2338, OLV 1314 half-sheet, HolyCross 1545x2000).** PDF→PNG conversion: Windows WinRT PdfDocument via PowerShell (scratchpad script pattern — MUST load StorageFile + InMemoryRandomAccessStream type accelerators in the SAME call). sb-api.ps1 needs `-Encoding UTF8` on Get-Content.
+
+**Conventions learned from Paul's filled examples (now autofill keys in lib/permitBuilder.js):** trade notation for stone (45"→3-9 via _trade; die_size/base_size/die_shape/base_line), plain inches for bronze (die_w_in/die_t_in/etc.), deceased_grave ("Name - Block 4 Section C..."), monument_full, split W/T/H keys, customer street/city/state/zip splits, deceased_dod, company_fax/email, bronze_mfr = Coldspring MN, see_reverse, polish_level. Checkbox X's = tiny custom boxes pre-placed at the common option (drag for others).
+
+**Templates by cemetery (title → binding):** CloverLeaf permit+bronze+; Shevco own form (null cemetery — charges box FDN/P&M/Total/Check); Mt.Leb permit + MtLeb/ForestLawn combined grid (dup-copied to Forest Lawn + New Mount Lebanon); Alpine + Hollywood memorialization (CMS family, layout_slot page:'back'; Hollywood blank had residual "Beth Levine" — whited out via System.Drawing); StGertrude sketch sheet; Beth Israel permit+foundation+bronze (dup-copied to bare 'Beth Israel' row); Hillside ScotchPlains; Resurrection Pisc + Holy Cross (Diocese of Metuchen generic, $100); StStephen/StMary ($25, dup-copied); SacredHeart Parlin (null cemetery, 3pg, only p1 mapped); ChristChurch monument + inscription ($75); Hazelwood; MapleGrove Hackensack (null); Maplewood Freehold (null); Marlboro/Mt.Sinai foundation+bronze; OLV/New Calvary booklet; StGabriels Marlboro (null); StJohnBaptist Clark ($2.43/sq-in handwritten + $75); StStanislaus Kostka ($2/sq-in + $50, caps 34x14x24 / 40x14x32).
+
+**OPEN QUESTIONS for Paul:** (1) StGertrude needs the BLANK Catholic Cemeteries authorization page; (2) unbound cemeteries — SacredHeart, MapleGrove, Maplewood, StGabriels have no cemetery rows (add or point at existing?); (3) photo releases (CloverLeaf + Hollywood, PNGs already converted in scratchpad) — want as templates?; (4) positions are eyeballed ±1-2% — Paul fine-tunes by dragging in the template editor.
+
+**NEXT = PB-3 (task #29): Print button (exportPermitPdf returnDoc → bloburl → window.open) + "Needed for this permit" missing-info checklist at doc create (empty autofill fields → quick inputs; plot_* write back to the order). Paul's words: "pull the info from the order then ask me for the info that you dont have."**
+
 ## Sprint PB-1 (2026-07-21) — SHIPPED: Permit Builder foundation (AWAITING Paul's form uploads)
 
 Commit 4d7bfd3, deploy 5541309321, live chunk verified (PermitBuilderTab + all 6 UI markers). Paul: permits are "one of the most time consuming parts of the job... I need this to be amazing." NOT yet piloted by a human — Paul is the first click; expect an iteration round. **NEXT: Paul uploads blank + filled example permits per cemetery; use the filled examples to place/bind each template's field boxes.**
