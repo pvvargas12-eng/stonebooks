@@ -7,6 +7,7 @@
 
 import { supabase } from './supabase'
 import { pokePushSender } from './pushPoke'
+import { recordTaskAssigned } from './taskStreak'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
 import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
@@ -3064,6 +3065,7 @@ export async function addShopTask({
     .insert(row).select(TASK_SELECT).single()
   if (error) return { ok: false, error: error.message }
   pokePushSender()   // near-instant phone notification for the assignee
+  recordTaskAssigned()   // the streak easter egg (fire-and-forget, UI-only)
   return { ok: true, task: data, row: data }
 }
 

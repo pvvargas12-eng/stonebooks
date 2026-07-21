@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase'
 import { getSession, onAuthStateChange, signInWithPassword, signOut } from './lib/auth'
 import { tradeSignup, getMyPartnerContext } from './lib/vendorsData'
 import Stonebooks from './Stonebooks'
+import TaskStreakFun from './components/TaskStreakFun'
 
 // ── Code-split routes (perf pass 2026-07-15) ────────────────────────────────
 // Everything except the staff app itself loads on demand — SalesMode alone
@@ -519,6 +520,18 @@ const isSalesKioskRoute = () => {
 }
 
 export default function App() {
+  // TaskStreakFun rides OUTSIDE the route switch so the tasking easter egg
+  // works identically on the desktop shell and /field (it renders null until
+  // lib/taskStreak fires an event — public routes never see anything).
+  return (
+    <>
+      <AppRoutes />
+      <TaskStreakFun />
+    </>
+  )
+}
+
+function AppRoutes() {
   // Trade params on any non-/trade path (old-format invite links, emails sent
   // before the /trade route existed, hand-typed links) forward to the Trade
   // front door — a dealer link must NEVER land on staff chrome.
