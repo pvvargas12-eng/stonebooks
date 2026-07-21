@@ -38,6 +38,7 @@ const CustomersTab = lazy(() => import('./CustomersTab'))
 const OrdersTab = lazy(() => import('./OrdersTab'))
 const CemeteryOrdersTab = lazy(() => import('./CemeteryOrdersTab'))
 const JobsTab = lazy(() => import('./JobsTab'))
+const PermitBuilderTab = lazy(() => import('./PermitBuilderTab'))
 const SchedulerTab = lazy(() => import('./SchedulerTab'))
 const ReportsTab = lazy(() => import('./ReportsTab'))
 const ProfitTab = lazy(() => import('./ProfitTab'))
@@ -214,6 +215,7 @@ const NAV_PRIMARY = [
   { key: 'orders',    label: 'Sales' },
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
+  { key: 'permitbuilder', label: 'Permit Builder' },
   { key: 'scheduler', label: 'Scheduler' },
   { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
@@ -329,6 +331,14 @@ export default function Stonebooks() {
   // clears it on consumption. Same pattern as `selectedJobId`.
   const [pendingQueue, setPendingQueue] = useState(null)
   const [ordersQueue, setOrdersQueue] = useState(null)   // Workflow Hubs → Orders pre-filter
+
+  // Permit Hub → Permit Builder deep link. A window event instead of threading
+  // a prop through JobsTab → JobsDepartmentView → PermitHub.
+  useEffect(() => {
+    const go = () => setTab('permitbuilder')
+    window.addEventListener('sb-open-permit-builder', go)
+    return () => window.removeEventListener('sb-open-permit-builder', go)
+  }, [])
   const [orderDetailId, setOrderDetailId] = useState(null) // ITEM 5 — Jobs Admin Hub closeout → OrderDetail
   const [orderDetailAction, setOrderDetailAction] = useState(null) // optional auto-action on open (e.g. 'email')
 
@@ -707,6 +717,7 @@ export default function Stonebooks() {
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} />}
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenOrderDetail={(id, action) => { setOrderDetailId(id); if (action) setOrderDetailAction(action); setTab('orders') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
+{tab === 'permitbuilder' && <PermitBuilderTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setTab('orders') }} />}
 {tab === 'scheduler' && <SchedulerTab user={user} profile={profile} onOpenJob={openJobSmart} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {/* Calendar = the same SchedulerTab component in a Month-default, view-focused
     variant. It reads the SAME work_batches data through the same data layer —

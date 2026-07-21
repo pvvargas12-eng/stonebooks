@@ -372,6 +372,8 @@ export default function PermitHub({ onOpenQueue, onEditOrder, onOpenJob, onOpenC
           <div className="sb-crm-head-actions">
             <button type="button" className={`sb-crm-btn-secondary${view === 'worklist' ? ' sb-ph-on' : ''}`} onClick={() => setView('worklist')}>Worklist</button>
             <button type="button" className={`sb-crm-btn-secondary${view === 'cemeteries' ? ' sb-ph-on' : ''}`} onClick={() => setView('cemeteries')}>Cemetery requirements</button>
+            {/* PB-1: jump to the Permit Builder tab (shell listens for this event). */}
+            <button type="button" className="sb-crm-btn-primary" onClick={() => window.dispatchEvent(new CustomEvent('sb-open-permit-builder'))}>Permit Builder →</button>
           </div>
         </header>
 
