@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { fmtDate, getCurrentStaffName, sendOrderEmail, sendShopEmail, missingCheckRef } from './lib/stonebooksData'
+import { fmtDate, getCurrentStaffName, sendOrderEmail, sendShopEmail, missingCheckRef, todayISO } from './lib/stonebooksData'
 import PartnerPortal from './PartnerPortal'
 import {
   listPartners, createPartner, updatePartner,
@@ -1058,7 +1058,7 @@ function POPayModal({ po, onClose, onSaved }) {
   const [amount, setAmount] = useState(due > 0 ? String(due) : '')
   const [method, setMethod] = useState('check')
   const [ref, setRef] = useState('')
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [date, setDate] = useState(() => todayISO())
   const [busy, setBusy] = useState(false); const [error, setError] = useState(null)
   const save = async () => {
     if (missingCheckRef(method, ref)) { setError('Check number is required for check payments.'); return }
@@ -1121,7 +1121,7 @@ function POModal({ seed, partners, onClose, onSaved }) {
   const lineSum = lines.reduce((s, li) => s + (li.unitPrice !== '' && li.unitPrice != null ? Number(li.unitPrice) * (Number(li.quantity) || 1) : 0), 0)
   const total = customAmount !== '' ? Number(customAmount) : lineSum
   const toPoObject = () => ({
-    po_number: poNumber, po_date: ex?.po_date || new Date().toISOString().slice(0, 10),
+    po_number: poNumber, po_date: ex?.po_date || todayISO(),
     partner: partners.find(p => p.id === partnerId) || ex?.partner || null,
     notes, custom_amount: customAmount !== '' ? Number(customAmount) : null,
     po_items: lines.map(li => ({ description: li.description, quantity: Number(li.quantity) || 1, unit_price: li.unitPrice === '' ? null : Number(li.unitPrice) })),

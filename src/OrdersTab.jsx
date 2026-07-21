@@ -33,7 +33,7 @@ import {
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
   logOrderActivity, getCurrentStaffName,
-  properName,
+  properName, todayISO,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
@@ -788,7 +788,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     for (const k of (plan.done || []))       statusByKey[k] = 'done'
     for (const k of (plan.notStarted || [])) statusByKey[k] = 'not_started'
     for (const k of (plan.notNeeded || []))  statusByKey[k] = 'not_needed'
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayISO()
     setAllJobs(prev => prev.map(j => {
       if (j.order_id !== orderId) return j
       const milestones = (j.milestones || []).map(m =>
@@ -892,7 +892,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Cemetery & Grave card read the same field). Auto-stamps the submitted/approved
   // date when first reached. Logged to order_activity in Phase 7.
   const inlinePermit = async (o, code) => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayISO()
     const patch = { permit_status: code }
     if (code === 'submitted' && !o.permit_filed_at) patch.permit_filed_at = today
     if (code === 'approved' && !o.permit_approved_at) patch.permit_approved_at = today
@@ -962,7 +962,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       { label: 'Balance', get: o => o._balance },
       { label: 'Cemetery', get: o => o.cemetery?.name || '' },
     ]
-    downloadCSV(`orders-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(rows, cols))
+    downloadCSV(`orders-${todayISO()}.csv`, toCSV(rows, cols))
     showToast(`Exported ${rows.length} order${rows.length === 1 ? '' : 's'} to CSV.`)
   }
 

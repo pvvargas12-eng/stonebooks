@@ -16,7 +16,7 @@
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
-  updateMilestone, addOrderTask, logOrderActivity, getCurrentStaffName } from '../lib/stonebooksData'
+  updateMilestone, addOrderTask, logOrderActivity, getCurrentStaffName, todayISO } from '../lib/stonebooksData'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -113,7 +113,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   }, [components, jobs, byJob, monthKey])
 
   // ── Actions (reuse existing milestone + task + photo systems) ───────────────
-  const openSchedule = (row) => { const d = new Date(); setScheduleDate(d.toISOString().slice(0, 10)); setScheduleRow(row) }
+  const openSchedule = (row) => { setScheduleDate(todayISO()); setScheduleRow(row) }
   const doSchedule = async () => {
     if (!scheduleRow || !scheduleDate || busy) return
     setBusy(true)

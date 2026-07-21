@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO } from './lib/stonebooksData'
 import { designTags } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -6127,7 +6127,7 @@ function VaseConfigurator({ order, update, updateAddOn }) {
     }
     const patch = { addOns: [...order.addOns, newAddOn] }
     if (overrideNote) {
-      const today = new Date().toISOString().slice(0, 10)
+      const today = todayISO()
       const stamp = `[OVERRIDE: Vase base clearance below 1.5" minimum on ${today}]`
       patch.notes = order.notes ? `${stamp}\n${order.notes}` : stamp
     }
@@ -11640,7 +11640,7 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
       amount: defaultAmount,
       method: 'check',
       ref: '',
-      receivedAt: new Date().toISOString().slice(0, 10),  // YYYY-MM-DD, today
+      receivedAt: todayISO(),  // YYYY-MM-DD, local today
       createdAt: new Date().toISOString(),                // full ISO, ledger-sort key
       createdBy: order.salesRep || null,
       note: null,

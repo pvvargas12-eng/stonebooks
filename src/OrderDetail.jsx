@@ -1603,7 +1603,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   const markContracted = async () => {
     if (!contractArm) { setContractArm(true); setTimeout(() => setContractArm(false), 4000); return }
     setContractArm(false)
-    const d = order.signed_at ? String(order.signed_at).slice(0, 10) : new Date().toISOString().slice(0, 10)
+    const d = order.signed_at ? String(order.signed_at).slice(0, 10) : todayISO()
     const patch = { signed_at: `${d}T00:00:00` }
     if (['draft', 'scoping', 'quoted'].includes(order.status)) patch.status = 'contracted'
     const res = await bulkUpdateOrders([orderId], patch)

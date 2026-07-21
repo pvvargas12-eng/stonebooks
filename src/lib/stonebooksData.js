@@ -673,7 +673,7 @@ export async function getEmailTasks() {
       installDates.set(oid, String(m.due_date).slice(0, 10))
     }
   }
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const tasks = []
   const photoCandidates = []
   for (const o of orders) {
@@ -1974,7 +1974,7 @@ function _fdnPlan(code) {
 // derived value deterministic. Up to 3 batched updates, job-scoped.
 async function _applyMilestonePlan(jobId, plan) {
   if (!jobId || !plan) return { ok: false, error: 'Invalid status change' }
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const nowIso = new Date().toISOString()
   const steps = [
     plan.done?.length      ? supabase.from('job_milestones').update({ status: 'done',        status_date: today, updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.done)      : null,
@@ -2345,7 +2345,7 @@ export async function recordOutgoingPayment(input = {}) {
     method:     input.method || null,
     reference:  input.reference?.trim() || null,
     amount,
-    paid_date:  input.paidDate || new Date().toISOString().slice(0, 10),
+    paid_date:  input.paidDate || todayISO(),
     direction:  'out',
     notes:      input.notes?.trim() || null,
     created_by: input.createdBy || null,
@@ -3491,9 +3491,25 @@ export function maskPhoneInput(v) {
   return `(${d.slice(0, 3)}) ${d.slice(3, 6)} - ${d.slice(6)}`
 }
 
+// Local calendar day as YYYY-MM-DD. Never use new Date().toISOString() for a
+// "today" default — toISOString is UTC, which after 8pm Eastern is already
+// TOMORROW, so evening entries got stamped a day ahead. Pass a Date to format
+// some other moment as a local calendar day.
+export function todayISO(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Date-only values ('2026-07-21' — paid_date, permit dates, receivedAt) must
+// parse as LOCAL midnight: bare new Date('2026-07-21') is midnight UTC, which
+// is 8pm the PREVIOUS evening in NJ — every date column rendered a day behind.
+const parseDateLocal = (iso) => {
+  const s = String(iso)
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(`${s}T00:00:00`) : new Date(s)
+}
+
 export function fmtDate(iso, opts = {}) {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const d = parseDateLocal(iso)
   if (opts.long) return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
   if (opts.month) return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -3501,7 +3517,7 @@ export function fmtDate(iso, opts = {}) {
 
 export function fmtRelative(iso) {
   if (!iso) return ''
-  const ms = Date.now() - new Date(iso).getTime()
+  const ms = Date.now() - parseDateLocal(iso).getTime()
   const days = Math.floor(ms / 86400000)
   if (days === 0)   return 'today'
   if (days === 1)   return 'yesterday'
@@ -4512,7 +4528,7 @@ export async function combineOrders(primaryId, otherIds = []) {
     if (t > 0) addOns.push({ id: `combined-${String(o.id).slice(0, 8)}`, kind: 'other', code: 'other', label: `Combined from ${o.order_number} — ${orderTypeLabel(o)}`, price: t })
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const stamp = (txt) => `[COMBINED ${today}] ${txt}`
   const primaryNotes = [primary.notes, ...others.map(o => stamp(`${o.order_number} (${orderTypeLabel(o)}) merged into this order.`))].filter(Boolean).join('\n')
 
@@ -6625,7 +6641,7 @@ async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, 
   if (actorUserId) rowPatch.updated_by = actorUserId
   if (patch.status !== undefined) {
     rowPatch.status = patch.status
-    rowPatch.status_date = new Date().toISOString().slice(0, 10)
+    rowPatch.status_date = todayISO()
   }
   if (patch.due_date !== undefined) rowPatch.due_date = patch.due_date
   if (patch.assignee_user_id !== undefined) rowPatch.assignee_user_id = patch.assignee_user_id
@@ -11782,7 +11798,7 @@ export async function resolvePromise(promiseId, { kept }) {
 // are still in the air for this person.
 export async function getPromiseCounts(promised_by, { rolling_days = 90 } = {}) {
   if (!promised_by) return { made: 0, kept: 0, openCount: 0 }
-  const cutoff = new Date(Date.now() - rolling_days * 86400000).toISOString().slice(0, 10)
+  const cutoff = todayISO(new Date(Date.now() - rolling_days * 86400000))
   const { data, error } = await supabase
     .from('job_promises')
     .select('id, kept, resolved_at, promised_date')

@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { supabase } from './supabase'
-import { getCurrentStaffName, createTradeJob, sendShopEmail } from './stonebooksData'
+import { getCurrentStaffName, createTradeJob, sendShopEmail, todayISO } from './stonebooksData'
 
 const MIGRATION_HINT = 'Vendor portal isn’t set up yet — apply the 20260608_vendor_portal migration in Supabase Studio, then try again.'
 const isMissing = (msg) => /relation .* does not exist|could not find the table|schema cache/i.test(msg || '')
@@ -295,7 +295,7 @@ export async function createVendorPO(input = {}) {
   if (!input.partnerId) return { ok: false, error: 'Pick a partner.' }
   const poNumber = input.poNumber || await nextPONumber()
   const { data: po, error } = await supabase.from('vendor_pos').insert({
-    partner_id: input.partnerId, po_number: poNumber, po_date: input.poDate || new Date().toISOString().slice(0, 10),
+    partner_id: input.partnerId, po_number: poNumber, po_date: input.poDate || todayISO(),
     status: input.status === 'sent' ? 'sent' : 'draft', notes: input.notes?.trim() || null,
     custom_amount: input.customAmount != null && input.customAmount !== '' ? Number(input.customAmount) : null,
     batch_id: input.batchId || null,
@@ -361,7 +361,7 @@ export async function recordVendorPOPayment(id, { amount, method = 'check', ref 
   if (amount == null || amount === '' || !(Number(amount) > 0)) return { ok: false, error: 'Enter the amount received.' }
   const payment = {
     amount: Number(amount), method, ref: ref?.trim() || null,
-    date: date || new Date().toISOString().slice(0, 10),
+    date: date || todayISO(),
     recordedBy: actor || null, at: new Date().toISOString(),
   }
   const { data: po, error } = await supabase.from('vendor_pos')

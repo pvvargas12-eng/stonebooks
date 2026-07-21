@@ -20,7 +20,8 @@ import {
   customerName,
 } from '../lib/stonebooksData'
 
-const todayISO = () => new Date().toISOString().slice(0, 10)
+// Local calendar day — toISOString is UTC and rolls to tomorrow after 8pm ET.
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
 
 export default function ExpenseModal({ presetLink = null, presetLabel = '', showPicker = false, onClose, onSaved }) {
   // link value encodes type+id: 'overhead' | `job:ID` | `order:ID` | `cemetery:ID`

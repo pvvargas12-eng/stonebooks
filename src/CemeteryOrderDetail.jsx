@@ -47,7 +47,8 @@ const PAY_PILL = {
   paid:    { label: 'Paid in full', color: '#2d7a4f' },
 }
 const keyOf = (s) => (typeof s === 'string' ? s : s?.key)
-const todayISO = () => new Date().toISOString().slice(0, 10)
+// Local calendar day — toISOString is UTC and rolls to tomorrow after 8pm ET.
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
 
 export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResumeDraft, onEditOrder }) {
   const [order, setOrder] = useState(null)

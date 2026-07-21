@@ -948,7 +948,14 @@ function OrderInfoSections({ order, ctx, sources, onInsertLayout }) {
   const dieDims = [order.width_inches, order.height_inches, order.thickness_inches ?? order.depth_inches].filter(v => v != null)
   const base = order.base_config || {}
   const baseDims = [base.width ?? base.w, base.height ?? base.h, base.depth ?? base.d].filter(v => v != null)
-  const fmtDT = (iso) => iso ? String(iso).slice(0, 10) : null
+  // Local calendar day for both date-only strings and full timestamps — a raw
+  // UTC slice dated evening emails a day ahead.
+  const fmtDT = (iso) => {
+    if (!iso) return null
+    const s = String(iso)
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(`${s}T00:00:00`) : new Date(s)
+    return isNaN(d) ? s.slice(0, 10) : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
   return (
     <div className="pbt-info">
       <details className="pbt-info-sec" open>

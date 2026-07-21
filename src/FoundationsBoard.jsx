@@ -18,7 +18,7 @@ import { supabase } from './lib/supabase'
 import {
   getJobs, getFoundationList, addToFoundationList, removeFromFoundationList,
   deriveFdnStatus, fdnStatusLabel, setOrderFdnStatus, orderStatusWritePlan,
-  customerName, getCurrentStaffName,
+  customerName, getCurrentStaffName, todayISO,
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
 import { buildBaseSpec, composeGraveLocation } from './lib/monumentCatalog'
@@ -343,7 +343,7 @@ export default function FoundationsBoard({ onOpenJob }) {
 // shape _applyMilestonePlan uses, so the derived status matches a refetch.
 function applyFdnPlanLocally(job, plan) {
   if (!plan) return job
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const milestones = (job.milestones || []).map(m => {
     if (plan.done?.includes(m.milestone_key))       return { ...m, status: 'done', status_date: today }
     if (plan.notStarted?.includes(m.milestone_key)) return { ...m, status: 'not_started', status_date: null }
