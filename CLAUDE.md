@@ -1,5 +1,11 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## INCIDENT (2026-07-21 ~19:20-19:43 UTC): Supabase project wedged — RESOLVED by project restart
+
+Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis ladder that worked: (1) site HTML + chunks 200 ✓; (2) unkeyed /auth/v1/health + /rest/v1/ → instant 401 (gateway alive); (3) SAME endpoints WITH the anon apikey → HTTP 000 timeouts (services behind gateway hung); (4) Management API SQL → "Connection terminated due to connection timeout" (the DATABASE itself unreachable); (5) status.supabase.com → all operational (so OUR instance, not platform). Remedy: **POST https://api.supabase.com/v1/projects/ibekfollqnytxcuyekad/restart** (Bearer = same Credential Manager token as sb-api; scratchpad sb-restart.ps1 pattern) → HTTP 200 → back in under a minute, zero data loss (453 orders, 36 templates verified). "Failed to fetch" on sign-in = the reboot window.
+- Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
+- Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
+
 ## Sprint SEND-1 (2026-07-21) — SHIPPED: send-safety gate + invoice preview/download + Trade logo
 
 Commit 179e7e6, live-verified. Incident: a worker one-click sent trade invoice TI-2026-001 unintentionally. **STANDING DOCTRINE (also in memory feedback-send-safety): every customer/dealer-facing send goes through a confirm gate showing the EXACT email (recipient + subject + rendered body) — no bare send buttons, ever.**
