@@ -1,5 +1,15 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint SEND-1 (2026-07-21) — SHIPPED: send-safety gate + invoice preview/download + Trade logo
+
+Commit 179e7e6, live-verified. Incident: a worker one-click sent trade invoice TI-2026-001 unintentionally. **STANDING DOCTRINE (also in memory feedback-send-safety): every customer/dealer-facing send goes through a confirm gate showing the EXACT email (recipient + subject + rendered body) — no bare send buttons, ever.**
+
+- `src/components/ConfirmSend.jsx` — reusable gate: sandboxed-iframe email preview, explicit "Send to <email>" gold button, viewOnly mode doubles as pure preview. Adopt it for ANY new customer-emailing feature.
+- Trade invoices (VendorsTab): "Send invoice" → "Preview and send" (gated via buildTradeInvoiceEmail — extracted from setTradeInvoiceStatus so preview and sender share ONE composer); "Preview" on sent/paid; **"Download PDF" at ANY status** (downloadTradeInvoicePdf in vendorsData — ink-light letterhead, hairlines only).
+- `src/components/TradeLogo.jsx` — steel-blue stacked-slab mark + STONEBOOKS TRADE wordmark (deliberately far from cream/gold), applied: /trade login gate, invite signup, staff-wandered card (App.jsx ×3), PartnerPortal header.
+- Audit note: other sendShopEmail callers are inside deliberate compose modals (EmailTab/OrderDetail/CustomersTab/DesignPacket/QuoteHub) — acceptable; sweep them onto ConfirmSend opportunistically.
+- OPEN: Paul said "create a stonebooks trade app as well" — logo shipped; asked whether he also wants /trade installable as its own phone/tablet PWA (manifest + icon like SB Field). Browser pane hung during visual check — verified via live-bundle grep instead.
+
 ## Sprint PB-3/PB-4 (2026-07-21) — SHIPPED: expert editor + full order rail
 
 Commits d3cf600 (PB-3) + 09963ac (PB-4), both live-verified. Paul: "EXPERT LEVEL PDF editor... in the actual build a permit i need to be able to add those things too" + "right side all the order information... basically everything."
