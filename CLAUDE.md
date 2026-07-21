@@ -1,5 +1,16 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint PB-3/PB-4 (2026-07-21) — SHIPPED: expert editor + full order rail
+
+Commits d3cf600 (PB-3) + 09963ac (PB-4), both live-verified. Paul: "EXPERT LEVEL PDF editor... in the actual build a permit i need to be able to add those things too" + "right side all the order information... basically everything."
+
+- **Field kinds** (template + doc): 'text' (autofill), **'fixed'** (template's own typed text — dblclick to edit right on the form, seeds every permit), **'check'** (click toggles, ✓ or X style via `mark`, template default via `on` / "Starts checked"). PDF draws checks as VECTORS (WinAnsi has no U+2713). effectiveBox/seedDocData carry kind/mark/on.
+- **Canvas engine**: click-vs-drag detection (>4px = drag; clean click fires onClickNoDrag — how checks toggle); arrow-key nudge on selection (Shift = 10px), wrapper tabIndex=0.
+- **Doc editor**: Print (bloburl → viewer tab), **"Needed for this permit"** amber panel (missingAutofill: order-bound fields resolved empty, MISSING_EXEMPT skips company/date/fixed; Fill writes every box bound to the key; MISSING_ORDER_WRITEBACK sends plot_section/block/lot/row/grave + grave_location back via setOrderPermit), exact size input (sizePct×1000), Duplicate.
+- **Order-info rail (PB-4)**: DOC_EMBED now full `order:orders(*)`; getOrderContext(orderId, customerId) → order_attachments (file_url/filename/category) + order_emails by customer (direction/subject/sent_at). Rail = collapsible <details> sections: Customer / Deceased / Cemetery+grave / Stone (trade + inch dims — orders store die in width_inches/height_inches/thickness_inches/depth_inches COLUMNS, base in base_config jsonb) / **Layouts (thumbs, click = placeLayout insert)** / Attachments / Email traffic / Notes, then the status+fees cards (PermitMoneyRail now .pbt-rail-stack). Sources load eagerly.
+- Audit trick that session: matching leftover stones = SQL over width_inches/height_inches + shape ilike + status not closed (die_config does NOT exist as a column).
+- Paul's next-level wishlist offered, not yet built: undo (Ctrl+Z), canvas zoom, snap guides, duplicate template, permit status chips on Home.
+
 ## Sprint PB-2 (2026-07-21) — SHIPPED: 36 permit templates live from Paul's two zips
 
 Commits 596353c/646ed33 (batch 1: 15 templates + dup-cemetery copies) + d3303b5 (batch 2: 12 more). **All mapped by eye from Paul's blanks + filled examples; geometry = fractions of page images in `public/permit-forms/<slug>/pN.png` (1700px wide, mostly 2200 tall; MapleGrove 2338, OLV 1314 half-sheet, HolyCross 1545x2000).** PDF→PNG conversion: Windows WinRT PdfDocument via PowerShell (scratchpad script pattern — MUST load StorageFile + InMemoryRandomAccessStream type accelerators in the SAME call). sb-api.ps1 needs `-Encoding UTF8` on Get-Content.
