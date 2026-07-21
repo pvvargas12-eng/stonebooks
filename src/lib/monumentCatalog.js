@@ -208,10 +208,15 @@ export const POLISH_TO_SIDES_DEFAULT = {
 }
 
 // ---- Polish levels --------------------------------------------------------
+// P1 / Steel Top / Frosted Top added 2026-07-21 (Paul). No POLISH_TO_SIDES_DEFAULT
+// entries for them — sides stay operator-picked; pricing rides the sides codes.
 export const POLISH_LEVELS = [
+  { code: 'P1', label: 'P1 — Polished Top', blurb: 'Top polished only.' },
   { code: 'P2', label: 'P2 — Polished 2',  blurb: 'Front and back polished.' },
   { code: 'P3', label: 'P3 — Polished 3',  blurb: 'Front, back, and top polished.' },
   { code: 'P5', label: 'P5 — Polished 5',  blurb: 'All sides polished except the bottom.' },
+  { code: 'steel-top',   label: 'Steel Top',   blurb: 'Steeled (smooth, unpolished) top.' },
+  { code: 'frosted-top', label: 'Frosted Top', blurb: 'Frosted top finish.' },
 ]
 
 // ---- Base sizes (used when adding a base to slant/die/etc.) --------------

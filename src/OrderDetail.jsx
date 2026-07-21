@@ -46,6 +46,7 @@ import {
   markApprovalLinkEmailed,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
+  addToFoundationList, removeFromFoundationList,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
   permitStatusTone,
 } from './lib/stonebooksData'
@@ -615,6 +616,28 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     if (!jid) return
     const r = await setOrderFdnStatus(jid, code)
     if (r.ok) await refreshJob()
+  }
+  // Who pours the foundation (Paul 2026-07-21) — most permits ARE for a
+  // cemetery foundation. 'Our Foundation'/'Strip' = Shevco pours it → the job
+  // goes ONTO the shevco foundation work list (foundation_list) and stays in
+  // the Foundations board pool; 'Cemetery Foundation' takes it off both.
+  const saveFoundationBy = async (v) => {
+    const val = v || null
+    const r = await setOrderPermit(orderId, { foundation_type: val })
+    if (!r.ok) return
+    const jid = job?.id || null
+    if (jid) {
+      if (val === 'Our Foundation' || val === 'Strip') await addToFoundationList(jid)
+      else if (val === 'Cemetery Foundation') await removeFromFoundationList(jid)
+    }
+    await refreshOrder()
+    const staff = await getCurrentStaffName()
+    logOrderActivity(orderId, {
+      type: 'change', field: 'Foundation by', newValue: val || '—',
+      note: val === 'Cemetery Foundation' ? 'Cemetery pours the foundation'
+        : (val ? 'Shevco foundation — routed to the foundation list' : null),
+      actor: staff,
+    }).then(() => refreshActivity()).catch(() => {})
   }
   const inlinePermit = async (code) => {
     const today = todayISO()
@@ -2554,8 +2577,8 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
           </Section>
 
           {/* 4b — Permit */}
-          <Section id="od-permit" title="Permit" headerAction={
-            <CardQuickEdit title="Permit" onOpen={seedPermitDraft} onSave={savePermit} width={360}>
+          <Section id="od-permit" title="Permit & Foundation" headerAction={
+            <CardQuickEdit title="Permit & Foundation" onOpen={seedPermitDraft} onSave={savePermit} width={360}>
               {permitDraft && (() => {
                 const permitOpts = PERMIT_SELECTABLE.has(permitDraft.permit_status)
                   ? PERMIT_STATUS_OPTIONS
@@ -2625,6 +2648,24 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
             <Field label="Paid (outgoing)" value={permitExpenses.length
               ? permitExpenses.map(p => <div key={p.id}>{fmtUSD(p.amount)}{p.reference ? ` · ck #${p.reference}` : ''} · {fmtDate(p.paid_date)}{p.payee ? ` → ${p.payee}` : ''}</div>)
               : null} hint={permitExpenses.length ? 'paid out — not a customer payment' : 'none recorded — add it via ⋯'} />
+            {/* Foundation lives with the permit (Paul 2026-07-21) — most permits
+                ARE for a cemetery foundation. Shevco/Strip routes the job onto
+                the foundation work list; both selects commit instantly. */}
+            <Field label="Foundation by" value={
+              <select className="sb-od-fdn-select" value={order.foundation_type || ''}
+                onChange={e => saveFoundationBy(e.target.value)}>
+                <option value="">—</option>
+                <option value="Cemetery Foundation">Cemetery Foundation</option>
+                <option value="Our Foundation">Shevco Foundation</option>
+                <option value="Strip">Strip (Shevco)</option>
+              </select>
+            } hint={(order.foundation_type === 'Our Foundation' || order.foundation_type === 'Strip') ? 'on the Shevco foundation list' : null} />
+            <Field label="Foundation status" value={
+              <select className="sb-od-fdn-select" value={deriveFdnStatus(job)}
+                onChange={e => inlineFdn(e.target.value)}>
+                {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </select>
+            } />
           </Section>
 
           {/* 5 — Related job */}
@@ -3545,6 +3586,12 @@ const OD_CSS = `
   .sb-od-attach-badge-signed { background: #2e7d3a; color: #fff; }
   .sb-od-attach-badge-draft { background: #e7e2d6; color: #7a756a; }
   .sb-od-permit-tasks { margin-top: 6px; }
+  .sb-od-fdn-select {
+    font: inherit; font-size: 13px; padding: 4px 9px; cursor: pointer;
+    border: 0.5px solid var(--sb-border); border-radius: 6px;
+    background: var(--sb-surface); color: var(--sb-text); max-width: 220px;
+  }
+  .sb-od-fdn-select:focus { outline: none; border-color: var(--sb-accent, #b8842a); }
   .sb-od-permit-task { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
   .sb-od-permit-task span { flex: 1 1 auto; word-break: break-word; }
   .sb-od-permit-task-toggle { border: none; background: none; cursor: pointer; font-size: 14px; color: #2d7a4f; flex: 0 0 auto; }

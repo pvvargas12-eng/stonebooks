@@ -463,6 +463,9 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
 
             {sections.includes('finance') && <div className="of-span-2"><QuotesManager order={order} update={update} /></div>}
 
+            {/* Notes — ALWAYS, whatever the job type (Paul 2026-07-21). */}
+            <div className="of-span-2"><StaffNotesCard order={order} update={update} /></div>
+
             <div className="of-span-2"><StatusCard isEdit={isEdit} templateMs={templateMs} stageIdx={stageIdx} setStageIdx={setStageIdx} /></div>
           </div>
         </div>
@@ -588,6 +591,38 @@ function NoteCard({ title, value, onChange, placeholder }) {
   return (
     <Card title={title}>
       <TextAreaField label="Details" value={value} onChange={onChange} placeholder={placeholder} rows={4} />
+    </Card>
+  )
+}
+
+// Staff notes — EVERY order type (Paul 2026-07-21: building a bronze marker
+// had nowhere to write the design info). Appends to orders.staff_notes — the
+// same array the sales wizard's "Internal staff notes" reads, so notes travel
+// with the order everywhere. Saves with the form.
+function StaffNotesCard({ order, update }) {
+  const [draft, setDraft] = useState('')
+  const notes = Array.isArray(order.staffNotes) ? order.staffNotes : []
+  const add = () => {
+    const text = draft.trim()
+    if (!text) return
+    update({ staffNotes: [...notes, { at: new Date().toISOString(), by: order.salesRep || 'Staff', text }] })
+    setDraft('')
+  }
+  return (
+    <Card title="Notes" sub="Design details, what the family wants, anything for the team — staff only, saves with the order.">
+      {notes.length > 0 && (
+        <div className="of-staffnotes-list">
+          {notes.slice().reverse().map((n, i) => (
+            <div key={i} className="of-staffnote">
+              <div className="of-staffnote-meta">{n.by || 'Staff'}{n.at ? ` · ${String(n.at).slice(0, 10)}` : ''}</div>
+              <div className="of-staffnote-text">{n.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <TextAreaField label="Add a note" value={draft} onChange={setDraft}
+        placeholder="e.g. Bronze marker — rose border, praying hands, family wants the Miller lettering style…" rows={3} />
+      <button type="button" className="of-staffnote-add" onClick={add} disabled={!draft.trim()}>Add note</button>
     </Card>
   )
 }
@@ -1745,6 +1780,14 @@ function StatusCard({ isEdit, templateMs, stageIdx, setStageIdx }) {
 export const OF_CSS = `
   .of-overlay { position: fixed; inset: 0; z-index: 950; background: var(--cream, #faf8f4); display: flex; flex-direction: column;
     font-family: var(--font-b, 'Lato'), 'Helvetica Neue', sans-serif; color: var(--text, #2a2a2a); }
+  .of-staffnotes-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .of-staffnote { background: #FBF9F4; border: 1px solid #EAE4D6; border-radius: 8px; padding: 8px 11px; }
+  .of-staffnote-meta { font-size: 11px; color: #9A8A5E; margin-bottom: 2px; }
+  .of-staffnote-text { font-size: 13px; color: #2a2a2a; white-space: pre-wrap; }
+  .of-staffnote-add { font: inherit; font-size: 12.5px; font-weight: 700; padding: 7px 16px; cursor: pointer;
+    border: 1.5px solid #9A7209; border-radius: 7px; background: none; color: #9A7209; }
+  .of-staffnote-add:hover:not(:disabled) { background: #9A7209; color: #fff; }
+  .of-staffnote-add:disabled { opacity: 0.45; cursor: not-allowed; }
   .of-overlay input, .of-overlay select, .of-overlay textarea, .of-overlay button { font-family: var(--font-b, 'Lato'), sans-serif; }
   .of-shell { display: flex; flex-direction: column; height: 100%; }
   .of-empty { margin: auto; color: #8a8a85; font-size: 15px; }
