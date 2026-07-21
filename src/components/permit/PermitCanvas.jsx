@@ -55,25 +55,47 @@ export default function PermitCanvas({
   }, [])
 
   // ── Pointer engine ─────────────────────────────────────────────────────────
+  // spec.onClickNoDrag fires on release if the pointer never really moved —
+  // how checkmark spots toggle without fighting the drag (PB-3).
   const beginDrag = (e, spec) => {
     e.preventDefault()
     e.stopPropagation()
     const rect = wrapRef.current.getBoundingClientRect()
-    drag.current = { ...spec, rect, sx: e.clientX, sy: e.clientY }
+    drag.current = { ...spec, rect, sx: e.clientX, sy: e.clientY, moved: false }
     const move = (ev) => {
       const d = drag.current
       if (!d) return
+      if (Math.abs(ev.clientX - d.sx) + Math.abs(ev.clientY - d.sy) > 4) d.moved = true
+      if (!d.moved) return
       const fx = (ev.clientX - d.sx) / d.rect.width
       const fy = (ev.clientY - d.sy) / d.rect.height
       applyDrag(d, fx, fy)
     }
     const up = () => {
+      const d = drag.current
+      if (d && !d.moved && d.onClickNoDrag) d.onClickNoDrag()
       drag.current = null
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+  }
+
+  // ── Arrow-key nudge on the selected box (Shift = coarse) ──────────────────
+  const handleKeyDown = (e) => {
+    if (editingId) return
+    if (!selectedId || !onBoxPatch) return
+    const stepX = (e.shiftKey ? 10 : 1) / Math.max(cw, 1)
+    const box = boxes.find(b => b.id === selectedId)
+    if (!box) return
+    const stepY = stepX * (cw / (wrapRef.current?.clientHeight || cw))
+    let patch = null
+    if (e.key === 'ArrowLeft')  patch = { x: clamp(box.x - stepX, 0, 1) }
+    if (e.key === 'ArrowRight') patch = { x: clamp(box.x + stepX, 0, 1) }
+    if (e.key === 'ArrowUp')    patch = { y: clamp(box.y - stepY, 0, 1) }
+    if (e.key === 'ArrowDown')  patch = { y: clamp(box.y + stepY, 0, 1) }
+    if (patch) { e.preventDefault(); onBoxPatch(selectedId, patch) }
   }
 
   const applyDrag = (d, fx, fy) => {
@@ -116,6 +138,8 @@ export default function PermitCanvas({
       className="pmc-wrap"
       style={{ aspectRatio: `1 / ${aspect}` }}
       onPointerDown={deselectAll}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
     >
       {page?.blank
         ? <div className="pmc-blank"><span>Back page</span></div>
@@ -164,15 +188,18 @@ export default function PermitCanvas({
         </div>
       )}
 
-      {/* Text boxes */}
+      {/* Text, fixed-text, and checkmark boxes */}
       {boxes.filter(b => !b.hidden).map(b => {
         const selected = b.id === selectedId
         const editing = b.id === editingId
         const fontPx = Math.max(7, b.sizePct * cw)
+        const isCheck = b.kind === 'check'
+        const isFixed = b.kind === 'fixed'
+        const canType = !templateMode || isFixed
         return (
           <div
             key={b.id}
-            className={`pmc-box ${selected ? 'on' : ''} ${templateMode ? 'tpl' : ''}`}
+            className={`pmc-box ${selected ? 'on' : ''} ${templateMode ? 'tpl' : ''} ${isCheck ? 'pmc-check' : ''} ${isCheck && !b.on ? 'off' : ''}`}
             style={{
               left: pct(b.x), top: pct(b.y), width: pct(b.w), minHeight: pct(b.h),
               fontSize: fontPx, textAlign: b.align, fontWeight: b.bold ? 600 : 400,
@@ -181,9 +208,13 @@ export default function PermitCanvas({
               e.stopPropagation()
               onSelectDim?.(null); onSelectLayout?.(false); onSelectSlot?.(false)
               onSelect?.(b.id)
-              if (!editing) beginDrag(e, { kind: 'box-move', id: b.id, o: { x: b.x, y: b.y, w: b.w, h: b.h } })
+              if (!editing) beginDrag(e, {
+                kind: 'box-move', id: b.id, o: { x: b.x, y: b.y, w: b.w, h: b.h },
+                // A clean click (no drag) on a checkmark toggles it.
+                onClickNoDrag: isCheck ? () => onBoxPatch?.(b.id, { on: !b.on }) : undefined,
+              })
             }}
-            onDoubleClick={(e) => { e.stopPropagation(); if (!templateMode) { setEditingId(b.id); onSelect?.(b.id) } }}
+            onDoubleClick={(e) => { e.stopPropagation(); if (canType && !isCheck) { setEditingId(b.id); onSelect?.(b.id) } }}
           >
             {editing ? (
               <textarea
@@ -195,10 +226,14 @@ export default function PermitCanvas({
                 onBlur={() => setEditingId(null)}
                 onPointerDown={(e) => e.stopPropagation()}
               />
-            ) : templateMode ? (
+            ) : isCheck ? (
+              <span className="pmc-check-glyph" style={{ fontSize: Math.max(10, Math.min(b.w, b.h * (wrapRef.current?.clientHeight || cw) / cw) * cw * 0.9) }}>
+                {b.mark === 'x' ? '×' : '✓'}
+              </span>
+            ) : templateMode && !isFixed ? (
               <span className="pmc-box-key">{labelFor ? labelFor(b) : b.id}</span>
             ) : (
-              <span className="pmc-box-text">{b.text}</span>
+              <span className="pmc-box-text">{isFixed && templateMode && !(b.text || '').trim() ? 'Fixed text — double-click to type' : b.text}</span>
             )}
             {selected && !editing && (
               <div className="pmc-handle" onPointerDown={(e) => beginDrag(e, { kind: 'box-size', id: b.id, o: { x: b.x, y: b.y, w: b.w, h: b.h } })} />
@@ -276,6 +311,11 @@ const localStyles = `
   .pmc-box.tpl.on { border-color: #534AB7; background: rgba(83, 74, 183, 0.14); }
   .pmc-box-key { font-size: 10px; color: #534AB7; font-weight: 600; letter-spacing: 0.02em; }
   .pmc-box-text { display: block; }
+  .pmc-check { display: flex; align-items: center; justify-content: flex-start; cursor: pointer; }
+  .pmc-check-glyph { line-height: 1; font-weight: 700; color: #14161a; }
+  .pmc-check.off .pmc-check-glyph { opacity: 0.18; }
+  .pmc-check.off { border-style: dotted; border-color: rgba(154,114,9,0.5); }
+  .pmc-wrap:focus { outline: 2px solid rgba(154,114,9,0.25); outline-offset: -2px; }
   .pmc-edit {
     position: absolute; inset: -1px; width: calc(100% + 2px); min-height: calc(100% + 2px);
     border: 1px solid #9A7209; background: #fff; resize: none; outline: none;

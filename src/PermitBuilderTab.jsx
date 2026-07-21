@@ -24,6 +24,7 @@ import {
   listPermitDocs, getPermitDoc, createPermitDoc, updatePermitDoc, deletePermitDoc,
   uploadPermitAsset, rasterizePdfFile, readImageSize,
   AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf,
+  missingAutofill, MISSING_ORDER_WRITEBACK,
 } from './lib/permitBuilder'
 import PermitCanvas from './components/permit/PermitCanvas'
 
@@ -278,10 +279,23 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
   const selField = fields.find(f => f.id === sel) || null
   const patchField = (fid, patch) => setFields(prev => prev.map(f => f.id === fid ? { ...f, ...patch } : f))
 
-  const addField = () => {
-    const f = { id: rid(), key: 'custom', page, x: 0.08, y: 0.08, w: 0.28, h: 0.028, sizePct: 0.016, align: 'left', bold: false }
+  // PB-3: three field kinds — autofill text, fixed text (never changes),
+  // and checkmark spots (click toggles on the permit).
+  const addField = (kind = 'text') => {
+    const f = kind === 'check'
+      ? { id: rid(), key: 'custom', kind: 'check', mark: 'check', on: false, page, x: 0.08, y: 0.08, w: 0.02, h: 0.014, sizePct: 0.016 }
+      : kind === 'fixed'
+        ? { id: rid(), key: 'custom', kind: 'fixed', text: '', page, x: 0.08, y: 0.08, w: 0.28, h: 0.028, sizePct: 0.016, align: 'left', bold: false }
+        : { id: rid(), key: 'custom', page, x: 0.08, y: 0.08, w: 0.28, h: 0.028, sizePct: 0.016, align: 'left', bold: false }
     setFields(prev => [...prev, f])
     setSel(f.id)
+  }
+  const duplicateField = () => {
+    const f = fields.find(x => x.id === sel)
+    if (!f) return
+    const copy = { ...f, id: rid(), x: Math.min(0.95, f.x + 0.02), y: Math.min(0.95, f.y + 0.02) }
+    setFields(prev => [...prev, copy])
+    setSel(copy.id)
   }
   const removePage = () => {
     if (!window.confirm(`Remove page ${page + 1}? Its fields go with it.`)) return
@@ -325,7 +339,9 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
         <div className="pbt-edhead-spacer" />
         {pages.length > 0 && (
           <>
-            <button type="button" className="pbt-btn" onClick={addField}>+ Field box</button>
+            <button type="button" className="pbt-btn" onClick={() => addField('text')}>+ Field box</button>
+            <button type="button" className="pbt-btn" onClick={() => addField('fixed')}>+ Fixed text</button>
+            <button type="button" className="pbt-btn" onClick={() => addField('check')}>+ Checkmark</button>
             <button type="button" className="pbt-btn" onClick={() => {
               if (slot?.page === page) { setSlot(null); setSlotSel(false) }
               else { setSlot({ page, x: 0.1, y: 0.55, w: 0.8, h: 0.33 }); setSlotSel(true) }
@@ -336,15 +352,33 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
 
       {selField && (
         <div className="pbt-toolbar">
-          <select className="pbt-input" style={{ maxWidth: 230 }} value={selField.key}
-            onChange={e => patchField(selField.id, { key: e.target.value })}>
-            {AUTOFILL_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
-          </select>
-          <button type="button" className="pbt-btn" onClick={() => patchField(selField.id, { sizePct: Math.max(0.008, (selField.sizePct || 0.016) - 0.002) })}>A−</button>
-          <button type="button" className="pbt-btn" onClick={() => patchField(selField.id, { sizePct: Math.min(0.05, (selField.sizePct || 0.016) + 0.002) })}>A+</button>
-          <button type="button" className={`pbt-btn ${selField.align === 'center' ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { align: selField.align === 'center' ? 'left' : 'center' })}>Center</button>
-          <button type="button" className={`pbt-btn ${selField.bold ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { bold: !selField.bold })}>Bold</button>
+          {(selField.kind || 'text') === 'text' && (
+            <select className="pbt-input" style={{ maxWidth: 230 }} value={selField.key}
+              onChange={e => patchField(selField.id, { key: e.target.value })}>
+              {AUTOFILL_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+            </select>
+          )}
+          {selField.kind === 'fixed' && <span className="pbt-tool-label">Fixed text — double-click the box to type</span>}
+          {selField.kind === 'check' ? (
+            <>
+              <button type="button" className={`pbt-btn ${(selField.mark || 'check') === 'check' ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { mark: 'check' })}>Checkmark</button>
+              <button type="button" className={`pbt-btn ${selField.mark === 'x' ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { mark: 'x' })}>X</button>
+              <button type="button" className={`pbt-btn ${selField.on ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { on: !selField.on })}>Starts checked</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="pbt-btn" onClick={() => patchField(selField.id, { sizePct: Math.max(0.008, (selField.sizePct || 0.016) - 0.002) })}>A−</button>
+              <input type="number" className="pbt-input pbt-sizein" min={8} max={60}
+                value={Math.round((selField.sizePct || 0.016) * 1000)}
+                onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) patchField(selField.id, { sizePct: Math.min(0.06, Math.max(0.008, v / 1000)) }) }} />
+              <button type="button" className="pbt-btn" onClick={() => patchField(selField.id, { sizePct: Math.min(0.06, (selField.sizePct || 0.016) + 0.002) })}>A+</button>
+              <button type="button" className={`pbt-btn ${selField.align === 'center' ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { align: selField.align === 'center' ? 'left' : 'center' })}>Center</button>
+              <button type="button" className={`pbt-btn ${selField.bold ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { bold: !selField.bold })}>Bold</button>
+            </>
+          )}
+          <button type="button" className="pbt-btn" onClick={duplicateField}>Duplicate</button>
           <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { setFields(prev => prev.filter(f => f.id !== sel)); setSel(null) }}>Delete box</button>
+          <span className="pbt-hint" style={{ marginTop: 0 }}>Arrow keys nudge, Shift+arrows jump</span>
         </div>
       )}
 
@@ -356,7 +390,12 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
         <div className="pbt-canvaswrap">
           <PermitCanvas
             page={pages[page]}
-            boxes={fields.filter(f => f.page === page).map(f => ({ ...f, text: '', hidden: false }))}
+            boxes={fields.filter(f => f.page === page).map(f => ({
+              ...f, kind: f.kind || 'text',
+              text: f.kind === 'fixed' ? (f.text || '') : '',
+              on: !!f.on,   // template shows the DEFAULT state; click or "Starts checked" toggles
+              mark: f.mark || 'check', hidden: false,
+            }))}
             selectedId={sel}
             onSelect={setSel}
             onBoxPatch={patchField}
@@ -429,6 +468,44 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     const ex = { id: `x-${rid()}`, page, text: 'Text', x: 0.08, y: 0.08, w: 0.3, h: 0.028, sizePct: 0.016, align: 'left', bold: false }
     setData(prev => ({ ...prev, extras: [...(prev.extras || []), ex] }))
     setSel(ex.id)
+  }
+  const addCheck = () => {
+    const ex = { id: `x-${rid()}`, kind: 'check', mark: 'check', on: true, page, x: 0.08, y: 0.08, w: 0.02, h: 0.014, sizePct: 0.016 }
+    setData(prev => ({ ...prev, extras: [...(prev.extras || []), ex] }))
+    setSel(ex.id)
+  }
+  const duplicateSel = () => {
+    if (!selBox) return
+    const ex = { ...selBox, id: `x-${rid()}`, page, x: Math.min(0.95, selBox.x + 0.02), y: Math.min(0.95, selBox.y + 0.02) }
+    delete ex.hidden
+    setData(prev => ({ ...prev, extras: [...(prev.extras || []), ex] }))
+    setSel(ex.id)
+  }
+
+  // PB-3 — "ask me for the info that you dont have": template fields that are
+  // order-bound but resolved empty. Filling one writes every box bound to the
+  // same key; plot fields also write BACK to the order.
+  const missing = useMemo(
+    () => (template && data) ? missingAutofill(template, data.values) : [],
+    [template, data],
+  )
+  const [missDraft, setMissDraft] = useState({})
+  const [missBusy, setMissBusy] = useState(false)
+  const [missHidden, setMissHidden] = useState(false)
+  const fillMissing = async (m) => {
+    const v = (missDraft[m.key] || '').trim()
+    if (!v) return
+    setData(prev => {
+      const values = { ...prev.values }
+      for (const f of fields.filter(f => f.key === m.key)) values[f.id] = { ...(values[f.id] || {}), text: v }
+      return { ...prev, values }
+    })
+    setMissDraft(prev => ({ ...prev, [m.key]: '' }))
+    if (MISSING_ORDER_WRITEBACK[m.key] && order?.id) {
+      setMissBusy(true)
+      await setOrderPermit(order.id, { [MISSING_ORDER_WRITEBACK[m.key]]: v })
+      setMissBusy(false)
+    }
   }
 
   // ── layout ────────────────────────────────────────────────────────────────
@@ -507,6 +584,19 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     }
     setBusy(false)
   }
+  // Print — same PDF, opened in the browser's viewer so the print dialog is
+  // one keystroke away (no download shuffle).
+  const printPdf = async () => {
+    setBusy(true)
+    try {
+      await save()
+      const d = await exportPermitPdf({ template, docData: data, returnDoc: true })
+      window.open(d.output('bloburl'), '_blank')
+    } catch (e) {
+      say(e?.message || 'Could not open the print view.', true)
+    }
+    setBusy(false)
+  }
 
   if (!doc || !data) return <div className="pbt-empty" style={{ padding: 30 }}>Loading…</div>
 
@@ -522,8 +612,32 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
         </div>
         <div className="pbt-edhead-spacer" />
         <button type="button" className="pbt-btn" onClick={save} disabled={busy}>Save</button>
+        <button type="button" className="pbt-btn" onClick={printPdf} disabled={busy}>Print</button>
         <button type="button" className="pbt-btn pbt-btn-gold" onClick={download} disabled={busy}>{busy ? 'Working…' : 'Download PDF'}</button>
       </header>
+
+      {missing.length > 0 && !missHidden && (
+        <div className="pbt-missing">
+          <div className="pbt-missing-head">
+            <span className="pbt-missing-title">Needed for this permit — the order doesn't know these yet</span>
+            <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => setMissHidden(true)}>Hide</button>
+          </div>
+          <div className="pbt-missing-rows">
+            {missing.map(m => (
+              <div key={m.key} className="pbt-missing-row">
+                <span className="pbt-missing-label">{m.label}</span>
+                <input type="text" className="pbt-input" style={{ maxWidth: 220 }}
+                  value={missDraft[m.key] || ''}
+                  onChange={e => setMissDraft(prev => ({ ...prev, [m.key]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') fillMissing(m) }} />
+                <button type="button" className="pbt-btn" disabled={missBusy || !(missDraft[m.key] || '').trim()}
+                  onClick={() => fillMissing(m)}>Fill</button>
+              </div>
+            ))}
+          </div>
+          <div className="pbt-rail-hint">Section / lot / grave answers also save back to the order, so it knows next time.</div>
+        </div>
+      )}
 
       <div className="pbt-docgrid">
         <div className="pbt-docmain">
@@ -536,6 +650,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
             </button>
             <div className="pbt-edhead-spacer" />
             <button type="button" className="pbt-btn" onClick={addText}>+ Text</button>
+            <button type="button" className="pbt-btn" onClick={addCheck}>+ Checkmark</button>
             <button type="button" className="pbt-btn" onClick={addDim}>+ Dimension</button>
             {!layout
               ? <button type="button" className="pbt-btn" onClick={openPicker}>Insert layout</button>
@@ -544,20 +659,35 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
 
           {selBox && (
             <div className="pbt-toolbar">
-              <span className="pbt-tool-label">{selIsField ? (AUTOFILL_LABEL.get(fields.find(f => f.id === sel)?.key) || 'Field') : 'Text box'}</span>
-              <button type="button" className="pbt-btn" onClick={() => patchBox(sel, { sizePct: Math.max(0.008, (selBox.sizePct || 0.016) - 0.002) })}>A−</button>
-              <button type="button" className="pbt-btn" onClick={() => patchBox(sel, { sizePct: Math.min(0.05, (selBox.sizePct || 0.016) + 0.002) })}>A+</button>
-              <button type="button" className={`pbt-btn ${selBox.align === 'center' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { align: selBox.align === 'center' ? 'left' : 'center' })}>Center</button>
-              <button type="button" className={`pbt-btn ${selBox.bold ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { bold: !selBox.bold })}>Bold</button>
-              {selIsField && (
+              <span className="pbt-tool-label">{selBox.kind === 'check' ? 'Checkmark — click it to toggle' : selIsField ? (AUTOFILL_LABEL.get(fields.find(f => f.id === sel)?.key) || 'Field') : 'Text box'}</span>
+              {selBox.kind === 'check' ? (
+                <>
+                  <button type="button" className={`pbt-btn ${(selBox.mark || 'check') === 'check' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { mark: 'check' })}>Checkmark</button>
+                  <button type="button" className={`pbt-btn ${selBox.mark === 'x' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { mark: 'x' })}>X</button>
+                  <button type="button" className={`pbt-btn ${selBox.on ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { on: !selBox.on })}>{selBox.on ? 'Checked' : 'Unchecked'}</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="pbt-btn" onClick={() => patchBox(sel, { sizePct: Math.max(0.008, (selBox.sizePct || 0.016) - 0.002) })}>A−</button>
+                  <input type="number" className="pbt-input pbt-sizein" min={8} max={60}
+                    value={Math.round((selBox.sizePct || 0.016) * 1000)}
+                    onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) patchBox(sel, { sizePct: Math.min(0.06, Math.max(0.008, v / 1000)) }) }} />
+                  <button type="button" className="pbt-btn" onClick={() => patchBox(sel, { sizePct: Math.min(0.06, (selBox.sizePct || 0.016) + 0.002) })}>A+</button>
+                  <button type="button" className={`pbt-btn ${selBox.align === 'center' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { align: selBox.align === 'center' ? 'left' : 'center' })}>Center</button>
+                  <button type="button" className={`pbt-btn ${selBox.bold ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { bold: !selBox.bold })}>Bold</button>
+                </>
+              )}
+              {selIsField && selBox.kind !== 'check' && (
                 <button type="button" className="pbt-btn" onClick={() => {
                   const f = fields.find(x => x.id === sel)
                   patchBox(sel, { text: autofillValue(f.key, order) })
                 }}>Re-autofill</button>
               )}
+              <button type="button" className="pbt-btn" onClick={duplicateSel}>Duplicate</button>
               {selIsField
                 ? <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { patchBox(sel, { hidden: true }); setSel(null) }}>Hide</button>
                 : <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { setData(prev => ({ ...prev, extras: prev.extras.filter(e => e.id !== sel) })); setSel(null) }}>Delete</button>}
+              <span className="pbt-hint" style={{ marginTop: 0 }}>Arrows nudge</span>
             </div>
           )}
 
@@ -851,6 +981,15 @@ const localStyles = `
     border-radius: 8px; padding: 7px 10px;
   }
   .pbt-toolbar .pbt-input { width: auto; }
+  .pbt-sizein { max-width: 64px; text-align: center; }
+  .pbt-missing {
+    background: #FDF6E3; border: 0.5px solid #BA7517; border-radius: 9px; padding: 11px 14px;
+  }
+  .pbt-missing-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .pbt-missing-title { font-size: 12.5px; font-weight: 700; color: #854F0B; }
+  .pbt-missing-rows { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
+  .pbt-missing-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pbt-missing-label { font-size: 12.5px; color: #5F5E5A; min-width: 150px; }
   .pbt-tool-label { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #9A7209; margin-right: 4px; }
   .pbt-dropzone {
     font: inherit; border: 2px dashed var(--sb-border, #C9C3B4); border-radius: 12px; background: transparent;

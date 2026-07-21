@@ -290,13 +290,17 @@ export function autofillValue(key, order) {
   try { return f.resolve(order) || '' } catch { return '' }
 }
 
-// Seed a fresh doc's data from a template + order: every template field gets
-// its autofilled text; geometry starts as the template's (instance overrides
-// layer on top as the operator adjusts).
+// Seed a fresh doc's data from a template + order. Field kinds (PB-3):
+//   'text' (default) — autofill-resolved from the bound key
+//   'fixed'          — the template's own typed text ("some things never
+//                      change" — Paul), still editable per-permit
+//   'check'          — a checkmark spot; click toggles it on the permit
 export function seedDocData(template, order) {
   const values = {}
   for (const f of (template?.fields || [])) {
-    values[f.id] = { text: autofillValue(f.key, order) }
+    if (f.kind === 'check')      values[f.id] = { on: !!f.on }
+    else if (f.kind === 'fixed') values[f.id] = { text: f.text || '' }
+    else                         values[f.id] = { text: autofillValue(f.key, order) }
   }
   return { values, extras: [], layout: null, dims: [] }
 }
@@ -305,7 +309,10 @@ export function seedDocData(template, order) {
 export function effectiveBox(field, override) {
   return {
     id: field.id, page: field.page,
-    text:    override?.text !== undefined ? override.text : '',
+    kind:    field.kind || 'text',
+    mark:    override?.mark ?? field.mark ?? 'check',
+    on:      override?.on !== undefined ? !!override.on : !!field.on,
+    text:    override?.text !== undefined ? override.text : (field.kind === 'fixed' ? (field.text || '') : ''),
     x:       override?.x       ?? field.x,
     y:       override?.y       ?? field.y,
     w:       override?.w       ?? field.w,
@@ -315,6 +322,31 @@ export function effectiveBox(field, override) {
     bold:    override?.bold    ?? field.bold ?? false,
     hidden:  !!override?.hidden,
   }
+}
+
+// The "ask me for what you don't have" list (PB-3, Paul): template fields that
+// are DATA-bound but resolved empty for this order. Company constants, dates,
+// fixed text, checks, and custom boxes don't count — they're not order data.
+const MISSING_EXEMPT = new Set(['custom', 'see_reverse', 'today_date',
+  'company_name', 'company_address', 'company_phone', 'company_fax', 'company_email',
+  'bronze_mfr', 'bronze_mfr_addr'])
+export function missingAutofill(template, values) {
+  const out = []
+  for (const f of (template?.fields || [])) {
+    if ((f.kind || 'text') !== 'text') continue
+    if (MISSING_EXEMPT.has(f.key)) continue
+    const text = values?.[f.id]?.text
+    if (text === undefined || String(text).trim() !== '') continue
+    if (out.some(m => m.key === f.key)) continue
+    out.push({ id: f.id, key: f.key, label: AUTOFILL_BY_KEY.get(f.key)?.label || f.key })
+  }
+  return out
+}
+// Plot fields write BACK to the order when filled from the checklist, so the
+// next permit (and the whole app) knows them.
+export const MISSING_ORDER_WRITEBACK = {
+  plot_section: 'plot_section', plot_block: 'plot_block', plot_lot: 'plot_lot',
+  plot_row: 'plot_row', plot_grave: 'plot_grave', grave_location: 'grave_location',
 }
 
 // ── jsPDF export ────────────────────────────────────────────────────────────
@@ -358,7 +390,25 @@ function pageTransform(pageMeta) {
 }
 
 function drawBox(doc, t, box) {
-  if (box.hidden || !(box.text || '').trim()) return
+  if (box.hidden) return
+  // Checkmark spots — vector-drawn (WinAnsi fonts have no U+2713 glyph).
+  if (box.kind === 'check') {
+    if (!box.on) return
+    const cx = t.x + box.x * t.w
+    const cy = t.y + box.y * t.h
+    const s = Math.max(2.5, Math.min(box.w * t.w, box.h * t.h))
+    doc.setDrawColor(20, 20, 20)
+    doc.setLineWidth(0.55)
+    if (box.mark === 'x') {
+      doc.line(cx, cy, cx + s, cy + s)
+      doc.line(cx + s, cy, cx, cy + s)
+    } else {
+      doc.line(cx, cy + s * 0.55, cx + s * 0.35, cy + s * 0.9)
+      doc.line(cx + s * 0.35, cy + s * 0.9, cx + s, cy + s * 0.1)
+    }
+    return
+  }
+  if (!(box.text || '').trim()) return
   const x = t.x + box.x * t.w
   const y = t.y + box.y * t.h
   const wmm = Math.max(4, box.w * t.w)
