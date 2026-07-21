@@ -940,28 +940,99 @@ export async function setTradeInvoiceStatus(invoiceId, status, { paidNote = null
     }
   }
   if (status === 'sent' && inv.partner?.email && (inv.partner?.notification_prefs || {}).invoice !== false) {
-    const rowsHtml = (inv.lines || []).map(l =>
-      `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
-      `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`
-    ).join('')
-    const link = `${window.location.origin}/trade?payments=1`
-    const html =
-      `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
-      `<p style="margin:0 0 10px"><b>Invoice ${inv.invoice_number} — Shevchenko Monuments</b></p>` +
-      `<table style="border-collapse:collapse;width:100%;max-width:520px;font-size:14px">${rowsHtml}` +
-      `<tr><td style="padding:8px 10px;font-weight:800">TOTAL</td><td style="padding:8px 10px;text-align:right;font-weight:800">$${total.toLocaleString()}</td></tr></table>` +
-      (inv.notes ? `<p style="margin:10px 0 0;color:#555">${inv.notes}</p>` : '') +
-      `<p style="margin:14px 0 0;color:#555">Pay by check or Zelle (shevcoteam@gmail.com — memo ${inv.invoice_number}).</p>` +
-      `<p style="margin:18px 0"><a href="${link}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">View in your portal →</a></p>` +
-      `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments</p></div>`
-    sendShopEmail({
-      to: inv.partner.email,
-      subject: `Invoice ${inv.invoice_number} — $${total.toLocaleString()} — Shevchenko Monuments`,
-      html,
-      text: `Invoice ${inv.invoice_number} — total $${total.toLocaleString()}. View it in your portal: ${link}`,
-    }).catch(() => {})
+    const mail = buildTradeInvoiceEmail(inv)
+    sendShopEmail({ to: mail.to, subject: mail.subject, html: mail.html, text: mail.text }).catch(() => {})
   }
   return { ok: true }
+}
+
+// The EXACT email a dealer receives for an invoice — one composer shared by
+// the sender above and the preview modal (Paul 2026-07-21: a worker one-click
+// sent an invoice she didn't mean to; every send now shows THIS first).
+export function buildTradeInvoiceEmail(inv) {
+  const total = (inv.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
+  const rowsHtml = (inv.lines || []).map(l =>
+    `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
+    `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`
+  ).join('')
+  const link = `${typeof window !== 'undefined' ? window.location.origin : 'https://stonebooks-beta.vercel.app'}/trade?payments=1`
+  const html =
+    `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
+    `<p style="margin:0 0 10px"><b>Invoice ${inv.invoice_number} — Shevchenko Monuments</b></p>` +
+    `<table style="border-collapse:collapse;width:100%;max-width:520px;font-size:14px">${rowsHtml}` +
+    `<tr><td style="padding:8px 10px;font-weight:800">TOTAL</td><td style="padding:8px 10px;text-align:right;font-weight:800">$${total.toLocaleString()}</td></tr></table>` +
+    (inv.notes ? `<p style="margin:10px 0 0;color:#555">${inv.notes}</p>` : '') +
+    `<p style="margin:14px 0 0;color:#555">Pay by check or Zelle (shevcoteam@gmail.com — memo ${inv.invoice_number}).</p>` +
+    `<p style="margin:18px 0"><a href="${link}" style="background:#9A7209;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">View in your portal →</a></p>` +
+    `<p style="margin:0;color:#8a8a85;font-size:12.5px">Stonebooks Trade · Shevchenko Monuments</p></div>`
+  return {
+    to: inv.partner?.email || '',
+    subject: `Invoice ${inv.invoice_number} — $${total.toLocaleString()} — Shevchenko Monuments`,
+    html,
+    text: `Invoice ${inv.invoice_number} — total $${total.toLocaleString()}. View it in your portal: ${link}`,
+    total,
+  }
+}
+
+// Invoice as a downloadable PDF — works at ANY status, sent or not (Paul).
+// Ink-light per the shop's print doctrine: no solid fills, hairlines only.
+let _vjsPDF = null
+function _loadJsPDF() {
+  if (window.jspdf?.jsPDF) return Promise.resolve(window.jspdf.jsPDF)
+  if (_vjsPDF) return _vjsPDF
+  _vjsPDF = new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
+    s.onload = () => resolve(window.jspdf.jsPDF)
+    s.onerror = () => reject(new Error('Could not load the PDF library.'))
+    document.head.appendChild(s)
+  })
+  return _vjsPDF
+}
+export async function downloadTradeInvoicePdf(inv) {
+  const JsPDF = await _loadJsPDF()
+  const doc = new JsPDF({ unit: 'mm', format: 'letter' })
+  const W = 215.9, M = 18
+  const total = (inv.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
+  let y = 22
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(20, 20, 20)
+  doc.text('SHEVCHENKO MONUMENTS, LLC.', M, y)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(90, 90, 90)
+  y += 5.5; doc.text('329 S Florida Grove Rd, Perth Amboy, NJ 08861 · 732-442-1286 · shevcoteam@gmail.com', M, y)
+  y += 4; doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.3); doc.line(M, y, W - M, y)
+  y += 10
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(20, 20, 20)
+  doc.text(`INVOICE ${inv.invoice_number}`, M, y)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(80, 80, 80)
+  doc.text(new Date(inv.created_at || Date.now()).toLocaleDateString(), W - M, y, { align: 'right' })
+  y += 7
+  doc.text(`Bill to: ${inv.partner?.company_name || '—'}${inv.partner?.email ? ` · ${inv.partner.email}` : ''}`, M, y)
+  if (inv.status && inv.status !== 'sent') { y += 5; doc.text(`Status: ${String(inv.status).toUpperCase()}`, M, y) }
+  y += 9
+  doc.setDrawColor(120, 120, 120); doc.setLineWidth(0.35); doc.line(M, y, W - M, y)
+  y += 6
+  doc.setTextColor(20, 20, 20)
+  for (const l of (inv.lines || [])) {
+    const desc = `${l.description}${l.is_rush_fee ? '  (RUSH)' : ''}`
+    const lines = doc.splitTextToSize(desc, W - M * 2 - 32)
+    doc.text(lines, M, y)
+    doc.text(`$${(Number(l.amount) || 0).toLocaleString()}`, W - M, y, { align: 'right' })
+    y += lines.length * 5 + 3
+    doc.setDrawColor(210, 210, 210); doc.setLineWidth(0.2); doc.line(M, y - 2, W - M, y - 2)
+    if (y > 250) { doc.addPage('letter'); y = 22 }
+  }
+  y += 3
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5)
+  doc.text('TOTAL', M, y)
+  doc.text(`$${total.toLocaleString()}`, W - M, y, { align: 'right' })
+  y += 9
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(90, 90, 90)
+  if (inv.notes) { const nl = doc.splitTextToSize(inv.notes, W - M * 2); doc.text(nl, M, y); y += nl.length * 4.5 + 3 }
+  doc.text(`Pay by check or Zelle (shevcoteam@gmail.com) — memo ${inv.invoice_number}.`, M, y)
+  y += 5
+  doc.text('Stonebooks Trade · Shevchenko Monuments', M, y)
+  doc.save(`${inv.invoice_number}.pdf`)
+  return true
 }
 
 // Per-order activity log — both sides read the same timeline.

@@ -23,6 +23,7 @@ import {
 } from './lib/vendorsData'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
+import TradeLogo from './components/TradeLogo'
 import { fmtDate } from './lib/stonebooksData'
 
 const PARTNER_STATUS = {
@@ -108,7 +109,7 @@ export default function PartnerPortal({ context, onSignOut, viewAs = false }) {
 
       <header className="vp-header">
         <div className="vp-brand">
-          <div className="vp-brand-mark">stonebooks <span>· Trade</span></div>
+          <div className="vp-brand-mark"><TradeLogo size={22} /></div>
           <div className="vp-brand-sub">Shevchenko Monuments{partner?.company_name ? ` · ${partner.company_name}` : ''}</div>
         </div>
         <button type="button" className="vp-signout" onClick={handleSignOut}>{viewAs ? 'Exit' : 'Sign out'}</button>

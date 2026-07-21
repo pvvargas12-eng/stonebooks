@@ -4,6 +4,7 @@ import { getSession, onAuthStateChange, signInWithPassword, signOut } from './li
 import { tradeSignup, getMyPartnerContext } from './lib/vendorsData'
 import Stonebooks from './Stonebooks'
 import TaskStreakFun from './components/TaskStreakFun'
+import TradeLogo from './components/TradeLogo'
 
 // ── Code-split routes (perf pass 2026-07-15) ────────────────────────────────
 // Everything except the staff app itself loads on demand — SalesMode alone
@@ -603,7 +604,7 @@ function TradePortalStandalone() {
       <><style>{css}</style>
         <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
           <div style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', maxWidth: 420, textAlign: 'center' }}>
-            <div style={{ fontFamily: 'var(--font-d)', fontSize: 22, color: 'var(--navy)', marginBottom: 8 }}>stonebooks <span style={{ color: 'var(--accent)' }}>· Trade</span></div>
+            <div style={{ marginBottom: 8 }}><TradeLogo size={24} /></div>
             <div style={{ fontSize: 14, color: 'var(--text-mid)', marginBottom: 18 }}>This is the dealer portal — your login isn't linked to a dealer company. Staff work happens in the main app.</div>
             <a href="/" className="btn btn-navy" style={{ display: 'inline-block', padding: '10px 22px', fontSize: 13, textDecoration: 'none' }}>Open Stonebooks →</a>
             <div style={{ marginTop: 12 }}>
@@ -635,7 +636,7 @@ function TradeLoginGate() {
       <style>{css}</style>
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
         <form onSubmit={submit} style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', width: '100%', maxWidth: 380, boxShadow: 'var(--shadow-md)' }}>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: 24, color: 'var(--navy)', marginBottom: 4 }}>stonebooks <span style={{ color: 'var(--accent)' }}>· Trade</span></div>
+          <div style={{ marginBottom: 6 }}><TradeLogo size={26} /></div>
           <div style={{ fontSize: 13, color: 'var(--text-mid)', marginBottom: 22 }}>Dealer portal · Shevchenko Monuments. Sign in — or use your company's invite link to create a login.</div>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" autoFocus autoComplete="username" style={gateInput} />
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" autoComplete="current-password" style={gateInput} />
@@ -717,7 +718,7 @@ function TradeSignupGate({ code }) {
       <style>{css}</style>
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cream)', padding: 20 }}>
         <form onSubmit={submit} style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 12, padding: '34px 30px', width: '100%', maxWidth: 400, boxShadow: 'var(--shadow-md)' }}>
-          <div style={{ fontFamily: 'var(--font-d)', fontSize: 24, color: 'var(--navy)', marginBottom: 2 }}>stonebooks <span style={{ color: 'var(--accent)' }}>· Trade</span></div>
+          <div style={{ marginBottom: 4 }}><TradeLogo size={26} /></div>
           <div style={{ fontSize: 13, color: 'var(--text-mid)', marginBottom: 20 }}>You’ve been invited to the Shevchenko Monuments trade portal. Create your login — anyone at your company with this link can make their own.</div>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name" autoFocus style={gateInput} />
           <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Phone (optional)" style={gateInput} />

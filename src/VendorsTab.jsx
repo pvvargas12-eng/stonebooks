@@ -25,7 +25,9 @@ import {
   listTradeInvoices, listUninvoicedTradeOrders, createTradeInvoice,
   deleteTradeInvoiceLine, setTradeInvoiceStatus, tradeServiceLabel,
   getOrCreatePartnerInvite,
+  buildTradeInvoiceEmail, downloadTradeInvoicePdf,
 } from './lib/vendorsData'
+import ConfirmSend from './components/ConfirmSend'
 import VendorItemCard, { VENDOR_ITEM_CARD_CSS } from './components/VendorItemCard'
 import TradeOrderBoard from './components/TradeOrderBoard'
 
@@ -217,6 +219,17 @@ function TradeInvoicesView({ partners, flash }) {
     if (r.ok) { flash(status === 'sent' ? `Invoice ${inv.invoice_number} sent.` : status === 'paid' ? `Invoice ${inv.invoice_number} marked paid.` : 'Invoice updated.'); load() }
     else flash(r.error || 'Failed.')
   }
+  // SEND-1 (Paul): sending is GATED behind the exact-email preview — nothing
+  // goes out on one click ever again. Preview + Download work at any status.
+  const [confirmInv, setConfirmInv] = useState(null)   // { inv, viewOnly }
+  const confirmSend = async () => {
+    const inv = confirmInv?.inv
+    setConfirmInv(null)
+    if (inv) await act(inv, 'sent')
+  }
+  const downloadPdf = async (inv) => {
+    try { await downloadTradeInvoicePdf(inv) } catch { flash('PDF failed to generate.') }
+  }
   const strikeLine = async (inv, line) => {
     setBusyId(inv.id)
     await deleteTradeInvoiceLine(line.id)
@@ -262,7 +275,9 @@ function TradeInvoicesView({ partners, flash }) {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
                         {inv.status === 'draft' && (
                           <>
-                            <button type="button" className="vend-update-approve" disabled={busy || !(inv.lines || []).length} onClick={() => act(inv, 'sent')}>Send invoice · ${inv.total.toLocaleString()}</button>
+                            {/* SEND-1: no more one-click send — the button opens the
+                                exact-email preview and the send happens in there. */}
+                            <button type="button" className="vend-update-approve" disabled={busy || !(inv.lines || []).length} onClick={() => setConfirmInv({ inv, viewOnly: false })}>Preview and send · ${inv.total.toLocaleString()}</button>
                             <button type="button" className="vend-update-decline" disabled={busy} onClick={() => act(inv, 'void')}>Void</button>
                           </>
                         )}
@@ -275,6 +290,10 @@ function TradeInvoicesView({ partners, flash }) {
                           </>
                         )}
                         {inv.status === 'paid' && <span className="vend-update-meta">Paid {inv.paid_at ? fmtDate(inv.paid_at) : ''}</span>}
+                        {inv.status !== 'draft' && (
+                          <button type="button" className="vend-update-decline" disabled={busy} onClick={() => setConfirmInv({ inv, viewOnly: true })}>Preview</button>
+                        )}
+                        <button type="button" className="vend-update-decline" disabled={busy} onClick={() => downloadPdf(inv)}>Download PDF</button>
                       </div>
                     </div>
                   )}
@@ -284,6 +303,23 @@ function TradeInvoicesView({ partners, flash }) {
           </div>
         )}
       {builder && <TradeInvoiceBuilder partners={partners} onClose={() => setBuilder(false)} onSaved={() => { setBuilder(false); flash('Draft invoice created.'); load() }} />}
+      {confirmInv && (() => {
+        const mail = buildTradeInvoiceEmail(confirmInv.inv)
+        return (
+          <ConfirmSend
+            open
+            to={mail.to}
+            subject={mail.subject}
+            html={mail.html}
+            viewOnly={confirmInv.viewOnly}
+            busy={busyId === confirmInv.inv.id}
+            warning="This emails the invoice to the dealer the moment you press send."
+            confirmLabel={`Send invoice to ${mail.to}`}
+            onConfirm={confirmSend}
+            onClose={() => setConfirmInv(null)}
+          />
+        )
+      })()}
     </div>
   )
 }
