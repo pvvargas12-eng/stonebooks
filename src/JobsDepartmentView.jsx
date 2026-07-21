@@ -340,7 +340,22 @@ export default function JobsDepartmentView({
       {/* BRANCH — Workflow + Permits section hubs re-parent a whole existing
           surface; Design hub gets the studio surface; other hubs keep the
           list-view body. */}
-      {hub === 'quote' ? (
+      {/* ACC-4 — GOD MODE is the Admin front page, ahead of every other body
+          (Admin is NOT a studio hub, so it must branch here, not inside the
+          isStudioHub chain). The Work list toggle drops to the classic table. */}
+      {hub === 'admin' && adminMode === 'command' ? (
+        loading ? (
+          <div className="sb-crm-container"><div className="sb-crm-empty">Loading the command center…</div></div>
+        ) : (
+          <div className="sb-crm-container">
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button type="button" className="sb-crm-btn-primary" onClick={() => pickAdminMode('command')}>Command center</button>
+              <button type="button" className="sb-crm-btn" onClick={() => pickAdminMode('list')}>Work list</button>
+            </div>
+            <AdminCommandCenter jobs={jobs || []} proofsByJob={currentProofsByJob} onOpenOrderDetail={onOpenOrderDetail} />
+          </div>
+        )
+      ) : hub === 'quote' ? (
         <div className="sb-crm-container">
           <QuoteHub orders={orders || []} jobs={jobs || []} onReload={loadJobs} onEditOrder={onEditOrder} />
         </div>
@@ -372,31 +387,17 @@ export default function JobsDepartmentView({
           <div className="sb-crm-container">
             <InstallBoard jobs={jobs || []} onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
           </div>
-        ) : hub === 'admin' ? (
-          adminMode === 'command' ? (
-            <div className="sb-crm-container">
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button type="button" className="sb-crm-btn-primary" onClick={() => pickAdminMode('command')}>Command center</button>
-                <button type="button" className="sb-crm-btn" onClick={() => pickAdminMode('list')}>Work list</button>
-              </div>
-              <AdminCommandCenter jobs={jobs || []} proofsByJob={currentProofsByJob} onOpenOrderDetail={onOpenOrderDetail} />
-            </div>
-          ) : (
-            <>
-              <div className="sb-crm-container" style={{ paddingBottom: 0 }}>
-                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                  <button type="button" className="sb-crm-btn" onClick={() => pickAdminMode('command')}>Command center</button>
-                  <button type="button" className="sb-crm-btn-primary" onClick={() => pickAdminMode('list')}>Work list</button>
-                </div>
-              </div>
-              <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS.admin} />
-            </>
-          )
         ) : (
           <HubHome hubData={currentData} onOpenJob={onOpenJob} config={HUB_HOME_CONFIGS[hub]} />
         )
       ) : (
         <div className="sb-crm-container">
+          {hub === 'admin' && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button type="button" className="sb-crm-btn" onClick={() => pickAdminMode('command')}>Command center</button>
+              <button type="button" className="sb-crm-btn-primary" onClick={() => pickAdminMode('list')}>Work list</button>
+            </div>
+          )}
           {/* Hub-aware filter chips */}
           <HubFilterChips
             def={currentDef}
