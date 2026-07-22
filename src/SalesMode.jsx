@@ -1414,6 +1414,19 @@ async function upsertCustomer(customer) {
   return { data, error }
 }
 
+// NAME CASING AT THE DOOR (Paul 2026-07-22: "some people write in all caps,
+// others don't, and it makes it sloppy"). Every order save normalizes the
+// LEGAL name fields — customer first/last, deceased first/middle/last — via
+// properName (Hess, not hESS/HESS; McDonald and O'Brien protected). The
+// CARVED inscriptionName is deliberately untouched: stone styling is a
+// design choice, not data hygiene.
+const normalizeDeceasedNames = (list) => (list || []).map(d => d ? {
+  ...d,
+  firstName: properName(d.firstName),
+  middleName: properName(d.middleName),
+  lastName: properName(d.lastName),
+} : d)
+
 // Auto-casing for NEW cemetery names (Paul 2026-07-22, after the 22-row
 // ALL-CAPS cleanup): only shouty (all-caps) or all-lowercase input is
 // normalized — deliberate mixed case ("McClellan") passes through untouched.
@@ -1759,8 +1772,8 @@ async function uploadSignature(dataUrl, who, orderId) {
 // state, zip, notes, qb_customer_id, tenant_id, archived, archived_at.
 function customerToRow(c) {
   return {
-    first_name: c.firstName?.trim() || '',
-    last_name: c.lastName?.trim() || '',
+    first_name: properName(c.firstName?.trim()) || '',
+    last_name: properName(c.lastName?.trim()) || '',
     email: c.email?.trim() || null,
     email_alt: c.emailAlt?.trim() || null,
     phone_primary: c.phonePrimary?.trim() || null,
@@ -1916,7 +1929,7 @@ function orderToRow(order) {
     quote_title: order.quoteTitle || null,
     mausoleum_intake: order.mausoleumIntake || null,
 
-    deceased: order.deceased || [],
+    deceased: normalizeDeceasedNames(order.deceased),
     staff_notes: order.staffNotes || [],
   }
 }
