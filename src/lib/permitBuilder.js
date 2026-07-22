@@ -169,6 +169,17 @@ export async function updatePermitDoc(id, docData, title) {
 
 export async function deletePermitDoc(id) {
   if (!id) return { ok: false, error: 'Missing doc id' }
+  // The built PDF was attached to the order (attachPermitPdfToOrder's stable
+  // path) — a deleted permit must not leave its ghost in the attachments list.
+  // Best-effort: the doc delete itself is the operation that must succeed.
+  try {
+    const { data: doc } = await supabase.from('permit_docs').select('order_id').eq('id', id).maybeSingle()
+    if (doc?.order_id) {
+      const path = `attachments/${doc.order_id}/permit-${id}.pdf`
+      await supabase.from('order_attachments').delete().eq('order_id', doc.order_id).eq('storage_path', path)
+      await supabase.storage.from(BUCKET).remove([path])
+    }
+  } catch { /* attachment cleanup is best-effort */ }
   const { error } = await supabase.from('permit_docs').delete().eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
@@ -218,7 +229,28 @@ function loadPdfJs() {
   return _pdfjsPromise
 }
 
-export async function rasterizePdfFile(file, { maxPages = 4, targetWidth = 1700 } = {}) {
+// Near-blank detection: duplex scanners tack an empty back page onto almost
+// every one-sided form (the 2026-07-22 audit found 13 of them in Paul's
+// permit zips). Sample the render small; if under 0.2% of pixels carry any
+// ink, the page is a scan back — skip it rather than shipping a blank page
+// into the template.
+function _canvasIsBlank(canvas) {
+  try {
+    const s = document.createElement('canvas')
+    const sw = 120, sh = Math.max(1, Math.round(120 * canvas.height / canvas.width))
+    s.width = sw; s.height = sh
+    const ctx = s.getContext('2d')
+    ctx.drawImage(canvas, 0, 0, sw, sh)
+    const d = ctx.getImageData(0, 0, sw, sh).data
+    let ink = 0
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] < 235 || d[i + 1] < 235 || d[i + 2] < 235) ink++
+    }
+    return ink / (sw * sh) < 0.002
+  } catch { return false }   // when in doubt, keep the page
+}
+
+export async function rasterizePdfFile(file, { maxPages = 12, targetWidth = 1700, skipBlank = true } = {}) {
   const pdfjs = await loadPdfJs()
   const buf = await file.arrayBuffer()
   const pdf = await pdfjs.getDocument({ data: buf }).promise
@@ -233,9 +265,11 @@ export async function rasterizePdfFile(file, { maxPages = 4, targetWidth = 1700 
     canvas.width = Math.round(vp.width)
     canvas.height = Math.round(vp.height)
     await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise
+    if (skipBlank && n > 1 && _canvasIsBlank(canvas)) continue
     const blob = await new Promise(r => canvas.toBlob(r, 'image/png'))
     if (blob) out.push({ blob, w: canvas.width, h: canvas.height })
   }
+  if (pdf.numPages > maxPages) out.truncatedFrom = pdf.numPages
   return out
 }
 
@@ -260,6 +294,17 @@ const _dimParts = (c) => {
 const _dims = (c) => _dimParts(c).map(_trade).join(' x ')
 const _dimsIn = (c) => _dimParts(c).join(' x ')
 const _custAddr = (c) => [c?.address || c?.address_line1 || c?.street, [c?.city, c?.state].filter(Boolean).join(', '), c?.zip || c?.zip_code].filter(Boolean).join(', ')
+// Footprint (length x width) of whatever meets the foundation: the base when
+// one exists, else the die itself (slants/markers set without a base).
+const _footprint = (o, fmt) => {
+  const pick = (c) => {
+    if (!c) return ''
+    const w = c.width ?? c.w, d = c.depth ?? c.d
+    if (w == null || w === '' || d == null || d === '') return ''
+    return `${fmt(w)} x ${fmt(d)}`
+  }
+  return pick(o?.base_config || o?.baseConfig) || pick(o?.die_config || o?.dieConfig)
+}
 const _todayUS = () => {
   const d = new Date()
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
@@ -283,6 +328,11 @@ export const AUTOFILL_FIELDS = [
   { key: 'grave_location',   label: 'Grave location (full)', resolve: (o) => o?.grave_location || [o?.plot_section && `Sec ${o.plot_section}`, o?.plot_block && `Blk ${o.plot_block}`, o?.plot_lot && `Lot ${o.plot_lot}`, o?.plot_grave && `Gr ${o.plot_grave}`].filter(Boolean).join(' · ') },
   { key: 'die_size',         label: 'Die size (3-9 x 1-4)',  resolve: (o) => _dims(o?.die_config || o?.dieConfig) },
   { key: 'base_size',        label: 'Base size (4-0 x 1-6)', resolve: (o) => _dims(o?.base_config || o?.baseConfig) },
+  // Foundation footprint (Paul 2026-07-22): length x width OF THE BASE — and a
+  // slant with no base sits straight on the foundation, so fall back to the
+  // die's own footprint. Trade notation + a plain-inches variant.
+  { key: 'foundation_size',    label: 'Foundation size (3-6 x 1-2)',    resolve: (o) => _footprint(o, _trade) },
+  { key: 'foundation_size_in', label: 'Foundation size inches (42 x 14)', resolve: (o) => _footprint(o, (v) => v) },
   { key: 'die_size_in',      label: 'Die size in inches (24 x 12)', resolve: (o) => _dimsIn(o?.die_config || o?.dieConfig) },
   { key: 'die_shape',        label: 'Die size + shape',   resolve: (o) => [_dims(o?.die_config || o?.dieConfig), o?.shape].filter(Boolean).join(' ') },
   { key: 'base_line',        label: 'Base + size',        resolve: (o) => { const b = _dims(o?.base_config || o?.baseConfig); return b ? `Base ${b}` : '' } },

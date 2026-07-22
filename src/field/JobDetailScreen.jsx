@@ -207,9 +207,11 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
       )}
       {/* FIELD-3: the owner suite — contact / payments / approvals / tasks /
           activity. Only mounted for the owner build; the crew bundle renders
-          nothing here. */}
+          nothing here. Recording a payment refetches the order so the balance,
+          payment list, and LEAD banner all catch up. */}
       {showMoney && (
-        <OwnerOrderPanel order={order} who={who} undo={undo} onChanged={onTaskChanged} />
+        <OwnerOrderPanel order={order} who={who} undo={undo} onChanged={onTaskChanged}
+          onOrderChanged={async () => { if (orderId) setOrder(await getOrderById(orderId).catch(() => order)) }} />
       )}
     </div>
   )

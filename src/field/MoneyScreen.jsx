@@ -1,16 +1,19 @@
 // =============================================================================
-// MoneyScreen — FIELD-3 owner suite: read-only money overview off the Menu.
+// MoneyScreen — FIELD-3 owner suite: the money view off the Menu.
 // =============================================================================
 // Three sections off two fetches (one effect): THIS MONTH stat row (collected
 // this month + balance due), RECENT PAYMENTS (last 20 locked non-voided
 // payments across every paying order), WHO OWES (open orders by balance desc,
-// PAST 60D chip when signed_at is older than 60 days). No writes anywhere —
-// payment entry stays at the desk, so `undo` is accepted but never fired.
+// PAST 60D chip when signed_at is older than 60 days). Payment ENTRY lives
+// here now too (2026-07-22, Paul's ask): RECORD A PAYMENT opens the shared
+// sheet over this screen's own open-orders fetch, and the write offers the
+// standard 8s undo.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { fmtUSD, rowBalanceDue, paymentMethodLabel } from '../lib/stonebooksData'
 import { familyNameOf, todayISO } from './fieldShared'
+import RecordPaymentSheet from './RecordPaymentSheet'
 
 const MONO = '"JetBrains Mono", Consolas, monospace'
 
@@ -63,6 +66,8 @@ export default function MoneyScreen({ who, undo, onOpenJob, onBack }) {
   const [data, setData] = useState(null)   // { orders, payOrders }
   const [err, setErr] = useState(null)
   const [today, setToday] = useState(() => todayISO())   // re-stamped on fetch
+  const [rev, setRev] = useState(0)        // record/undo -> refetch
+  const [recOpen, setRecOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -80,7 +85,7 @@ export default function MoneyScreen({ who, undo, onOpenJob, onBack }) {
       }
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [rev])
 
   // Stat row: collected this month across ALL paying orders + balance due
   // across open orders.
@@ -148,7 +153,12 @@ export default function MoneyScreen({ who, undo, onOpenJob, onBack }) {
         </button>
       )}
       <div className="fl-greet" style={{ fontSize: 29 }}>Money</div>
-      <div className="fl-greet-sub">Read-only &#8212; payment entry stays at the desk</div>
+      <div className="fl-greet-sub">Collected, owed, and who paid what</div>
+
+      <button type="button" className="fl-btn fl-btn-gold" style={{ marginTop: 12 }}
+        onClick={() => setRecOpen(true)} disabled={!data}>
+        Record a payment
+      </button>
 
       {err && <div className="fl-empty">{err}</div>}
       {!err && data === null && <div className="fl-empty">Loading the money view&#8230;</div>}
@@ -232,6 +242,15 @@ export default function MoneyScreen({ who, undo, onOpenJob, onBack }) {
             </div>
           )}
         </>
+      )}
+
+      {recOpen && (
+        <RecordPaymentSheet
+          orders={data?.orders || []}
+          undo={undo}
+          onClose={() => setRecOpen(false)}
+          onRecorded={() => setRev(r => r + 1)}
+        />
       )}
     </div>
   )

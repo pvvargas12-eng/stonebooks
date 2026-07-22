@@ -951,10 +951,12 @@ export async function setTradeInvoiceStatus(invoiceId, status, { paidNote = null
 // sent an invoice she didn't mean to; every send now shows THIS first).
 export function buildTradeInvoiceEmail(inv) {
   const total = (inv.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0)
-  const rowsHtml = (inv.lines || []).map(l =>
-    `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
-    `<td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`
-  ).join('')
+  // Same table grammar as the PDF: no row rules, every other row lightly shaded.
+  const rowsHtml = (inv.lines || []).map((l, i) => {
+    const bg = i % 2 === 1 ? 'background:#f2f2f2;' : ''
+    return `<tr><td style="padding:6px 10px;${bg}">${l.description}${l.is_rush_fee ? ' <span style="color:#b3261e;font-weight:700">(rush)</span>' : ''}</td>` +
+      `<td style="padding:6px 10px;${bg}text-align:right;white-space:nowrap">$${(Number(l.amount) || 0).toLocaleString()}</td></tr>`
+  }).join('')
   const link = `${typeof window !== 'undefined' ? window.location.origin : 'https://stonebooks-beta.vercel.app'}/trade?payments=1`
   const html =
     `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
@@ -1009,20 +1011,42 @@ export async function downloadTradeInvoicePdf(inv) {
   doc.text(`Bill to: ${inv.partner?.company_name || '—'}${inv.partner?.email ? ` · ${inv.partner.email}` : ''}`, M, y)
   if (inv.status && inv.status !== 'sent') { y += 5; doc.text(`Status: ${String(inv.status).toUpperCase()}`, M, y) }
   y += 9
-  doc.setDrawColor(120, 120, 120); doc.setLineWidth(0.35); doc.line(M, y, W - M, y)
-  y += 6
-  doc.setTextColor(20, 20, 20)
+
+  // Line items — the house table style (Paul 2026-07-22, the Hall Monuments
+  // invoice): NO divider rules between rows (at this pitch they cut straight
+  // through the next row's text) — every other row gets the same neutral-gray
+  // wash the contract/estimate tables use, drawn UNDER the text. Simple black
+  // and white; header repeats after a page break.
+  const itemsHeader = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(90, 90, 90)
+    doc.text('DESCRIPTION', M, y)
+    doc.text('AMOUNT', W - M, y, { align: 'right' })
+    y += 2
+    doc.setDrawColor(120, 120, 120); doc.setLineWidth(0.35); doc.line(M, y, W - M, y)
+    y += 5.6
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(20, 20, 20)
+  }
+  itemsHeader()
+  let zebra = 0
   for (const l of (inv.lines || [])) {
     const desc = `${l.description}${l.is_rush_fee ? '  (RUSH)' : ''}`
     const lines = doc.splitTextToSize(desc, W - M * 2 - 32)
+    const rowH = lines.length * 4.6 + 4.4
+    if (y + rowH > 258) { doc.addPage('letter'); y = 22; itemsHeader(); zebra = 0 }
+    if (zebra % 2 === 1) {
+      doc.setFillColor(237, 237, 237)
+      doc.rect(M - 2, y - 3.2, (W - M * 2) + 4, rowH, 'F')
+    }
+    zebra++
+    doc.setTextColor(20, 20, 20)
     doc.text(lines, M, y)
     doc.text(`$${(Number(l.amount) || 0).toLocaleString()}`, W - M, y, { align: 'right' })
-    y += lines.length * 5 + 3
-    doc.setDrawColor(210, 210, 210); doc.setLineWidth(0.2); doc.line(M, y - 2, W - M, y - 2)
-    if (y > 250) { doc.addPage('letter'); y = 22 }
+    y += rowH
   }
-  y += 3
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5)
+  y += 1.5
+  doc.setDrawColor(120, 120, 120); doc.setLineWidth(0.5); doc.line(M, y, W - M, y)
+  y += 6
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.setTextColor(20, 20, 20)
   doc.text('TOTAL', M, y)
   doc.text(`$${total.toLocaleString()}`, W - M, y, { align: 'right' })
   y += 9

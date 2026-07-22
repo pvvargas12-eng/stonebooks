@@ -3,8 +3,9 @@
 // =============================================================================
 // NOT a screen: a section stack the shell mounts inside JobDetailScreen for
 // the owner build, below the cut-sheet/ladder cards. Contact verbs, balance +
-// payment history (read-only — entry stays at the desk), approval links with
-// the customer's change notes, the order's tasks (check-off with undo), and a
+// payment history + RECORD A PAYMENT (2026-07-22 — entry no longer desk-only;
+// same shape/undo as the Money screen sheet), approval links with the
+// customer's change notes, the order's tasks (check-off with undo), and a
 // quiet activity trail. Contact + balance render straight off the order prop;
 // the three fetched sections appear when their data lands (each section skips
 // itself when empty, so there is no loading flash). One mount effect keyed on
@@ -18,6 +19,7 @@ import {
   setShopTaskDone, customerName, fmtUSD, fmtDate, rowBalanceDue,
 } from '../lib/stonebooksData'
 import { todayISO } from './fieldShared'
+import RecordPaymentSheet from './RecordPaymentSheet'
 
 const MONO = '"JetBrains Mono", Consolas, monospace'
 const HAIR = '1px solid #EEE9DD'
@@ -59,12 +61,13 @@ const CHECK_GLYPH = (
     strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12.5 l5 5 L20 7" /></svg>
 )
 
-export default function OwnerOrderPanel({ order, who, undo, onChanged }) {
+export default function OwnerOrderPanel({ order, who, undo, onChanged, onOrderChanged }) {
   const orderId = order?.id
   const [data, setData] = useState(null)     // { links, tasks, activity }
   const [bump, setBump] = useState(0)        // undo restored something -> refetch
   const [doneIds, setDoneIds] = useState(() => new Set())  // optimistic strikethroughs
   const [today, setToday] = useState(() => todayISO())     // re-stamped on every fetch
+  const [recOpen, setRecOpen] = useState(false)            // record-payment sheet
 
   useEffect(() => {
     if (!orderId) return undefined
@@ -148,7 +151,6 @@ export default function OwnerOrderPanel({ order, who, undo, onChanged }) {
 
   const links = data?.links || []
   const activity = (data?.activity || []).slice(0, 8)
-  const showBalance = payments.length > 0 || balance > 0
 
   return (
     <div>
@@ -185,42 +187,44 @@ export default function OwnerOrderPanel({ order, who, undo, onChanged }) {
         </>
       )}
 
-      {/* ── 2. Balance & payments (read-only) ──────────────────────────── */}
-      {showBalance && (
-        <>
-          <div className="fl-sect"><span className="fl-sect-h">Balance &amp; payments</span></div>
-          <div className="fl-row" style={{ cursor: 'default' }}>
-            <div className="fl-lab">Balance</div>
-            <div style={{ fontFamily: MONO, fontSize: 22, fontWeight: 700, color: '#16150F' }}>
-              {fmtUSD(balance)}
-            </div>
-            {payments.length > 0 && (
-              <div style={{ marginTop: 6, borderTop: '1px solid #F0ECE2' }}>
-                {payments.map((p, i) => {
-                  const struck = p.voided ? { textDecoration: 'line-through', color: '#8A7F6C' } : null
-                  return (
-                    <div key={p.id || i}
-                      style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 44, padding: '8px 0', borderBottom: i < payments.length - 1 ? HAIR : 'none' }}>
-                      <span style={{ fontFamily: MONO, fontSize: 14.5, fontWeight: 700, color: '#16150F', ...struck }}>
-                        {fmtUSD(p.amount)}
-                      </span>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#55503F', ...struck }}>
-                        {methodLabel(p.method)}{p.method === 'check' && p.ref ? ` #${p.ref}` : ''}
-                      </span>
-                      {p.voided && <span className="fl-chip fl-c-bad">VOIDED</span>}
-                      <span style={{ fontSize: 12, color: '#8A7F6C', flexShrink: 0 }}>
-                        {fmtDate(p.receivedAt || p.createdAt)}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            <div style={{ fontSize: 11.5, color: '#8A7F6C', marginTop: 8 }}>
-              Entry stays at the desk.
-            </div>
+      {/* ── 2. Balance & payments (entry lives here too now) ───────────── */}
+      <div className="fl-sect"><span className="fl-sect-h">Balance &amp; payments</span></div>
+      <div className="fl-row" style={{ cursor: 'default' }}>
+        <div className="fl-lab">Balance</div>
+        <div style={{ fontFamily: MONO, fontSize: 22, fontWeight: 700, color: '#16150F' }}>
+          {fmtUSD(balance)}
+        </div>
+        {payments.length > 0 && (
+          <div style={{ marginTop: 6, borderTop: '1px solid #F0ECE2' }}>
+            {payments.map((p, i) => {
+              const struck = p.voided ? { textDecoration: 'line-through', color: '#8A7F6C' } : null
+              return (
+                <div key={p.id || i}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 44, padding: '8px 0', borderBottom: i < payments.length - 1 ? HAIR : 'none' }}>
+                  <span style={{ fontFamily: MONO, fontSize: 14.5, fontWeight: 700, color: '#16150F', ...struck }}>
+                    {fmtUSD(p.amount)}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#55503F', ...struck }}>
+                    {methodLabel(p.method)}{p.method === 'check' && p.ref ? ` #${p.ref}` : ''}
+                  </span>
+                  {p.voided && <span className="fl-chip fl-c-bad">VOIDED</span>}
+                  <span style={{ fontSize: 12, color: '#8A7F6C', flexShrink: 0 }}>
+                    {fmtDate(p.receivedAt || p.createdAt)}
+                  </span>
+                </div>
+              )
+            })}
           </div>
-        </>
+        )}
+        <button type="button" className="fl-verb" style={{ width: '100%', marginTop: 10 }}
+          onClick={() => setRecOpen(true)}>
+          RECORD A PAYMENT
+        </button>
+      </div>
+      {recOpen && (
+        <RecordPaymentSheet order={order} undo={undo}
+          onClose={() => setRecOpen(false)}
+          onRecorded={() => onOrderChanged?.()} />
       )}
 
       {/* ── 3. Approvals ───────────────────────────────────────────────── */}

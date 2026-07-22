@@ -41,6 +41,8 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
   const [docs, setDocs] = useState([])
   const [orders, setOrders] = useState([])
   const [cemeteries, setCemeteries] = useState([])
+  const [confirm, setConfirm] = useState(null)   // { title, body, confirmLabel, onConfirm }
+  const [uploadBusy, setUploadBusy] = useState(false)
   const [flash, setFlash] = useState(null)
   const flashTimer = useRef(null)
   const say = (text, err = false) => {
@@ -70,25 +72,80 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
     setView({ name: 'doc', id: r.doc.id })
   }
 
+  // "Upload a permit and edit over it" (Paul 2026-07-22): a one-off doc that
+  // carries its OWN pages (data.pages, no template) — the doc editor's extras/
+  // checks/dims/layout then type straight over the uploaded form.
+  const uploadDocForOrder = async (order, files) => {
+    if (!files?.length || uploadBusy) return
+    setUploadBusy(true)
+    say('Reading the permit…')
+    const created = await createPermitDoc({
+      orderId: order.id, templateId: null, cemeteryId: order.cemetery_id || null,
+      title: 'Uploaded permit', data: { values: {}, extras: [], layout: null, dims: [], pages: [] },
+    })
+    if (!created.ok) { setUploadBusy(false); say(created.error, true); return }
+    const docId = created.doc.id
+    const pages = []
+    try {
+      for (const file of files) {
+        if (/pdf$/i.test(file.type) || /\.pdf$/i.test(file.name)) {
+          const rendered = await rasterizePdfFile(file)
+          for (const pg of rendered) {
+            const up = await uploadPermitAsset(`permit-docs/${docId}`, pg.blob, 'page.png')
+            if (up.ok) pages.push({ url: up.url, w: pg.w, h: pg.h })
+            else say(up.error, true)
+          }
+          if (rendered.truncatedFrom) say(`Long document — kept the first ${pages.length} of ${rendered.truncatedFrom} pages.`, true)
+        } else {
+          const up = await uploadPermitAsset(`permit-docs/${docId}`, file, file.name)
+          if (up.ok) {
+            const size = await readImageSize(up.url)
+            pages.push({ url: up.url, w: size?.w || 1700, h: size?.h || 2200 })
+          } else say(up.error, true)
+        }
+      }
+    } catch (e) {
+      say(e?.message || 'Upload failed.', true)
+    }
+    if (pages.length === 0) {
+      await deletePermitDoc(docId).catch(() => {})
+      setUploadBusy(false)
+      say('No usable pages in that file.', true)
+      return
+    }
+    await updatePermitDoc(docId, { values: {}, extras: [], layout: null, dims: [], pages })
+    setUploadBusy(false)
+    setView({ name: 'doc', id: docId })
+  }
+
   return (
     <div className="pbt-wrap">
       {flash && <div className={`pbt-flash ${flash.err ? 'err' : ''}`}>{flash.text}</div>}
       {view.name === 'home' && (
         <HomeView
           templates={templates} docs={docs} orders={orders} cemeteries={cemeteries}
+          uploadBusy={uploadBusy}
           onOpenTemplate={(id) => setView({ name: 'template', id })}
           onOpenDoc={(id) => setView({ name: 'doc', id })}
           onBuild={openDocForOrder}
+          onUploadDoc={uploadDocForOrder}
           onCreateTemplate={async (title, cemeteryId) => {
             const r = await createPermitTemplate({ title, cemeteryId })
             if (!r.ok) { say(r.error, true); return }
             setView({ name: 'template', id: r.template.id })
           }}
-          onDeleteDoc={async (doc) => {
-            if (!window.confirm('Delete this permit? The order itself is untouched.')) return
-            await deletePermitDoc(doc.id)
-            reloadHome()
-          }}
+          onDeleteDoc={(doc) => setConfirm({
+            title: 'Delete this permit?',
+            body: `${doc.order?.primary_lastname || customerName(doc.order?.customer) || 'This order'} — ${doc.title || doc.template?.title || 'permit'}. The built PDF copy in the order's attachments goes with it. The order itself is untouched.`,
+            confirmLabel: 'Delete permit',
+            onConfirm: async () => {
+              const r = await deletePermitDoc(doc.id)
+              setConfirm(null)
+              if (!r.ok) { say(r.error, true); return }
+              say('Permit deleted.')
+              reloadHome()
+            },
+          })}
           say={say}
         />
       )}
@@ -100,18 +157,23 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
         <DocEditor id={view.id} say={say} onOpenOrderDetail={onOpenOrderDetail}
           onBack={() => { setView({ name: 'home' }); reloadHome() }} />
       )}
+      {confirm && (
+        <PbtConfirm {...confirm} onCancel={() => setConfirm(null)} />
+      )}
     </div>
   )
 }
 
 // ── HOME ────────────────────────────────────────────────────────────────────
 
-function HomeView({ templates, docs, orders, cemeteries, onOpenTemplate, onOpenDoc, onBuild, onCreateTemplate, onDeleteDoc, say }) {
+function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTemplate, onOpenDoc, onBuild, onUploadDoc, onCreateTemplate, onDeleteDoc, say }) {
   const [q, setQ] = useState('')
   const [newOpen, setNewOpen] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newCem, setNewCem] = useState('')
   const [pickFor, setPickFor] = useState(null)   // order whose template choice is open
+  const upRef = useRef(null)                     // hidden input for per-order Upload
+  const upForRef = useRef(null)                  // which order the pick belongs to
 
   const activeOrders = useMemo(() => (orders || []).filter(o => o && !o.archived), [orders])
   const results = useMemo(() => {
@@ -153,11 +215,18 @@ function HomeView({ templates, docs, orders, cemeteries, onOpenTemplate, onOpenD
                   <span className={`pbt-pill pbt-pill-${permitStatusTone(o.permit_status)}`}>{permitStatusLabel(o.permit_status)}</span>
                 </div>
                 {!picking ? (
-                  <button type="button" className="pbt-btn pbt-btn-gold" onClick={() => {
-                    if (tpls.length === 0) { say(`No template for ${o.cemetery?.name || 'this cemetery'} yet — create one on the right, then come back.`, true); return }
-                    if (tpls.length === 1) { onBuild(o, tpls[0]); return }
-                    setPickFor(o.id)
-                  }}>Build</button>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    <button type="button" className="pbt-btn" disabled={uploadBusy}
+                      title="Upload this order's permit file and type over it"
+                      onClick={() => { upForRef.current = o; upRef.current?.click() }}>
+                      {uploadBusy ? 'Working…' : 'Upload'}
+                    </button>
+                    <button type="button" className="pbt-btn pbt-btn-gold" onClick={() => {
+                      if (tpls.length === 0) { say(`No template for ${o.cemetery?.name || 'this cemetery'} yet — create one on the right, or hit Upload to type over the permit file itself.`, true); return }
+                      if (tpls.length === 1) { onBuild(o, tpls[0]); return }
+                      setPickFor(o.id)
+                    }}>Build</button>
+                  </div>
                 ) : (
                   <div className="pbt-tplpick">
                     {tpls.map(t => (
@@ -170,6 +239,15 @@ function HomeView({ templates, docs, orders, cemeteries, onOpenTemplate, onOpenD
             )
           })}
         </div>
+
+        <input ref={upRef} type="file" accept="image/*,application/pdf" multiple style={{ display: 'none' }}
+          onChange={e => {
+            const files = [...e.target.files]
+            e.target.value = ''
+            const order = upForRef.current
+            upForRef.current = null
+            if (order && files.length) onUploadDoc(order, files)
+          }} />
 
         <h2 className="pbt-h2" style={{ marginTop: 22 }}>Recent permits</h2>
         <div className="pbt-doclist">
@@ -237,6 +315,7 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
   const [sel, setSel] = useState(null)
   const [slotSel, setSlotSel] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [delOpen, setDelOpen] = useState(false)
   const fileRef = useRef(null)
 
   useEffect(() => {
@@ -325,8 +404,24 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
           {(cemeteries || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <div className="pbt-edhead-spacer" />
+        <button type="button" className="pbt-btn pbt-btn-danger-quiet" onClick={() => setDelOpen(true)} disabled={busy}>Delete</button>
         <button type="button" className="pbt-btn pbt-btn-gold" onClick={save} disabled={busy}>{busy ? 'Working…' : 'Save template'}</button>
       </header>
+
+      {delOpen && (
+        <PbtConfirm
+          title="Remove this template from the library?"
+          body={`"${title || 'Untitled permit'}" comes off the template list and Build stops offering it. Permits already built with it keep working, and uploading the blank again brings it back as a fresh template.`}
+          confirmLabel="Remove template"
+          onCancel={() => setDelOpen(false)}
+          onConfirm={async () => {
+            const r = await updatePermitTemplate(id, { archived: true })
+            if (!r.ok) { say(r.error, true); setDelOpen(false); return }
+            say('Template removed.')
+            onBack()
+          }}
+        />
+      )}
 
       <div className="pbt-edbar">
         {pages.map((_, i) => (
@@ -424,7 +519,9 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [sources, setSources] = useState(null)
+  const [delOpen, setDelOpen] = useState(false)
   const layFileRef = useRef(null)
+  const pageFileRef = useRef(null)
 
   const [ctx, setCtx] = useState(null)   // { attachments, emails } for the rail
   const load = async () => {
@@ -460,7 +557,11 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
 
   const template = doc?.template
   const order = doc?.order
-  const pages = template?.pages || []
+  // Uploaded one-off permits carry their OWN pages in data.pages (no template);
+  // template docs keep reading the template's. Fields only ever come from a
+  // template — an uploaded permit is typed over with extras/checks/dims.
+  const ownPages = Array.isArray(data?.pages) && data.pages.length > 0
+  const pages = ownPages ? data.pages : (template?.pages || [])
   const fields = template?.fields || []
   const layout = data?.layout || null
   const hasBack = layout?.frame?.page === 'back' || (data?.extras || []).some(e => e.page === 'back') || (data?.dims || []).some(d => d.page === 'back')
@@ -607,12 +708,15 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
       if (r.ok) say('Saved to the order’s attachments too.')
     } catch { /* the download/print itself already succeeded */ }
   }
+  // Export sees one template shape whether the pages are the template's or the
+  // doc's own upload.
+  const exportTemplate = () => ({ ...(template || {}), pages, fields })
   const download = async () => {
     setBusy(true)
     try {
       await save()
       const fam = (order?.primary_lastname || customerName(order?.customer) || 'permit').replace(/[^\w-]+/g, '_')
-      const d = await exportPermitPdf({ template, docData: data, returnDoc: true })
+      const d = await exportPermitPdf({ template: exportTemplate(), docData: data, returnDoc: true })
       d.save(`${fam}-${(doc.title || 'permit').replace(/[^\w-]+/g, '_')}.pdf`)
       await attachBuiltPdf(d)
     } catch (e) {
@@ -626,11 +730,41 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     setBusy(true)
     try {
       await save()
-      const d = await exportPermitPdf({ template, docData: data, returnDoc: true })
+      const d = await exportPermitPdf({ template: exportTemplate(), docData: data, returnDoc: true })
       window.open(d.output('bloburl'), '_blank')
       await attachBuiltPdf(d)
     } catch (e) {
       say(e?.message || 'Could not open the print view.', true)
+    }
+    setBusy(false)
+  }
+  // Uploaded permits can grow pages after the fact (page 2 arrives, the map
+  // sheet, the county's addendum) — same rasterize path as the first upload.
+  const addPages = async (files) => {
+    if (!files?.length) return
+    setBusy(true)
+    try {
+      const next = [...(data?.pages || [])]
+      for (const file of files) {
+        if (/pdf$/i.test(file.type) || /\.pdf$/i.test(file.name)) {
+          const rendered = await rasterizePdfFile(file)
+          for (const pg of rendered) {
+            const up = await uploadPermitAsset(`permit-docs/${id}`, pg.blob, 'page.png')
+            if (up.ok) next.push({ url: up.url, w: pg.w, h: pg.h })
+            else say(up.error, true)
+          }
+        } else {
+          const up = await uploadPermitAsset(`permit-docs/${id}`, file, file.name)
+          if (up.ok) {
+            const size = await readImageSize(up.url)
+            next.push({ url: up.url, w: size?.w || 1700, h: size?.h || 2200 })
+          } else say(up.error, true)
+        }
+      }
+      setData(prev => ({ ...prev, pages: next }))
+      setPage(Math.max(0, next.length - 1))
+    } catch (e) {
+      say(e?.message || 'Upload failed.', true)
     }
     setBusy(false)
   }
@@ -648,10 +782,26 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
           <span className="pbt-edid-sub">{doc.title || template?.title}{order?.cemetery?.name ? ` · ${order.cemetery.name}` : ''}</span>
         </div>
         <div className="pbt-edhead-spacer" />
+        <button type="button" className="pbt-btn pbt-btn-danger-quiet" onClick={() => setDelOpen(true)} disabled={busy}>Delete</button>
         <button type="button" className="pbt-btn" onClick={save} disabled={busy}>Save</button>
         <button type="button" className="pbt-btn" onClick={printPdf} disabled={busy}>Print</button>
         <button type="button" className="pbt-btn pbt-btn-gold" onClick={download} disabled={busy}>{busy ? 'Working…' : 'Download PDF'}</button>
       </header>
+
+      {delOpen && (
+        <PbtConfirm
+          title="Delete this permit?"
+          body={`${order?.primary_lastname || customerName(order?.customer) || 'This order'} — ${doc.title || template?.title || 'permit'}. The built PDF copy in the order's attachments goes with it. The order itself is untouched.`}
+          confirmLabel="Delete permit"
+          onCancel={() => setDelOpen(false)}
+          onConfirm={async () => {
+            const r = await deletePermitDoc(id)
+            if (!r.ok) { say(r.error, true); setDelOpen(false); return }
+            say('Permit deleted.')
+            onBack()
+          }}
+        />
+      )}
 
       {missing.length > 0 && !missHidden && (
         <div className="pbt-missing">
@@ -686,6 +836,13 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
               Back{hasBack ? '' : ' (blank)'}
             </button>
             <div className="pbt-edhead-spacer" />
+            {(ownPages || !template) && (
+              <>
+                <button type="button" className="pbt-btn" onClick={() => pageFileRef.current?.click()} disabled={busy}>+ Add page</button>
+                <input ref={pageFileRef} type="file" accept="image/*,application/pdf" multiple style={{ display: 'none' }}
+                  onChange={e => { addPages([...e.target.files]); e.target.value = '' }} />
+              </>
+            )}
             <button type="button" className="pbt-btn" onClick={addText}>+ Text</button>
             <button type="button" className="pbt-btn" onClick={addCheck}>+ Checkmark</button>
             <button type="button" className="pbt-btn" onClick={addDim}>+ Dimension</button>
@@ -739,6 +896,9 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
               {autofillValue('base_size', order) && (
                 <button type="button" className="pbt-btn" onClick={() => patchDim(selDim, { label: `BASE ${autofillValue('base_size', order)}` })}>Base size</button>
               )}
+              {autofillValue('foundation_size', order) && (
+                <button type="button" className="pbt-btn" onClick={() => patchDim(selDim, { label: `FDN ${autofillValue('foundation_size', order)}` })}>Foundation</button>
+              )}
               <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { setData(prev => ({ ...prev, dims: prev.dims.filter(d => d.id !== selDim) })); setSelDim(null) }}>Delete</button>
             </div>
           )}
@@ -757,7 +917,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
 
           <div className="pbt-canvaswrap">
             {(!currentPageObj && page !== 'back')
-              ? <div className="pbt-empty">This template has no pages yet — open it from Home and upload the blank form.</div>
+              ? <div className="pbt-empty">{(ownPages || !template) ? 'No pages yet — use + Add page to upload the permit.' : 'This template has no pages yet — open it from Home and upload the blank form.'}</div>
               : (
                 <PermitCanvas
                   page={currentPageObj}
@@ -1063,6 +1223,29 @@ function OrderInfoSections({ order, ctx, sources, onInsertLayout }) {
   )
 }
 
+// ── CONFIRM MODAL — the safety stop before anything is destroyed ────────────
+// Paul 2026-07-22: "delete permits ... with a safety message." One shape for
+// permit-doc deletes (Home + doc editor) and template removal.
+
+function PbtConfirm({ title, body, confirmLabel = 'Delete', onConfirm, onCancel }) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className="pbt-scrim" onClick={busy ? undefined : onCancel}>
+      <div className="pbt-modal" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+        <h3 className="pbt-h2" style={{ marginBottom: 6 }}>{title}</h3>
+        <div className="pbt-confirm-body">{body}</div>
+        <div className="pbt-modal-actions">
+          <button type="button" className="pbt-btn pbt-btn-quiet" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="pbt-btn pbt-btn-danger" disabled={busy}
+            onClick={async () => { setBusy(true); try { await onConfirm() } finally { setBusy(false) } }}>
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── STYLES ──────────────────────────────────────────────────────────────────
 
 const localStyles = `
@@ -1099,6 +1282,11 @@ const localStyles = `
   .pbt-btn-gold:hover:not(:disabled) { background: #7d5d07; color: #fff; }
   .pbt-btn-quiet { border-color: transparent; color: var(--sb-text-muted, #888780); }
   .pbt-btn-on { background: rgba(154,114,9,0.12); border-color: #9A7209; color: #9A7209; }
+  .pbt-btn-danger { background: #b54040; border-color: #b54040; color: #fff; }
+  .pbt-btn-danger:hover:not(:disabled) { background: #983434; border-color: #983434; color: #fff; }
+  .pbt-btn-danger-quiet { border-color: transparent; color: #b54040; }
+  .pbt-btn-danger-quiet:hover:not(:disabled) { border-color: #b54040; color: #b54040; }
+  .pbt-confirm-body { font-size: 13px; color: var(--sb-text, #2C2C2A); line-height: 1.55; margin-bottom: 6px; }
 
   .pbt-orderlist, .pbt-doclist { display: flex; flex-direction: column; margin-top: 10px; }
   .pbt-orderrow, .pbt-docrow {
