@@ -6,6 +6,17 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint CAL-2 (2026-07-22, round 5) — SHIPPED: the Calendar tab rebuilt
+
+Commit 77cc2b8, Production success. Migration `20260722_calendar_reminders.sql` ✅ APPLIED + verified. **`src/CalendarTab.jsx` (new) now owns the Calendar tab** — SchedulerTab's `variant="calendar"` surface is retired from the nav (code intact, Scheduler tab untouched; same work_batches/shop_tasks/orders data layer, no parallel store).
+
+- **Layers** (localStorage-persisted): Runs & events / Task due dates / Order due dates / Reminders. Month + Week views (view persisted too).
+- **Add stays in view** (Paul's complaint: adding always bounced to week): + Event header button (today), hover + on any day cell, or from the day peek — creates a zero-job work_batch (site_visit/errand) via createBatch, so the Scheduler sees it.
+- **Drag anything to any day = date override**: batch scheduled_date / task due_date (updateShopTask dueDate) / order target_completion_date (new setOrderTargetDate — NOTE this moves the CONTRACT-facing due date, per Paul "wherever its dragged that date is override") / reminder remind_on. Optimistic + 8s UNDO toast.
+- **Reminders board** (`calendar_reminders`, one row PER FIRING): composer offers on-the-day/1d/3d/1w/2w/1m/2m-before + any exact dates, from any item's REMIND ME (day peek) or standalone. Due (remind_on ≤ today, unacknowledged) rows are unmissable — red board + pulsing jump pill by the filters — and each stays until ACKNOWLEDGE stamps acknowledged_at/by. Upcoming = quiet list, undoable remove. Order-sourced reminders carry Open-order (source_type/source_id).
+- Look: cream/gold/near-black, Fraunces-serif masthead (falls back Georgia), dark DOW band, gold today ring, type-colored chips (runs near-black/gold, tasks blue, order-due red, reminders gold).
+- NOT built (flagged for later): reminders surfaced on Today/field push; recurring events; weather strip on the new month view.
+
 ## Sprint CEM-3 (2026-07-22, round 4) — SHIPPED: snap-run map capture, grave pins, install history, auto-casing
 
 Commit e54cb79, Production success. Migration `20260722_cemetery_map_pins.sql` ✅ APPLIED + verified (table, 3 policies, 4 indexes).
