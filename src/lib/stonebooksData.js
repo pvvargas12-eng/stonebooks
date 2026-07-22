@@ -3583,6 +3583,45 @@ export async function listInstallHistoryAtCemetery(cemeteryId, { limit = 100 } =
   return data || []
 }
 
+// Private mirror of SalesMode's titleCaseCemeteryName (kept local to avoid an
+// import cycle): only shouty (all-caps / all-lowercase) input is normalized.
+const _titleCaseCem = (raw) => {
+  const name = String(raw || '').trim()
+  if (!name || !/[a-zA-Z]/.test(name)) return name
+  if (name !== name.toUpperCase() && name !== name.toLowerCase()) return name
+  const SMALL = new Set(['of', 'the', 'and', 'at', 'on', 'in', 'for'])
+  return name.toLowerCase().split(/\s+/).map((w, i) => {
+    if (i > 0 && SMALL.has(w)) return w
+    if (w === 'st' || w === 'st.') return 'St.'
+    if (w === 'mt' || w === 'mt.') return 'Mt.'
+    return w.replace(/^./, ch => ch.toUpperCase())
+  }).join(' ')
+}
+// Add a cemetery from the Cemeteries tab. Case-insensitive lookup first so a
+// retyped existing name reuses the row instead of duping; new names get the
+// same auto-casing as the sales path.
+export async function createCemetery({ name, city = null, state = null }) {
+  const typed = String(name || '').trim()
+  if (!typed) return { ok: false, error: 'Name the cemetery.' }
+  const { data: existing } = await supabase.from('cemeteries')
+    .select('id, name').ilike('name', typed).limit(1).maybeSingle()
+  if (existing?.id) return { ok: true, cemetery: existing, existed: true }
+  const { data, error } = await supabase.from('cemeteries').insert({
+    tenant_id: TENANT_ID, name: _titleCaseCem(typed),
+    city: city ? String(city).trim() || null : null,
+    state: state ? String(state).trim() || null : null,
+  }).select().single()
+  if (error) {
+    if (error.code === '23505') {
+      const { data: found } = await supabase.from('cemeteries')
+        .select('id, name').ilike('name', typed).limit(1).maybeSingle()
+      if (found?.id) return { ok: true, cemetery: found, existed: true }
+    }
+    return { ok: false, error: error.message }
+  }
+  return { ok: true, cemetery: data, existed: false }
+}
+
 // ── CEMETERY MERGE (2026-07-22) — fold a duplicate into the real row ─────────
 // Every table that references cemeteries, from the prod FK audit + the
 // FK-less permit_docs.cemetery_id: orders, permit_templates, permit_docs,
@@ -3642,6 +3681,34 @@ export async function mergeCemeteries(fromId, toId) {
   }
   const { error: delErr } = await supabase.from('cemeteries').delete().eq('id', fromId).eq('tenant_id', TENANT_ID)
   if (delErr) return { ok: false, error: `Everything re-pointed, but the duplicate row would not delete: ${delErr.message}` }
+  // PB-2 dup-copied templates across duplicate cemetery ROWS — after a merge
+  // the keeper can end up holding two identical templates (the 6-button Beth
+  // Israel pick, 2026-07-22). Archive the extra copies per title: the one with
+  // more built permits survives, ties keep the oldest. Best-effort.
+  try {
+    const { data: tpls } = await supabase.from('permit_templates')
+      .select('id, title, created_at').eq('cemetery_id', toId).eq('archived', false)
+    const byTitle = new Map()
+    for (const t of (tpls || [])) {
+      const k = String(t.title || '').trim().toLowerCase()
+      if (!byTitle.has(k)) byTitle.set(k, [])
+      byTitle.get(k).push(t)
+    }
+    for (const group of byTitle.values()) {
+      if (group.length < 2) continue
+      const counts = await Promise.all(group.map(async (t) => {
+        const { count } = await supabase.from('permit_docs')
+          .select('id', { count: 'exact', head: true }).eq('template_id', t.id)
+        return { t, n: count || 0 }
+      }))
+      counts.sort((a, b) => (b.n - a.n) || String(a.t.created_at).localeCompare(String(b.t.created_at)))
+      const losers = counts.slice(1).map(x => x.t.id)
+      if (losers.length) {
+        await supabase.from('permit_templates')
+          .update({ archived: true }).in('id', losers)
+      }
+    }
+  } catch { /* dedupe is a nicety; the merge itself succeeded */ }
   return { ok: true, moved }
 }
 // The cemetery's open work — the detail card's "who's here" list.

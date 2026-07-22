@@ -12,7 +12,7 @@
 // =============================================================================
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  listCemeteriesWithPermit, updateCemeteryPermit,
+  listCemeteriesWithPermit, updateCemeteryPermit, createCemetery,
   listCemeteryMaps, addCemeteryMap, updateCemeteryMap, deleteCemeteryMap, countCemeteryMaps,
   cemeteryRefCounts, mergeCemeteries, listOrdersAtCemetery, listPermitTemplatesForCemetery,
   listMapPins, addMapPin, deleteMapPin, listInstallHistoryAtCemetery,
@@ -55,6 +55,15 @@ export default function CemeteriesTab({ onOpenOrder }) {
   const [selId, setSelId] = useState(null)
   const [q, setQ] = useState('')
   const [merge, setMerge] = useState(null)   // { keepId, awayId } | null
+  const [addOpen, setAddOpen] = useState(false)
+  const [dupOpen, setDupOpen] = useState(false)   // duplicates panel COLLAPSED by default (Paul: "it's in the way")
+  const [ignoredDups, setIgnoredDups] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem('sb_cem_dup_ignored') || '[]'); return new Set(Array.isArray(v) ? v : []) } catch { return new Set() }
+  })
+  const persistIgnored = (next) => {
+    setIgnoredDups(next)
+    try { localStorage.setItem('sb_cem_dup_ignored', JSON.stringify([...next])) } catch { /* ok */ }
+  }
   const [flash, setFlash] = useState(null)
   const flashTimer = useRef(null)
   const say = (text, err = false) => {
@@ -78,7 +87,8 @@ export default function CemeteriesTab({ onOpenOrder }) {
     return rows
   }, [list, q])
 
-  // Possible duplicates — same normalized scent, 2+ rows.
+  // Possible duplicates — same normalized scent, 2+ rows, minus the groups
+  // Paul has explicitly ignored (deliberate same-name rows exist — Hillside).
   const dupGroups = useMemo(() => {
     const byKey = new Map()
     for (const c of (list || [])) {
@@ -87,10 +97,10 @@ export default function CemeteriesTab({ onOpenOrder }) {
       if (!byKey.has(key)) byKey.set(key, [])
       byKey.get(key).push(c)
     }
-    return [...byKey.entries()].filter(([, rows]) => rows.length > 1)
+    return [...byKey.entries()].filter(([key, rows]) => rows.length > 1 && !ignoredDups.has(key))
       .map(([key, rows]) => ({ key, rows }))
       .sort((a, b) => a.rows[0].name.localeCompare(b.rows[0].name))
-  }, [list])
+  }, [list, ignoredDups])
 
   // Merge review from a dup group: keep the row that looks most "real"
   // (address on file, then more map pages) — swappable in the modal.
@@ -111,21 +121,46 @@ export default function CemeteriesTab({ onOpenOrder }) {
       <style>{CSS}</style>
       {flash && <div className={`cmt-flash ${flash.err ? 'err' : ''}`}>{flash.text}</div>}
       <div className="cmt-head">
-        <h1 className="cmt-title">Cemeteries</h1>
-        <div className="cmt-sub">{list ? `${list.length} on the books` : 'Loading…'}</div>
+        <div>
+          <h1 className="cmt-title">Cemeteries</h1>
+          <div className="cmt-sub">{list ? `${list.length} on the books` : 'Loading…'}</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {dupGroups.length > 0 && !dupOpen && (
+            <button type="button" className="cmt-dup-pill" onClick={() => setDupOpen(true)}
+              title="Names that look like the same cemetery twice">
+              Possible duplicates · {dupGroups.length}
+            </button>
+          )}
+          <button type="button" className="cmt-btn cmt-btn-gold" onClick={() => setAddOpen(true)}>+ New cemetery</button>
+        </div>
       </div>
 
-      {dupGroups.length > 0 && (
+      {dupOpen && dupGroups.length > 0 && (
         <div className="cmt-dup">
-          <div className="cmt-dup-head">
-            Possible duplicates — {dupGroups.length} group{dupGroups.length === 1 ? '' : 's'}. Merging moves every order, permit, map page, and scheduled run onto the one you keep.
+          <div className="cmt-dup-head" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ flex: 1 }}>
+              Possible duplicates — {dupGroups.length} group{dupGroups.length === 1 ? '' : 's'}. Merging moves every order, permit, map page, and scheduled run onto the one you keep. Ignore hides a pair that's deliberately separate.
+            </span>
+            <button type="button" className="cmt-btn cmt-btn-quiet" onClick={() => setDupOpen(false)}>Hide</button>
           </div>
           {dupGroups.map(g => (
             <div key={g.key} className="cmt-dup-row">
               <span className="cmt-dup-names">{g.rows.map(r => r.name).join('   ·   ')}</span>
               <button type="button" className="cmt-btn" onClick={() => openGroupMerge(g)}>Review merge</button>
+              <button type="button" className="cmt-btn cmt-btn-quiet"
+                title="Not duplicates — stop flagging this pair"
+                onClick={() => { const n = new Set(ignoredDups); n.add(g.key); persistIgnored(n); say('Ignored — it will not be flagged again.') }}>
+                Ignore
+              </button>
             </div>
           ))}
+          {ignoredDups.size > 0 && (
+            <button type="button" className="cmt-dup-reset"
+              onClick={() => { persistIgnored(new Set()); say('Ignored pairs cleared — everything shows again.') }}>
+              {ignoredDups.size} ignored — show them again
+            </button>
+          )}
         </div>
       )}
 
@@ -165,6 +200,76 @@ export default function CemeteriesTab({ onOpenOrder }) {
           onMerged={onMerged}
         />
       )}
+
+      {addOpen && (
+        <AddCemeteryModal
+          list={list || []}
+          say={say}
+          onClose={() => setAddOpen(false)}
+          onCreated={async (row, existed) => {
+            setAddOpen(false)
+            await reload()
+            setSelId(row.id)
+            say(existed ? `"${row.name}" was already on the books — opened it.` : `"${row.name}" added.`)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Add a cemetery — dup-guarded, auto-cased ────────────────────────────────
+function AddCemeteryModal({ list, say, onClose, onCreated }) {
+  const [name, setName] = useState('')
+  const [city, setCity] = useState('')
+  const [state, setState] = useState('NJ')
+  const [busy, setBusy] = useState(false)
+  const lookalike = useMemo(() => {
+    const key = normCemName(name)
+    if (!key) return null
+    return list.find(c => normCemName(c.name) === key) || null
+  }, [name, list])
+
+  const save = async () => {
+    if (!name.trim() || busy) return
+    setBusy(true)
+    const r = await createCemetery({ name, city, state })
+    setBusy(false)
+    if (!r.ok) { say(r.error, true); return }
+    onCreated(r.cemetery, !!r.existed)
+  }
+
+  return (
+    <div className="cmt-viewer" style={{ cursor: 'default', alignItems: 'center' }} onClick={busy ? undefined : onClose}>
+      <div className="cmt-card" style={{ maxWidth: 460, width: '100%', cursor: 'default' }} onClick={e => e.stopPropagation()}>
+        <h2 className="cmt-h2" style={{ marginBottom: 10 }}>New cemetery</h2>
+        <label className="cmt-field" style={{ marginBottom: 10 }}>
+          <span>Name</span>
+          <input className="cmt-input" autoFocus placeholder="e.g. Rosehill Cemetery"
+            value={name} onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') save() }} />
+        </label>
+        {lookalike && (
+          <div className="cmt-pinline" style={{ marginBottom: 10, color: '#8a5a12' }}>
+            Looks a lot like "{lookalike.name}" — saving with the same name reuses that row instead of duplicating it.
+          </div>
+        )}
+        <div className="cmt-info-grid" style={{ marginBottom: 10 }}>
+          <label className="cmt-field"><span>City</span>
+            <input className="cmt-input" value={city} onChange={e => setCity(e.target.value)} />
+          </label>
+          <label className="cmt-field"><span>State</span>
+            <input className="cmt-input" value={state} onChange={e => setState(e.target.value)} />
+          </label>
+        </div>
+        <div className="cmt-hint" style={{ marginBottom: 12 }}>Phone, address, Drive link, pin, and maps get added on the detail after it's created.</div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="cmt-btn cmt-btn-quiet" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="cmt-btn cmt-btn-gold" onClick={save} disabled={busy || !name.trim()}>
+            {busy ? 'Saving…' : 'Add cemetery'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -633,7 +738,10 @@ const CSS = `
   .cmt-wrap { padding: 24px 28px; max-width: 1500px; margin: 0 auto; }
   .cmt-flash { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 1200; background: #1D9E75; color: #fff; font-size: 13px; padding: 8px 18px; border-radius: 8px; box-shadow: 0 6px 20px rgba(15,20,25,0.25); }
   .cmt-flash.err { background: #b54040; }
-  .cmt-head { margin-bottom: 16px; }
+  .cmt-head { margin-bottom: 16px; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .cmt-dup-pill { font: inherit; font-size: 12.5px; font-weight: 800; padding: 7px 14px; border-radius: 999px; border: 1px solid #b8842a; background: #fdf4e3; color: #8a5a12; cursor: pointer; }
+  .cmt-dup-pill:hover { background: #b8842a; color: #fff; }
+  .cmt-dup-reset { font: inherit; font-size: 12px; font-weight: 600; border: none; background: none; color: #8a5a12; cursor: pointer; text-decoration: underline; align-self: flex-start; padding: 0; }
   .cmt-title { font-size: 24px; font-weight: 700; color: #0f1419; margin: 0; }
   .cmt-sub { font-size: 13px; color: #7a756a; margin-top: 4px; }
   .cmt-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px; align-items: start; }
