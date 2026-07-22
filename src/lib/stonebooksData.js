@@ -2177,13 +2177,29 @@ export async function countCutReady() {
     if (!byJob.has(m.job_id)) byJob.set(m.job_id, {})
     byJob.get(m.job_id)[m.milestone_key] = m.status
   }
-  let n = 0
+  const candidates = []
   for (const [jobId, keys] of byJob) {
     if (!('stencil_cut' in keys) || keys.stencil_cut === 'done') continue
     if ('stone_received' in keys && keys.stone_received !== 'done') continue
     const proof = proofs.get(jobId)
     if (!proof?.approved_at) continue
     if (listed.has(jobId)) continue
+    candidates.push(jobId)
+  }
+  if (!candidates.length) return 0
+  // HARD RULE: drafts and leads never count toward the cut list or
+  // production. Real work = post-contract status, not archived/terminal,
+  // and a locked deposit on the books.
+  const { data: rows, error } = await supabase.from('jobs')
+    .select('id, order:orders(status, archived, payments, deposit_amount, balance_amount)')
+    .in('id', candidates)
+  if (error) { console.warn('[cutlist] countCutReady orders:', error.message); return 0 }
+  let n = 0
+  for (const r of (rows || [])) {
+    const o = r.order
+    if (!o || o.archived) continue
+    if (['draft', 'scoping', 'quoted', 'closed', 'cancelled'].includes(o.status)) continue
+    if (rowTotalPaid(o) <= 0) continue
     n++
   }
   return n

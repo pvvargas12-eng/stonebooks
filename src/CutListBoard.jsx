@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getJobs, getStencilCutList, addToStencilCutList, removeFromStencilCutList,
   getCurrentProofsByJob, designStateFor, setOrderStoneStatus, orderStatusWritePlan,
-  customerName, properName,
+  customerName, properName, rowTotalPaid,
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
 import { buildDieSpec, displayGraniteColor } from './lib/monumentCatalog'
@@ -28,6 +28,20 @@ import { buildDieSpec, displayGraniteColor } from './lib/monumentCatalog'
 const msFind = (job, key) => (job.milestones || []).find(m => m.milestone_key === key) || null
 const msDone = (job, key) => msFind(job, key)?.status === 'done'
 const hasKey = (job, key) => !!msFind(job, key)
+
+// HARD RULE (Paul 2026-07-22): drafts and leads NEVER touch the cut list or
+// production. Not addable, not counted, not even amber-gated — a lead is not
+// work. Lead = pre-contract status OR no locked deposit on the books (the
+// same LEAD — NO DEPOSIT rule every other surface shouts about).
+const PRE_CONTRACT = new Set(['draft', 'scoping', 'quoted'])
+const TERMINAL = new Set(['closed', 'cancelled'])
+const isRealWork = (job) => {
+  const o = job.order
+  if (!o || o.archived) return false
+  if (PRE_CONTRACT.has(o.status) || TERMINAL.has(o.status)) return false
+  if (rowTotalPaid(o) <= 0) return false
+  return true
+}
 
 export default function CutListBoard({ onOpenJob }) {
   const [jobs, setJobs] = useState([])
@@ -72,8 +86,9 @@ export default function CutListBoard({ onOpenJob }) {
   }, [proofs])
 
   // Every uncut job that carries a stencil leg — the addable universe.
+  // Drafts/leads are excluded OUTRIGHT (isRealWork), not gate-chipped.
   const pool = useMemo(
-    () => jobs.filter(j => hasKey(j, 'stencil_cut') && !msDone(j, 'stencil_cut')),
+    () => jobs.filter(j => isRealWork(j) && hasKey(j, 'stencil_cut') && !msDone(j, 'stencil_cut')),
     [jobs],
   )
   // THE RED LIST — both gates green, stencil not cut, and NOT on Paul's list.
@@ -156,6 +171,7 @@ export default function CutListBoard({ onOpenJob }) {
   }, [pool, listIds, search, readiness])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const gateChips = (j) => {
+    if (!isRealWork(j)) return <span className="scc-chip scc-chip-red">DRAFT / LEAD — not production work</span>
     const r = readiness(j)
     if (r.cut) return <span className="scc-chip scc-chip-green">CUT</span>
     return (
@@ -178,7 +194,7 @@ export default function CutListBoard({ onOpenJob }) {
         <div>
           <h2 className="scc-title">Cut list</h2>
           <div className="scc-sub">
-            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet.
+            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet. Drafts and leads never appear here — no deposit, no production.
           </div>
         </div>
         <div className="scc-actions">
@@ -300,7 +316,7 @@ export default function CutListBoard({ onOpenJob }) {
                     </span>
                     <span className="scc-chiprow">{gateChips(j)}</span>
                   </div>
-                  {!r.cut && (
+                  {!r.cut && isRealWork(j) && (
                     <button type="button" className="scc-btn scc-btn-gold" disabled={busyId === j.id}
                       title={r.ready ? 'Stencil is cut — flips the stone ladder to blasting' : 'Gates are still open — you can still mark it if it really is cut'}
                       onClick={() => markCut(j)}>
@@ -383,5 +399,6 @@ const CSS = `
   .scc-chip { font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
   .scc-chip-green { color: #1d7a55; background: rgba(29,122,85,0.12); }
   .scc-chip-amber { color: #8a5a12; background: rgba(216,144,31,0.15); }
+  .scc-chip-red { color: #b3261e; background: rgba(179,38,30,0.12); }
   .scc-empty { font-size: 13px; color: #9a948a; padding: 12px 2px; }
 `
