@@ -6,6 +6,14 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint NAMES-2 (2026-07-22, round 8) — SHIPPED: stored names cleaned + casing normalized at the door
+
+Commit e220a57. Paul's go: "some people write in all caps others dont and it makes it sloppy… also all over with cemetery names."
+
+- **One-time prod cleanup (logged, guarded):** `_name_casing_log` table (2,485 before/after rows) — 1,062 customers (first/last), 295 orders' deceased jsonb (first/middle/last; primary_lastname regenerated itself), 5 more cemeteries (round 2: broken-mixed + all-lower), 0 cemetery_order snapshots needed. Ran via scratchpad `names-cleanup.mjs` (Node computes with the EXACT properName port; token via env from Credential Manager; updates guarded on prior values so concurrent edits are skipped not clobbered; chunked through the Management API — ~10 min run). Verified: **0 shouty order families / 1 "shouty" customer left = last_name "III"** (correctly protected suffix). O'LEARY→O'Leary, D'ARCY→D'Arcy recovered properly.
+- **Save-time guard:** `customerToRow` first/last + `orderToRow` deceased (via `normalizeDeceasedNames`) run properName on EVERY save — all-caps typing lands clean and re-saves self-heal any strays. **inscriptionName (carved) is deliberately untouched.**
+- Keep the properName port in names-cleanup.mjs in sync if properName's shapes ever change (it's a scratchpad one-shot; the canonical logic lives in stonebooksData).
+
 ## Sprint NAMES-1 + CAL-2 fixes (2026-07-22, round 7) — SHIPPED: hESS → Hess everywhere + the month grid can't merge days
 
 Commits a4fc151 + 4985f28 (calendar grid: minmax(0,1fr) columns, then 1px-gap tile grid + overflow:hidden per cell — chips truncate, days can never bleed into neighbors; verified vs a rebuild of Paul's July screenshot at desktop width) and b038733 (**properName rewritten** — the old guard skipped ALL mixed-case so hESS/KOVALESKi passed raw; now per-word well-formed shapes are kept (Hess, Smith-Jones, Mc/Mac, O'/D', De/Di/La/Van…, II/III/IV) and everything else normalizes to capital-first; 23-case node test in-session. Display-only, data untouched. Raw sites wrapped: Calendar, Cemeteries tab + field screen, Reconcile, Permit Builder; OrdersTab/DesignHub inherit; the field app's deliberate ALL-CAPS family styling kept). Ukrainian Cemetery → St Vladimir merge was run BY PAUL via the tab tool.
