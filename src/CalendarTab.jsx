@@ -631,14 +631,15 @@ const CSS = `
   @keyframes cal2pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(179,38,30,0.35); } 50% { box-shadow: 0 0 0 7px rgba(179,38,30,0); } }
 
   .cal2-card { background: #fff; border: 1px solid #E6E1D4; border-radius: 18px; overflow: hidden; box-shadow: 0 10px 34px rgba(15,20,25,0.06); }
-  /* minmax(0,1fr) + min-width:0 everywhere — long chips must TRUNCATE, never
-     widen their column (the July-2026 screenshot: uneven columns pushed day
-     numbers under the wrong weekdays). */
+  /* Days are TILES separated by real gridlines (1px gap over a line-color
+     background) and every cell CLIPS its content — chips truncate with an
+     ellipsis and can never widen a column or bleed into the next day (the
+     July-2026 screenshot: days with due dates visually merged into their
+     empty neighbors). minmax(0,1fr) keeps all seven columns dead equal. */
   .cal2-dow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: #0F1419; }
-  .cal2-dow span { font-size: 10.5px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: #C7B575; padding: 10px 12px; }
-  .cal2-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
-  .cal2-cell { min-width: 0; min-height: 118px; border-top: 1px solid #EFEBE0; border-left: 1px solid #EFEBE0; padding: 7px 8px 9px; cursor: pointer; transition: background 0.12s; position: relative; }
-  .cal2-cell:nth-child(7n+1) { border-left: none; }
+  .cal2-dow span { font-size: 10.5px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: #C7B575; padding: 10px 12px; min-width: 0; }
+  .cal2-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; background: #E3DECE; border-top: 1px solid #E3DECE; }
+  .cal2-cell { background: #fff; min-width: 0; overflow: hidden; min-height: 118px; padding: 7px 8px 9px; cursor: pointer; transition: background 0.12s; position: relative; }
   .cal2-cell:hover { background: #FBF9F3; }
   .cal2-cell.dim { background: #FAF8F2; }
   .cal2-cell.dim .cal2-daynum { color: #C6C0B0; }
