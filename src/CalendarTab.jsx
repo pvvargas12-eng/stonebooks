@@ -631,10 +631,13 @@ const CSS = `
   @keyframes cal2pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(179,38,30,0.35); } 50% { box-shadow: 0 0 0 7px rgba(179,38,30,0); } }
 
   .cal2-card { background: #fff; border: 1px solid #E6E1D4; border-radius: 18px; overflow: hidden; box-shadow: 0 10px 34px rgba(15,20,25,0.06); }
-  .cal2-dow { display: grid; grid-template-columns: repeat(7, 1fr); background: #0F1419; }
+  /* minmax(0,1fr) + min-width:0 everywhere — long chips must TRUNCATE, never
+     widen their column (the July-2026 screenshot: uneven columns pushed day
+     numbers under the wrong weekdays). */
+  .cal2-dow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: #0F1419; }
   .cal2-dow span { font-size: 10.5px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: #C7B575; padding: 10px 12px; }
-  .cal2-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
-  .cal2-cell { min-height: 118px; border-top: 1px solid #EFEBE0; border-left: 1px solid #EFEBE0; padding: 7px 8px 9px; cursor: pointer; transition: background 0.12s; position: relative; }
+  .cal2-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .cal2-cell { min-width: 0; min-height: 118px; border-top: 1px solid #EFEBE0; border-left: 1px solid #EFEBE0; padding: 7px 8px 9px; cursor: pointer; transition: background 0.12s; position: relative; }
   .cal2-cell:nth-child(7n+1) { border-left: none; }
   .cal2-cell:hover { background: #FBF9F3; }
   .cal2-cell.dim { background: #FAF8F2; }
@@ -648,8 +651,8 @@ const CSS = `
   .cal2-cell-add { font: inherit; width: 22px; height: 22px; border-radius: 7px; border: none; background: transparent; color: #C6C0B0; font-size: 15px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity 0.12s; }
   .cal2-cell:hover .cal2-cell-add { opacity: 1; }
   .cal2-cell-add:hover { background: #9A7209; color: #fff; }
-  .cal2-chips { display: flex; flex-direction: column; gap: 3px; }
-  .cal2-chip { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 3px 7px; cursor: grab; overflow: hidden; border-left: 3px solid transparent; }
+  .cal2-chips { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .cal2-chip { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 3px 7px; cursor: grab; overflow: hidden; border-left: 3px solid transparent; max-width: 100%; min-width: 0; }
   .cal2-chip:active { cursor: grabbing; }
   .cal2-chip-txt { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cal2-batch { background: #0F1419; color: #F3EBD8; border-left-color: #C7B575; }
