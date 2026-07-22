@@ -6,6 +6,15 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint CUT-LIST (2026-07-22, round 9) — SHIPPED: the hand-built stencil queue + red not-queued alert
+
+Commit ba9f4ac, Production success. Migration `20260722_stencil_cut_list.sql` ✅ APPLIED + verified (foundation_list mirror: membership only, job_id unique CASCADE, 3-role RLS). Paul's doctrine, again: "I don't want to auto add to production — I already told you I want to build my lists."
+
+- **Jobs › Cut list** (JOBS_TABS after Production) — `src/CutListBoard.jsx`: readiness = **stone_received done (jobs with NO stone_received milestone — inscriptions — skip that gate) AND layout approved** (designStateFor 'approved' OR proof_approved milestone OR current proof approved_at). Picker adds ANY uncut job (has an open stencil_cut milestone), amber gate chips STONE NOT HERE / LAYOUT NOT APPROVED — gates inform, never wall.
+- **The red notification**: pulsing red section on the board listing eligible-but-unqueued stones (one-click Add each) + a red count badge on the Jobs tab strip via `countCutReady()` (3 light queries: job_milestones in (stencil_cut, stone_received) + getCurrentProofsByJob + the list — no getJobs; badge approximates layout-approved as proof.approved_at, the board shows the full read).
+- **MARK CUT** = `setOrderStoneStatus(job, 'needs_blasting')` (flips stencil_created + stencil_cut done, vocabulary-aware) + optimistic local plan apply (`applyPlanLocally`, the FoundationsBoard pattern). Cut rows stay listed (dimmed, CUT chip) until removed.
+- NOT built (flagged): cut-ready surfacing on Today / field push; drag reorder (sort_order column exists).
+
 ## Sprint NAMES-2 (2026-07-22, round 8) — SHIPPED: stored names cleaned + casing normalized at the door
 
 Commit e220a57. Paul's go: "some people write in all caps others dont and it makes it sloppy… also all over with cemetery names."
