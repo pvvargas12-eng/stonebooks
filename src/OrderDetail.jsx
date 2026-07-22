@@ -33,7 +33,7 @@ import {
   uploadProofLayout, createProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
   hydrateEmailAttachment, renameEmailAttachment, copyEmailAttachmentToOrder, classifyAttachment, ATTACH_KIND_LABELS,
-  setOrderPermit, needsSignedContract, hardDeleteOrder,
+  setOrderPermit, needsSignedContract, hardDeleteOrder, setJobReferralSource,
   setOrderQuoteStatus, appendQuoteEvent,
   orderTypeLabel, orderTypeLabels,
   updateCustomer, bulkUpdateOrders,
@@ -1038,19 +1038,28 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   }
 
   // ── Customer & Contact quick-edit (writes the customers row) ─────────────────
+  // Funeral home / referral is a JOB column (jobs.referral_source) — sending it
+  // to customers is the "schema cache" crash that blocked every rename
+  // (2026-07-22, the Abigail Gonzalez save). It seeds from and writes to the
+  // job; the rest of the draft goes to the customers row.
   const seedCustDraft = () => setCustDraft({
     first_name: cust.first_name || '', last_name: cust.last_name || '',
     phone_primary: cust.phone_primary || '', email: cust.email || '',
     address_line1: cust.address_line1 || '', address_line2: cust.address_line2 || '',
     city: cust.city || '', state: cust.state || '', zip: cust.zip || '',
     phone_alt: cust.phone_alt || '', email_alt: cust.email_alt || '',
-    referral_source: cust.referral_source || '',
+    referral_source: job?.referral_source || '',
   })
   const saveCustomer = async () => {
     if (!custDraft) return { ok: false, error: 'Nothing to edit.' }
     if (!cust?.id) return { ok: false, error: 'No customer is linked to this order.' }
-    const r = await updateCustomer(cust.id, custDraft)
+    const { referral_source, ...custPatch } = custDraft
+    const r = await updateCustomer(cust.id, custPatch)
     if (!r.ok) return r
+    if (job?.id && (referral_source || '') !== (job.referral_source || '')) {
+      const jr = await setJobReferralSource(job.id, referral_source)
+      if (jr.ok) await refreshJob()
+    }
     await refreshOrder()
     logOrderActivity(orderId, {
       type: 'change', field: 'Customer & contact', newValue: 'updated',
@@ -1747,7 +1756,8 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // Address blocks
   const custAddr = [cust.address_line1, cust.address_line2, [cust.city, cust.state, cust.zip].filter(Boolean).join(', ')].filter(Boolean)
   const cemAddr = [cem.address, [cem.city, cem.state, cem.zip].filter(Boolean).join(', ')].filter(Boolean)
-  const referral = [humanize(cust.referral_source), cust.referral_source_detail].filter(Boolean).join(' — ')
+  // Referral lives on the JOB — customers has no referral_source column.
+  const referral = [humanize(job?.referral_source), job?.referral_source_detail].filter(Boolean).join(' — ')
 
   // Quick-glance values (the three things to read the instant the order opens).
   const plotShort = composeGraveLocation(order)
@@ -2082,6 +2092,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             {uploadBusy ? 'Uploading…' : 'Upload attachment'}
           </button>
           <button type="button" className="sb-od-btn" onClick={openPayment}>Record payment</button>
+          <button type="button" className="sb-od-btn" style={{ color: '#b3261e', borderColor: '#dda9a4' }}
+            title="Permanently delete this order — confirmation required"
+            onClick={() => { setDeleteErr(null); setDeleteModal(true) }}>
+            Delete
+          </button>
           <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onPickAttachment} />
         </div>
         {actionNote && <div className="sb-od-actionnote">{actionNote}</div>}

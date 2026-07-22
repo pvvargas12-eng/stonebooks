@@ -2149,6 +2149,17 @@ export async function addToStencilCutList(jobId) {
   if (error && error.code !== '23505') return { ok: false, error: error.message }
   return { ok: true }
 }
+// Funeral home / referral lives on the JOB (jobs.referral_source), never on
+// customers — sending it to the customers table is the "schema cache" crash
+// OrderDetail's contact editor hit on 2026-07-22.
+export async function setJobReferralSource(jobId, value) {
+  if (!jobId) return { ok: false, error: 'Missing job' }
+  const { error } = await supabase.from('jobs')
+    .update({ referral_source: (value || '').trim() || null }).eq('id', jobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function removeFromStencilCutList(jobId) {
   const { error } = await supabase
     .from('stencil_cut_list')
