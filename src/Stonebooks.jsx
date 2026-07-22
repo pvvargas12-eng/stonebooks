@@ -39,6 +39,7 @@ const OrdersTab = lazy(() => import('./OrdersTab'))
 const CemeteryOrdersTab = lazy(() => import('./CemeteryOrdersTab'))
 const JobsTab = lazy(() => import('./JobsTab'))
 const PermitBuilderTab = lazy(() => import('./PermitBuilderTab'))
+const CemeteriesTab = lazy(() => import('./CemeteriesTab'))
 const SchedulerTab = lazy(() => import('./SchedulerTab'))
 const ReportsTab = lazy(() => import('./ReportsTab'))
 const ProfitTab = lazy(() => import('./ProfitTab'))
@@ -216,6 +217,7 @@ const NAV_PRIMARY = [
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
   { key: 'permitbuilder', label: 'Permit Builder' },
+  { key: 'cemeteries', label: 'Cemeteries' },
   { key: 'scheduler', label: 'Scheduler' },
   { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
@@ -340,6 +342,10 @@ export default function Stonebooks() {
     return () => window.removeEventListener('sb-open-permit-builder', go)
   }, [])
   const [orderDetailId, setOrderDetailId] = useState(null) // ITEM 5 — Jobs Admin Hub closeout → OrderDetail
+  // Where the OrderDetail back button returns to when the order was opened
+  // from another surface (Design hub / Jobs / Reconcile) — "go back to where I
+  // last was" (Paul, 2026-07-22). Null = the normal Orders-list back.
+  const [orderDetailReturn, setOrderDetailReturn] = useState(null)
   const [orderDetailAction, setOrderDetailAction] = useState(null) // optional auto-action on open (e.g. 'email')
 
   // Open Sales Mode — either fresh (no id) or with a specific order
@@ -712,12 +718,13 @@ export default function Stonebooks() {
 
         <main className="sb-main">
           <Suspense fallback={<TabFallback />}>
-          {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
-{tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
-{tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} />}
+          {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
+{tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
+{tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} returnTo={orderDetailReturn} onReturn={() => { const r = orderDetailReturn; setOrderDetailReturn(null); setOrderDetailId(null); if (r?.tab) setTab(r.tab) }} />}
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
-{tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenOrderDetail={(id, action) => { setOrderDetailId(id); if (action) setOrderDetailAction(action); setTab('orders') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
-{tab === 'permitbuilder' && <PermitBuilderTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setTab('orders') }} />}
+{tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenOrderDetail={(id, action) => { setOrderDetailId(id); if (action) setOrderDetailAction(action); setOrderDetailReturn({ label: action === 'design' ? 'Design hub' : 'Jobs', tab: 'jobs' }); setTab('orders') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
+{tab === 'permitbuilder' && <PermitBuilderTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Permit Builder', tab: 'permitbuilder' }); setTab('orders') }} />}
+{tab === 'cemeteries' && <CemeteriesTab />}
 {tab === 'scheduler' && <SchedulerTab user={user} profile={profile} onOpenJob={openJobSmart} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {/* Calendar = the same SchedulerTab component in a Month-default, view-focused
     variant. It reads the SAME work_batches data through the same data layer —
@@ -725,13 +732,13 @@ export default function Stonebooks() {
     Scheduler exactly (ITEM 2). */}
 {tab === 'calendar'  && <SchedulerTab variant="calendar" user={user} profile={profile} onOpenJob={openJobSmart} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {tab === 'email'     && <EmailTab />}
-{tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onOpenJob={openJobSmart} />}
-{tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setTab('orders') }} />}
+{tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={openJobSmart} />}
+{tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
-{tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
+{tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'profit'    && <ProfitTab onOpenJob={openJobSmart} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}
-          {tab === 'reconcile' && <ReconciliationTab onOpenOrder={(id) => { setOrderDetailId(id); setTab('orders') }} />}
+          {tab === 'reconcile' && <ReconciliationTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Reconcile', tab: 'reconcile' }); setTab('orders') }} />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}
           {tab === 'settings'  && <SettingsTab user={user} profile={profile} theme={theme} setTheme={setTheme} onProfileChange={reloadProfile} />}
           </Suspense>

@@ -37,6 +37,7 @@ export default function PermitCanvas({
   onSlotPatch,
   templateMode = false,
   labelFor,             // (box) => small key label shown in template mode
+  allSelected = false,  // "All boxes" mode — every box wears the selected ring
 }) {
   const wrapRef = useRef(null)
   const [cw, setCw] = useState(800)
@@ -190,7 +191,7 @@ export default function PermitCanvas({
 
       {/* Text, fixed-text, and checkmark boxes */}
       {boxes.filter(b => !b.hidden).map(b => {
-        const selected = b.id === selectedId
+        const selected = allSelected || b.id === selectedId
         const editing = b.id === editingId
         const fontPx = Math.max(7, b.sizePct * cw)
         const isCheck = b.kind === 'check'
@@ -235,7 +236,7 @@ export default function PermitCanvas({
             ) : (
               <span className="pmc-box-text">{isFixed && templateMode && !(b.text || '').trim() ? 'Fixed text — double-click to type' : b.text}</span>
             )}
-            {selected && !editing && (
+            {selected && !editing && !allSelected && (
               <div className="pmc-handle" onPointerDown={(e) => beginDrag(e, { kind: 'box-size', id: b.id, o: { x: b.x, y: b.y, w: b.w, h: b.h } })} />
             )}
           </div>
@@ -309,7 +310,10 @@ const localStyles = `
   .pmc-box.on { border-color: #9A7209; background: rgba(154, 114, 9, 0.05); }
   .pmc-box.tpl { background: rgba(83, 74, 183, 0.07); border-color: rgba(83, 74, 183, 0.4); }
   .pmc-box.tpl.on { border-color: #534AB7; background: rgba(83, 74, 183, 0.14); }
-  .pmc-box-key { font-size: 10px; color: #534AB7; font-weight: 600; letter-spacing: 0.02em; }
+  /* Inherits the box's live font size so A-/A+/slider changes are VISIBLE while
+     placing boxes (Paul 2026-07-22: "I want the font in the box to also adjust
+     so I can see exactly how it will look"). */
+  .pmc-box-key { font-size: inherit; color: #534AB7; font-weight: 600; letter-spacing: 0.02em; }
   .pmc-box-text { display: block; }
   .pmc-check { display: flex; align-items: center; justify-content: flex-start; cursor: pointer; }
   .pmc-check-glyph { line-height: 1; font-weight: 700; color: #14161a; }

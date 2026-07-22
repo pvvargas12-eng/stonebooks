@@ -3243,7 +3243,7 @@ export async function markReplyHandled(id, by = null) {
 export async function listAllApprovalLinks() {
   const { data, error } = await supabase
     .from('approval_links')
-    .select('id, order_id, status, expires_at, viewed_at, signed_at, revoked_at, changes_requested_at, created_at, share_url, emailed_at, emailed_to, order:orders(id, order_number, primary_lastname, customer:customers(email))')
+    .select('id, order_id, status, expires_at, viewed_at, signed_at, revoked_at, changes_requested_at, change_notes, created_at, share_url, emailed_at, emailed_to, order:orders(id, order_number, primary_lastname, customer:customers(email))')
     .order('created_at', { ascending: false })
   if (error) { console.warn('[approval] listAllApprovalLinks:', error.message); return [] }
   const now = Date.now()
@@ -3483,6 +3483,60 @@ export async function updateCemeteryPermit(id, patch) {
   const { error } = await supabase.from('cemeteries').update(patch).eq('id', id).eq('tenant_id', TENANT_ID)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+}
+
+// ── CEMETERY MAPS (2026-07-22) — labeled photo pages per cemetery ────────────
+// Some cemeteries run 60+ paper map sheets; these are their photos, labeled,
+// readable on the desktop tab and the phone. Storage rides the public
+// attachments bucket under cemetery-maps/<cemeteryId>/.
+export async function listCemeteryMaps(cemeteryId) {
+  if (!cemeteryId) return []
+  const { data, error } = await supabase.from('cemetery_maps')
+    .select('*').eq('cemetery_id', cemeteryId)
+    .order('sort_order', { ascending: true }).order('created_at', { ascending: true })
+  if (error) { console.warn('[cem] listCemeteryMaps:', error.message); return [] }
+  return data || []
+}
+export async function addCemeteryMap(cemeteryId, file, { label = null, sortOrder = 0, uploadedBy = null } = {}) {
+  if (!cemeteryId || !file) return { ok: false, error: 'Missing cemetery or file' }
+  const safe = String(file.name || 'map.jpg').replace(/[^\w.-]+/g, '_')
+  const path = `cemetery-maps/${cemeteryId}/${Date.now()}-${safe}`
+  const { error: upErr } = await supabase.storage.from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || 'image/jpeg' })
+  if (upErr) return { ok: false, error: upErr.message }
+  const { data: pub } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  const { data, error } = await supabase.from('cemetery_maps').insert({
+    cemetery_id: cemeteryId, image_url: pub.publicUrl, storage_path: path,
+    label: label || null, sort_order: sortOrder, uploaded_by: uploadedBy,
+  }).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, map: data }
+}
+export async function updateCemeteryMap(id, patch) {
+  if (!id) return { ok: false, error: 'Missing map id' }
+  const row = {}
+  if ('label' in patch) row.label = (patch.label || '').trim() || null
+  if ('sortOrder' in patch) row.sort_order = patch.sortOrder
+  const { error } = await supabase.from('cemetery_maps').update(row).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function deleteCemeteryMap(map) {
+  if (!map?.id) return { ok: false, error: 'Missing map' }
+  if (map.storage_path) {
+    await supabase.storage.from('orders-attachments-public').remove([map.storage_path]).catch(() => {})
+  }
+  const { error } = await supabase.from('cemetery_maps').delete().eq('id', map.id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+// Map-page counts for the whole list in one query (the tab's list badges).
+export async function countCemeteryMaps() {
+  const { data, error } = await supabase.from('cemetery_maps').select('cemetery_id')
+  if (error) { console.warn('[cem] countCemeteryMaps:', error.message); return new Map() }
+  const m = new Map()
+  for (const r of (data || [])) m.set(r.cemetery_id, (m.get(r.cemetery_id) || 0) + 1)
+  return m
 }
 
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
@@ -10102,6 +10156,45 @@ export async function getCurrentProofsByJob() {
   const m = new Map()
   for (const r of (data || [])) if (r.job_id) m.set(r.job_id, r)
   return m
+}
+
+// Light one-shot list of CURRENT proofs across BOTH scopes — powers cross-order
+// audits (the reconcile layout catch-up): who has a layout image on file, and
+// whether it's approved. One query, no per-order reads.
+export async function listCurrentProofRefs() {
+  const { data, error } = await supabase
+    .from('proof_versions')
+    .select('id, job_id, order_id, layout_image_url, approved_at')
+    .eq('is_current', true)
+  if (error) { console.warn('[proof] listCurrentProofRefs:', error.message); return [] }
+  return data || []
+}
+
+// job.id ↔ order_id pairs, one query — client-side joining of job-scoped proof
+// rows back to their orders.
+export async function listJobOrderPairs() {
+  const { data, error } = await supabase
+    .from('jobs').select('id, order_id').not('order_id', 'is', null)
+  if (error) { console.warn('[jobs] listJobOrderPairs:', error.message); return [] }
+  return data || []
+}
+
+// Stamp the CURRENT proof approved — the reconcile catch-up path, where the
+// layout being uploaded IS the historically-approved artwork. Prefers the job
+// scope when both ids are given (matches every other proof reader).
+export async function approveCurrentProof({ jobId = null, orderId = null }) {
+  const col = jobId ? 'job_id' : 'order_id'
+  const val = jobId || orderId
+  if (!val) return { ok: false, error: 'Missing id' }
+  const { data, error } = await supabase.from('proof_versions')
+    .select('id, approved_at').eq(col, val).eq('is_current', true)
+    .order('version_number', { ascending: false }).limit(1).maybeSingle()
+  if (error || !data) return { ok: false, error: error?.message || 'No current layout on file.' }
+  if (data.approved_at) return { ok: true, already: true }
+  const { error: upErr } = await supabase.from('proof_versions')
+    .update({ approved_at: new Date().toISOString() }).eq('id', data.id)
+  if (upErr) return { ok: false, error: upErr.message }
+  return { ok: true }
 }
 
 // THE Design-hub state machine — ONE predicate behind every tile, list, task, and

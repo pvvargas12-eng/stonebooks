@@ -30,7 +30,7 @@ import {
   getCurrentStaffName,
   getProofVersionsByOrder, getProofVersions, uploadProofLayout, createProofVersion,
   sendShopEmail, markApprovalLinkEmailed, addShopTask,
-  getJobByOrderId, deriveDesignStatus,
+  getJobByOrderId, deriveDesignStatus, listCurrentProofRefs,
 } from './lib/stonebooksData'
 import { generateEstimatePDF, rowToOrder } from './SalesMode'
 
@@ -79,6 +79,16 @@ const TILES = [
   { code: 'due',           label: 'Layouts due',  tone: 'red' },
   { code: 'revision',      label: 'Need revision', tone: 'amber' },
   { code: 'need_approval', label: 'Need approval', tone: 'neutral' },
+  { code: 'approved',      label: 'Layouts approved', tone: 'green' },
+]
+// Job-type slice — New stone / Bronze / Inscription are separate work streams
+// (Paul, 2026-07-22). Matched on the ORDER's service types so the same chips
+// drive the layouts queue, the estimates tab, and the library.
+const TYPE_CHIPS = [
+  { code: 'all',         label: 'All' },
+  { code: 'new_stone',   label: 'New stone',   svc: ['NEW_STONE'] },
+  { code: 'bronze',      label: 'Bronze',      svc: ['BRONZE', 'BRONZE_MARKER'] },
+  { code: 'inscription', label: 'Inscription', svc: ['INSCRIPTION'] },
 ]
 const SORTS = [
   { code: 'urgency', label: 'Urgency' },
@@ -93,11 +103,17 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
   useEffect(() => { setTodayISO(todayStr()) }, [])
   const nowMs = todayISO ? msFrom(todayISO) : null
 
-  const [tab, setTab] = useState('layouts')        // 'layouts' | 'estimates'
+  const [tab, setTab] = useState('layouts')        // 'layouts' | 'estimates' | 'library'
   const [activeTile, setActiveTile] = useState(null)
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState('urgency')
   const [busyId, setBusyId] = useState(null)
+  const [typeFilter, setTypeFilter] = useState('all')   // TYPE_CHIPS code
+  const typeMatch = useCallback((order) => {
+    if (typeFilter === 'all') return true
+    const chip = TYPE_CHIPS.find(c => c.code === typeFilter)
+    return (order?.service_types || []).some(t => chip?.svc?.includes(t))
+  }, [typeFilter])
 
   // ── ONE state machine → rows (contracted, 4 states) ────────────────────────
   const layoutRows = useMemo(() => {
@@ -296,6 +312,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     } else {
       list = activeTile ? layoutRows.filter(r => r.state === activeTile) : layoutRows.filter(r => r.state !== 'approved')
     }
+    list = list.filter(r => typeMatch(r.order))
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       list = list.filter(r => [familyOf(r.order), customerOf(r.order), r.order?.order_number].filter(Boolean).join(' ').toLowerCase().includes(q))
@@ -308,7 +325,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
           : sortKey === 'status' ? (a, b) => (STATE_ORDER[a.state] - STATE_ORDER[b.state]) || byUrg(a, b)
             : byUrg
     return [...list].sort(cmp)
-  }, [layoutRows, activeTile, approvalFilter, approvalByOrder, search, sortKey])
+  }, [layoutRows, activeTile, approvalFilter, approvalByOrder, search, sortKey, typeMatch])
 
   // Pulse-filter safety net (Paul, 2026-07-20: "changes requested doesn't
   // work"): the pulse COUNTS every order's latest link, but the row list only
@@ -326,12 +343,51 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
   // ── Estimate-layout (lead) rows ────────────────────────────────────────────
   const estimateRows = useMemo(() => {
     let list = (orders || []).filter(o => orderIsEstimateLayout(o) && !o.archived && !o.lost_at)
+    list = list.filter(typeMatch)
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       list = list.filter(o => [familyOf(o), customerOf(o), o.order_number].filter(Boolean).join(' ').toLowerCase().includes(q))
     }
     return list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-  }, [orders, search])
+  }, [orders, search, typeMatch])
+
+  // ── Layout library — the LATEST layout per order, one card each ────────────
+  // (Paul, 2026-07-22: "just the photo library of all the previous layouts…
+  // not 15 versions, just the latest of each order.") is_current rows ARE the
+  // latest per scope; when an order has both scopes the job-scoped one wins.
+  const [libRefs, setLibRefs] = useState(null)
+  useEffect(() => {
+    if (tab !== 'library' || libRefs) return
+    let alive = true
+    listCurrentProofRefs().then(r => { if (alive) setLibRefs(r || []) }).catch(() => { if (alive) setLibRefs([]) })
+    return () => { alive = false }
+  }, [tab, libRefs])
+  const libraryCards = useMemo(() => {
+    if (!libRefs) return null
+    const jobToOrderId = new Map(); const jobById = new Map()
+    for (const j of (jobs || [])) { jobById.set(j.id, j); if (j.order?.id) jobToOrderId.set(j.id, j.order.id) }
+    const orderById = new Map((orders || []).map(o => [o.id, o]))
+    for (const j of (jobs || [])) if (j.order?.id && !orderById.has(j.order.id)) orderById.set(j.order.id, j.order)
+    const byOrder = new Map()
+    for (const ref of libRefs) {
+      if (!ref.layout_image_url) continue
+      const oid = ref.order_id || jobToOrderId.get(ref.job_id)
+      const key = oid || `job:${ref.job_id || ref.id}`
+      const existing = byOrder.get(key)
+      if (existing && existing.ref.job_id && !ref.job_id) continue   // job scope wins
+      byOrder.set(key, {
+        ref,
+        order: oid ? (orderById.get(oid) || null) : null,
+        job: ref.job_id ? (jobById.get(ref.job_id) || { id: ref.job_id }) : null,
+      })
+    }
+    let cards = [...byOrder.values()].filter(c => !c.order || typeMatch(c.order))
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      cards = cards.filter(c => [familyOf(c.order), c.order?.order_number].filter(Boolean).join(' ').toLowerCase().includes(q))
+    }
+    return cards.sort((a, b) => familyOf(a.order).localeCompare(familyOf(b.order)))
+  }, [libRefs, jobs, orders, search, typeMatch])
 
   // ── Actions ────────────────────────────────────────────────────────────────
   const changeStatus = useCallback(async (row, code) => {
@@ -408,6 +464,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
       await setOrderDesignStatus(job.id, 'layout_created').catch(() => {})
     }
     setUploadFor(null); setOrderProof(null)
+    setLibRefs(null)   // library refetches with the new version
     await onReload?.()
   }, [uploadFor, onReload])
   const hasLayout = (orderId) => !!(currentProofOrderIds && currentProofOrderIds.has(orderId))
@@ -452,6 +509,17 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
       <div className="sb-dh2-tabs">
         <button type="button" className={`sb-dh2-tab${tab === 'layouts' ? ' on' : ''}`} onClick={() => setTab('layouts')}>Layouts needed</button>
         <button type="button" className={`sb-dh2-tab${tab === 'estimates' ? ' on' : ''}`} onClick={() => setTab('estimates')}>Estimate layouts</button>
+        <button type="button" className={`sb-dh2-tab${tab === 'library' ? ' on' : ''}`} onClick={() => setTab('library')}>Layout library</button>
+      </div>
+
+      {/* TYPE SLICE — the three design streams are separate work */}
+      <div className="sb-dh2-typechips">
+        {TYPE_CHIPS.map(c => (
+          <button key={c.code} type="button" className={`sb-dh2-typechip${typeFilter === c.code ? ' on' : ''}`}
+            onClick={() => setTypeFilter(c.code)}>
+            {c.label}
+          </button>
+        ))}
       </div>
 
       {tab === 'layouts' ? (
@@ -610,7 +678,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     Order design
                   </button>
                   <select
-                    className="sb-dh2-statusbox"
+                    className={`sb-dh2-statusbox sb-dh2-st-${r.state}`}
                     value={r.state}
                     disabled={busyId === r.job.id}
                     onClick={e => e.stopPropagation()}
@@ -618,9 +686,15 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                   >
                     {STATUS_BOX.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
                   </select>
-                  {r.state === 'revision' && changeNotes[r.job.id] && (
-                    <span className="sb-dh2-changenote">“{changeNotes[r.job.id]}”</span>
-                  )}
+                  {(() => {
+                    // The customer's words, readable right on the row: the
+                    // revision-milestone note first, else the latest approval
+                    // link's changes-requested note.
+                    const l = approvalByOrder[r.order?.id]
+                    const linkNote = l && (l.displayStatus || l.status) === 'changes_requested' ? l.change_notes : null
+                    const note = (r.state === 'revision' && changeNotes[r.job.id]) || linkNote
+                    return note ? <span className="sb-dh2-changenote">“{note}”</span> : null
+                  })()}
                 </div>
               ))}
             </div>
@@ -634,18 +708,23 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                 In this approval state, outside the layout queue:
               </div>
               <div className="sb-dh2-rows">
-                {pulseExtraRows.map(o => (
-                  <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id, 'design') }} role="button" tabIndex={0}>
-                    <span className="sb-dh2-fam">{familyOf(o)}</span>
-                    <span className="sb-dh2-est-meta">{o.order_number || (o.signed_at ? '—' : 'Lead / estimate')}</span>
-                    {approvalBadge(o.id)}
-                    <span className="sb-dh2-row-spacer" />
-                    <button type="button" className="sb-dh2-createbtn"
-                      onClick={e => { e.stopPropagation(); rememberScroll(); onOpenOrder?.(o.id, 'design') }}>
-                      Open order
-                    </button>
-                  </div>
-                ))}
+                {pulseExtraRows.map(o => {
+                  const l = approvalByOrder[o.id]
+                  const linkNote = l && (l.displayStatus || l.status) === 'changes_requested' ? l.change_notes : null
+                  return (
+                    <div key={o.id} className="sb-dh2-row" onClick={() => { rememberScroll(); onOpenOrder?.(o.id, 'design') }} role="button" tabIndex={0}>
+                      <span className="sb-dh2-fam">{familyOf(o)}</span>
+                      <span className="sb-dh2-est-meta">{o.order_number || (o.signed_at ? '—' : 'Lead / estimate')}</span>
+                      {approvalBadge(o.id)}
+                      <span className="sb-dh2-row-spacer" />
+                      <button type="button" className="sb-dh2-createbtn"
+                        onClick={e => { e.stopPropagation(); rememberScroll(); onOpenOrder?.(o.id, 'design') }}>
+                        Open order
+                      </button>
+                      {linkNote && <span className="sb-dh2-changenote">“{linkNote}”</span>}
+                    </div>
+                  )
+                })}
               </div>
             </>
           )}
@@ -674,7 +753,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             </>
           )}
         </>
-      ) : (
+      ) : tab === 'estimates' ? (
         /* ── ESTIMATE LAYOUTS (leads) ─────────────────────────────────────── */
         <>
           <div className="sb-dh2-toolbar">
@@ -696,6 +775,34 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     {hasLayout(o.id) ? 'View / update layout' : 'Create estimate layout'}
                   </button>
                 </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        /* ── LAYOUT LIBRARY — the latest layout per order, one card each ──── */
+        <>
+          <div className="sb-dh2-toolbar">
+            <input className="sb-dh2-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search the layout library — family or order #…" />
+            <span className="sb-dh2-estcount">{libraryCards ? `${libraryCards.length} layout${libraryCards.length === 1 ? '' : 's'}` : 'Loading…'}</span>
+          </div>
+          {!libraryCards ? (
+            <div className="sb-dh2-empty">Pulling every current layout…</div>
+          ) : libraryCards.length === 0 ? (
+            <div className="sb-dh2-empty">No layouts on file{typeFilter !== 'all' || search.trim() ? ' for this filter' : ' yet'}.</div>
+          ) : (
+            <div className="sb-dh2-libgrid">
+              {libraryCards.map(c => (
+                <button key={c.ref.id} type="button" className="sb-dh2-libcard"
+                  onClick={() => { if (c.order) openUploader(c.order, c.job) }}
+                  title={c.order ? 'Open — view full size, download, upload a new version' : 'No order record found for this layout'}>
+                  <img src={c.ref.layout_image_url} alt="" loading="lazy" />
+                  <span className="sb-dh2-libname">{familyOf(c.order)}</span>
+                  <span className="sb-dh2-libmeta">
+                    {c.order?.order_number || '—'}
+                    {c.ref.approved_at ? ' · approved' : ''}
+                  </span>
+                </button>
               ))}
             </div>
           )}
@@ -802,6 +909,11 @@ const CSS = `
   .sb-dh2-tile-red { border-left-color: #b54040; }
   .sb-dh2-tile-amber { border-left-color: #b8842a; background: #fdfaf2; }
   .sb-dh2-tile-neutral { border-left-color: #9aa0a6; }
+  .sb-dh2-tile-green { border-left-color: #1d7a55; }
+
+  .sb-dh2-typechips { display: flex; gap: 6px; flex-wrap: wrap; margin: -8px 0 16px; }
+  .sb-dh2-typechip { font: inherit; font-size: 12.5px; font-weight: 600; border: 1px solid #ddd6c6; background: #fff; border-radius: 999px; padding: 5px 14px; cursor: pointer; color: #6b6256; }
+  .sb-dh2-typechip.on { background: #9A7209; border-color: #9A7209; color: #fff; }
   .sb-dh2-tile-num { font-size: 32px; font-weight: 700; color: #1e2d3d; line-height: 1; font-variant-numeric: tabular-nums; }
   .sb-dh2-tile-lab { font-size: 13px; font-weight: 600; color: #6a6a62; }
 
@@ -896,8 +1008,19 @@ const CSS = `
   .sb-dh2-modal-uplabel .sb-dh2-createbtn { display: block; text-align: center; padding: 10px; }
   .sb-dh2-modal-cancel { width: 100%; font: inherit; font-size: 13px; font-weight: 600; padding: 9px; border-radius: 8px; border: 0.5px solid #d8d2c4; background: #fff; color: #6a6a62; cursor: pointer; }
   .sb-dh2-modal-cancel:disabled { opacity: .5; }
-  .sb-dh2-statusbox { font: inherit; font-size: 13px; padding: 6px 10px; border: 0.5px solid #d8d2c4; border-radius: 8px; background: #fff; color: #2a2a2a; cursor: pointer; min-width: 150px; }
+  .sb-dh2-statusbox { font: inherit; font-size: 13px; padding: 6px 10px; border: 1.5px solid #d8d2c4; border-radius: 8px; background: #fff; color: #2a2a2a; cursor: pointer; min-width: 150px; font-weight: 700; }
   .sb-dh2-statusbox:disabled { opacity: .5; }
+  .sb-dh2-st-due { border-color: #b54040; color: #b3261e; background: #fdf2f1; }
+  .sb-dh2-st-revision { border-color: #b8842a; color: #8b6418; background: #fdf7ec; }
+  .sb-dh2-st-need_approval { border-color: #1d6fa8; color: #1d6fa8; background: #f0f6fb; }
+  .sb-dh2-st-approved { border-color: #1d7a55; color: #1d7a55; background: #f0f8f4; }
+
+  .sb-dh2-libgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+  .sb-dh2-libcard { font: inherit; cursor: pointer; text-align: left; background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 4px; transition: box-shadow .12s; }
+  .sb-dh2-libcard:hover { box-shadow: 0 4px 14px rgba(15,20,25,.1); }
+  .sb-dh2-libcard img { width: 100%; height: 150px; object-fit: contain; background: #faf8f4; border-radius: 8px; }
+  .sb-dh2-libname { font-size: 13.5px; font-weight: 700; color: #1e2d3d; }
+  .sb-dh2-libmeta { font-size: 11.5px; color: #8a8a85; font-variant-numeric: tabular-nums; }
   .sb-dh2-est-meta { font-size: 12.5px; color: #8a8a85; font-variant-numeric: tabular-nums; }
   .sb-dh2-createbtn { font: inherit; font-size: 12.5px; font-weight: 600; border-radius: 7px; cursor: pointer; padding: 6px 12px; border: 0.5px solid #9A7209; background: #9A7209; color: #fff; }
   .sb-dh2-empty { padding: 40px 16px; text-align: center; color: #8a8a85; font-size: 14px; background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 12px; font-style: italic; }

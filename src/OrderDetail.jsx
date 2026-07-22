@@ -324,7 +324,7 @@ function SectionRail({ items }) {
 // =============================================================================
 // MAIN
 // =============================================================================
-export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer, onOpenHub, initialAction = null, onConsumeInitialAction }) {
+export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer, onOpenHub, initialAction = null, onConsumeInitialAction }) {
   const [order, setOrder] = useState(null)
   const [job, setJob] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -1681,14 +1681,14 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   if (loading) {
     return (
       <div className="sb-od-page"><style>{OD_CSS}</style>
-        <div className="sb-od-container"><BackBar onBack={onBack} /><div className="sb-od-empty">Loading order…</div></div>
+        <div className="sb-od-container"><BackBar onBack={onBack} label={backLabel} /><div className="sb-od-empty">Loading order…</div></div>
       </div>
     )
   }
   if (err || !order) {
     return (
       <div className="sb-od-page"><style>{OD_CSS}</style>
-        <div className="sb-od-container"><BackBar onBack={onBack} /><div className="sb-od-empty">{err || 'Order not found.'}</div></div>
+        <div className="sb-od-container"><BackBar onBack={onBack} label={backLabel} /><div className="sb-od-empty">{err || 'Order not found.'}</div></div>
       </div>
     )
   }
@@ -1953,7 +1953,7 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
     <div className="sb-od-page">
       <style>{OD_CSS}</style>
       <div className="sb-od-container">
-        <BackBar onBack={onBack} />
+        <BackBar onBack={onBack} label={backLabel} />
 
         {/* ── HEADER (always visible) ─────────────────────────────────────── */}
         <header className="sb-od-header">
@@ -3461,9 +3461,9 @@ export default function OrderDetail({ orderId, onBack, onEditInSales, onEditInSa
   )
 }
 
-function BackBar({ onBack }) {
+function BackBar({ onBack, label = 'Orders' }) {
   return (
-    <button type="button" className="sb-od-back" onClick={onBack}>← Orders</button>
+    <button type="button" className="sb-od-back" onClick={onBack}>← {label}</button>
   )
 }
 

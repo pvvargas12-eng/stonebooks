@@ -34,6 +34,22 @@ const _todayISO = () => {
 }
 const rid = () => Math.random().toString(36).slice(2, 9)
 const AUTOFILL_LABEL = new Map(AUTOFILL_FIELDS.map(f => [f.key, f.label]))
+const clampSize = (v) => Math.min(0.06, Math.max(0.008, v))
+
+// Shared font-size control cluster — steppers + number + a SLIDER (Paul
+// 2026-07-22: "easier to change the font size"). `value` is sizePct×1000.
+function SizeControls({ value, onDelta, onSet }) {
+  return (
+    <>
+      <button type="button" className="pbt-btn" onClick={() => onDelta(-0.002)}>A−</button>
+      <input type="number" className="pbt-input pbt-sizein" min={8} max={60} value={value}
+        onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) onSet(clampSize(v / 1000)) }} />
+      <button type="button" className="pbt-btn" onClick={() => onDelta(0.002)}>A+</button>
+      <input type="range" className="pbt-sizeslider" min={8} max={60} step={1} value={value}
+        onChange={e => onSet(clampSize(Number(e.target.value) / 1000))} />
+    </>
+  )
+}
 
 export default function PermitBuilderTab({ onOpenOrderDetail }) {
   const [view, setView] = useState({ name: 'home' })
@@ -313,6 +329,7 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
   const [cemId, setCemId] = useState('')
   const [page, setPage] = useState(0)
   const [sel, setSel] = useState(null)
+  const [selAll, setSelAll] = useState(false)   // one size for every box at once
   const [slotSel, setSlotSel] = useState(false)
   const [busy, setBusy] = useState(false)
   const [delOpen, setDelOpen] = useState(false)
@@ -357,6 +374,10 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
 
   const selField = fields.find(f => f.id === sel) || null
   const patchField = (fid, patch) => setFields(prev => prev.map(f => f.id === fid ? { ...f, ...patch } : f))
+  // "All boxes" sizing — every text/fixed box on every page (checks size by w/h).
+  const sizeAllFields = (fn) => setFields(prev =>
+    prev.map(f => f.kind === 'check' ? f : ({ ...f, sizePct: clampSize(fn(f.sizePct || 0.016)) })))
+  const allSizeValue = Math.round(((fields.find(f => (f.kind || 'text') !== 'check')?.sizePct) || 0.016) * 1000)
 
   // PB-3: three field kinds — autofill text, fixed text (never changes),
   // and checkmark spots (click toggles on the permit).
@@ -441,9 +462,25 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
               if (slot?.page === page) { setSlot(null); setSlotSel(false) }
               else { setSlot({ page, x: 0.1, y: 0.55, w: 0.8, h: 0.33 }); setSlotSel(true) }
             }}>{slot?.page === page ? 'Remove layout area' : '+ Layout area'}</button>
+            {fields.length > 0 && (
+              <button type="button" className={`pbt-btn ${selAll ? 'pbt-btn-on' : ''}`}
+                onClick={() => { setSelAll(v => !v); setSel(null) }}>
+                All boxes
+              </button>
+            )}
           </>
         )}
       </div>
+
+      {selAll && !selField && (
+        <div className="pbt-toolbar">
+          <span className="pbt-tool-label">All boxes — one font size everywhere</span>
+          <SizeControls value={allSizeValue}
+            onDelta={(d) => sizeAllFields(s => s + d)}
+            onSet={(v) => sizeAllFields(() => v)} />
+          <span className="pbt-hint" style={{ marginTop: 0 }}>Every text box on every page. Click a box to size just that one.</span>
+        </div>
+      )}
 
       {selField && (
         <div className="pbt-toolbar">
@@ -462,11 +499,9 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
             </>
           ) : (
             <>
-              <button type="button" className="pbt-btn" onClick={() => patchField(selField.id, { sizePct: Math.max(0.008, (selField.sizePct || 0.016) - 0.002) })}>A−</button>
-              <input type="number" className="pbt-input pbt-sizein" min={8} max={60}
-                value={Math.round((selField.sizePct || 0.016) * 1000)}
-                onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) patchField(selField.id, { sizePct: Math.min(0.06, Math.max(0.008, v / 1000)) }) }} />
-              <button type="button" className="pbt-btn" onClick={() => patchField(selField.id, { sizePct: Math.min(0.06, (selField.sizePct || 0.016) + 0.002) })}>A+</button>
+              <SizeControls value={Math.round((selField.sizePct || 0.016) * 1000)}
+                onDelta={(d) => patchField(selField.id, { sizePct: clampSize((selField.sizePct || 0.016) + d) })}
+                onSet={(v) => patchField(selField.id, { sizePct: v })} />
               <button type="button" className={`pbt-btn ${selField.align === 'center' ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { align: selField.align === 'center' ? 'left' : 'center' })}>Center</button>
               <button type="button" className={`pbt-btn ${selField.bold ? 'pbt-btn-on' : ''}`} onClick={() => patchField(selField.id, { bold: !selField.bold })}>Bold</button>
             </>
@@ -492,7 +527,7 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
               mark: f.mark || 'check', hidden: false,
             }))}
             selectedId={sel}
-            onSelect={setSel}
+            onSelect={(v) => { setSel(v); if (v) setSelAll(false) }}
             onBoxPatch={patchField}
             slot={slot?.page === page ? slot : null}
             slotSelected={slotSel}
@@ -500,6 +535,7 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
             onSlotPatch={(s) => setSlot({ ...s, page })}
             templateMode
             labelFor={(b) => AUTOFILL_LABEL.get(b.key) || b.key}
+            allSelected={selAll}
           />
         </div>
       )}
@@ -514,6 +550,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   const [data, setData] = useState(null)
   const [page, setPage] = useState(0)          // number | 'back'
   const [sel, setSel] = useState(null)
+  const [selAll, setSelAll] = useState(false)  // one size for every box at once
   const [selDim, setSelDim] = useState(null)
   const [laySel, setLaySel] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -589,6 +626,28 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     : null
   const selIsField = sel ? fieldIds.has(sel) : false
 
+  // "All boxes" sizing — template-field overrides + extras together (checks
+  // size by their w/h, skipped).
+  const sizeAllBoxes = (fn) => {
+    setData(prev => {
+      const values = { ...(prev.values || {}) }
+      for (const f of fields) {
+        if ((f.kind || 'text') === 'check') continue
+        const cur = effectiveBox(f, values[f.id]).sizePct || 0.016
+        values[f.id] = { ...(values[f.id] || {}), sizePct: clampSize(fn(cur)) }
+      }
+      const extras = (prev.extras || []).map(ex =>
+        ex.kind === 'check' ? ex : ({ ...ex, sizePct: clampSize(fn(ex.sizePct || 0.016)) }))
+      return { ...prev, values, extras }
+    })
+  }
+  const allSizeValue = (() => {
+    const f = fields.find(x => (x.kind || 'text') !== 'check')
+    const cur = f ? (effectiveBox(f, data?.values?.[f.id]).sizePct || 0.016)
+      : ((data?.extras || []).find(e => e.kind !== 'check')?.sizePct || 0.016)
+    return Math.round(cur * 1000)
+  })()
+
   const addText = () => {
     const ex = { id: `x-${rid()}`, page, text: 'Text', x: 0.08, y: 0.08, w: 0.3, h: 0.028, sizePct: 0.016, align: 'left', bold: false }
     setData(prev => ({ ...prev, extras: [...(prev.extras || []), ex] }))
@@ -631,6 +690,24 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
       await setOrderPermit(order.id, { [MISSING_ORDER_WRITEBACK[m.key]]: v })
       setMissBusy(false)
     }
+  }
+  // Custom text boxes fill from the SAME top panel (Paul 2026-07-22): numbered
+  // "Custom text 1..N" reading top-to-bottom, left-to-right across the pages.
+  // The number lives ONLY here — the canvas never shows it. Numbering runs over
+  // ALL custom boxes (stable as you fill); only the still-empty ones list.
+  const customPending = useMemo(() => {
+    if (!template || !data) return []
+    const all = fields
+      .filter(f => (f.kind || 'text') === 'text' && f.key === 'custom')
+      .sort((a, b) => (a.page - b.page) || (a.y - b.y) || (a.x - b.x))
+    return all.map((f, i) => ({ f, n: i + 1 }))
+      .filter(({ f }) => !String(data.values?.[f.id]?.text ?? '').trim())
+  }, [template, data, fields])
+  const fillCustom = (f) => {
+    const v = (missDraft[`c:${f.id}`] || '').trim()
+    if (!v) return
+    setData(prev => ({ ...prev, values: { ...prev.values, [f.id]: { ...(prev.values?.[f.id] || {}), text: v } } }))
+    setMissDraft(prev => ({ ...prev, [`c:${f.id}`]: '' }))
   }
 
   // ── layout ────────────────────────────────────────────────────────────────
@@ -803,10 +880,10 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
         />
       )}
 
-      {missing.length > 0 && !missHidden && (
+      {(missing.length > 0 || customPending.length > 0) && !missHidden && (
         <div className="pbt-missing">
           <div className="pbt-missing-head">
-            <span className="pbt-missing-title">Needed for this permit — the order doesn't know these yet</span>
+            <span className="pbt-missing-title">Needed for this permit — fill it here, it lands in the right box</span>
             <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => setMissHidden(true)}>Hide</button>
           </div>
           <div className="pbt-missing-rows">
@@ -821,8 +898,19 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
                   onClick={() => fillMissing(m)}>Fill</button>
               </div>
             ))}
+            {customPending.map(({ f, n }) => (
+              <div key={f.id} className="pbt-missing-row">
+                <span className="pbt-missing-label">Custom text {n}</span>
+                <input type="text" className="pbt-input" style={{ maxWidth: 220 }}
+                  value={missDraft[`c:${f.id}`] || ''}
+                  onChange={e => setMissDraft(prev => ({ ...prev, [`c:${f.id}`]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') fillCustom(f) }} />
+                <button type="button" className="pbt-btn" disabled={!(missDraft[`c:${f.id}`] || '').trim()}
+                  onClick={() => fillCustom(f)}>Fill</button>
+              </div>
+            ))}
           </div>
-          <div className="pbt-rail-hint">Section / lot / grave answers also save back to the order, so it knows next time.</div>
+          <div className="pbt-rail-hint">Custom text counts top to bottom, left to right. Section / lot / grave answers also save back to the order, so it knows next time.</div>
         </div>
       )}
 
@@ -849,7 +937,23 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
             {!layout
               ? <button type="button" className="pbt-btn" onClick={openPicker}>Insert layout</button>
               : <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { setData(prev => ({ ...prev, layout: null })); setLaySel(false) }}>Remove layout</button>}
+            {(fields.length > 0 || (data?.extras || []).length > 0) && (
+              <button type="button" className={`pbt-btn ${selAll ? 'pbt-btn-on' : ''}`}
+                onClick={() => { setSelAll(v => !v); setSel(null); setSelDim(null); setLaySel(false) }}>
+                All boxes
+              </button>
+            )}
           </div>
+
+          {selAll && !selBox && (
+            <div className="pbt-toolbar">
+              <span className="pbt-tool-label">All boxes — one font size everywhere</span>
+              <SizeControls value={allSizeValue}
+                onDelta={(d) => sizeAllBoxes(s => s + d)}
+                onSet={(v) => sizeAllBoxes(() => v)} />
+              <span className="pbt-hint" style={{ marginTop: 0 }}>Every box on every page. Click a box to size just that one.</span>
+            </div>
+          )}
 
           {selBox && (
             <div className="pbt-toolbar">
@@ -862,11 +966,9 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
                 </>
               ) : (
                 <>
-                  <button type="button" className="pbt-btn" onClick={() => patchBox(sel, { sizePct: Math.max(0.008, (selBox.sizePct || 0.016) - 0.002) })}>A−</button>
-                  <input type="number" className="pbt-input pbt-sizein" min={8} max={60}
-                    value={Math.round((selBox.sizePct || 0.016) * 1000)}
-                    onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) patchBox(sel, { sizePct: Math.min(0.06, Math.max(0.008, v / 1000)) }) }} />
-                  <button type="button" className="pbt-btn" onClick={() => patchBox(sel, { sizePct: Math.min(0.06, (selBox.sizePct || 0.016) + 0.002) })}>A+</button>
+                  <SizeControls value={Math.round((selBox.sizePct || 0.016) * 1000)}
+                    onDelta={(d) => patchBox(sel, { sizePct: clampSize((selBox.sizePct || 0.016) + d) })}
+                    onSet={(v) => patchBox(sel, { sizePct: v })} />
                   <button type="button" className={`pbt-btn ${selBox.align === 'center' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { align: selBox.align === 'center' ? 'left' : 'center' })}>Center</button>
                   <button type="button" className={`pbt-btn ${selBox.bold ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { bold: !selBox.bold })}>Bold</button>
                 </>
@@ -923,7 +1025,8 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
                   page={currentPageObj}
                   boxes={boxesForPage(page)}
                   selectedId={sel}
-                  onSelect={(v) => { setSel(v); if (v) { setSelDim(null); setLaySel(false) } }}
+                  allSelected={selAll}
+                  onSelect={(v) => { setSel(v); if (v) { setSelDim(null); setLaySel(false); setSelAll(false) } }}
                   onBoxPatch={patchBox}
                   dims={(data?.dims || []).filter(d => d.page === page)}
                   selectedDimId={selDim}
@@ -1341,6 +1444,7 @@ const localStyles = `
   }
   .pbt-toolbar .pbt-input { width: auto; }
   .pbt-sizein { max-width: 64px; text-align: center; }
+  .pbt-sizeslider { width: 170px; accent-color: #9A7209; cursor: pointer; }
   .pbt-missing {
     background: #FDF6E3; border: 0.5px solid #BA7517; border-radius: 9px; padding: 11px 14px;
   }

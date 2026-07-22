@@ -248,7 +248,8 @@ function StatusLadder({ title, options, current, onSet, busy }) {
 
 // GPS + note + optional photo → orders.field_location (+ photo also lands in
 // the order's general attachments so the office sees it on the desktop).
-function MarkSpotForm({ order, onSaved, onCancel, undo }) {
+// Exported: the Cemeteries screen reuses it to mark a grave on any open order.
+export function MarkSpotForm({ order, onSaved, onCancel, undo }) {
   const [note, setNote] = useState(order.field_location?.note || '')
   const [gps, setGps] = useState(null)      // {lat,lng,accuracy} | 'error' | null=asking
   const [file, setFile] = useState(null)

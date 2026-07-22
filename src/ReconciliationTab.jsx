@@ -11,8 +11,12 @@
 // (contracted / in_production / installed / paid_in_full), archived=false. Leads
 // (draft/scoping/quoted) and terminal (closed/cancelled) are never in this set.
 // =============================================================================
-import { useState, useEffect, useMemo } from 'react'
-import { listAllOrders, closeOrder, bulkCloseOrders, setOrderFamilyName } from './lib/stonebooksData'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import {
+  listAllOrders, closeOrder, bulkCloseOrders, setOrderFamilyName, hardDeleteOrder,
+  listCurrentProofRefs, listJobOrderPairs, uploadProofLayout, createProofVersion,
+  approveCurrentProof, setOrderDesignStatus, getCurrentStaffName,
+} from './lib/stonebooksData'
 import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
 
@@ -34,6 +38,8 @@ export default function ReconciliationTab({ onOpenOrder }) {
   const [orders, setOrders] = useState([])
   const [decisions, setDecisions] = useState({})   // orderId -> 'keep' | 'close' | 'reviewed' (LOCAL only)
   const [closing, setClosing] = useState({})       // orderId -> 'busy' | 'done' | 'error' (actual DB close)
+  const [deleting, setDeleting] = useState({})     // orderId -> 'busy' | 'done' | 'error' (hard delete)
+  const [layoutCount, setLayoutCount] = useState(null)   // catch-up card number
   const [execText, setExecText] = useState('')
   const [executing, setExecuting] = useState(false)
   const [execMsg, setExecMsg] = useState(null)
@@ -65,6 +71,25 @@ export default function ReconciliationTab({ onOpenOrder }) {
     setClosing(s => ({ ...s, [orderId]: 'busy' }))
     const res = await closeOrder(orderId)
     setClosing(s => ({ ...s, [orderId]: res.ok ? 'done' : 'error' }))
+  }
+
+  // PERMANENT delete — wipe the order from Stonebooks entirely (Paul
+  // 2026-07-22: "no mercy, my worker understands that"). Typed-DELETE gate,
+  // then hardDeleteOrder clears jobs/proofs/ledger children and the row.
+  const doDelete = async (r) => {
+    const id = r.orderId
+    if (deleting[id] === 'busy' || deleting[id] === 'done') return
+    const typed = window.prompt(
+      `This permanently WIPES ${r.orderNumber || 'this order'} (${r.surnameRaw || 'no surname'}) from Stonebooks — the order, its jobs, proofs, and activity. There is no undo.\n\nType DELETE to confirm.`)
+    if (typed !== 'DELETE') return
+    setDeleting(s => ({ ...s, [id]: 'busy' }))
+    const res = await hardDeleteOrder(id)
+    if (!res.ok) {
+      setDeleting(s => ({ ...s, [id]: 'error' }))
+      window.alert(res.error || 'Delete failed.')
+      return
+    }
+    setDeleting(s => ({ ...s, [id]: 'done' }))
   }
 
   // Bulk close every row still marked 'close' (typed-confirmation gated).
@@ -111,7 +136,12 @@ export default function ReconciliationTab({ onOpenOrder }) {
         <Card label="Unmatched schedule" value={c.unmatchedSchedule} tone="neutral" sub="jobs with no open order" />
         <Card label="Surname backfill" value={backfillNeeded} tone="info" sub="blank primary_lastname → customer.last_name" />
         <Card label="Needs family name" value={result.rows.filter(r => r.surnameSource !== 'order').length} tone="warn" sub="no family name on the order — fix below" />
+        <Card label="Missing layouts" value={layoutCount ?? '…'} tone="red" sub="bronze + new stone, no approved layout" />
       </div>
+
+      {/* Layout catch-up (Paul, 2026-07-22): every active bronze / new-stone
+          order with no APPROVED layout on file — upload it right here. */}
+      {!loading && <LayoutCatchUp orders={orders} onOpenOrder={onOpenOrder} onCount={setLayoutCount} />}
 
       {/* Needs family name — rapid fix workbench (Paul, 2026-07-08) */}
       {!loading && <NeedsFamilyName rows={result.rows.filter(r => r.surnameSource !== 'order')} orders={orders} onOpenOrder={onOpenOrder} />}
@@ -119,10 +149,10 @@ export default function ReconciliationTab({ onOpenOrder }) {
       {/* Buckets */}
       {!loading && (
         <>
-          <Bucket meta={BUCKET_META.closeCandidate} rows={byBucket('closeCandidate')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} onOpenOrder={onOpenOrder} bulk={(d) => {
+          <Bucket meta={BUCKET_META.closeCandidate} rows={byBucket('closeCandidate')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} deleting={deleting} doDelete={doDelete} onOpenOrder={onOpenOrder} bulk={(d) => {
             setDecisions(prev => { const n = { ...prev }; for (const r of byBucket('closeCandidate')) n[r.orderId] = d; return n })
           }} />
-          <Bucket meta={BUCKET_META.review} rows={byBucket('review')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} onOpenOrder={onOpenOrder} />
+          <Bucket meta={BUCKET_META.review} rows={byBucket('review')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} deleting={deleting} doDelete={doDelete} onOpenOrder={onOpenOrder} />
           <Bucket meta={BUCKET_META.confirmed} rows={byBucket('confirmed')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} onOpenOrder={onOpenOrder} />
 
           {/* Unmatched schedule jobs */}
@@ -160,6 +190,145 @@ export default function ReconciliationTab({ onOpenOrder }) {
         </>
       )}
     </div>
+  )
+}
+
+// ── Layout catch-up (Paul, 2026-07-22) ──────────────────────────────────────
+// Every ACTIVE (non-lead open) bronze / new-stone order with no APPROVED
+// layout on file — the records backlog. Upload the layout right on the row:
+// it lands as the next proof version, gets stamped approved (this IS the
+// historically-approved artwork), bumps the design milestone when a job
+// exists, and the row drops off. Bronze + new stone only, per Paul.
+const LAYOUT_CATCHUP_TYPES = new Set(['NEW_STONE', 'BRONZE', 'BRONZE_MARKER'])
+function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
+  const [refs, setRefs] = useState(null)              // current proof refs
+  const [jobByOrder, setJobByOrder] = useState(null)  // order_id -> job id
+  const [busyId, setBusyId] = useState(null)
+  const [doneIds, setDoneIds] = useState(() => new Set())
+  const [errById, setErrById] = useState({})
+  const [open, setOpen] = useState(true)
+  const fileRef = useRef(null)
+  const uploadForRef = useRef(null)
+
+  useEffect(() => {
+    let alive = true
+    Promise.all([listCurrentProofRefs(), listJobOrderPairs()]).then(([p, j]) => {
+      if (!alive) return
+      setRefs(p || [])
+      setJobByOrder(new Map((j || []).map(x => [x.order_id, x.id])))
+    }).catch(() => { if (alive) { setRefs([]); setJobByOrder(new Map()) } })
+    return () => { alive = false }
+  }, [])
+
+  const layoutState = useMemo(() => {
+    if (!refs || !jobByOrder) return null
+    const jobToOrder = new Map()
+    for (const [oid, jid] of jobByOrder) jobToOrder.set(jid, oid)
+    const has = new Set(), approved = new Set()
+    for (const r of refs) {
+      if (!r.layout_image_url) continue
+      const oid = r.order_id || jobToOrder.get(r.job_id)
+      if (!oid) continue
+      has.add(oid)
+      if (r.approved_at) approved.add(oid)
+    }
+    return { has, approved }
+  }, [refs, jobByOrder])
+
+  const rows = useMemo(() => {
+    if (!layoutState) return null
+    return (orders || [])
+      .filter(o => (o.service_types || []).some(t => LAYOUT_CATCHUP_TYPES.has(t)))
+      .filter(o => !layoutState.approved.has(o.id) && !doneIds.has(o.id))
+      .map(o => ({ o, hasLayout: layoutState.has.has(o.id) }))
+      .sort((a, b) => a.hasLayout === b.hasLayout
+        ? String(a.o.primary_lastname || 'zz').localeCompare(String(b.o.primary_lastname || 'zz'))
+        : (a.hasLayout ? 1 : -1))
+  }, [orders, layoutState, doneIds])
+
+  useEffect(() => { if (rows) onCount?.(rows.length) }, [rows, onCount])
+
+  const finishApprove = async (o) => {
+    const jobId = jobByOrder?.get(o.id) || null
+    const ap = await approveCurrentProof(jobId ? { jobId } : { orderId: o.id })
+    if (!ap.ok) return ap
+    if (jobId) await setOrderDesignStatus(jobId, 'layout_approved').catch(() => {})
+    return { ok: true }
+  }
+  const markApproved = async (o) => {
+    if (busyId) return
+    setBusyId(o.id); setErrById(e => ({ ...e, [o.id]: null }))
+    const r = await finishApprove(o)
+    setBusyId(null)
+    if (!r.ok) { setErrById(e => ({ ...e, [o.id]: r.error })); return }
+    setDoneIds(prev => new Set(prev).add(o.id))
+  }
+  const onPick = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    const o = uploadForRef.current
+    uploadForRef.current = null
+    if (!file || !o) return
+    setBusyId(o.id); setErrById(er => ({ ...er, [o.id]: null }))
+    const jobId = jobByOrder?.get(o.id) || null
+    const up = await uploadProofLayout(jobId || o.id, file, { scope: jobId ? 'job' : 'order' })
+    if (!up.ok) { setBusyId(null); setErrById(er => ({ ...er, [o.id]: up.error })); return }
+    const me = await getCurrentStaffName().catch(() => null)
+    const { error } = await createProofVersion(jobId
+      ? { jobId, layoutImageUrl: up.url, uploadedBy: me }
+      : { orderId: o.id, layoutImageUrl: up.url, uploadedBy: me })
+    if (error) { setBusyId(null); setErrById(er => ({ ...er, [o.id]: error.message })); return }
+    const r = await finishApprove(o)
+    setBusyId(null)
+    if (!r.ok) { setErrById(er => ({ ...er, [o.id]: r.error })); return }
+    setDoneIds(prev => new Set(prev).add(o.id))
+  }
+
+  if (!rows) return <section className="sb-recon-bucket sb-recon-lay"><div className="sb-recon-bucket-hint">Checking layouts on file…</div></section>
+  if (rows.length === 0) return null
+  return (
+    <section className="sb-recon-bucket sb-recon-lay">
+      <div className="sb-recon-bucket-head" onClick={() => setOpen(v => !v)} style={{ cursor: 'pointer' }}>
+        <span className="sb-recon-dot red" /> <strong>Layout catch-up</strong> <span className="sb-recon-n">{rows.length}</span>
+        <span className="sb-recon-toggle">{open ? '▾' : '▸'}</span>
+      </div>
+      <div className="sb-recon-bucket-hint">
+        Active bronze and new-stone orders with no APPROVED layout on file. Upload the layout here — it saves as the proof, marks approved, and the row drops off.
+      </div>
+      <input ref={fileRef} type="file" accept="image/jpeg,image/png" style={{ display: 'none' }} onChange={onPick} />
+      {open && (
+        <div className="sb-recon-fam-list">
+          {rows.map(({ o, hasLayout }) => {
+            const custFull = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
+            return (
+              <div key={o.id} className="sb-recon-fam-row">
+                <strong className="sb-recon-lay-fam">{o.primary_lastname || custFull || '—'}</strong>
+                <span className="sb-recon-fam-meta">
+                  <strong>{o.order_number || 'DRAFT'}</strong>
+                  {' · '}{(o.service_types || []).filter(t => LAYOUT_CATCHUP_TYPES.has(t)).map(svcLabel).join(', ')}
+                  {o.cemetery?.name ? ` · ${o.cemetery.name}` : ''}
+                  {' · '}{o.status}
+                </span>
+                {hasLayout
+                  ? <span className="sb-recon-lay-chip amber">Layout on file — not approved</span>
+                  : <span className="sb-recon-lay-chip red">No layout</span>}
+                <button type="button" className="sb-recon-lay-upload" disabled={busyId === o.id}
+                  onClick={() => { uploadForRef.current = o; fileRef.current?.click() }}>
+                  {busyId === o.id ? 'Working…' : 'Upload layout'}
+                </button>
+                {hasLayout && (
+                  <button type="button" className="sb-recon-fam-save" disabled={busyId === o.id} onClick={() => markApproved(o)}>
+                    Mark approved
+                  </button>
+                )}
+                <button type="button" className="sb-recon-open" onClick={() => onOpenOrder?.(o.id)}>Open ↗</button>
+                {errById[o.id] && <span className="sb-recon-fam-err">{errById[o.id]}</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -253,7 +422,7 @@ function Card({ label, value, tone, sub }) {
   )
 }
 
-function Bucket({ meta, rows, decisionOf, setDecision, closing, doClose, onOpenOrder, bulk }) {
+function Bucket({ meta, rows, decisionOf, setDecision, closing, doClose, deleting = {}, doDelete = null, onOpenOrder, bulk }) {
   const [open, setOpen] = useState(true)
   return (
     <section className="sb-recon-bucket">
@@ -287,7 +456,9 @@ function Bucket({ meta, rows, decisionOf, setDecision, closing, doClose, onOpenO
                 <span className="sb-recon-reason">{r.reason}</span>
               </div>
               <div className="sb-recon-actions">
-                {closing[r.orderId] === 'done' ? (
+                {deleting[r.orderId] === 'done' ? (
+                  <span className="sb-recon-wiped">Wiped from Stonebooks</span>
+                ) : closing[r.orderId] === 'done' ? (
                   <span className="sb-recon-closed">Closed ✓</span>
                 ) : (<>
                   <button type="button" className={dec === 'keep' ? 'on' : ''} onClick={() => setDecision(r.orderId, 'keep')}>Keep</button>
@@ -295,6 +466,12 @@ function Bucket({ meta, rows, decisionOf, setDecision, closing, doClose, onOpenO
                     {closing[r.orderId] === 'busy' ? 'Closing…' : closing[r.orderId] === 'error' ? 'Retry' : 'Close'}
                   </button>
                   <button type="button" className={dec === 'reviewed' ? 'on' : ''} onClick={() => setDecision(r.orderId, 'reviewed')}>Reviewed</button>
+                  {doDelete && (
+                    <button type="button" className="del-act" onClick={() => doDelete(r)} disabled={deleting[r.orderId] === 'busy'}
+                      title="Permanently wipe this order from Stonebooks — typed confirmation required">
+                      {deleting[r.orderId] === 'busy' ? 'Wiping…' : deleting[r.orderId] === 'error' ? 'Retry delete' : 'Delete'}
+                    </button>
+                  )}
                 </>)}
               </div>
             </div>
@@ -333,7 +510,7 @@ const RECON_CSS = `
   .sb-recon-bulk { display: flex; gap: 8px; margin-bottom: 8px; }
   .sb-recon-bulk button { font: inherit; font-size: 12px; padding: 5px 12px; border: 1px solid #d8d6d1; border-radius: 8px; background: #fff; cursor: pointer; }
   .sb-recon-rows { display: flex; flex-direction: column; }
-  .sb-recon-row { display: grid; grid-template-columns: 80px 1.4fr 1.1fr 0.9fr 2.4fr 170px; gap: 10px; align-items: center;
+  .sb-recon-row { display: grid; grid-template-columns: 80px 1.4fr 1.1fr 0.9fr 2fr 240px; gap: 10px; align-items: center;
     padding: 8px 6px; border-top: 1px solid #f0ece1; font-size: 13px; }
   .sb-recon-row.d-close { background: #fdf3f2; } .sb-recon-row.d-keep { background: #f3f8f4; }
   .sb-recon-ordno { font: inherit; font-family: ui-monospace, monospace; font-size: 12px; color: #234c8a; background: none; border: none; cursor: pointer; text-align: left; }
@@ -355,6 +532,18 @@ const RECON_CSS = `
   .sb-recon-actions button.close-act:hover:not(:disabled) { background: #96201a; }
   .sb-recon-actions button.close-act:disabled { opacity: 0.6; cursor: default; }
   .sb-recon-closed { font-size: 11.5px; font-weight: 700; color: #15724a; padding: 4px 9px; }
+  .sb-recon-actions { flex-wrap: wrap; }
+  .sb-recon-actions button.del-act { border-color: #7a1713; background: #fff; color: #7a1713; font-weight: 700; }
+  .sb-recon-actions button.del-act:hover:not(:disabled) { background: #7a1713; color: #fff; }
+  .sb-recon-actions button.del-act:disabled { opacity: 0.6; cursor: default; }
+  .sb-recon-wiped { font-size: 11.5px; font-weight: 700; color: #7a1713; padding: 4px 9px; }
+  .sb-recon-lay { border: 1px solid #e2b8b4; background: #fffaf9; }
+  .sb-recon-lay-fam { font-size: 13.5px; min-width: 120px; }
+  .sb-recon-lay-chip { font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+  .sb-recon-lay-chip.red { color: #b3261e; background: rgba(179,38,30,.1); }
+  .sb-recon-lay-chip.amber { color: #8a5a12; background: rgba(216,144,31,.14); }
+  .sb-recon-lay-upload { font: inherit; font-size: 12px; font-weight: 700; border: 1px solid #9a7209; background: #9a7209; color: #fff; border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+  .sb-recon-lay-upload:disabled { opacity: 0.6; }
   .sb-recon-empty { color: #b3aea2; font-size: 13px; padding: 8px 6px; }
   .sb-recon-unmatched { display: flex; flex-direction: column; gap: 4px; }
   .sb-recon-unmatched-row { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 3px 0; }

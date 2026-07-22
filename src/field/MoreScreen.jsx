@@ -20,6 +20,7 @@ import LeadsScreen from './LeadsScreen'
 import PermitsScreen from './PermitsScreen'
 import VendorsScreen from './VendorsScreen'
 import CemOrdersScreen from './CemOrdersScreen'
+import CemeteriesScreen from './CemeteriesScreen'
 import CatalogScreen from './CatalogScreen'
 import IntakeScreen from './IntakeScreen'
 import FieldSettingsScreen from './FieldSettingsScreen'
@@ -47,6 +48,7 @@ const TAB_TILE_META = {
 const NATIVE = [
   { key: 'settings',  nm: 'Settings',        ds: 'Tabs, alerts, your link',        owner: false, ic: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.8 v3 M12 18.2 v3 M2.8 12 h3 M18.2 12 h3 M5.5 5.5 l2.1 2.1 M16.4 16.4 l2.1 2.1 M18.5 5.5 l-2.1 2.1 M7.6 16.4 l-2.1 2.1"/>' },
   { key: 'catalog',   nm: 'Catalog',         ds: 'Search designs by shape or name', owner: false, ic: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M3 17 l5-5 4 4 3-3 6 6"/>' },
+  { key: 'cemeteries', nm: 'Cemeteries',     ds: 'Directions, maps, mark graves',  owner: false, ic: '<path d="M12 21 s-6.5-5.5-6.5-10.5 a6.5 6.5 0 0 1 13 0 C18.5 15.5 12 21 12 21z"/><circle cx="12" cy="10" r="2.4"/>' },
   { key: 'intake',    nm: 'New lead',        ds: 'Hand the phone to the customer', owner: true,  ic: '<circle cx="9" cy="8" r="3.5"/><path d="M3.5 20 a5.5 5.5 0 0 1 11 0"/><line x1="18" y1="7" x2="18" y2="13"/><line x1="15" y1="10" x2="21" y2="10"/>' },
   { key: 'money',     nm: 'Money',           ds: 'Record payments, who owes',      owner: true,  ic: '<line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5.5 H9.5 a3 3 0 0 0 0 6 h5 a3 3 0 0 1 0 6 H7"/>' },
   { key: 'schedule',  nm: 'Schedule',        ds: 'Runs by day, bump a run',        owner: true,  ic: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10 h18 M8 3 v4 M16 3 v4"/><circle cx="12" cy="15.5" r="1.6" fill="currentColor" stroke="none"/>' },
@@ -62,6 +64,7 @@ const SCREENS = {
   money: MoneyScreen, schedule: ScheduleScreen, approvals: ApprovalsScreen,
   customers: CustomersScreen, leads: LeadsScreen, permits: PermitsScreen,
   vendors: VendorsScreen, cemorders: CemOrdersScreen, catalog: CatalogScreen,
+  cemeteries: CemeteriesScreen,
 }
 
 // Everything else rides the desktop, full-fat. Owner only.

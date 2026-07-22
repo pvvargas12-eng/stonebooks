@@ -267,7 +267,7 @@ const ROW_SORTERS = {
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, onOpenHub, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction }) {
+export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEditOrder, onOpenCustomer, onOpenJob, onOpenHub, initialQueue = null, onConsumeInitialQueue, initialSelectedId = null, onConsumeInitialSelected, initialAction = null, onConsumeInitialAction, returnTo = null, onReturn = null }) {
   const [selectedOrderId, setSelectedOrderId] = useState(null)
   const [view, setView] = useState('all')   // 'all' | 'orders' | 'leads' — All is the landing (Paul, 2026-07-20)
   // Seed from the cross-mount cache so re-opening Orders renders instantly
@@ -1007,7 +1007,16 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // ── Order detail drill-in ─────────────────────────────────────────────────
   if (selectedOrderId) {
     return (
-      <OrderDetail orderId={selectedOrderId} onBack={() => { setSelectedOrderId(null); reload() }}
+      // A returnTo context (e.g. opened from the Design hub) sends Back to the
+      // ORIGIN surface instead of the Orders list, with the origin's name on
+      // the button — "go back to where I last was" (Paul, 2026-07-22).
+      <OrderDetail orderId={selectedOrderId}
+        backLabel={returnTo?.label || 'Orders'}
+        onBack={() => {
+          setSelectedOrderId(null)
+          if (returnTo && onReturn) onReturn()
+          else reload()
+        }}
         onEditInSales={(id) => onEditOrder?.(id)}
         onEditInSalesPortal={(id) => onOpenOrder?.(id)}
         onOpenJob={onOpenJob} onOpenCustomer={onOpenCustomer} onOpenHub={onOpenHub}
@@ -1460,8 +1469,10 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
         )}
         {(blocker || o.manual_blocker) && (
           <div className="sb-ord-blockline">
-            {/* Manual blocker first — a human set it on purpose. Its kind chip
-                replaces the derived Call chip (no double red pills). */}
+            {/* Manual blocker only — CALL/EMAIL chips appear ONLY when a human
+                selected that blocker (Paul 2026-07-22, the Sandy row: the
+                derived needs-call pill is gone; callReasons live on in the
+                Needs-call filter and tooltips, never as a row chip). */}
             {o.manual_blocker && (
               <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
                 {manualBlockerChipText(o.manual_blocker)}
@@ -1469,7 +1480,6 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
             )}
             {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
             {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
-            {!o.manual_blocker && o._pressure.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
           </div>
         )}
         {!blocker && !o.manual_blocker && o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
@@ -1657,9 +1667,11 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
         {o._total > 0 ? fmtUSD(o._total) : '—'}
         {o._balance > 0 && <span className="sb-kb-card-owes"> · owes {fmtUSD(o._balance)}</span>}
       </div>
-      {(blocker || unsigned || lead || o.manual_blocker || o._pressure?.needsCall) && (
+      {(blocker || unsigned || lead || o.manual_blocker) && (
         <div className="sb-ord-blockline">
           {lead && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
+          {/* CALL/EMAIL chips only from an explicitly-selected blocker (Paul
+              2026-07-22) — the derived needs-call pill is gone. */}
           {o.manual_blocker && (
             <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
               {manualBlockerChipText(o.manual_blocker)}
@@ -1668,7 +1680,6 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
           {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
           {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
           {unsigned && <span className="sb-ord-bpill sb-ord-bpill-red">Unsigned</span>}
-          {!o.manual_blocker && o._pressure?.needsCall && <span className="sb-ord-callpill" title={(o._pressure.callReasons || []).join(' · ') || 'Needs a phone call'}>Call</span>}
         </div>
       )}
     </div>
