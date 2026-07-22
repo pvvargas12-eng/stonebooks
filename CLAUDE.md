@@ -6,6 +6,10 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Fix ceeffb2 (2026-07-22, round 10) — customer-save crash + OrderDetail top Delete
+
+OrderDetail's Customer & Contact quick-edit sent `referral_source` to the CUSTOMERS table — it's a JOBS column (the exact trap customerToRow documents) — so PostgREST rejected the whole save and names couldn't be fixed. The editor now seeds Funeral home / referral FROM the job and writes back via new `setJobReferralSource` (stonebooksData); rest of the draft → customers; the contact card's referral display reads the job too (the customers read was always blank; leads with no job simply don't persist the field). Plus a red **Delete** in the top quick-action row opening the EXISTING permanent-delete modal (it only lived in the bottom danger zone — Paul couldn't find it on a blank lead).
+
 ## Sprint CUT-LIST (2026-07-22, round 9) — SHIPPED: the hand-built stencil queue + red not-queued alert
 
 Commit ba9f4ac, Production success. Migration `20260722_stencil_cut_list.sql` ✅ APPLIED + verified (foundation_list mirror: membership only, job_id unique CASCADE, 3-role RLS). Paul's doctrine, again: "I don't want to auto add to production — I already told you I want to build my lists."
