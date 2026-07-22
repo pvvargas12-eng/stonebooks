@@ -14,6 +14,7 @@ Commit ba9f4ac, Production success. Migration `20260722_stencil_cut_list.sql` �
 - **The red notification**: pulsing red section on the board listing eligible-but-unqueued stones (one-click Add each) + a red count badge on the Jobs tab strip via `countCutReady()` (3 light queries: job_milestones in (stencil_cut, stone_received) + getCurrentProofsByJob + the list — no getJobs; badge approximates layout-approved as proof.approved_at, the board shows the full read).
 - **MARK CUT** = `setOrderStoneStatus(job, 'needs_blasting')` (flips stencil_created + stencil_cut done, vocabulary-aware) + optimistic local plan apply (`applyPlanLocally`, the FoundationsBoard pattern). Cut rows stay listed (dimmed, CUT chip) until removed.
 - NOT built (flagged): cut-ready surfacing on Today / field push; drag reorder (sort_order column exists).
+- **Fix befad24 (same night): drafts/leads HARD-EXCLUDED** — `isRealWork` (post-contract status, not archived/terminal, AND rowTotalPaid > 0 — the LEAD-no-deposit rule) gates the pool/picker/alert outright, countCutReady fetches candidate orders and applies the same rule, and a draft already ON the list renders a red "DRAFT / LEAD — not production work" chip with only Remove. **STANDING DOCTRINE: drafts and leads never appear on production work lists** — apply isRealWork-equivalent gates to any future production queue.
 
 ## Sprint NAMES-2 (2026-07-22, round 8) — SHIPPED: stored names cleaned + casing normalized at the door
 
