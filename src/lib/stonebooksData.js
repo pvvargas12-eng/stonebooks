@@ -3665,6 +3665,78 @@ export async function listPermitTemplatesForCemetery(cemeteryId) {
   return data || []
 }
 
+// =============================================================================
+// CALENDAR (CAL-2, 2026-07-22) — reminders + the order-due layer
+// =============================================================================
+// Reminders are ONE ROW PER FIRING (several offsets on one event = several
+// rows) and stay on the board until a human ACKNOWLEDGES them.
+export async function listCalendarReminders({ includeAcknowledged = false } = {}) {
+  let q = supabase.from('calendar_reminders').select('*').order('remind_on', { ascending: true })
+  if (!includeAcknowledged) q = q.is('acknowledged_at', null)
+  const { data, error } = await q
+  if (error) { console.warn('[cal] listCalendarReminders:', error.message); return [] }
+  return data || []
+}
+export async function addCalendarReminders(rows) {
+  const clean = (rows || [])
+    .filter(r => r && r.title && r.remind_on)
+    .map(r => ({
+      title: String(r.title).trim(), remind_on: r.remind_on,
+      event_date: r.event_date || null, source_type: r.source_type || 'custom',
+      source_id: r.source_id != null ? String(r.source_id) : null,
+      note: r.note ? String(r.note).trim() : null, created_by: r.created_by || null,
+    }))
+  if (!clean.length) return { ok: false, error: 'Nothing to remind about.' }
+  const { data, error } = await supabase.from('calendar_reminders').insert(clean).select()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, reminders: data || [] }
+}
+export async function acknowledgeCalendarReminder(id, by = null) {
+  if (!id) return { ok: false, error: 'Missing reminder' }
+  const { error } = await supabase.from('calendar_reminders')
+    .update({ acknowledged_at: new Date().toISOString(), acknowledged_by: by }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function updateCalendarReminder(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing reminder' }
+  const row = {}
+  if ('remind_on' in patch) row.remind_on = patch.remind_on
+  if ('title' in patch) row.title = (patch.title || '').trim()
+  if ('note' in patch) row.note = (patch.note || '').trim() || null
+  const { error } = await supabase.from('calendar_reminders').update(row).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function deleteCalendarReminder(id) {
+  if (!id) return { ok: false, error: 'Missing reminder' }
+  const { error } = await supabase.from('calendar_reminders').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+// The order-due calendar layer — open orders with a target date in range.
+export async function listOrderDueDates({ from, to } = {}) {
+  let q = supabase.from('orders')
+    .select('id, order_number, primary_lastname, status, target_completion_date, customer:customers(first_name, last_name)')
+    .not('target_completion_date', 'is', null)
+    .not('status', 'in', '(closed,cancelled)')
+    .or('archived.is.null,archived.eq.false')
+  if (from) q = q.gte('target_completion_date', from)
+  if (to) q = q.lte('target_completion_date', to)
+  const { data, error } = await q
+  if (error) { console.warn('[cal] listOrderDueDates:', error.message); return [] }
+  return data || []
+}
+// Drag an order's due chip to a new day — target_completion_date IS the due
+// date every surface reads (dashboard, contract PDF, customers list).
+export async function setOrderTargetDate(orderId, isoDate) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const { error } = await supabase.from('orders')
+    .update({ target_completion_date: isoDate || null }).eq('id', orderId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
 
 export function fmtUSD(n, opts = {}) {

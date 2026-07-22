@@ -40,6 +40,7 @@ const CemeteryOrdersTab = lazy(() => import('./CemeteryOrdersTab'))
 const JobsTab = lazy(() => import('./JobsTab'))
 const PermitBuilderTab = lazy(() => import('./PermitBuilderTab'))
 const CemeteriesTab = lazy(() => import('./CemeteriesTab'))
+const CalendarTab = lazy(() => import('./CalendarTab'))
 const SchedulerTab = lazy(() => import('./SchedulerTab'))
 const ReportsTab = lazy(() => import('./ReportsTab'))
 const ProfitTab = lazy(() => import('./ProfitTab'))
@@ -726,11 +727,12 @@ export default function Stonebooks() {
 {tab === 'permitbuilder' && <PermitBuilderTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Permit Builder', tab: 'permitbuilder' }); setTab('orders') }} />}
 {tab === 'cemeteries' && <CemeteriesTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Cemeteries', tab: 'cemeteries' }); setTab('orders') }} />}
 {tab === 'scheduler' && <SchedulerTab user={user} profile={profile} onOpenJob={openJobSmart} onOpenOrder={openSales} onSwitchTab={setTab} />}
-{/* Calendar = the same SchedulerTab component in a Month-default, view-focused
-    variant. It reads the SAME work_batches data through the same data layer —
-    no parallel store — so anything scheduled/completed/overdue here matches the
-    Scheduler exactly (ITEM 2). */}
-{tab === 'calendar'  && <SchedulerTab variant="calendar" user={user} profile={profile} onOpenJob={openJobSmart} onOpenOrder={openSales} onSwitchTab={setTab} />}
+{/* Calendar (CAL-2, 2026-07-22) — the dedicated owner calendar: layer filters,
+    stay-in-view quick add, drag-anything-to-any-day, and the acknowledge-gated
+    reminders board. Same data layer as the Scheduler (work_batches/shop_tasks/
+    orders) — no parallel store; the old SchedulerTab variant="calendar" surface
+    is retired from the nav but the Scheduler tab itself is untouched. */}
+{tab === 'calendar'  && <CalendarTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Calendar', tab: 'calendar' }); setTab('orders') }} />}
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={openJobSmart} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setOrderDetailReturn(null); setTab('orders') }} />}
