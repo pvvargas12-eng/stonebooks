@@ -34,6 +34,7 @@ import {
   customerName, fmtDate, fmtRelative, fmtUSD,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   getNextRequiredAction,
+  countCutReady,
   SOLD_STATUSES, // eslint-disable-line no-unused-vars
   BLOCK_REASON_CODES,
   listAllBulkOrders,
@@ -68,6 +69,7 @@ import JobsDepartmentView from './JobsDepartmentView'
 import JobsCommandCenter from './JobsCommandCenter'
 import ProductionBoard from './components/ProductionFloor'
 import FoundationsBoard from './FoundationsBoard'
+import CutListBoard from './CutListBoard'
 import CheckJobsBoard from './CheckJobsBoard'
 import { getJobsView, setJobsView } from './lib/workspaceState'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
@@ -114,6 +116,15 @@ export default function JobsTab({
     setTab(next)
     setJobsView(userId, next)
   }
+
+  // The cut-list red badge — stones IN THE SHOP with an APPROVED layout that
+  // Paul hasn't queued yet (never auto-added; the number is the nag).
+  const [cutBadge, setCutBadge] = useState(0)
+  useEffect(() => {
+    let alive = true
+    countCutReady().then(n => { if (alive) setCutBadge(n) }).catch(() => { /* badge is additive */ })
+    return () => { alive = false }
+  }, [tab])
 
   // JOBS-OPERATIONAL-HUBS Phase 2A.2 — captured here so the "Open packet →"
   // affordance in DesignHubHome can open JobDetail with the Design Packet
@@ -171,6 +182,8 @@ export default function JobsTab({
     body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} onOpenBoard={() => handleTabChange('production')} /></div>
   } else if (tab === 'production') {
     body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} /></div>
+  } else if (tab === 'cutlist') {
+    body = <div className="sb-crm-container"><CutListBoard onOpenJob={handleOpenJob} /></div>
   } else if (tab === 'foundations') {
     body = <div className="sb-crm-container"><FoundationsBoard onOpenJob={handleOpenJob} /></div>
   } else if (tab === 'checkjobs') {
@@ -198,7 +211,7 @@ export default function JobsTab({
     <div className="sb-jobs-tabshell">
       <style>{JOBS_TABROW_CSS}</style>
       <div className="sb-crm-container sb-jobs-tabrow-wrap">
-        <JobsTabRow tab={tab} onChange={handleTabChange} />
+        <JobsTabRow tab={tab} onChange={handleTabChange} badges={{ cutlist: cutBadge }} />
       </div>
       {body}
     </div>
@@ -213,6 +226,7 @@ const JOBS_TABS = [
   { code: 'admin',        label: 'Admin' },
   { code: 'design',       label: 'Design' },
   { code: 'production',   label: 'Production' },
+  { code: 'cutlist',      label: 'Cut list' },
   { code: 'installation', label: 'Installation' },
   { code: 'foundations',  label: 'Foundations' },
   { code: 'checkjobs',    label: 'Check jobs' },
@@ -220,13 +234,14 @@ const JOBS_TABS = [
   { code: 'workflow',     label: 'Workflow' },
   { code: 'all',          label: 'Jobs — All' },
 ]
-function JobsTabRow({ tab, onChange }) {
+function JobsTabRow({ tab, onChange, badges = {} }) {
   return (
     <div className="sb-jobs-tabrow" role="tablist" aria-label="Jobs">
       {JOBS_TABS.map(t => (
         <button key={t.code} type="button" role="tab" aria-selected={tab === t.code}
           className={`sb-jobs-tab ${tab === t.code ? 'on' : ''}`} onClick={() => onChange(t.code)}>
           {t.label}
+          {badges[t.code] > 0 && <span className="sb-jobs-tab-badge">{badges[t.code]}</span>}
         </button>
       ))}
     </div>
@@ -238,6 +253,7 @@ const JOBS_TABROW_CSS = `
   .sb-jobs-tab { font: inherit; font-size: 13px; font-weight: 500; padding: 6px 14px; border: none; border-radius: 6px; background: none; color: #6b6256; cursor: pointer; white-space: nowrap; }
   .sb-jobs-tab:hover { color: #2a2a27; }
   .sb-jobs-tab.on { background: #fff; color: #9A7209; font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .sb-jobs-tab-badge { margin-left: 6px; background: #B3261E; color: #fff; border-radius: 999px; padding: 1px 7px; font-size: 10.5px; font-weight: 800; font-variant-numeric: tabular-nums; }
 `
 
 // =============================================================================

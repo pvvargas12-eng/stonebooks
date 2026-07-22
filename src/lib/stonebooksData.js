@@ -2130,6 +2130,65 @@ export async function removeFromFoundationList(jobId) {
   return { ok: true }
 }
 
+// ── STENCIL CUT LIST (2026-07-22) — the hand-built cutting queue ────────────
+// Same doctrine as foundation_list: membership only, PAUL builds the list
+// (never auto-added), cut state stays milestone-derived (stencil_cut).
+export async function getStencilCutList() {
+  const { data, error } = await supabase
+    .from('stencil_cut_list')
+    .select('*')
+    .order('created_at', { ascending: true })
+  if (error) { console.error('getStencilCutList:', error); return [] }
+  return data || []
+}
+export async function addToStencilCutList(jobId) {
+  const added_by = await getCurrentStaffName()
+  const { error } = await supabase
+    .from('stencil_cut_list')
+    .insert({ job_id: jobId, added_by })
+  if (error && error.code !== '23505') return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function removeFromStencilCutList(jobId) {
+  const { error } = await supabase
+    .from('stencil_cut_list')
+    .delete()
+    .eq('job_id', jobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+// The red-notification count: jobs whose stencil is READY TO CUT (stone
+// received — or no stone leg at all, e.g. inscriptions — AND the current
+// layout is approved) with stencil_cut still open, that Paul has NOT put on
+// the cut list. Three light queries, no getJobs. The board itself computes
+// the richer designStateFor read; this count keys on proof.approved_at,
+// which is the same primary signal.
+export async function countCutReady() {
+  const [{ data: ms }, proofs, list] = await Promise.all([
+    supabase.from('job_milestones')
+      .select('job_id, milestone_key, status')
+      .in('milestone_key', ['stencil_cut', 'stone_received']),
+    getCurrentProofsByJob(),
+    getStencilCutList(),
+  ])
+  const listed = new Set((list || []).map(l => l.job_id))
+  const byJob = new Map()
+  for (const m of (ms || [])) {
+    if (!byJob.has(m.job_id)) byJob.set(m.job_id, {})
+    byJob.get(m.job_id)[m.milestone_key] = m.status
+  }
+  let n = 0
+  for (const [jobId, keys] of byJob) {
+    if (!('stencil_cut' in keys) || keys.stencil_cut === 'done') continue
+    if ('stone_received' in keys && keys.stone_received !== 'done') continue
+    const proof = proofs.get(jobId)
+    if (!proof?.approved_at) continue
+    if (listed.has(jobId)) continue
+    n++
+  }
+  return n
+}
+
 // ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────
 // Append a payment to the order's payments[] JSONB. Money records are
 // APPEND-ONLY here: this never edits or deletes an existing payment (voiding /
