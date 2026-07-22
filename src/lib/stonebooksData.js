@@ -474,11 +474,35 @@ function _isJunkThread(t) {
 // Title-case a name for display/email: "CYNTHIA MACON" → "Cynthia Macon". Leaves
 // already mixed-case names (McDonald, O'Brien) untouched so real capitalization is
 // never mangled; only reformats all-caps or all-lowercase input.
+// Family names display as "Hess" — capital first, lowercase rest (Paul
+// 2026-07-22, the hESS chip) — WITHOUT mangling the legitimately mixed-case
+// shapes: McDonald / MacRae, O'Brien / D'Angelo, DeLuca / LaRosa / VanDyke,
+// Smith-Jones, II/III/IV. Any word that isn't one of those well-formed shapes
+// (HESS, hESS, KOVALESKi, kovaleski) gets normalized. Display-only — stored
+// data is never touched.
+const _NAME_KEEP = [
+  /^[A-Z][a-z'’.,]*(?:-[A-Z][a-z'’.,]*)*$/,             // Hess, Smith-Jones, Jr.
+  /^(?:Mc|Mac)[A-Z][a-z'’.,]*$/,                         // McDonald, MacRae
+  /^[A-Za-z]['’][A-Z][a-z'’.,]*$/,                       // O'Brien, D'Angelo
+  /^(?:De|Di|Da|Du|La|Le|Van|Von|St)[A-Z][a-z'’.,]*$/,   // DeLuca, LaRosa, VanDyke
+  /^(?:II|III|IV)\.?,?$/,                                // suffixes stay caps
+]
+const _fixNameWord = (w) => {
+  if (!/[A-Za-z]/.test(w)) return w
+  if (_NAME_KEEP.some(re => re.test(w))) return w
+  let out = ''
+  let capNext = true
+  for (const ch of w.toLowerCase()) {
+    if (/[a-z]/.test(ch)) { out += capNext ? ch.toUpperCase() : ch; capNext = false }
+    else { out += ch; if (ch === "'" || ch === '’' || ch === '-') capNext = true }
+  }
+  return out.replace(/\bMc([a-z])/g, (m, c) => `Mc${c.toUpperCase()}`)
+}
 export function properName(name) {
   if (!name) return name
   const s = String(name).trim()
-  if (!s || (s !== s.toUpperCase() && s !== s.toLowerCase())) return s
-  return s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()).replace(/\bMc(\w)/g, (m, c) => `Mc${c.toUpperCase()}`)
+  if (!s) return s
+  return s.split(/(\s+)/).map(part => /^\s+$/.test(part) ? part : _fixNameWord(part)).join('')
 }
 
 // ── Attachment intelligence — classify by filename + MIME (metadata only; the

@@ -12,14 +12,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import {
   listCemeteriesWithPermit, updateCemeteryPermit, listCemeteryMaps, countCemeteryMaps,
-  addCemeteryMap, listMapPins, addMapPin, deleteMapPin,
+  addCemeteryMap, listMapPins, addMapPin, deleteMapPin, properName,
 } from '../lib/stonebooksData'
 import { directionsUrl } from './fieldShared'
 import { MarkSpotForm } from './JobDetailScreen'
 
-const famNameOf = (o) => o?.primary_lastname
+const famNameOf = (o) => properName(o?.primary_lastname
   || [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
-  || o?.order_number || '—'
+  || o?.order_number || '—')
 
 // GO TO target: manual pin first, then the shared address/geocode fallback.
 const goToUrl = (c) => {

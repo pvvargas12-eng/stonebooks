@@ -24,7 +24,7 @@ import {
   listOrderDueDates, setOrderTargetDate,
   listCalendarReminders, addCalendarReminders, acknowledgeCalendarReminder,
   updateCalendarReminder, deleteCalendarReminder,
-  getActiveStaffUser, todayISO, STAFF_NAMES,
+  getActiveStaffUser, todayISO, STAFF_NAMES, properName,
 } from './lib/stonebooksData'
 
 // ── Pure date math on ISO strings (argful Date only — render-safe) ──────────
@@ -46,9 +46,9 @@ const KIND_LABEL = {
   acid_wash: 'Acid wash', repair: 'Repair', rub_grab: 'Rub & grab', foundation_trip: 'Foundation',
   door_trip: 'Door trip', site_visit: 'Site visit', errand: 'Errand',
 }
-const famOf = (o) => o?.primary_lastname
+const famOf = (o) => properName(o?.primary_lastname
   || [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
-  || o?.order_number || '—'
+  || o?.order_number || '—')
 
 const LAYERS = [
   { key: 'runs', label: 'Runs & events' },

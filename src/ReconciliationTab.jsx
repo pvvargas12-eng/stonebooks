@@ -15,7 +15,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   listAllOrders, closeOrder, bulkCloseOrders, setOrderFamilyName, hardDeleteOrder,
   listCurrentProofRefs, listJobOrderPairs, uploadProofLayout, createProofVersion,
-  approveCurrentProof, setOrderDesignStatus, getCurrentStaffName,
+  approveCurrentProof, setOrderDesignStatus, getCurrentStaffName, properName,
 } from './lib/stonebooksData'
 import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
@@ -302,7 +302,7 @@ function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
             const custFull = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
             return (
               <div key={o.id} className="sb-recon-fam-row">
-                <strong className="sb-recon-lay-fam">{o.primary_lastname || custFull || '—'}</strong>
+                <strong className="sb-recon-lay-fam">{properName(o.primary_lastname || custFull) || '—'}</strong>
                 <span className="sb-recon-fam-meta">
                   <strong>{o.order_number || 'DRAFT'}</strong>
                   {' · '}{(o.service_types || []).filter(t => LAYOUT_CATCHUP_TYPES.has(t)).map(svcLabel).join(', ')}
@@ -443,7 +443,7 @@ function Bucket({ meta, rows, decisionOf, setDecision, closing, doClose, deletin
             <div key={r.orderId} className={`sb-recon-row d-${dec}`}>
               <button type="button" className="sb-recon-ordno" onClick={() => onOpenOrder?.(r.orderId)}>{r.orderNumber || 'DRAFT'}</button>
               <div className="sb-recon-name">
-                <strong>{r.surnameRaw || '— no surname —'}</strong>
+                <strong>{properName(r.surnameRaw) || '— no surname —'}</strong>
                 <span className={`sb-recon-src ${r.surnameSource}`}>{r.surnameSource === 'customer' ? 'from customer' : r.surnameSource === 'order' ? 'on order' : 'none'}</span>
               </div>
               <div className="sb-recon-cem">{r.cemeteryName || '—'}</div>

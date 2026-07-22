@@ -14,7 +14,7 @@
 // =============================================================================
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  listAllOrders, customerName, fmtUSD,
+  listAllOrders, customerName, fmtUSD, properName,
   permitNeeded, PERMIT_STATUS_OPTIONS, permitStatusLabel, permitStatusTone,
   setOrderPermit, createPermitOutgoingPayment, getCurrentStaffName, logOrderActivity,
   listCemeteriesWithPermit, getProofVersionsByOrder, getProofVersions, getJobByOrderId,
@@ -226,7 +226,7 @@ function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTempl
             return (
               <div key={o.id} className="pbt-orderrow">
                 <div className="pbt-orderrow-main">
-                  <span className="pbt-orderrow-name">{o.primary_lastname || customerName(o.customer) || '—'}</span>
+                  <span className="pbt-orderrow-name">{properName(o.primary_lastname || customerName(o.customer)) || '—'}</span>
                   {o.cemetery?.name && <span className="pbt-orderrow-cem">{o.cemetery.name}</span>}
                   <span className={`pbt-pill pbt-pill-${permitStatusTone(o.permit_status)}`}>{permitStatusLabel(o.permit_status)}</span>
                 </div>
@@ -271,7 +271,7 @@ function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTempl
           {docs.map(d => (
             <div key={d.id} className="pbt-docrow">
               <button type="button" className="pbt-docrow-open" onClick={() => onOpenDoc(d.id)}>
-                <span className="pbt-orderrow-name">{d.order?.primary_lastname || customerName(d.order?.customer) || '—'}</span>
+                <span className="pbt-orderrow-name">{properName(d.order?.primary_lastname || customerName(d.order?.customer)) || '—'}</span>
                 <span className="pbt-orderrow-cem">{d.title || d.template?.title || 'Permit'}</span>
                 <span className="pbt-docrow-date">{String(d.updated_at || '').slice(0, 10)}</span>
               </button>
@@ -855,7 +855,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
       <header className="pbt-edhead">
         <button type="button" className="pbt-btn pbt-btn-quiet" onClick={onBack}>← Back</button>
         <div className="pbt-edid">
-          <span className="pbt-edid-name">{order?.primary_lastname || customerName(order?.customer) || '—'}</span>
+          <span className="pbt-edid-name">{properName(order?.primary_lastname || customerName(order?.customer)) || '—'}</span>
           <span className="pbt-edid-sub">{doc.title || template?.title}{order?.cemetery?.name ? ` · ${order.cemetery.name}` : ''}</span>
         </div>
         <div className="pbt-edhead-spacer" />
@@ -1144,7 +1144,7 @@ function PermitMoneyRail({ order, say, onChanged, onOpenOrderDetail }) {
     <div className="pbt-rail-stack">
       <div className="pbt-rail-card">
         <div className="pbt-rail-title">Order</div>
-        <div className="pbt-rail-name">{order.primary_lastname || customerName(order.customer) || '—'}</div>
+        <div className="pbt-rail-name">{properName(order.primary_lastname || customerName(order.customer)) || '—'}</div>
         {order.order_number && <div className="pbt-rail-sub">{order.order_number}</div>}
         {order.cemetery?.name && <div className="pbt-rail-sub">{order.cemetery.name}</div>}
         {onOpenOrderDetail && (

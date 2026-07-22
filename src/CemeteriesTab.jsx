@@ -16,12 +16,12 @@ import {
   listCemeteryMaps, addCemeteryMap, updateCemeteryMap, deleteCemeteryMap, countCemeteryMaps,
   cemeteryRefCounts, mergeCemeteries, listOrdersAtCemetery, listPermitTemplatesForCemetery,
   listMapPins, addMapPin, deleteMapPin, listInstallHistoryAtCemetery,
-  getCurrentStaffName,
+  getCurrentStaffName, properName,
 } from './lib/stonebooksData'
 
-const famOfOrder = (o) => o?.primary_lastname
+const famOfOrder = (o) => properName(o?.primary_lastname
   || [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
-  || o?.order_number || '—'
+  || o?.order_number || '—')
 
 // Duplicate scent: lowercase, strip punctuation, Saint→St / Mount→Mt, drop the
 // suffix words (cemetery/memorial/park/…) — "ALPINE" and "Alpine Cemetery"
