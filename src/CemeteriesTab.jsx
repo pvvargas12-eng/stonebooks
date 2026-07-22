@@ -14,8 +14,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   listCemeteriesWithPermit, updateCemeteryPermit,
   listCemeteryMaps, addCemeteryMap, updateCemeteryMap, deleteCemeteryMap, countCemeteryMaps,
+  cemeteryRefCounts, mergeCemeteries, listOrdersAtCemetery, listPermitTemplatesForCemetery,
   getCurrentStaffName,
 } from './lib/stonebooksData'
+
+// Duplicate scent: lowercase, strip punctuation, Saint→St / Mount→Mt, drop the
+// suffix words (cemetery/memorial/park/…) — "ALPINE" and "Alpine Cemetery"
+// land on the same key. Deliberately conservative: typos don't group (merge
+// those by hand from the detail's Merge button).
+const normCemName = (n) => String(n || '')
+  .toLowerCase()
+  .replace(/[.'’,()–—-]/g, ' ')
+  .replace(/\bsaint\b/g, 'st')
+  .replace(/\bmount\b/g, 'mt')
+  .replace(/\b(cemetery|cem|memorial|park|gardens?|mausoleum)\b/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
 
 const INFO_FIELDS = [
   ['name', 'Name'], ['address', 'Address'], ['city', 'City'], ['state', 'State'],
@@ -30,11 +44,12 @@ function cemeteryMapsUrl(c) {
   return addr ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr)}` : null
 }
 
-export default function CemeteriesTab() {
+export default function CemeteriesTab({ onOpenOrder }) {
   const [list, setList] = useState(null)
   const [mapCounts, setMapCounts] = useState(new Map())
   const [selId, setSelId] = useState(null)
   const [q, setQ] = useState('')
+  const [merge, setMerge] = useState(null)   // { keepId, awayId } | null
   const [flash, setFlash] = useState(null)
   const flashTimer = useRef(null)
   const say = (text, err = false) => {
@@ -58,6 +73,34 @@ export default function CemeteriesTab() {
     return rows
   }, [list, q])
 
+  // Possible duplicates — same normalized scent, 2+ rows.
+  const dupGroups = useMemo(() => {
+    const byKey = new Map()
+    for (const c of (list || [])) {
+      const key = normCemName(c.name)
+      if (!key) continue
+      if (!byKey.has(key)) byKey.set(key, [])
+      byKey.get(key).push(c)
+    }
+    return [...byKey.entries()].filter(([, rows]) => rows.length > 1)
+      .map(([key, rows]) => ({ key, rows }))
+      .sort((a, b) => a.rows[0].name.localeCompare(b.rows[0].name))
+  }, [list])
+
+  // Merge review from a dup group: keep the row that looks most "real"
+  // (address on file, then more map pages) — swappable in the modal.
+  const openGroupMerge = (g) => {
+    const score = (c) => (c.address ? 4 : 0) + (mapCounts.get(c.id) || 0) + (c.pin_lat != null ? 1 : 0)
+    const sorted = [...g.rows].sort((a, b) => score(b) - score(a))
+    setMerge({ keepId: sorted[0].id, awayId: sorted[1].id })
+  }
+
+  const onMerged = (keepId, awayId) => {
+    setMerge(null)
+    if (selId === awayId) setSelId(keepId)
+    reload()
+  }
+
   return (
     <div className="cmt-wrap">
       <style>{CSS}</style>
@@ -66,6 +109,21 @@ export default function CemeteriesTab() {
         <h1 className="cmt-title">Cemeteries</h1>
         <div className="cmt-sub">{list ? `${list.length} on the books` : 'Loading…'}</div>
       </div>
+
+      {dupGroups.length > 0 && (
+        <div className="cmt-dup">
+          <div className="cmt-dup-head">
+            Possible duplicates — {dupGroups.length} group{dupGroups.length === 1 ? '' : 's'}. Merging moves every order, permit, map page, and scheduled run onto the one you keep.
+          </div>
+          {dupGroups.map(g => (
+            <div key={g.key} className="cmt-dup-row">
+              <span className="cmt-dup-names">{g.rows.map(r => r.name).join('   ·   ')}</span>
+              <button type="button" className="cmt-btn" onClick={() => openGroupMerge(g)}>Review merge</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="cmt-grid">
         <aside className="cmt-list">
           <input className="cmt-input" placeholder="Search cemeteries…" value={q} onChange={e => setQ(e.target.value)} />
@@ -86,14 +144,100 @@ export default function CemeteriesTab() {
         <main className="cmt-main">
           {!sel
             ? <div className="cmt-empty" style={{ padding: 60, textAlign: 'center' }}>Pick a cemetery on the left — info, Drive link, location pin, and its map pages live here.</div>
-            : <CemeteryDetail key={sel.id} cem={sel} say={say} onSaved={reload} />}
+            : <CemeteryDetail key={sel.id} cem={sel} say={say} onSaved={reload}
+                onOpenOrder={onOpenOrder}
+                onStartMerge={() => setMerge({ keepId: '', awayId: sel.id })} />}
         </main>
+      </div>
+
+      {merge && (
+        <MergeModal
+          list={list || []}
+          initialKeepId={merge.keepId}
+          initialAwayId={merge.awayId}
+          say={say}
+          onClose={() => setMerge(null)}
+          onMerged={onMerged}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Merge modal — fold a duplicate into the keeper ──────────────────────────
+function MergeModal({ list, initialKeepId, initialAwayId, say, onClose, onMerged }) {
+  const [keepId, setKeepId] = useState(initialKeepId || '')
+  const [awayId, setAwayId] = useState(initialAwayId || '')
+  const [counts, setCounts] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const keep = list.find(c => c.id === keepId) || null
+  const away = list.find(c => c.id === awayId) || null
+
+  useEffect(() => {
+    if (!awayId) { setCounts(null); return }
+    let alive = true
+    setCounts(null)
+    cemeteryRefCounts(awayId).then(c => { if (alive) setCounts(c) }).catch(() => { if (alive) setCounts(null) })
+    return () => { alive = false }
+  }, [awayId])
+
+  const doMerge = async () => {
+    if (!keep || !away || busy) return
+    setBusy(true)
+    const r = await mergeCemeteries(away.id, keep.id)
+    setBusy(false)
+    if (!r.ok) { say(r.error, true); return }
+    say(`Merged — "${away.name}" folded into "${keep.name}".`)
+    onMerged(keep.id, away.id)
+  }
+
+  const pickRow = (label, value, setValue, excludeId) => (
+    <label className="cmt-field">
+      <span>{label}</span>
+      <select className="cmt-input" value={value} onChange={e => setValue(e.target.value)}>
+        <option value="">— pick a cemetery —</option>
+        {list.filter(c => c.id !== excludeId).map(c => (
+          <option key={c.id} value={c.id}>{c.name}{c.city ? ` — ${c.city}` : ''}</option>
+        ))}
+      </select>
+    </label>
+  )
+
+  return (
+    <div className="cmt-viewer" style={{ cursor: 'default', alignItems: 'center' }} onClick={busy ? undefined : onClose}>
+      <div className="cmt-card" style={{ maxWidth: 520, width: '100%', cursor: 'default' }} onClick={e => e.stopPropagation()}>
+        <h2 className="cmt-h2" style={{ marginBottom: 4 }}>Merge duplicates</h2>
+        <div className="cmt-hint">
+          Everything on the duplicate — orders, permit templates, built permits, map pages, scheduled runs — moves onto the keeper. Blank info on the keeper (phone, address, pin, Drive link) fills in from the duplicate. The duplicate row is then removed. Nothing about any order changes except which cemetery it points to.
+        </div>
+        {pickRow('Keep this one', keepId, setKeepId, awayId)}
+        {pickRow('Merge this one away', awayId, setAwayId, keepId)}
+        {keep && away && (
+          <button type="button" className="cmt-btn cmt-btn-quiet" style={{ margin: '2px 0 8px' }}
+            onClick={() => { setKeepId(away.id); setAwayId(keep.id) }}>
+            Swap direction
+          </button>
+        )}
+        {away && (
+          <div className="cmt-pinline" style={{ marginTop: 4 }}>
+            {counts === null
+              ? `Counting what's on "${away.name}"…`
+              : `Moving from "${away.name}": ${counts.orders} order${counts.orders === 1 ? '' : 's'} · ${counts.templates} permit template${counts.templates === 1 ? '' : 's'} · ${counts.docs} built permit${counts.docs === 1 ? '' : 's'} · ${counts.maps} map page${counts.maps === 1 ? '' : 's'} · ${counts.batches} scheduled run${counts.batches === 1 ? '' : 's'}`}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+          <button type="button" className="cmt-btn cmt-btn-quiet" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="cmt-btn cmt-btn-danger" onClick={doMerge}
+            disabled={busy || !keep || !away || counts === null}>
+            {busy ? 'Merging…' : keep ? `Merge — keep "${keep.name}"` : 'Merge'}
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
-function CemeteryDetail({ cem, say, onSaved }) {
+function CemeteryDetail({ cem, say, onSaved, onOpenOrder, onStartMerge }) {
   const [draft, setDraft] = useState(() => {
     const d = {}
     for (const [k] of INFO_FIELDS) d[k] = cem[k] || ''
@@ -144,7 +288,13 @@ function CemeteryDetail({ cem, say, onSaved }) {
       <section className="cmt-card">
         <div className="cmt-card-head">
           <h2 className="cmt-h2">{cem.name}</h2>
-          <button type="button" className="cmt-btn cmt-btn-gold" onClick={saveInfo} disabled={busy}>Save</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="cmt-btn cmt-btn-danger-quiet" onClick={onStartMerge}
+              title="This cemetery is a duplicate — fold it into the real one">
+              Merge…
+            </button>
+            <button type="button" className="cmt-btn cmt-btn-gold" onClick={saveInfo} disabled={busy}>Save</button>
+          </div>
         </div>
         <div className="cmt-info-grid">
           {INFO_FIELDS.map(([k, label]) => (
@@ -192,8 +342,64 @@ function CemeteryDetail({ cem, say, onSaved }) {
         </div>
       </section>
 
+      <CemeteryWork cem={cem} onOpenOrder={onOpenOrder} />
+
       <MapPages cem={cem} say={say} onChanged={onSaved} />
     </div>
+  )
+}
+
+// What's happening AT this cemetery — the open orders/leads and the permit
+// templates bound to it. Read-only glance; rows open the order.
+function CemeteryWork({ cem, onOpenOrder }) {
+  const [orders, setOrders] = useState(null)
+  const [templates, setTemplates] = useState(null)
+  const [showAll, setShowAll] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    Promise.all([listOrdersAtCemetery(cem.id), listPermitTemplatesForCemetery(cem.id)]).then(([o, t]) => {
+      if (!alive) return
+      setOrders(o); setTemplates(t)
+    }).catch(() => { if (alive) { setOrders([]); setTemplates([]) } })
+    return () => { alive = false }
+  }, [cem.id])
+
+  const rows = orders ? (showAll ? orders : orders.slice(0, 10)) : null
+  return (
+    <section className="cmt-card">
+      <h2 className="cmt-h2">Work here</h2>
+      {templates !== null && (
+        <div className="cmt-pinline" style={{ marginTop: 6 }}>
+          {templates.length === 0
+            ? <>No permit template bound to this cemetery yet — set one up in Permit Builder.</>
+            : <>Permit template{templates.length === 1 ? '' : 's'}: {templates.map(t => t.title).join(' · ')}</>}
+        </div>
+      )}
+      <div className="cmt-hint" style={{ margin: '10px 0 6px' }}>
+        {orders === null ? 'Loading open orders…' : `${orders.length} open order${orders.length === 1 ? '' : 's'} and lead${orders.length === 1 ? '' : 's'} at this cemetery.`}
+      </div>
+      {rows && rows.length > 0 && (
+        <div className="cmt-workrows">
+          {rows.map(o => {
+            const fam = o.primary_lastname || [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ') || '—'
+            return (
+              <button key={o.id} type="button" className="cmt-workrow" onClick={() => onOpenOrder?.(o.id)}
+                title="Open the order">
+                <span className="cmt-workrow-fam">{fam}</span>
+                <span className="cmt-workrow-num">{o.order_number || 'DRAFT'}</span>
+                <span className="cmt-workrow-status">{String(o.status || '').replace(/_/g, ' ')}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {orders && orders.length > 10 && (
+        <button type="button" className="cmt-btn cmt-btn-quiet" style={{ marginTop: 8 }} onClick={() => setShowAll(v => !v)}>
+          {showAll ? 'Show fewer' : `Show all ${orders.length}`}
+        </button>
+      )}
+    </section>
   )
 }
 
@@ -318,6 +524,21 @@ const CSS = `
   .cmt-btn-gold { background: #9A7209; border-color: #9A7209; color: #fff; }
   .cmt-btn-gold:hover:not(:disabled) { background: #7d5d07; color: #fff; }
   .cmt-btn-quiet { border-color: transparent; color: #8a8a85; }
+  .cmt-btn-danger { background: #b54040; border-color: #b54040; color: #fff; }
+  .cmt-btn-danger:hover:not(:disabled) { background: #983434; border-color: #983434; color: #fff; }
+  .cmt-btn-danger-quiet { border-color: transparent; color: #b3261e; }
+  .cmt-btn-danger-quiet:hover:not(:disabled) { border-color: #b3261e; color: #b3261e; }
+  .cmt-dup { background: #fffaf3; border: 1px solid #e6c98a; border-left: 4px solid #b8842a; border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .cmt-dup-head { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #8a5a12; }
+  .cmt-dup-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .cmt-dup-names { flex: 1; min-width: 200px; font-size: 13.5px; font-weight: 600; color: #2a2a27; white-space: pre-wrap; }
+  .cmt-workrows { display: flex; flex-direction: column; }
+  .cmt-workrow { display: flex; align-items: baseline; gap: 12px; font: inherit; text-align: left; background: none; border: none; border-top: 0.5px solid #f1efeb; padding: 7px 4px; cursor: pointer; }
+  .cmt-workrow:first-child { border-top: none; }
+  .cmt-workrow:hover { background: #faf8f4; }
+  .cmt-workrow-fam { font-size: 13.5px; font-weight: 600; color: #1e2d3d; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmt-workrow-num { font-size: 12px; color: #234c8a; font-family: ui-monospace, monospace; }
+  .cmt-workrow-status { font-size: 12px; color: #8a8a85; }
   .cmt-pinline { font-size: 12.5px; color: #6b6256; margin-top: 8px; }
   .cmt-pinline a { color: #9A7209; font-weight: 700; }
   .cmt-hint { font-size: 12px; color: #8a8a85; margin-bottom: 12px; }

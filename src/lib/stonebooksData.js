@@ -3539,6 +3539,88 @@ export async function countCemeteryMaps() {
   return m
 }
 
+// ── CEMETERY MERGE (2026-07-22) — fold a duplicate into the real row ─────────
+// Every table that references cemeteries, from the prod FK audit + the
+// FK-less permit_docs.cemetery_id: orders, permit_templates, permit_docs,
+// cemetery_maps, work_batches.destination_cemetery_id. The 2026-07-06
+// merge_cemetery_by_id SQL function predates the permit/maps tables — this
+// client-side path is the one that covers everything. Keep the list in
+// lockstep when a new cemetery_id column appears.
+const CEMETERY_REFS = [
+  ['orders', 'cemetery_id'],
+  ['permit_templates', 'cemetery_id'],
+  ['permit_docs', 'cemetery_id'],
+  ['cemetery_maps', 'cemetery_id'],
+  ['work_batches', 'destination_cemetery_id'],
+]
+export async function cemeteryRefCounts(cemeteryId) {
+  if (!cemeteryId) return null
+  const one = async ([table, col]) => {
+    const { count, error } = await supabase.from(table)
+      .select('id', { count: 'exact', head: true }).eq(col, cemeteryId)
+    return error ? 0 : (count || 0)
+  }
+  const [orders, templates, docs, maps, batches] = await Promise.all(CEMETERY_REFS.map(one))
+  return { orders, templates, docs, maps, batches, total: orders + templates + docs + maps + batches }
+}
+// Merge: blank-fill the keeper's info from the duplicate (never overwrite),
+// re-point every referencing row, then delete the duplicate. Ordered so a
+// mid-way failure leaves BOTH rows intact and the merge safely re-runnable.
+export async function mergeCemeteries(fromId, toId) {
+  if (!fromId || !toId) return { ok: false, error: 'Pick both cemeteries.' }
+  if (fromId === toId) return { ok: false, error: 'That is the same cemetery twice.' }
+  const { data: rows, error: rErr } = await supabase.from('cemeteries').select('*').in('id', [fromId, toId])
+  if (rErr) return { ok: false, error: rErr.message }
+  const from = (rows || []).find(r => r.id === fromId)
+  const to = (rows || []).find(r => r.id === toId)
+  if (!from || !to) return { ok: false, error: 'Cemetery not found.' }
+  const FILL = ['address', 'city', 'state', 'zip', 'contact_phone', 'contact_email', 'website',
+    'drive_link', 'pin_lat', 'pin_lng', 'pin_set_by', 'pin_set_at',
+    'geocoded_lat', 'geocoded_lng', 'region_tag']
+  const patch = {}
+  for (const k of FILL) {
+    const kept = to[k]
+    const dup = from[k]
+    if ((kept === null || kept === undefined || kept === '') && dup !== null && dup !== undefined && dup !== '') patch[k] = dup
+  }
+  if (from.notes && String(from.notes).trim()) {
+    patch.notes = [to.notes, `[merged from "${from.name}"] ${String(from.notes).trim()}`].filter(Boolean).join('\n')
+  }
+  if (Object.keys(patch).length) {
+    const { error } = await supabase.from('cemeteries').update(patch).eq('id', toId).eq('tenant_id', TENANT_ID)
+    if (error) return { ok: false, error: `Could not carry info onto the keeper: ${error.message}` }
+  }
+  const moved = {}
+  for (const [table, col] of CEMETERY_REFS) {
+    const { data, error } = await supabase.from(table).update({ [col]: toId }).eq(col, fromId).select('id')
+    if (error) return { ok: false, error: `Re-pointing ${table} failed: ${error.message}. Nothing was deleted — fix and run the merge again.` }
+    moved[table] = (data || []).length
+  }
+  const { error: delErr } = await supabase.from('cemeteries').delete().eq('id', fromId).eq('tenant_id', TENANT_ID)
+  if (delErr) return { ok: false, error: `Everything re-pointed, but the duplicate row would not delete: ${delErr.message}` }
+  return { ok: true, moved }
+}
+// The cemetery's open work — the detail card's "who's here" list.
+export async function listOrdersAtCemetery(cemeteryId, { limit = 80 } = {}) {
+  if (!cemeteryId) return []
+  const { data, error } = await supabase.from('orders')
+    .select('id, order_number, primary_lastname, status, customer:customers(first_name, last_name)')
+    .eq('cemetery_id', cemeteryId)
+    .or('archived.is.null,archived.eq.false')
+    .not('status', 'in', '(closed,cancelled)')
+    .order('updated_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.warn('[cem] listOrdersAtCemetery:', error.message); return [] }
+  return data || []
+}
+export async function listPermitTemplatesForCemetery(cemeteryId) {
+  if (!cemeteryId) return []
+  const { data, error } = await supabase.from('permit_templates')
+    .select('id, title').eq('cemetery_id', cemeteryId).eq('archived', false).order('title')
+  if (error) { console.warn('[cem] listPermitTemplatesForCemetery:', error.message); return [] }
+  return data || []
+}
+
 // ── FORMATTERS ───────────────────────────────────────────────────────────────
 
 export function fmtUSD(n, opts = {}) {
