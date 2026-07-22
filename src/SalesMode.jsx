@@ -1414,6 +1414,25 @@ async function upsertCustomer(customer) {
   return { data, error }
 }
 
+// Auto-casing for NEW cemetery names (Paul 2026-07-22, after the 22-row
+// ALL-CAPS cleanup): only shouty (all-caps) or all-lowercase input is
+// normalized — deliberate mixed case ("McClellan") passes through untouched.
+// Mirrors prod's title_case_cemetery(): Title Case, small connector words
+// lowercase, St./Mt. with the period.
+function titleCaseCemeteryName(raw) {
+  const name = String(raw || '').trim()
+  if (!name || !/[a-zA-Z]/.test(name)) return name
+  const shouty = name === name.toUpperCase() || name === name.toLowerCase()
+  if (!shouty) return name
+  const SMALL = new Set(['of', 'the', 'and', 'at', 'on', 'in', 'for'])
+  return name.toLowerCase().split(/\s+/).map((w, i) => {
+    if (i > 0 && SMALL.has(w)) return w
+    if (w === 'st' || w === 'st.') return 'St.'
+    if (w === 'mt' || w === 'mt.') return 'Mt.'
+    return w.replace(/^./, ch => ch.toUpperCase())
+  }).join(' ')
+}
+
 // Upsert a cemetery; returns { data, error }.
 async function upsertCemetery(cem) {
   if (cem.id) {
@@ -1437,9 +1456,11 @@ async function upsertCemetery(cem) {
       .from('cemeteries').select('*').ilike('name', name).limit(1).maybeSingle()
     if (existing?.id) return { data: existing, error: null }
   }
+  const newRow = cemeteryToRow(cem)
+  if (newRow.name) newRow.name = titleCaseCemeteryName(newRow.name)
   const { data, error } = await supabase
     .from('cemeteries')
-    .insert(cemeteryToRow(cem))
+    .insert(newRow)
     .select()
     .single()
   if (error) {

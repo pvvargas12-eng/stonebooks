@@ -3539,6 +3539,50 @@ export async function countCemeteryMaps() {
   return m
 }
 
+// ── CEMETERY MAP PINS (2026-07-22) — a grave pin on a map page ──────────────
+// Each pin belongs to an ORDER. Visibility is READ-time: pins whose order is
+// closed/cancelled/archived are filtered out here, so closing an order clears
+// its pins everywhere (Paul's rule) and reopening brings them back. Hard
+// order deletes CASCADE the pins away.
+export async function listMapPins(cemeteryId) {
+  if (!cemeteryId) return []
+  const { data, error } = await supabase.from('cemetery_map_pins')
+    .select('*, order:orders(id, order_number, primary_lastname, status, archived)')
+    .eq('cemetery_id', cemeteryId)
+  if (error) { console.warn('[cem] listMapPins:', error.message); return [] }
+  return (data || []).filter(p =>
+    p.order && !['closed', 'cancelled'].includes(p.order.status) && p.order.archived !== true)
+}
+export async function addMapPin({ cemeteryId, mapId, orderId, x, y, label = null, createdBy = null }) {
+  if (!cemeteryId || !mapId || !orderId) return { ok: false, error: 'Missing pin target' }
+  const fx = Math.min(1, Math.max(0, Number(x) || 0))
+  const fy = Math.min(1, Math.max(0, Number(y) || 0))
+  const { data, error } = await supabase.from('cemetery_map_pins').insert({
+    cemetery_id: cemeteryId, map_id: mapId, order_id: orderId,
+    x: fx, y: fy, label: label || null, created_by: createdBy,
+  }).select('*, order:orders(id, order_number, primary_lastname, status, archived)').single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, pin: data }
+}
+export async function deleteMapPin(id) {
+  if (!id) return { ok: false, error: 'Missing pin' }
+  const { error } = await supabase.from('cemetery_map_pins').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+// Completed work at a cemetery — the "we've been here before" reference.
+export async function listInstallHistoryAtCemetery(cemeteryId, { limit = 100 } = {}) {
+  if (!cemeteryId) return []
+  const { data, error } = await supabase.from('orders')
+    .select('id, order_number, primary_lastname, status, signed_at, target_completion_date, customer:customers(first_name, last_name)')
+    .eq('cemetery_id', cemeteryId)
+    .in('status', ['installed', 'closed'])
+    .order('updated_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.warn('[cem] listInstallHistoryAtCemetery:', error.message); return [] }
+  return data || []
+}
+
 // ── CEMETERY MERGE (2026-07-22) — fold a duplicate into the real row ─────────
 // Every table that references cemeteries, from the prod FK audit + the
 // FK-less permit_docs.cemetery_id: orders, permit_templates, permit_docs,

@@ -15,8 +15,13 @@ import {
   listCemeteriesWithPermit, updateCemeteryPermit,
   listCemeteryMaps, addCemeteryMap, updateCemeteryMap, deleteCemeteryMap, countCemeteryMaps,
   cemeteryRefCounts, mergeCemeteries, listOrdersAtCemetery, listPermitTemplatesForCemetery,
+  listMapPins, addMapPin, deleteMapPin, listInstallHistoryAtCemetery,
   getCurrentStaffName,
 } from './lib/stonebooksData'
+
+const famOfOrder = (o) => o?.primary_lastname
+  || [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
+  || o?.order_number || '—'
 
 // Duplicate scent: lowercase, strip punctuation, Saint→St / Mount→Mt, drop the
 // suffix words (cemetery/memorial/park/…) — "ALPINE" and "Alpine Cemetery"
@@ -238,6 +243,14 @@ function MergeModal({ list, initialKeepId, initialAwayId, say, onClose, onMerged
 }
 
 function CemeteryDetail({ cem, say, onSaved, onOpenOrder, onStartMerge }) {
+  // Open orders/leads here — shared by the Work card (list) and the map
+  // viewer (the grave-pin picker). One fetch.
+  const [openOrders, setOpenOrders] = useState(null)
+  useEffect(() => {
+    let alive = true
+    listOrdersAtCemetery(cem.id).then(o => { if (alive) setOpenOrders(o || []) }).catch(() => { if (alive) setOpenOrders([]) })
+    return () => { alive = false }
+  }, [cem.id])
   const [draft, setDraft] = useState(() => {
     const d = {}
     for (const [k] of INFO_FIELDS) d[k] = cem[k] || ''
@@ -342,30 +355,34 @@ function CemeteryDetail({ cem, say, onSaved, onOpenOrder, onStartMerge }) {
         </div>
       </section>
 
-      <CemeteryWork cem={cem} onOpenOrder={onOpenOrder} />
+      <CemeteryWork cem={cem} openOrders={openOrders} onOpenOrder={onOpenOrder} />
 
-      <MapPages cem={cem} say={say} onChanged={onSaved} />
+      <MapPages cem={cem} say={say} onChanged={onSaved} openOrders={openOrders} onOpenOrder={onOpenOrder} />
     </div>
   )
 }
 
-// What's happening AT this cemetery — the open orders/leads and the permit
-// templates bound to it. Read-only glance; rows open the order.
-function CemeteryWork({ cem, onOpenOrder }) {
-  const [orders, setOrders] = useState(null)
+// What's happening AT this cemetery — open orders/leads, the permit templates
+// bound to it, and the install HISTORY (completed work — "we've been here").
+function CemeteryWork({ cem, openOrders, onOpenOrder }) {
   const [templates, setTemplates] = useState(null)
+  const [history, setHistory] = useState(null)
   const [showAll, setShowAll] = useState(false)
+  const [showAllHist, setShowAllHist] = useState(false)
 
   useEffect(() => {
     let alive = true
-    Promise.all([listOrdersAtCemetery(cem.id), listPermitTemplatesForCemetery(cem.id)]).then(([o, t]) => {
+    Promise.all([listPermitTemplatesForCemetery(cem.id), listInstallHistoryAtCemetery(cem.id)]).then(([t, h]) => {
       if (!alive) return
-      setOrders(o); setTemplates(t)
-    }).catch(() => { if (alive) { setOrders([]); setTemplates([]) } })
+      setTemplates(t); setHistory(h)
+    }).catch(() => { if (alive) { setTemplates([]); setHistory([]) } })
     return () => { alive = false }
   }, [cem.id])
 
+  const orders = openOrders
   const rows = orders ? (showAll ? orders : orders.slice(0, 10)) : null
+  const histRows = history ? (showAllHist ? history : history.slice(0, 10)) : null
+  const yearOf = (o) => String(o.target_completion_date || o.signed_at || '').slice(0, 4) || null
   return (
     <section className="cmt-card">
       <h2 className="cmt-h2">Work here</h2>
@@ -381,17 +398,14 @@ function CemeteryWork({ cem, onOpenOrder }) {
       </div>
       {rows && rows.length > 0 && (
         <div className="cmt-workrows">
-          {rows.map(o => {
-            const fam = o.primary_lastname || [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ') || '—'
-            return (
-              <button key={o.id} type="button" className="cmt-workrow" onClick={() => onOpenOrder?.(o.id)}
-                title="Open the order">
-                <span className="cmt-workrow-fam">{fam}</span>
-                <span className="cmt-workrow-num">{o.order_number || 'DRAFT'}</span>
-                <span className="cmt-workrow-status">{String(o.status || '').replace(/_/g, ' ')}</span>
-              </button>
-            )
-          })}
+          {rows.map(o => (
+            <button key={o.id} type="button" className="cmt-workrow" onClick={() => onOpenOrder?.(o.id)}
+              title="Open the order">
+              <span className="cmt-workrow-fam">{famOfOrder(o)}</span>
+              <span className="cmt-workrow-num">{o.order_number || 'DRAFT'}</span>
+              <span className="cmt-workrow-status">{String(o.status || '').replace(/_/g, ' ')}</span>
+            </button>
+          ))}
         </div>
       )}
       {orders && orders.length > 10 && (
@@ -399,13 +413,36 @@ function CemeteryWork({ cem, onOpenOrder }) {
           {showAll ? 'Show fewer' : `Show all ${orders.length}`}
         </button>
       )}
+
+      <div className="cmt-hint" style={{ margin: '16px 0 6px', fontWeight: 700, color: '#6b6256' }}>
+        {history === null ? 'Loading install history…' : `Install history — ${history.length} completed job${history.length === 1 ? '' : 's'} here.`}
+      </div>
+      {histRows && histRows.length > 0 && (
+        <div className="cmt-workrows">
+          {histRows.map(o => (
+            <button key={o.id} type="button" className="cmt-workrow" onClick={() => onOpenOrder?.(o.id)}
+              title="Open the order">
+              <span className="cmt-workrow-fam">{famOfOrder(o)}</span>
+              <span className="cmt-workrow-num">{o.order_number || '—'}</span>
+              <span className="cmt-workrow-status">{String(o.status || '').replace(/_/g, ' ')}{yearOf(o) ? ` · ${yearOf(o)}` : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {history && history.length > 10 && (
+        <button type="button" className="cmt-btn cmt-btn-quiet" style={{ marginTop: 8 }} onClick={() => setShowAllHist(v => !v)}>
+          {showAllHist ? 'Show fewer' : `Show all ${history.length}`}
+        </button>
+      )}
     </section>
   )
 }
 
-// The map pages — bulk upload, label each picture, delete with a confirm.
-function MapPages({ cem, say, onChanged }) {
+// The map pages — bulk upload, label each picture, delete with a confirm,
+// and GRAVE PINS on every page (view/add/remove in the full-size viewer).
+function MapPages({ cem, say, onChanged, openOrders, onOpenOrder }) {
   const [maps, setMaps] = useState(null)
+  const [pins, setPins] = useState([])
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(null)   // '3 / 12'
   const [labels, setLabels] = useState({})         // id -> draft label
@@ -414,6 +451,34 @@ function MapPages({ cem, say, onChanged }) {
 
   const reload = async () => setMaps(await listCemeteryMaps(cem.id))
   useEffect(() => { reload() }, [cem.id])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    let alive = true
+    listMapPins(cem.id).then(p => { if (alive) setPins(p || []) }).catch(() => { if (alive) setPins([]) })
+    return () => { alive = false }
+  }, [cem.id])
+  const pinCount = useMemo(() => {
+    const m = new Map()
+    for (const p of pins) m.set(p.map_id, (m.get(p.map_id) || 0) + 1)
+    return m
+  }, [pins])
+
+  const addPin = async (map, orderId, x, y) => {
+    const o = (openOrders || []).find(z => z.id === orderId)
+    const staff = await Promise.resolve(getCurrentStaffName()).catch(() => null)
+    const r = await addMapPin({
+      cemeteryId: cem.id, mapId: map.id, orderId, x, y,
+      label: o ? famOfOrder(o) : null,
+      createdBy: typeof staff === 'string' ? staff : null,
+    })
+    if (!r.ok) { say(r.error, true); return }
+    setPins(prev => [...prev, r.pin])
+    say('Grave pin dropped — it clears on its own when the order closes.')
+  }
+  const removePin = async (pin) => {
+    const r = await deleteMapPin(pin.id)
+    if (!r.ok) { say(r.error, true); return }
+    setPins(prev => prev.filter(p => p.id !== pin.id))
+  }
 
   const onFiles = async (files) => {
     if (!files?.length) return
@@ -467,7 +532,7 @@ function MapPages({ cem, say, onChanged }) {
         <div className="cmt-mapsgrid">
           {maps.map(m => (
             <div key={m.id} className="cmt-mapcard">
-              <button type="button" className="cmt-mapimg" onClick={() => setViewer(m)} title="View full size">
+              <button type="button" className="cmt-mapimg" onClick={() => setViewer(m)} title="View full size + grave pins">
                 <img src={m.image_url} alt={m.label || 'Map page'} loading="lazy" />
               </button>
               <input className="cmt-input cmt-maplabel" placeholder="Label — e.g. Section C blocks 1-9"
@@ -475,18 +540,92 @@ function MapPages({ cem, say, onChanged }) {
                 onChange={e => setLabels(prev => ({ ...prev, [m.id]: e.target.value }))}
                 onBlur={() => saveLabel(m)}
                 onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }} />
-              <button type="button" className="cmt-mapdel" onClick={() => remove(m)} title="Delete this page">Delete</button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span className="cmt-pincount">{pinCount.get(m.id) ? `${pinCount.get(m.id)} grave pin${pinCount.get(m.id) === 1 ? '' : 's'}` : ''}</span>
+                <button type="button" className="cmt-mapdel" onClick={() => remove(m)} title="Delete this page">Delete</button>
+              </div>
             </div>
           ))}
         </div>
       )}
       {viewer && (
-        <div className="cmt-viewer" onClick={() => setViewer(null)}>
-          <img src={viewer.image_url} alt={viewer.label || 'Map'} />
-          <div className="cmt-viewer-label">{viewer.label || 'Map page'} — click anywhere to close</div>
-        </div>
+        <PinViewer
+          map={viewer}
+          pins={pins.filter(p => p.map_id === viewer.id)}
+          openOrders={openOrders || []}
+          onAddPin={(orderId, x, y) => addPin(viewer, orderId, x, y)}
+          onRemovePin={removePin}
+          onOpenOrder={onOpenOrder}
+          onClose={() => setViewer(null)}
+        />
       )}
     </section>
+  )
+}
+
+// Full-size map page with the grave pins on it. Pick an order, click the map
+// where the grave is — the pin carries the family name and disappears on its
+// own once that order closes out (read-time filter in listMapPins).
+function PinViewer({ map, pins, openOrders, onAddPin, onRemovePin, onOpenOrder, onClose }) {
+  const [placingFor, setPlacingFor] = useState('')   // orderId mid-placement
+  const [selPinId, setSelPinId] = useState(null)
+  const wrapRef = useRef(null)
+  const selPin = pins.find(p => p.id === selPinId) || null
+
+  const clickMap = (e) => {
+    if (!placingFor || !wrapRef.current) { setSelPinId(null); return }
+    const rect = wrapRef.current.getBoundingClientRect()
+    const x = (e.clientX - rect.left) / rect.width
+    const y = (e.clientY - rect.top) / rect.height
+    onAddPin(placingFor, x, y)
+    setPlacingFor('')
+  }
+
+  return (
+    <div className="cmt-viewer" style={{ cursor: 'default' }} onClick={onClose}>
+      <div className="cmt-pv" onClick={e => e.stopPropagation()}>
+        <div className="cmt-pv-bar">
+          <strong className="cmt-pv-title">{map.label || 'Map page'}</strong>
+          <select className="cmt-input" style={{ maxWidth: 260 }} value={placingFor}
+            onChange={e => { setPlacingFor(e.target.value); setSelPinId(null) }}>
+            <option value="">+ Drop a grave pin — pick the order</option>
+            {openOrders.map(o => (
+              <option key={o.id} value={o.id}>{famOfOrder(o)}{o.order_number ? ` · ${o.order_number}` : ''}</option>
+            ))}
+          </select>
+          {placingFor && <span className="cmt-pv-hint">Now click the map where the grave is</span>}
+          <button type="button" className="cmt-btn" onClick={onClose}>Close</button>
+        </div>
+        <div className="cmt-pv-scroll">
+          <div ref={wrapRef} className={`cmt-pv-wrap${placingFor ? ' placing' : ''}`} onClick={clickMap}>
+            <img src={map.image_url} alt={map.label || 'Map'} draggable={false} />
+            {pins.map(p => (
+              <button key={p.id} type="button"
+                className={`cmt-pin${selPinId === p.id ? ' on' : ''}`}
+                style={{ left: `${(Number(p.x) || 0) * 100}%`, top: `${(Number(p.y) || 0) * 100}%` }}
+                title={p.label || p.order?.primary_lastname || 'Grave pin'}
+                onClick={e => { e.stopPropagation(); setSelPinId(id => id === p.id ? null : p.id); setPlacingFor('') }}>
+                <span className="cmt-pin-dot" />
+                <span className="cmt-pin-tag">{p.label || p.order?.primary_lastname || 'Pin'}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        {selPin && (
+          <div className="cmt-pv-bar cmt-pv-foot">
+            <strong className="cmt-pv-title">{selPin.label || selPin.order?.primary_lastname || 'Grave pin'}</strong>
+            <span className="cmt-pv-hint">{selPin.order?.order_number || ''}</span>
+            {onOpenOrder && selPin.order?.id && (
+              <button type="button" className="cmt-btn" onClick={() => onOpenOrder(selPin.order.id)}>Open order</button>
+            )}
+            <button type="button" className="cmt-btn cmt-btn-danger-quiet"
+              onClick={() => { onRemovePin(selPin); setSelPinId(null) }}>
+              Remove pin
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -553,4 +692,18 @@ const CSS = `
   .cmt-viewer { position: fixed; inset: 0; z-index: 1300; background: rgba(15,20,25,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; cursor: zoom-out; }
   .cmt-viewer img { max-width: 96vw; max-height: 88vh; object-fit: contain; border-radius: 6px; background: #fff; }
   .cmt-viewer-label { color: #fff; font-size: 13px; }
+  .cmt-pincount { font-size: 11px; font-weight: 700; color: #9A7209; }
+  .cmt-pv { background: #fff; border-radius: 12px; width: min(980px, 96vw); max-height: 92vh; display: flex; flex-direction: column; overflow: hidden; }
+  .cmt-pv-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 0.5px solid #e6e2d8; flex-wrap: wrap; }
+  .cmt-pv-foot { border-bottom: none; border-top: 0.5px solid #e6e2d8; }
+  .cmt-pv-title { font-size: 14px; color: #1e2d3d; flex: 1; min-width: 120px; }
+  .cmt-pv-hint { font-size: 12px; font-weight: 700; color: #9A7209; }
+  .cmt-pv-scroll { overflow: auto; }
+  .cmt-pv-wrap { position: relative; }
+  .cmt-pv-wrap img { display: block; width: 100%; height: auto; max-width: none; max-height: none; border-radius: 0; }
+  .cmt-pv-wrap.placing { cursor: crosshair; }
+  .cmt-pin { position: absolute; transform: translate(-50%, -100%); background: none; border: none; padding: 0 0 2px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 1px; z-index: 2; }
+  .cmt-pin-dot { width: 14px; height: 14px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: #9A7209; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+  .cmt-pin.on .cmt-pin-dot { background: #b3261e; }
+  .cmt-pin-tag { font-size: 10px; font-weight: 800; color: #16150F; background: rgba(255,255,255,0.92); border-radius: 4px; padding: 1px 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.35); white-space: nowrap; order: -1; }
 `
