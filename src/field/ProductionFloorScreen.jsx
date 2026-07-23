@@ -25,6 +25,18 @@ import { trackPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TR
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
 const TRACK_CHIP = { new_stone: 'NEW STONE', inscription: 'INSCRIPTION', bronze: 'BRONZE', door: 'DOORS' }
 const TYPE_LABEL = { die: 'Die', base: 'Base', inscription: 'Inscription', door: 'Door', bronze: 'Bronze' }
+const DAY_MS = 86400000
+
+// Order age in days (signed first, created fallback, piece created for trade).
+const ageDaysOf = (c, todayMs) => {
+  const t = Date.parse(c.order?.signed_at || c.order?.created_at || c.created_at || '')
+  if (!todayMs || !Number.isFinite(t)) return null
+  return Math.max(0, Math.floor((todayMs - t) / DAY_MS))
+}
+// Paul's age circle: under 2 months green, 2–5 amber, 5+ red.
+const AgeDot = ({ n }) => n == null ? null : (
+  <span className={`fl-chip ${n < 60 ? 'fl-c-good' : n < 150 ? 'fl-c-warn' : 'fl-c-bad'}`}>{n}d</span>
+)
 
 // Field grammar: families read ALL-CAPS. Same fallback chain as the desktop board.
 const famOf = (c) => String(
@@ -49,6 +61,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const [denyFor, setDenyFor] = useState(null)   // component id with the QC deny input open
   const [denyText, setDenyText] = useState('')
 
+  const [todayMs, setTodayMs] = useState(0)
   const load = useCallback(async () => {
     try {
       const [d, rec] = await Promise.all([
@@ -56,6 +69,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
         getBringUpReady().catch(() => ({ count: 0, readyByTrack: {}, byJob: new Map() })),
       ])
       setComps(d || []); setRecs(rec); setErr(null)
+      const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
     } catch (e) { setErr(e?.message || 'Could not load the floor.') }
   }, [])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
@@ -67,7 +81,10 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const phases = trackPhases(track)
   const readyOf = (c) => !!(c.job_id && recs.byJob.get(c.job_id)?.ready)
   const readyQueue = queue.filter(readyOf)
-  const queueSorted = [...queue].sort((a, b) => (readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
+  // Paul's queue order: all conditions met first, then oldest to newest.
+  const queueSorted = [...queue].sort((a, b) =>
+    ((readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
+    || ((ageDaysOf(b, todayMs) ?? -1) - (ageDaysOf(a, todayMs) ?? -1)))
   const actor = who?.name || null
 
   const matches = (c) => {
@@ -211,7 +228,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
             return (
               <div key={c.id} className="fl-row" style={{ cursor: 'default' }}>
                 <div className="fl-rowtop">
-                  <span className="fl-fam">{famOf(c)}</span>
+                  <span className="fl-fam">{famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} /></span>
                   {held ? <span className="fl-chip fl-c-bad">HELD</span>
                     : c.blocker ? <span className="fl-chip fl-c-warn">BLOCKED</span> : null}
                 </div>
@@ -277,7 +294,11 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                 return (
                   <div key={c.id} className="fl-row" style={{ cursor: 'default' }}>
                     <div className="fl-rowtop">
-                      <span className="fl-fam" style={{ fontSize: 14.5 }}>{famOf(c)}</span>
+                      <span className="fl-fam" style={{ fontSize: 14.5 }}
+                        role={c.job_id || c.order_id ? 'button' : undefined}
+                        onClick={() => openPiece(c)}>
+                        {famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} />
+                      </span>
                       <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
                         disabled={busyId === c.id} onClick={() => addToBucket(c)}>
                         {busyId === c.id ? '…' : 'ADD'}

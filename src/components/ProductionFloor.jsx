@@ -44,6 +44,24 @@ const permitContext = (c) => {
   return (s && s !== 'approved' && s !== 'not_required' && s !== 'unknown') ? permitStatusLabel(s) : null
 }
 
+// Order age in days (signed date first — production clocks start at contract;
+// created as fallback; the piece's own created_at for order-less trade work).
+const ageDaysOf = (c, todayMs) => {
+  const t = Date.parse(c.order?.signed_at || c.order?.created_at || c.created_at || '')
+  if (!todayMs || !Number.isFinite(t)) return null
+  return Math.max(0, Math.floor((todayMs - t) / DAY_MS))
+}
+// Paul's age circle: under 2 months green, 2–5 amber, 5+ red.
+const AgeDot = ({ n }) => n == null ? null : (
+  <span className={`pf-age ${n < 60 ? 'pf-age-g' : n < 150 ? 'pf-age-a' : 'pf-age-r'}`}
+    title={`${n} days old (from signing) — under 2 months green, 2–5 amber, 5+ red`}>{n}d</span>
+)
+
+// The board's place, remembered across an order round-trip (open an order →
+// Back → pick up where you left off). Module singleton — survives unmount,
+// resets on a full page reload, no storage APIs involved.
+const PF_MEM = { track: 'new_stone', queueOpen: false, addCol: null, addQ: '' }
+
 // ── Dashboard funnel ─────────────────────────────────────────────────────────
 export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
   const [components, setComponents] = useState(null)
@@ -114,12 +132,13 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   const [components, setComponents] = useState(null)
   const [todayMs, setTodayMs] = useState(0)
   const [err, setErr] = useState(null)
-  const [track, setTrack] = useState('new_stone')
-  const [queueOpen, setQueueOpen] = useState(false)
+  const [track, setTrack] = useState(() => PF_MEM.track)
+  const [queueOpen, setQueueOpen] = useState(() => PF_MEM.queueOpen)
   const [queueQ, setQueueQ] = useState('')
-  const [addCol, setAddCol] = useState(null)   // phase code the "+ Add" modal targets
-  const [addQ, setAddQ] = useState('')
+  const [addCol, setAddCol] = useState(() => PF_MEM.addCol)   // phase code the "+ Add" modal targets
+  const [addQ, setAddQ] = useState(() => PF_MEM.addQ)
   const [busyId, setBusyId] = useState(null)
+  useEffect(() => { PF_MEM.track = track; PF_MEM.queueOpen = queueOpen; PF_MEM.addCol = addCol; PF_MEM.addQ = addQ }, [track, queueOpen, addCol, addQ])
   // Per-job bring-up readiness (design approved + stone here/in stock +
   // contracted) — drives the red need-to-add numbers + queue-row chips.
   const [recs, setRecs] = useState(() => ({ count: 0, readyByTrack: {}, byJob: new Map() }))
@@ -146,8 +165,10 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   // Every add is still his click; nothing lands on the board by itself.
   const readyOf = (c) => !!(c.job_id && recs.byJob.get(c.job_id)?.ready)
   const readyQueue = queue.filter(readyOf)
-  // Ready pieces first wherever the queue is browsed, then keep queue order.
-  const queueSorted = [...queue].sort((a, b) => (readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
+  // Paul's queue order: all conditions met first, then oldest to newest.
+  const queueSorted = [...queue].sort((a, b) =>
+    ((readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
+    || ((ageDaysOf(b, todayMs) ?? -1) - (ageDaysOf(a, todayMs) ?? -1)))
   const phases = trackPhases(track)
   const counts = phases.map(p => floor.filter(c => c.current_phase === p).length)
   const bnIdx = counts.indexOf(Math.max(...counts))
@@ -157,6 +178,19 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
     if (!t) return true
     return [famOf(c), orderNoOf(c), cemOf(c), c.size, c.color].filter(Boolean).join(' ').toLowerCase().includes(t)
   }
+
+  // Queue-row name: clickable when there's an order — opens OrderDetail with
+  // "Production floor" as the Back destination (the board's place is held in
+  // PF_MEM, so Back lands exactly where Paul left off). Age circle beside it.
+  const rowName = (c) => (
+    <>
+      {c.order_id
+        ? <button type="button" className="pf-queue-fam pf-queue-fam-btn" title="Open the order — Back returns to the floor"
+            onClick={() => onOpenOrderDetail?.(c.order_id, 'production')}>{famOf(c)}</button>
+        : <span className="pf-queue-fam">{famOf(c)}</span>}
+      <AgeDot n={ageDaysOf(c, todayMs)} />
+    </>
+  )
 
   // Condition chips on queue rows — the same states Paul's Orders-table
   // dropdowns show, so he sees WHY a piece is or isn't ready right here.
@@ -234,7 +268,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
           <div className="pf-queue-list">
             {queueSorted.filter(c => matches(c, queueQ)).slice(0, 60).map(c => (
               <div key={c.id} className={`pf-queue-row${readyOf(c) ? ' pf-queue-row-ready' : ''}`}>
-                <span className="pf-queue-fam">{famOf(c)}</span>
+                {rowName(c)}
                 <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
                 {condChips(c)}
                 <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, phases[0])}>
@@ -295,7 +329,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
             <div className="pf-queue-list" style={{ maxHeight: '46vh' }}>
               {queueSorted.filter(c => matches(c, addQ)).slice(0, 40).map(c => (
                 <div key={c.id} className={`pf-queue-row${readyOf(c) ? ' pf-queue-row-ready' : ''}`}>
-                  <span className="pf-queue-fam">{famOf(c)}</span>
+                  {rowName(c)}
                   <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
                   {condChips(c)}
                   <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, addCol)}>
@@ -399,7 +433,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
             : <button type="button" onClick={() => openMode('block')}>Mark blocked</button>}
           <button type="button" onClick={() => openMode('note')}>Add / edit note</button>
           {comp.job_id && <button type="button" onClick={() => onOpenJob?.(comp.job_id)}>Open job</button>}
-          {comp.order_id && <button type="button" onClick={() => onOpenOrderDetail?.(comp.order_id)}>Open order</button>}
+          {comp.order_id && <button type="button" onClick={() => onOpenOrderDetail?.(comp.order_id, 'production')}>Open order</button>}
         </div>
       )}
     </div>
@@ -571,6 +605,12 @@ const PF_CSS = `
   .pf-queue-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
   .pf-queue-row { display: flex; align-items: center; gap: 10px; background: #151a22; border: 1px solid #232a35; border-radius: 7px; padding: 6px 10px; flex-wrap: wrap; }
   .pf-queue-fam { font-size: 12.5px; font-weight: 700; color: #f4f6fa; min-width: 110px; }
+  .pf-queue-fam-btn { font: inherit; font-size: 12.5px; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
+  .pf-queue-fam-btn:hover { color: #fbbf24; }
+  .pf-age { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; font-weight: 800; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+  .pf-age-g { color: #34d399; background: rgba(52,211,153,0.14); }
+  .pf-age-a { color: #fbbf24; background: rgba(251,191,36,0.14); }
+  .pf-age-r { color: #f87171; background: rgba(248,113,113,0.16); }
   .pf-queue-meta { flex: 1; font-size: 11px; color: #8b95a5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pf-queue-empty { font-size: 12px; color: #6f7a8a; padding: 10px; text-align: center; }
   .pf-modal-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(5,8,12,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }

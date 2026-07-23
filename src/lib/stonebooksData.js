@@ -5481,7 +5481,7 @@ export async function getProductionComponents() {
   const { data, error } = await supabase.from('job_components')
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
-      order:orders(id, order_number, primary_lastname, permit_status, customer:customers(last_name), cemetery:cemeteries(name)),
+      order:orders(id, order_number, primary_lastname, permit_status, signed_at, created_at, customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name),
       vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
     .order('track', { ascending: true }).order('sort_order', { ascending: true })
