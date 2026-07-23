@@ -6,6 +6,14 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint FLOOR-QUEUE-UX (2026-07-23, rounds 2-3) — SHIPPED: age circles, sort, order round-trip, lead exclusion
+
+Commits 80c528e + d209415, both Production success. Paul's picker feedback, desktop + phone in lockstep:
+
+- **Age circle** next to the name on every queue/picker row: days since `orders.signed_at` (created_at fallback; the piece's own created_at for order-less trade work) — **under 60d green / 60-150 amber / 150+ red** (`ageDaysOf` + `AgeDot`; getProductionComponents order embed gained signed_at/created_at). **Sort = all conditions met first, then oldest→newest** — both surfaces.
+- **Name click opens the order**: desktop queue/picker names are buttons → `onOpenOrderDetail(orderId, 'production')`; Stonebooks maps action 'production' → return label **"Production floor"** (and does NOT set orderDetailAction, which is for scroll targets). Board state (track/queueOpen/addCol/addQ) lives in module singleton `PF_MEM`, so Back → Jobs (subtab persisted = production) → board remounts exactly where he left off, modal re-open included. Phone: name-tap in the add sheet = the job drill; field tabs stay mounted so the sheet survives the round trip natively.
+- **Round 3 (Paul: "why am i seeing not contracted stones here"): known-not-contracted pieces are HARD-EXCLUDED** from the queue log + add pickers (the cut-list standing doctrine applied to the floor — the earlier red NOT CONTRACTED chip was the wrong call). `notLead` hides pieces whose byJob entry says contracted=false; no-job trade pieces stay (real work, no contract concept). Titles now scope-name the track ("Add to Ready to Bring Up · New Stone only"); the queue count line says "contracted work only". If getBringUpReady ever fails, byJob is empty → nothing is hidden (fail-open, never blanks the queue).
+
 ## Sprint FIELD-FLOOR (2026-07-23) — SHIPPED: the phone FLOOR tab is the real component floor
 
 Commit 9f8346b, Production success. Paul walking the shop with Collin: "i need to adjust these production queues on the field app... start with blast, i'll add every order to that list. same for the others." He'd flagged TWICE that the old field production screen (stone-ladder lanes: To order/In shop/Blasted/Foundation) wasn't his steps — those lanes are retired.
