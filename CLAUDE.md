@@ -6,6 +6,16 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint FIELD-FLOOR (2026-07-23) — SHIPPED: the phone FLOOR tab is the real component floor
+
+Commit 9f8346b, Production success. Paul walking the shop with Collin: "i need to adjust these production queues on the field app... start with blast, i'll add every order to that list. same for the others." He'd flagged TWICE that the old field production screen (stone-ladder lanes: To order/In shop/Blasted/Foundation) wasn't his steps — those lanes are retired.
+
+- **`src/field/ProductionFloorScreen.jsx` rewritten** on the desktop ProductionBoard's exact substrate: getProductionComponents + getBringUpReady, advance/reverse/setComponentOnFloor(+overrideComponentPhase for add-undo)/qcApprove/qcDeny/clearComponentQcIssue — writes stamp `source:'field'`, actor = the phone's picked person (who.name).
+- **IA:** track chips (NEW STONE/INSCRIPTION/BRONZE/DOORS, white = on-floor count, red = ready-to-add count) → phase bucket tiles (first bucket shows "N ready to add" red) → bucket list: ADVANCE/BACK verbs with the field-standard 8s undo (inverse op; add-undo returns to queue + restores prior phase), QC APPROVE/DENY-with-typed-issue/CLEAR ISSUE on quality_check (new_stone + door), HELD/BLOCKED chips, OPEN → job drill. **+ ADD per bucket** = fl-sheet over the queue, ready pieces first wearing the DESIGN/STONE/CONTRACTED condition chips (fl-c-good/warn/bad).
+- Hand-picked doctrine holds on the phone: the + ADD sheet is the only way pieces reach the floor.
+- **Tab availability:** FLOOR is default for Production/Installation departments; owner reaches it via MORE → "Not in your bar" or adds it in Settings → Staff → tabs (not ownerOnly — no registry change needed).
+- **Install flow verified, not changed:** Jobs → Installations (14-day batches) → stop → JobDetail → Finish: camera upload, "Mark installed" gated on ≥1 completion photo, undoable. Paul called this critical — it was already built (FIELD-MODE) and confirmed wired.
+
 ## Sprint BRING-UP-ALERT (2026-07-23) — SHIPPED: floor bring-up recommendations + cut-list stone-up alarm
 
 Commit bc5c8c3, Production success. Paul's conditions, verbatim: "for recommended things to bring up the conditions are design approved, stone arrived or in stock, contracted... then i want alerts for things that are ready or like stone is up but stencil is not cut."
