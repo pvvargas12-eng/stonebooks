@@ -67,6 +67,22 @@ function parseCreatedBy(notes) {
   return { createdBy, prNotes }
 }
 
+// Structured vendor-sheet cells (Paul's columns: Color · Type · Size · Specs).
+// New lines carry item_type/specs directly; legacy lines derive Type from the
+// resolved spec and fall back to top/sides (or the whole resolved spec when the
+// line has no stored size).
+function structuredOf(it, lineSpec) {
+  const isStock = !!it.is_stock || String(it.family_name || '').trim().toLowerCase() === 'stock'
+  return {
+    family: isStock ? 'STOCK' : (it.family_name || '—'),
+    isStock,
+    color: it.color || '—',
+    type: it.item_type || (isStock ? 'Stock' : isBaseSpec(lineSpec[it.id]) ? 'Base' : 'Die'),
+    size: it.size || '—',
+    specs: it.specs || it.spec_text || [it.top, it.sides].filter(Boolean).join('; ') || (!it.size ? (lineSpec[it.id] || '—') : '—'),
+  }
+}
+
 // ── Real PDF (letter, jsPDF manual layout, single Helvetica face) ─────────────
 async function generatePRPdf(o, items, lineSpec, kind = 'stone', attach = {}) {
   const K = prKind(kind)
@@ -103,44 +119,82 @@ async function generatePRPdf(o, items, lineSpec, kind = 'stone', attach = {}) {
   }
   y += 34
 
-  // Table columns — Family · Item · Qty (no Notes)
-  const famX = M, itemX = 188, qtyCX = 536
-  const itemW = qtyCX - 40 - itemX
-  const drawHeader = () => {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(60)
-    doc.text('FAMILY NAME', famX, y); doc.text(K.itemHeader.toUpperCase(), itemX, y)
-    doc.text('QTY', qtyCX, y, { align: 'center' })
-    y += 6
-    doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(M, y, RIGHT, y)
-    y += 12
-  }
-  drawHeader()
-
   const LH = 13
-  rowsArr.forEach((it, idx) => {
-    const itemLines = doc.splitTextToSize(pdfSafe(lineSpec[it.id] || '—'), itemW)
-    const att = attach[it.id] || ''
-    const famLines = doc.splitTextToSize(pdfSafe(it.family_name || '—'), itemX - famX - 8)
-    const rows = Math.max(itemLines.length + (att ? 1 : 0), famLines.length, 1)
-    const rowH = rows * LH + 8
-    if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
-    if (idx % 2 === 1) { doc.setFillColor(245, 245, 245); doc.rect(M - 6, y - 2, (RIGHT - M) + 12, rowH, 'F') }
-    const ty = y + 4
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(20)
-    famLines.forEach((ln, k) => doc.text(ln, famX, ty + 8 + k * LH))
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
-    itemLines.forEach((ln, k) => doc.text(ln, itemX, ty + 8 + k * LH))
-    if (att) {
-      const awaiting = /awaiting/i.test(att)
-      doc.setFont('helvetica', awaiting ? 'bold' : 'normal'); doc.setFontSize(8.5)
-      doc.setTextColor(awaiting ? 179 : 110, awaiting ? 38 : 110, awaiting ? 30 : 110)
-      doc.text(pdfSafe(att), itemX, ty + 8 + itemLines.length * LH)
+  const qtyCX = kind === 'stone' ? 540 : 536
+  if (kind === 'stone') {
+    // Paul's vendor-sheet columns: Family · Color · Type · Size · Specs · Qty.
+    const famX = M, colorX = 148, typeX = 224, sizeX = 272, specX = 390
+    const drawHeader = () => {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(60)
+      doc.text('FAMILY NAME', famX, y); doc.text('COLOR', colorX, y); doc.text('TYPE', typeX, y)
+      doc.text('SIZE', sizeX, y); doc.text('SPECS', specX, y)
+      doc.text('QTY', qtyCX, y, { align: 'center' })
+      y += 6
+      doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(M, y, RIGHT, y)
+      y += 12
     }
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
-    doc.text(String(it.quantity ?? 1), qtyCX, ty + 8, { align: 'center' })
-    y += rowH
-    doc.setDrawColor(228); doc.setLineWidth(0.5); doc.line(M, y, RIGHT, y)
-  })
+    drawHeader()
+    rowsArr.forEach((it, idx) => {
+      const s = structuredOf(it, lineSpec)
+      const famLines = doc.splitTextToSize(pdfSafe(s.family), colorX - famX - 8)
+      const colorLines = doc.splitTextToSize(pdfSafe(s.color), typeX - colorX - 8)
+      const sizeLines = doc.splitTextToSize(pdfSafe(s.size), specX - sizeX - 8)
+      const specLines = doc.splitTextToSize(pdfSafe(s.specs), qtyCX - 22 - specX)
+      const rows = Math.max(famLines.length, colorLines.length, sizeLines.length, specLines.length, 1)
+      const rowH = rows * LH + 8
+      if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
+      if (idx % 2 === 1) { doc.setFillColor(245, 245, 245); doc.rect(M - 6, y - 2, (RIGHT - M) + 12, rowH, 'F') }
+      const ty = y + 12
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
+      famLines.forEach((ln, k) => doc.text(ln, famX, ty + k * LH))
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(30)
+      colorLines.forEach((ln, k) => doc.text(ln, colorX, ty + k * LH))
+      doc.text(pdfSafe(s.type), typeX, ty)
+      sizeLines.forEach((ln, k) => doc.text(ln, sizeX, ty + k * LH))
+      specLines.forEach((ln, k) => doc.text(ln, specX, ty + k * LH))
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
+      doc.text(String(it.quantity ?? 1), qtyCX, ty, { align: 'center' })
+      y += rowH
+      doc.setDrawColor(228); doc.setLineWidth(0.5); doc.line(M, y, RIGHT, y)
+    })
+  } else {
+    // Photo / etching keep the single Item column.
+    const famX = M, itemX = 188
+    const itemW = qtyCX - 40 - itemX
+    const drawHeader = () => {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(60)
+      doc.text('FAMILY NAME', famX, y); doc.text(K.itemHeader.toUpperCase(), itemX, y)
+      doc.text('QTY', qtyCX, y, { align: 'center' })
+      y += 6
+      doc.setDrawColor(20); doc.setLineWidth(1.2); doc.line(M, y, RIGHT, y)
+      y += 12
+    }
+    drawHeader()
+    rowsArr.forEach((it, idx) => {
+      const itemLines = doc.splitTextToSize(pdfSafe(lineSpec[it.id] || '—'), itemW)
+      const att = attach[it.id] || ''
+      const famLines = doc.splitTextToSize(pdfSafe(it.family_name || '—'), itemX - famX - 8)
+      const rows = Math.max(itemLines.length + (att ? 1 : 0), famLines.length, 1)
+      const rowH = rows * LH + 8
+      if (y + rowH > PH - M - 80) { doc.addPage(); y = M; drawHeader() }
+      if (idx % 2 === 1) { doc.setFillColor(245, 245, 245); doc.rect(M - 6, y - 2, (RIGHT - M) + 12, rowH, 'F') }
+      const ty = y + 4
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(20)
+      famLines.forEach((ln, k) => doc.text(ln, famX, ty + 8 + k * LH))
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(30)
+      itemLines.forEach((ln, k) => doc.text(ln, itemX, ty + 8 + k * LH))
+      if (att) {
+        const awaiting = /awaiting/i.test(att)
+        doc.setFont('helvetica', awaiting ? 'bold' : 'normal'); doc.setFontSize(8.5)
+        doc.setTextColor(awaiting ? 179 : 110, awaiting ? 38 : 110, awaiting ? 30 : 110)
+        doc.text(pdfSafe(att), itemX, ty + 8 + itemLines.length * LH)
+      }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(20)
+      doc.text(String(it.quantity ?? 1), qtyCX, ty + 8, { align: 'center' })
+      y += rowH
+      doc.setDrawColor(228); doc.setLineWidth(0.5); doc.line(M, y, RIGHT, y)
+    })
+  }
 
   // Total
   y += 16
@@ -242,31 +296,65 @@ export default function StonePRPrint({ bulkOrderId, onClose, kind = 'stone' }) {
             <Meta label="Created By" value={createdBy || '—'} />
           </div>
 
-          <table className="prp-table">
-            <thead>
-              <tr>
-                <th className="prp-c-fam">Family Name</th>
-                <th className="prp-c-item">{K.itemHeader}</th>
-                <th className="prp-c-qty">Qty</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rowsArr.length === 0 && <tr><td colSpan={3} className="prp-empty-row">No line items.</td></tr>}
-              {rowsArr.map((it, idx) => (
-                <tr key={it.id || idx} className={idx % 2 === 1 ? 'prp-zebra' : ''}>
-                  <td className="prp-c-fam">{it.family_name || '—'}</td>
-                  <td className="prp-c-item">
-                    {lineSpec[it.id] || '—'}
-                    {attach[it.id] && <div className={`prp-attach ${/awaiting/i.test(attach[it.id]) ? 'prp-attach-warn' : ''}`}>{attach[it.id]}</div>}
-                  </td>
-                  <td className="prp-c-qty">{it.quantity ?? 1}</td>
+          {kind === 'stone' ? (
+            <table className="prp-table">
+              <thead>
+                <tr>
+                  <th className="prp-c-fam2">Family Name</th>
+                  <th className="prp-c-color">Color</th>
+                  <th className="prp-c-type">Type</th>
+                  <th className="prp-c-size">Size</th>
+                  <th>Specs</th>
+                  <th className="prp-c-qty">Qty</th>
                 </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr><td className="prp-total-l">Total pieces</td><td /><td className="prp-c-qty">{totalQty}</td></tr>
-            </tfoot>
-          </table>
+              </thead>
+              <tbody>
+                {rowsArr.length === 0 && <tr><td colSpan={6} className="prp-empty-row">No line items.</td></tr>}
+                {rowsArr.map((it, idx) => {
+                  const s = structuredOf(it, lineSpec)
+                  return (
+                    <tr key={it.id || idx} className={idx % 2 === 1 ? 'prp-zebra' : ''}>
+                      <td className="prp-c-fam2">{s.family}</td>
+                      <td className="prp-c-color">{s.color}</td>
+                      <td className="prp-c-type">{s.type}</td>
+                      <td className="prp-c-size prp-mono">{s.size}</td>
+                      <td className="prp-mono">{s.specs}</td>
+                      <td className="prp-c-qty">{it.quantity ?? 1}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr><td colSpan={4} className="prp-total-l">Total pieces</td><td /><td className="prp-c-qty">{totalQty}</td></tr>
+              </tfoot>
+            </table>
+          ) : (
+            <table className="prp-table">
+              <thead>
+                <tr>
+                  <th className="prp-c-fam">Family Name</th>
+                  <th className="prp-c-item">{K.itemHeader}</th>
+                  <th className="prp-c-qty">Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rowsArr.length === 0 && <tr><td colSpan={3} className="prp-empty-row">No line items.</td></tr>}
+                {rowsArr.map((it, idx) => (
+                  <tr key={it.id || idx} className={idx % 2 === 1 ? 'prp-zebra' : ''}>
+                    <td className="prp-c-fam">{it.family_name || '—'}</td>
+                    <td className="prp-c-item">
+                      {lineSpec[it.id] || '—'}
+                      {attach[it.id] && <div className={`prp-attach ${/awaiting/i.test(attach[it.id]) ? 'prp-attach-warn' : ''}`}>{attach[it.id]}</div>}
+                    </td>
+                    <td className="prp-c-qty">{it.quantity ?? 1}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr><td className="prp-total-l">Total pieces</td><td /><td className="prp-c-qty">{totalQty}</td></tr>
+              </tfoot>
+            </table>
+          )}
 
           {prNotes && (
             <div className="prp-notesblock"><span className="prp-notesblock-l">Notes:</span> {prNotes}</div>
@@ -328,6 +416,11 @@ const PRP_CSS = `
   .prp-zebra { background: #f5f5f5; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .prp-c-fam { font-weight: 700; font-size: 13.5px; width: 30%; }
   .prp-c-item { width: 58%; line-height: 1.5; }
+  .prp-c-fam2 { font-weight: 700; font-size: 13px; width: 18%; }
+  .prp-c-color { width: 13%; }
+  .prp-c-type { width: 9%; }
+  .prp-c-size { width: 20%; white-space: nowrap; }
+  .prp-mono { font-family: 'Courier New', monospace; font-size: 12.5px; }
   .prp-attach { font-size: 10.5px; color: #777; margin-top: 2px; }
   .prp-attach-warn { color: #b3261e; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
   .prp-c-qty { text-align: center; width: 56px; }

@@ -10,6 +10,7 @@ import { PR_KIND_LIST, prKind } from '../lib/prKinds'
 import StonePRBuilder from './StonePRBuilder'
 import StonePRPrint from './StonePRPrint'
 import StonePREditor from './StonePREditor'
+import StonePRWorkspace from './StonePRWorkspace'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -32,6 +33,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState(null)
   const [showBuilder, setShowBuilder] = useState(false)
+  const [showRecord, setShowRecord] = useState(false)
   const [printId, setPrintId] = useState(null)
   const [editId, setEditId] = useState(null)
   const [banner, setBanner] = useState(null)
@@ -87,7 +89,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
     load()
   }
   const doDelete = async (pr) => {
-    const tail = kind === 'stone' ? ' Any order it marked “stone ordered” reverts to not-ordered.' : ''
+    const tail = kind === 'stone' && !pr.recorded ? ' Any order it marked “stone ordered” reverts to not-ordered.' : pr.recorded ? ' Recorded PRs never touched orders, so nothing reverts.' : ''
     if (!window.confirm(`Delete ${pr.po_number || 'this PR'} permanently?\n\nThis removes the PR and its line items.${tail} This cannot be undone.`)) return
     setBusyId(pr.id); setBanner(null)
     const r = await deletePR(pr.id, kind)
@@ -114,10 +116,16 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
       <div className="ipr-head">
         <span className="ipr-sub">
           {kind === 'stone'
-            ? 'Stone purchase requests — print + send to a supplier, then Submit to mark its orders “stone ordered.”'
+            ? 'Stone purchase requests — print + send to a supplier, then Submit to mark its orders “stone ordered.” Recorded PRs document outside purchases and never touch orders.'
             : `${K.noun} purchase requests — print + send to your ${K.label.toLowerCase()} supplier.`}
         </span>
-        <button type="button" className="sb-btn-primary" onClick={() => setShowBuilder(true)}>+ New {K.noun} PR</button>
+        <span className="ipr-head-btns">
+          {kind === 'stone' && (
+            <button type="button" className="sb-btn-secondary" title="Document a PR that was already placed outside Stonebooks — lands as Ordered, receivable, never changes any order"
+              onClick={() => setShowRecord(true)}>Record existing Stone PR</button>
+          )}
+          <button type="button" className="sb-btn-primary" onClick={() => setShowBuilder(true)}>+ New {K.noun} PR</button>
+        </span>
       </div>
 
       {banner && <div className={`ipr-banner ipr-banner-${banner.kind}`}>{banner.text}<button type="button" className="ipr-banner-x" onClick={() => setBanner(null)}>×</button></div>}
@@ -142,11 +150,14 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
                     <td>{fmtDate(pr.placed_at)}</td>
                     <td>{fmtDate(pr.supplier_eta)}</td>
                     <td className="ipr-num">{itemCount(pr) ?? '—'}</td>
-                    <td><span className={`ipr-pill ipr-pill-${st}`}>{STATUS_LABEL[st]}</span></td>
+                    <td>
+                      <span className={`ipr-pill ipr-pill-${st}`}>{STATUS_LABEL[st]}</span>
+                      {pr.recorded && <span className="ipr-pill ipr-pill-recorded" title="Recorded outside purchase — never writes to orders">REC</span>}
+                    </td>
                     <td className="ipr-actions">
                       <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setPrintId(pr.id)}>Print</button>
                       {st !== 'received' && st !== 'cancelled' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setEditId(pr.id)}>Edit</button>}
-                      {(st === 'draft' || st === 'ordered') && <button type="button" className="ipr-link ipr-link-go" disabled={busyId === pr.id} onClick={() => doSubmit(pr)}>Submit</button>}
+                      {!pr.recorded && (st === 'draft' || st === 'ordered') && <button type="button" className="ipr-link ipr-link-go" disabled={busyId === pr.id} onClick={() => doSubmit(pr)}>Submit</button>}
                       {st === 'draft' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => markOrdered(pr)}>Mark ordered</button>}
                       {st === 'submitted' && <button type="button" className="ipr-link ipr-link-warn" disabled={busyId === pr.id} onClick={() => doCancel(pr)}>Cancel</button>}
                       <button type="button" className="ipr-link ipr-link-del" disabled={busyId === pr.id} onClick={() => doDelete(pr)}>Delete</button>
@@ -159,15 +170,32 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
         </div>
       )}
 
-      {showBuilder && (
+      {/* STONE PRs use the full-screen split workspace (Paul 2026-07-23);
+          photo/etching keep the compact builder/editor. */}
+      {showBuilder && (kind === 'stone' ? (
+        <StonePRWorkspace mode="new"
+          onClose={() => setShowBuilder(false)}
+          onSaved={(id) => { setShowBuilder(false); load(); if (id) setPrintId(id) }} />
+      ) : (
         <StonePRBuilder
           kind={kind}
           onClose={() => setShowBuilder(false)}
           onSaved={(id) => { setShowBuilder(false); load(); if (id) setPrintId(id) }}
         />
+      ))}
+      {showRecord && (
+        <StonePRWorkspace mode="record"
+          onClose={() => setShowRecord(false)}
+          onSaved={() => { setShowRecord(false); setBanner({ kind: 'ok', text: 'Recorded — the PR is on the books as Ordered and receivable. No order was touched; check Reconcile for differences.' }); load() }} />
       )}
       {printId && <StonePRPrint bulkOrderId={printId} kind={kind} onClose={() => setPrintId(null)} />}
-      {editId && <StonePREditor bulkOrderId={editId} kind={kind} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); setBanner({ kind: 'ok', text: 'PR lines updated.' }); load() }} />}
+      {editId && (kind === 'stone' ? (
+        <StonePRWorkspace mode="edit" bulkOrderId={editId}
+          onClose={() => setEditId(null)}
+          onSaved={() => { setEditId(null); setBanner({ kind: 'ok', text: 'PR updated.' }); load() }} />
+      ) : (
+        <StonePREditor bulkOrderId={editId} kind={kind} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); setBanner({ kind: 'ok', text: 'PR lines updated.' }); load() }} />
+      ))}
     </div>
   )
 }
@@ -193,6 +221,8 @@ const IPR_CSS = `
   .ipr-pill-ordered { background: #ede8f7; color: #6d49b8; }
   .ipr-pill-received { background: #e7f3ea; color: #1f7a3d; }
   .ipr-pill-cancelled { background: #f3e6e5; color: #b3261e; }
+  .ipr-pill-recorded { background: #ede8f7; color: #6d49b8; margin-left: 5px; }
+  .ipr-head-btns { display: flex; gap: 10px; flex-wrap: wrap; }
   .ipr-actions { display: flex; gap: 12px; flex-wrap: wrap; }
   .ipr-link { background: none; border: none; font: inherit; font-size: 13px; font-weight: 600; color: #9A7209; cursor: pointer; padding: 0; }
   .ipr-link:hover { text-decoration: underline; }

@@ -9941,21 +9941,27 @@ function _prNumber() {
 // Create a purchase request of any kind ('stone' | 'photo' | 'etching'): a
 // bulk_orders row (status=draft) + its line items. Stone/photo/etching all share
 // this path — the kind flows onto the header AND each item row.
-export async function createPR({ kind = 'stone', supplier = {}, placedAt = null, requestedDelivery = null, notes = null, createdBy = null, lines = [] } = {}) {
+// `recorded: true` = documenting a purchase that already happened OUTSIDE
+// Stonebooks (Paul's old paper/spreadsheet PRs): the PR lands as `status`
+// ('ordered' by default for recorded) and NEVER touches orders — submit is
+// refused and cancel/delete skip the milestone revert (see the guards below).
+export async function createPR({ kind = 'stone', supplier = {}, placedAt = null, requestedDelivery = null, notes = null, createdBy = null, lines = [], recorded = false, status = null } = {}) {
   const supplierName = supplier?.name?.trim()
   if (!supplierName) return { ok: false, error: 'A supplier is required.' }
   if (!Array.isArray(lines) || lines.length === 0) return { ok: false, error: 'Add at least one line item.' }
   const poNumber = _prNumber()
   const orderPayload = {
-    kind, supplier_name: supplierName, supplier_id: supplier?.id || null, status: 'draft',
+    kind, supplier_name: supplierName, supplier_id: supplier?.id || null,
+    status: status || (recorded ? 'ordered' : 'draft'),
     po_number: poNumber, supplier_eta: requestedDelivery || null,
     notes: [notes?.trim() || null, createdBy ? `Created by ${createdBy}` : null].filter(Boolean).join(' · ') || null,
   }
+  if (recorded) orderPayload.recorded = true
   if (placedAt) orderPayload.placed_at = placedAt
   try {
     let res = await supabase.from('bulk_orders').insert(orderPayload).select().single()
-    if (res.error && /supplier_id|status|column|could not find/i.test(res.error.message)) {
-      const { supplier_id, status, ...slim } = orderPayload   // eslint-disable-line no-unused-vars
+    if (res.error && /supplier_id|status|recorded|column|could not find/i.test(res.error.message)) {
+      const { supplier_id, status, recorded: _r, ...slim } = orderPayload   // eslint-disable-line no-unused-vars
       res = await supabase.from('bulk_orders').insert(slim).select().single()
     }
     if (res.error) return { ok: false, error: `bulk_orders header insert: ${res.error.message}`, stage: 'bulk_orders', dbError: res.error }
@@ -9965,12 +9971,15 @@ export async function createPR({ kind = 'stone', supplier = {}, placedAt = null,
       family_name: l.family_name?.trim() || null, order_id: l.order_id || null,
       color: l.color?.trim() || null, size: l.size?.trim() || null,
       top: l.top?.trim() || null, sides: l.sides?.trim() || null,
+      item_type: l.item_type?.trim() || null, specs: l.specs?.trim() || null,
+      is_stock: !!l.is_stock,
+      unit_price: (l.unit_price != null && l.unit_price !== '') ? Number(l.unit_price) : null,
       spec_text: l.spec_text?.trim() || null,
       quantity: Math.max(1, Number(l.quantity) || 1), notes: l.notes?.trim() || null,
     }))
     let itemErr = (await supabase.from('bulk_order_items').insert(itemRows)).error
-    if (itemErr && /spec_text|column|could not find/i.test(itemErr.message)) {
-      const slim = itemRows.map(({ spec_text, ...rest }) => rest)   // eslint-disable-line no-unused-vars
+    if (itemErr && /spec_text|item_type|specs|is_stock|unit_price|column|could not find/i.test(itemErr.message)) {
+      const slim = itemRows.map(({ spec_text, item_type, specs, is_stock, unit_price, ...rest }) => rest)   // eslint-disable-line no-unused-vars
       itemErr = (await supabase.from('bulk_order_items').insert(slim)).error
     }
     if (itemErr) return { ok: false, error: `bulk_order_items insert (header ${poNumber} saved): ${itemErr.message}`, stage: 'bulk_order_items', dbError: itemErr, bulkOrderId: boId }
@@ -10017,12 +10026,15 @@ export async function addBulkOrderItem(bulkOrderId, line = {}, kind = 'stone') {
       family_name: line.family_name?.trim() || null, order_id: line.order_id || null,
       color: line.color?.trim() || null, size: line.size?.trim() || null,
       top: line.top?.trim() || null, sides: line.sides?.trim() || null,
+      item_type: line.item_type?.trim() || null, specs: line.specs?.trim() || null,
+      is_stock: !!line.is_stock,
+      unit_price: (line.unit_price != null && line.unit_price !== '') ? Number(line.unit_price) : null,
       spec_text: line.spec_text?.trim() || null,
       quantity: Math.max(1, Number(line.quantity) || 1), notes: line.notes?.trim() || null,
     }
     let res = await supabase.from('bulk_order_items').insert(row).select().single()
-    if (res.error && /spec_text|column|could not find/i.test(res.error.message)) {
-      const { spec_text, ...slim } = row   // eslint-disable-line no-unused-vars
+    if (res.error && /spec_text|item_type|specs|is_stock|unit_price|column|could not find/i.test(res.error.message)) {
+      const { spec_text, item_type, specs, is_stock, unit_price, ...slim } = row   // eslint-disable-line no-unused-vars
       res = await supabase.from('bulk_order_items').insert(slim).select().single()
     }
     if (res.error) return { ok: false, error: res.error.message }
@@ -10037,10 +10049,19 @@ export async function updateBulkOrderItem(itemId, patch = {}) {
     if (patch.spec_text !== undefined) row.spec_text = (patch.spec_text || '').trim() || null
     if (patch.family_name !== undefined) row.family_name = (patch.family_name || '').trim() || null
     if (patch.notes !== undefined) row.notes = (patch.notes || '').trim() || null
+    if (patch.color !== undefined) row.color = (patch.color || '').trim() || null
+    if (patch.size !== undefined) row.size = (patch.size || '').trim() || null
+    if (patch.item_type !== undefined) row.item_type = (patch.item_type || '').trim() || null
+    if (patch.specs !== undefined) row.specs = (patch.specs || '').trim() || null
+    if (patch.is_stock !== undefined) row.is_stock = !!patch.is_stock
+    if (patch.unit_price !== undefined) row.unit_price = (patch.unit_price != null && patch.unit_price !== '') ? Number(patch.unit_price) : null
+    // order_id: linking a PR line to an order (Reconcile / workspace rail) —
+    // a PR-side write only, never an order write.
+    if (patch.order_id !== undefined) row.order_id = patch.order_id || null
     if (Object.keys(row).length === 0) return { ok: true }
     let { error } = await supabase.from('bulk_order_items').update(row).eq('id', itemId)
-    if (error && ('spec_text' in row) && /spec_text|column|could not find/i.test(error.message)) {
-      const { spec_text, ...rest } = row   // eslint-disable-line no-unused-vars
+    if (error && /spec_text|item_type|specs|is_stock|unit_price|column|could not find/i.test(error.message)) {
+      const { spec_text, item_type, specs, is_stock, unit_price, ...rest } = row   // eslint-disable-line no-unused-vars
       if (Object.keys(rest).length) ({ error } = await supabase.from('bulk_order_items').update(rest).eq('id', itemId))
       else error = null
     }
@@ -10099,15 +10120,44 @@ async function _setStoneOrderedForPR(bulkOrderId, target, { actorUserId = null, 
   return { marked, orderCount: orderIds.length, error: milestoneError }
 }
 
+// Header fetch shared by the guards below — recorded column tolerant of the
+// pre-migration schema.
+async function _prHeader(bulkOrderId) {
+  let { data, error } = await supabase.from('bulk_orders').select('po_number, recorded').eq('id', bulkOrderId).single()
+  if (error && /recorded|column|could not find/i.test(error.message)) {
+    ;({ data } = await supabase.from('bulk_orders').select('po_number').eq('id', bulkOrderId).single())
+  }
+  return data || {}
+}
+
+// Update a PR's header fields (workspace edits). PR-side write only.
+export async function updatePRHeader(bulkOrderId, patch = {}) {
+  const row = {}
+  if (patch.supplier_name !== undefined) { const n = (patch.supplier_name || '').trim(); if (n) row.supplier_name = n }
+  if (patch.supplier_id !== undefined) row.supplier_id = patch.supplier_id || null
+  if (patch.placed_at !== undefined) row.placed_at = patch.placed_at || null
+  if (patch.supplier_eta !== undefined) row.supplier_eta = patch.supplier_eta || null
+  if (patch.notes !== undefined) row.notes = (patch.notes || '').trim() || null
+  if (patch.status !== undefined) row.status = patch.status
+  if (Object.keys(row).length === 0) return { ok: true }
+  const err = await _bulkOrderUpdate(bulkOrderId, row)
+  return err ? { ok: false, error: err.message || String(err) } : { ok: true }
+}
+
 // SUBMIT / CANCEL / DELETE for any PR kind. ONLY 'stone' has an order milestone
 // (stone_ordered); photo/etching have NO equivalent "ordered" milestone in any job
 // template, so for those kinds these just change/remove the PR — no milestone is
 // touched (we don't fake one). Stone behavior is unchanged.
+// HARD RULE (Paul 2026-07-23): RECORDED PRs never write to orders — submit is
+// refused outright, and cancel/delete skip the milestone revert (they never set
+// anything, so there is nothing to honestly revert). Fixing an order's stone
+// status from a recorded PR happens ONLY through the Reconcile tab, by hand.
 export async function submitPR(bulkOrderId, kind = 'stone', { actorUserId = null } = {}) {
   try {
+    const bo = await _prHeader(bulkOrderId)
+    if (bo.recorded) return { ok: false, error: 'This is a recorded PR — it documents an outside purchase and never writes to orders. Receive it when the stone arrives; fix order statuses in Reconcile.' }
     let res = { marked: 0, orderCount: 0, error: null }
     if (kind === 'stone') {
-      const { data: bo } = await supabase.from('bulk_orders').select('po_number').eq('id', bulkOrderId).single()
       const reason = `Stone PR ${bo?.po_number || ''} submitted to supplier`.trim()
       res = await _setStoneOrderedForPR(bulkOrderId, 'done', { actorUserId, reason })
     }
@@ -10119,8 +10169,9 @@ export async function submitPR(bulkOrderId, kind = 'stone', { actorUserId = null
 
 export async function cancelPR(bulkOrderId, kind = 'stone', { actorUserId = null } = {}) {
   try {
+    const bo = await _prHeader(bulkOrderId)
     let res = { marked: 0, orderCount: 0, error: null }
-    if (kind === 'stone') res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
+    if (kind === 'stone' && !bo.recorded) res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
     const upErr = await _bulkOrderUpdate(bulkOrderId, { status: 'cancelled' })
     if (upErr) return { ok: false, error: upErr.message || String(upErr) }
     return { ok: true, reverted: res.marked, orderCount: res.orderCount, milestoneError: res.error }
@@ -10129,8 +10180,9 @@ export async function cancelPR(bulkOrderId, kind = 'stone', { actorUserId = null
 
 export async function deletePR(bulkOrderId, kind = 'stone', { actorUserId = null } = {}) {
   try {
+    const bo = await _prHeader(bulkOrderId)
     let res = { marked: 0, orderCount: 0, error: null }
-    if (kind === 'stone') res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
+    if (kind === 'stone' && !bo.recorded) res = await _setStoneOrderedForPR(bulkOrderId, 'not_started', { actorUserId })
     const delItems = await supabase.from('bulk_order_items').delete().eq('bulk_order_id', bulkOrderId)
     if (delItems.error) return { ok: false, error: `Couldn’t remove line items: ${delItems.error.message}` }
     const delHdr = await supabase.from('bulk_orders').delete().eq('id', bulkOrderId)
@@ -10143,6 +10195,120 @@ export async function deletePR(bulkOrderId, kind = 'stone', { actorUserId = null
 export const submitStonePR = (id, opts) => submitPR(id, 'stone', opts)
 export const cancelStonePR = (id, opts) => cancelPR(id, 'stone', opts)
 export const deleteStonePR = (id, opts) => deletePR(id, 'stone', opts)
+
+// ── PR RECONCILE (Paul 2026-07-23) ───────────────────────────────────────────
+// Compares what the PRs say against what the orders say and SURFACES the
+// differences — never writes anything itself. Every fix is Paul's click in the
+// Reconcile tab (reconcileMarkStoneStatus below), every dismissal is remembered
+// in pr_reconcile_dismissals.
+const _chunk = (arr, n = 150) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out }
+
+export async function getPRReconcile() {
+  const empty = { orderedMismatch: [], receivedMismatch: [], unmatched: [], stockLines: [], error: null }
+  try {
+    let { data: prs, error: pErr } = await supabase.from('bulk_orders')
+      .select('id, po_number, status, recorded, received_at, supplier_name, placed_at')
+      .eq('kind', 'stone').neq('status', 'cancelled')
+    if (pErr && /recorded|column|could not find/i.test(pErr.message)) {
+      ;({ data: prs, error: pErr } = await supabase.from('bulk_orders')
+        .select('id, po_number, status, received_at, supplier_name, placed_at')
+        .eq('kind', 'stone').neq('status', 'cancelled'))
+    }
+    if (pErr) return { ...empty, error: pErr.message }
+    const prById = new Map((prs || []).map(p => [p.id, p]))
+    // "The supplier has this" = submitted / ordered / already receiving.
+    const orderedPRIds = new Set((prs || []).filter(p => ['submitted', 'ordered'].includes(p.status) || p.received_at).map(p => p.id))
+    const prIds = (prs || []).map(p => p.id)
+    if (!prIds.length) return empty
+
+    const items = []
+    for (const ids of _chunk(prIds)) {
+      const { data, error } = await supabase.from('bulk_order_items').select('*').in('bulk_order_id', ids)
+      if (error) return { ...empty, error: error.message }
+      items.push(...(data || []))
+    }
+    const activeItems = items.filter(it => orderedPRIds.has(it.bulk_order_id))
+
+    const { data: dis } = await supabase.from('pr_reconcile_dismissals').select('item_id, check_kind')
+    const dismissed = new Set((dis || []).map(d => `${d.item_id}|${d.check_kind}`))
+
+    // Linked items → the order + stone milestones truth.
+    const orderIds = [...new Set(activeItems.map(i => i.order_id).filter(Boolean))]
+    const orderById = new Map(), jobByOrder = new Map(), msByJob = new Map()
+    for (const ids of _chunk(orderIds)) {
+      const { data } = await supabase.from('orders').select('id, order_number, primary_lastname, status, archived').in('id', ids)
+      for (const o of (data || [])) orderById.set(o.id, o)
+      const { data: js } = await supabase.from('jobs').select('id, order_id').in('order_id', ids)
+      for (const j of (js || [])) jobByOrder.set(j.order_id, j.id)
+    }
+    const jobIds = [...jobByOrder.values()]
+    for (const ids of _chunk(jobIds)) {
+      const { data } = await supabase.from('job_milestones')
+        .select('job_id, milestone_key, status')
+        .in('milestone_key', ['stone_ordered', 'stone_received', 'stone_in_stock']).in('job_id', ids)
+      for (const m of (data || [])) {
+        if (!msByJob.has(m.job_id)) msByJob.set(m.job_id, {})
+        msByJob.get(m.job_id)[m.milestone_key] = m.status
+      }
+    }
+
+    const orderedMismatch = [], receivedMismatch = []
+    const TERMINAL = new Set(['closed', 'cancelled'])
+    for (const it of activeItems) {
+      if (!it.order_id) continue
+      const o = orderById.get(it.order_id)
+      if (!o || o.archived || TERMINAL.has(o.status)) continue
+      const jobId = jobByOrder.get(it.order_id)
+      const keys = (jobId && msByJob.get(jobId)) || {}
+      const pr = prById.get(it.bulk_order_id)
+      const orderedOk = keys.stone_ordered === 'done' || keys.stone_in_stock === 'done'
+      if (!orderedOk && !dismissed.has(`${it.id}|ordered`)) {
+        orderedMismatch.push({ item: it, pr, order: o })
+      }
+      const fullyReceived = pr?.received_at || (Number(it.received_qty) || 0) >= (Number(it.quantity) || 1)
+      if (fullyReceived && keys.stone_received !== 'done' && !dismissed.has(`${it.id}|received`)) {
+        receivedMismatch.push({ item: it, pr, order: o })
+      }
+    }
+
+    // Unlinked, non-stock lines with a family name → find their order by hand.
+    // Candidate matching happens in the component against the open-orders roster.
+    const unmatched = activeItems
+      .filter(it => !it.order_id && !it.is_stock
+        && (it.family_name || '').trim() && (it.family_name || '').trim().toLowerCase() !== 'stock'
+        && !dismissed.has(`${it.id}|unmatched`))
+      .map(it => ({ item: it, pr: prById.get(it.bulk_order_id) }))
+
+    // Stock lines on ordered PRs, not yet fully received — the "a stock stone of
+    // that size was ordered" pool the component matches against open needs.
+    const stockLines = activeItems
+      .filter(it => (it.is_stock || (it.family_name || '').trim().toLowerCase() === 'stock')
+        && (Number(it.received_qty) || 0) < (Number(it.quantity) || 1))
+      .map(it => ({ item: it, pr: prById.get(it.bulk_order_id) }))
+
+    return { orderedMismatch, receivedMismatch, unmatched, stockLines, dismissedKeys: dismissed, error: null }
+  } catch (e) { return { ...empty, error: String(e?.message || e) } }
+}
+
+export async function dismissPRReconcile(itemId, checkKind, dismissedBy = null) {
+  try {
+    const { error } = await supabase.from('pr_reconcile_dismissals')
+      .upsert({ item_id: itemId, check_kind: checkKind, dismissed_by: dismissedBy }, { onConflict: 'item_id,check_kind', ignoreDuplicates: true })
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+// Paul's one-click reconcile fixes — the SAME master-override stone ladder every
+// other surface uses, applied to the order's job. This is the ONLY path by which
+// PR reconciliation changes an order, and it only runs on his click.
+export async function reconcileMarkStoneStatus(orderId, code) {
+  try {
+    const job = await getJobByOrderId(orderId)
+    if (!job) return { ok: false, error: 'No job found for this order.' }
+    return await setOrderStoneStatus(job.id, code)
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
 
 // ── Receiving (lands PR items into the yard; closes the procurement loop) ─────
 // Insert yard rows; strip the optional link columns (source_bulk_order_id /

@@ -32,7 +32,9 @@ export default function ReceivePRModal({ bulkOrderId, onClose, onReceived }) {
           itemId: it.id, quantity: Number(it.quantity) || 1, alreadyReceived: Number(it.received_qty) || 0, remaining,
           color: it.color, size: it.size, top: it.top, sides: it.sides,
           family: it.family_name, orderId: it.order_id,
-          item_type: 'custom',
+          // Structured lines carry their Type now; STOCK lines land as
+          // available yard stock by construction (no order to allocate to).
+          item_type: (it.item_type || '').trim().toLowerCase() || 'custom',
           receivedQty: remaining,
           landAs: it.order_id ? 'allocated' : 'available',
         }
