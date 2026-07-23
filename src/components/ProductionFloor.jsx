@@ -164,9 +164,15 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   // pieces meeting them (need adding); the white number stays "on the board".
   // Every add is still his click; nothing lands on the board by itself.
   const readyOf = (c) => !!(c.job_id && recs.byJob.get(c.job_id)?.ready)
-  const readyQueue = queue.filter(readyOf)
+  // HARD RULE (Paul 2026-07-23, same doctrine as the cut list): pieces we
+  // positively KNOW are not contracted — drafts/leads — never appear on the
+  // queue log or the add pickers at all. Pieces with no job (trade/dealer
+  // work) stay; they're real work with no contract concept here.
+  const notLead = (c) => { const r = c.job_id ? recs.byJob.get(c.job_id) : null; return !r || r.contracted }
+  const queueVisible = queue.filter(notLead)
+  const readyQueue = queueVisible.filter(readyOf)
   // Paul's queue order: all conditions met first, then oldest to newest.
-  const queueSorted = [...queue].sort((a, b) =>
+  const queueSorted = [...queueVisible].sort((a, b) =>
     ((readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
     || ((ageDaysOf(b, todayMs) ?? -1) - (ageDaysOf(a, todayMs) ?? -1)))
   const phases = trackPhases(track)
@@ -234,7 +240,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
         <div className="jobcc-cmd-right">
           <div className="jobcc-actions">
             <button type="button" className={`jobcc-btn${queueOpen ? ' pf-qbtn-on' : ''}`} onClick={() => setQueueOpen(o => !o)}>
-              Queue log · {loading ? '—' : queue.length}
+              Queue log · {loading ? '—' : queueVisible.length}
             </button>
             <button type="button" className="jobcc-btn" onClick={load}>Refresh</button>
           </div>
@@ -263,7 +269,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
         <div className="pf-queue">
           <div className="pf-queue-head">
             <input className="pf-input pf-queue-search" type="search" placeholder="Search family, order #, cemetery…" value={queueQ} onChange={e => setQueueQ(e.target.value)} autoFocus />
-            <span className="pf-queue-count">{queue.filter(c => matches(c, queueQ)).length} of {queue.length} in the queue</span>
+            <span className="pf-queue-count">{queueSorted.filter(c => matches(c, queueQ)).length} of {queueVisible.length} in the {TAB_LABEL[track]} queue · contracted work only</span>
           </div>
           <div className="pf-queue-list">
             {queueSorted.filter(c => matches(c, queueQ)).slice(0, 60).map(c => (
@@ -276,7 +282,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
                 </button>
               </div>
             ))}
-            {queue.filter(c => matches(c, queueQ)).length === 0 && <div className="pf-queue-empty">Nothing in the queue matches.</div>}
+            {queueSorted.filter(c => matches(c, queueQ)).length === 0 && <div className="pf-queue-empty">Nothing in the queue matches.</div>}
           </div>
         </div>
       )}
@@ -321,7 +327,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       {addCol && (
         <div className="pf-modal-overlay" onClick={() => setAddCol(null)}>
           <div className="pf-modal" onClick={e => e.stopPropagation()}>
-            <div className="pf-modal-title">Add to “{phaseLabel(addCol)}”</div>
+            <div className="pf-modal-title">Add to “{phaseLabel(addCol)}” · {TAB_LABEL[track]} only</div>
             {addCol === phases[0] && readyQueue.length > 0 && (
               <div className="pf-modal-hint">{readyQueue.length} piece{readyQueue.length === 1 ? ' meets' : 's meet'} the bring-up conditions — listed first.</div>
             )}
@@ -337,7 +343,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
                   </button>
                 </div>
               ))}
-              {queue.filter(c => matches(c, addQ)).length === 0 && <div className="pf-queue-empty">No queue pieces match — everything else is already on the board.</div>}
+              {queueSorted.filter(c => matches(c, addQ)).length === 0 && <div className="pf-queue-empty">No queue pieces match — everything else is already on the board.</div>}
             </div>
             <div className="pf-card-form-actions" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
               <button type="button" className="pf-btn" onClick={() => setAddCol(null)}>Close</button>

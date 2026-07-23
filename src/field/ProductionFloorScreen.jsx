@@ -80,9 +80,14 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const queue = inTrack.filter(c => !c.on_floor)
   const phases = trackPhases(track)
   const readyOf = (c) => !!(c.job_id && recs.byJob.get(c.job_id)?.ready)
-  const readyQueue = queue.filter(readyOf)
+  // HARD RULE (Paul 2026-07-23, cut-list doctrine): pieces we positively KNOW
+  // are not contracted — drafts/leads — never appear in the add sheet at all.
+  // No-job pieces (trade/dealer) stay; they're real work.
+  const notLead = (c) => { const r = c.job_id ? recs.byJob.get(c.job_id) : null; return !r || r.contracted }
+  const queueVisible = queue.filter(notLead)
+  const readyQueue = queueVisible.filter(readyOf)
   // Paul's queue order: all conditions met first, then oldest to newest.
-  const queueSorted = [...queue].sort((a, b) =>
+  const queueSorted = [...queueVisible].sort((a, b) =>
     ((readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
     || ((ageDaysOf(b, todayMs) ?? -1) - (ageDaysOf(a, todayMs) ?? -1)))
   const actor = who?.name || null
@@ -189,7 +194,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                     <div className="fl-tile-main">
                       <div className="fl-tile-name">{phaseLabel(p)}</div>
                       <div className="fl-tile-sub" style={showNeed ? { color: '#B3261E', fontWeight: 800 } : undefined}>
-                        {showNeed ? `${readyQueue.length} ready to add` : (i === 0 ? `${queue.length} in the queue` : 'Tap to work this list')}
+                        {showNeed ? `${readyQueue.length} ready to add` : (i === 0 ? `${queueVisible.length} in the queue` : 'Tap to work this list')}
                       </div>
                     </div>
                     <div className="fl-tile-count">{n}</div>
@@ -280,7 +285,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
           <div className="fl-sheet-scrim" onClick={() => setAddOpen(false)} />
           <div className="fl-sheet">
             <div className="fl-sheet-grab" />
-            <div className="fl-sheet-title">Add to {phaseLabel(bucket)}</div>
+            <div className="fl-sheet-title">Add to {phaseLabel(bucket)} · {TRACK_CHIP[track]} only</div>
             {bucket === phases[0] && readyQueue.length > 0 && (
               <div className="fl-label" style={{ color: '#1d7a55' }}>
                 {readyQueue.length} piece{readyQueue.length === 1 ? ' meets' : 's meet'} the bring-up conditions — listed first
