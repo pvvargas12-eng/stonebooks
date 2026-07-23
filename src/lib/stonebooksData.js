@@ -2245,50 +2245,61 @@ export async function countCutReady() {
 }
 
 // ── BRING-UP RECOMMENDATIONS (Production floor) ──────────────────────────────
-// Paul's conditions (2026-07-23): a QUEUED new-stone piece is recommended to
-// bring up when (1) the design is approved, (2) the stone is here — received
-// or in stock, and (3) the order is contracted (real work, never a lead).
+// Paul's conditions (2026-07-23): a QUEUED piece is recommended to bring up
+// when (1) the design is approved, (2) the stone is here — received or in
+// stock (pieces with no stone leg — inscriptions, bronzes, doors — skip that
+// gate), and (3) the order is contracted (real work, never a lead).
 // Recommendation only: the floor stays hand-picked, nothing auto-lands — the
-// red section and tab badge are the nag, Paul does the pulling.
-// Returns { count, jobIds } — the board maps queue pieces through jobIds, the
-// Jobs tab strip shows count on the Production tab. count = PIECES (die and
-// base count separately), matching what the board's red section lists.
+// red numbers are the nag, Paul does the pulling.
+// Returns:
+//   count        — total READY queue pieces (Jobs-tab Production badge)
+//   readyByTrack — { track: ready piece count } (track chips + first-column
+//                  red numbers; the white column count stays "on the board")
+//   byJob        — Map(job_id -> {contracted, designOk, stoneOk, hasStoneKey,
+//                  ready}) so queue rows can wear condition chips (the same
+//                  states Paul's Orders-table dropdowns show).
 export async function getBringUpReady() {
+  const empty = { count: 0, readyByTrack: {}, byJob: new Map() }
   const { data: comps, error } = await supabase.from('job_components')
-    .select('job_id')
-    .eq('track', 'new_stone').eq('on_floor', false)
+    .select('job_id, track')
+    .eq('on_floor', false)
     .not('job_id', 'is', null)
-  if (error) { console.warn('[floor] bringUpReady comps:', error.message); return { count: 0, jobIds: new Set() } }
+  if (error) { console.warn('[floor] bringUpReady comps:', error.message); return empty }
   const queueJobs = new Set((comps || []).map(c => c.job_id))
-  if (!queueJobs.size) return { count: 0, jobIds: new Set() }
+  if (!queueJobs.size) return empty
 
-  const [{ data: ms }, proofs] = await Promise.all([
+  const [{ data: ms }, proofs, contracted] = await Promise.all([
     supabase.from('job_milestones')
       .select('job_id, milestone_key, status')
-      .in('milestone_key', ['stone_received', 'stone_in_stock', 'proof_approved']),
+      // proof_approved covers new_stone + inscription vocab; bronze approves
+      // via bronze_proof_approved; any track with an approved proof artifact
+      // is covered by proof_versions.approved_at.
+      .in('milestone_key', ['stone_received', 'stone_in_stock', 'proof_approved', 'bronze_proof_approved']),
     getCurrentProofsByJob(),
+    _filterRealWorkJobIds(queueJobs),
   ])
-  const byJob = new Map()
+  const keysByJob = new Map()
   for (const m of (ms || [])) {
     if (!queueJobs.has(m.job_id)) continue
-    if (!byJob.has(m.job_id)) byJob.set(m.job_id, {})
-    byJob.get(m.job_id)[m.milestone_key] = m.status
+    if (!keysByJob.has(m.job_id)) keysByJob.set(m.job_id, {})
+    keysByJob.get(m.job_id)[m.milestone_key] = m.status
   }
-  const candidates = new Set()
+  const byJob = new Map()
   for (const jobId of queueJobs) {
-    const keys = byJob.get(jobId) || {}
-    // Stone here = received OR in stock. No stone keys at all → the gate
-    // can't be measured; pass (the cut list's rule — gates inform, and the
-    // board is hand-picked anyway).
+    const keys = keysByJob.get(jobId) || {}
     const hasStoneKey = ('stone_received' in keys) || ('stone_in_stock' in keys)
     const stoneOk = !hasStoneKey || keys.stone_received === 'done' || keys.stone_in_stock === 'done'
-    const layoutOk = keys.proof_approved === 'done' || !!proofs.get(jobId)?.approved_at
-    if (stoneOk && layoutOk) candidates.add(jobId)
+    const designOk = keys.proof_approved === 'done' || keys.bronze_proof_approved === 'done'
+      || !!proofs.get(jobId)?.approved_at
+    const isContracted = contracted.has(jobId)
+    byJob.set(jobId, { contracted: isContracted, designOk, stoneOk, hasStoneKey, ready: isContracted && designOk && stoneOk })
   }
-  if (!candidates.size) return { count: 0, jobIds: new Set() }
-  const ready = await _filterRealWorkJobIds(candidates)
-  const pieceCount = (comps || []).filter(c => ready.has(c.job_id)).length
-  return { count: pieceCount, jobIds: ready }
+  const readyByTrack = {}
+  let count = 0
+  for (const c of (comps || [])) {
+    if (byJob.get(c.job_id)?.ready) { readyByTrack[c.track] = (readyByTrack[c.track] || 0) + 1; count++ }
+  }
+  return { count, readyByTrack, byJob }
 }
 
 // ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────
