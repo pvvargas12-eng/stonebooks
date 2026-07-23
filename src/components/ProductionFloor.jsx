@@ -16,6 +16,7 @@ import {
   advanceComponent, reverseComponent, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
   setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
+  getBringUpReady,
 } from '../lib/stonebooksData'
 import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -119,11 +120,17 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   const [addCol, setAddCol] = useState(null)   // phase code the "+ Add" modal targets
   const [addQ, setAddQ] = useState('')
   const [busyId, setBusyId] = useState(null)
+  // Jobs whose queued stone meets Paul's bring-up conditions (design approved +
+  // stone here/in stock + contracted) — drives the red section + tab count.
+  const [recIds, setRecIds] = useState(() => new Set())
 
   const load = useCallback(async () => {
     try {
-      const d = await getProductionComponents()
-      setComponents(d || []); setErr(null)
+      const [d, rec] = await Promise.all([
+        getProductionComponents(),
+        getBringUpReady().catch(() => ({ count: 0, jobIds: new Set() })),
+      ])
+      setComponents(d || []); setRecIds(rec.jobIds || new Set()); setErr(null)
       const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
     } catch (e) { setErr(e?.message || 'Failed to load'); setComponents([]) }
   }, [])
@@ -133,6 +140,10 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   const inTrack = (components || []).filter(c => c.track === track)
   const floor = inTrack.filter(c => c.on_floor)
   const queue = inTrack.filter(c => !c.on_floor)
+  // RECOMMENDED TO BRING UP (Paul 2026-07-23): queued new-stone pieces whose
+  // job has design approved + stone here/in stock + a contract. Alert only —
+  // every row is still his click; nothing lands on the board by itself.
+  const recommended = (components || []).filter(c => c.track === 'new_stone' && !c.on_floor && c.job_id && recIds.has(c.job_id))
   const phases = trackPhases(track)
   const counts = phases.map(p => floor.filter(c => c.current_phase === p).length)
   const bnIdx = counts.indexOf(Math.max(...counts))
@@ -179,12 +190,35 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
             <button key={t} type="button" className={`pf-tab${track === t ? ' on' : ''}`}
               onClick={() => { setTrack(t); setQueueOpen(false); setAddCol(null) }}>
               {TAB_LABEL[t]} <span className="pf-tab-n">{loading ? '' : n}</span>
+              {t === 'new_stone' && recommended.length > 0 && <span className="pf-tab-alert">{recommended.length}</span>}
             </button>
           )
         })}
       </div>
 
       {err && <div className="jobcc-err">{err}</div>}
+
+      {/* THE BRING-UP ALERT — queued stones that meet all three conditions
+          (design approved · stone here or in stock · contracted). Nothing is
+          ever pulled up for you; each row is one click. */}
+      {track === 'new_stone' && !loading && recommended.length > 0 && (
+        <div className="pf-alert">
+          <div className="pf-alert-head">
+            {recommended.length} piece{recommended.length === 1 ? '' : 's'} ready to bring up
+          </div>
+          <div className="pf-alert-sub">Design approved · stone here or in stock · contracted — waiting in the queue.</div>
+          {recommended.slice(0, 30).map(c => (
+            <div key={c.id} className="pf-alert-row">
+              <span className="pf-queue-fam">{famOf(c)}</span>
+              <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
+              <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, trackPhases('new_stone')[0])}>
+                {busyId === c.id ? '…' : '⤒ Bring up'}
+              </button>
+            </div>
+          ))}
+          {recommended.length > 30 && <div className="pf-alert-more">+ {recommended.length - 30} more in the queue log.</div>}
+        </div>
+      )}
 
       {/* Queue log — the full backlog, searchable. Bring up = first column. */}
       {queueOpen && (
@@ -499,6 +533,13 @@ const PF_CSS = `
   .pf-tab-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6f7a8a; margin-left: 4px; }
   .pf-tab.on .pf-tab-n { color: #fbbf24; }
   .pf-qbtn-on { border-color: #5a4a1e !important; color: #fbbf24 !important; }
+  .pf-tab-alert { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; font-weight: 800; background: #b3261e; color: #fff; border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+  .pf-alert { background: #1c1416; border: 1px solid #5c2a2a; border-left: 4px solid #b3261e; border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+  .pf-alert-head { font-size: 12.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: #f87171; display: inline-block; animation: pfpulse 2.2s ease-in-out infinite; }
+  @keyframes pfpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .pf-alert-sub { font-size: 11px; color: #8b95a5; margin: 2px 0 8px; }
+  .pf-alert-row { display: flex; align-items: center; gap: 10px; background: #151a22; border: 1px solid #232a35; border-radius: 7px; padding: 6px 10px; margin-top: 4px; }
+  .pf-alert-more { font-size: 11px; color: #6f7a8a; margin-top: 6px; }
   .pf-col-headr { display: inline-flex; align-items: baseline; gap: 8px; }
   .pf-col-add { font: inherit; font-size: 10.5px; font-weight: 700; border: 1px solid #2a313c; background: #1a212b; color: #8b95a5; border-radius: 5px; padding: 1px 7px; cursor: pointer; }
   .pf-col-add:hover { color: #f4f6fa; border-color: #3a4452; }

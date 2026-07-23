@@ -2168,19 +2168,60 @@ export async function removeFromStencilCutList(jobId) {
   if (error) return { ok: false, error: error.message }
   return { ok: true }
 }
-// The red-notification count: jobs whose stencil is READY TO CUT (stone
-// received — or no stone leg at all, e.g. inscriptions — AND the current
-// layout is approved) with stencil_cut still open, that Paul has NOT put on
-// the cut list. Three light queries, no getJobs. The board itself computes
-// the richer designStateFor read; this count keys on proof.approved_at,
-// which is the same primary signal.
+// The contracted / real-work gate shared by every production alert count.
+// HARD RULE: drafts and leads never count toward the cut list or production.
+// Real work = post-contract status, not archived/terminal, and a locked
+// deposit on the books. Chunked .in() so big id lists don't blow the URL.
+async function _filterRealWorkJobIds(jobIds) {
+  const ids = [...jobIds]
+  const real = new Set()
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data: rows, error } = await supabase.from('jobs')
+      .select('id, order:orders(status, archived, payments, deposit_amount, balance_amount)')
+      .in('id', ids.slice(i, i + 150))
+    if (error) { console.warn('[production] realWork filter:', error.message); continue }
+    for (const r of (rows || [])) {
+      const o = r.order
+      if (!o || o.archived) continue
+      if (['draft', 'scoping', 'quoted', 'closed', 'cancelled'].includes(o.status)) continue
+      if (rowTotalPaid(o) <= 0) continue
+      real.add(r.id)
+    }
+  }
+  return real
+}
+
+// New-stone pieces physically UP ON THE LINE (pulled onto the floor, at
+// Brought to Line or Cut — before Stencil Cut), keyed by job. The cut list
+// screams about these when the stencil milestone is still open: a stone on
+// the line with no stencil queued is the most urgent cut of all.
+export async function getStoneUpByJob() {
+  const { data, error } = await supabase.from('job_components')
+    .select('job_id, current_phase')
+    .eq('track', 'new_stone').eq('on_floor', true)
+    .in('current_phase', ['brought_to_line', 'cut'])
+    .not('job_id', 'is', null)
+  if (error) { console.warn('[cutlist] stoneUp:', error.message); return new Map() }
+  const m = new Map()
+  for (const c of (data || [])) m.set(c.job_id, c.current_phase)
+  return m
+}
+
+// The cut-list red-notification count: jobs whose stencil should be on Paul's
+// list and isn't. Two ways in (union, deduped): (a) READY TO CUT — stone
+// received (or no stone leg at all, e.g. inscriptions) AND the current layout
+// approved; (b) STONE IS UP — the piece is on the line before Stencil Cut,
+// which alerts REGARDLESS of gates (physical reality outranks paperwork).
+// Light queries only, no getJobs. The board computes the richer designStateFor
+// read; this count keys on proof.approved_at, the same primary signal.
 export async function countCutReady() {
-  const [{ data: ms }, proofs, list] = await Promise.all([
+  const [{ data: ms }, proofs, list, stoneUp] = await Promise.all([
     supabase.from('job_milestones')
       .select('job_id, milestone_key, status')
       .in('milestone_key', ['stencil_cut', 'stone_received']),
     getCurrentProofsByJob(),
     getStencilCutList(),
+    getStoneUpByJob(),
   ])
   const listed = new Set((list || []).map(l => l.job_id))
   const byJob = new Map()
@@ -2188,32 +2229,66 @@ export async function countCutReady() {
     if (!byJob.has(m.job_id)) byJob.set(m.job_id, {})
     byJob.get(m.job_id)[m.milestone_key] = m.status
   }
-  const candidates = []
+  const candidates = new Set()
   for (const [jobId, keys] of byJob) {
     if (!('stencil_cut' in keys) || keys.stencil_cut === 'done') continue
+    if (listed.has(jobId)) continue
+    if (stoneUp.has(jobId)) { candidates.add(jobId); continue }
     if ('stone_received' in keys && keys.stone_received !== 'done') continue
     const proof = proofs.get(jobId)
     if (!proof?.approved_at) continue
-    if (listed.has(jobId)) continue
-    candidates.push(jobId)
+    candidates.add(jobId)
   }
-  if (!candidates.length) return 0
-  // HARD RULE: drafts and leads never count toward the cut list or
-  // production. Real work = post-contract status, not archived/terminal,
-  // and a locked deposit on the books.
-  const { data: rows, error } = await supabase.from('jobs')
-    .select('id, order:orders(status, archived, payments, deposit_amount, balance_amount)')
-    .in('id', candidates)
-  if (error) { console.warn('[cutlist] countCutReady orders:', error.message); return 0 }
-  let n = 0
-  for (const r of (rows || [])) {
-    const o = r.order
-    if (!o || o.archived) continue
-    if (['draft', 'scoping', 'quoted', 'closed', 'cancelled'].includes(o.status)) continue
-    if (rowTotalPaid(o) <= 0) continue
-    n++
+  if (!candidates.size) return 0
+  const real = await _filterRealWorkJobIds(candidates)
+  return real.size
+}
+
+// ── BRING-UP RECOMMENDATIONS (Production floor) ──────────────────────────────
+// Paul's conditions (2026-07-23): a QUEUED new-stone piece is recommended to
+// bring up when (1) the design is approved, (2) the stone is here — received
+// or in stock, and (3) the order is contracted (real work, never a lead).
+// Recommendation only: the floor stays hand-picked, nothing auto-lands — the
+// red section and tab badge are the nag, Paul does the pulling.
+// Returns { count, jobIds } — the board maps queue pieces through jobIds, the
+// Jobs tab strip shows count on the Production tab. count = PIECES (die and
+// base count separately), matching what the board's red section lists.
+export async function getBringUpReady() {
+  const { data: comps, error } = await supabase.from('job_components')
+    .select('job_id')
+    .eq('track', 'new_stone').eq('on_floor', false)
+    .not('job_id', 'is', null)
+  if (error) { console.warn('[floor] bringUpReady comps:', error.message); return { count: 0, jobIds: new Set() } }
+  const queueJobs = new Set((comps || []).map(c => c.job_id))
+  if (!queueJobs.size) return { count: 0, jobIds: new Set() }
+
+  const [{ data: ms }, proofs] = await Promise.all([
+    supabase.from('job_milestones')
+      .select('job_id, milestone_key, status')
+      .in('milestone_key', ['stone_received', 'stone_in_stock', 'proof_approved']),
+    getCurrentProofsByJob(),
+  ])
+  const byJob = new Map()
+  for (const m of (ms || [])) {
+    if (!queueJobs.has(m.job_id)) continue
+    if (!byJob.has(m.job_id)) byJob.set(m.job_id, {})
+    byJob.get(m.job_id)[m.milestone_key] = m.status
   }
-  return n
+  const candidates = new Set()
+  for (const jobId of queueJobs) {
+    const keys = byJob.get(jobId) || {}
+    // Stone here = received OR in stock. No stone keys at all → the gate
+    // can't be measured; pass (the cut list's rule — gates inform, and the
+    // board is hand-picked anyway).
+    const hasStoneKey = ('stone_received' in keys) || ('stone_in_stock' in keys)
+    const stoneOk = !hasStoneKey || keys.stone_received === 'done' || keys.stone_in_stock === 'done'
+    const layoutOk = keys.proof_approved === 'done' || !!proofs.get(jobId)?.approved_at
+    if (stoneOk && layoutOk) candidates.add(jobId)
+  }
+  if (!candidates.size) return { count: 0, jobIds: new Set() }
+  const ready = await _filterRealWorkJobIds(candidates)
+  const pieceCount = (comps || []).filter(c => ready.has(c.job_id)).length
+  return { count: pieceCount, jobIds: ready }
 }
 
 // ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────

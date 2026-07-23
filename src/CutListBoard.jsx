@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getJobs, getStencilCutList, addToStencilCutList, removeFromStencilCutList,
   getCurrentProofsByJob, designStateFor, setOrderStoneStatus, orderStatusWritePlan,
-  customerName, properName, rowTotalPaid,
+  customerName, properName, rowTotalPaid, getStoneUpByJob,
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
 import { buildDieSpec, displayGraniteColor } from './lib/monumentCatalog'
@@ -47,6 +47,7 @@ export default function CutListBoard({ onOpenJob }) {
   const [jobs, setJobs] = useState([])
   const [list, setList] = useState([])
   const [proofs, setProofs] = useState(() => new Map())
+  const [stoneUp, setStoneUp] = useState(() => new Map())
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -57,12 +58,14 @@ export default function CutListBoard({ onOpenJob }) {
     setLoading(true)
     setErr(null)
     try {
-      const [js, cl, pf] = await Promise.all([
+      const [js, cl, pf, su] = await Promise.all([
         getJobs({ limit: 2000 }), getStencilCutList(), getCurrentProofsByJob(),
+        getStoneUpByJob().catch(() => new Map()),
       ])
       setJobs(js || [])
       setList(cl || [])
       setProofs(pf || new Map())
+      setStoneUp(su || new Map())
     } catch (e) {
       setErr(e?.message || 'Failed to load the cut list')
     }
@@ -91,10 +94,15 @@ export default function CutListBoard({ onOpenJob }) {
     () => jobs.filter(j => isRealWork(j) && hasKey(j, 'stencil_cut') && !msDone(j, 'stencil_cut')),
     [jobs],
   )
-  // THE RED LIST — both gates green, stencil not cut, and NOT on Paul's list.
+  // THE RED LIST — stencil not cut and NOT on Paul's list, with two ways in:
+  // (a) both gates green (ready to cut), or (b) the stone is physically UP ON
+  // THE LINE — which alerts regardless of gates (reality outranks paperwork).
+  // Stone-up rows scream first.
   const alerts = useMemo(
-    () => pool.filter(j => !listIds.has(j.id) && readiness(j).ready),
-    [pool, listIds, readiness],
+    () => pool
+      .filter(j => !listIds.has(j.id) && (stoneUp.has(j.id) || readiness(j).ready))
+      .sort((a, b) => (stoneUp.has(b.id) ? 1 : 0) - (stoneUp.has(a.id) ? 1 : 0)),
+    [pool, listIds, readiness, stoneUp],
   )
 
   const famOf = (j) => properName(j.order?.primary_lastname || customerName(j.customer) || j.order?.order_number || '—')
@@ -176,6 +184,7 @@ export default function CutListBoard({ onOpenJob }) {
     if (r.cut) return <span className="scc-chip scc-chip-green">CUT</span>
     return (
       <>
+        {stoneUp.has(j.id) && <span className="scc-chip scc-chip-red">STONE IS UP</span>}
         {r.stoneOk
           ? <span className="scc-chip scc-chip-green">STONE IN SHOP</span>
           : <span className="scc-chip scc-chip-amber">STONE NOT HERE</span>}
@@ -194,7 +203,7 @@ export default function CutListBoard({ onOpenJob }) {
         <div>
           <h2 className="scc-title">Cut list</h2>
           <div className="scc-sub">
-            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet. Drafts and leads never appear here — no deposit, no production.
+            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet — and a stone that's UP ON THE LINE with no stencil cut screams loudest of all. Drafts and leads never appear here — no deposit, no production.
           </div>
         </div>
         <div className="scc-actions">
@@ -209,9 +218,9 @@ export default function CutListBoard({ onOpenJob }) {
 
       <div className="scc-kpis">
         <div className={`scc-kpi ${alerts.length > 0 ? 'scc-kpi-red' : 'scc-kpi-quiet'}`}>
-          <div className="scc-kpi-label">Ready, not on your list</div>
+          <div className="scc-kpi-label">Needs cutting, not on your list</div>
           <div className="scc-kpi-value">{loading ? '—' : alerts.length}</div>
-          <div className="scc-kpi-sub">stone here + layout approved</div>
+          <div className="scc-kpi-sub">stone up, or here + layout approved</div>
         </div>
         <div className="scc-kpi scc-kpi-gold">
           <div className="scc-kpi-label">Ready to cut</div>
@@ -230,15 +239,17 @@ export default function CutListBoard({ onOpenJob }) {
         </div>
       </div>
 
-      {/* THE RED NOTIFICATION — ready stones not on the list. Nothing here is
-          ever added for you; each row is one click. */}
+      {/* THE RED NOTIFICATION — stones that should be on the list and aren't:
+          stone-up-no-stencil rows first, then the gate-ready ones. Nothing
+          here is ever added for you; each row is one click. */}
       {!loading && alerts.length > 0 && (
         <div className="scc-alert">
           <div className="scc-alert-head">
-            {alerts.length} stone{alerts.length === 1 ? '' : 's'} ready to cut and NOT on your list
+            {alerts.length} stone{alerts.length === 1 ? '' : 's'} need{alerts.length === 1 ? 's' : ''} cutting and NOT on your list
           </div>
           {alerts.map(j => {
             const spec = specOf.get(j.id) || {}
+            const up = stoneUp.has(j.id)
             return (
               <div key={j.id} className="scc-alert-row">
                 <button type="button" className="scc-fam" onClick={() => onOpenJob?.(j.id, 'design')}>{famOf(j)}</button>
@@ -246,7 +257,9 @@ export default function CutListBoard({ onOpenJob }) {
                   {j.order?.order_number || 'DRAFT'}
                   {spec.die ? ` · ${spec.die}` : ''}{spec.color ? ` · ${spec.color}` : ''}
                 </span>
-                <span className="scc-alert-why">stone in shop · layout approved</span>
+                {up
+                  ? <span className="scc-alert-why scc-alert-why-up">STONE IS UP — stencil not cut</span>
+                  : <span className="scc-alert-why">stone in shop · layout approved</span>}
                 <button type="button" className="scc-btn scc-btn-gold" disabled={busyId === j.id}
                   onClick={() => add(j.id)}>
                   Add to cut list
@@ -380,6 +393,7 @@ const CSS = `
   @keyframes sccpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
   .scc-alert-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid #F6DEDC; flex-wrap: wrap; }
   .scc-alert-why { font-size: 11.5px; font-weight: 700; color: #1d7a55; }
+  .scc-alert-why-up { color: #b3261e; animation: sccpulse 2.2s ease-in-out infinite; }
 
   .scc-panel, .scc-listwrap { background: #fff; border: 1px solid #E6E1D4; border-radius: 14px; padding: 14px 16px; margin-bottom: 16px; }
   .scc-panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }

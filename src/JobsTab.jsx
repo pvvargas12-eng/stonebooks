@@ -35,6 +35,7 @@ import {
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
   getNextRequiredAction,
   countCutReady,
+  getBringUpReady,
   SOLD_STATUSES, // eslint-disable-line no-unused-vars
   BLOCK_REASON_CODES,
   listAllBulkOrders,
@@ -117,12 +118,17 @@ export default function JobsTab({
     setJobsView(userId, next)
   }
 
-  // The cut-list red badge — stones IN THE SHOP with an APPROVED layout that
-  // Paul hasn't queued yet (never auto-added; the number is the nag).
+  // The cut-list red badge — stones IN THE SHOP with an APPROVED layout (or
+  // physically UP with no stencil) that Paul hasn't queued yet — and the
+  // Production badge: queued pieces meeting his bring-up conditions (design
+  // approved + stone here/in stock + contracted). Never auto-added; the
+  // numbers are the nag.
   const [cutBadge, setCutBadge] = useState(0)
+  const [bringUpBadge, setBringUpBadge] = useState(0)
   useEffect(() => {
     let alive = true
     countCutReady().then(n => { if (alive) setCutBadge(n) }).catch(() => { /* badge is additive */ })
+    getBringUpReady().then(r => { if (alive) setBringUpBadge(r.count) }).catch(() => { /* badge is additive */ })
     return () => { alive = false }
   }, [tab])
 
@@ -211,7 +217,7 @@ export default function JobsTab({
     <div className="sb-jobs-tabshell">
       <style>{JOBS_TABROW_CSS}</style>
       <div className="sb-crm-container sb-jobs-tabrow-wrap">
-        <JobsTabRow tab={tab} onChange={handleTabChange} badges={{ cutlist: cutBadge }} />
+        <JobsTabRow tab={tab} onChange={handleTabChange} badges={{ cutlist: cutBadge, production: bringUpBadge }} />
       </div>
       {body}
     </div>
