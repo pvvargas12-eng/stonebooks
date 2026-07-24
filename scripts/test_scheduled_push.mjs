@@ -2,7 +2,7 @@
 // Pure module — no deps, no network. Run: node scripts/test_scheduled_push.mjs
 import { readFileSync } from 'node:fs'
 import {
-  buildScheduledEvents, shopClock, toEtYmd,
+  buildScheduledEvents, shopClock, toEtYmd, isWeekendYmd, weekendOffSet,
   CREW_DIGEST_MIN, LEDGER_MIN, MORNING_CUTOFF_MIN, CLOSEOUT_MIN, CLOSEOUT_CUTOFF_MIN,
 } from '../api/push/_scheduled.js'
 
@@ -70,6 +70,25 @@ const clear = byPrefix(at(CLOSEOUT_MIN, { shopDueCount: 0 }), 'closeout')[0]
 ok(clear.body.includes('board clear'), 'closeout empty-board copy')
 ok(morning.concat(evening).every(e => !/[^\x00-\x7F’…—·]/.test(e.title + e.body)), 'no emojis in any copy')
 
+console.log('weekend quiet (Production + Sales workers)')
+ok(!isWeekendYmd('2026-07-24') && isWeekendYmd('2026-07-25') && isWeekendYmd('2026-07-26'),
+  'Fri no / Sat yes / Sun yes')
+const ROSTER = [
+  { name: 'Collin', department: 'Production', is_owner: false },
+  { name: 'Leo', department: 'Production', is_owner: false },
+  { name: 'Sam', department: 'Sales', is_owner: false },
+  { name: 'Sabina', department: 'Admin', is_owner: true },
+  { name: 'Chelsea', department: 'Production', is_owner: true },   // owner exempt even in a quiet dept
+  { name: 'Paul', department: null, is_owner: true },
+]
+const satOff = weekendOffSet('2026-07-25', ROSTER)
+ok([...satOff].sort().join() === 'Collin,Leo,Sam', 'Saturday set = Production + Sales workers only')
+ok(!satOff.has('Chelsea') && !satOff.has('Sabina'), 'owners exempt regardless of department')
+ok(weekendOffSet('2026-07-24', ROSTER).size === 0, 'weekday set is empty')
+const satMorning = at(LEDGER_MIN, { weekendOff: satOff })
+ok(byPrefix(satMorning, 'rundigest').length === 0, 'weekend-off crew claims NO run digest (not even a claim)')
+ok(byPrefix(satMorning, 'ledger').length === 2, 'owner Ledger unaffected on Saturday')
+
 console.log('clock helpers')
 ok(toEtYmd('2026-07-25T03:30:00.000Z') === '2026-07-24', '11:30pm ET stays on the shop day (EDT)')
 ok(toEtYmd('2026-01-25T03:30:00.000Z') === '2026-01-24', '10:30pm ET winter stays on the shop day (EST)')
@@ -84,6 +103,8 @@ ok(!sender.includes('DIGEST_HOUR'), 'old any-time-after-7 digest gate removed')
 ok(!sender.includes('dueTasksByPerson'), 'old digest task-title plumbing removed')
 ok(sender.includes('buildScheduledEvents({'), 'sender calls the scheduled builder')
 ok(sender.includes("from './_scheduled.js'"), 'sender imports the pure module')
+ok(sender.includes('weekendOffSet(today') && sender.includes('weekendOffToday.has(e.person)'),
+  'send loop gates weekend-off people (claims/feed still land, pushes skipped)')
 
 if (failed) { console.error(`\n${failed} FAILED`); process.exit(1) }
 console.log('\nall green')

@@ -46,6 +46,31 @@ export function toEtYmd(iso) {
   }).format(t)
 }
 
+// Weekend-quiet rule (Paul, 2026-07-24): Production and Sales workers get NO
+// pushes on Saturday or Sunday — their days off stay quiet. Owners are exempt
+// (money never sleeps), and Installation/Admin still hear (installs happen on
+// Saturdays). The ymd is the SHOP day from shopClock, so the boundary is ET
+// midnight, not UTC.
+export const WEEKEND_OFF_DEPTS = ['Production', 'Sales']
+
+export function isWeekendYmd(ymd) {
+  const d = new Date(String(ymd) + 'T12:00:00Z')   // UTC noon — immune to date shifting
+  if (isNaN(d.getTime())) return false
+  const dow = d.getUTCDay()
+  return dow === 0 || dow === 6
+}
+
+// The set of people whose phones stay silent today. Pure: employees rows in,
+// names out; empty on weekdays.
+export function weekendOffSet(ymd, employees = []) {
+  if (!isWeekendYmd(ymd)) return new Set()
+  const out = new Set()
+  for (const e of employees) {
+    if (e && !e.is_owner && WEEKEND_OFF_DEPTS.includes(e.department)) out.add(e.name)
+  }
+  return out
+}
+
 const usd = (n) =>
   '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 
@@ -62,6 +87,7 @@ export function buildScheduledEvents({
   runsToday = 0, stopsToday = 0, firstRunTitle = '',
   stopsDoneToday = 0, tasksClosedToday = 0, shopDueCount = 0,
   payByYmd = {},                    // ET ymd → { sum, count } (locked, non-voided)
+  weekendOff = new Set(),           // people whose phones stay silent today (never claim)
 }) {
   const events = []
   const owners = new Set(ownerNames)
@@ -74,6 +100,7 @@ export function buildScheduledEvents({
   if (inMorning) {
     for (const person of subscribedPeople) {
       if (owners.has(person)) continue
+      if (weekendOff.has(person)) continue   // day off — not even a claim
       const due = dueByPerson[person] || 0
       if (!runsToday && !due) continue
       const runBit = runsToday

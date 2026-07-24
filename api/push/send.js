@@ -45,7 +45,7 @@
 import { createClient } from '@supabase/supabase-js'
 import webpush from 'web-push'
 import {
-  shopClock, toEtYmd, buildScheduledEvents,
+  shopClock, toEtYmd, buildScheduledEvents, weekendOffSet,
   CREW_DIGEST_MIN, MORNING_CUTOFF_MIN, CLOSEOUT_MIN, CLOSEOUT_CUTOFF_MIN,
 } from './_scheduled.js'
 
@@ -213,6 +213,11 @@ async function sendHandler(req, res) {
   const yesterday = toEtYmd(new Date(Date.now() - 24 * 3600000).toISOString())
   const sinceIso = new Date(Date.now() - WINDOW_HOURS * 3600000).toISOString()
   const sinceMs = ms(sinceIso)
+
+  // Weekend-quiet (Paul 2026-07-24): Production + Sales workers get no pushes
+  // Sat/Sun. Claims + bell feed rows still land — the app keeps everything,
+  // only the lock screen goes quiet. Owners exempt.
+  const weekendOffToday = weekendOffSet(today, employees || [])
 
   // ── Gather notifiable events ───────────────────────────────────────────────
   const TASK_COLS = 'id, title, assignee, assignee_kind, tasked_by, created_by, status, due_date, snoozed_until, created_at, deleted_at'
@@ -388,6 +393,7 @@ async function sendHandler(req, res) {
     subscribedPeople, ownerNames, dueByPerson,
     runsToday, stopsToday, firstRunTitle,
     stopsDoneToday, tasksClosedToday, shopDueCount, payByYmd,
+    weekendOff: weekendOffToday,
   }))
 
   if (!events.length) {
@@ -428,6 +434,7 @@ async function sendHandler(req, res) {
   const byPerson = {}
   for (const e of claimedEvents) {
     if (!subsByPerson[e.person]) continue
+    if (weekendOffToday.has(e.person)) continue   // day off — no lock-screen pings
     ;(byPerson[e.person] = byPerson[e.person] || []).push(e)
   }
   const toSend = Object.values(byPerson).flatMap(list =>
