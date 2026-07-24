@@ -25,12 +25,9 @@
 //   • proof signed (owners only)  "Proof signed" / KOWALSKI signed — E-26-0142.
 //   • payment landed              "Payment received" / $2,500.00 check —
 //     (owners only)               KOWALSKI E-26-0142.
-//   • crew run digest (6:45–11a shop time, once/day; push-only)
-//                                 "Today at the shop" / runs + stops + due tasks
-//   • Morning Ledger (owners, 7–11a, once/day; push-only)
-//                                 "Morning Ledger" / yesterday $ + today's day
-//   • Evening closeout (owners, 6–10p, once/day; push-only)
-//                                 "Evening closeout" / $ in · stops done · tasks closed
+// Instants ONLY — scheduled morning/evening summaries were tried and removed
+// same-day (FIELD-NOTIF-2, Paul's call). Weekend rule: Production + Sales
+// workers get no pushes Sat/Sun (claims + feed rows still land).
 // Every payload carries badgeCount = that person's live due-today+overdue
 // count, so the home-screen badge tracks the in-app Tasks badge.
 //
@@ -44,10 +41,7 @@
 // =============================================================================
 import { createClient } from '@supabase/supabase-js'
 import webpush from 'web-push'
-import {
-  shopClock, toEtYmd, buildScheduledEvents, weekendOffSet,
-  CREW_DIGEST_MIN, MORNING_CUTOFF_MIN, CLOSEOUT_MIN, CLOSEOUT_CUTOFF_MIN,
-} from './_scheduled.js'
+import { shopClock, weekendOffSet } from './_scheduled.js'
 
 const WINDOW_HOURS = 36            // event look-back; dedupe log is the real gate
 const MAX_SENDS_PER_PERSON = 8     // per run — absorbs first-deploy backlog floods
@@ -102,12 +96,8 @@ const kindOf = (key) => KIND_BY_PREFIX[String(key).split(':')[0]] || 'note'
 // mutes that kind's PUSHES on that device. Feed rows are untouched — the
 // in-app bell always keeps everything.
 const PREF_BY_PREFIX = {
-  assigned: 'task_assigned', reply: 'task_reply', digest: 'digest',
+  assigned: 'task_assigned', reply: 'task_reply',
   pay: 'payment', changes: 'proofs', signed: 'proofs',
-  // FIELD-NOTIF-1: the crew run digest inherits the old 'digest' toggle (same
-  // product slot); the owner summaries get their OWN keys — Paul muted 'digest'
-  // back when it was the task list, and that mute must not silence the Ledger.
-  rundigest: 'digest', ledger: 'ledger', closeout: 'closeout',
 }
 const prefKeyOf = (key) => PREF_BY_PREFIX[String(key).split(':')[0]] || null
 const deviceMuted = (sub, eventKey) => {
@@ -209,8 +199,7 @@ async function sendHandler(req, res) {
     if (e.is_owner) ownerNames.push(e.name)
   }
 
-  const { ymd: today, minuteOfDay } = shopClock()
-  const yesterday = toEtYmd(new Date(Date.now() - 24 * 3600000).toISOString())
+  const { ymd: today } = shopClock()
   const sinceIso = new Date(Date.now() - WINDOW_HOURS * 3600000).toISOString()
   const sinceMs = ms(sinceIso)
 
@@ -244,34 +233,10 @@ async function sendHandler(req, res) {
       isMine(t, person, deptOf) && t.due_date && String(t.due_date).slice(0, 10) <= today && !isSnoozed(t, today)).length
   }
 
-  // ── Day-shape data for the scheduled summaries (FIELD-NOTIF-1) ─────────────
-  // Fetched ONLY inside the morning/evening claim windows so the every-5-min
-  // sweep stays two queries lighter the rest of the day.
-  const needDay = minuteOfDay >= CREW_DIGEST_MIN && minuteOfDay < MORNING_CUTOFF_MIN
-  const needClose = minuteOfDay >= CLOSEOUT_MIN && minuteOfDay < CLOSEOUT_CUTOFF_MIN
-  let runsToday = 0, stopsToday = 0, firstRunTitle = '', stopsDoneToday = 0, tasksClosedToday = 0, shopDueCount = 0
-  if (needDay || needClose) {
-    const { data: batches } = await admin.from('work_batches')
-      .select('id, title, scheduled_date, created_at')
-      .eq('scheduled_date', today).order('created_at', { ascending: true })
-    runsToday = (batches || []).length
-    firstRunTitle = trunc(((batches || [])[0] || {}).title || '', 28)
-    const batchIds = (batches || []).map(b => b.id)
-    if (batchIds.length) {
-      const { data: stops } = await admin.from('work_batch_jobs')
-        .select('id, batch_id, completed_at').in('batch_id', batchIds)
-      stopsToday = (stops || []).length
-      stopsDoneToday = (stops || []).filter(s => s.completed_at && toEtYmd(s.completed_at) === today).length
-    }
-    if (needClose) {
-      const { data: closedTasks } = await admin.from('shop_tasks')
-        .select('id, done_at')
-        .gte('done_at', new Date(Date.now() - 24 * 3600000).toISOString()).is('deleted_at', null)
-      tasksClosedToday = (closedTasks || []).filter(t => toEtYmd(t.done_at) === today).length
-    }
-    shopDueCount = (openTasks || []).filter(t =>
-      t.due_date && String(t.due_date).slice(0, 10) <= today && !isSnoozed(t, today)).length
-  }
+  // Scheduled morning/evening summaries were built then REMOVED same-day
+  // (FIELD-NOTIF-2, Paul: "i dont want those morning notifications and evening
+  // notifications thats not helpful") — instants only. The weekend-quiet gate
+  // below survives; _scheduled.js keeps the clock helpers.
 
   const events = []   // { key, person, title, body, url, tag, at, feed }
   for (const t of (newTasks || [])) {
@@ -353,17 +318,10 @@ async function sendHandler(req, res) {
     }
   }
 
-  const payByYmd = {}   // ET shop-day → { sum, count } — feeds Ledger + closeout
   for (const o of (payOrders || [])) {
     const pays = Array.isArray(o.payments) ? o.payments : []
     for (const p of pays) {
       if (!p || p.voided || !(p.locked ?? true)) continue
-      const pYmd = toEtYmd(p.createdAt)
-      if (pYmd === today || pYmd === yesterday) {
-        const slot = (payByYmd[pYmd] = payByYmd[pYmd] || { sum: 0, count: 0 })
-        slot.sum += Number(p.amount) || 0
-        slot.count++
-      }
       const at = ms(p.createdAt)
       if (!(at >= sinceMs)) continue
       const fam = famOf(o) || 'The family'
@@ -384,17 +342,6 @@ async function sendHandler(req, res) {
     }
   }
 
-  // Scheduled summaries (FIELD-NOTIF-1): crew run digest 6:45, owner Morning
-  // Ledger 7:00, owner closeout 6:00p — morning/evening claim windows only, so
-  // no afternoon "due today" pings; push-only (the feed keeps discrete events);
-  // once per person per day via the date-suffixed keys.
-  events.push(...buildScheduledEvents({
-    minuteOfDay, today, yesterday, nowIso: new Date().toISOString(),
-    subscribedPeople, ownerNames, dueByPerson,
-    runsToday, stopsToday, firstRunTitle,
-    stopsDoneToday, tasksClosedToday, shopDueCount, payByYmd,
-    weekendOff: weekendOffToday,
-  }))
 
   if (!events.length) {
     return res.status(200).json({ ok: true, subs: (subs || []).length, events: 0, wrote: 0, sent: 0 })
