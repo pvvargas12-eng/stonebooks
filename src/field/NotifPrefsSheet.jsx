@@ -12,16 +12,22 @@ import { getThisDeviceSubscription, saveThisDevicePrefs, getPushState } from './
 const CREW_KINDS = [
   { key: 'task_assigned', label: 'New tasks',      sub: 'A task lands on you or your department' },
   { key: 'task_reply',    label: 'Replies',        sub: 'Someone answers on your task' },
-  { key: 'digest',        label: 'Morning digest', sub: 'After 7am: what is due today' },
+  { key: 'digest',        label: 'Morning digest', sub: '6:45am: today’s runs and what is due' },
 ]
 const OWNER_KINDS = [
-  { key: 'payment',  label: 'Payments',       sub: 'Money lands on any order' },
-  { key: 'proofs',   label: 'Proof activity', sub: 'A family signs or asks for changes' },
+  { key: 'payment',  label: 'Payments',        sub: 'Money lands on any order' },
+  { key: 'proofs',   label: 'Proof activity',  sub: 'A family signs or asks for changes' },
+  { key: 'ledger',   label: 'Morning Ledger',  sub: '7am: yesterday’s money and today’s day' },
+  { key: 'closeout', label: 'Evening closeout', sub: '6pm: money in, stops done, tasks closed' },
 ]
 
 export default function NotifPrefsSheet({ who, onClose, onAskPush }) {
   const isOwner = !!who?.isOwner
-  const kinds = isOwner ? [...CREW_KINDS, ...OWNER_KINDS] : CREW_KINDS
+  // Owners get the Morning Ledger instead of the crew run digest — hide the
+  // toggle for a push their phone will never receive.
+  const kinds = isOwner
+    ? [...CREW_KINDS.filter(k => k.key !== 'digest'), ...OWNER_KINDS]
+    : CREW_KINDS
   const [row, setRow] = useState(undefined)   // undefined loading | null no sub | row
   const [err, setErr] = useState(null)
 
