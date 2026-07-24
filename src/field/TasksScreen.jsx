@@ -12,6 +12,7 @@ import {
   setShopTaskDone, setShopTaskStatus, updateShopTask, uploadTaskAttachment,
 } from '../lib/stonebooksData'
 import { fmtDayLabel, todayISO } from './fieldShared'
+import CompletionEmailModal from '../components/CompletionEmailModal'
 
 const SAVE_ERR = 'Could not save — try again.'
 const SEGS = [['mine', 'Mine'], ['everyone', 'Everyone'], ['done', 'Done']]
@@ -257,8 +258,10 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [emailOpen, setEmailOpen] = useState(false)
   const due = dueChip(t, today)
   const isCheckJob = t.task_type === 'check_job'
+  const isCloseout = t.task_type === 'closeout' || t.details?.auto === 'install_completed'
   const atts = Array.isArray(t.attachments) ? t.attachments : []
   const done = t.status === 'done'
 
@@ -356,6 +359,16 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
               onChange={onFilePick} disabled={uploading} />
           </label>
         </div>
+      )}
+
+      {isCloseout && t.order_id && (
+        <button type="button" className="fl-btn fl-btn-green" onClick={() => setEmailOpen(true)}>
+          {t.details?.completionEmailSentAt ? 'Completion email sent — resend' : 'Preview completion email'}
+        </button>
+      )}
+      {emailOpen && (
+        <CompletionEmailModal task={t} onClose={() => setEmailOpen(false)}
+          onChanged={() => setEmailOpen(false)} />
       )}
 
       <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>

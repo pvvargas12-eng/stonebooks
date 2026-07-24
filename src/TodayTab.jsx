@@ -35,6 +35,7 @@ import {
   fmtDate, customerName,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
+import CompletionEmailModal from './components/CompletionEmailModal'
 
 const pad = (n) => String(n).padStart(2, '0')
 const isoOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -644,6 +645,7 @@ function TaskDetail({ t, me, staff, replies, onChanged, onOpenOrder }) {
   const [due, setDue] = useState(t.due_date || '')
   const [taskedBy, setTaskedBy] = useState(t.tasked_by || t.created_by || '')
   const [replyText, setReplyText] = useState('')
+  const [emailOpen, setEmailOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [errMsg, setErrMsg] = useState(null)
   const [orderFiles, setOrderFiles] = useState(null)
@@ -701,6 +703,8 @@ function TaskDetail({ t, me, staff, replies, onChanged, onOpenOrder }) {
     if (r.ok) onChanged?.()
   }
 
+  const isCloseout = t.task_type === 'closeout' || details.auto === 'install_completed'
+
   return (
     <div className="sb-tcc-detail">
       {t.order && (
@@ -708,8 +712,18 @@ function TaskDetail({ t, me, staff, replies, onChanged, onOpenOrder }) {
           <button type="button" className="act solid" onClick={() => onOpenOrder?.(t.order.id)}>
             Open {isLeadOrder(t.order) ? 'lead' : 'order'} — {t.order.primary_lastname || t.order.order_number || ''}
           </button>
+          {isCloseout && (
+            <button type="button" className="act solid" style={{ background: '#1f7a3d' }}
+              onClick={() => setEmailOpen(true)}>
+              {details.completionEmailSentAt ? `Completion email sent — resend` : 'Preview completion email'}
+            </button>
+          )}
           <span className="jumphint">the record this task lives on</span>
         </div>
+      )}
+      {emailOpen && (
+        <CompletionEmailModal task={t} onClose={() => setEmailOpen(false)}
+          onChanged={() => { setEmailOpen(false); onChanged?.() }} />
       )}
       {(details.cemeteryName || details.cemetery) && (
         <div className="cemline">Cemetery: <b>{details.cemeteryName || details.cemetery}</b>{details.notes ? ` — ${details.notes}` : ''}</div>

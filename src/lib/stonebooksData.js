@@ -2130,6 +2130,40 @@ export async function removeFromFoundationList(jobId) {
   return { ok: true }
 }
 
+// ── INSTALL WORK-LIST (2026-07-24) — the hand-picked set list ───────────────
+// Built from the field app (Paul: "i want to build my lists from the app").
+// Same doctrine as foundation_list: membership only, marking installed is the
+// milestone truth — an installed job simply stops being install work.
+// Table: install_list (job_id unique).
+
+export async function getInstallList() {
+  const { data, error } = await supabase
+    .from('install_list')
+    .select('*')
+    .order('created_at', { ascending: true })
+  if (error) { console.error('getInstallList:', error); return [] }
+  return data || []
+}
+
+export async function addToInstallList(jobId) {
+  const added_by = await getCurrentStaffName()
+  const { error } = await supabase
+    .from('install_list')
+    .insert({ job_id: jobId, added_by })
+  // Unique violation = already on the list; double-tap safe.
+  if (error && error.code !== '23505') return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function removeFromInstallList(jobId) {
+  const { error } = await supabase
+    .from('install_list')
+    .delete()
+    .eq('job_id', jobId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ── STENCIL CUT LIST (2026-07-22) — the hand-built cutting queue ────────────
 // Same doctrine as foundation_list: membership only, PAUL builds the list
 // (never auto-added), cut state stays milestone-derived (stencil_cut).
@@ -3239,6 +3273,7 @@ export const TASK_TYPES = [
   { code: 'layout',     label: 'Layout' },   // design-family; drives the Leads layout signal
   { code: 'production', label: 'Production' },
   { code: 'check_job',  label: 'Check job' },
+  { code: 'closeout',   label: 'Closeout' }, // install done → email + call + close (auto)
 ]
 export const taskTypeLabel = (code) =>
   (TASK_TYPES.find(t => t.code === code) || {}).label || 'General'
@@ -3334,6 +3369,49 @@ export async function ensurePermitBuildTask(orderId, formLabel, familyLabel) {
     orderId, createdBy: staff, taskedBy: staff,
     details: { auto: 'shevco_form_selected' },
   })
+}
+
+// Auto-task on install completion (Paul 2026-07-24): one Admin task that carries
+// the whole closeout — send the completion email (photo attached), call the
+// family, close out the order. Dedup-checked like ensurePermitBuildTask so the
+// field Finish flow and the desktop Install Board can both call it safely.
+// task_type 'closeout' is what unlocks the one-button email in the task row.
+export async function ensureCloseoutTask(orderId, familyLabel, orderNumber) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const title = `Completion email + call + closeout — ${familyLabel || 'order'}${orderNumber ? ` (${orderNumber})` : ''}`.slice(0, 300)
+  const { data: existing } = await supabase.from('shop_tasks')
+    .select('id, status, deleted_at').eq('order_id', orderId).eq('task_type', 'closeout').limit(10)
+  if ((existing || []).some(t => !t.deleted_at && t.status !== 'done')) {
+    return { ok: true, skipped: true }
+  }
+  const staff = await getCurrentStaffName().catch(() => null)
+  return addShopTask({
+    title, assignee: 'Admin', assigneeKind: 'department',
+    orderId, createdBy: staff, taskedBy: staff,
+    dueDate: todayISO(), taskType: 'closeout',
+    details: { auto: 'install_completed' },
+  })
+}
+
+// The completion email draft — auto-written from the order's real data (the
+// "AI generated" email, template v1 per Paul 2026-07-24). The Email CC's
+// closeout voice + the photo line. Staff edit before the ConfirmSend gate;
+// nothing sends without the explicit click (send-safety doctrine).
+export function buildCompletionEmailDraft(orderRow, customer) {
+  const first = (customer?.first_name || '').trim() || 'there'
+  const fam = orderRow?.primary_lastname ? ` ${orderRow.primary_lastname}` : ''
+  const ord = orderRow?.order_number ? ` (${orderRow.order_number})` : ''
+  const cem = orderRow?.cemetery?.name ? ` at ${orderRow.cemetery.name}` : ''
+  const subject = `Your${fam ? fam + ' family' : ''} memorial is complete`
+  const body =
+    `Hi ${first},\n\n` +
+    `We're glad to share that your memorial${ord} has been completed and set${cem}. ` +
+    `A photo of the finished work is attached so you can see it right away.\n\n` +
+    `It was our privilege to craft this for your family, and we hope it brings you ` +
+    `comfort for years to come. Thank you for trusting Shevchenko Monuments with ` +
+    `something so meaningful.\n\n` +
+    `If there's ever anything we can do for you, please don't hesitate to reach out.`
+  return { subject, body }
 }
 
 // Anyone can edit any task — title, assignee, due date, tasked-by, type,

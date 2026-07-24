@@ -16,7 +16,7 @@
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
-  updateMilestone, addOrderTask, logOrderActivity, getCurrentStaffName, todayISO } from '../lib/stonebooksData'
+  updateMilestone, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO } from '../lib/stonebooksData'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -133,7 +133,9 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     const r = installRow
     const actor = await getCurrentStaffName()
     if (r.installKey) await updateMilestone(r.jobId, r.installKey, { status: 'done' })
-    await addOrderTask(r.orderId, { kind: 'closeout', note: 'Send install photo + thank-you to customer, close out order', actor })
+    // Shared closeout auto-task (dedup-checked, dept Admin, task_type 'closeout'
+    // → unlocks the one-button completion email in the task row).
+    await ensureCloseoutTask(r.orderId, r.family, r.orderNumber)
     await logOrderActivity(r.orderId, { type: 'change', field: 'Install', newValue: 'Installed', note: 'Marked installed; closeout task created', actor })
     setBusy(false)
     setInstallStep('photo')   // installed — now add the photo (uploads to the order)

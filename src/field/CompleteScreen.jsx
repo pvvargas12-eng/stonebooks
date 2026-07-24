@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   getJob, listCompletionPhotos, uploadCompletionPhoto,
   updateMilestone, updateMilestoneWithOverride, customerName,
+  ensureCloseoutTask, deleteShopTask, removeFromInstallList, addToInstallList,
 } from '../lib/stonebooksData'
 
 const INSTALL_KEYS = ['installed', 'door_installed', 'work_completed']
@@ -60,15 +61,33 @@ export default function CompleteScreen({ jobId, orderId, onBack }) {
     if (!res.ok && res.requiresOverride) {
       res = await updateMilestoneWithOverride(job.id, installMs.milestone_key, { status: 'done' }, 'Completed in the field')
     }
+    if (!res.ok) { setBusy(false); setUploadErr(res.error || 'Could not mark installed.'); return }
+    // The closeout chain (Paul 2026-07-24): one Admin task carries the completion
+    // email + call + closeout, and the job leaves the hand-picked set list.
+    // Best-effort — a hiccup here never blocks the crew in the field.
+    let closeoutTaskId = null
+    try {
+      const fam = job?.order?.primary_lastname || customerName(job?.customer) || ''
+      const t = await ensureCloseoutTask(orderId, fam, job?.order?.order_number)
+      closeoutTaskId = (!t?.skipped && t?.task?.id) || null
+      await removeFromInstallList(job.id).catch(() => {})
+      window.dispatchEvent(new CustomEvent('sb-field-install-done'))
+    } catch { /* never block the field */ }
     setBusy(false)
-    if (!res.ok) { setUploadErr(res.error || 'Could not mark installed.'); return }
-    setDoneState({ prevStatus, key: installMs.milestone_key })
+    setDoneState({ prevStatus, key: installMs.milestone_key, closeoutTaskId })
   }
 
   const undoDone = async () => {
     if (!job || !doneState) return
     setBusy(true)
     await updateMilestone(job.id, doneState.key, { status: doneState.prevStatus || 'not_started' })
+    // Reverse the chain: pull the auto-task we just created (only ours — a
+    // pre-existing closeout task is left alone) and put the job back on the list.
+    try {
+      if (doneState.closeoutTaskId) await deleteShopTask(doneState.closeoutTaskId).catch(() => {})
+      await addToInstallList(job.id).catch(() => {})
+      window.dispatchEvent(new CustomEvent('sb-field-install-done'))
+    } catch { /* best-effort */ }
     setBusy(false)
     setDoneState(null)
     setJob(await getJob(job.id).catch(() => job))

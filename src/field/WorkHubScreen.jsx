@@ -8,9 +8,9 @@
 // dig list (FoundationsScreen) and an inline check-job list.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
-import { getBatches, getFoundationList, listCheckJobTasks } from '../lib/stonebooksData'
-import { todayISO, isoPlusDays } from './fieldShared'
-import InstallsScreen from './InstallsScreen'
+import { getInstallList, getFoundationList, listCheckJobTasks } from '../lib/stonebooksData'
+import { todayISO } from './fieldShared'
+import InstallListScreen from './InstallListScreen'
 import ProductionScreen from './ProductionScreen'
 import FoundationsScreen from './FoundationsScreen'
 
@@ -21,7 +21,7 @@ function dueChipLabel(iso) {
   return 'DUE ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }).toUpperCase()
 }
 
-export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask }) {
+export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComplete }) {
   const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'production' | 'foundations' | 'check'
   const [counts, setCounts] = useState({ installs: null, foundations: null, check: null })
   const [checkTasks, setCheckTasks] = useState(null)
@@ -32,22 +32,14 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask }) {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [batches, fdnList, checks] = await Promise.all([
-        getBatches({ from: todayISO(), to: isoPlusDays(13) }).catch(() => null),
+      const [setList, fdnList, checks] = await Promise.all([
+        getInstallList().catch(() => null),
         getFoundationList().catch(() => null),
         listCheckJobTasks().catch(() => null),
       ])
       if (cancelled) return
-      let installs = null
-      if (batches) {
-        installs = 0
-        for (const b of batches) {
-          if (!b || b.status === 'cancelled') continue
-          installs += (b.batch_jobs || []).filter(s => s && !s.completed_at).length
-        }
-      }
       setCounts({
-        installs,
+        installs: setList ? setList.length : null,
         foundations: fdnList ? fdnList.length : null,
         check: checks ? checks.filter(t => t.status !== 'done').length : null,
       })
@@ -68,7 +60,7 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask }) {
     return (
       <div>
         {back}
-        <InstallsScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
+        <InstallListScreen onOpenJob={onOpenJob} onComplete={onComplete} />
       </div>
     )
   }
@@ -138,7 +130,7 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask }) {
         <button type="button" className="fl-tile" onClick={() => setSub('installs')}>
           <div className="fl-tile-main">
             <div className="fl-tile-name">Installations</div>
-            <div className="fl-tile-sub">Next 14 days</div>
+            <div className="fl-tile-sub">The set list</div>
           </div>
           <div className="fl-tile-count">{counts.installs == null ? '…' : counts.installs}</div>
         </button>

@@ -401,7 +401,8 @@ export default function FieldApp() {
               onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev} />
           )}
           {tab === 'jobs' && (
-            <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask} />
+            <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
+              onComplete={openComplete} />
           )}
           {tab === 'production' && (
             <ProductionFloorScreen who={who} undo={undo} onOpenJob={openJob} />

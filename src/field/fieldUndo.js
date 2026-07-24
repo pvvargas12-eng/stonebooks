@@ -115,6 +115,10 @@ export const FIELD_CSS = `
   .fl-c-neutral { background: #EEEAE0; color: #6B6456; }
   .fl-c-bad { background: rgba(179,38,30,0.10); color: #B3261E; }
   .fl-c-lead { background: #B3261E; color: #fff; }
+  /* Install-list ceramic-photo flag (Paul 2026-07-24: "so i dont forget the
+     photo... something that stands out") — solid violet, nothing else wears it. */
+  .fl-c-photo { background: #6D28D9; color: #fff; }
+  .fl-photo-alert { background: #6D28D9; color: #fff; font-size: 12.5px; font-weight: 800; letter-spacing: 0.04em; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; text-align: center; }
   .fl-kind { font-size: 9.5px; font-weight: 800; letter-spacing: 0.09em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
   .fl-k-set { background: rgba(29,158,117,0.12); color: #14775A; }
   .fl-k-del { background: rgba(29,111,168,0.11); color: #185F8F; }
@@ -309,12 +313,12 @@ export const FIELD_CSS = `
 
   /* ── FIELD-6: flat tab bar, both builds (Paul: "the crew tabs are
      terrible, only the owner tab is good") — no raised center, quiet
-     labels, gold underline on the active tab. Crew's camera lives on the
-     Today screen now. ── */
+     labels. Active tab reads by the gold label alone (Paul 2026-07-24:
+     the underline bar was "sloppy" — removed). Crew's camera lives on
+     the Today screen now. ── */
   .fl-nav { padding: 6px 6px calc(12px + env(safe-area-inset-bottom)); gap: 0; }
   .fl-nav button { padding: 9px 2px 7px; border-radius: 10px; font-size: 9.5px; letter-spacing: 0.08em; color: #8F8770; }
-  .fl-nav button.on { color: #C9A468; background: none; }
-  .fl-nav button.on .fl-nav-glyph::after { content: ''; display: block; width: 18px; height: 3px; border-radius: 2px; background: #9A7209; margin: 3px auto -6px; }
+  .fl-nav button.on { color: #C9A468; background: none; font-weight: 800; }
 
   /* ── FIELD-3 grafts: header bell, picker PIN pad, Today camera button ── */
   .fl-bell { position: relative; background: none; border: none; color: #E8E2D4; cursor: pointer; padding: 6px; line-height: 0; }
