@@ -1,18 +1,24 @@
 // =============================================================================
-// WorkHubScreen — crew Jobs tab: queues built at the desk, run from the field
+// WorkHubScreen — crew Jobs tab: queues built and RUN from the phone
 // =============================================================================
-// FIELD-2: one hub with internal sub-navigation ('hub' | 'installs' |
-// 'production' | 'foundations' | 'check'). The tiles carry live open counts
-// (one Promise.all on mount, each count independent-failure-safe); the sub
-// screens are the existing Installs / Production surfaces plus the new phone
-// dig list (FoundationsScreen) and an inline check-job list.
+// FIELD-JOBS-1 (Paul, 2026-07-24): the hub's sections are his work lists —
+// Installations (set list), Foundations (dig list, buildable, base L×W +
+// section on every row), Sandblasting (trade blast queue), Inscriptions,
+// Check jobs. Production opens the REAL floor (ProductionFloorScreen — the
+// hand-picked component queues, contracted work only); the old "every active
+// stone" finder with its All default and LEAD rows is deleted. Leads belong in
+// Check jobs and nowhere else on this tab.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
 import { getInstallList, getFoundationList, listCheckJobTasks } from '../lib/stonebooksData'
+import { listVendorItems } from '../lib/vendorsData'
+import { BLAST_ACTIVE } from '../lib/blastLadder'
 import { todayISO } from './fieldShared'
 import InstallListScreen from './InstallListScreen'
-import ProductionScreen from './ProductionScreen'
+import ProductionFloorScreen from './ProductionFloorScreen'
 import FoundationsScreen from './FoundationsScreen'
+import SandblastScreen from './SandblastScreen'
+import InscriptionsScreen from './InscriptionsScreen'
 
 // Deterministic chip text from an ISO date (local-midnight parse, no shift).
 function dueChipLabel(iso) {
@@ -22,25 +28,28 @@ function dueChipLabel(iso) {
 }
 
 export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComplete }) {
-  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'production' | 'foundations' | 'check'
-  const [counts, setCounts] = useState({ installs: null, foundations: null, check: null })
+  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'foundations' | 'sandblast' | 'inscriptions' | 'check' | 'production'
+  const [counts, setCounts] = useState({ installs: null, foundations: null, blast: null, check: null })
   const [checkTasks, setCheckTasks] = useState(null)
 
-  // One fetch pass for all three counts. The helpers already swallow their own
-  // query errors (returning []), and the .catch(() => null) keeps any one
-  // failure from taking the other tiles down with it.
+  // One fetch pass for the tile counts; each independent-failure-safe so one
+  // broken query never takes the other tiles down.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [setList, fdnList, checks] = await Promise.all([
+      const [setList, fdnList, vendorItems, checks] = await Promise.all([
         getInstallList().catch(() => null),
         getFoundationList().catch(() => null),
+        listVendorItems().catch(() => null),
         listCheckJobTasks().catch(() => null),
       ])
       if (cancelled) return
       setCounts({
         installs: setList ? setList.length : null,
         foundations: fdnList ? fdnList.length : null,
+        blast: vendorItems
+          ? vendorItems.filter(i => i.work_type === 'blasting' && BLAST_ACTIVE.includes(i.status)).length
+          : null,
         check: checks ? checks.filter(t => t.status !== 'done').length : null,
       })
       setCheckTasks(checks || [])
@@ -65,20 +74,38 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
     )
   }
 
-  if (sub === 'production') {
-    return (
-      <div>
-        {back}
-        <ProductionScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} undo={undo} />
-      </div>
-    )
-  }
-
   if (sub === 'foundations') {
     return (
       <div>
         {back}
         <FoundationsScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
+      </div>
+    )
+  }
+
+  if (sub === 'sandblast') {
+    return (
+      <div>
+        {back}
+        <SandblastScreen who={who} undo={undo} />
+      </div>
+    )
+  }
+
+  if (sub === 'inscriptions') {
+    return (
+      <div>
+        {back}
+        <InscriptionsScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
+      </div>
+    )
+  }
+
+  if (sub === 'production') {
+    return (
+      <div>
+        {back}
+        <ProductionFloorScreen who={who} undo={undo} onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
       </div>
     )
   }
@@ -124,7 +151,7 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
     <div>
       <div style={{ margin: '4px 2px 14px' }}>
         <div className="fl-sect-h" style={{ fontSize: 26 }}>Work</div>
-        <div className="fl-greet-sub">Queues built at the desk, run from the field</div>
+        <div className="fl-greet-sub">Your lists — built here, run here</div>
       </div>
       <div className="fl-tilegrid">
         <button type="button" className="fl-tile" onClick={() => setSub('installs')}>
@@ -141,6 +168,20 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
           </div>
           <div className="fl-tile-count">{counts.foundations == null ? '…' : counts.foundations}</div>
         </button>
+        <button type="button" className="fl-tile" onClick={() => setSub('sandblast')}>
+          <div className="fl-tile-main">
+            <div className="fl-tile-name">Sandblasting</div>
+            <div className="fl-tile-sub">Trade blast queue</div>
+          </div>
+          <div className="fl-tile-count">{counts.blast == null ? '…' : counts.blast}</div>
+        </button>
+        <button type="button" className="fl-tile" onClick={() => setSub('inscriptions')}>
+          <div className="fl-tile-main">
+            <div className="fl-tile-name">Inscriptions</div>
+            <div className="fl-tile-sub">Cemetery lettering</div>
+          </div>
+          <div className="fl-tile-count">&#8250;</div>
+        </button>
         <button type="button" className="fl-tile" onClick={() => setSub('check')}>
           <div className="fl-tile-main">
             <div className="fl-tile-name">Check jobs</div>
@@ -151,7 +192,7 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
         <button type="button" className="fl-tile" onClick={() => setSub('production')}>
           <div className="fl-tile-main">
             <div className="fl-tile-name">Production</div>
-            <div className="fl-tile-sub">Every active stone</div>
+            <div className="fl-tile-sub">The floor — your queues</div>
           </div>
           <div className="fl-tile-count">&#8250;</div>
         </button>

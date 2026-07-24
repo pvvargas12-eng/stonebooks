@@ -11,22 +11,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { listVendorItems, updateVendorItem } from './lib/vendorsData'
 import { getCurrentStaffName } from './lib/stonebooksData'
-
-const ACTIVE = ['submitted', 'waiting_on_info', 'ready_to_work', 'in_progress', 'design_uploaded', 'ready_for_pickup']
-const NEXT = {
-  submitted: 'ready_to_work', waiting_on_info: 'ready_to_work', ready_to_work: 'in_progress',
-  in_progress: 'ready_for_pickup', design_uploaded: 'ready_for_pickup', ready_for_pickup: 'completed',
-}
-const PREV = {
-  completed: 'ready_for_pickup', ready_for_pickup: 'in_progress', in_progress: 'ready_to_work',
-  ready_to_work: 'submitted', design_uploaded: 'in_progress', waiting_on_info: 'submitted',
-}
-const TONE = {
-  submitted: '#8b93a1', waiting_on_info: '#e05d55', ready_to_work: '#6fb3f0',
-  in_progress: '#d8a03f', design_uploaded: '#a78bfa', ready_for_pickup: '#39c6a5',
-  completed: '#4fbf7c', cancelled: '#767c86',
-}
-const label = (s) => (s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+import {
+  BLAST_ACTIVE as ACTIVE, BLAST_NEXT as NEXT, BLAST_PREV as PREV,
+  BLAST_TONE as TONE, blastLabel as label,
+} from './lib/blastLadder'
 
 export default function SandblastBoard() {
   const [items, setItems] = useState(null)

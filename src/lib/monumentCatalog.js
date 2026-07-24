@@ -494,6 +494,19 @@ const BASE_SIDES_SPLIT = {
   'brp-sawback':    { top: '',        back: 'BRP, SAW BACK' },
 }
 
+// Dimensions-only base size for field lists ("2-6 × 1-0") — the same size
+// token buildBaseSpec embeds, without the finish/height tail. A dig crew wants
+// L × W, nothing else (Paul, 2026-07-24). Override text wins whole: it is
+// Paul's own wording and unparseable by design.
+export function buildBaseSizeOnly(order) {
+  const bc = order?.baseConfig || {}
+  const override = (bc.baseTextOverride || '').trim()
+  if (override) return override
+  const baseSizeObj = BASE_SIZES.find(b => b.code === bc.sizeCode)
+  if (baseSizeObj) return baseSizeObj.label.replace(/\s*polished\s+top\s*$/i, '').trim()
+  return [ftIn(bc.width), ftIn(bc.depth)].filter(Boolean).join(' × ')
+}
+
 export function buildBaseSpec(order) {
   const bc = order.baseConfig || {}
   const override = (bc.baseTextOverride || '').trim()
