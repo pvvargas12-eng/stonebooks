@@ -166,6 +166,23 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const filteredLive = useMemo(() => live.filter(t => matchesWho(t) && matchesType(t)), [live, matchesWho, matchesType])
   const filteredDone = useMemo(() => doneRecent.filter(t => matchesWho(t) && matchesType(t)), [doneRecent, matchesWho, matchesType])
 
+  // Per-type counts for the chip row (Paul 2026-07-24: "how many design layout
+  // production checkjob closeout... i need notifications"). Faceted: respect
+  // the who-filter but never the type chip itself, so each badge says exactly
+  // what clicking that chip shows. Red when the type carries overdue work.
+  const typeCounts = useMemo(() => {
+    const counts = { all: 0 }
+    const overdue = {}
+    for (const t of live) {
+      if (!matchesWho(t)) continue
+      counts.all++
+      const code = t.task_type || 'general'
+      counts[code] = (counts[code] || 0) + 1
+      if (isOverdue(t)) { overdue[code] = true; overdue.all = true }
+    }
+    return { counts, overdue }
+  }, [live, matchesWho, isOverdue])
+
   const dayCounts = useMemo(() => {
     const m = { overdue: 0, nodate: 0 }
     for (const iso of weekISOs) m[iso] = 0
@@ -304,9 +321,19 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
       </div>
 
       <div className="sb-tcc-typerow">
-        <button type="button" className={`ttab${typeFilter === 'all' ? ' on' : ''}`} onClick={() => setTypeFilter('all')}>All types</button>
+        <button type="button" className={`ttab${typeFilter === 'all' ? ' on' : ''}`} onClick={() => setTypeFilter('all')}>
+          All types
+          {typeCounts.counts.all > 0 && (
+            <b className={`tnum${typeCounts.overdue.all ? ' red' : ''}`}>{typeCounts.counts.all}</b>
+          )}
+        </button>
         {TASK_TYPES.map(t => (
-          <button key={t.code} type="button" className={`ttab${typeFilter === t.code ? ' on' : ''}`} onClick={() => setTypeFilter(t.code)}>{t.label}</button>
+          <button key={t.code} type="button" className={`ttab${typeFilter === t.code ? ' on' : ''}`} onClick={() => setTypeFilter(t.code)}>
+            {t.label}
+            {(typeCounts.counts[t.code] || 0) > 0 && (
+              <b className={`tnum${typeCounts.overdue[t.code] ? ' red' : ''}`}>{typeCounts.counts[t.code]}</b>
+            )}
+          </button>
         ))}
         {view === 'list' && (
           <label className="donechk">
@@ -984,6 +1011,10 @@ const CSS = `
   .sb-tcc-typerow{display:flex;align-items:center;gap:2px;flex-wrap:wrap;margin-bottom:10px;background:#ECE6D8;border-radius:10px;padding:3px;width:fit-content;max-width:100%}
   .sb-tcc .ttab{font:600 12.5px/1 inherit;font-family:inherit;border:none;background:none;color:#7a756a;border-radius:8px;padding:8px 13px;cursor:pointer;white-space:nowrap}
   .sb-tcc .ttab.on{background:#fff;color:#9A7209;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .sb-tcc .ttab .tnum{margin-left:6px;font:700 10.5px/1 var(--sb-font-mono,monospace);color:#fff;background:#1A1E24;border-radius:999px;padding:2px 7px;vertical-align:1px}
+  .sb-tcc .ttab .tnum.red{background:#B3261E}
+  .sb-tcc .ttab.on .tnum{background:#9A7209}
+  .sb-tcc .ttab.on .tnum.red{background:#B3261E}
   .sb-tcc .donechk{font-size:12.5px;color:#79735F;display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-left:10px;padding-right:8px}
 
   .sb-tcc-days{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
