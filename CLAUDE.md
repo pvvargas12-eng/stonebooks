@@ -6,6 +6,14 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint FIELD-JOBS-2 (2026-07-24) — SHIPPED: orders attach to phone tasks + the Done-today lane
+
+Paul: "i need to attach orders to tasks that i generate. in today tab why doesnt it show the work that i did today under runs like it should show the pena install that was complete." Commit 1c57611 (+86541b6 same session: Task CC type chips carry live count badges, faceted on the who-filter, red when the type holds overdue).
+
+- **Diagnosis first (prod SQL): Pena Garcia E-26-0116 `installed` flipped done 07-24 14:39 ET with ZERO run stops** — completed from the install list (Paul's flow), and Today only read scheduled work_batches. Ad-hoc completions were invisible by construction.
+- **`listWorkDoneToday()`** (stonebooksData): install-family milestones (installed/door_installed/work_completed) flipped done since LOCAL midnight + work_batch_jobs completed today, merged one-row-per-job (stop row contributes the run title, milestone row the verb). **`DoneToday` lane on BOTH Today builds** (owner: after runs, before the month card; crew: after the run) — family, verb · run · who · time, DONE chip, tap → job. Refetches on the existing `sb-field-install-done` CustomEvent, so completing an install then returning to Today shows it live.
+- **`searchOrdersLight(q)`** (stonebooksData): server-side ilike over primary_lastname + order_number, trimmed select **including `payments`** (isLeadRaw needs rowTotalPaid — without it every hit wears a false LEAD chip), archived excluded, 12 rows. **NewTaskSheet "Attach an order"**: 300ms-debounced typeahead, LEAD chip on lead rows, picked order renders as a REMOVE row; writes the SAME `shop_tasks.order_id` the desktop link picker uses (addShopTask already carried the param — the phone sheet just never offered it).
+
 ## Sprint FIELD-JOBS-1 (2026-07-24) — SHIPPED: the phone Jobs tab rebuilt around Paul's lists
 
 Paul's punch list, verbatim intent: "in stonebooks field my jobs tab to be fixed... i wants sandblasting section, i want inscription section in jobs i still cant build lists why cant i build a foundation list in the app in foundation list I need under the name to be the size of the base lxw, i need the section number thats incredibly important the production tab is incredibly unuseful it opens up with all why do my workers need to see anything wiht leads." Commit 081c860.
