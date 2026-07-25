@@ -12,7 +12,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import {
   listShopTasks, setShopTaskDone, getBatches, getBatch,
-  listAllApprovalLinks, fmtUSD, rowBalanceDue,
+  listAllApprovalLinks, fmtUSD, rowBalanceDue, listWorkDoneToday,
 } from '../lib/stonebooksData'
 import { familyNameOf, directionsUrl, BATCH_KIND_CHIP, todayISO } from './fieldShared'
 import { getPushState, isPushCardDismissed, dismissPushCard } from './fieldPush'
@@ -101,12 +101,13 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
     let cancelled = false
     ;(async () => {
       try {
-        const [shallow, tasks, links, orders, payOrders] = await Promise.all([
+        const [shallow, tasks, links, orders, payOrders, workDone] = await Promise.all([
           getBatches({ from: todayISO(), to: todayISO() }).catch(() => []),
           listShopTasks().catch(() => []),
           isOwner ? listAllApprovalLinks().catch(() => []) : Promise.resolve([]),
           isOwner ? fetchOpenOrders().catch(() => []) : Promise.resolve([]),
           isOwner ? fetchMonthPaymentOrders().catch(() => []) : Promise.resolve([]),
+          listWorkDoneToday().catch(() => []),
         ])
         const active = (shallow || []).filter(b => b.status !== 'cancelled')
         // getBatch resolves null on error (it doesn't reject) — fall back to
@@ -115,7 +116,7 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
         if (cancelled) return
         const slotRank = (b) => b.am_pm === 'am' ? 0 : b.am_pm === 'pm' ? 2 : 1
         const batches = deep.filter(Boolean).sort((a, z) => slotRank(a) - slotRank(z))
-        setData({ batches, tasks: tasks || [], links: links || [], orders: orders || [], payOrders: payOrders || [] })
+        setData({ batches, tasks: tasks || [], links: links || [], orders: orders || [], payOrders: payOrders || [], workDone: workDone || [] })
         setDoneIds(new Set())
         setToday(todayISO())
       } catch (e) {
@@ -124,6 +125,14 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
     })()
     return () => { cancelled = true }
   }, [isOwner, bump, refreshKey])
+
+  // A completed install announces itself (CompleteScreen fires this) — Today
+  // refetches so the Done-today lane shows the work without a remount.
+  useEffect(() => {
+    const onDone = () => setBump(v => v + 1)
+    window.addEventListener('sb-field-install-done', onDone)
+    return () => window.removeEventListener('sb-field-install-done', onDone)
+  }, [])
 
   // Batches -> view models (stops with jobs only; getBatch pre-sorts stop_order).
   const runs = useMemo(() => {
@@ -266,19 +275,55 @@ export default function TodayScreen({ who, undo, onOpenJob, onOpenTask, onOpenTa
         <>
           <NeedsYouLane items={needsYou} />
           <OwnerRuns runs={runs} onOpenStop={openStop} />
+          <DoneToday items={data.workDone}
+            onOpen={(w) => onOpenJob({ jobId: w.jobId, orderId: w.orderId }, 'today')} />
           {month && (
             <MonthCard month={month} open={monthOpen} onToggle={() => setMonthOpen(v => !v)}
               onOpenOrder={(o) => onOpenJob({ orderId: o.id, jobId: null }, 'today')} />
           )}
         </>
       ) : (
-        <CrewRun runs={runs} showDone={showDone} onToggleDone={() => setShowDone(v => !v)}
-          onOpenStop={openStop} />
+        <>
+          <CrewRun runs={runs} showDone={showDone} onToggleDone={() => setShowDone(v => !v)}
+            onOpenStop={openStop} />
+          <DoneToday items={data.workDone}
+            onOpen={(w) => onOpenJob({ jobId: w.jobId, orderId: w.orderId }, 'today')} />
+        </>
       )}
 
       <MyTasks items={myTasks} doneIds={doneIds} onMarkDone={markDone}
         onOpenTask={onOpenTask} onOpenTab={onOpenTab} onNewTask={onNewTask}
         openCount={myOpenCount} onCapture={onCapture} />
+    </div>
+  )
+}
+
+// ── Done today — what the crew actually finished (Paul: "it should show the
+// pena install that was complete"). Installs marked from the set list carry no
+// run; scheduled stops carry their run's name. Hidden when the day is empty.
+function DoneToday({ items, onOpen }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div>
+      <div className="fl-sect" style={{ marginTop: 16 }}>
+        <span className="fl-sect-h">Done today</span>
+        <span className="fl-sect-pill">{items.length}</span>
+      </div>
+      {items.map(w => {
+        const t = new Date(w.at || 0)
+        const when = isNaN(t.getTime()) ? '' : t.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        const spec = [w.label, w.runTitle, w.by, when].filter(Boolean).join(' · ')
+        return (
+          <button key={w.jobId} type="button" className="fl-row fl-row-flex" onClick={() => onOpen(w)}>
+            <div className="fl-row-main">
+              <div className="fl-fam">{familyNameOf(w.order)}</div>
+              <div className="fl-spec">{spec}</div>
+            </div>
+            <span className="fl-chip fl-c-good">DONE</span>
+            <span className="fl-chev">&#8250;</span>
+          </button>
+        )
+      })}
     </div>
   )
 }

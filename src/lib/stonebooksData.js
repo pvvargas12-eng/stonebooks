@@ -2095,6 +2095,68 @@ export function setBlockReason(order, job) {
 }
 export function isReadyToSet(order, job) { return setBlockReason(order, job) === null }
 
+// ── FIELD DAY HELPERS (2026-07-24) ──────────────────────────────────────────
+
+// Light order/lead search for link pickers (the field task sheet). Server-side
+// ilike over family name + order number, trimmed select, newest first. Commas
+// and %/_ are PostgREST or-syntax / pattern chars — flattened to spaces.
+export async function searchOrdersLight(q, limit = 12) {
+  const needle = String(q || '').trim().replace(/[%_,()]/g, ' ').trim()
+  if (!needle) return []
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, order_number, primary_lastname, status, signed_at, archived, payments, cemetery:cemeteries(name)')
+    .or(`primary_lastname.ilike.%${needle}%,order_number.ilike.%${needle}%`)
+    .or('archived.is.null,archived.eq.false')
+    .order('updated_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.error('searchOrdersLight:', error); return [] }
+  return data || []
+}
+
+// What got DONE today (Paul: "it should show the pena install that was
+// complete"): install-family milestones flipped done today + run stops
+// completed today, one row per job. Ad-hoc install-list completions carry no
+// batch; a stop that also flipped the milestone merges into one row with the
+// run's name. "Today" = the phone's local midnight (the crew's day).
+export async function listWorkDoneToday() {
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0)
+  const iso = dayStart.toISOString()
+  const JOB_EMBED = 'job:jobs(id, order_id, order:orders(id, order_number, primary_lastname, cemetery:cemeteries(name)))'
+  const [msRes, stopRes] = await Promise.all([
+    supabase.from('job_milestones')
+      .select(`job_id, milestone_key, updated_at, ${JOB_EMBED}`)
+      .in('milestone_key', ['installed', 'door_installed', 'work_completed'])
+      .eq('status', 'done')
+      .gte('updated_at', iso),
+    supabase.from('work_batch_jobs')
+      .select(`job_id, completed_at, completed_by, batch:work_batches(title), ${JOB_EMBED}`)
+      .gte('completed_at', iso),
+  ])
+  if (msRes.error) console.error('listWorkDoneToday milestones:', msRes.error)
+  if (stopRes.error) console.error('listWorkDoneToday stops:', stopRes.error)
+  const byJob = new Map()
+  for (const r of (stopRes.data || [])) {
+    if (!r.job?.order) continue
+    byJob.set(r.job_id, {
+      jobId: r.job_id, orderId: r.job.order_id, order: r.job.order,
+      label: 'Stop done', runTitle: r.batch?.title || '', by: r.completed_by || '', at: r.completed_at,
+    })
+  }
+  const MS_LABEL = { installed: 'Installed', door_installed: 'Door installed', work_completed: 'Work completed' }
+  for (const r of (msRes.data || [])) {
+    if (!r.job?.order) continue
+    const prev = byJob.get(r.job_id)
+    byJob.set(r.job_id, {
+      jobId: r.job_id, orderId: r.job.order_id, order: r.job.order,
+      label: MS_LABEL[r.milestone_key] || 'Done',
+      runTitle: prev?.runTitle || '', by: prev?.by || '',
+      at: r.updated_at > (prev?.at || '') ? r.updated_at : prev?.at,
+    })
+  }
+  return [...byJob.values()].sort((a, z) => String(z.at || '').localeCompare(String(a.at || '')))
+}
+
 // ── FOUNDATION WORK-LIST ─────────────────────────────────────────────────────
 // The hand-picked list of foundations we're actually going to dig/pour (out of
 // the full needs-a-foundation pool). Membership only — status stays milestone-

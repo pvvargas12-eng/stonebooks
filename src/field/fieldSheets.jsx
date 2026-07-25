@@ -7,9 +7,9 @@
 // Every write is optimistic-ish: close the sheet, offer UNDO via the toast.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
-import { addShopTask, deleteShopTask, listShopTasks, updateShopTask, uploadTaskAttachment } from '../lib/stonebooksData'
+import { addShopTask, deleteShopTask, listShopTasks, updateShopTask, uploadTaskAttachment, searchOrdersLight } from '../lib/stonebooksData'
 import { getActiveEmployees, DEPARTMENTS } from '../lib/employees'
-import { toneCls, todayISO } from './fieldShared'
+import { toneCls, todayISO, isLeadRaw } from './fieldShared'
 
 const CHIP_ROW = { display: 'flex', flexWrap: 'wrap', gap: 8 }
 
@@ -33,6 +33,22 @@ export function NewTaskSheet({ who, undo, onClose, onChanged }) {
   const [busy, setBusy] = useState(false)
   const people = useMemo(() => getActiveEmployees().map(r => r.name), [])
 
+  // Order link (Paul 2026-07-24: "i need to attach orders to tasks that i
+  // generate") — same shop_tasks.order_id the desktop link picker writes.
+  const [linked, setLinked] = useState(null)      // picked order row | null
+  const [linkQ, setLinkQ] = useState('')
+  const [linkHits, setLinkHits] = useState([])
+  useEffect(() => {
+    const needle = linkQ.trim()
+    if (needle.length < 2) { setLinkHits([]); return undefined }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      const rows = await searchOrdersLight(needle).catch(() => [])
+      if (!cancelled) setLinkHits(rows)
+    }, 300)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [linkQ])
+
   const create = async () => {
     const t = title.trim()
     if (!t || !sel.assignee || busy) return
@@ -41,6 +57,7 @@ export function NewTaskSheet({ who, undo, onClose, onChanged }) {
       title: t,
       assignee: sel.assignee,
       assigneeKind: sel.kind,
+      orderId: linked?.id || null,
       dueDate: due || null,
       createdBy: who?.name || null,
       taskedBy: who?.name || null,
@@ -90,6 +107,40 @@ export function NewTaskSheet({ who, undo, onClose, onChanged }) {
 
         <div className="fl-label">Due</div>
         <input type="date" className="fl-input" value={due} onChange={e => setDue(e.target.value)} />
+
+        <div className="fl-label">Attach an order</div>
+        {linked ? (
+          <button type="button" className="fl-row fl-row-flex" style={{ marginTop: 2 }}
+            onClick={() => { setLinked(null); setLinkQ('') }}>
+            <div className="fl-row-main">
+              <div className="fl-fam">{String(linked.primary_lastname || '').toUpperCase() || linked.order_number || 'Order'}</div>
+              <div className="fl-spec">{[linked.order_number, linked.cemetery?.name].filter(Boolean).join(' · ')}</div>
+            </div>
+            <span className="fl-chip fl-c-neutral">REMOVE</span>
+          </button>
+        ) : (
+          <>
+            <input className="fl-input" placeholder="Family or order number…"
+              value={linkQ} onChange={e => setLinkQ(e.target.value)} />
+            {linkHits.length > 0 && (
+              <div style={{ maxHeight: '28vh', overflowY: 'auto' }}>
+                {linkHits.map(o => (
+                  <button key={o.id} type="button" className="fl-row fl-row-flex"
+                    onClick={() => { setLinked(o); setLinkHits([]) }}>
+                    <div className="fl-row-main">
+                      <div className="fl-fam">
+                        {String(o.primary_lastname || '').toUpperCase() || o.order_number || 'Order'}
+                        {isLeadRaw(o) && <span className="fl-chip fl-c-lead" style={{ marginLeft: 8, verticalAlign: 'middle' }}>LEAD</span>}
+                      </div>
+                      <div className="fl-spec">{[o.order_number, o.cemetery?.name].filter(Boolean).join(' · ')}</div>
+                    </div>
+                    <span className="fl-chev">&#8250;</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
           <button type="button" className="fl-btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
