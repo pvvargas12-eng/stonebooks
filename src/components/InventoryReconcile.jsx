@@ -15,6 +15,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   getPRReconcile, dismissPRReconcile, reconcileMarkStoneStatus,
   updateBulkOrderItem, getActiveStoneOrders, getCurrentStaffName,
+  listStoneDeadlines, applyStoneDeadline, dismissStoneDeadline, listOpenOrdersLight,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { resolveStoneNeeds, matchNeedsToStock } from '../lib/inventoryMatch'
@@ -110,7 +111,9 @@ export default function InventoryReconcile({ onOpenOrder = null }) {
       </div>
       {banner && <div className={`irx-banner irx-banner-${banner.kind}`}>{banner.text}<button type="button" className="irx-x" onClick={() => setBanner(null)}>×</button></div>}
 
-      {total === 0 && <div className="sb-empty">Everything agrees — no PR/order differences to reconcile.</div>}
+      <StoneDeadlinesSection onOpenOrder={onOpenOrder} setBanner={setBanner} />
+
+      {total === 0 && <div className="sb-empty">No PR/order differences to reconcile.</div>}
 
       {data.orderedMismatch.length > 0 && (
         <Section title="PR says ordered — order says not" tone="red" count={data.orderedMismatch.length}
@@ -203,6 +206,202 @@ export default function InventoryReconcile({ onOpenOrder = null }) {
     </div>
   )
 }
+
+// ── STONE DEADLINES (RECON-2) — Sabina's chart vs orders, Paul clicks ───────
+const sdNorm = (s) => String(s || '').toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim()
+const sdKeys = (raw) => {
+  const n = sdNorm(String(raw || '').split(/[-–]/)[0])
+  const words = n.split(' ').filter(Boolean)
+  return { full: n, longest: words.slice().sort((a, z) => z.length - a.length)[0] || '' }
+}
+const sdFmt = (iso) => {
+  if (!iso) return '—'
+  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number)
+  return `${m}/${d}/${y}`
+}
+const sdFamOf = (o) => (o.primary_lastname && String(o.primary_lastname).trim())
+  || [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
+  || o.order_number || 'Order'
+
+function StoneDeadlinesSection({ onOpenOrder, setBanner }) {
+  const [rows, setRows] = useState(null)
+  const [orders, setOrders] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+  const [pick, setPick] = useState({})     // rowId -> chosen order (for ambiguous/missing)
+  const [searchFor, setSearchFor] = useState(null)
+  const [q, setQ] = useState('')
+
+  const load = useCallback(async () => {
+    const [r, o] = await Promise.all([listStoneDeadlines(), listOpenOrdersLight()])
+    setRows(r); setOrders(o)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const index = useMemo(() => {
+    const m = new Map()
+    const push = (k, o) => { if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(o) }
+    for (const o of (orders || [])) {
+      push(sdNorm(o.primary_lastname), o)
+      const ln = sdNorm(o.customer?.last_name)
+      if (ln && ln !== sdNorm(o.primary_lastname)) push(ln, o)
+    }
+    return m
+  }, [orders])
+
+  const buckets = useMemo(() => {
+    if (!rows || !orders) return null
+    const uniq = (arr) => { const s = new Set(); return arr.filter(o => !s.has(o.id) && s.add(o.id)) }
+    const missing = [], ambiguous = [], proposals = []
+    let aligned = 0
+    for (const r of rows) {
+      const { full, longest } = sdKeys(r.family)
+      let hits = uniq([...(index.get(full) || []), ...(index.get(longest) || [])])
+      if (hits.length === 0 && longest.length >= 4) {
+        hits = uniq((orders || []).filter(o => {
+          const pn = sdNorm(o.primary_lastname), ln = sdNorm(o.customer?.last_name)
+          return (pn && pn.includes(longest)) || (ln && ln.includes(longest))
+        }))
+        if (hits.length > 3) hits = []
+      }
+      const chosen = pick[r.id]
+      if (chosen) { proposals.push({ r, order: chosen }); continue }
+      if (hits.length === 0) missing.push({ r })
+      else if (hits.length > 1) ambiguous.push({ r, hits })
+      else {
+        const cur = hits[0].target_completion_date ? String(hits[0].target_completion_date).slice(0, 10) : null
+        if (cur === r.proposed_date) aligned++
+        else proposals.push({ r, order: hits[0] })
+      }
+    }
+    return { missing, ambiguous, proposals, aligned }
+  }, [rows, orders, index, pick])
+
+  const searchHits = useMemo(() => {
+    if (!orders || q.trim().length < 2) return []
+    const t = q.trim().toLowerCase()
+    return orders.filter(o => `${o.primary_lastname || ''} ${o.customer?.last_name || ''} ${o.order_number || ''}`.toLowerCase().includes(t)).slice(0, 8)
+  }, [orders, q])
+
+  const apply = async (row, order) => {
+    if (busyId) return
+    setBusyId(row.id)
+    const who = await getCurrentStaffName().catch(() => null)
+    const res = await applyStoneDeadline(row.id, order.id, row.proposed_date, who)
+    setBusyId(null)
+    if (!res.ok) { setBanner({ kind: 'err', text: res.error || 'Could not set the due date.' }); return }
+    setBanner({ kind: 'ok', text: `${sdFamOf(order)} due date set to ${sdFmt(row.proposed_date)}.` })
+    load()
+  }
+  const dismiss = async (row) => {
+    if (busyId) return
+    setBusyId(row.id)
+    const who = await getCurrentStaffName().catch(() => null)
+    const res = await dismissStoneDeadline(row.id, who)
+    setBusyId(null)
+    if (!res.ok) { setBanner({ kind: 'err', text: res.error || 'Could not disregard.' }); return }
+    load()
+  }
+
+  if (rows === null || orders === null) return <div className="sb-empty">Reading the deadline chart…</div>
+  if (!rows.length) return null
+  if (!buckets) return null
+
+  const colorChip = (r) => (
+    r.sheet_color === 'blue' ? <span className="irx-sd-chip irx-sd-blue">STENCIL CUT</span>
+      : r.sheet_color === 'orange' ? <span className="irx-sd-chip irx-sd-orange">HAS PHOTO</span>
+        : <span className="irx-sd-chip">NOT CUT</span>
+  )
+
+  return (
+    <>
+      <style>{SD_CSS}</style>
+      {buckets.missing.length > 0 && (
+        <Section title="On the deadline chart — not found in Stonebooks" tone="red" count={buckets.missing.length}
+          hint="These stones are on Sabina's chart but no open order matches the name. Link one, or disregard if it lives under a different family.">
+          {buckets.missing.map(({ r }) => (
+            <div key={r.id} className="irx-row irx-row-tall">
+              <span className="irx-fam-plain">{r.family}</span>
+              <span className="irx-meta">{r.detail || r.family_raw} · due {sdFmt(r.proposed_date)}</span>
+              {colorChip(r)}
+              <span className="irx-actions">
+                <button type="button" className="irx-btn" disabled={!!busyId} onClick={() => { setSearchFor(searchFor === r.id ? null : r.id); setQ('') }}>
+                  {searchFor === r.id ? 'Close search' : 'Search orders…'}
+                </button>
+                <button type="button" className="irx-btn" disabled={!!busyId} onClick={() => dismiss(r)}>Disregard</button>
+              </span>
+              {searchFor === r.id && (
+                <div className="irx-linkbox">
+                  <input className="sb-input" autoFocus placeholder="Search family, customer, or order #…" value={q} onChange={e => setQ(e.target.value)} />
+                  {searchHits.map(o => (
+                    <button key={o.id} type="button" className="irx-linkrow"
+                      onClick={() => { setPick(p => ({ ...p, [r.id]: o })); setSearchFor(null); setQ('') }}>
+                      {sdFamOf(o)} <span className="irx-meta">{o.order_number} · {o.status}{o.target_completion_date ? ` · due ${sdFmt(o.target_completion_date)}` : ''}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {buckets.ambiguous.length > 0 && (
+        <Section title="Deadline chart — more than one order matches" tone="amber" count={buckets.ambiguous.length}
+          hint="Pick which order the chart row means; then it becomes a one-click due-date update below.">
+          {buckets.ambiguous.map(({ r, hits }) => (
+            <div key={r.id} className="irx-row irx-row-tall">
+              <span className="irx-fam-plain">{r.family}</span>
+              <span className="irx-meta">due {sdFmt(r.proposed_date)}</span>
+              {colorChip(r)}
+              <span className="irx-actions">
+                {hits.slice(0, 4).map(o => (
+                  <button key={o.id} type="button" className="irx-btn irx-btn-cand" disabled={!!busyId}
+                    onClick={() => setPick(p => ({ ...p, [r.id]: o }))}>
+                    → {sdFamOf(o)} · {o.order_number}{o.target_completion_date ? ` (due ${sdFmt(o.target_completion_date)})` : ''}
+                  </button>
+                ))}
+                <button type="button" className="irx-btn" disabled={!!busyId} onClick={() => dismiss(r)}>Disregard</button>
+              </span>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {buckets.proposals.length > 0 && (
+        <Section title="Deadline chart — due-date updates for your click" tone="blue" count={buckets.proposals.length}
+          hint="The chart's month (or its written date) vs the order's current due date. Nothing changes until you press Set.">
+          {buckets.proposals.map(({ r, order }) => (
+            <div key={r.id} className="irx-row">
+              <button type="button" className="irx-fam" onClick={() => onOpenOrder?.(order.id)}>{sdFamOf(order)}</button>
+              <span className="irx-meta">
+                {order.order_number} · {order.status} · now {order.target_completion_date ? sdFmt(order.target_completion_date) : 'NO DUE DATE'} → chart says {sdFmt(r.proposed_date)}
+              </span>
+              {colorChip(r)}
+              <span className="irx-actions">
+                <button type="button" className="irx-btn irx-btn-go" disabled={!!busyId} onClick={() => apply(r, order)}>
+                  Set due {sdFmt(r.proposed_date)}
+                </button>
+                <button type="button" className="irx-btn" disabled={!!busyId} onClick={() => dismiss(r)}>Disregard</button>
+              </span>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {buckets.aligned > 0 && (
+        <div className="irx-muted" style={{ margin: '-6px 0 16px 4px' }}>
+          {buckets.aligned} chart row{buckets.aligned === 1 ? ' already agrees' : 's already agree'} with the order due dates — nothing to do there.
+        </div>
+      )}
+    </>
+  )
+}
+
+const SD_CSS = `
+  .irx-sd-chip { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; border-radius: 6px; padding: 3px 8px; background: #f0ece2; color: #6b6256; white-space: nowrap; }
+  .irx-sd-blue { background: #EAF1FB; color: #234C8A; }
+  .irx-sd-orange { background: #FCEFD9; color: #A05A12; }
+`
 
 function Section({ title, tone, count, hint, children }) {
   return (

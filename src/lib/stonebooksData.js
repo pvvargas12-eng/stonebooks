@@ -10460,6 +10460,52 @@ export async function getPRReconcile() {
   } catch (e) { return { ...empty, error: String(e?.message || e) } }
 }
 
+// ── STONE DEADLINES (RECON-2, 2026-07-27) ───────────────────────────────────
+// Sabina's deadline chart, staged in stone_deadlines. The Reconcile tab shows
+// the comparison; PAUL clicks every change — apply = the ONLY write path, and
+// it rides the same setOrderTargetDate as the calendar drag.
+export async function listStoneDeadlines() {
+  const { data, error } = await supabase
+    .from('stone_deadlines')
+    .select('*')
+    .is('dismissed_at', null)
+    .is('applied_at', null)
+    .order('due_month', { ascending: true })
+  if (error) { console.error('listStoneDeadlines:', error); return [] }
+  return data || []
+}
+
+// Every non-dead order, light columns — the deadline matcher needs the FULL
+// open book (drafts and paid-in-full included), wider than NEEDS_STONE_STATUSES.
+export async function listOpenOrdersLight() {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, order_number, primary_lastname, status, target_completion_date, signed_at, customer:customers(first_name, last_name)')
+    .or('archived.is.null,archived.eq.false')
+    .not('status', 'in', '(closed,cancelled)')
+    .limit(3000)
+  if (error) { console.error('listOpenOrdersLight:', error); return [] }
+  return data || []
+}
+
+export async function applyStoneDeadline(rowId, orderId, dateIso, appliedBy = null) {
+  const r = await setOrderTargetDate(orderId, dateIso)
+  if (!r.ok) return r
+  const { error } = await supabase.from('stone_deadlines')
+    .update({ matched_order_id: orderId, applied_at: new Date().toISOString(), applied_by: appliedBy })
+    .eq('id', rowId)
+  if (error) return { ok: false, error: `Due date set, but the deadline row did not clear: ${error.message}` }
+  return { ok: true }
+}
+
+export async function dismissStoneDeadline(rowId, dismissedBy = null) {
+  const { error } = await supabase.from('stone_deadlines')
+    .update({ dismissed_at: new Date().toISOString(), dismissed_by: dismissedBy })
+    .eq('id', rowId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function dismissPRReconcile(itemId, checkKind, dismissedBy = null) {
   try {
     const { error } = await supabase.from('pr_reconcile_dismissals')
