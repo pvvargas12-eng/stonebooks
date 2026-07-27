@@ -285,10 +285,16 @@ export default function SignContractScreen({ who, onClose }) {
           <button key={o.id} type="button" className="fl-row fl-row-flex" disabled={busy} onClick={() => pick(o)}>
             <div className="fl-row-main">
               <div className="fl-fam" style={{ fontSize: 17 }}>
-                {String(o.primary_lastname || '').toUpperCase() || o.order_number || 'Order'}
+                {String(o.primary_lastname
+                  || [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
+                  || o.order_number || 'Order').toUpperCase()}
                 {isLeadRaw(o) && <span className="fl-chip fl-c-lead" style={{ marginLeft: 8, verticalAlign: 'middle' }}>LEAD</span>}
               </div>
-              <div className="fl-spec">{[o.order_number, o.cemetery?.name].filter(Boolean).join(' · ')}</div>
+              <div className="fl-spec">
+                {[o.order_number,
+                  o.customer?.last_name && String(o.customer.last_name) !== String(o.primary_lastname || '') ? `Customer: ${[o.customer.first_name, o.customer.last_name].filter(Boolean).join(' ')}` : null,
+                  o.cemetery?.name].filter(Boolean).join(' · ')}
+              </div>
             </div>
             {o.signed_at
               ? <span className="fl-chip fl-c-good">SIGNED</span>

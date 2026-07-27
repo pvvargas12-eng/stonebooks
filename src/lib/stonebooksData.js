@@ -2097,21 +2097,51 @@ export function isReadyToSet(order, job) { return setBlockReason(order, job) ===
 
 // ── FIELD DAY HELPERS (2026-07-24) ──────────────────────────────────────────
 
-// Light order/lead search for link pickers (the field task sheet). Server-side
-// ilike over family name + order number, trimmed select, newest first. Commas
-// and %/_ are PostgREST or-syntax / pattern chars — flattened to spaces.
+// Light order/lead search for link pickers (sales sign search, field task
+// attach, calendar links). Matches the order's FAMILY name and order number
+// AND the CUSTOMER's own first/last name — they can differ (the Tanko case,
+// 2026-07-27: intake customer named Tanko, order findable only by number —
+// embarrassing at the counter). Two indexed queries, merged, newest first.
+// Commas and %/_ are PostgREST or-syntax / pattern chars — flattened.
+const ORDER_SEARCH_SELECT = 'id, order_number, primary_lastname, status, signed_at, archived, updated_at, payments, customer:customers(first_name, last_name), cemetery:cemeteries(name)'
 export async function searchOrdersLight(q, limit = 12) {
   const needle = String(q || '').trim().replace(/[%_,()]/g, ' ').trim()
   if (!needle) return []
-  const { data, error } = await supabase
-    .from('orders')
-    .select('id, order_number, primary_lastname, status, signed_at, archived, payments, cemetery:cemeteries(name)')
-    .or(`primary_lastname.ilike.%${needle}%,order_number.ilike.%${needle}%`)
-    .or('archived.is.null,archived.eq.false')
-    .order('updated_at', { ascending: false })
-    .limit(limit)
-  if (error) { console.error('searchOrdersLight:', error); return [] }
-  return data || []
+  const [byOrder, custRows] = await Promise.all([
+    supabase.from('orders')
+      .select(ORDER_SEARCH_SELECT)
+      .or(`primary_lastname.ilike.%${needle}%,order_number.ilike.%${needle}%`)
+      .or('archived.is.null,archived.eq.false')
+      .order('updated_at', { ascending: false })
+      .limit(limit),
+    supabase.from('customers')
+      .select('id')
+      .or(`last_name.ilike.%${needle}%,first_name.ilike.%${needle}%`)
+      .limit(25),
+  ])
+  if (byOrder.error) console.error('searchOrdersLight orders:', byOrder.error)
+  if (custRows.error) console.error('searchOrdersLight customers:', custRows.error)
+  let byCustomer = []
+  const custIds = (custRows.data || []).map(c => c.id)
+  if (custIds.length) {
+    const res = await supabase.from('orders')
+      .select(ORDER_SEARCH_SELECT)
+      .in('customer_id', custIds)
+      .or('archived.is.null,archived.eq.false')
+      .order('updated_at', { ascending: false })
+      .limit(limit)
+    if (res.error) console.error('searchOrdersLight by-customer:', res.error)
+    byCustomer = res.data || []
+  }
+  const seen = new Set()
+  const merged = []
+  for (const o of [...(byOrder.data || []), ...byCustomer]) {
+    if (seen.has(o.id)) continue
+    seen.add(o.id)
+    merged.push(o)
+  }
+  merged.sort((a, z) => String(z.updated_at || '').localeCompare(String(a.updated_at || '')))
+  return merged.slice(0, limit)
 }
 
 // What got DONE today (Paul: "it should show the pena install that was
@@ -11677,6 +11707,13 @@ export const BATCH_KINDS = [
   // store; the modal exposes optional free-text address for those cases.
   { code: 'site_visit',      label: 'Site visit',       color: '#7F77DD', isField: true,  requiresDestination: false, requiresCompletionPhoto: false },
   { code: 'errand',          label: 'Errand',           color: '#5F5E5A', isField: true,  requiresDestination: false, requiresCompletionPhoto: false },
+  // CAL-3 (Paul 2026-07-27) — the calendar's typed events. Errand and Call are
+  // OUT of the composer vocabulary (legacy errand rows still render); these
+  // three are IN: Pickup (doors, monuments, whatever), Appointment (customers,
+  // vendors), Meeting (company meeting).
+  { code: 'pickup',          label: 'Pickup',           color: '#A05A12', isField: true,  requiresDestination: false, requiresCompletionPhoto: false },
+  { code: 'appointment',     label: 'Appointment',      color: '#2E5FA3', isField: false, requiresDestination: false, requiresCompletionPhoto: false },
+  { code: 'meeting',         label: 'Meeting',          color: '#6B4FA0', isField: false, requiresDestination: false, requiresCompletionPhoto: false },
 ]
 
 const _BATCH_KIND_BY_CODE = new Map(BATCH_KINDS.map(k => [k.code, k]))
@@ -11778,6 +11815,92 @@ export async function getBatches({ from, to, kind, assigned_to, status } = {}) {
   return data || []
 }
 
+// CAL-3: the CALENDAR's batch fetch — wider than getBatches on purpose and
+// used ONLY by CalendarTab. Catches (1) multi-day banners whose start is
+// before the visible range but whose end_date reaches in, and (2) recurring
+// events whose anchor date is older than the range. getBatches stays
+// untouched — the Scheduler and field Today must never see a recurring
+// anchor row on the wrong day.
+export async function getCalendarBatches({ from, to } = {}) {
+  const base = supabase
+    .from('work_batches')
+    .select('*, cemetery:cemeteries(*), batch_jobs:work_batch_jobs(*)')
+    .order('scheduled_date', { ascending: true, nullsFirst: true })
+    .lte('scheduled_date', to)
+    .or(`scheduled_date.gte.${from},end_date.gte.${from},recur_rule.not.is.null`)
+  const { data, error } = await base
+  if (error) { console.warn('[calendar] getCalendarBatches failed:', error.message); return [] }
+  // Recurring rows whose series ended before the range are noise — drop here.
+  return (data || []).filter(b => !b.recur_rule || !b.recur_until || b.recur_until >= from)
+}
+
+// Expand a recurring batch into the ISO dates it occupies inside [from, to].
+// Rules are deliberately simple presets: daily / weekdays / weekly / monthly
+// (anchor's day-of-month; short months skip). Non-recurring → just its own
+// date. Capped at 120 occurrences as a runaway guard.
+export function expandBatchOccurrences(batch, from, to) {
+  const anchor = String(batch.scheduled_date || '').slice(0, 10)
+  if (!anchor) return []
+  const rule = batch.recur_rule || null
+  if (!rule) return (anchor >= from && anchor <= to) ? [anchor] : []
+  const until = batch.recur_until ? String(batch.recur_until).slice(0, 10) : null
+  const stop = until && until < to ? until : to
+  const out = []
+  const [ay, am, ad] = anchor.split('-').map(Number)
+  const pad = (n) => String(n).padStart(2, '0')
+  const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  if (rule === 'monthly') {
+    for (let i = 0; i < 120; i++) {
+      const d = new Date(ay, am - 1 + i, ad)
+      if (d.getDate() !== ad) continue          // short month — no occurrence
+      const s = iso(d)
+      if (s > stop) break
+      if (s >= from && s >= anchor) out.push(s)
+    }
+    return out
+  }
+  const stepDays = rule === 'weekly' ? 7 : 1
+  for (let i = 0; i < (rule === 'weekly' ? 120 : 400); i++) {
+    const d = new Date(ay, am - 1, ad + i * stepDays)
+    const s = iso(d)
+    if (s > stop) break
+    if (rule === 'weekdays' && (d.getDay() === 0 || d.getDay() === 6)) continue
+    if (s >= from) out.push(s)
+    if (out.length >= 120) break
+  }
+  return out
+}
+
+// ── PRODUCTION DAY FOCUS (CAL-3) ────────────────────────────────────────────
+// One declared priority per production day — inscriptions / foundations /
+// blasting / setting. The calendar paints it as a band on the day and clicking
+// it opens the matching work list.
+export async function getDayFocusRange(from, to) {
+  const { data, error } = await supabase
+    .from('production_day_focus')
+    .select('*')
+    .gte('focus_date', from)
+    .lte('focus_date', to)
+  if (error) { console.warn('getDayFocusRange:', error.message); return {} }
+  const map = {}
+  for (const r of (data || [])) map[String(r.focus_date).slice(0, 10)] = r.focus_key
+  return map
+}
+
+export async function setDayFocus(dateIso, focusKey, setBy = null) {
+  if (!dateIso) return { ok: false, error: 'Missing date' }
+  if (!focusKey) {
+    const { error } = await supabase.from('production_day_focus').delete().eq('focus_date', dateIso)
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  }
+  const { error } = await supabase
+    .from('production_day_focus')
+    .upsert({ focus_date: dateIso, focus_key: focusKey, set_by: setBy, updated_at: new Date().toISOString() }, { onConflict: 'focus_date' })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // Full single-batch detail. Joins linked jobs with their milestones + order
 // + cemetery so the Calendar Day dispatch sheet has everything to render
 // die specs, color, top, etc.
@@ -11843,6 +11966,18 @@ export async function createBatch(input) {
     notes:                   (input.notes || '').trim() || null,
     status:                  input.status || 'planned',
   }
+  // CAL-3 optional fields — only sent when provided so pre-migration writers
+  // (and any cached schema) stay byte-identical.
+  if (input.start_time !== undefined)     payload.start_time = input.start_time || null
+  if (input.end_time !== undefined)       payload.end_time = input.end_time || null
+  if (input.end_date !== undefined)       payload.end_date = input.end_date || null
+  if (input.color !== undefined)          payload.color = input.color || null
+  if (input.attendees !== undefined)      payload.attendees = Array.isArray(input.attendees) ? input.attendees : []
+  if (input.calendar_scope !== undefined) payload.calendar_scope = input.calendar_scope || 'all'
+  if (input.owner_name !== undefined)     payload.owner_name = input.owner_name || null
+  if (input.order_id !== undefined)       payload.order_id = input.order_id || null
+  if (input.recur_rule !== undefined)     payload.recur_rule = input.recur_rule || null
+  if (input.recur_until !== undefined)    payload.recur_until = input.recur_until || null
   const { data: batch, error: insErr } = await supabase
     .from('work_batches')
     .insert(payload)
@@ -11887,6 +12022,17 @@ export async function updateBatch(id, patch) {
   if (patch.assigned_to !== undefined)             row.assigned_to = patch.assigned_to || null
   if (patch.notes !== undefined)                   row.notes = patch.notes || null
   if (patch.status !== undefined)                  row.status = patch.status
+  if (patch.kind !== undefined)                    row.kind = patch.kind
+  if (patch.start_time !== undefined)              row.start_time = patch.start_time || null
+  if (patch.end_time !== undefined)                row.end_time = patch.end_time || null
+  if (patch.end_date !== undefined)                row.end_date = patch.end_date || null
+  if (patch.color !== undefined)                   row.color = patch.color || null
+  if (patch.attendees !== undefined)               row.attendees = Array.isArray(patch.attendees) ? patch.attendees : []
+  if (patch.calendar_scope !== undefined)          row.calendar_scope = patch.calendar_scope || 'all'
+  if (patch.owner_name !== undefined)              row.owner_name = patch.owner_name || null
+  if (patch.order_id !== undefined)                row.order_id = patch.order_id || null
+  if (patch.recur_rule !== undefined)              row.recur_rule = patch.recur_rule || null
+  if (patch.recur_until !== undefined)             row.recur_until = patch.recur_until || null
   const { error } = await supabase.from('work_batches').update(row).eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
