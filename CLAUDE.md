@@ -6,6 +6,19 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## INCIDENT #2 (2026-07-27 ~21:0x UTC): Supabase wedged AGAIN — same restart fixed it
+
+Second occurrence in six days (see the 2026-07-21 incident above — identical signature). Ladder run again, in this order: unkeyed `/rest/v1/` → instant **401** (gateway alive) · keyed query with the anon key → **timed out at 20s** · Management API SQL → **"Connection terminated due to connection timeout"** · status.supabase.com → **All Systems Operational** (so: OUR instance). Remedy: `POST /v1/projects/ibekfollqnytxcuyekad/restart` → HTTP 200 → healthy in ~2 min. Post-restart verified: project + db + rest + auth all `ACTIVE_HEALTHY`, 22 pg connections / 1 active, data intact (480 orders, 1304 customers, 431 jobs, 96 tasks, 107 deadline rows), site 200 in 203ms.
+- **Symptom in the UI: boards stick on "Loading…" forever with `—` in the KPIs.** That is a wedged DB, not a code bug — run the ladder before debugging the component.
+- `sb-status.ps1` (scratchpad pattern) hits `GET /v1/projects/{ref}` + `/health?services=db&services=rest&services=auth` — the fastest confirmation.
+- **TWICE in six days = a pattern, not a fluke.** Suspected connection pile-up under load. On a third occurrence, investigate compute tier / pooling rather than restarting again.
+
+## Fix 0d1c512 (2026-07-27) — the field Inventory tab CRASHED the whole app
+
+`getInventoryStock()` resolves **`{ ok, rows, error }`, not an array** (it's the never-throws shape). `src/field/InventoryScreen.jsx` did `.then(rows => setItems(rows || []))`, so `items` became the wrapper object — `items.filter(...)` and `list.map(...)` then threw a TypeError that took the whole field app down the moment Paul opened Inventory. Now unwraps `.rows`, tolerates a bare array, and surfaces the helper's own error. **Every other caller already read `.rows` correctly** (InventoryDashboard, NeedsOrdering, SmartMatches, InventoryTab, prKinds) — this one screen was the outlier. When a data helper returns a result envelope, check EVERY consumer.
+
+Same commit: **Sandblasting removed** from desktop Jobs (JOBS_TABS entry + board mount + import) and the field Work hub (tile + screen + the listVendorItems count that fed it) at Paul's request — `SandblastBoard.jsx`, `field/SandblastScreen.jsx` and `lib/blastLadder.js` remain in the repo, unmounted. **Production floor pickers now list ONE ROW PER ORDER** (`groupByOrder`, module-scope in both boards): a job's die and base are separate components, so searching a name hit twice. The row is faced by the die, its meta reads "Die + Base …", and bringing it up pulls every piece of that job so nothing is orphaned. NOTE: written as a plain function, NOT `useMemo` — the React Compiler rejects memoizing a value built by mutating arrays ("Existing memoization could not be preserved").
+
 ## Sprint RECON-4 (2026-07-27) — SHIPPED: ONE Reconcile tab + candidates you can actually see
 
 Paul, unhappy: "remove reconcile tab from inventory also its too confusing… especially when you ask which order for multiple of the same name you cant view gotta be able to open and view the orders then go back and select which one it is… This reconcile tab is pretty terrible especially with updating the new due dates with preexisting order." Commit 07ad421.
