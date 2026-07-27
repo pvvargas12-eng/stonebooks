@@ -100,8 +100,9 @@ export default function SalesKioskApp() {
 
   if (door === 'intake') {
     return (
-      <div className="fl-shell">
+      <div className="fl-shell sk-ipad">
         <style>{FIELD_CSS}</style>
+        <style>{KIOSK_CSS}</style>
         <IntakeScreen who={who} onClose={() => setDoor(null)} />
       </div>
     )
@@ -109,9 +110,10 @@ export default function SalesKioskApp() {
 
   if (door === 'sign') {
     return (
-      <div className="fl-shell">
+      <div className="fl-shell sk-ipad">
         <style>{FIELD_CSS}</style>
-        <main className="fl-body" style={{ maxWidth: 900, margin: '0 auto' }}>
+        <style>{KIOSK_CSS}</style>
+        <main className="fl-body">
           <SignContractScreen who={who} onClose={() => setDoor(null)} />
         </main>
       </div>
@@ -119,26 +121,27 @@ export default function SalesKioskApp() {
   }
 
   return (
-    <div className="fl-shell">
+    <div className="fl-shell sk-ipad">
       <style>{FIELD_CSS}</style>
-      <main className="fl-body" style={{ maxWidth: 760, margin: '0 auto' }}>
+      <style>{KIOSK_CSS}</style>
+      <main className="fl-body">
         {door === 'catalog' ? (
           <CatalogScreen onBack={() => setDoor(null)} backLabel="Back" />
         ) : (
-          <div style={{ paddingTop: '8dvh', textAlign: 'center' }}>
-            <img src="/sb-sales-icon-180.png" alt="" width="76" height="76"
-              style={{ borderRadius: 18, border: '1px solid #E2DCCE', marginBottom: 14 }} />
-            <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.14em', color: '#6B6456' }}>
+          <div style={{ paddingTop: '7dvh', textAlign: 'center' }}>
+            <img src="/sb-sales-icon-180.png" alt="" width="88" height="88"
+              style={{ borderRadius: 20, border: '1px solid #E2DCCE', marginBottom: 16 }} />
+            <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: '0.14em', color: '#6B6456' }}>
               STONEBOOKS <span style={{ color: '#9A7209' }}>SALES</span>
             </div>
-            <div className="fl-serif" style={{ fontFamily: 'Fraunces, Georgia, serif', fontSize: 42, fontWeight: 600, color: '#16150F', margin: '14px 0 10px', lineHeight: 1.1 }}>
+            <div className="fl-serif" style={{ fontFamily: 'Fraunces, Georgia, serif', fontSize: 52, fontWeight: 600, color: '#16150F', margin: '16px 0 12px', lineHeight: 1.1 }}>
               Welcome.
             </div>
-            <div style={{ fontSize: 16.5, color: '#55503F', lineHeight: 1.6, maxWidth: 440, margin: '0 auto 30px' }}>
+            <div style={{ fontSize: 18, color: '#55503F', lineHeight: 1.6, maxWidth: 520, margin: '0 auto 38px' }}>
               Since 1919, families have trusted us with their memorials.
               How can we help you today?
             </div>
-            <div style={{ display: 'grid', gap: 14, maxWidth: 520, margin: '0 auto' }}>
+            <div className="fi-kiosk-doors">
               <button type="button" className="fi-kiosk-door" onClick={() => setDoor('catalog')}>
                 <span className="nm">View Catalog</span>
                 <span className="ds">Explore monuments by shape and style</span>
@@ -155,14 +158,21 @@ export default function SalesKioskApp() {
           </div>
         )}
       </main>
-      <style>{KIOSK_CSS}</style>
     </div>
   )
 }
 
+// SALES-4: the kiosk is an IPAD app — undo the phone shell's narrow column
+// (fl-body caps + 92px tab-bar padding) and let the big screen breathe.
+// Doors go 3-across in landscape, stack in portrait.
 const KIOSK_CSS = `
-  .fi-kiosk-door { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; background: #fff; border: 1.5px solid #E2DCCE; border-radius: 18px; padding: 22px 24px; cursor: pointer; font-family: inherit; min-height: 92px; }
+  .sk-ipad .fl-body { max-width: 1080px; margin: 0 auto; width: 100%; padding: 28px 34px 60px; font-size: 16px; }
+  .sk-ipad .fl-input { font-size: 16.5px; padding: 13px 15px; }
+  .sk-ipad .fl-row { min-height: 60px; }
+  .fi-kiosk-doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; max-width: 1000px; margin: 0 auto; }
+  .fi-kiosk-door { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 6px; text-align: left; background: #fff; border: 1.5px solid #E2DCCE; border-radius: 20px; padding: 28px 28px; cursor: pointer; font-family: inherit; min-height: 148px; }
   .fi-kiosk-door:active { background: #FBFAF6; border-color: #9A7209; }
-  .fi-kiosk-door .nm { font-family: Fraunces, Georgia, serif; font-size: 23px; font-weight: 600; color: #16150F; }
-  .fi-kiosk-door .ds { font-size: 14px; color: #8A7F6C; }
+  .fi-kiosk-door .nm { font-family: Fraunces, Georgia, serif; font-size: 26px; font-weight: 600; color: #16150F; line-height: 1.15; }
+  .fi-kiosk-door .ds { font-size: 15px; color: #8A7F6C; line-height: 1.45; }
+  @media (max-width: 700px) { .sk-ipad .fl-body { padding: 16px 16px 50px; } }
 `
