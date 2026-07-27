@@ -17,7 +17,6 @@ import InventorySmartMatches from './components/InventorySmartMatches'
 import InventoryDashboard from './components/InventoryDashboard'
 import InventoryProcurement from './components/InventoryProcurement'
 import InventoryReceiving from './components/InventoryReceiving'
-import InventoryReconcile from './components/InventoryReconcile'
 import InventoryPhotoEtching from './components/InventoryPhotoEtching'
 import InventoryNeedsOrdering from './components/InventoryNeedsOrdering'
 import InventorySuppliers from './components/InventorySuppliers'
@@ -129,7 +128,7 @@ export default function InventoryTab({ onOpenOrder }) {
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'needs' ? 'Needs Ordering' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'reconcile' ? 'Reconcile' : view === 'photos' ? 'Photos & Etching' : view === 'suppliers' ? 'Suppliers' : 'Dashboard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'needs' ? 'Needs Ordering' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'photos' ? 'Photos & Etching' : view === 'suppliers' ? 'Suppliers' : 'Dashboard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
@@ -139,7 +138,6 @@ export default function InventoryTab({ onOpenOrder }) {
             <button type="button" className={`inv-seg-btn${view === 'needs' ? ' on' : ''}`} onClick={() => setView('needs')}>Needs Ordering</button>
             <button type="button" className={`inv-seg-btn${view === 'procurement' ? ' on' : ''}`} onClick={() => setView('procurement')}>Procurement</button>
             <button type="button" className={`inv-seg-btn${view === 'receiving' ? ' on' : ''}`} onClick={() => setView('receiving')}>Receiving</button>
-            <button type="button" className={`inv-seg-btn${view === 'reconcile' ? ' on' : ''}`} onClick={() => setView('reconcile')}>Reconcile</button>
             <button type="button" className={`inv-seg-btn${view === 'suppliers' ? ' on' : ''}`} onClick={() => setView('suppliers')}>Suppliers</button>
             <button type="button" className={`inv-seg-btn${view === 'photos' ? ' on' : ''}`} onClick={() => setView('photos')}>Photos &amp; Etching</button>
           </div>
@@ -172,8 +170,6 @@ export default function InventoryTab({ onOpenOrder }) {
       )}
 
       {view === 'receiving' && <InventoryReceiving />}
-
-      {view === 'reconcile' && <InventoryReconcile onOpenOrder={onOpenOrder} />}
 
       {view === 'photos' && <InventoryPhotoEtching />}
 

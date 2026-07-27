@@ -10522,10 +10522,16 @@ export async function listStoneDeadlines() {
 
 // Every non-dead order, light columns — the deadline matcher needs the FULL
 // open book (drafts and paid-in-full included), wider than NEEDS_STONE_STATUSES.
+// Enough context to TELL TWO SAME-NAME ORDERS APART without leaving the tab
+// (Paul 2026-07-27: "you cant view gotta be able to open and view the orders
+// then go back and select which one it is"): cemetery, deceased, money,
+// created date, service types.
 export async function listOpenOrdersLight() {
   const { data, error } = await supabase
     .from('orders')
-    .select('id, order_number, primary_lastname, status, target_completion_date, signed_at, customer:customers(first_name, last_name)')
+    .select('id, order_number, primary_lastname, status, target_completion_date, signed_at, created_at, ' +
+      'deceased, service_types, payments, grave_location, plot_section, plot_block, plot_lot, plot_grave, ' +
+      'customer:customers(first_name, last_name, phone_primary), cemetery:cemeteries(name)')
     .or('archived.is.null,archived.eq.false')
     .not('status', 'in', '(closed,cancelled)')
     .limit(3000)

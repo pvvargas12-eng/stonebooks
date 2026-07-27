@@ -20,6 +20,7 @@ import {
 import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
 import StoneDeadlines from './components/StoneDeadlines'
+import InventoryReconcile from './components/InventoryReconcile'
 
 const OPEN_STATUSES = ['contracted', 'in_production', 'installed', 'paid_in_full']
 const RECON_SELECT =
@@ -132,6 +133,16 @@ export default function ReconciliationTab({ onOpenOrder }) {
       {/* Stone deadline chart (RECON-3) — Sabina's workbook vs the order due
           dates. TOP of this tab: it's the reconcile work Paul does most. */}
       <StoneDeadlines onOpenOrder={onOpenOrder} />
+
+      {/* Stone PRs vs orders (RECON-4) — used to be a SECOND tab also called
+          "Reconcile" inside Inventory, which is exactly what confused Paul.
+          One Reconcile now; the PR work moved here whole. */}
+      <section className="sb-recon-bucket">
+        <div className="sb-recon-bucket-head">
+          <span className="sb-recon-dot neutral" /> <strong>Stone POs vs orders</strong>
+        </div>
+        <InventoryReconcile onOpenOrder={onOpenOrder} />
+      </section>
 
       {/* Summary cards */}
       <div className="sb-recon-cards">
