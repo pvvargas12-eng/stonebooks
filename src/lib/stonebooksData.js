@@ -5735,6 +5735,51 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
   return r
 }
 
+// ── PARALLEL MEMBERSHIPS (FLOOR-PARALLEL, 2026-07-27) ───────────────────────
+// Paul: "multiple steps happen together" — a piece keeps ONE primary
+// current_phase and may ALSO sit in other columns (extra_phases jsonb).
+// Extras advance along the same track ladder; landing on the primary phase
+// merges (extra removed). The stone-status rollup reads current_phase only —
+// extras never move the mirror.
+const _extras = (c) => Array.isArray(c.extra_phases) ? c.extra_phases : []
+
+export async function addComponentExtraPhase(id, phase, { actor = null, source = 'board' } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  if (!isValidPhase(c.track, phase)) return { ok: false, error: `Invalid phase for ${c.track}` }
+  if (c.current_phase === phase) return { ok: false, error: 'Already in this column.' }
+  const ex = _extras(c)
+  if (ex.includes(phase)) return { ok: false, error: 'Already in this column.' }
+  const r = await _patchComponent(id, { extra_phases: [...ex, phase] })
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_also_added', { note: `Also at ${phaseLabel(phase)} (parallel step)`, payload: { phase }, actor, source })
+  return r
+}
+
+export async function removeComponentExtraPhase(id, phase, { actor = null, source = 'board' } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const ex = _extras(c)
+  if (!ex.includes(phase)) return { ok: false, error: 'Not in that column.' }
+  const r = await _patchComponent(id, { extra_phases: ex.filter(p => p !== phase) })
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_also_removed', { note: `Removed from ${phaseLabel(phase)}`, payload: { phase }, actor, source })
+  return r
+}
+
+export async function moveComponentExtraPhase(id, fromPhase, dir, { actor = null, source = 'board' } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const ex = _extras(c)
+  if (!ex.includes(fromPhase)) return { ok: false, error: 'Not in that column.' }
+  const to = dir > 0 ? nextPhase(c.track, fromPhase) : prevPhase(c.track, fromPhase)
+  if (!to) return { ok: false, error: dir > 0 ? 'Already at the final phase.' : 'Already at the first phase.' }
+  const without = ex.filter(p => p !== fromPhase)
+  // Landing on the primary (or an existing extra) merges — one card there.
+  const next = (to === c.current_phase || without.includes(to)) ? without : [...without, to]
+  const r = await _patchComponent(id, { extra_phases: next })
+  if (!r.ok) return r
+  await _componentEvent(c, 'component_also_moved', { note: `${phaseLabel(fromPhase)} → ${phaseLabel(to)} (parallel step)`, payload: { from: fromPhase, to }, actor, source })
+  return { ...r, merged: next === without, to }
+}
+
 export async function advanceComponent(id, { actor = null, source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (c.current_phase === QC_PHASE) return { ok: false, error: 'At Quality Check — use Approve or Deny.' }

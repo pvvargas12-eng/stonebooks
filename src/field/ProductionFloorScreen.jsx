@@ -19,6 +19,7 @@ import {
   getProductionComponents, getBringUpReady,
   advanceComponent, reverseComponent, setComponentOnFloor, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
+  addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
 } from '../lib/stonebooksData'
 import { trackPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC } from '../lib/jobComponents'
 
@@ -148,6 +149,12 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   if (err) return <div className="fl-empty">{err}</div>
 
   const bucketCards = bucket ? floor.filter(c => c.current_phase === bucket) : []
+  // Parallel memberships (the Boyd case): pieces ALSO in this column while
+  // their primary card sits elsewhere — separate steps happening together.
+  const bucketAlso = bucket
+    ? floor.filter(c => c.current_phase !== bucket && Array.isArray(c.extra_phases) && c.extra_phases.includes(bucket))
+    : []
+  const inCol = (c, p) => c.current_phase === p || (Array.isArray(c.extra_phases) && c.extra_phases.includes(p))
   const hasQc = TRACKS_WITH_QC.has(track)
 
   return (
@@ -186,7 +193,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
           {!loading && (
             <div className="fl-tilegrid">
               {phases.map((p, i) => {
-                const n = floor.filter(c => c.current_phase === p).length
+                const n = floor.filter(c => inCol(c, p)).length
                 const showNeed = i === 0 && readyQueue.length > 0
                 return (
                   <button key={p} type="button" className="fl-tile"
@@ -212,7 +219,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
           </button>
           <div className="fl-sect" style={{ margin: '2px 2px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="fl-sect-h">{phaseLabel(bucket)}</span>
-            <span className="fl-sect-pill">{bucketCards.length}</span>
+            <span className="fl-sect-pill">{bucketCards.length + bucketAlso.length}</span>
             <button type="button" className="fl-verb" style={{ marginLeft: 'auto', borderColor: '#9A7209', color: '#9A7209' }}
               onClick={() => { setAddOpen(true); setQ('') }}>
               + ADD
@@ -224,7 +231,40 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
             </div>
           )}
 
-          {bucketCards.length === 0 && <div className="fl-empty-serif">Nothing here yet — + ADD pulls from the queue.</div>}
+          {bucketCards.length === 0 && bucketAlso.length === 0 && <div className="fl-empty-serif">Nothing here yet — + ADD pulls from the queue.</div>}
+          {bucketAlso.map(c => (
+            <div key={`also-${c.id}`} className="fl-row" style={{ cursor: 'default', borderStyle: 'dashed' }}>
+              <div className="fl-rowtop">
+                <span className="fl-fam">{famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} /></span>
+                <span className="fl-chip fl-c-neutral" title={`Main card is at ${phaseLabel(c.current_phase)}`}>ALSO</span>
+              </div>
+              <div className="fl-spec">{metaOf(c)} · main: {phaseLabel(c.current_phase)}</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
+                  disabled={busyId === c.id}
+                  onClick={() => run(c.id,
+                    () => moveComponentExtraPhase(c.id, bucket, +1, { actor, source: 'field' }),
+                    `${famOf(c)} parallel step advanced`,
+                    () => addComponentExtraPhase(c.id, bucket, { actor, source: 'field' }))}>
+                  ADVANCE →
+                </button>
+                <button type="button" className="fl-verb" disabled={busyId === c.id}
+                  onClick={() => run(c.id,
+                    () => moveComponentExtraPhase(c.id, bucket, -1, { actor, source: 'field' }),
+                    `${famOf(c)} parallel step back`,
+                    () => addComponentExtraPhase(c.id, bucket, { actor, source: 'field' }))}>
+                  ← BACK
+                </button>
+                <button type="button" className="fl-verb" disabled={busyId === c.id}
+                  onClick={() => run(c.id,
+                    () => removeComponentExtraPhase(c.id, bucket, { actor, source: 'field' }),
+                    `${famOf(c)} removed from ${phaseLabel(bucket)}`,
+                    () => addComponentExtraPhase(c.id, bucket, { actor, source: 'field' }))}>
+                  REMOVE
+                </button>
+              </div>
+            </div>
+          ))}
           {bucketCards.map(c => {
             const atQc = hasQc && c.current_phase === QC_PHASE
             const held = !!c.qc_issue
@@ -321,8 +361,34 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                 )
               })}
               {queueSorted.filter(matches).length === 0 && (
-                <div className="fl-empty">Nothing in the queue matches — everything else is already on the floor.</div>
+                <div className="fl-empty">Nothing in the queue matches.</div>
               )}
+              {/* Already on the floor — add here TOO (parallel steps, the Boyd
+                  case). Keeps its main column; gets its own card here. */}
+              {(() => {
+                const onBoard = floor.filter(c => !inCol(c, bucket) && matches(c))
+                if (!onBoard.length) return null
+                return (
+                  <>
+                    <div className="fl-label" style={{ marginTop: 12 }}>Already on the floor — add here too</div>
+                    {onBoard.slice(0, 25).map(c => (
+                      <div key={`ob-${c.id}`} className="fl-row" style={{ cursor: 'default' }}>
+                        <div className="fl-rowtop">
+                          <span className="fl-fam" style={{ fontSize: 14.5 }}>{famOf(c)}</span>
+                          <button type="button" className="fl-verb" disabled={busyId === c.id}
+                            onClick={() => run(c.id,
+                              () => addComponentExtraPhase(c.id, bucket, { actor, source: 'field' }),
+                              `${famOf(c)} also at ${phaseLabel(bucket)}`,
+                              () => removeComponentExtraPhase(c.id, bucket, { actor, source: 'field' }))}>
+                            {busyId === c.id ? '…' : 'ADD HERE TOO'}
+                          </button>
+                        </div>
+                        <div className="fl-spec">{metaOf(c)} · main: {phaseLabel(c.current_phase)}</div>
+                      </div>
+                    ))}
+                  </>
+                )
+              })()}
             </div>
             <button type="button" className="fl-btn-ghost" style={{ marginTop: 12 }} onClick={() => setAddOpen(false)}>Done</button>
           </div>

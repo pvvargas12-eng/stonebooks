@@ -17,6 +17,7 @@ import {
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
   setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
   getBringUpReady,
+  addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
 } from '../lib/stonebooksData'
 import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -292,12 +293,16 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
           <div className="pf-cols">
             {phases.map((p, i) => {
               const cards = floor.filter(c => c.current_phase === p)
+              // Parallel memberships (Paul, the Boyd case): a piece ALSO sits
+              // here while its primary card is elsewhere — separate steps
+              // happening at the same time.
+              const alsoCards = floor.filter(c => c.current_phase !== p && Array.isArray(c.extra_phases) && c.extra_phases.includes(p))
               return (
                 <div key={p} className={`pf-col ${i === bnIdx && counts[i] > 0 ? 'pf-col-bn' : ''}`}>
                   <div className="pf-col-head">
                     <span className="pf-col-l">{phaseLabel(p)}</span>
                     <span className="pf-col-headr">
-                      <span className="pf-col-n">{cards.length}</span>
+                      <span className="pf-col-n">{cards.length + alsoCards.length}</span>
                       {i === 0 && readyQueue.length > 0 && (
                         <button type="button" className="pf-col-need"
                           title={`${readyQueue.length} queued piece${readyQueue.length === 1 ? ' meets' : 's meet'} the bring-up conditions (design approved · stone here or in stock · contracted) — click to add`}
@@ -310,10 +315,13 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
                     </span>
                   </div>
                   <div className="pf-col-body">
-                    {cards.length === 0 && <div className="pf-col-empty">—</div>}
+                    {cards.length === 0 && alsoCards.length === 0 && <div className="pf-col-empty">—</div>}
                     {cards.map(c => (
                       <ComponentCard key={c.id} comp={c} todayMs={todayMs} onChanged={load}
                         onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
+                    ))}
+                    {alsoCards.map(c => (
+                      <AlsoCard key={`also-${c.id}`} comp={c} phase={p} onChanged={load} setErr={setErr} />
                     ))}
                   </div>
                 </div>
@@ -343,7 +351,40 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
                   </button>
                 </div>
               ))}
-              {queueSorted.filter(c => matches(c, addQ)).length === 0 && <div className="pf-queue-empty">No queue pieces match — everything else is already on the board.</div>}
+              {queueSorted.filter(c => matches(c, addQ)).length === 0 && <div className="pf-queue-empty">No queue pieces match.</div>}
+              {/* Already on the board — add here TOO (parallel steps, the Boyd
+                  case). The piece keeps its primary column and also appears
+                  in this one with its own Advance/Back. */}
+              {(() => {
+                const onBoard = floor.filter(c =>
+                  c.current_phase !== addCol &&
+                  !(Array.isArray(c.extra_phases) && c.extra_phases.includes(addCol)) &&
+                  matches(c, addQ))
+                if (!onBoard.length) return null
+                return (
+                  <>
+                    <div className="pf-modal-hint" style={{ marginTop: 10 }}>Already on the board — add here too (stays in its other column):</div>
+                    {onBoard.slice(0, 25).map(c => (
+                      <div key={`ob-${c.id}`} className="pf-queue-row">
+                        {rowName(c)}
+                        <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, phaseLabel(c.current_phase), orderNoOf(c)].filter(Boolean).join(' · ')}</span>
+                        <button type="button" className="pf-btn" disabled={busyId === c.id}
+                          onClick={async () => {
+                            setBusyId(c.id); setErr(null)
+                            const actor = await getCurrentStaffName()
+                            const r = await addComponentExtraPhase(c.id, addCol, { actor })
+                            setBusyId(null)
+                            if (r && r.ok === false) { setErr(r.error); return }
+                            setAddCol(null); setAddQ('')
+                            load()
+                          }}>
+                          {busyId === c.id ? '…' : 'Add here too →'}
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )
+              })()}
             </div>
             <div className="pf-card-form-actions" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
               <button type="button" className="pf-btn" onClick={() => setAddCol(null)}>Close</button>
@@ -351,6 +392,39 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// A parallel-step card: the piece's PRIMARY card lives in another column; this
+// membership advances on its own ladder and merges away when it catches the
+// primary. Compact on purpose — QC/notes/blockers belong to the primary card.
+function AlsoCard({ comp, phase, onChanged, setErr }) {
+  const [busy, setBusy] = useState(false)
+  const act = async (fn) => {
+    if (busy) return
+    setBusy(true); setErr(null)
+    const actor = await getCurrentStaffName()
+    const r = await fn(actor)
+    setBusy(false)
+    if (r && r.ok === false) { setErr(r.error); return }
+    onChanged()
+  }
+  return (
+    <div className="pf-card pf-also">
+      <div className="pf-card-top">
+        <span className="pf-card-fam">{famOf(comp)}</span>
+        <span className="pf-also-tag" title={`Primary card is at ${phaseLabel(comp.current_phase)}`}>ALSO</span>
+      </div>
+      <div className="pf-card-meta">{[TYPE_LABEL[comp.component_type] || comp.label, orderNoOf(comp), `main: ${phaseLabel(comp.current_phase)}`].filter(Boolean).join(' · ')}</div>
+      <div className="pf-card-acts">
+        <button type="button" className="pf-btn pf-btn-go" disabled={busy}
+          onClick={() => act(a => moveComponentExtraPhase(comp.id, phase, +1, { actor: a }))}>Advance →</button>
+        <button type="button" className="pf-btn" disabled={busy}
+          onClick={() => act(a => moveComponentExtraPhase(comp.id, phase, -1, { actor: a }))}>← Back</button>
+        <button type="button" className="pf-btn" disabled={busy} title="Remove from this column only"
+          onClick={() => act(a => removeComponentExtraPhase(comp.id, phase, { actor: a }))}>×</button>
+      </div>
     </div>
   )
 }
@@ -635,6 +709,9 @@ const PF_CSS = `
   .pf-col-body { display: flex; flex-direction: column; gap: 8px; min-height: 12px; }
 
   .pf-card { background: #151a22; border: 1px solid #232a35; border-radius: 9px; padding: 9px 10px; position: relative; }
+  .pf-also { border-style: dashed; border-color: #3a4454; background: #131820; }
+  .pf-also-tag { font-size: 9px; font-weight: 800; letter-spacing: 0.08em; color: #C7B575; border: 1px solid #C7B575; border-radius: 5px; padding: 1px 6px; }
+  .pf-card-acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .pf-card-held { border-color: #5c2a2a; background: #1c1416; }
   .pf-card-blocked { border-color: #5a4a1e; }
   .pf-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
