@@ -6,6 +6,15 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint INSTALL-LIST-DESK (2026-07-27) — SHIPPED: the set list is buildable from the DESKTOP install board
+
+Paul: "i must be able to add to installation list from my orders / leads… if i add to this list then that means its blasted so dont worry even if it says stone not ordered yet.. i can override all that… i do however want to see blockers like is the foundation done or not thats important." Commit a1a783b.
+
+- The desktop Installation board was 100% DERIVED (five gates, nothing hand-picked) while the phone had been building `install_list` since FIELD-INSTALL-LOOP. Same table, now on both: **"My set list" is the FIRST KPI and the default view.**
+- **`+ Add to list` has NO readiness filter** — every open order/lead (drafts included; only installed/closed/cancelled/archived excluded). Adding IS the override: stone status is deliberately ignored.
+- **Blockers inform, never gate** (`blockersFor(job)` — separate from the gate engine): FOUNDATION IN / FOUNDATION NOT IN / NO FOUNDATION NEEDED leads every row and the picker rows, then balance due, permit, missing cemetery. The "My set list" KPI subtitle counts `N waiting on foundation`.
+- Schedule install / Mark installed reuse the existing milestone+closeout+photo chain; Remove pulls it off the list. The five derived buckets are untouched behind their own tiles.
+
 ## Sprint RECON-3 (2026-07-27) — SHIPPED: deadlines moved to the REAL Reconcile tab + grouped by family
 
 Paul: "why is this in inventory tab and not reconcile tab thats where im totally thrown off... also im seeing many duplicate orders." Commit f9df92e.
