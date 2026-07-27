@@ -6,6 +6,15 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint RECON-4 (2026-07-27) — SHIPPED: ONE Reconcile tab + candidates you can actually see
+
+Paul, unhappy: "remove reconcile tab from inventory also its too confusing… especially when you ask which order for multiple of the same name you cant view gotta be able to open and view the orders then go back and select which one it is… This reconcile tab is pretty terrible especially with updating the new due dates with preexisting order." Commit 07ad421.
+
+- **The Inventory → Reconcile sub-tab is DELETED** (seg button, route, import, page title). Its stone-PO reconcile moved WHOLE into the top-level Reconcile tab as a "Stone POs vs orders" section. **There is now exactly one Reconcile in the app — keep it that way.** `components/InventoryReconcile.jsx` still exists and is mounted from `ReconciliationTab.jsx`, not from Inventory.
+- **Same-name candidates are CARDS, not bare order numbers** — the actual complaint. Each shows cemetery · grave · deceased · current due date · money in · when the order was written, plus **Open** (onOpenOrder already sets orderDetailReturn → Back lands on Reconcile) and **This one**. Two Garras are now tellable apart without leaving the tab.
+- **The date is editable before it commits.** A chart cell with no written day renders "chart column April 2026 · no day written — proposing month end" next to a date input pre-filled with month-end; Set uses whatever's in the input. A real due date can never be silently overwritten by a month-end guess.
+- `listOpenOrdersLight` widened for that context (deceased/cemetery/grave/created/payments). **Money shown is `rowTotalPaid` (payments jsonb) — NOT a computed balance**, because the select carries no pricing columns (the Illuzzi trap; see ORDER_PRICING_COLUMNS rule).
+
 ## Sprint INSTALL-LIST-DESK (2026-07-27) — SHIPPED: the set list is buildable from the DESKTOP install board
 
 Paul: "i must be able to add to installation list from my orders / leads… if i add to this list then that means its blasted so dont worry even if it says stone not ordered yet.. i can override all that… i do however want to see blockers like is the foundation done or not thats important." Commit a1a783b.
