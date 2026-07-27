@@ -83,6 +83,15 @@ const famOf = (o) => properName(o?.primary_lastname
   || [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ')
   || o?.order_number || '—')
 
+// Focus-day shading (Paul 2026-07-27): the WHOLE day wears the priority's
+// color — a readable tint, with the full-strength band on top.
+const hexTint = (hex, a) => {
+  const h = String(hex || '').replace('#', '')
+  if (h.length !== 6) return undefined
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${a})`
+}
+
 const SCOPES = [
   { key: 'all', label: 'All' },
   { key: 'admin_sales', label: 'Admin / Sales' },
@@ -345,9 +354,11 @@ export default function CalendarTab({ onOpenOrder }) {
     const cap = view === 'week' ? 14 : (focus ? 2 : 3)
     const shown = chips.slice(0, cap)
     const more = chips.length - shown.length
+    const cellStyle = focus ? { background: hexTint(focus.color, inMonth ? 0.15 : 0.07) } : undefined
     return (
       <div key={day}
         className={`cal2-cell${inMonth ? '' : ' dim'}${isToday ? ' today' : ''}${dragOverDay === day ? ' drop' : ''}${view === 'week' ? ' wk' : ''}`}
+        style={cellStyle}
         onDragOver={e => { e.preventDefault(); setDragOverDay(day) }}
         onDragLeave={() => setDragOverDay(d => (d === day ? null : d))}
         onDrop={e => onDayDrop(e, day)}
