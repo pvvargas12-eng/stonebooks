@@ -343,6 +343,30 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
     })
   }, [id])   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Re-uploading the ORIGINAL 2-page PDF into a template that already has a
+  // perfected page 1 must not duplicate that page (Paul 2026-07-27: "do not
+  // touch the first page because i spent a lot of time fixing those"). When
+  // the template already has pages, the rendered pages go to a picker with
+  // the ones he already has pre-UNchecked; only what he confirms is appended.
+  const [pagePick, setPagePick] = useState(null)   // { rendered, file }
+
+  const appendRendered = async (chosen) => {
+    setBusy(true)
+    try {
+      const next = [...pages]
+      for (const pg of chosen) {
+        const up = await uploadPermitAsset(`permit-templates/${id}`, pg.blob, 'page.png')
+        if (up.ok) next.push({ url: up.url, w: pg.w, h: pg.h })
+        else say(up.error, true)
+      }
+      setPages(next)
+      setPage(Math.max(0, next.length - 1))
+      say(`Added ${chosen.length} page${chosen.length === 1 ? '' : 's'} — page 1 untouched.`)
+    } catch (e) { say(e?.message || 'Upload failed.', true) }
+    setBusy(false)
+    setPagePick(null)
+  }
+
   const onFiles = async (files) => {
     if (!files?.length) return
     setBusy(true)
@@ -351,6 +375,12 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
       for (const file of files) {
         if (/pdf$/i.test(file.type) || /\.pdf$/i.test(file.name)) {
           const rendered = await rasterizePdfFile(file)
+          // Template already built → let him choose which pages to append.
+          if (pages.length > 0 && rendered.length > 1) {
+            setBusy(false)
+            setPagePick({ rendered, name: file.name })
+            return
+          }
           for (const pg of rendered) {
             const up = await uploadPermitAsset(`permit-templates/${id}`, pg.blob, 'page.png')
             if (up.ok) next.push({ url: up.url, w: pg.w, h: pg.h })
@@ -539,6 +569,66 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
           />
         </div>
       )}
+
+      {pagePick && (
+        <PagePickModal
+          rendered={pagePick.rendered}
+          fileName={pagePick.name}
+          haveCount={pages.length}
+          busy={busy}
+          onCancel={() => setPagePick(null)}
+          onAdd={appendRendered}
+        />
+      )}
+    </div>
+  )
+}
+
+// This template already has pages Paul spent time getting right. When he
+// re-uploads the ORIGINAL multi-page PDF to recover a missing back page, the
+// pages he already has come in UNCHECKED so re-adding page 1 takes a
+// deliberate click. Blank back pages are shown and addable — that is the
+// whole point of the re-upload.
+function PagePickModal({ rendered, fileName, haveCount, busy, onCancel, onAdd }) {
+  const [pick, setPick] = useState(() => rendered.map((_, i) => i >= haveCount))
+  const thumbs = useMemo(() => rendered.map(p => URL.createObjectURL(p.blob)), [rendered])
+  useEffect(() => () => thumbs.forEach(u => URL.revokeObjectURL(u)), [thumbs])
+
+  const chosen = rendered.filter((_, i) => pick[i])
+
+  return (
+    <div className="pbt-scrim" onClick={onCancel}>
+      <div className="pbt-modal" onClick={e => e.stopPropagation()}>
+        <h3 className="pbt-h2">Which pages should be added?</h3>
+        <p className="pbt-hint" style={{ marginTop: 0 }}>
+          {fileName} has {rendered.length} pages. This template already has {haveCount}
+          {haveCount === 1 ? ' page' : ' pages'} — those are unchecked so nothing you already
+          set up gets touched. Checked pages are ADDED to the end.
+        </p>
+        <div className="pbt-srcgrid">
+          {rendered.map((pg, i) => (
+            <button
+              key={i}
+              type="button"
+              className="pbt-srccard"
+              style={{ outline: pick[i] ? '2px solid var(--sb-gold, #b8963f)' : 'none' }}
+              onClick={() => setPick(prev => prev.map((v, n) => (n === i ? !v : v)))}
+            >
+              {thumbs[i] && <img src={thumbs[i]} alt="" />}
+              <span>
+                {pick[i] ? 'ADD — ' : 'skip — '}page {pg.pageNo}
+                {pg.blank ? ' (blank)' : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="pbt-modal-actions">
+          <button type="button" className="pbt-btn pbt-btn-quiet" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="pbt-btn" onClick={() => onAdd(chosen)} disabled={busy || chosen.length === 0}>
+            {busy ? 'Adding…' : `Add ${chosen.length} page${chosen.length === 1 ? '' : 's'}`}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

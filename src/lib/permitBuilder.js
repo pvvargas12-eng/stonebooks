@@ -250,7 +250,12 @@ function _canvasIsBlank(canvas) {
   } catch { return false }   // when in doubt, keep the page
 }
 
-export async function rasterizePdfFile(file, { maxPages = 12, targetWidth = 1700, skipBlank = true } = {}) {
+// skipBlank now defaults FALSE (Paul 2026-07-27: "even if it had a blank page
+// i want that second page uploaded"). The old default silently DISCARDED back
+// pages during rasterization — in the browser, before any upload — which is
+// why ~32 templates ended up single-page and the missing pages exist nowhere.
+// Blank pages are still FLAGGED (page.blank) so the picker can say so.
+export async function rasterizePdfFile(file, { maxPages = 12, targetWidth = 1700, skipBlank = false } = {}) {
   const pdfjs = await loadPdfJs()
   const buf = await file.arrayBuffer()
   const pdf = await pdfjs.getDocument({ data: buf }).promise
@@ -265,9 +270,10 @@ export async function rasterizePdfFile(file, { maxPages = 12, targetWidth = 1700
     canvas.width = Math.round(vp.width)
     canvas.height = Math.round(vp.height)
     await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise
-    if (skipBlank && n > 1 && _canvasIsBlank(canvas)) continue
+    const blank = _canvasIsBlank(canvas)
+    if (skipBlank && n > 1 && blank) continue
     const blob = await new Promise(r => canvas.toBlob(r, 'image/png'))
-    if (blob) out.push({ blob, w: canvas.width, h: canvas.height })
+    if (blob) out.push({ blob, w: canvas.width, h: canvas.height, pageNo: i, blank })
   }
   if (pdf.numPages > maxPages) out.truncatedFrom = pdf.numPages
   return out
