@@ -6,6 +6,15 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint RECON-3 (2026-07-27) — SHIPPED: deadlines moved to the REAL Reconcile tab + grouped by family
+
+Paul: "why is this in inventory tab and not reconcile tab thats where im totally thrown off... also im seeing many duplicate orders." Commit f9df92e.
+
+- **TWO SCREENS ARE NAMED "RECONCILE"** and RECON-2 put the deadline work in the wrong one. `ReconciliationTab.jsx` = the TOP-LEVEL nav tab (NAV_SECONDARY, key `reconcile`) — schedule reconciliation, close candidates, layout catch-up. `components/InventoryReconcile.jsx` = an Inventory SUB-TAB (PR vs order stone status). **Deadline work belongs in the top-level tab; anything order-wide does.** Extracted to `src/components/StoneDeadlines.jsx`, mounted at the top of ReconciliationTab, removed from Inventory.
+- **Duplicate-looking rows fixed:** the chart lists a family once per month column, so an ungrouped list showed the same order 2-3× (MACON, NEHER, CARPENTER, GARRA…). Now **one card per family** carrying all its chart dates; assigning an order to one date removes it from that family's other dates (one order = one due date); families with no matching order sort first with a red rail.
+- Encoding gotcha: **never rewrite a source file with PS `Get-Content`/`Set-Content`** — it mangles UTF-8 (· — became mojibake). Use the Edit tool or node with explicit utf8. `git checkout --` is the recovery.
+- **Duplicate-orders audit (read-only, reported to Paul, NOTHING deleted):** 16 families with 2+ open orders. 4 look like true accidental doubles (same customer, same cemetery, consecutive order numbers, minutes apart): Badler 0383/0384, Guberer 0419/0420, Yager 0316/0317, Sokoloff-Smith Friedman 0426/0427. 6 are legitimate repeat work (same customer, weeks apart, both with payments): Drahos, Kubala, Lodato, Mackiewicz, Montoto, Garra (two DIFFERENT cemeteries). 6 are unrelated families sharing a surname (different customer_ids): Alvarez, Diaz, Guzman, Klein, Levine ×3, Walshin. **Separate data bug found: customer record `a45db621-…` is attached to BOTH a Guzman order (0405) and two Montoto orders (0437/0491)** — one customer row reused across families, likely a wrong pick at intake.
+
 ## Sprint FLOOR-PARALLEL (2026-07-27) — SHIPPED: a piece can sit in multiple floor columns (the Boyd case)
 
 Paul: "boyd is on the line but its not cut and i cant add it to the cut... gotta be able to have the order in multiple spots because there are multiple steps that happen together." Commit fabb9b1. Migration `20260727_component_extra_phases.sql` ✅ APPLIED (`job_components.extra_phases jsonb default []`).
