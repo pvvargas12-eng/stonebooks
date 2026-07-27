@@ -19,6 +19,7 @@ import {
 } from './lib/stonebooksData'
 import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
+import StoneDeadlines from './components/StoneDeadlines'
 
 const OPEN_STATUSES = ['contracted', 'in_production', 'installed', 'paid_in_full']
 const RECON_SELECT =
@@ -127,6 +128,10 @@ export default function ReconciliationTab({ onOpenOrder }) {
       </div>
 
       {err && <div className="sb-recon-err">{err}</div>}
+
+      {/* Stone deadline chart (RECON-3) — Sabina's workbook vs the order due
+          dates. TOP of this tab: it's the reconcile work Paul does most. */}
+      <StoneDeadlines onOpenOrder={onOpenOrder} />
 
       {/* Summary cards */}
       <div className="sb-recon-cards">
