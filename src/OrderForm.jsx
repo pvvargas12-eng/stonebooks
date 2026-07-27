@@ -81,6 +81,7 @@ const PLOT_TYPES = [
   { code: 'single', label: 'Single' },
   { code: 'sxs',    label: 'Side by side' },
   { code: 'dd',     label: 'Double deep' },
+  { code: 'td',     label: 'Triple deep' },
   { code: 'family', label: 'Family die' },
 ]
 // Foundation type — plain text column (orders.foundation_type), extend freely.

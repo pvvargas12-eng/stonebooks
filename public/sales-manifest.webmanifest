@@ -1,0 +1,14 @@
+{
+  "name": "Stonebooks Sales",
+  "short_name": "SB Sales",
+  "description": "Shevchenko Monuments customer iPad - catalog, intake, contract signing.",
+  "start_url": "/sales",
+  "scope": "/sales",
+  "display": "standalone",
+  "background_color": "#F5F3EE",
+  "theme_color": "#F5F3EE",
+  "icons": [
+    { "src": "/sb-sales-icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/sb-sales-icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -136,6 +136,7 @@ const PLOT_TYPES = [
   { code: 'double', label: 'Double',         blurb: 'Two plots side by side.' },
   { code: 'sxs',    label: 'Side by Side',   blurb: 'Two caskets, side by side.' },
   { code: 'dd',     label: 'Double Deep',    blurb: 'Two caskets, stacked.' },
+  { code: 'td',     label: 'Triple Deep',    blurb: 'Three caskets, stacked.' },
   { code: 'family', label: 'Family Plot',    blurb: 'Multi-grave family plot.' },
 ]
 
@@ -1745,8 +1746,9 @@ async function captureOrderPdfAttachment(orderId, blob, kind) {
 }
 
 // Upload a base64 signature data URL as a PNG to storage. Returns { url, path }.
-// `who` is 'customer' or 'rep'.
-async function uploadSignature(dataUrl, who, orderId) {
+// `who` is 'customer' or 'rep'. Exported for the /sales iPad sign flow.
+// eslint-disable-next-line react-refresh/only-export-components
+export async function uploadSignature(dataUrl, who, orderId) {
   if (!dataUrl) throw new Error('No signature data to upload')
   const res = await fetch(dataUrl)
   const blob = await res.blob()

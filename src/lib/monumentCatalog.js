@@ -112,6 +112,14 @@ export const SHAPES = [
     requiresBase: true,
   },
   {
+    code: 'monolith',
+    label: 'Monolith',
+    blurb: 'One-piece standing stone — custom sized.',
+    icon: '',
+    standardSizes: [],
+    canHaveBase: true,
+  },
+  {
     code: 'bronze',
     label: 'Bronze Plaque',
     blurb: 'Bronze marker — flat or on a granite base.',

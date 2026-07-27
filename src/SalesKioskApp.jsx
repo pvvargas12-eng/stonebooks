@@ -19,6 +19,7 @@ import { getFieldWho } from './field/fieldIdentity'
 import { redeemFieldLinkIfPresent } from './field/fieldLink'
 import IntakeScreen from './field/IntakeScreen'
 import CatalogScreen from './field/CatalogScreen'
+import SignContractScreen from './field/SignContractScreen'
 
 // One-time device setup — plain staff sign-in, kiosk-branded.
 function KioskLogin() {
@@ -102,32 +103,49 @@ export default function SalesKioskApp() {
     )
   }
 
+  if (door === 'sign') {
+    return (
+      <div className="fl-shell">
+        <style>{FIELD_CSS}</style>
+        <main className="fl-body" style={{ maxWidth: 900, margin: '0 auto' }}>
+          <SignContractScreen who={who} onClose={() => setDoor(null)} />
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="fl-shell">
       <style>{FIELD_CSS}</style>
-      <main className="fl-body" style={{ maxWidth: 720, margin: '0 auto' }}>
+      <main className="fl-body" style={{ maxWidth: 760, margin: '0 auto' }}>
         {door === 'catalog' ? (
           <CatalogScreen onBack={() => setDoor(null)} backLabel="Back" />
         ) : (
-          <div style={{ paddingTop: '9dvh', textAlign: 'center' }}>
+          <div style={{ paddingTop: '8dvh', textAlign: 'center' }}>
+            <img src="/sb-sales-icon-180.png" alt="" width="76" height="76"
+              style={{ borderRadius: 18, border: '1px solid #E2DCCE', marginBottom: 14 }} />
             <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.14em', color: '#6B6456' }}>
-              SHEVCHENKO <span style={{ color: '#9A7209' }}>MONUMENTS</span>
+              STONEBOOKS <span style={{ color: '#9A7209' }}>SALES</span>
             </div>
-            <div className="fl-serif" style={{ fontFamily: 'Fraunces, Georgia, serif', fontSize: 42, fontWeight: 600, color: '#16150F', margin: '16px 0 10px', lineHeight: 1.1 }}>
+            <div className="fl-serif" style={{ fontFamily: 'Fraunces, Georgia, serif', fontSize: 42, fontWeight: 600, color: '#16150F', margin: '14px 0 10px', lineHeight: 1.1 }}>
               Welcome.
             </div>
-            <div style={{ fontSize: 16.5, color: '#55503F', lineHeight: 1.6, maxWidth: 440, margin: '0 auto 34px' }}>
+            <div style={{ fontSize: 16.5, color: '#55503F', lineHeight: 1.6, maxWidth: 440, margin: '0 auto 30px' }}>
               Since 1919, families have trusted us with their memorials.
               How can we help you today?
             </div>
-            <div style={{ display: 'grid', gap: 14, maxWidth: 460, margin: '0 auto' }}>
+            <div style={{ display: 'grid', gap: 14, maxWidth: 520, margin: '0 auto' }}>
               <button type="button" className="fi-kiosk-door" onClick={() => setDoor('catalog')}>
-                <span className="nm">Browse our designs</span>
+                <span className="nm">View Catalog</span>
                 <span className="ds">Explore monuments by shape and style</span>
               </button>
               <button type="button" className="fi-kiosk-door" onClick={() => setDoor('intake')}>
-                <span className="nm">Get started with us</span>
+                <span className="nm">Customer Intake</span>
                 <span className="ds">Tell us a few details — it takes about two minutes</span>
+              </button>
+              <button type="button" className="fi-kiosk-door" onClick={() => setDoor('sign')}>
+                <span className="nm">View and Sign Contract</span>
+                <span className="ds">Review your contract and sign it right here</span>
               </button>
             </div>
           </div>
