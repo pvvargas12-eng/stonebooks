@@ -16,7 +16,8 @@
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
-  updateMilestone, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO } from '../lib/stonebooksData'
+  updateMilestone, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO,
+  getInstallList, addToInstallList, removeFromInstallList, fmtUSD } from '../lib/stonebooksData'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -38,7 +39,15 @@ const installMilestone = (job) => {
 export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const [components, setComponents] = useState(null)
   const [monthKey, setMonthKey] = useState('')
-  const [activeKpi, setActiveKpi] = useState('ready')
+  // Paul 2026-07-27: "i must be able to add to installation list from my orders
+  // / leads… if i add to this list then that means its blasted so dont worry
+  // even if it says stone not ordered yet." The hand-picked SET LIST is the
+  // default view — gates inform, they never keep a stone off his list.
+  const [activeKpi, setActiveKpi] = useState('setlist')
+  const [setList, setSetList] = useState(null)     // install_list rows
+  const [addOpen, setAddOpen] = useState(false)
+  const [addQ, setAddQ] = useState('')
+  const [listBusy, setListBusy] = useState(null)   // job id mid-write
   // Action state — schedule date modal + the confirm→photo→finalize install chain.
   const [scheduleRow, setScheduleRow] = useState(null)
   const [scheduleDate, setScheduleDate] = useState('')
@@ -47,8 +56,12 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const [installStep, setInstallStep] = useState(null)   // 'confirm' | 'photo'
 
   const load = useCallback(async () => {
-    const d = await getProductionComponents()
+    const [d, l] = await Promise.all([
+      getProductionComponents(),
+      getInstallList().catch(() => []),
+    ])
     setComponents(d || [])
+    setSetList(l || [])
     const now = new Date(); setMonthKey(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
   }, [])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
@@ -112,6 +125,80 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     return out
   }, [components, jobs, byJob, monthKey])
 
+  // ── The hand-picked SET LIST ───────────────────────────────────────────────
+  // Membership only (install_list). NO readiness gate — adding a stone IS Paul
+  // saying it's blasted and ready to schedule. Blockers are shown, never
+  // enforced; foundation is the one he actually acts on.
+  const memberIds = useMemo(() => new Set((setList || []).map(r => r.job_id)), [setList])
+  const blockersFor = useCallback((job) => {
+    const order = job.order || {}
+    const ci = byJob.get(job.id)
+    const track = ci?.track || null
+    const needsFdn = track ? FDN_TRACKS.has(track) : true
+    const fdnCode = deriveFdnStatus(job)
+    const fdn = needsFdn && fdnCode !== 'na' ? (fdnCode === 'in') : null
+    const bal = rowBalanceDue(order)
+    const permit = order.permit_status === 'approved' || order.permit_status === 'not_required' || !permitNeeded(order)
+    return { fdn, fdnCode, balance: bal, cem: !!order.cemetery_id, permit }
+  }, [byJob])
+
+  const setListRows = useMemo(() => {
+    if (!setList || !jobs) return []
+    const byId = new Map((jobs || []).map(j => [j.id, j]))
+    const out = []
+    for (const m of setList) {
+      const job = byId.get(m.job_id)
+      if (!job) continue
+      const ms = installMilestone(job)
+      if (ms?.status === 'done') continue            // installed — it's off the list
+      const ci = byJob.get(job.id) || { track: null, cemetery: job.order?.cemetery?.name || '', orderNumber: job.order?.order_number || '' }
+      out.push(makeRow(job, ci, job.order || {}, {
+        blockers: blockersFor(job),
+        installKey: ms?.milestone_key || null,
+        scheduled: ms?.status === 'in_progress',
+        scheduledDate: ms?.status === 'in_progress' ? (ms?.due_date || null) : null,
+        onList: true,
+      }))
+    }
+    return out
+  }, [setList, jobs, byJob, blockersFor])
+
+  // Add picker: EVERY open job — contracted, lead, draft, stone not ordered.
+  // Paul overrides; the picker only reports what's missing.
+  const addCandidates = useMemo(() => {
+    if (!jobs) return []
+    const t = addQ.trim().toLowerCase()
+    const pool = jobs.filter(j => {
+      if (memberIds.has(j.id)) return false
+      const ms = installMilestone(j)
+      if (ms?.status === 'done') return false
+      const o = j.order || {}
+      if (o.archived || o.status === 'closed' || o.status === 'cancelled') return false
+      return true
+    })
+    const hit = t
+      ? pool.filter(j => [j.order?.primary_lastname, j.order?.order_number, j.order?.cemetery?.name]
+        .filter(Boolean).join(' ').toLowerCase().includes(t))
+      : pool
+    return hit.slice(0, t ? 40 : 25)
+  }, [jobs, memberIds, addQ])
+
+  const addToList = async (jobId) => {
+    if (listBusy) return
+    setListBusy(jobId)
+    await addToInstallList(jobId).catch(() => {})
+    setListBusy(null)
+    setAddQ('')
+    load()
+  }
+  const removeFromList = async (jobId) => {
+    if (listBusy) return
+    setListBusy(jobId)
+    await removeFromInstallList(jobId).catch(() => {})
+    setListBusy(null)
+    load()
+  }
+
   // ── Actions (reuse existing milestone + task + photo systems) ───────────────
   const openSchedule = (row) => { setScheduleDate(todayISO()); setScheduleRow(row) }
   const doSchedule = async () => {
@@ -148,18 +235,24 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const closePhoto = () => { setInstallRow(null); setInstallStep(null); load() }
 
   const loading = components == null
+  const fdnOut = setListRows.filter(r => r.blockers?.fdn === false).length
   const kpis = [
+    { key: 'setlist', label: 'My set list', tone: 'gold', value: setListRows.length, sub: fdnOut > 0 ? `${fdnOut} waiting on foundation` : 'hand-picked to schedule' },
     { key: 'ready', label: 'Ready to set', tone: 'green', value: buckets.ready.length, sub: 'all 5 gates green' },
     { key: 'scheduled', label: 'Scheduled', tone: 'purple', value: buckets.scheduled.length, sub: 'install date set' },
     { key: 'blocked', label: 'Blocked', tone: 'red', value: buckets.blocked.length, sub: 'stone done, gate unmet' },
     { key: 'foundation', label: 'Foundation needed', tone: 'amber', value: buckets.foundationNeeded.length, sub: 'pour not in' },
     { key: 'done', label: 'Done this month', tone: 'green', value: buckets.doneThisMonth.length, sub: 'installed' },
   ]
-  const sectionRows = { ready: buckets.ready, scheduled: buckets.scheduled, blocked: buckets.blocked, foundation: buckets.foundationNeeded, done: buckets.doneThisMonth }[activeKpi] || buckets.ready
+  const sectionRows = { setlist: setListRows, ready: buckets.ready, scheduled: buckets.scheduled, blocked: buckets.blocked, foundation: buckets.foundationNeeded, done: buckets.doneThisMonth }[activeKpi] || buckets.ready
   const sectionLabel = kpis.find(k => k.key === activeKpi)?.label || ''
   const groupByCem = activeKpi !== 'done'
-  const canAct = activeKpi === 'ready' || activeKpi === 'scheduled'
-  const cardProps = { onOpenJob, onOpenOrderDetail, canAct, onSchedule: openSchedule, onMarkInstalled: openInstall }
+  const onSetList = activeKpi === 'setlist'
+  const canAct = onSetList || activeKpi === 'ready' || activeKpi === 'scheduled'
+  const cardProps = {
+    onOpenJob, onOpenOrderDetail, canAct, onSchedule: openSchedule, onMarkInstalled: openInstall,
+    onRemove: onSetList ? removeFromList : null, listBusy,
+  }
 
   return (
     <div className="jobcc ib">
@@ -183,9 +276,26 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       </div>
 
       <section className="jobcc-panel">
-        <div className="jobcc-panel-head"><span className="jobcc-panel-title">{sectionLabel}</span><span className="jobcc-panel-count">{loading ? '—' : sectionRows.length}</span></div>
+        <div className="jobcc-panel-head">
+          <span className="jobcc-panel-title">{sectionLabel}</span>
+          <span className="jobcc-panel-count">{loading ? '—' : sectionRows.length}</span>
+          {onSetList && (
+            <button type="button" className="jobcc-btn ib-btn-go" style={{ marginLeft: 'auto' }}
+              onClick={() => { setAddOpen(true); setAddQ('') }}>+ Add to list</button>
+          )}
+        </div>
+        {onSetList && (
+          <div className="ib-listhint">
+            Your list, your call — anything you add is treated as ready to schedule regardless of what the stone status says.
+            Blockers below are information only; <strong>foundation</strong> is the one worth chasing.
+          </div>
+        )}
         {loading ? <div className="jobcc-empty">Loading…</div>
-          : sectionRows.length === 0 ? <div className="jobcc-empty jobcc-empty-ok">✓ Nothing here.</div>
+          : sectionRows.length === 0 ? (
+            onSetList
+              ? <div className="jobcc-empty">Nothing on the set list yet — <strong>+ Add to list</strong> pulls from any order or lead.</div>
+              : <div className="jobcc-empty jobcc-empty-ok">✓ Nothing here.</div>
+          )
           : groupByCem ? groupByCemetery(sectionRows).map(([cem, rows]) => (
             <div key={cem} className="ib-group">
               <div className="ib-group-head">{cem || 'Cemetery not set'} <span className="ib-group-n">{rows.length}</span></div>
@@ -194,6 +304,47 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
           ))
           : <div className="ib-cards">{sectionRows.map(r => <InstallCard key={r.jobId} row={r} {...cardProps} />)}</div>}
       </section>
+
+      {/* + Add to list — EVERY open order/lead, no readiness filter. Paul picks;
+          the rows just report what's missing so nothing surprises him later. */}
+      {addOpen && (
+        <div className="ib-modal-overlay" onClick={() => setAddOpen(false)}>
+          <div className="ib-modal ib-modal-wide" onClick={e => e.stopPropagation()}>
+            <div className="ib-modal-title">Add to the set list</div>
+            <div className="ib-modal-body">
+              Any order or lead — stone status is ignored on purpose. What shows on each row is
+              what's still open, foundation first.
+            </div>
+            <input className="ib-modal-input" type="search" autoFocus placeholder="Search family, order #, cemetery…"
+              value={addQ} onChange={e => setAddQ(e.target.value)} />
+            <div className="ib-addlist">
+              {addCandidates.map(j => {
+                const bl = blockersFor(j)
+                const o = j.order || {}
+                return (
+                  <div key={j.id} className="ib-addrow">
+                    <div className="ib-addmain">
+                      <span className="ib-addfam">{o.primary_lastname || '—'}</span>
+                      <span className="ib-addmeta">{[o.order_number, o.cemetery?.name, o.status].filter(Boolean).join(' · ')}</span>
+                    </div>
+                    <span className="ib-addflags">
+                      {bl.fdn === false && <span className="ib-flag ib-flag-red">FDN NOT IN</span>}
+                      {bl.fdn === true && <span className="ib-flag ib-flag-ok">FDN IN</span>}
+                      {bl.balance > 0 && <span className="ib-flag ib-flag-amber">BAL {fmtUSD(bl.balance)}</span>}
+                    </span>
+                    <button type="button" className="ib-act ib-act-go" disabled={listBusy === j.id}
+                      onClick={() => addToList(j.id)}>{listBusy === j.id ? '…' : 'Add'}</button>
+                  </div>
+                )
+              })}
+              {addCandidates.length === 0 && <div className="jobcc-empty">Nothing matches — everything else is already on the list.</div>}
+            </div>
+            <div className="ib-modal-actions">
+              <button type="button" className="jobcc-btn" onClick={() => setAddOpen(false)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Schedule-install date modal */}
       {scheduleRow && (
@@ -254,10 +405,11 @@ function groupByCemetery(rows) {
   return [...m.entries()].sort((a, b) => (a[0] || '~').localeCompare(b[0] || '~'))
 }
 
-function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled }) {
+function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null }) {
   const tone = TRACK_TONE[row.track] || 'neutral'
+  const b = row.blockers
   return (
-    <div className="ib-card">
+    <div className={`ib-card${row.onList ? ' ib-card-list' : ''}`}>
       <div className="ib-card-top">
         <button type="button" className="ib-card-fam" onClick={() => onOpenJob?.(row.jobId)}>{row.family}</button>
         <span className={`ib-track ib-track-${tone}`}>{TRACK_LABEL[row.track] || row.track}</span>
@@ -266,7 +418,20 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
         {row.orderNumber && <button type="button" className="ib-card-ord" onClick={() => row.orderId && onOpenOrderDetail?.(row.orderId)}>{row.orderNumber}</button>}
         <span className="ib-card-cem">{[row.cemetery, row.grave].filter(Boolean).join(' · ') || '—'}</span>
       </div>
-      {!row.installed && (
+      {/* SET-LIST rows: blockers inform, they never gate. Foundation is the
+          headline — Paul: "i do however want to see blockers like is the
+          foundation done or not thats important." */}
+      {b && (
+        <div className="ib-gates">
+          {b.fdn === false && <span className="ib-flag ib-flag-red">FOUNDATION NOT IN</span>}
+          {b.fdn === true && <span className="ib-flag ib-flag-ok">FOUNDATION IN</span>}
+          {b.fdn === null && <span className="ib-flag ib-flag-na">NO FOUNDATION NEEDED</span>}
+          {b.balance > 0 && <span className="ib-flag ib-flag-amber">BALANCE {fmtUSD(b.balance)}</span>}
+          {!b.permit && <span className="ib-flag ib-flag-amber">PERMIT</span>}
+          {!b.cem && <span className="ib-flag ib-flag-amber">NO CEMETERY</span>}
+        </div>
+      )}
+      {!row.installed && !b && (
         <div className="ib-gates">
           {GATE_DEFS.map(g => {
             const v = row.gates ? row.gates[g.key] : (g.key === 'stone' ? true : null)
@@ -283,6 +448,10 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
         <div className="ib-card-actions">
           {!row.scheduled && <button type="button" className="ib-act" onClick={() => onSchedule?.(row)}>Schedule install</button>}
           <button type="button" className="ib-act ib-act-go" onClick={() => onMarkInstalled?.(row)}>Mark installed</button>
+          {onRemove && (
+            <button type="button" className="ib-act ib-act-x" disabled={listBusy === row.jobId}
+              onClick={() => onRemove(row.jobId)}>Remove</button>
+          )}
         </div>
       )}
     </div>
@@ -315,6 +484,23 @@ const IB_CSS = `
   .ib-installed { font-size: 11.5px; color: #34d399; margin-top: 8px; font-weight: 600; }
   .ib-sched { font-size: 11px; color: #a78bfa; margin-top: 8px; }
   .ib-card-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  /* Set list (Paul's hand-picked scheduling list) */
+  .ib-listhint { font-size: 12.5px; color: #8b93a1; line-height: 1.55; padding: 2px 2px 12px; max-width: 820px; }
+  .ib-card-list { border-color: #3a4454; }
+  .ib-flag { font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
+  .ib-flag-red { background: rgba(179,38,30,0.18); color: #ff8a80; border: 1px solid rgba(179,38,30,0.5); }
+  .ib-flag-ok { background: rgba(52,211,153,0.14); color: #34d399; border: 1px solid rgba(52,211,153,0.35); }
+  .ib-flag-amber { background: rgba(216,160,63,0.15); color: #d8a03f; border: 1px solid rgba(216,160,63,0.35); }
+  .ib-flag-na { background: #1a212b; color: #6f7a8a; border: 1px solid #2a313c; }
+  .ib-modal-wide { max-width: 720px; }
+  .ib-addlist { max-height: 52vh; overflow-y: auto; margin-top: 10px; }
+  .ib-addrow { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-top: 1px solid #1f2732; }
+  .ib-addrow:first-child { border-top: none; }
+  .ib-addmain { flex: 1; min-width: 0; }
+  .ib-addfam { display: block; font-size: 13.5px; font-weight: 700; color: #f4f6fa; }
+  .ib-addmeta { display: block; font-size: 11.5px; color: #6f7a8a; margin-top: 1px; }
+  .ib-addflags { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+  .ib-act-x { border-color: #3a2a2a; background: #1e1618; color: #ff8a80; }
   .ib-act { font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a313c; background: #1a212b; color: #e6e9ef; cursor: pointer; }
   .ib-act:hover { background: #232c38; }
   .ib-act-go { border-color: #2d5a44; background: #15301f; color: #34d399; }
