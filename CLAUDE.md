@@ -6,6 +6,14 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint FLOOR-PARALLEL (2026-07-27) — SHIPPED: a piece can sit in multiple floor columns (the Boyd case)
+
+Paul: "boyd is on the line but its not cut and i cant add it to the cut... gotta be able to have the order in multiple spots because there are multiple steps that happen together." Commit fabb9b1. Migration `20260727_component_extra_phases.sql` ✅ APPLIED (`job_components.extra_phases jsonb default []`).
+
+- **Model:** ONE primary `current_phase` (unchanged — QC, blockers, notes, and the stone-status rollup all stay primary-only) + `extra_phases[]` memberships. Helpers `addComponentExtraPhase` / `moveComponentExtraPhase(dir)` / `removeComponentExtraPhase` — moves ride the same track ladder via nextPhase/prevPhase; **landing on the primary phase (or an existing extra) MERGES the extra away**. Every membership move is event-logged (`component_also_*`).
+- **Both boards:** desktop ProductionFloor + field ProductionFloorScreen — the + Add sheet's queue group keeps the hand-picked doctrine, and a NEW "already on the board — add here too" group adds a membership. ALSO cards render dashed with an ALSO tag + "main: <phase>" and carry Advance/Back/Remove for the membership only. Column counts include extras. Field verbs wear the 8s undo (inverse = re-add/remove membership).
+- Do NOT add QC or blocker verbs to ALSO cards — those belong to the primary card by design.
+
 ## Sprint RECON-2 (2026-07-27) — SHIPPED: STONE Deadlines chart → Reconcile (Paul's click only)
 
 Paul: "green is finished... white not cut blue is stencil cut... First to see all the things on this list that arent in stonebooks next i want to auto update the due dates... i want to personally make all the changes in reconcile tab so i have control." Commit 70b7466. Migration `20260727_stone_deadlines.sql` ✅ APPLIED.
