@@ -152,6 +152,7 @@ export default function SignContractScreen({ who, onClose }) {
   const [pdfBytes, setPdfBytes] = useState(null) // ArrayBuffer for the viewer
   const [pdfErr, setPdfErr] = useState(null)
   const [sig, setSig] = useState(null)
+  const [printedName, setPrintedName] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   // The signed copy, captured at commit for the email attachment.
@@ -183,6 +184,7 @@ export default function SignContractScreen({ who, onClose }) {
       if (error) throw new Error(error.message)
       const mapped = rowToOrder(data, data.customer, data.cemetery)
       setRow(data); setOrder(mapped); setSig(null); setSignedPdf(null); setSentTo(null)
+      setPrintedName([data.customer?.first_name, data.customer?.last_name].filter(Boolean).join(' '))
       setEmails(data.customer?.email ? [String(data.customer.email).trim().toLowerCase()] : [])
       setStage('review')
       setPdfBytes(null)
@@ -196,7 +198,7 @@ export default function SignContractScreen({ who, onClose }) {
 
   // The commit — mirrors the desk's convert flow exactly.
   const commit = async () => {
-    if (!sig || !order || busy) return
+    if (!sig || !printedName.trim() || !order || busy) return
     setBusy(true); setErr(null)
     try {
       const custUp = await uploadSignature(sig, 'customer', order.id)
@@ -207,6 +209,7 @@ export default function SignContractScreen({ who, onClose }) {
         customerSignature: null,
         customerSignatureUrl: custUp.url,
         customerSignaturePath: custUp.path,
+        customerPrintedName: printedName.trim(),
         signedAt: now,
         pricingLockedAt: order.pricingLockedAt || now,
       }
@@ -397,10 +400,16 @@ export default function SignContractScreen({ who, onClose }) {
             By signing below I acknowledge I have reviewed the contract for
             {' '}{familyNameOf(row)} ({row?.order_number}) and agree to its terms.
           </div>
+          <div className="fl-label" style={{ marginTop: 4 }}>Type your full name</div>
+          <input className="fl-input" value={printedName} placeholder="Full legal name"
+            onChange={e => setPrintedName(e.target.value)} style={{ marginBottom: 14, fontSize: 17 }} />
           <SignatureCanvas value={sig} onChange={setSig} label="Customer signature" />
+          <div className="fl-spec" style={{ marginTop: 8 }}>
+            Date signs automatically: {new Date().toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
+          </div>
           {err && <div className="fl-login-err" style={{ marginTop: 10 }}>{err}</div>}
           <button type="button" className="fl-btn-gold" style={{ marginTop: 16 }}
-            disabled={!sig || busy} onClick={commit}>
+            disabled={!sig || !printedName.trim() || busy} onClick={commit}>
             {busy ? 'Saving…' : 'Sign the contract'}
           </button>
         </div>

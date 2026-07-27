@@ -1899,6 +1899,7 @@ function orderToRow(order) {
     // Signatures + contract conversion (Sprint 3b)
     customer_signature_url: order.customerSignatureUrl || null,
     customer_signature_path: order.customerSignaturePath || null,
+    customer_printed_name: order.customerPrintedName || null,
     rep_signature_url: order.repSignatureUrl || null,
     rep_signature_path: order.repSignaturePath || null,
     signed_at: order.signedAt || null,
@@ -2130,6 +2131,7 @@ export function rowToOrder(row, customerRow, cemeteryRow) {
     repSignature: null,
     customerSignatureUrl: row.customer_signature_url || null,
     customerSignaturePath: row.customer_signature_path || null,
+    customerPrintedName: row.customer_printed_name || null,
     repSignatureUrl: row.rep_signature_url || null,
     repSignaturePath: row.rep_signature_path || null,
     signedAt: row.signed_at || null,
@@ -8291,12 +8293,21 @@ export async function generateEstimatePDF(order, opts = {}) {
     const nameStart = dateEnd + 6
     const [csX1, csX2] = ul('Customer Signature:', M, sigEnd, sigY)
     const [cdX1, cdX2] = ul('Date:', dateStart, dateEnd, sigY)
-    ul('Printed Name:', nameStart, W - M, sigY)
+    const [pnX1] = ul('Printed Name:', nameStart, W - M, sigY)
 
     // Embed the captured e-signature on the customer signature line, if present.
     let custSigData = null
     if (order.customerSignatureUrl) custSigData = await urlToDataURL(order.customerSignatureUrl)
     if (custSigData) { try { doc.addImage(custSigData, 'PNG', csX1, sigY - 7, Math.min(60, csX2 - csX1), 6) } catch (e) { console.warn('cust sig embed:', e) } }
+    // SALES-5: a signed order stamps the Date line (numeric M/D/YYYY) and the
+    // typed name on Printed Name — the on-glass flow fills all three lines.
+    if (order.signedAt) {
+      const sd = new Date(order.signedAt)
+      if (!isNaN(sd.getTime())) doc.text(`${sd.getMonth() + 1}/${sd.getDate()}/${sd.getFullYear()}`, cdX1 + 1, sigY - 1.5)
+    }
+    if (order.customerPrintedName) {
+      doc.text(String(order.customerPrintedName), pnX1 + 1, sigY - 1.5)
+    }
 
     // AcroForm fields + signFields in PHYSICAL coords so remote e-sign stamping
     // lands on the customer signature/date lines regardless of the auto-fit scale.
