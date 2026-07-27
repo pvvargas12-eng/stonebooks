@@ -6758,7 +6758,7 @@ const COMPANY_INFO = {
   legalName: 'Shevchenko Monuments LLC',
   address: '329 S Florida Grove Rd',
   city: 'Perth Amboy, NJ 08861',
-  phone: '732-442-1286',
+  phone: '(732) 442-1286',
   email: 'shevcoteam@gmail.com',
   established: 'Family-owned since 1919',
 }
@@ -7069,8 +7069,9 @@ function calculateDueDate(order, anchorDate) {
     return { dateText: 'TBD — contact office', months: null }
   }
   // 'T00:00:00' forces local-midnight parsing so the date doesn't shift a day.
+  // Numeric M/D/YYYY on every printed date (Paul 2026-07-27).
   const d = new Date(isoDate + 'T00:00:00')
-  const dateText = d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  const dateText = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
   return { dateText, months: null }
 }
 
@@ -7166,7 +7167,7 @@ export function contractDueInfo(order) {
   const hasRange = isMausoleum && order.targetCompletionDate && order.targetCompletionEndDate
   // 'T00:00:00' forces local-midnight parsing — without it, 'YYYY-MM-DD' is
   // read as UTC and shifts back a day in negative-UTC timezones.
-  const fmtLong = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  const fmtLong = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}` }
   if (hasRange) return { dateText: `${fmtLong(order.targetCompletionDate)} – ${fmtLong(order.targetCompletionEndDate)}`, isRange: true }
   if (order.targetCompletionDate) return { dateText: fmtLong(order.targetCompletionDate), isRange: false }
   let due = null
@@ -7270,7 +7271,7 @@ export function contractLegalParagraphs(order) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildContractDefaults(order, opts = {}) {
   const isContract = opts.isContract !== false
-  const shortDate = (d) => d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' })
+  const shortDate = (d) => d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })
   const infoDate = shortDate(isContract && order.signedAt ? new Date(order.signedAt) : new Date())
   let infoDue
   if (order.targetCompletionDate) infoDue = shortDate(new Date(order.targetCompletionDate + 'T00:00:00'))
@@ -7485,7 +7486,7 @@ export async function generateEstimatePDF(order, opts = {}) {
   doc.text(`${COMPANY_INFO.phone} · ${COMPANY_INFO.email}`, M, y + 17)
 
   // Top-right info box: Date · Due Date · File (family name) · Order #.
-  const shortDate = (d) => d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' })
+  const shortDate = (d) => d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })
   const infoDate = shortDate(isContract && order.signedAt ? new Date(order.signedAt) : new Date())
   let infoDue
   if (order.targetCompletionDate) infoDue = shortDate(new Date(order.targetCompletionDate + 'T00:00:00'))
@@ -8745,9 +8746,11 @@ export async function generateReceiptPDF(order, payment, opts = {}) {
   const fmtUSD = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   // Slice to the date part + force local-midnight parsing so YYYY-MM-DD values
   // (the new payment.receivedAt format) don't shift a day in negative-UTC zones.
-  const fmtDate = (iso) => iso
-    ? new Date(String(iso).slice(0, 10) + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-    : '—'
+  const fmtDate = (iso) => {
+    if (!iso) return '—'
+    const d = new Date(String(iso).slice(0, 10) + 'T00:00:00')
+    return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
+  }
 
   let y = M
   // Sprint 3u Part D — thin binding of the shared ensureBlock helper. The

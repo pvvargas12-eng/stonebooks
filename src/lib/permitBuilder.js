@@ -310,9 +310,30 @@ const _todayUS = () => {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
 }
 
+// Display standards (Paul 2026-07-27): every date NUMERIC M/D/YYYY, every
+// phone (xxx) xxx-xxxx. Unparseable input passes through untouched — a permit
+// must never show blank where the record had SOMETHING.
+export function fmtDateUS(v) {
+  if (!v) return ''
+  const s = String(v).trim()
+  // date-only strings parse at LOCAL midnight via the T-anchor (no UTC shift)
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s)
+  if (iso) return `${parseInt(iso[2], 10)}/${parseInt(iso[3], 10)}/${iso[1]}`
+  const d = new Date(s)
+  if (!isNaN(d.getTime())) return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
+  return s
+}
+export function fmtPhoneUS(v) {
+  if (!v) return ''
+  const digits = String(v).replace(/\D/g, '')
+  const ten = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits
+  if (ten.length !== 10) return String(v).trim()
+  return `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}`
+}
+
 export const AUTOFILL_FIELDS = [
   { key: 'customer_name',    label: 'Customer name',      resolve: (o) => [o?.customer?.first_name, o?.customer?.last_name].filter(Boolean).join(' ') || o?.primary_lastname || '' },
-  { key: 'customer_phone',   label: 'Customer phone',     resolve: (o) => o?.customer?.phone_primary || o?.customer?.phone || '' },
+  { key: 'customer_phone',   label: 'Customer phone',     resolve: (o) => fmtPhoneUS(o?.customer?.phone_primary || o?.customer?.phone || '') },
   { key: 'customer_email',   label: 'Customer email',     resolve: (o) => o?.customer?.email || '' },
   { key: 'customer_address', label: 'Customer address',   resolve: (o) => _custAddr(o?.customer) },
   { key: 'deceased_name',    label: 'Deceased name',      resolve: (o) => _decName(_dec(o)[0]) || o?.primary_lastname || '' },
@@ -353,8 +374,8 @@ export const AUTOFILL_FIELDS = [
   { key: 'today_date',       label: "Today's date",       resolve: () => _todayUS() },
   { key: 'company_name',     label: 'Company name',       resolve: () => PERMIT_COMPANY.name },
   { key: 'company_address',  label: 'Company address',    resolve: () => `${PERMIT_COMPANY.address}, ${PERMIT_COMPANY.city}` },
-  { key: 'company_phone',    label: 'Company phone',      resolve: () => PERMIT_COMPANY.phone },
-  { key: 'company_fax',      label: 'Company fax',        resolve: () => PERMIT_COMPANY.fax },
+  { key: 'company_phone',    label: 'Company phone',      resolve: () => fmtPhoneUS(PERMIT_COMPANY.phone) },
+  { key: 'company_fax',      label: 'Company fax',        resolve: () => fmtPhoneUS(PERMIT_COMPANY.fax) },
   { key: 'company_email',    label: 'Company email',      resolve: () => PERMIT_COMPANY.email },
   // Split single dimensions — forms like St. Gertrude ask Width / Thickness /
   // Height as separate boxes. Trade notation (45" → 3-9).
@@ -376,7 +397,7 @@ export const AUTOFILL_FIELDS = [
   { key: 'base_w_in',        label: 'Base length in inches',  resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.width ?? c?.w; return v ?? '' } },
   { key: 'base_t_in',        label: 'Base width/thick inches', resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.depth ?? c?.d; return v ?? '' } },
   { key: 'base_h_in',        label: 'Base height in inches',  resolve: (o) => { const c = o?.base_config || o?.baseConfig; const v = c?.height ?? c?.h; return v ?? '' } },
-  { key: 'deceased_dod',     label: 'Date of death',      resolve: (o) => { const p = _dec(o)[0]; return p?.dateOfDeath || p?.date_of_death || p?.deathDate || '' } },
+  { key: 'deceased_dod',     label: 'Date of death',      resolve: (o) => { const p = _dec(o)[0]; return fmtDateUS(p?.dateOfDeath || p?.date_of_death || p?.deathDate || '') } },
   { key: 'customer_street',  label: 'Customer street',    resolve: (o) => o?.customer?.address || o?.customer?.address_line1 || o?.customer?.street || '' },
   { key: 'customer_city',    label: 'Customer city',      resolve: (o) => o?.customer?.city || '' },
   { key: 'customer_state',   label: 'Customer state',     resolve: (o) => o?.customer?.state || '' },

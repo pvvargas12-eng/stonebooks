@@ -23,7 +23,7 @@ import {
   listPermitTemplates, getPermitTemplate, createPermitTemplate, updatePermitTemplate,
   listPermitDocs, getPermitDoc, createPermitDoc, updatePermitDoc, deletePermitDoc,
   uploadPermitAsset, rasterizePdfFile, readImageSize,
-  AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf,
+  AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf, fmtPhoneUS,
   missingAutofill, MISSING_ORDER_WRITEBACK, getOrderContext, attachPermitPdfToOrder,
 } from './lib/permitBuilder'
 import PermitCanvas from './components/permit/PermitCanvas'
@@ -1237,7 +1237,7 @@ function OrderInfoSections({ order, ctx, sources, onInsertLayout }) {
       <details className="pbt-info-sec" open>
         <summary>Customer</summary>
         <InfoRow label="Name" value={[cust.first_name, cust.last_name].filter(Boolean).join(' ') || order.primary_lastname} />
-        <InfoRow label="Phone" value={cust.phone_primary || cust.phone} />
+        <InfoRow label="Phone" value={fmtPhoneUS(cust.phone_primary || cust.phone)} />
         <InfoRow label="Email" value={cust.email} />
         <InfoRow label="Address" value={custAddr} />
       </details>
@@ -1254,7 +1254,7 @@ function OrderInfoSections({ order, ctx, sources, onInsertLayout }) {
         <summary>Cemetery and grave</summary>
         <InfoRow label="Cemetery" value={cem.name} />
         <InfoRow label="Address" value={[cem.address, cem.city, cem.state].filter(Boolean).join(', ')} />
-        <InfoRow label="Phone" value={cem.phone} />
+        <InfoRow label="Phone" value={fmtPhoneUS(cem.phone)} />
         <InfoRow label="Section" value={order.plot_section} />
         <InfoRow label="Block" value={order.plot_block} />
         <InfoRow label="Lot" value={order.plot_lot} />
