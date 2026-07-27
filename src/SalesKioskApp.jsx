@@ -31,7 +31,11 @@ function KioskLogin() {
     e.preventDefault()
     if (busy) return
     setBusy(true); setErr(null)
-    const res = await signInWithPassword(email.trim(), pw)
+    // Paul 2026-07-27: "username sales" — a plain username expands to the
+    // kiosk account's real email; a full email still works for any staff.
+    const raw = email.trim()
+    const addr = raw.includes('@') ? raw : `${raw.toLowerCase()}@shevcoteam.app`
+    const res = await signInWithPassword(addr, pw)
     setBusy(false)
     if (!res.ok) setErr(res.error || 'Sign-in failed.')
   }
@@ -40,7 +44,7 @@ function KioskLogin() {
       <div className="fl-login-brand">STONEBOOKS <em>SALES</em></div>
       <div className="fl-login-sub">One-time device setup — staff sign-in</div>
       <form onSubmit={submit} className="fl-login-form">
-        <input type="email" inputMode="email" autoComplete="username" placeholder="Email"
+        <input type="text" inputMode="email" autoComplete="username" placeholder="Username or email"
           value={email} onChange={e => setEmail(e.target.value)} />
         <input type="password" autoComplete="current-password" placeholder="Password"
           value={pw} onChange={e => setPw(e.target.value)} />

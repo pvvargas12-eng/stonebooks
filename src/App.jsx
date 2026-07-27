@@ -513,11 +513,14 @@ const isFieldRoute = () => {
   return window.location.pathname.replace(/\/+$/, '') === '/field'
 }
 
-// /sales — STONEBOOKS SALES, the customer-facing iPad kiosk (intake + catalog
-// ONLY). Rides the device's persisted staff session; zero CRM chrome.
+// /sales — STONEBOOKS SALES, the customer-facing iPad kiosk (catalog + intake
+// + sign contract). Rides the device's persisted staff session; zero CRM
+// chrome. Also matches /sales.html — the SALES-3 static entry Vercel serves
+// for /sales (and what the dev server serves directly).
 const isSalesKioskRoute = () => {
   if (typeof window === 'undefined') return false
-  return window.location.pathname.replace(/\/+$/, '') === '/sales'
+  const p = window.location.pathname.replace(/\/+$/, '')
+  return p === '/sales' || p === '/sales.html'
 }
 
 export default function App() {

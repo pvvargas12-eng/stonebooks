@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/sb-sales-icon-180.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F5F3EE" />
+    <title>Stonebooks Sales</title>
+    <meta name="description" content="Shevchenko Monuments — customer catalog, intake, and contract signing." />
+
+    <!-- Stonebooks SALES PWA identity — its OWN static entry (SALES-3). iOS
+         ignores runtime manifest swaps too often; the server serves this file
+         for /sales (vercel.json rewrite), so Add-to-Home-Screen always reads
+         the Sales identity. Same app bundle as index.html. -->
+    <link rel="manifest" href="/sales-manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/sb-sales-icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="SB Sales" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Lato:wght@300;400;700;900&display=swap"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

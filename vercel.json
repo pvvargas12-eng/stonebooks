@@ -1,5 +1,7 @@
 {
   "rewrites": [
+    { "source": "/sales", "destination": "/sales.html" },
+    { "source": "/sales/(.*)", "destination": "/sales.html" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "crons": [

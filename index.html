@@ -17,21 +17,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="SB Field" />
 
-    <!-- One origin, two apps (Paul 2026-07-27: "/sales installed as Field").
-         iOS reads the manifest + apple-touch-icon from the LIVE DOM at
-         Add-to-Home-Screen time, so a synchronous head script swaps the
-         identity before anything can be read. /sales = Stonebooks Sales
-         (cream icon); everything else keeps the Field identity. -->
-    <script>
-      (function () {
-        if (!location.pathname.replace(/\/+$/, '').startsWith('/sales')) return
-        document.querySelector('link[rel="manifest"]').href = '/sales-manifest.webmanifest'
-        document.querySelector('link[rel="apple-touch-icon"]').href = '/sb-sales-icon-180.png'
-        document.querySelector('meta[name="apple-mobile-web-app-title"]').content = 'SB Sales'
-        document.title = 'Stonebooks Sales'
-      })()
-    </script>
-
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
