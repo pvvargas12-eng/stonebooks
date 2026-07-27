@@ -6,6 +6,15 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint RECON-2 (2026-07-27) — SHIPPED: STONE Deadlines chart → Reconcile (Paul's click only)
+
+Paul: "green is finished... white not cut blue is stencil cut... First to see all the things on this list that arent in stonebooks next i want to auto update the due dates... i want to personally make all the changes in reconcile tab so i have control." Commit 70b7466. Migration `20260727_stone_deadlines.sql` ✅ APPLIED.
+
+- **The workbook** (`STONE Deadlines.xlsx`): the LIVE chart is sheet "UPDATE THIS SHEET SABINA" — 24 month columns = May 2025 → April 2027 (col 15 = July 2026), stones stacked under their due month. Colors: `FF57BB8A` green = finished, `FFA7C4E5` blue = stencil cut, no-fill white = not cut, orange = HAS PHOTO (the sheet's own r25-28 legend confirms). **Legend junk lives INSIDE the grid** (r25-28 col 3 + r38-47 col 10 — an old pasted key with a DIFFERENT vocabulary) and false-matches real families (Blue E-26-0167, Greene) if not excluded. Other sheets (Sheet1/Sheet2/Current) are older trackers with their own color keys — not imported.
+- **Import:** 107 open stones (86 white, 20 blue, 1 orange) → `stone_deadlines` staging (unique family+due_month; proposed_date = explicit in-cell date else month-end; scratchpad gen_import.js). Green rows never imported.
+- **Reconcile** (`StoneDeadlinesSection`, top of the tab): (1) not-found-in-Stonebooks → search-and-link (over listOpenOrdersLight — WIDER than NEEDS_STONE_STATUSES on purpose: drafts + paid_in_full match too) or Disregard; (2) ambiguous multi-matches → pick the order, row becomes a proposal; (3) due-date proposals → "Set due M/D/YYYY" = `applyStoneDeadline` (the ONLY write path: setOrderTargetDate + stamps matched/applied/by) + Disregard (stamped). Aligned rows counted quietly. Ship-time analysis: 16 not in SB, 14 ambiguous, 71 date proposals, 6 aligned.
+- PS 5.1 gotcha: `[IO.File]::ReadAllText` with a RELATIVE path resolves against the process CWD, not Set-Location — always absolute paths in sb-api -SqlFile.
+
 ## Sprint CAL-3 (2026-07-27) — SHIPPED: the calendar upgrade (Paul's full list) + the Tanko search fix + builder formats
 
 Commits 61276bb (formats) + c4df31b (search) + b8d87f3 (calendar). Migration `20260727_calendar_v2.sql` ✅ APPLIED + verified (10 new work_batches columns: start_time/end_time/end_date/color/attendees/calendar_scope/owner_name/order_id/recur_rule/recur_until; `production_day_focus` table w/ 3-role RLS).
