@@ -6,6 +6,14 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint SALES-4 (2026-07-27) — SHIPPED: the kiosk is actually an IPAD app (wide shell, whole-contract viewer, email the signed copy)
+
+Paul: "this is still build for an iphone not an ipad... you can only view like a 3rd of it... right after you sign have an option to send to email... confirm email... change or add multiple emails then hit send." Commit a3707d8.
+
+- **iPad shell:** `.sk-ipad` overrides in KIOSK_CSS — fl-body 1080px/16px type/no phone tab-bar padding, door tiles 3-across via auto-fit minmax(280px), bigger targets. FIELD_CSS stays the base; the override style mounts AFTER it on every kiosk door.
+- **Whole-contract viewer:** iOS Safari clips embedded PDFs to the first slice (iframe/object both) — **never iframe a PDF for iPad**. `PdfPages` renders every page via **pdf.js from cdnjs 3.11.174** (the jsPDF loader pattern — window.pdfjsLib + CDN workerSrc, no npm dep): each page a canvas at devicePixelRatio (cap 2), stacked full-width, PAGE-level scrolling. Gotcha: pdf.js DETACHES the ArrayBuffer it's given — pass `bytes.slice(0)` or a StrictMode re-effect reads a neutered buffer.
+- **Email the signed copy:** commit now captures the signed PDF as base64 in state (same doc that's attached to the order); the DONE stage offers recipient CHIPS (customer email prefilled from the row, add/remove multiple, format-validated) → **ConfirmSend gate** (the SEND-1 send-safety surface, self-injecting styles — works on /sales as-is) → `sendShopEmail` with `[{filename, contentBase64, contentType}]` + orderId/customerId → activity log "Signed contract emailed to ...". No one-click sends, per doctrine.
+
 ## Sprint SALES-2 (2026-07-27) — SHIPPED: Stonebooks Sales is its own iPad app (identity + 3 doors + sign-on-glass)
 
 Paul: "/sales installs as Field — this is stonebooks sales for customers... 3 options: View Catalog, Customer Intake, View and Sign Contract... search the name i just made, click the order, view and sign, once they sign it moves to signed and saves that copy... IPAD app... separate logo." Commit 9b3f75e.
