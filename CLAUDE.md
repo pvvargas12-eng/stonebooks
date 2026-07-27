@@ -6,6 +6,17 @@ Symptom: "Stonebooks isn't opening / never signs in" in EVERY browser. Diagnosis
 - Post-restart baseline: 31/60 pg connections (22 idle pools), db 4754 MB, no long-lived conns. Root cause unproven (stats reset) — suspected connection pile-up under heavy day load. If it recurs: check pg_stat_activity FIRST (count/state/oldest), then restart; consider compute upgrade if repeated.
 - Note: the app anon key is the NEW sb_publishable_* format (46 chars) in .env.local — bundle-grepping for 'eyJ' finds nothing.
 
+## Sprint SALES-2 (2026-07-27) — SHIPPED: Stonebooks Sales is its own iPad app (identity + 3 doors + sign-on-glass)
+
+Paul: "/sales installs as Field — this is stonebooks sales for customers... 3 options: View Catalog, Customer Intake, View and Sign Contract... search the name i just made, click the order, view and sign, once they sign it moves to signed and saves that copy... IPAD app... separate logo." Commit 9b3f75e.
+
+- **One origin, two PWAs:** `public/sales-manifest.webmanifest` (name Stonebooks Sales, start_url+scope /sales, cream theme) + a SYNCHRONOUS index.html head script that swaps manifest link + apple-touch-icon + apple-mobile-web-app-title + document.title when the path starts with /sales — iOS reads the LIVE DOM at Add-to-Home-Screen time, so the swap must run before the user can tap Share. Field/desktop untouched (verified both routes in dev). **Icons `sb-sales-icon-{180,512}.png` are the INVERSE of Field's:** cream ground, near-black Georgia SB, gold rule, spaced gold SALES — generated with PowerShell System.Drawing (scratchpad make-sales-icon.ps1 pattern; no node canvas in repo).
+- **Kiosk home** (SalesKioskApp): logo mark + three doors named exactly as Paul said — View Catalog / Customer Intake / View and Sign Contract.
+- **`src/field/SignContractScreen.jsx`** (new): search (searchOrdersLight, SIGNED/UNSIGNED chips, LEAD chip) → review the REAL contract in an iframe (generateContractPDF returnDoc → blob URL) → SignatureCanvas (imported from SalesMode; **its .sm-signature CSS mirrored locally — SalesMode's <style> is not mounted on /sales, same precedent as DesignPacket**) → commit mirrors the desk's convert flow: uploadSignature (now EXPORTED from SalesMode) → saveOrder {status contracted, signature url/path, signedAt, pricingLockedAt} → createJobFromOrder(source 'sales-ipad', isolated) → regenerate the PDF (embeds from customerSignatureUrl — must run AFTER upload) → uploadOrderAttachment as `Contract SIGNED - <fam> - <date>.pdf` → logOrderActivity. Already-signed orders open VIEW-ONLY.
+- **Options added same session (Paul mid-build):** PLOT_TYPES gains Triple deep (`td`) in OrderForm + SalesMode; SHAPES gains **Monolith** (custom-sized, standardSizes:[] like heart/custom, canHaveBase) in monumentCatalog.
+- **Known exposure, flagged to Paul:** the Sign door's search is not PIN-gated — anyone holding the iPad can search customer names and open contracts (with money). The employees PIN system exists if he wants a gate.
+- PS 5.1 gotcha that bit this commit: DOUBLE QUOTES inside a git -m here-string break native-arg tokenization — keep commit messages quote-free.
+
 ## Sprint FIELD-JOBS-2 (2026-07-24) — SHIPPED: orders attach to phone tasks + the Done-today lane
 
 Paul: "i need to attach orders to tasks that i generate. in today tab why doesnt it show the work that i did today under runs like it should show the pena install that was complete." Commit 1c57611 (+86541b6 same session: Task CC type chips carry live count badges, faceted on the who-filter, red when the type holds overdue).
