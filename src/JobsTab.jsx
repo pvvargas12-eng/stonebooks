@@ -71,7 +71,6 @@ import JobsCommandCenter from './JobsCommandCenter'
 import ProductionBoard from './components/ProductionFloor'
 import FoundationsBoard from './FoundationsBoard'
 import CutListBoard from './CutListBoard'
-import SandblastBoard from './SandblastBoard'
 import CheckJobsBoard from './CheckJobsBoard'
 import { getJobsView, setJobsView } from './lib/workspaceState'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
@@ -191,8 +190,6 @@ export default function JobsTab({
     body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} /></div>
   } else if (tab === 'cutlist') {
     body = <div className="sb-crm-container"><CutListBoard onOpenJob={handleOpenJob} /></div>
-  } else if (tab === 'sandblast') {
-    body = <div className="sb-crm-container"><SandblastBoard /></div>
   } else if (tab === 'foundations') {
     body = <div className="sb-crm-container"><FoundationsBoard onOpenJob={handleOpenJob} /></div>
   } else if (tab === 'checkjobs') {
@@ -236,7 +233,6 @@ const JOBS_TABS = [
   { code: 'design',       label: 'Design' },
   { code: 'production',   label: 'Production' },
   { code: 'cutlist',      label: 'Cut list' },
-  { code: 'sandblast',    label: 'Sandblasting' },
   { code: 'installation', label: 'Installation' },
   { code: 'foundations',  label: 'Foundations' },
   { code: 'checkjobs',    label: 'Check jobs' },

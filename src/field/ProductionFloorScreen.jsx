@@ -50,6 +50,28 @@ const metaOf = (c) => [
   c.order?.cemetery?.name || c.cemetery_order?.cemetery_name,
 ].filter(Boolean).join(' · ')
 
+// Group queue pieces into ONE ROW PER ORDER, preserving the incoming sort.
+const groupByOrder = (pieces) => {
+  const order = []
+  const byKey = new Map()
+  for (const c of pieces) {
+    const k = c.job_id || `solo:${c.id}`
+    if (!byKey.has(k)) { byKey.set(k, []); order.push(k) }
+    byKey.get(k).push(c)
+  }
+  return order.map(k => {
+    const group = byKey.get(k)
+    return { key: k, rep: group.find(p => p.component_type === 'die') || group[0], pieces: group }
+  })
+}
+// A queue ROW is one order — die and base ride together.
+const groupMeta = (g) => {
+  const kinds = [...new Set(g.pieces.map(p => TYPE_LABEL[p.component_type] || p.label).filter(Boolean))]
+  return [kinds.join(' + '), g.rep.size, g.rep.color,
+    g.rep.order?.order_number || g.rep.cemetery_order?.order_number,
+    g.rep.order?.cemetery?.name || g.rep.cemetery_order?.cemetery_name].filter(Boolean).join(' · ')
+}
+
 export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = null, backLabel = 'More' }) {
   const [comps, setComps] = useState(null)
   const [recs, setRecs] = useState(() => ({ count: 0, readyByTrack: {}, byJob: new Map() }))
@@ -124,14 +146,26 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
       `${famOf(c)} ← ${prev ? phaseLabel(prev) : ''}`,
       () => advanceComponent(c.id, { actor, source: 'field' }))
   }
-  const addToBucket = (c) => {
-    const prevPhaseCode = c.current_phase
-    run(c.id,
-      () => setComponentOnFloor(c.id, true, { actor, phase: bucket }),
-      `${famOf(c)} added to ${phaseLabel(bucket)}`,
+  // ONE ROW PER ORDER (Paul 2026-07-27): die and base are separate components,
+  // so a name search listed the same order twice. The queue lists the JOB once
+  // (die is the face) and adding brings every piece of it — nothing orphaned.
+  const queueGroups = groupByOrder(queueSorted)
+  const addToBucket = (g) => {
+    const prev = g.pieces.map(p => ({ id: p.id, phase: p.current_phase }))
+    run(g.rep.id,
       async () => {
-        await setComponentOnFloor(c.id, false, { actor })
-        if (prevPhaseCode && prevPhaseCode !== bucket) await overrideComponentPhase(c.id, prevPhaseCode, { actor, source: 'field' })
+        for (const p of g.pieces) {
+          const r = await setComponentOnFloor(p.id, true, { actor, phase: bucket })
+          if (r && r.ok === false) return r
+        }
+        return { ok: true }
+      },
+      `${famOf(g.rep)} added to ${phaseLabel(bucket)}`,
+      async () => {
+        for (const p of prev) {
+          await setComponentOnFloor(p.id, false, { actor })
+          if (p.phase && p.phase !== bucket) await overrideComponentPhase(p.id, p.phase, { actor, source: 'field' })
+        }
       })
   }
   const qcApprove = (c) => run(c.id, () => qcApproveComponent(c.id, { actor, source: 'field' }))
@@ -334,10 +368,11 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
             <input className="fl-input" placeholder="Search family, order #, cemetery"
               value={q} onChange={e => setQ(e.target.value)} />
             <div style={{ maxHeight: '48vh', overflowY: 'auto', marginTop: 6 }}>
-              {queueSorted.filter(matches).slice(0, 40).map(c => {
+              {queueGroups.filter(g => matches(g.rep)).slice(0, 40).map(g => {
+                const c = g.rep
                 const r = c.job_id ? recs.byJob.get(c.job_id) : null
                 return (
-                  <div key={c.id} className="fl-row" style={{ cursor: 'default' }}>
+                  <div key={g.key} className="fl-row" style={{ cursor: 'default' }}>
                     <div className="fl-rowtop">
                       <span className="fl-fam" style={{ fontSize: 14.5 }}
                         role={c.job_id || c.order_id ? 'button' : undefined}
@@ -345,11 +380,11 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                         {famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} />
                       </span>
                       <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
-                        disabled={busyId === c.id} onClick={() => addToBucket(c)}>
+                        disabled={busyId === c.id} onClick={() => addToBucket(g)}>
                         {busyId === c.id ? '…' : 'ADD'}
                       </button>
                     </div>
-                    <div className="fl-spec">{metaOf(c)}</div>
+                    <div className="fl-spec">{groupMeta(g)}</div>
                     {r && (
                       <div className="fl-chips" style={{ marginTop: 6 }}>
                         <span className={`fl-chip ${r.designOk ? 'fl-c-good' : 'fl-c-warn'}`}>{r.designOk ? 'DESIGN APPROVED' : 'DESIGN NOT APPROVED'}</span>
@@ -360,7 +395,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                   </div>
                 )
               })}
-              {queueSorted.filter(matches).length === 0 && (
+              {queueGroups.filter(g => matches(g.rep)).length === 0 && (
                 <div className="fl-empty">Nothing in the queue matches.</div>
               )}
               {/* Already on the floor — add here TOO (parallel steps, the Boyd

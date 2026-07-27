@@ -38,6 +38,26 @@ const niceCase = (s) => {
 // got a family name on the order itself — fix them in Reconcile), cemetery last.
 const famOf = (c) => niceCase(c.order?.primary_lastname || c.order?.customer?.last_name || c.vendor_request?.family_name || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—')
 const orderNoOf = (c) => c.order?.order_number || c.cemetery_order?.order_number || ''
+// Group queue pieces into ONE ROW PER ORDER, preserving the incoming sort.
+const groupByOrder = (pieces) => {
+  const order = []
+  const byKey = new Map()
+  for (const c of pieces) {
+    const k = c.job_id || `solo:${c.id}`
+    if (!byKey.has(k)) { byKey.set(k, []); order.push(k) }
+    byKey.get(k).push(c)
+  }
+  return order.map(k => {
+    const group = byKey.get(k)
+    return { key: k, rep: group.find(p => p.component_type === 'die') || group[0], pieces: group }
+  })
+}
+// A queue ROW is one order — "Die + Base 2-0 × 1-2 · E-26-0449 · Rosedale".
+const groupMeta = (g) => {
+  const kinds = [...new Set(g.pieces.map(p => TYPE_LABEL[p.component_type] || p.label).filter(Boolean))]
+  const size = g.rep.size ? ` ${g.rep.size}` : ''
+  return [kinds.join(' + ') + size, orderNoOf(g.rep), cemOf(g.rep)].filter(Boolean).join(' · ')
+}
 const cemOf = (c) => c.order?.cemetery?.name || c.cemetery_order?.cemetery_name || ''
 // Read-only permit context from existing truth (orders.permit_status).
 const permitContext = (c) => {
@@ -220,12 +240,24 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
     )
   }
 
-  const pullUp = async (c, phase) => {
-    setBusyId(c.id); setErr(null)
+  // ONE ROW PER ORDER in the pickers (Paul 2026-07-27: "when i search the
+  // names comes up twice to add the die then another order for the base…
+  // i dont want the bases showing up just the one order"). A job's die and
+  // base are separate components; the queue lists the JOB once — the die is
+  // the row's face — and pulling it up brings every piece of that job with
+  // it, so nothing gets orphaned in the queue. Map preserves queueSorted's
+  // order, so Paul's ready-first / oldest-first sort survives.
+  // The die is what he calls "the stone" — it's the row's face. Plain const:
+  // O(n) over an already-sorted array, and the React Compiler memoizes it.
+  const queueGroups = groupByOrder(queueSorted)
+  const pullUp = async (group, phase) => {
+    setBusyId(group.rep.id); setErr(null)
     const actor = await getCurrentStaffName()
-    const r = await setComponentOnFloor(c.id, true, { actor, phase })
+    for (const p of group.pieces) {
+      const r = await setComponentOnFloor(p.id, true, { actor, phase })
+      if (r && r.ok === false) { setBusyId(null); setErr(r.error); return }
+    }
     setBusyId(null)
-    if (r && r.ok === false) { setErr(r.error); return }
     setAddCol(null); setAddQ('')
     load()
   }
@@ -270,20 +302,20 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
         <div className="pf-queue">
           <div className="pf-queue-head">
             <input className="pf-input pf-queue-search" type="search" placeholder="Search family, order #, cemetery…" value={queueQ} onChange={e => setQueueQ(e.target.value)} autoFocus />
-            <span className="pf-queue-count">{queueSorted.filter(c => matches(c, queueQ)).length} of {queueVisible.length} in the {TAB_LABEL[track]} queue · contracted work only</span>
+            <span className="pf-queue-count">{queueGroups.filter(g => matches(g.rep, queueQ)).length} of {queueGroups.length} in the {TAB_LABEL[track]} queue · contracted work only</span>
           </div>
           <div className="pf-queue-list">
-            {queueSorted.filter(c => matches(c, queueQ)).slice(0, 60).map(c => (
-              <div key={c.id} className={`pf-queue-row${readyOf(c) ? ' pf-queue-row-ready' : ''}`}>
-                {rowName(c)}
-                <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
-                {condChips(c)}
-                <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, phases[0])}>
-                  {busyId === c.id ? '…' : '⤒ Bring up'}
+            {queueGroups.filter(g => matches(g.rep, queueQ)).slice(0, 60).map(g => (
+              <div key={g.key} className={`pf-queue-row${readyOf(g.rep) ? ' pf-queue-row-ready' : ''}`}>
+                {rowName(g.rep)}
+                <span className="pf-queue-meta">{groupMeta(g)}</span>
+                {condChips(g.rep)}
+                <button type="button" className="pf-btn pf-btn-go" disabled={busyId === g.rep.id} onClick={() => pullUp(g, phases[0])}>
+                  {busyId === g.rep.id ? '…' : '⤒ Bring up'}
                 </button>
               </div>
             ))}
-            {queueSorted.filter(c => matches(c, queueQ)).length === 0 && <div className="pf-queue-empty">Nothing in the queue matches.</div>}
+            {queueGroups.filter(g => matches(g.rep, queueQ)).length === 0 && <div className="pf-queue-empty">Nothing in the queue matches.</div>}
           </div>
         </div>
       )}
@@ -341,17 +373,17 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
             )}
             <input className="pf-input" type="search" placeholder="Search family, order #, cemetery…" value={addQ} onChange={e => setAddQ(e.target.value)} autoFocus />
             <div className="pf-queue-list" style={{ maxHeight: '46vh' }}>
-              {queueSorted.filter(c => matches(c, addQ)).slice(0, 40).map(c => (
-                <div key={c.id} className={`pf-queue-row${readyOf(c) ? ' pf-queue-row-ready' : ''}`}>
-                  {rowName(c)}
-                  <span className="pf-queue-meta">{[TYPE_LABEL[c.component_type] || c.label, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
-                  {condChips(c)}
-                  <button type="button" className="pf-btn pf-btn-go" disabled={busyId === c.id} onClick={() => pullUp(c, addCol)}>
-                    {busyId === c.id ? '…' : 'Add →'}
+              {queueGroups.filter(g => matches(g.rep, addQ)).slice(0, 40).map(g => (
+                <div key={g.key} className={`pf-queue-row${readyOf(g.rep) ? ' pf-queue-row-ready' : ''}`}>
+                  {rowName(g.rep)}
+                  <span className="pf-queue-meta">{groupMeta(g)}</span>
+                  {condChips(g.rep)}
+                  <button type="button" className="pf-btn pf-btn-go" disabled={busyId === g.rep.id} onClick={() => pullUp(g, addCol)}>
+                    {busyId === g.rep.id ? '…' : 'Add →'}
                   </button>
                 </div>
               ))}
-              {queueSorted.filter(c => matches(c, addQ)).length === 0 && <div className="pf-queue-empty">No queue pieces match.</div>}
+              {queueGroups.filter(g => matches(g.rep, addQ)).length === 0 && <div className="pf-queue-empty">No queue orders match.</div>}
               {/* Already on the board — add here TOO (parallel steps, the Boyd
                   case). The piece keeps its primary column and also appears
                   in this one with its own Advance/Back. */}

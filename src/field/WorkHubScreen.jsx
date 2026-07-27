@@ -3,7 +3,7 @@
 // =============================================================================
 // FIELD-JOBS-1 (Paul, 2026-07-24): the hub's sections are his work lists —
 // Installations (set list), Foundations (dig list, buildable, base L×W +
-// section on every row), Sandblasting (trade blast queue), Inscriptions,
+// section on every row), Inscriptions,
 // Check jobs. Production opens the REAL floor (ProductionFloorScreen — the
 // hand-picked component queues, contracted work only); the old "every active
 // stone" finder with its All default and LEAD rows is deleted. Leads belong in
@@ -11,13 +11,10 @@
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
 import { getInstallList, getFoundationList, listCheckJobTasks } from '../lib/stonebooksData'
-import { listVendorItems } from '../lib/vendorsData'
-import { BLAST_ACTIVE } from '../lib/blastLadder'
 import { todayISO } from './fieldShared'
 import InstallListScreen from './InstallListScreen'
 import ProductionFloorScreen from './ProductionFloorScreen'
 import FoundationsScreen from './FoundationsScreen'
-import SandblastScreen from './SandblastScreen'
 import InscriptionsScreen from './InscriptionsScreen'
 
 // Deterministic chip text from an ISO date (local-midnight parse, no shift).
@@ -28,8 +25,8 @@ function dueChipLabel(iso) {
 }
 
 export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComplete }) {
-  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'foundations' | 'sandblast' | 'inscriptions' | 'check' | 'production'
-  const [counts, setCounts] = useState({ installs: null, foundations: null, blast: null, check: null })
+  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'foundations' | 'inscriptions' | 'check' | 'production'
+  const [counts, setCounts] = useState({ installs: null, foundations: null, check: null })
   const [checkTasks, setCheckTasks] = useState(null)
 
   // One fetch pass for the tile counts; each independent-failure-safe so one
@@ -37,19 +34,15 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [setList, fdnList, vendorItems, checks] = await Promise.all([
+      const [setList, fdnList, checks] = await Promise.all([
         getInstallList().catch(() => null),
         getFoundationList().catch(() => null),
-        listVendorItems().catch(() => null),
         listCheckJobTasks().catch(() => null),
       ])
       if (cancelled) return
       setCounts({
         installs: setList ? setList.length : null,
         foundations: fdnList ? fdnList.length : null,
-        blast: vendorItems
-          ? vendorItems.filter(i => i.work_type === 'blasting' && BLAST_ACTIVE.includes(i.status)).length
-          : null,
         check: checks ? checks.filter(t => t.status !== 'done').length : null,
       })
       setCheckTasks(checks || [])
@@ -79,15 +72,6 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
       <div>
         {back}
         <FoundationsScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
-      </div>
-    )
-  }
-
-  if (sub === 'sandblast') {
-    return (
-      <div>
-        {back}
-        <SandblastScreen who={who} undo={undo} />
       </div>
     )
   }
@@ -167,13 +151,6 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
             <div className="fl-tile-sub">The dig list</div>
           </div>
           <div className="fl-tile-count">{counts.foundations == null ? '…' : counts.foundations}</div>
-        </button>
-        <button type="button" className="fl-tile" onClick={() => setSub('sandblast')}>
-          <div className="fl-tile-main">
-            <div className="fl-tile-name">Sandblasting</div>
-            <div className="fl-tile-sub">Trade blast queue</div>
-          </div>
-          <div className="fl-tile-count">{counts.blast == null ? '…' : counts.blast}</div>
         </button>
         <button type="button" className="fl-tile" onClick={() => setSub('inscriptions')}>
           <div className="fl-tile-main">

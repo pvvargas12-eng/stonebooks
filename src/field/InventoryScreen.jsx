@@ -22,9 +22,17 @@ export default function InventoryScreen({ undo }) {
   const [adding, setAdding] = useState(false)
   const [receiving, setReceiving] = useState(null)   // item being received
 
+  // getInventoryStock resolves { ok, rows, error } — NOT an array. Treating it
+  // as one made items an object, so list.map() threw and took the whole app
+  // down when Paul opened Inventory (2026-07-27). Unwrap .rows, tolerate a
+  // bare array, and surface the helper's own error instead of crashing.
   const refresh = useCallback(() => {
     getInventoryStock()
-      .then(rows => setItems(rows || []))
+      .then(res => {
+        if (Array.isArray(res)) { setItems(res); return }
+        if (res && res.ok === false) { setErr(res.error || 'Could not load inventory.'); setItems([]); return }
+        setItems(res?.rows || [])
+      })
       .catch(e => setErr(e?.message || 'Could not load inventory.'))
   }, [])
   useEffect(() => { refresh() }, [refresh])
