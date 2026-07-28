@@ -277,6 +277,11 @@ export const BRONZE_SIZES = [
   { code: '24x12', label: '24″ × 12″', price: 2873 },
   { code: '24x14', label: '24″ × 14″', price: 3089 },
   { code: '44x14', label: '44″ × 14″', price: 4965 },
+  // Lawn Crypt (Paul 2026-07-28): a 16″ × 24″ plate that always rides a
+  // 20″ × 28″ granite backer. No sheet price yet — price: null means the
+  // operator types the plate price (same input as Custom); picking it
+  // auto-checks the unitized-backer line.
+  { code: '16x24-lawncrypt', label: '16″ × 24″ — Lawn Crypt', price: null, backerSize: '20″ × 28″' },
 ]
 export const BRONZE_BACKER_PRICE = 489
 
@@ -294,7 +299,10 @@ function bronzeBaseItems(order) {
   const isCustom = b.size === 'custom'
   const sizeRow = BRONZE_SIZES.find(s => s.code === b.size)
   const sizeLabel = isCustom ? (String(b.customSizeText || '').trim() || 'Custom') : (sizeRow?.label || '—')
-  const price = isCustom ? (Number(b.customPrice) || 0) : (sizeRow?.price || 0)
+  // A catalog size with price:null (Lawn Crypt) prices from the typed customPrice.
+  const price = isCustom || (sizeRow && sizeRow.price == null)
+    ? (Number(b.customPrice) || 0)
+    : (sizeRow?.price || 0)
   const override = String(b.descOverride || '').trim()
   const items = [{
     code: 'bronze-marker',

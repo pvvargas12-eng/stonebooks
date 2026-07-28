@@ -761,14 +761,25 @@ function BronzeCard({ order, updatePricing }) {
   const b = order.pricing?.bronze || {}
   const setB = (patch) => updatePricing({ bronze: { ...b, ...patch } })
   const isCustom = b.size === 'custom'
+  const sizeRow = BRONZE_SIZES.find(s => s.code === b.size)
+  // Lawn Crypt: catalog size with no sheet price — operator types the plate
+  // price; picking it auto-checks the backer (it always sits on a 20″ × 28″).
+  const needsPrice = !isCustom && sizeRow && sizeRow.price == null
+  const onSize = (v) => {
+    const row = BRONZE_SIZES.find(s => s.code === v)
+    setB({ size: v, ...(row?.backerSize ? { backer: true } : {}) })
+  }
   return (
     <Card title="Bronze Marker" sub="Bronze plate — size, optional unitized backer, description.">
       <Grid cols={2}>
-        <SelectField label="Bronze size" value={b.size || ''} onChange={v => setB({ size: v })}
+        <SelectField label="Bronze size" value={b.size || ''} onChange={onSize}
           options={[
-            ...BRONZE_SIZES.map(s => ({ value: s.code, label: `${s.label} — ${fmtUSD(s.price)}` })),
+            ...BRONZE_SIZES.map(s => ({ value: s.code, label: s.price == null ? s.label : `${s.label} — ${fmtUSD(s.price)}` })),
             { value: 'custom', label: 'Custom size…' },
           ]} placeholder="Select bronze size…" />
+        {needsPrice && (
+          <NumberField label="Plate price ($)" value={b.customPrice} onChange={v => setB({ customPrice: v })} placeholder="e.g. 3500" />
+        )}
       </Grid>
       {isCustom && (
         <Grid cols={2}>
@@ -777,7 +788,8 @@ function BronzeCard({ order, updatePricing }) {
         </Grid>
       )}
       <CheckRow checked={!!b.backer} onChange={v => setB({ backer: v })}
-        label="Add unitized backer (+$489)" hint="Flat $489, regardless of size." />
+        label="Add unitized backer (+$489)"
+        hint={sizeRow?.backerSize ? `Lawn crypt backer is ${sizeRow.backerSize}. Flat $489.` : 'Flat $489, regardless of size.'} />
       <TextAreaField label="Bronze description override" value={b.descOverride || ''}
         onChange={v => setB({ descOverride: v })} rows={2}
         placeholder="Optional — becomes the bronze line label. Blank → “Bronze Marker — {size}”." />

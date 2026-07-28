@@ -64,6 +64,7 @@ import { buildPipeline } from './lib/orderPipeline'
 import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
 import CheckJobModal from './components/CheckJobModal.jsx'
+import SalesEmailModal from './components/SalesEmailModal.jsx'
 
 // A shop_tasks row wearing the legacy order_activity task shape, so the
 // pipeline rail + activity timeline render tasks unchanged (tasks moved to
@@ -369,6 +370,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // Pipeline rail task-remove confirm (× with confirm)
   const [delTask, setDelTask] = useState(null)   // shop_tasks task row (legacy view) | null
   const [checkJobOpen, setCheckJobOpen] = useState(false)   // check-job modal (site inspection task)
+  const [salesEmailMode, setSalesEmailMode] = useState(null) // null | 'contract' | 'sales' (SalesEmailModal)
   // The design change-request loop: what the family (or staff) asked to change
   // + staff replies, chronological. Refetched whenever approvalLinks refreshes.
   const [designThread, setDesignThread] = useState([])
@@ -2082,6 +2084,16 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             Open related job
           </button>
           <button type="button" className="sb-od-btn" onClick={openEmailComposer}>Send email</button>
+          {!order.signed_at && (
+            <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode('contract')}
+              title="Customer opens a secure link, reviews the contract, prints their name and e-signs — date autofills">
+              Email contract to sign
+            </button>
+          )}
+          <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode('sales')}
+            title="One email: permit (view only) + layout + estimate + contract e-sign link">
+            Sales email
+          </button>
           <span className="sb-od-actions-spacer" />
           <button type="button" className="sb-od-btn" onClick={focusNote}>Add note</button>
           <button type="button" className="sb-od-btn" onClick={() => setCheckJobOpen(true)}
@@ -3280,6 +3292,16 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           }}
           onClose={() => setCheckJobOpen(false)}
           onSaved={() => { setCheckJobOpen(false); refreshActivity(); setActionNote('Check job added — it’s on the task command center. ✓') }}
+        />
+      )}
+
+      {/* Sales email / Email contract to sign — the customer-facing bundle. */}
+      {salesEmailMode && (
+        <SalesEmailModal
+          order={order}
+          mode={salesEmailMode}
+          onClose={() => setSalesEmailMode(null)}
+          onSent={(msg) => { refreshActivity(); setActionNote(msg) }}
         />
       )}
 
