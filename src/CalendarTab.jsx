@@ -745,7 +745,9 @@ function EventEditor({ seed, me, staff, onClose, onSaved }) {
     setBusy(true)
     const res = await deleteBatch(editing.id)
     setBusy(false)
-    if (!res.ok) { setErr(res.error || 'Could not delete.'); return }
+    // Name the exact reason — "Could not delete." alone is undebuggable
+    // (Paul 2026-07-28: "I CAN NOT DELETE EVENTS").
+    if (!res.ok) { setErr(`Could not delete — ${res.error || 'unknown error'}`); return }
     onSaved('Deleted.')
   }
 

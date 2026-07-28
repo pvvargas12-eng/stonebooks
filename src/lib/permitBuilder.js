@@ -504,6 +504,32 @@ async function fetchAsDataUrl(url) {
 }
 const _imgFmt = (dataUrl) => dataUrl.startsWith('data:image/png') ? 'PNG' : 'JPEG'
 
+// PNG scans re-encode to JPEG before embedding. jsPDF stores PNGs as RAW
+// bitmaps (1700×2200 page ≈ 11MB inside the PDF — a one-page permit shipped
+// at 29MB and Gmail refused it; Paul 2026-07-28: "THEYRE SIMPLE SCANS THEY
+// SHOULD BE VERY VERY SMALL FILES"). JPEG bytes embed verbatim, and a white
+// paper scan compresses ~100×. White-filled first — JPEG has no alpha.
+async function toJpegDataUrl(dataUrl, quality = 0.82) {
+  if (!dataUrl || dataUrl.startsWith('data:image/jpeg')) return dataUrl
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image()
+      i.onload = () => resolve(i)
+      i.onerror = reject
+      i.src = dataUrl
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = img.naturalWidth || img.width
+    canvas.height = img.naturalHeight || img.height
+    if (!canvas.width || !canvas.height) return dataUrl
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(img, 0, 0)
+    return canvas.toDataURL('image/jpeg', quality)
+  } catch { return dataUrl }   // unreadable image → embed the original
+}
+
 const LETTER = { w: 215.9, h: 279.4 }   // mm, portrait
 const MM_TO_PT = 72 / 25.4
 
@@ -611,8 +637,8 @@ export async function exportPermitPdf({ template, docData, filename = 'permit.pd
 
   // Pre-fetch images (page backgrounds + layout) as data URLs.
   const pageData = []
-  for (const p of pages) pageData.push(p?.url ? await fetchAsDataUrl(p.url) : null)
-  const layoutData = layout?.src ? await fetchAsDataUrl(layout.src) : null
+  for (const p of pages) pageData.push(p?.url ? await toJpegDataUrl(await fetchAsDataUrl(p.url)) : null)
+  const layoutData = layout?.src ? await toJpegDataUrl(await fetchAsDataUrl(layout.src)) : null
 
   const fieldsByPage = new Map()
   for (const f of (template?.fields || [])) {
