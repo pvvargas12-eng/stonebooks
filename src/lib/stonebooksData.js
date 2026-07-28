@@ -9865,7 +9865,7 @@ export function getSalesSummary(orders, { now = new Date(), recentlyWonDays = 7,
 // ("1.2 A", "IN FRONT S2", "Next Big Truck") are never parsed or normalized.
 // Standalone table; touches nothing in orders/jobs/pricing.
 export const INVENTORY_ITEM_TYPES = [
-  'die', 'base', 'slant', 'grass', 'marker', 'hickey', 'bevel', 'bench', 'vase', 'ledger', 'bronze', 'custom',
+  'die', 'base', 'slant', 'grass', 'marker', 'hickey', 'bevel', 'bench', 'vase', 'ledger', 'bronze', 'backer', 'custom',
 ]
 export const INVENTORY_STATUSES = [
   { code: 'available', label: 'Available' },

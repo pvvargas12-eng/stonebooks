@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react'
 import {
   getEffectivePricingConfig, savePricingConfig, DEFAULT_PRICING_CONFIG,
   SHAPES, BASE_SIZES, BASE_HEIGHTS, ADD_ONS_CATALOG,
-  FOUNDATION_RATE, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
+  FOUNDATION_RATE, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE, BRONZE_BACKERS,
 } from '../lib/orderRates'
 
 const humanize = (s) =>
@@ -122,6 +122,12 @@ export default function PricingSettings({ user, canEdit = false }) {
       <Group title="Foundation rates ($ per sq in)">
         {Object.keys(FOUNDATION_RATE).map(k => (
           <Num key={k} label={humanize(k)} value={val(`foundationRates.${k}`)} onChange={v => set(`foundationRates.${k}`, v)} step="0.01" />
+        ))}
+      </Group>
+
+      <Group title="Bronze granite backers (per size)">
+        {BRONZE_BACKERS.map(b => (
+          <Num key={b.code} label={`Backer ${b.label}`} value={val(`bronzeBackerPrices.${b.code}`)} onChange={v => set(`bronzeBackerPrices.${b.code}`, v)} />
         ))}
       </Group>
 

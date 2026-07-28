@@ -39,7 +39,7 @@ import {
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   MONUMENT_TYPES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
   computeFormLineItems, priceOrderTotals, addonPrice, stoneFaceArea,
-  BRONZE_SIZES,
+  BRONZE_SIZES, BRONZE_BACKERS, BRONZE_BACKER_MATCH,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -762,15 +762,21 @@ function BronzeCard({ order, updatePricing }) {
   const setB = (patch) => updatePricing({ bronze: { ...b, ...patch } })
   const isCustom = b.size === 'custom'
   const sizeRow = BRONZE_SIZES.find(s => s.code === b.size)
-  // Lawn Crypt: catalog size with no sheet price — operator types the plate
-  // price; picking it auto-checks the backer (it always sits on a 20″ × 28″).
+  // Catalog sizes with no sheet price (Lawn Crypt, 28×16, 36×13) — the
+  // operator types the plate price. Never a silent $0.
   const needsPrice = !isCustom && sizeRow && sizeRow.price == null
+  // Picking a plate autofills its MATCHED granite backer (Paul 2026-07-28) —
+  // size stays overridable, color defaults Grey.
   const onSize = (v) => {
-    const row = BRONZE_SIZES.find(s => s.code === v)
-    setB({ size: v, ...(row?.backerSize ? { backer: true } : {}) })
+    const matched = BRONZE_BACKER_MATCH[v] || null
+    setB({ size: v, ...(matched ? { backer: true, backerSize: matched } : {}) })
   }
+  const backerRow = BRONZE_BACKERS.find(x => x.code === b.backerSize)
+  const backerIsCustom = b.backerSize === 'custom'
+  const matchedCode = BRONZE_BACKER_MATCH[b.size] || null
+  const stoneColors = getActiveStoneColors()
   return (
-    <Card title="Bronze Marker" sub="Bronze plate — size, optional unitized backer, description.">
+    <Card title="Bronze Marker" sub="Bronze plate + its granite backer — sizes matched automatically, both overridable.">
       <Grid cols={2}>
         <SelectField label="Bronze size" value={b.size || ''} onChange={onSize}
           options={[
@@ -787,9 +793,36 @@ function BronzeCard({ order, updatePricing }) {
           <NumberField label="Price ($)" value={b.customPrice} onChange={v => setB({ customPrice: v })} placeholder="e.g. 3500" />
         </Grid>
       )}
-      <CheckRow checked={!!b.backer} onChange={v => setB({ backer: v })}
-        label="Add unitized backer (+$489)"
-        hint={sizeRow?.backerSize ? `Lawn crypt backer is ${sizeRow.backerSize}. Flat $489.` : 'Flat $489, regardless of size.'} />
+      <CheckRow checked={!!(b.backer || b.backerSize)} onChange={v => setB(v
+        ? { backer: true, backerSize: b.backerSize || matchedCode || BRONZE_BACKERS[0].code }
+        : { backer: false, backerSize: null })}
+        label="Granite backer"
+        hint={backerRow
+          ? `${fmtUSD(backerRow.price)} for this size — every backer price is editable in Settings → Pricing.`
+          : 'Backer prices are per size, editable in Settings → Pricing.'} />
+      {(b.backer || b.backerSize) && (
+        <Grid cols={2}>
+          <SelectField label="Backer size" value={b.backerSize || ''} onChange={v => setB({ backerSize: v })}
+            options={[
+              ...BRONZE_BACKERS.map(x => ({
+                value: x.code,
+                label: `${x.label} — ${fmtUSD(x.price)}${x.code === matchedCode ? ' (matched)' : ''}`,
+              })),
+              { value: 'custom', label: 'Custom backer size…' },
+            ]} placeholder="Select backer size…" />
+          <SelectField label="Backer color" value={b.backerColor || 'Grey'} onChange={v => setB({ backerColor: v })}
+            options={[
+              { value: 'Grey', label: 'Grey (standard)' },
+              ...stoneColors.filter(c => !/^gr[ae]y$/i.test(c.label)).map(c => ({ value: c.label, label: c.label })),
+            ]} />
+        </Grid>
+      )}
+      {backerIsCustom && (
+        <Grid cols={2}>
+          <TextField label="Custom backer size" value={b.backerCustomText || ''} onChange={v => setB({ backerCustomText: v })} placeholder="e.g. 30 × 18" />
+          <NumberField label="Backer price ($)" value={b.backerCustomPrice} onChange={v => setB({ backerCustomPrice: v })} placeholder="e.g. 225" />
+        </Grid>
+      )}
       <TextAreaField label="Bronze description override" value={b.descOverride || ''}
         onChange={v => setB({ descOverride: v })} rows={2}
         placeholder="Optional — becomes the bronze line label. Blank → “Bronze Marker — {size}”." />

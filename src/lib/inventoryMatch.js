@@ -18,6 +18,7 @@ import {
   SHAPES, BASE_SIZES, BASE_HEIGHTS,
   buildDieSpec, buildBaseSpec, dieSize3, dieTopLabel, dimsFromWDT, orderHasBase, displayGraniteColor,
 } from './monumentCatalog'
+import { BRONZE_BACKERS } from './orderRates'
 
 // Map a monument shape code → an inventory item_type.
 const SHAPE_TO_ITEM_TYPE = {
@@ -33,6 +34,34 @@ export function resolveStoneNeeds(orders) {
   const needs = []
   for (const o of (orders || [])) {
     if (!o) continue
+
+    // Bronze-marker BACKER (Paul 2026-07-28: "backer must also be accounted
+    // for like new stone — do we have it in stock or have to order it").
+    // The granite piece under the plate is a stone need like any base; it
+    // rides Needs Ordering / Smart Matches / stone PRs. Emitted BEFORE the
+    // shape guard — bronze-marker orders carry no die shape.
+    const bz = o.pricing?.bronze
+    if (bz && (bz.backer || bz.backerSize)) {
+      const bk = BRONZE_BACKERS.find(x => x.code === bz.backerSize)
+      const bkSize = bk ? bk.code : String(bz.backerCustomText || '').trim()
+      if (bkSize) {
+        const bkColor = String(bz.backerColor || 'Grey')
+        needs.push({
+          key: `${o.id}:backer`,
+          orderId: o.id,
+          orderNumber: o.orderNumber || null,
+          family: o.family || o.orderNumber || 'Order',
+          kind: 'backer',
+          itemType: 'backer',
+          color: bkColor,
+          size: bkSize,
+          top: null,
+          sides: null,
+          spec: `Granite Backer ${bk ? bk.label.replace(/\s*\(lawn crypt\)/, '') : bkSize} · ${bkColor}`,
+        })
+      }
+    }
+
     const shape = SHAPES.find(s => s.code === o.shape)
     if (!shape) continue
     const dieSpec = buildDieSpec(o)

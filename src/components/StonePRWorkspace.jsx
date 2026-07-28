@@ -24,7 +24,7 @@ import {
 import { rowToOrder } from '../SalesMode'
 import { resolveStoneNeeds } from '../lib/inventoryMatch'
 
-const TYPE_SUGGESTIONS = ['Die', 'Base', 'Grass', 'Hickey', 'Slant', 'Upright', 'Marker', 'Bench', 'Vase', 'Other']
+const TYPE_SUGGESTIONS = ['Die', 'Base', 'Backer', 'Grass', 'Hickey', 'Slant', 'Upright', 'Marker', 'Bench', 'Vase', 'Other']
 let _tmp = 0
 const tmpId = () => `new-${++_tmp}`
 const todayISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }

@@ -276,14 +276,47 @@ const _isPaymentRow = (it) => /\b(payment|deposit|balance)\b/i.test(`${it.code |
 export const BRONZE_SIZES = [
   { code: '24x12', label: '24″ × 12″', price: 2873 },
   { code: '24x14', label: '24″ × 14″', price: 3089 },
-  { code: '44x14', label: '44″ × 14″', price: 4965 },
-  // Lawn Crypt (Paul 2026-07-28): a 16″ × 24″ plate that always rides a
-  // 20″ × 28″ granite backer. No sheet price yet — price: null means the
-  // operator types the plate price (same input as Custom); picking it
-  // auto-checks the unitized-backer line.
-  { code: '16x24-lawncrypt', label: '16″ × 24″ — Lawn Crypt', price: null, backerSize: '20″ × 28″' },
+  // 28×16 (single) + 36×13 (companion) — from Paul's backer-match sheet
+  // (2026-07-28). No sheet price → price: null = operator types the plate price.
+  { code: '28x16', label: '28″ × 16″', price: null },
+  { code: '36x13', label: '36″ × 13″ — Companion', price: null },
+  { code: '44x14', label: '44″ × 14″ — Companion', price: 4965 },
+  // Lawn Crypt (Paul 2026-07-28): a 16″ × 24″ plate on a 20″ × 28″ backer.
+  { code: '16x24-lawncrypt', label: '16″ × 24″ — Lawn Crypt', price: null },
 ]
+// Legacy flat unitized-backer price — orders saved BEFORE the per-size backer
+// system (backer:true with no backerSize) keep pricing at this figure so their
+// totals never move underneath them.
 export const BRONZE_BACKER_PRICE = 489
+
+// ── Granite backers (Paul 2026-07-28) ───────────────────────────────────────
+// Every bronze plate rides a matched granite backer. Prices are owner-editable
+// per size in Settings → Pricing (bronzeBackerPrices) — "typically the backer
+// has a 225 charge" seeds every row; the table is mutated in place by the
+// pricing config like every other rate table.
+export const BRONZE_BACKERS = [
+  { code: '28x16', label: '28″ × 16″', price: 225 },
+  { code: '28x18', label: '28″ × 18″', price: 225 },
+  { code: '32x20', label: '32″ × 20″', price: 225 },
+  { code: '40x17', label: '40″ × 17″', price: 225 },
+  { code: '42x18', label: '42″ × 18″', price: 225 },
+  { code: '48x18', label: '48″ × 18″', price: 225 },
+  { code: '20x28', label: '20″ × 28″ (lawn crypt)', price: 225 },
+]
+// Plate → its matched backer. 36×13 companions take 40×17 OR 42×18 — the match
+// autofills 40×17 and the dropdown offers the alternative.
+export const BRONZE_BACKER_MATCH = {
+  '24x12': '28x16',
+  '24x14': '28x18',
+  '28x16': '32x20',
+  '36x13': '40x17',
+  '44x14': '48x18',
+  '16x24-lawncrypt': '20x28',
+}
+export const bronzeBackerPriceFor = (code) => {
+  const row = BRONZE_BACKERS.find(b => b.code === code)
+  return row ? row.price : 225
+}
 
 // A bronze marker is the NEW stripped flow — discriminated by BRONZE service type
 // AND the presence of pricing.bronze (set only by the New Order "Bronze Marker"
@@ -310,8 +343,24 @@ function bronzeBaseItems(order) {
     amount: price,
     editable: true,
   }]
-  if (b.backer) {
-    items.push({ code: 'bronze-backer', label: 'Unitized Backer', amount: BRONZE_BACKER_PRICE, editable: true })
+  if (b.backer || b.backerSize) {
+    if (b.backerSize) {
+      // Structured backer (2026-07-28): its own line under the bronze —
+      // size + color named, price per size from Settings → Pricing.
+      const bk = BRONZE_BACKERS.find(x => x.code === b.backerSize)
+      const bkLabel = bk ? bk.label.replace(/\s*\(lawn crypt\)/, '') : (String(b.backerCustomText || '').trim() || 'Custom size')
+      const color = String(b.backerColor || 'Grey').trim() || 'Grey'
+      items.push({
+        code: 'bronze-backer',
+        label: `Granite Backer — ${bkLabel} · ${color}`,
+        amount: bk ? bk.price : (Number(b.backerCustomPrice) || 225),
+        editable: true,
+      })
+    } else {
+      // Legacy boolean-only backer — keeps the historical flat price so
+      // pre-existing orders never reprice underneath Paul.
+      items.push({ code: 'bronze-backer', label: 'Unitized Backer', amount: BRONZE_BACKER_PRICE, editable: true })
+    }
   }
   return items
 }
@@ -667,6 +716,7 @@ function snapshotPricingConfig() {
     diePrices: Object.fromEntries(SHAPES.flatMap(s => (s.standardSizes || []).map(sz => [sz.code, sz.price]))),
     baseSizePrices: Object.fromEntries(BASE_SIZES.map(b => [b.code, b.price])),
     addOnPrices: Object.fromEntries(ADD_ONS_CATALOG.filter(a => !a.custom).map(a => [a.code, a.price])),
+    bronzeBackerPrices: Object.fromEntries(BRONZE_BACKERS.map(b => [b.code, b.price])),
   }
 }
 
@@ -733,6 +783,7 @@ function applyConfigValues(config, skipNull) {
   if (config.diePrices) SHAPES.forEach(s => (s.standardSizes || []).forEach(sz => { if (ok(config.diePrices[sz.code])) sz.price = num(config.diePrices[sz.code]) }))
   if (config.baseSizePrices) BASE_SIZES.forEach(b => { if (ok(config.baseSizePrices[b.code])) b.price = num(config.baseSizePrices[b.code]) })
   if (config.addOnPrices) ADD_ONS_CATALOG.forEach(a => { if (ok(config.addOnPrices[a.code])) a.price = num(config.addOnPrices[a.code]) })
+  if (config.bronzeBackerPrices) BRONZE_BACKERS.forEach(b => { if (ok(config.bronzeBackerPrices[b.code])) b.price = num(config.bronzeBackerPrices[b.code]) })
   // INSCRIPTION-PRICING-SYNC — the owner edits inscription prices under
   // "Inscription tiers" (INSCRIPTION_TIERS: full/mdy/year), but the wizard
   // prices inscriptions via the duplicate lett-* Lettering add-ons. Mirror the
