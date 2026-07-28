@@ -5427,7 +5427,7 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // 2. Load the order.
   const { data: order, error: orderErr } = await supabase
     .from('orders')
-    .select('id, signed_at, service_types, sales_rep, tenant_id, staff_notes')
+    .select('id, signed_at, service_types, sales_rep, tenant_id, staff_notes, foundation_type')
     .eq('id', orderId)
     .single()
   if (orderErr || !order) return { ok: false, error: orderErr?.message || 'Order not found' }
@@ -5553,6 +5553,16 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // PART 2 B1 — seed per-component production rows for the new job (best-effort;
   // a seed miss must never fail job creation). No-op for non-production-track orders.
   try { await seedComponentsForOrder(orderId, job) } catch (e) { console.warn('[components] seed (job create):', e?.message) }
+
+  // Shevco foundation → the dig list, automatically (Paul 2026-07-28: "if
+  // shevco foundation is selected in order that must automatically be added
+  // to the foundation dig list"). Foundation is usually picked at INTAKE —
+  // before a job exists — so the add has to happen HERE, the moment the job
+  // is born, no matter which door signed it (desk, iPad, remote backfill).
+  // OrderDetail's Foundation-by handler covers changes made after signing.
+  if (order.foundation_type === 'Our Foundation' || order.foundation_type === 'Strip') {
+    try { await addToFoundationList(job.id) } catch (e) { console.warn('[fdn] auto-add to dig list:', e?.message) }
+  }
 
   return { ok: true, job, alreadyExisted: false }
 }

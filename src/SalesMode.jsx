@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder } from './lib/stonebooksData'
 import { designTags } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -1595,6 +1595,15 @@ export async function saveOrder(order) {
     // Recompute order-content-derived milestones on save (idempotent; no-ops when
     // there's no job). Fire-and-forget so it never slows the save.
     if (order.signedAt) ensureDerivedMilestones(order.id).catch(() => {})
+    // Shevco foundation → the dig list, automatically (Paul 2026-07-28).
+    // Fire-and-forget + 23505-tolerant, so an autosave loop costs one indexed
+    // lookup only while the foundation is ours; no job yet = no-op (the
+    // createJobFromOrder hook adds it at signing).
+    if (data.foundation_type === 'Our Foundation' || data.foundation_type === 'Strip') {
+      getJobByOrderId(order.id)
+        .then(j => (j?.id ? addToFoundationList(j.id) : null))
+        .catch(() => {})
+    }
     return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes, jobTypeSync }
   }
 

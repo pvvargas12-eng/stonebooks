@@ -11,6 +11,14 @@ Commits bf37d40 + 9931808 (+ signing-submit Edge Function redeployed). Paul's tw
 - **LEAD task tags + focus filter**: `isLeadTask` = task_type 'lead' OR linked order unsigned + draft/scoping/quoted (the STATUS rule — same as the lead auto-typing; deliberately NOT the field's money-based isLeadRaw). Tag renders on Task CC rows (`tbadge lead`, skipped when the type badge already says Lead), week-board cards, and field task rows/detail (`fl-c-lead`). New **"hide lead tasks"** checkbox in the type row filters every view AND the type-count badges (badges must match what clicking shows).
 - **Bronze markers gained 16″ × 24″ — Lawn Crypt** on a 20″ × 28″ backer: `BRONZE_SIZES` entry with `price: null` + `backerSize` — **null price = operator types the plate price** (never a silent $0; no sheet price given yet — ASK PAUL for the standing price), picking it auto-checks the unitized-backer line and the hint names the backer size.
 
+## Sprint EMAIL-DRAFTS-1 (2026-07-28) — SHIPPED: save-and-resume drafts + full attachments on the sales composer
+
+Paul: "must be able to add permit, design, or upload new attachments or view attachments… an option to leave as draft and then in order email be able to view edit and send drafts… i gotta keep restarting… must be able to send multiple attachments." Commit 45fe92f. Migration `20260728_email_drafts.sql` ✅ APPLIED + verified (table + 3-role RLS trio).
+
+- **SalesEmailModal both doors carry the FULL bundle** (estimate/layout/permit — only the default checks differ by mode) **plus an "Order files" picker**: every attachment from `listOrderAttachments` with a view link (new tab) + checkbox, multi-select, `+ Upload a file` through `uploadOrderAttachment` (so uploads land on the order too). Picked files are fetched → base64 → attached, and named in the email body.
+- **`email_drafts`** — one row per parked composer: `kind` general|sales|contract, `payload` = the composer's OWN STATE (general: to/subject/body/attach; sales/contract: to/note/items/files). Helpers `listEmailDrafts` / `saveEmailDraft` / `deleteEmailDraft` (deploy-safe). "Save as draft" on BOTH composers; **the Email drafts strip under the OrderDetail quick actions** reopens each draft exactly where it stopped (general → the Send-email composer with draftId; sales/contract → SalesEmailModal via `salesEmailMode = {mode, draft}` — NOTE that state is now an OBJECT, not a string). **Sending deletes the draft**; chips have per-draft ×.
+- Gmail relay cap (~3.5MB total attachments) still applies — the generic composer guards it; the sales modal inherits the send error if exceeded.
+
 ## Sprint BRONZE-BACKER-1 (2026-07-28) — SHIPPED: matched granite backers end-to-end
 
 Paul's backer match sheet, verbatim in `BRONZE_BACKER_MATCH` (orderRates): 24x12→28x16 · 24x14→28x18 · 28x16→32x20 · 36x13→40x17 (42x18 offered in the dropdown) · 44x14→48x18 · lawn-crypt 16x24→20x28. Commit b62b3c3.
