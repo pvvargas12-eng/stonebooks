@@ -1455,6 +1455,22 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   }
   const closeEmailComposer = () => setEmailModal(m => (m && m.busy ? m : null))
 
+  // ── Quick task (Paul 2026-07-28: "+add Task at the top") ───────────────────
+  const [quickTask, setQuickTask] = useState('')
+  const [quickTaskBusy, setQuickTaskBusy] = useState(false)
+  const addQuickTask = async () => {
+    const t = quickTask.trim()
+    if (!t || quickTaskBusy) return
+    setQuickTaskBusy(true)
+    const me = await getCurrentStaffName()
+    const r = await addOrderTask(orderId, { note: t, assignee: me, actor: me })
+    setQuickTaskBusy(false)
+    if (!r?.ok) { setActionNote(r?.error || 'Could not add the task.'); return }
+    setQuickTask('')
+    refreshActivity()
+    setActionNote(`Task added, assigned to ${me} — reassign it on the Today tab if it's for someone else.`)
+  }
+
   // ── Email drafts (Paul 2026-07-28: "i gotta keep restarting") ──────────────
   // Park the composer as a draft; the drafts strip under the quick actions
   // reopens it exactly where it stopped. Sending deletes the draft.
@@ -1531,26 +1547,21 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
       const imgs = photos.map(p => `<img src="${p.url}" alt="Completed monument" style="max-width:100%;border-radius:8px;margin-top:14px" />`).join('')
       html = `<div style="font-size:14px;line-height:1.6;color:#222">${bodyHtml}${imgs}</div>`
-      attachments = []
-      for (const p of photos) {
-        const a = await photoAttachment(p.url, p.name)
-        if (a) attachments.push(a)
-      }
+      // URL refs — the server fetches from OUR storage, so photos never ride
+      // the ~4.5MB request body (the old cap Paul kept hitting). Full size.
+      attachments = photos.map(p => ({ filename: p.name, url: p.url }))
     }
     // Picked/uploaded composer attachments ride along with any closeout photos.
     const picked = emailModal.attach || []
     if (picked.length) {
       attachments = attachments || []
-      for (const f of picked) {
-        const a = await photoAttachment(f.url, f.name)
-        if (!a) { setEmailModal(m => ({ ...m, busy: false, error: `Could not read ${f.name} — remove it and try again.` })); return }
-        attachments.push(a)
-      }
+      for (const f of picked) attachments.push({ filename: f.name, url: f.url })
     }
-    // Gmail relay hard cap (serverless body ~4.5MB): keep total under ~3.5MB.
+    // Only base64 payloads count against the request-body cap now — URL refs
+    // are fetched server-side and capped near Gmail's real 25MB limit there.
     const totalB64 = (attachments || []).reduce((s, a) => s + (a.contentBase64?.length || 0), 0)
     if (totalB64 > 4_800_000) {
-      setEmailModal(m => ({ ...m, busy: false, error: 'Attachments are too large for one email (about 3.5MB max) — remove some and send the rest separately.' }))
+      setEmailModal(m => ({ ...m, busy: false, error: 'Generated attachments are too large for one email — remove some and send the rest separately.' }))
       return
     }
     const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments })
@@ -2108,6 +2119,18 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           </div>
         )}
 
+        {/* ── QUICK TASK — type it, hit Add, it's on this order + the Task CC
+            (Paul 2026-07-28: "+add Task at the top — auto create a task to
+            that order when you type the task in"). */}
+        <div className="sb-od-quicktask">
+          <input className="sb-od-quicktask-in" value={quickTask} placeholder="+ Add a task for this order — type it and hit Add…"
+            onChange={e => setQuickTask(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addQuickTask() }} />
+          <button type="button" className="sb-od-quicktask-go" onClick={addQuickTask} disabled={quickTaskBusy || !quickTask.trim()}>
+            {quickTaskBusy ? 'Adding…' : 'Add task'}
+          </button>
+        </div>
+
         {/* ── QUICK ACTIONS ───────────────────────────────────────────────── */}
         <div className="sb-od-actions">
           <button type="button" className="sb-od-btn sb-od-btn-primary" onClick={() => onEditInSales?.(order.id)}>
@@ -2118,25 +2141,14 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
               Edit in Sales Portal
             </button>
           )}
-          <button type="button" className="sb-od-btn" onClick={handleOpenContract}>Open contract</button>
+          <button type="button" className="sb-od-btn sb-od-btn-strong" onClick={handleOpenContract}>Open contract</button>
           <button type="button" className="sb-od-btn" onClick={openContractEditor}>
             Edit contract{order.pricing?.contractOverrides ? ' ●' : ''}
           </button>
           <button type="button" className="sb-od-btn" onClick={() => setProfileOpen(true)}>View / print customer profile</button>
-          <button type="button" className="sb-od-btn" onClick={openApprovalPacket}>Open approval packet</button>
-          <button type="button" className="sb-od-btn" onClick={() => job ? onOpenJob?.(job.id) : null} disabled={!job}
-            title={job ? '' : 'No production job yet'}>
-            Open related job
-          </button>
-          <button type="button" className="sb-od-btn" onClick={openEmailComposer}>Send email</button>
-          {!order.signed_at && (
-            <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode({ mode: 'contract' })}
-              title="Customer opens a secure link, reviews the contract, prints their name and e-signs — date autofills">
-              Email contract to sign
-            </button>
-          )}
-          <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode({ mode: 'sales' })}
-            title="One email: permit (view only) + layout + estimate + contract e-sign link + any order files">
+          <button type="button" className="sb-od-btn sb-od-btn-strong" onClick={openEmailComposer}>Send email</button>
+          <button type="button" className="sb-od-btn sb-od-btn-sales" onClick={() => setSalesEmailMode({ mode: 'sales' })}
+            title="One email: contract e-sign link + estimate + layout + permit (view only) + any order files">
             Sales email
           </button>
           <span className="sb-od-actions-spacer" />
@@ -2148,7 +2160,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           <button type="button" className="sb-od-btn" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
             {uploadBusy ? 'Uploading…' : 'Upload attachment'}
           </button>
-          <button type="button" className="sb-od-btn" onClick={openPayment}>Record payment</button>
+          <button type="button" className="sb-od-btn sb-od-btn-pay" onClick={openPayment}>Record payment</button>
           <button type="button" className="sb-od-btn" style={{ color: '#b3261e', borderColor: '#dda9a4' }}
             title="Permanently delete this order — confirmation required"
             onClick={() => { setDeleteErr(null); setDeleteModal(true) }}>
@@ -3630,6 +3642,20 @@ const OD_CSS = `
   .sb-od-btn-stub { color: #8a8a85; border-style: dashed; }
   .sb-od-actionnote { font-size: 12.5px; color: #876307; background: rgba(154,114,9,0.07);
     border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 7px 12px; margin: 10px 0 0; }
+
+  /* Quick task — type + Add, lands on this order and the Task CC. */
+  .sb-od-quicktask { display: flex; gap: 8px; margin: 0 0 10px; }
+  .sb-od-quicktask-in { flex: 1; border: 1px dashed #C9A468; border-radius: 9px; padding: 9px 13px; font: inherit; font-size: 13.5px; background: rgba(201,164,104,0.05); }
+  .sb-od-quicktask-in:focus { outline: none; border-style: solid; border-color: #9A7209; background: #fff; }
+  .sb-od-quicktask-go { border: none; border-radius: 9px; background: #16150F; color: #C9A468; font: 700 13px/1 inherit; padding: 9px 16px; cursor: pointer; }
+  .sb-od-quicktask-go:disabled { opacity: 0.5; cursor: default; }
+
+  /* Emphasis tiers (Paul 2026-07-28: "bold some of the important ones"). */
+  .sb-od-btn-strong { font-weight: 700; border-color: #b3a880; }
+  .sb-od-btn-pay { background: #1f7a3d; border-color: #1f7a3d; color: #fff; font-weight: 700; }
+  .sb-od-btn-pay:hover:not(:disabled) { background: #1a6a35; }
+  .sb-od-btn-sales { background: #F4EBD4; border-color: #9A7209; color: #6d5106; font-weight: 700; }
+  .sb-od-btn-sales:hover:not(:disabled) { background: #eddfba; }
 
   /* Email drafts strip — parked composers, one chip each. */
   .sb-od-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }

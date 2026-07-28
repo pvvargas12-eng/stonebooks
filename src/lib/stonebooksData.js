@@ -10622,6 +10622,45 @@ export async function dismissPRReconcile(itemId, checkKind, dismissedBy = null) 
 // Paul's one-click reconcile fixes — the SAME master-override stone ladder every
 // other surface uses, applied to the order's job. This is the ONLY path by which
 // PR reconciliation changes an order, and it only runs on his click.
+// Which orders already have their stone/bronze IN MOTION — marked ordered,
+// received, or in stock on the order's job (Paul 2026-07-28: "I HAVE MANY
+// STONES THAT IN THE ORDER ITS MARKED AS ORDERED OR ARRIVED OR IN STOCK AND
+// THEY ARE STILL ON THE ORDER LIST"). Needs Ordering drops these. Returns a
+// Map order_id → 'ordered' | 'here' ('here' = received/in stock wins).
+export async function getStoneProgressByOrder(orderIds) {
+  const out = new Map()
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  if (!ids.length) return out
+  const jobs = []
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await supabase
+      .from('jobs').select('id, order_id').in('order_id', ids.slice(i, i + 150))
+    if (error) { console.warn('[inv] getStoneProgressByOrder jobs:', error.message); return out }
+    jobs.push(...(data || []))
+  }
+  if (!jobs.length) return out
+  const byJob = new Map(jobs.map(j => [j.id, j.order_id]))
+  const jids = jobs.map(j => j.id)
+  const KEYS = ['stone_ordered', 'stone_received', 'stone_in_stock', 'bronze_ordered', 'bronze_received']
+  const HERE = new Set(['stone_received', 'stone_in_stock', 'bronze_received'])
+  for (let i = 0; i < jids.length; i += 150) {
+    const { data, error } = await supabase
+      .from('job_milestones')
+      .select('job_id, milestone_key')
+      .in('job_id', jids.slice(i, i + 150))
+      .in('milestone_key', KEYS)
+      .eq('status', 'done')
+    if (error) { console.warn('[inv] getStoneProgressByOrder milestones:', error.message); return out }
+    for (const m of (data || [])) {
+      const oid = byJob.get(m.job_id)
+      if (!oid) continue
+      if (HERE.has(m.milestone_key)) out.set(oid, 'here')
+      else if (out.get(oid) !== 'here') out.set(oid, 'ordered')
+    }
+  }
+  return out
+}
+
 export async function reconcileMarkStoneStatus(orderId, code) {
   try {
     const job = await getJobByOrderId(orderId)

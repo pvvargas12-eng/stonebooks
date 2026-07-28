@@ -59,10 +59,41 @@ export default async function handler(req, res) {
     auth: { user: GMAIL_ADDRESS, pass: GMAIL_APP_PASSWORD },
   })
 
-  // attachments: [{ filename, contentBase64, contentType }]
-  const mailAttachments = (Array.isArray(attachments) ? attachments : [])
-    .filter(a => a && a.filename && a.contentBase64)
-    .map(a => ({ filename: a.filename, content: Buffer.from(a.contentBase64, 'base64'), contentType: a.contentType || undefined }))
+  // attachments: [{ filename, contentBase64?, url?, contentType }]
+  // Small generated PDFs ride the body as base64. Anything already in OUR
+  // Supabase storage comes as a URL ref and is fetched HERE — big files never
+  // touch the ~4.5MB request-body cap (Paul 2026-07-28: "MUST HAVE LARGER
+  // ATTACHMENT SPACE"). URL refs are restricted to this project's storage
+  // origin (no fetching arbitrary hosts); total is capped near Gmail's 25MB.
+  const storageOrigin = SUPABASE_URL ? `${SUPABASE_URL.replace(/\/+$/, '')}/storage/v1/object/` : null
+  const mailAttachments = []
+  let attachTotal = 0
+  for (const a of (Array.isArray(attachments) ? attachments : [])) {
+    if (!a || !a.filename) continue
+    let content = null
+    let cType = a.contentType || undefined
+    if (a.contentBase64) {
+      content = Buffer.from(a.contentBase64, 'base64')
+    } else if (a.url) {
+      if (!storageOrigin || !String(a.url).startsWith(storageOrigin)) {
+        return res.status(400).json({ error: 'attachment_url_rejected', detail: `${a.filename}: only this project's storage URLs can be attached by reference.` })
+      }
+      try {
+        const r = await fetch(a.url)
+        if (!r.ok) return res.status(400).json({ error: 'attachment_fetch_failed', detail: `${a.filename}: HTTP ${r.status}` })
+        content = Buffer.from(await r.arrayBuffer())
+        if (!cType) cType = r.headers.get('content-type') || undefined
+      } catch (e) {
+        return res.status(400).json({ error: 'attachment_fetch_failed', detail: `${a.filename}: ${e?.message || 'fetch failed'}` })
+      }
+    }
+    if (!content) continue
+    attachTotal += content.length
+    mailAttachments.push({ filename: a.filename, content, contentType: cType })
+  }
+  if (attachTotal > 22 * 1024 * 1024) {
+    return res.status(400).json({ error: 'attachments_too_large', detail: 'Attachments total over ~22MB — Gmail caps around 25MB. Remove one and send it separately.' })
+  }
 
   const headers = {}
   if (in_reply_to) headers['In-Reply-To'] = in_reply_to

@@ -7,9 +7,15 @@
 // will go out — recipient, subject, the rendered email — and nothing sends
 // until the explicit gold button is pressed. viewOnly mode reuses the same
 // surface as a pure preview (no send button at all).
-// The html is our own composed markup rendered in a sandboxed iframe.
+//
+// EDITABLE (Paul 2026-07-28: "WHEN I HIT PREVIEW AND SEND I MUST BE ABLE TO
+// EDIT THE WORDS AND TYPE OVER IT"): the preview body is contentEditable —
+// click in and retype anything; what's on screen at Send IS what goes out.
+// onConfirm receives { html, text } of the edited body (null if unreadable —
+// consumers fall back to their composed original). The iframe is srcDoc of
+// OUR OWN composed markup, unsandboxed so the parent can read the edits.
 // =============================================================================
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 
 export default function ConfirmSend({
   open, to, subject, html, text,
@@ -18,10 +24,28 @@ export default function ConfirmSend({
   confirmLabel,
   warning = 'This goes OUT to the recipient the moment you press send.',
 }) {
+  const frameRef = useRef(null)
   const srcDoc = useMemo(() => {
     const body = html || `<pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${(text || '').replace(/</g, '&lt;')}</pre>`
     return `<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:14px;background:#fff">${body}</body></html>`
   }, [html, text])
+
+  // Make the loaded preview typeable (skipped in viewOnly).
+  const armEditing = () => {
+    if (viewOnly) return
+    try {
+      const doc = frameRef.current?.contentDocument
+      if (doc?.body) doc.body.contentEditable = 'true'
+    } catch { /* cross-origin hiccup → preview stays read-only */ }
+  }
+  // What's on screen right now — the edited words win.
+  const readEdited = () => {
+    try {
+      const doc = frameRef.current?.contentDocument
+      if (!doc?.body) return null
+      return { html: doc.body.innerHTML, text: doc.body.innerText }
+    } catch { return null }
+  }
 
   if (!open) return null
   return (
@@ -30,18 +54,19 @@ export default function ConfirmSend({
         <div className="sb-csend-head">
           <div className="sb-csend-title">{viewOnly ? 'Email preview' : 'Confirm before sending'}</div>
           {!viewOnly && <div className="sb-csend-warn">{warning}</div>}
+          {!viewOnly && <div className="sb-csend-edithint">Click into the email to edit the words — what you see is what sends.</div>}
         </div>
         <div className="sb-csend-meta">
           <div><span className="sb-csend-label">To</span><b>{to || '—'}</b></div>
           <div><span className="sb-csend-label">Subject</span>{subject || '—'}</div>
         </div>
-        <iframe className="sb-csend-frame" title="Email preview" sandbox="" srcDoc={srcDoc} />
+        <iframe ref={frameRef} className="sb-csend-frame" title="Email preview" srcDoc={srcDoc} onLoad={armEditing} />
         <div className="sb-csend-actions">
           <button type="button" className="sb-csend-cancel" onClick={onClose} disabled={busy}>
             {viewOnly ? 'Close' : 'Cancel — do not send'}
           </button>
           {!viewOnly && (
-            <button type="button" className="sb-csend-go" onClick={onConfirm} disabled={busy || !to}>
+            <button type="button" className="sb-csend-go" onClick={() => onConfirm?.(readEdited())} disabled={busy || !to}>
               {busy ? 'Sending…' : (confirmLabel || `Send to ${to}`)}
             </button>
           )}
@@ -64,6 +89,7 @@ const localStyles = `
   .sb-csend-head { padding: 16px 20px 10px; }
   .sb-csend-title { font-size: 16px; font-weight: 700; color: #1c1c1c; }
   .sb-csend-warn { font-size: 12.5px; color: #854F0B; margin-top: 3px; }
+  .sb-csend-edithint { font-size: 12px; color: #1f7a3d; font-weight: 600; margin-top: 3px; }
   .sb-csend-meta {
     padding: 0 20px 10px; font-size: 13px; color: #2C2C2A;
     display: flex; flex-direction: column; gap: 3px;

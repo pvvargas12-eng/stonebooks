@@ -41,16 +41,6 @@ const bufToBase64 = (buf) => {
   return btoa(bin)
 }
 
-const fetchAttachment = async (url, filename) => {
-  try {
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const type = res.headers.get('content-type') || 'application/octet-stream'
-    const buf = await res.arrayBuffer()
-    return { filename, contentBase64: bufToBase64(buf), contentType: type.split(';')[0] }
-  } catch { return null }
-}
-
 const emailish = (s) => /\S+@\S+\.\S+/.test(s)
 
 // Module-scope (react-hooks/static-components): one include-this checkbox row.
@@ -205,24 +195,21 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
         })
       }
 
+      // Storage-backed files go as URL REFS — the email API fetches them
+      // server-side, so big layouts/permits/files never hit the request-body
+      // cap (Paul 2026-07-28: "MUST HAVE LARGER ATTACHMENT SPACE").
       if (items.layout && layoutRow) {
         const ext = /\.png(\?|$)/i.test(layoutRow.layout_image_url) ? 'png' : 'jpg'
-        const a = await fetchAttachment(layoutRow.layout_image_url, `Monument layout - ${surname}.${ext}`)
-        if (a) attachments.push(a)
-        else { setErr('Could not load the layout image for attaching.'); setBusy(false); return }
+        attachments.push({ filename: `Monument layout - ${surname}.${ext}`, url: layoutRow.layout_image_url })
       }
 
       if (items.permit && permitRow) {
-        const a = await fetchAttachment(permitRow.url, `Permit - ${surname}.pdf`)
-        if (a) attachments.push(a)
-        else { setErr('Could not load the permit PDF for attaching.'); setBusy(false); return }
+        attachments.push({ filename: `Permit - ${surname}.pdf`, url: permitRow.url, contentType: 'application/pdf' })
       }
 
       // Hand-picked / freshly uploaded order files ride along too.
       for (const f of pickedFiles) {
-        const a = await fetchAttachment(f.url, f.name)
-        if (a) attachments.push(a)
-        else { setErr(`Could not load ${f.name} for attaching.`); setBusy(false); return }
+        attachments.push({ filename: f.name, url: f.url })
       }
 
       // ── Compose ──
@@ -284,11 +271,14 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
     }
   }
 
-  const doSend = async () => {
+  const doSend = async (edited) => {
     if (!gate) return
     setBusy(true); setErr(null)
+    // The gate's preview is editable — whatever Paul typed over wins.
+    const html = edited?.html || gate.html
+    const text = edited?.text || gate.text
     const r = await sendShopEmail({
-      to: toList.join(', '), subject: gate.subject, html: gate.html, text: gate.text,
+      to: toList.join(', '), subject: gate.subject, html, text,
       attachments: gate.attachments,
       orderId, customerId: order.customer_id || order.customer?.id || null,
     })

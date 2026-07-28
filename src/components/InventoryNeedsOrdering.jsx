@@ -11,7 +11,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { rowToOrder } from '../SalesMode'
-import { getActiveStoneOrders, getInventoryStock, listOpenPRCoverage } from '../lib/stonebooksData'
+import { getActiveStoneOrders, getInventoryStock, listOpenPRCoverage, getStoneProgressByOrder, reconcileMarkStoneStatus } from '../lib/stonebooksData'
 import { resolveStoneNeeds, matchNeedsToStock } from '../lib/inventoryMatch'
 import { prLineFromNeed } from '../lib/prKinds'
 import StonePRBuilder from './StonePRBuilder'
@@ -28,10 +28,54 @@ function familyOf(row) {
   }
   return row.order_number || 'Order'
 }
+
+// ── Tolerant PR coverage (Paul 2026-07-28: "IF A FAMILY NAME IS ON THE
+// PROCUREMENT LIST REMOVE IT FROM NEEDS ORDERING, VERIFY THE FAMILY NAME AND
+// THE DIE AND BASE MATCH — JUST THE NUMBERS MAY NOT ALWAYS BE WRITTEN
+// PERFECT"). Sizes compare in inches with trade notation parsed ("2-6" = 30)
+// and a 2″ per-dim tolerance on the first two dims; the line's Type column
+// tells die-ish from base when the size can't be parsed.
+const dimsIn = (s) => String(s ?? '').toLowerCase().replace(/×/g, 'x').split('x').map(d => {
+  const m = String(d).match(/(\d+)\s*-\s*(\d+)/)
+  if (m) return parseInt(m[1], 10) * 12 + parseInt(m[2], 10)
+  const n = parseInt(String(d).replace(/[^\d]/g, ''), 10)
+  return Number.isFinite(n) ? n : null
+}).filter(v => v != null)
+const sizesClose = (a, b) => {
+  const A = dimsIn(a), B = dimsIn(b)
+  if (!A.length || !B.length) return false
+  const n = Math.min(A.length, B.length, 2)
+  for (let i = 0; i < n; i++) { if (Math.abs(A[i] - B[i]) > 2) return false }
+  return true
+}
+const lineClass = (it) => {
+  const t = normTxt(it.item_type)
+  if (!t) return null
+  if (t.includes('base')) return 'base'
+  if (t.includes('backer')) return 'backer'
+  if (/(die|slant|upright|marker|grass|hickey|bevel|ledger|stone|monument)/.test(t)) return 'stone'
+  return null
+}
+const colorLoose = (a, b) => {
+  const na = normTxt(a).replace(/grey/g, 'gray'), nb = normTxt(b).replace(/grey/g, 'gray')
+  if (!na || !nb) return true            // blank on either side = don't block on color
+  return na === nb || na.includes(nb) || nb.includes(na)
+}
 function coveredByPR(need, prItems) {
+  // Order-linked line = that order is being handled.
   let m = prItems.find(it => it.order_id && need.orderId && it.order_id === need.orderId)
   if (m) return m.po_number || 'a PR'
-  m = prItems.find(it => normTxt(it.family_name) && normTxt(it.family_name) === normTxt(need.family) && normTxt(it.color) === normTxt(need.color) && normTxt(it.size) === normTxt(need.size))
+  // Family-name match, numbers tolerant: same family AND the line looks like
+  // the same PIECE (type matches the need, or the size is close).
+  m = prItems.find(it => {
+    if (it.is_stock) return false
+    if (!normTxt(it.family_name) || normTxt(it.family_name) !== normTxt(need.family)) return false
+    if (!colorLoose(it.color, need.color)) return false
+    const cls = lineClass(it)
+    if (cls === need.kind) return !dimsIn(it.size).length || sizesClose(it.size, need.size)
+    if (cls === null) return sizesClose(it.size, need.size)
+    return false
+  })
   return m ? (m.po_number || 'a PR') : null
 }
 // spec_text is left unset on creation — the print view resolves the die/base spec
@@ -56,21 +100,33 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
     try {
       const [ordRes, stockRes, covRes] = await Promise.all([getActiveStoneOrders(), getInventoryStock(), listOpenPRCoverage()])
       const prItems = covRes.items || []
+      const nowMs = Date.now()
       const orderMeta = {}
       const orders = (ordRes.rows || []).map(r => {
         const o = rowToOrder(r, null, null); o.family = familyOf(r)
-        orderMeta[r.id] = { neededBy: r.target_completion_date || null, rush: !!r.rush_order }
+        // Age of the order — signed date first (created as fallback), the
+        // same green/amber/red bands as the production age circles.
+        const anchor = r.signed_at || r.created_at
+        const ageDays = anchor ? Math.max(0, Math.floor((nowMs - new Date(anchor).getTime()) / 86400000)) : null
+        orderMeta[r.id] = {
+          neededBy: r.target_completion_date || null, rush: !!r.rush_order,
+          ageDays, ageTone: ageDays == null ? null : ageDays < 60 ? 'green' : ageDays < 150 ? 'amber' : 'red',
+        }
         return o
       })
       const stock = stockRes.rows || []
+      // Orders whose stone is already marked ordered / received / in stock on
+      // the ORDER — those needs are OFF this list (Paul's #1 complaint).
+      const progress = await getStoneProgressByOrder(orders.map(o => o.id))
       const matched = matchNeedsToStock(resolveStoneNeeds(orders), stock)
 
       const stones = [], bronze = []
-      let coveredYard = 0, coveredAlloc = 0, coveredPR = 0
+      let coveredYard = 0, coveredAlloc = 0, coveredPR = 0, coveredMarked = 0
       for (const m of matched) {
         const need = m.need
         const meta = orderMeta[need.orderId] || {}
-        const row = { ...need, neededBy: meta.neededBy, rush: meta.rush, near: m.best?.strength === 'near' ? m.best : null }
+        const row = { ...need, neededBy: meta.neededBy, rush: meta.rush, ageDays: meta.ageDays, ageTone: meta.ageTone, near: m.best?.strength === 'near' ? m.best : null }
+        if (progress.has(need.orderId)) { coveredMarked++; continue }
         if (m.fulfilled) { coveredAlloc++; continue }
         const po = coveredByPR(need, prItems)
         if (po) { coveredPR++; continue }
@@ -105,7 +161,7 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
 
       setData({
         stones: sortNeeds(stones), bronze: sortNeeds(bronze), photos: sortNeeds(photos), etchings: sortNeeds(etchings),
-        covered: { yard: coveredYard, alloc: coveredAlloc, pr: coveredPR },
+        covered: { yard: coveredYard, alloc: coveredAlloc, pr: coveredPR, marked: coveredMarked },
         scanned: orders.length,
       })
       setErr((!ordRes.ok && !stockRes.ok) ? (ordRes.error || stockRes.error) : null)
@@ -114,12 +170,49 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
   }, [])
   useEffect(() => { load() }, [load])
 
+  // Search (Paul 2026-07-28: "i cant even search in needs ordering").
+  const [q, setQ] = useState('')
+  const matchQ = useCallback((r) => {
+    const needle = q.trim().toLowerCase()
+    if (!needle) return true
+    return [r.family, r.orderNumber, r.spec, r.color, r.size].filter(Boolean).join(' ').toLowerCase().includes(needle)
+  }, [q])
+
+  // Multi-select → one status change for every picked family (stones + bronze).
+  const [sel, setSel] = useState(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkErr, setBulkErr] = useState(null)
+  const toggleSel = (key) => setSel(prev => {
+    const n = new Set(prev)
+    if (n.has(key)) n.delete(key); else n.add(key)
+    return n
+  })
+  const selRows = useMemo(() => data ? [...data.stones, ...data.bronze].filter(r => sel.has(r.key)) : [], [data, sel])
+  const bulkStatus = async (code, label) => {
+    if (!selRows.length || bulkBusy) return
+    setBulkBusy(true); setBulkErr(null)
+    const orderIds = [...new Set(selRows.map(r => r.orderId).filter(Boolean))]
+    const failed = []
+    for (const oid of orderIds) {
+      const r = await reconcileMarkStoneStatus(oid, code)
+      if (!r?.ok) failed.push(r?.error || 'failed')
+    }
+    setBulkBusy(false)
+    setSel(new Set())
+    if (failed.length) setBulkErr(`${failed.length} of ${orderIds.length} could not be marked ${label} — ${failed[0]}`)
+    load()
+  }
+
   const mustOrderCount = useMemo(() => data ? data.stones.length + data.bronze.length + data.photos.length + data.etchings.length : 0, [data])
 
   if (loading) return <div className="sb-empty">Working out what needs ordering…</div>
   if (err) return <div className="sb-empty">Couldn’t build the queue.<br /><span className="ino-muted">{err}</span></div>
 
   const c = data.covered
+  const fStones = data.stones.filter(matchQ)
+  const fBronze = data.bronze.filter(matchQ)
+  const fPhotos = data.photos.filter(matchQ)
+  const fEtchings = data.etchings.filter(matchQ)
   return (
     <div className="ino">
       <style>{INO_CSS}</style>
@@ -127,30 +220,57 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
       <div className="ino-summary">
         <span className="ino-sum-big">{mustOrderCount}</span><span className="ino-sum-lab">need ordering</span>
         <span className="ino-sum-sep" />
-        <span className="ino-covered">Covered: {c.yard} in yard · {c.alloc} allocated · {c.pr} on a PR</span>
+        <span className="ino-covered">Covered: {c.marked} marked on the order · {c.pr} on a PR · {c.yard} in yard · {c.alloc} allocated</span>
         <span className="ino-summary-meta">{data.scanned} active orders</span>
       </div>
 
+      <div className="ino-toolbar">
+        <input className="ino-search" value={q} onChange={e => setQ(e.target.value)}
+          placeholder="Search by family, order number, size, color…" />
+        <span className="ino-agekey">
+          Age of order: <i className="ino-dot ino-dot-green" /> under 60d <i className="ino-dot ino-dot-amber" /> 60–150d <i className="ino-dot ino-dot-red" /> 150d+
+        </span>
+      </div>
+
+      {sel.size > 0 && (
+        <div className="ino-bulkbar">
+          <b>{sel.size} selected</b>
+          <span className="ino-bulk-hint">— sets the stone status on each family's order, then they drop off this list</span>
+          <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('ordered', 'ordered')}>Mark ordered</button>
+          <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('in_stock', 'in stock')}>Mark in stock</button>
+          <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('needs_stencil_cut', 'received')}>Mark received</button>
+          <button type="button" className="ino-bulk-clear" disabled={bulkBusy} onClick={() => setSel(new Set())}>Clear</button>
+          {bulkBusy && <span className="ino-muted">Working…</span>}
+        </div>
+      )}
+      {bulkErr && <div className="ino-bulkerr">{bulkErr}</div>}
+
       {mustOrderCount === 0 ? (
-        <div className="sb-empty">✓ Nothing needs ordering — every open order’s needs are in the yard, allocated, or already on a PR.</div>
+        <div className="sb-empty">✓ Nothing needs ordering — every open order’s needs are marked on the order, on a PR, in the yard, or allocated.</div>
       ) : (
         <>
-          <Group title="Stones" tone="stone" rows={data.stones}
-            onBuildAll={data.stones.length ? () => openBuilder('stone', data.stones.map(lineFromNeed)) : null}
+          <Group title="Stones" tone="stone" rows={fStones}
+            onBuildAll={fStones.length ? () => openBuilder('stone', fStones.map(lineFromNeed)) : null}
             onBuildRow={(r) => openBuilder('stone', [lineFromNeed(r)])}
-            onAllocate={onOpenMatches} onOpenOrder={onOpenOrder} />
+            onAllocate={onOpenMatches} onOpenOrder={onOpenOrder}
+            sel={sel} onToggleSel={toggleSel} />
 
-          <Group title="Bronze" tone="bronze" rows={data.bronze}
-            buildDisabledLabel="Bronze PR — coming soon" onAllocate={onOpenMatches} onOpenOrder={onOpenOrder} />
+          <Group title="Bronze" tone="bronze" rows={fBronze}
+            buildDisabledLabel="Bronze PR — coming soon" onAllocate={onOpenMatches} onOpenOrder={onOpenOrder}
+            sel={sel} onToggleSel={toggleSel} />
 
-          <PhotoGroup rows={data.photos} onOpenOrder={onOpenOrder}
-            onBuildAll={data.photos.length ? () => openBuilder('photo', data.photos.map(n => prLineFromNeed('photo', n))) : null}
+          <PhotoGroup rows={fPhotos} onOpenOrder={onOpenOrder}
+            onBuildAll={fPhotos.length ? () => openBuilder('photo', fPhotos.map(n => prLineFromNeed('photo', n))) : null}
             onBuildRow={(r) => openBuilder('photo', [prLineFromNeed('photo', r)])} />
 
-          <SimpleGroup title="Etchings" tone="etch" rows={data.etchings} specOf={(r) => `${r.spec}${r.size ? ` · ${String(r.size).toUpperCase()}` : ''}`}
+          <SimpleGroup title="Etchings" tone="etch" rows={fEtchings} specOf={(r) => `${r.spec}${r.size ? ` · ${String(r.size).toUpperCase()}` : ''}`}
             onOpenOrder={onOpenOrder}
-            onBuildAll={data.etchings.length ? () => openBuilder('etching', data.etchings.map(n => prLineFromNeed('etching', n))) : null}
+            onBuildAll={fEtchings.length ? () => openBuilder('etching', fEtchings.map(n => prLineFromNeed('etching', n))) : null}
             onBuildRow={(r) => openBuilder('etching', [prLineFromNeed('etching', r)])} />
+
+          {q.trim() && fStones.length + fBronze.length + fPhotos.length + fEtchings.length === 0 && (
+            <div className="sb-empty">Nothing matches “{q.trim()}”.</div>
+          )}
         </>
       )}
 
@@ -164,6 +284,11 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
 function RowMeta({ r }) {
   return (
     <span className="ino-meta">
+      {r.ageDays != null && (
+        <span className={`ino-age ino-age-${r.ageTone}`} title={`Order is ${r.ageDays} days old`}>
+          <i className={`ino-dot ino-dot-${r.ageTone}`} />{r.ageDays}d
+        </span>
+      )}
       {r.orderNumber && <span className="ino-ord">{r.orderNumber}</span>}
       {r.rush && <span className="ino-tag ino-tag-rush">RUSH</span>}
       {r.neededBy && <span className="ino-need-by">by {fmtDate(r.neededBy)}</span>}
@@ -171,7 +296,7 @@ function RowMeta({ r }) {
   )
 }
 
-function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOrder, buildDisabledLabel }) {
+function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOrder, buildDisabledLabel, sel, onToggleSel }) {
   if (!rows.length) return null
   return (
     <section className="ino-group">
@@ -183,8 +308,12 @@ function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOr
       </div>
       <div className="ino-rows">
         {rows.map(r => (
-          <div key={r.key} className={`ino-row ${r.rush ? 'ino-row-rush' : ''}`}>
+          <div key={r.key} className={`ino-row ${r.rush ? 'ino-row-rush' : ''}${sel?.has(r.key) ? ' ino-row-sel' : ''}`}>
             <div className="ino-row-main">
+              {onToggleSel && (
+                <input type="checkbox" className="ino-check" checked={!!sel?.has(r.key)} onChange={() => onToggleSel(r.key)}
+                  title="Select — then mark the whole batch ordered / in stock / received" />
+              )}
               <span className="ino-fam">{r.family}</span>
               <RowMeta r={r} />
               <span className="ino-spec">{r.spec}</span>
@@ -270,6 +399,27 @@ const INO_CSS = `
   .ino-sum-sep { width: 1px; height: 22px; background: var(--sb-border, #e4e0d4); margin: 0 6px; }
   .ino-covered { font-size: 13px; color: var(--sb-text-muted, #6b6256); }
   .ino-summary-meta { margin-left: auto; font-size: 12px; color: var(--sb-text-muted, #8a7f6c); }
+
+  .ino-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: -6px 0 14px; }
+  .ino-search { flex: 1 1 280px; max-width: 420px; border: 1px solid var(--sb-border, #d8d2c4); border-radius: 9px; padding: 8px 12px; font: inherit; font-size: 13.5px; }
+  .ino-search:focus { outline: none; border-color: #9A7209; }
+  .ino-agekey { font-size: 11.5px; color: var(--sb-text-muted, #8a7f6c); display: inline-flex; align-items: center; gap: 5px; }
+  .ino-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+  .ino-dot-green { background: #1f7a3d; }
+  .ino-dot-amber { background: #c9962a; }
+  .ino-dot-red { background: #b3261e; }
+  .ino-age { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .ino-age-green { color: #1f7a3d; }
+  .ino-age-amber { color: #a4770f; }
+  .ino-age-red { color: #b3261e; }
+  .ino-check { width: 16px; height: 16px; flex-shrink: 0; align-self: center; cursor: pointer; }
+  .ino-row-sel { border-color: #9A7209; background: rgba(154,114,9,0.05); }
+  .ino-bulkbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #16150F; color: #F4EBD4; border-radius: 10px; padding: 9px 14px; margin-bottom: 14px; font-size: 13px; }
+  .ino-bulk-hint { color: #b3a890; font-size: 12px; }
+  .ino-bulk-act { background: #C9A468; border: none; color: #16150F; font: 700 12.5px/1 inherit; padding: 7px 12px; border-radius: 7px; cursor: pointer; }
+  .ino-bulk-act:disabled { opacity: 0.5; cursor: default; }
+  .ino-bulk-clear { background: none; border: 1px solid #6B6456; color: #d8d2c4; font: 600 12px/1 inherit; padding: 6px 11px; border-radius: 7px; cursor: pointer; }
+  .ino-bulkerr { background: rgba(179,38,30,0.08); color: #B3261E; font-size: 12.5px; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
 
   .ino-group { margin-bottom: 22px; }
   .ino-group-head { display: flex; align-items: center; gap: 10px; padding: 8px 13px; border-radius: 9px; margin-bottom: 10px; border-left: 4px solid; }

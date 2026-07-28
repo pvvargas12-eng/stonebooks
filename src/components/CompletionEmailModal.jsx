@@ -10,7 +10,7 @@
 // =============================================================================
 import { useState, useEffect } from 'react'
 import {
-  getOrderById, listCompletionPhotos, buildCompletionEmailDraft, photoAttachment,
+  getOrderById, listCompletionPhotos, buildCompletionEmailDraft,
   sendShopEmail, addTaskReply, logOrderActivity, updateShopTask, getCurrentStaffName,
 } from '../lib/stonebooksData'
 import ConfirmSend from './ConfirmSend'
@@ -57,24 +57,20 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
   })
 
   // Build attachments, then open the gate — the preview IS the send surface.
+  // Photos go as URL REFS: the email API fetches them from our storage
+  // server-side, so full-size photos never hit the request-body cap.
   const openGate = async () => {
-    setBusy(true); setErr(null)
+    setErr(null)
     const chosen = photos.filter(p => picked.has(p.path))
-    const atts = []
-    for (const p of chosen) {
-      const a = await photoAttachment(p.url, p.name)
-      if (a) atts.push(a)
-    }
-    setBusy(false)
-    if (chosen.length > 0 && atts.length === 0) { setErr('Could not load the photo(s) for attaching.'); return }
-    setAttachments(atts)
+    setAttachments(chosen.map(p => ({ filename: p.name, url: p.url })))
     setGate(true)
   }
 
-  const doSend = async () => {
+  const doSend = async (edited) => {
     setBusy(true); setErr(null)
+    // The gate's preview is editable — typed-over words win.
     const r = await sendShopEmail({
-      to: to.trim(), subject, text: body, attachments: attachments || [],
+      to: to.trim(), subject, text: edited?.text || body, attachments: attachments || [],
       orderId, customerId: order?.customer_id || order?.customer?.id || null,
     })
     if (!r?.ok) { setBusy(false); setErr(r?.error || 'Send failed.'); setGate(false); return }
