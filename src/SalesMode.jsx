@@ -8315,6 +8315,9 @@ export async function generateEstimatePDF(order, opts = {}) {
       unit: 'mm', origin: 'top-left', pageWidth: W, pageHeight: H,
       customer_signature: { x: csX1, y: phys(sigY - 6), w: csX2 - csX1, h: 6 * S },
       customer_date:      { x: cdX1, y: phys(sigY - 6), w: cdX2 - cdX1, h: 6 * S },
+      // Remote signing stamps the typed name on the Printed Name line too
+      // (Paul 2026-07-28: the signed contract carries printed name + date).
+      customer_printed_name: { x: pnX1, y: phys(sigY - 6), w: (W - M) - pnX1, h: 6 * S },
     }
     const AcroFormTextField = window.jspdf?.AcroFormTextField
     if (AcroFormTextField) {

@@ -60,6 +60,10 @@ const daysBetween = (fromIso, toIso) => {
 // A lead is an unsigned order still in an uncontracted pipeline status
 // (same test as ensureLeadCadence / the task-type backfill).
 const isLeadOrder = (o) => !!o && !o.signed_at && ['draft', 'scoping', 'quoted'].includes(o.status)
+// A LEAD task = typed 'lead' OR linked to an order that is still a lead — a
+// check job or design task on a lead wears the tag too (Paul 2026-07-28:
+// "small tag on the task to denote that it is a LEAD... and filter off").
+const isLeadTask = (t) => t?.task_type === 'lead' || isLeadOrder(t?.order)
 
 // Manual-create task types (lead/order are auto-set by the link; check jobs
 // are created from inside the lead/order itself).
@@ -101,6 +105,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   })
   const [typeFilter, setTypeFilter] = useState('all')
   const [showDone, setShowDone] = useState(false)
+  const [hideLeads, setHideLeads] = useState(false)   // focus mode: lead tasks out
   const [openTaskId, setOpenTaskId] = useState(null) // expanded row (thread/edit)
 
   const reloadTasks = useCallback(async () => {
@@ -163,8 +168,8 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     return next
   })
 
-  const filteredLive = useMemo(() => live.filter(t => matchesWho(t) && matchesType(t)), [live, matchesWho, matchesType])
-  const filteredDone = useMemo(() => doneRecent.filter(t => matchesWho(t) && matchesType(t)), [doneRecent, matchesWho, matchesType])
+  const filteredLive = useMemo(() => live.filter(t => matchesWho(t) && matchesType(t) && (!hideLeads || !isLeadTask(t))), [live, matchesWho, matchesType, hideLeads])
+  const filteredDone = useMemo(() => doneRecent.filter(t => matchesWho(t) && matchesType(t) && (!hideLeads || !isLeadTask(t))), [doneRecent, matchesWho, matchesType, hideLeads])
 
   // Per-type counts for the chip row (Paul 2026-07-24: "how many design layout
   // production checkjob closeout... i need notifications"). Faceted: respect
@@ -175,13 +180,14 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     const overdue = {}
     for (const t of live) {
       if (!matchesWho(t)) continue
+      if (hideLeads && isLeadTask(t)) continue   // badges match what clicking shows
       counts.all++
       const code = t.task_type || 'general'
       counts[code] = (counts[code] || 0) + 1
       if (isOverdue(t)) { overdue[code] = true; overdue.all = true }
     }
     return { counts, overdue }
-  }, [live, matchesWho, isOverdue])
+  }, [live, matchesWho, isOverdue, hideLeads])
 
   const dayCounts = useMemo(() => {
     const m = { overdue: 0, nodate: 0 }
@@ -335,6 +341,9 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             )}
           </button>
         ))}
+        <label className="donechk" title="Focus mode — tasks tied to a LEAD drop out of every view">
+          <input type="checkbox" checked={hideLeads} onChange={e => setHideLeads(e.target.checked)} /> hide lead tasks
+        </label>
         {view === 'list' && (
           <label className="donechk">
             <input type="checkbox" checked={showDone} onChange={e => setShowDone(e.target.checked)} /> show recently done
@@ -640,6 +649,9 @@ function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpa
           {replies.length > 0 && <span className="meta"> · {replies.length} repl{replies.length === 1 ? 'y' : 'ies'}</span>}
         </span>
         <span className={`tbadge ${TYPE_CLS[typeCode] || 'gen'}`}>{taskTypeLabel(typeCode)}</span>
+        {/* Lead-linked tasks of ANY type wear the tag (the type badge already
+            says Lead for auto-typed ones — don't double-label those). */}
+        {isLeadTask(t) && typeCode !== 'lead' && <span className="tbadge lead">Lead</span>}
         {t.order && (
           <button type="button" className="oc" onClick={e => { e.stopPropagation(); onOpenOrder?.(t.order.id) }}>
             {t.order.order_number || famOf(t.order)}
@@ -845,6 +857,7 @@ function BoardCard({ t, todayISO, dragIdRef, onClick, overdue = false, compact =
       <div className="foot">
         <span className="who">{t.assignee}{t.assignee_kind === 'department' ? ' (dept)' : ''}</span>
         {!compact && t.order && <span className="ord">{t.order.order_number || famOf(t.order)}</span>}
+        {!compact && isLeadTask(t) && <span className="ord lead">LEAD</span>}
         {attachments.length > 0 && <span className="mch">{attachments.length}f</span>}
       </div>
     </div>
@@ -1093,6 +1106,7 @@ const CSS = `
   .sb-tcc-bcard .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:7px}
   .sb-tcc-bcard .who{font-size:10.5px;font-weight:800;letter-spacing:.04em;border-radius:999px;padding:3px 8px;background:#F6F3EC;color:#79735F}
   .sb-tcc-bcard .ord{font:600 10.5px var(--sb-font-mono,monospace);color:#1D6FA8}
+  .sb-tcc-bcard .ord.lead{color:#5B3E96}
   .sb-tcc-bcard .mch{font:600 10.5px var(--sb-font-mono,monospace);color:#A39C87}
   .sb-tcc-bcard .pendtag{font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#8A5A12;background:#FBF2DE;border-radius:6px;padding:2px 6px}
   .sb-tcc-bcard .latetag{font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#B3261E;background:#FBEDEA;border-radius:6px;padding:2px 6px}

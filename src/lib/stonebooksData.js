@@ -3370,6 +3370,8 @@ export const TASK_TYPES = [
 export const taskTypeLabel = (code) =>
   (TASK_TYPES.find(t => t.code === code) || {}).label || 'General'
 
+// The task LEAD tag is STATUS-based (unsigned + draft/scoping/quoted — the
+// same rule as the lead auto-typing), so the embed stays lean: no payments.
 const TASK_SELECT = '*, order:orders(id, order_number, primary_lastname, status, signed_at)'
 
 export async function listShopTasks({ doneWithinDays = 14 } = {}) {

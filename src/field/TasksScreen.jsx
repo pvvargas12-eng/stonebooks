@@ -16,6 +16,10 @@ import CompletionEmailModal from '../components/CompletionEmailModal'
 
 const SAVE_ERR = 'Could not save — try again.'
 const SEGS = [['mine', 'Mine'], ['everyone', 'Everyone'], ['done', 'Done']]
+// A task tied to a LEAD wears a tag (Paul 2026-07-28) — same status rule as
+// the desktop Task CC: linked order unsigned + still in a pre-contract status.
+const isLeadTaskRow = (t) => t?.task_type === 'lead'
+  || (!!t?.order && !t.order.signed_at && ['draft', 'scoping', 'quoted'].includes(t.order.status))
 const STATUS_CHIP = { open: 'fl-c-neutral', pending: 'fl-c-warn', done: 'fl-c-good' }
 const CHECK_SHOT_LIST = ['Cemetery sign', 'Section or lot marker', 'Existing stone, all sides', 'Base measurements']
 
@@ -234,6 +238,7 @@ function TaskRow({ t, who, thread, today, onToggle, onOpen }) {
           {t.task_type && t.task_type !== 'general' && (
             <span className={`fl-chip ${typeChipCls(t.task_type)}`}>{typeLabel(t.task_type)}</span>
           )}
+          {isLeadTaskRow(t) && t.task_type !== 'lead' && <span className="fl-chip fl-c-lead">LEAD</span>}
           {newCount > 0
             ? <span className="fl-chip fl-c-warn">{newCount} NEW</span>
             : (replyCount > 0 && <span className="fl-chip fl-c-neutral">{replyCount} {replyCount === 1 ? 'reply' : 'replies'}</span>)}
@@ -338,6 +343,7 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
             {t.order.order_number} · {String(t.order.primary_lastname || '—').toUpperCase()}
           </button>
         )}
+        {isLeadTaskRow(t) && t.task_type !== 'lead' && <span className="fl-chip fl-c-lead">LEAD</span>}
       </div>
 
       <div className="fl-thread">

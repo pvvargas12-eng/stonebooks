@@ -248,6 +248,46 @@ export default function SignContractScreen({ who, onClose }) {
     setBusy(false)
   }
 
+  // Unsign — mirrors the desk's Unlock & Edit exactly (Paul 2026-07-28: "I
+  // need to be able to unsign a contract" on the sales iPad). Signature/lock
+  // fields cleared, status back to draft, audit note appended. The previously
+  // saved "Contract SIGNED" copy stays in the order's files (audit trail),
+  // and any created job stays — same as the desktop unlock.
+  const [unsignOpen, setUnsignOpen] = useState(false)
+  const doUnsign = async () => {
+    if (!order || busy) return
+    setBusy(true); setErr(null)
+    try {
+      const stamp = `[CONTRACT UNSIGNED on the sales iPad${who?.name ? ` by ${who.name}` : ''} on ${new Date().toLocaleString()}: prior signature voided.]`
+      const unsigned = {
+        ...order,
+        status: 'draft',
+        customerSignature: null, repSignature: null,
+        customerSignatureUrl: null, customerSignaturePath: null,
+        repSignatureUrl: null, repSignaturePath: null,
+        customerPrintedName: null,
+        signedAt: null, pricingLockedAt: null,
+        notes: (order.notes || '') + (order.notes ? '\n\n' : '') + stamp,
+      }
+      const res = await saveOrder(unsigned)
+      if (!res.ok) throw new Error(res.error?.message || res.reason || 'Save failed')
+      logOrderActivity(order.id, {
+        type: 'contract',
+        note: `Contract UNSIGNED on the sales iPad${who?.name ? ` (by ${who.name})` : ''} — signature voided`,
+      }).catch(() => {})
+      setOrder(unsigned)
+      setRow(r => (r ? { ...r, signed_at: null, status: 'draft' } : r))
+      setSig(null); setSignedPdf(null); setSentTo(null); setUnsignOpen(false)
+      // Re-render the now-unsigned contract for review / re-signing.
+      setPdfBytes(null)
+      const { doc } = await generateContractPDF(unsigned, { returnDoc: true })
+      setPdfBytes(doc.output('arraybuffer'))
+    } catch (e) {
+      setErr(e?.message || 'Could not unsign the contract.')
+    }
+    setBusy(false)
+  }
+
   // The send — behind the ConfirmSend gate, per the send-safety doctrine.
   const emailSubject = row ? `Your signed contract — ${familyNameOf(row)} (${row.order_number || ''})`.trim() : ''
   const emailBody = row
@@ -391,7 +431,34 @@ export default function SignContractScreen({ who, onClose }) {
               </button>
             </div>
           )}
+          {alreadySigned && pdfBytes && (
+            <div className="sc-stickybar">
+              <button type="button" className="sc-unsign-btn" onClick={() => { setErr(null); setUnsignOpen(true) }}>
+                Unsign contract
+              </button>
+            </div>
+          )}
         </>
+      )}
+
+      {unsignOpen && (
+        <div className="sc-unsign-scrim" onClick={() => !busy && setUnsignOpen(false)}>
+          <div className="sc-unsign-modal" onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: '#16150F' }}>Unsign this contract?</div>
+            <p style={{ fontSize: 14.5, color: '#55503F', lineHeight: 1.55, margin: '10px 0 0' }}>
+              The signature on {familyNameOf(row)} ({row?.order_number}) is voided and the order goes
+              back to unsigned so it can be corrected and re-signed. The previously saved signed copy
+              stays in the order's files.
+            </p>
+            {err && <div className="fl-login-err" style={{ marginTop: 10 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 18 }}>
+              <button type="button" className="sc-unsign-cancel" disabled={busy} onClick={() => setUnsignOpen(false)}>Cancel</button>
+              <button type="button" className="sc-unsign-go" disabled={busy} onClick={doUnsign}>
+                {busy ? 'Unsigning…' : 'Yes, unsign'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {stage === 'sign' && !alreadySigned && (
@@ -432,6 +499,12 @@ const SIGN_CSS = `
   .sm-link-btn { background: none; border: none; color: #9A7209; font: 700 14px/1 inherit; cursor: pointer; padding: 6px 2px; }
   .sc-mailcard { background: #fff; border: 1.5px solid #E2DCCE; border-radius: 16px; padding: 18px 20px; margin-top: 22px; }
   .sc-mailchip { display: inline-flex; align-items: center; gap: 7px; background: #F4EBD4; border: 1px solid #9A7209; color: #6d5106; border-radius: 999px; padding: 8px 8px 8px 14px; font-size: 14.5px; font-weight: 700; }
+  .sc-unsign-btn { background: none; border: 1.5px solid #dda9a4; color: #B3261E; border-radius: 10px; padding: 12px 22px; font: 700 15px/1 inherit; cursor: pointer; }
+  .sc-unsign-scrim { position: fixed; inset: 0; background: rgba(15,20,25,0.5); z-index: 90; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .sc-unsign-modal { background: #fff; border-radius: 14px; width: 100%; max-width: 480px; padding: 20px 22px; }
+  .sc-unsign-cancel { background: none; border: 1px solid #D9D2C0; border-radius: 8px; padding: 10px 16px; font: inherit; cursor: pointer; }
+  .sc-unsign-go { background: #B3261E; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font: 800 14.5px/1 inherit; cursor: pointer; }
+  .sc-unsign-go:disabled, .sc-unsign-cancel:disabled, .sc-unsign-btn:disabled { opacity: 0.5; cursor: default; }
   .sc-mailchip button { border: none; background: #9A7209; color: #fff; width: 24px; height: 24px; border-radius: 999px; font-size: 14px; line-height: 1; cursor: pointer; }
   .sc-stickybar { position: sticky; bottom: 12px; padding: 10px 0; }
   .sc-stickybar .fl-btn-gold { box-shadow: 0 8px 26px rgba(22,21,15,0.25); }

@@ -132,12 +132,24 @@ Deno.serve(async (req) => {
       page.drawText(signerName, { x: boxX + 3, y: boxYBottom + 2, size, font: scriptFont, color: rgb(0.06, 0.08, 0.1) })
     }
 
-    // Date — long format to match the page ("June 5, 2026"), drawn in the date box.
+    // Date — numeric M/D/YYYY in SHOP time (the builder-formats rule; a 9pm ET
+    // signature must not stamp tomorrow's UTC date), drawn in the date box.
     if (dateRect) {
-      const dateStr = new Date(nowMs).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+      const dateStr = new Date(nowMs).toLocaleDateString('en-US', {
+        timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
+      })
       const boxH = dateRect.h * MM_TO_PT
       const boxYBottom = pageH - dateRect.y * MM_TO_PT - boxH
       page.drawText(dateStr, { x: dateRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 11, font, color: rgb(0.06, 0.08, 0.1) })
+    }
+
+    // Printed name — the typed name in plain type on the Printed Name line
+    // (older links carry no rect; they simply skip this).
+    const pnRect = rects.customer_printed_name
+    if (pnRect) {
+      const boxH = pnRect.h * MM_TO_PT
+      const boxYBottom = pageH - pnRect.y * MM_TO_PT - boxH
+      page.drawText(signerName, { x: pnRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 10, font, color: rgb(0.06, 0.08, 0.1) })
     }
 
     // ── Audit certificate page (Letter, matches contract) ──
@@ -211,6 +223,9 @@ Deno.serve(async (req) => {
     status: 'contracted',
     signed_at: signedAtIso,
     pricing_locked_at: signedAtIso,
+    // The typed name IS the printed name — the same field the iPad on-glass
+    // flow writes, so regenerated contracts stamp it on the Printed Name line.
+    customer_printed_name: signerName,
   }).eq('id', reqRow.order_id)
 
   // Short-lived signed URL so the customer can download immediately.
