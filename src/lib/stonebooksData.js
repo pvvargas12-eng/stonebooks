@@ -832,6 +832,47 @@ export async function getEmailTasks() {
   return { ok: true, tasks }
 }
 
+// ── Email drafts (EMAIL-DRAFTS-1) ───────────────────────────────────────────
+// Park a half-written email and come back to it (Paul 2026-07-28: "i gotta
+// keep restarting"). payload = the composer's own state; sending deletes the
+// row. Deploy-safe: every helper degrades to empty/error if the 20260728
+// migration isn't applied.
+export async function listEmailDrafts(orderId) {
+  if (!orderId) return []
+  const { data, error } = await supabase
+    .from('email_drafts')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('updated_at', { ascending: false })
+  if (error) { console.warn('[drafts] listEmailDrafts:', error.message); return [] }
+  return data || []
+}
+
+export async function saveEmailDraft({ id, orderId, customerId, kind, payload, by }) {
+  if (!orderId) return { ok: false, error: 'Missing order id.' }
+  const row = {
+    order_id: orderId,
+    customer_id: customerId || null,
+    kind: kind || 'general',
+    payload: payload || {},
+    created_by: by || null,
+    updated_at: new Date().toISOString(),
+  }
+  const q = id
+    ? supabase.from('email_drafts').update(row).eq('id', id).select('id').single()
+    : supabase.from('email_drafts').insert(row).select('id').single()
+  const { data, error } = await q
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, id: data?.id || id }
+}
+
+export async function deleteEmailDraft(id) {
+  if (!id) return { ok: true }
+  const { error } = await supabase.from('email_drafts').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // ── Remote contract e-signing (R2) ────────────────────────────────────────
 // Create a signing link for an order. The browser generates the CONTRACT-variant
 // PDF (the jsPDF generator is browser-only) and passes its bytes + the customer

@@ -32,6 +32,7 @@ import {
   getProofVersions, getProofVersionsByOrder, getProofSignatureSignedUrl, updateProofVersion,
   uploadProofLayout, createProofVersion,
   getMessageThread, sendShopEmail, aiDraftEmail,
+  listEmailDrafts, saveEmailDraft, deleteEmailDraft,
   hydrateEmailAttachment, renameEmailAttachment, copyEmailAttachmentToOrder, classifyAttachment, ATTACH_KIND_LABELS,
   setOrderPermit, needsSignedContract, hardDeleteOrder, setJobReferralSource,
   setOrderQuoteStatus, appendQuoteEvent,
@@ -370,7 +371,12 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // Pipeline rail task-remove confirm (× with confirm)
   const [delTask, setDelTask] = useState(null)   // shop_tasks task row (legacy view) | null
   const [checkJobOpen, setCheckJobOpen] = useState(false)   // check-job modal (site inspection task)
-  const [salesEmailMode, setSalesEmailMode] = useState(null) // null | 'contract' | 'sales' (SalesEmailModal)
+  // SalesEmailModal door: null | { mode: 'contract'|'sales', draft?: row }
+  const [salesEmailMode, setSalesEmailMode] = useState(null)
+  // Parked emails on this order (email_drafts) — view / edit / send / delete.
+  const [emailDrafts, setEmailDrafts] = useState([])
+  const refreshDrafts = () => { listEmailDrafts(orderId).then(setEmailDrafts).catch(() => {}) }
+  useEffect(() => { refreshDrafts() }, [orderId])   // eslint-disable-line react-hooks/exhaustive-deps
   // The design change-request loop: what the family (or staff) asked to change
   // + staff replies, chronological. Refetched whenever approvalLinks refreshes.
   const [designThread, setDesignThread] = useState([])
@@ -1449,6 +1455,43 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   }
   const closeEmailComposer = () => setEmailModal(m => (m && m.busy ? m : null))
 
+  // ── Email drafts (Paul 2026-07-28: "i gotta keep restarting") ──────────────
+  // Park the composer as a draft; the drafts strip under the quick actions
+  // reopens it exactly where it stopped. Sending deletes the draft.
+  const saveComposerDraft = async () => {
+    if (!emailModal || emailModal.busy) return
+    setEmailModal(m => ({ ...m, busy: true, error: null }))
+    const me = await getCurrentStaffName().catch(() => null)
+    const r = await saveEmailDraft({
+      id: emailModal.draftId || null,
+      orderId, customerId: order?.customer_id || null, kind: 'general',
+      payload: { to: emailModal.to, subject: emailModal.subject, body: emailModal.body, attach: emailModal.attach || [] },
+      by: me,
+    })
+    if (!r.ok) { setEmailModal(m => ({ ...m, busy: false, error: r.error || 'Could not save the draft.' })); return }
+    setEmailModal(null)
+    refreshDrafts()
+    setActionNote('Draft saved — pick it back up from Email drafts below.')
+  }
+  const openDraft = (d) => {
+    setActionNote(null)
+    if (d.kind === 'general') {
+      const p = d.payload || {}
+      setEmailModal({
+        to: p.to || order?.customer?.email || '', subject: p.subject || '', body: p.body || '',
+        attach: Array.isArray(p.attach) ? p.attach : [],
+        draftId: d.id, busy: false, error: null, sent: false,
+      })
+    } else {
+      setSalesEmailMode({ mode: d.kind === 'contract' ? 'contract' : 'sales', draft: d })
+    }
+  }
+  const removeDraft = async (d) => {
+    const r = await deleteEmailDraft(d.id)
+    if (!r.ok) { setActionNote(`Could not delete the draft — ${r.error}`); return }
+    refreshDrafts()
+  }
+
   // Composer attachments (Paul 2026-07-15): pick from the order's files or
   // upload new — a new upload goes through uploadOrderAttachment, so it lands
   // in the order's attachment list too (same rule as task attachments).
@@ -1515,6 +1558,8 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     // Approval emails stamp the link the moment they ACTUALLY send — the
     // Today tab's Approvals panel reads this as hard proof (Paul, 2026-07-14).
     if (emailModal.approvalLinkId) markApprovalLinkEmailed(emailModal.approvalLinkId, to).catch(() => {})
+    // A sent draft is no longer a draft.
+    if (emailModal.draftId) { deleteEmailDraft(emailModal.draftId).catch(() => {}); refreshDrafts() }
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
     if (order?.customer_id || orderId) setEmails((await getMessageThread({ customerId: order?.customer_id, orderId })).messages || [])
     // Auto-close only when paid in full — never close an order that still owes.
@@ -2085,13 +2130,13 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           </button>
           <button type="button" className="sb-od-btn" onClick={openEmailComposer}>Send email</button>
           {!order.signed_at && (
-            <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode('contract')}
+            <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode({ mode: 'contract' })}
               title="Customer opens a secure link, reviews the contract, prints their name and e-signs — date autofills">
               Email contract to sign
             </button>
           )}
-          <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode('sales')}
-            title="One email: permit (view only) + layout + estimate + contract e-sign link">
+          <button type="button" className="sb-od-btn" onClick={() => setSalesEmailMode({ mode: 'sales' })}
+            title="One email: permit (view only) + layout + estimate + contract e-sign link + any order files">
             Sales email
           </button>
           <span className="sb-od-actions-spacer" />
@@ -2112,6 +2157,24 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onPickAttachment} />
         </div>
         {actionNote && <div className="sb-od-actionnote">{actionNote}</div>}
+
+        {/* ── EMAIL DRAFTS — parked composers on this order (Paul 2026-07-28:
+            "leave as draft… view edit and send… i gotta keep restarting"). */}
+        {emailDrafts.length > 0 && (
+          <div className="sb-od-drafts">
+            <span className="sb-od-drafts-label">Email drafts</span>
+            {emailDrafts.map(d => (
+              <span key={d.id} className="sb-od-draft">
+                <button type="button" className="sb-od-draft-open" onClick={() => openDraft(d)}
+                  title="Open this draft — edit and send">
+                  {d.kind === 'contract' ? 'Contract to sign' : d.kind === 'sales' ? 'Sales email' : (d.payload?.subject || 'Email')}
+                  {d.payload?.to ? ` → ${d.payload.to}` : ''}
+                </button>
+                <button type="button" className="sb-od-draft-x" title="Delete draft" onClick={() => removeDraft(d)}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* ── STATUS OVERVIEW — where it stands, what's next, what's blocking.
             Reads the SAME engine as the rail (buildPipeline + pressure), so the
@@ -3265,6 +3328,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                 )}
                 <div className="sb-od-modal-actions">
                   <button type="button" className="sb-od-btn" onClick={closeEmailComposer} disabled={emailModal.busy || emailModal.polishing}>Cancel</button>
+                  <button type="button" className="sb-od-btn" onClick={saveComposerDraft}
+                    disabled={emailModal.busy || emailModal.polishing || emailModal.uploading}
+                    title="Park this email — edit and send it later from Email drafts on this order">
+                    {emailModal.draftId ? 'Update draft' : 'Save as draft'}
+                  </button>
                   {/* Polish rewrites what's typed (distinct from the generate-from-scratch buttons). */}
                   <button type="button" className="sb-od-btn" onClick={polishDraft}
                     disabled={emailModal.busy || emailModal.polishing || !emailModal.body.trim()}>
@@ -3299,9 +3367,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       {salesEmailMode && (
         <SalesEmailModal
           order={order}
-          mode={salesEmailMode}
+          mode={salesEmailMode.mode}
+          draft={salesEmailMode.draft || null}
           onClose={() => setSalesEmailMode(null)}
-          onSent={(msg) => { refreshActivity(); setActionNote(msg) }}
+          onSent={(msg) => { refreshActivity(); refreshDrafts(); setActionNote(msg) }}
+          onSaved={(msg) => { refreshDrafts(); setActionNote(msg) }}
         />
       )}
 
@@ -3560,6 +3630,14 @@ const OD_CSS = `
   .sb-od-btn-stub { color: #8a8a85; border-style: dashed; }
   .sb-od-actionnote { font-size: 12.5px; color: #876307; background: rgba(154,114,9,0.07);
     border: 0.5px solid rgba(154,114,9,0.25); border-radius: 8px; padding: 7px 12px; margin: 10px 0 0; }
+
+  /* Email drafts strip — parked composers, one chip each. */
+  .sb-od-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }
+  .sb-od-drafts-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #8A7F6C; }
+  .sb-od-draft { display: inline-flex; align-items: center; border: 1px dashed #C9A468; border-radius: 999px; background: rgba(201,164,104,0.08); overflow: hidden; }
+  .sb-od-draft-open { background: none; border: none; padding: 5px 4px 5px 12px; font: 600 12.5px/1 inherit; color: #6d5106; cursor: pointer; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-od-draft-open:hover { text-decoration: underline; }
+  .sb-od-draft-x { background: none; border: none; color: #B3261E; font: 700 14px/1 inherit; padding: 5px 10px 5px 4px; cursor: pointer; }
 
   /* Quick-glance strip — the three things to read the instant the order opens. */
   .sb-od-glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0 4px; }
