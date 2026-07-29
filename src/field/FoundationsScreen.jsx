@@ -143,26 +143,21 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
     reload()
   }
 
-  // Status write from the peek — instant commit, 8s undo restores the EXACT
-  // previous code (need_map/drop_off included), optimistic milestone mirror
+  // Status write from the peek — instant commit, optimistic milestone mirror
   // so the row + progress bar move without refetching the whole job pool.
+  // NO undo capsule here (Paul 2026-07-29: "i want to update the status
+  // instantly and if i had to change it i can just change it back") — the
+  // four chips are their own undo, and the capsule parked over the sheet's
+  // buttons. Failures still toast via showError.
   const setStatus = async (job, code) => {
-    const prevCode = deriveFdnStatus(job)
-    if (prevCode === code || busy) return
+    if (deriveFdnStatus(job) === code || busy) return
     setBusy(true)
     const r = await setOrderFdnStatus(job.id, code)
     setBusy(false)
     if (!r?.ok) { undo?.showError(r?.error || 'Could not update the status.'); return }
-    const apply = (c) => {
-      const plan = orderStatusWritePlan('fdn', c)
-      setJobs(js => (js || []).map(j => (j.id === job.id ? applyPlanLocally(j, plan) : j)))
-      setPeekJob(p => (p && p.id === job.id ? applyPlanLocally(p, plan) : p))
-    }
-    apply(code)
-    undo?.show(`${familyNameOf(job.order)} — ${fdnStatusLabel(code)}`, async () => {
-      const rr = await setOrderFdnStatus(job.id, prevCode)
-      if (rr?.ok) apply(prevCode)
-    })
+    const plan = orderStatusWritePlan('fdn', code)
+    setJobs(js => (js || []).map(j => (j.id === job.id ? applyPlanLocally(j, plan) : j)))
+    setPeekJob(p => (p && p.id === job.id ? applyPlanLocally(p, plan) : p))
   }
 
   const total = groups ? groups.reduce((n, [, rows]) => n + rows.length, 0) : null
@@ -263,8 +258,9 @@ function FdnRow({ job, onPeek, todayMs }) {
 }
 
 // One tap → what the dig needs: base size, section, status verbs, directions,
-// the job. Status commits instantly (8s undo) — milestones stay the truth, so
-// the desktop Foundations board and the install gates read the same tap.
+// the job. Status commits instantly, no undo capsule — the chips reverse
+// themselves. Milestones stay the truth, so the desktop Foundations board
+// and the install gates read the same tap.
 function FdnPeek({ job, onClose, onOpenJob, onRemove, onSetStatus, busy }) {
   const o = job.order
   const orderId = job.order_id || o?.id
