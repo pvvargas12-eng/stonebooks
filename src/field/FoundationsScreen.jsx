@@ -12,6 +12,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getFoundationList, addToFoundationList, removeFromFoundationList, getJobs,
   deriveFdnStatus, fdnStatusLabel, fdnStatusTone,
+  setOrderFdnStatus, orderStatusWritePlan,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { buildBaseSizeOnly, composeGraveLocation } from '../lib/monumentCatalog'
@@ -22,6 +23,27 @@ const DEAD_ORDER = new Set(['closed', 'cancelled'])
 // 4-stage dig run. need_map / drop_off read as stage 0 — the chip carries the
 // nuance; the bar just says how far along the hole is.
 const STAGE_IDX = { not_in: 0, need_map: 0, drop_off: 0, dug: 1, poured: 2, in: 3 }
+// The peek sheet's status verbs (Paul 2026-07-29: "i must be able to update
+// the status like not started, dug, poured, in") — same 4 rungs as the desktop
+// FoundationsBoard stepper; need_map/drop_off stay reachable from the desk.
+const DIG_STATUSES = [
+  ['not_in', 'NOT STARTED'],
+  ['dug', 'DUG'],
+  ['poured', 'POURED'],
+  ['in', 'IN'],
+]
+
+// Mirror a fdn write plan onto the local job row — no 400-job refetch per tap
+// (the CutListBoard/FoundationsBoard pattern).
+function applyPlanLocally(job, plan) {
+  if (!plan) return job
+  const ms = (job.milestones || []).map(m => {
+    if (plan.done?.includes(m.milestone_key) && m.status !== 'done') return { ...m, status: 'done' }
+    if (plan.notStarted?.includes(m.milestone_key) && m.status === 'done') return { ...m, status: 'not_started' }
+    return m
+  })
+  return { ...job, milestones: ms }
+}
 
 const ageDaysOf = (order, todayMs) => {
   const t = Date.parse(order?.signed_at || order?.created_at || '')
@@ -41,7 +63,7 @@ function digFacts(orderRow) {
   return { base, grave }
 }
 
-export default function FoundationsScreen({ onOpenJob }) {
+export default function FoundationsScreen({ onOpenJob, undo = null }) {
   const [list, setList] = useState(null)
   const [jobs, setJobs] = useState(null)
   const [err, setErr] = useState(null)
@@ -121,6 +143,28 @@ export default function FoundationsScreen({ onOpenJob }) {
     reload()
   }
 
+  // Status write from the peek — instant commit, 8s undo restores the EXACT
+  // previous code (need_map/drop_off included), optimistic milestone mirror
+  // so the row + progress bar move without refetching the whole job pool.
+  const setStatus = async (job, code) => {
+    const prevCode = deriveFdnStatus(job)
+    if (prevCode === code || busy) return
+    setBusy(true)
+    const r = await setOrderFdnStatus(job.id, code)
+    setBusy(false)
+    if (!r?.ok) { undo?.showError(r?.error || 'Could not update the status.'); return }
+    const apply = (c) => {
+      const plan = orderStatusWritePlan('fdn', c)
+      setJobs(js => (js || []).map(j => (j.id === job.id ? applyPlanLocally(j, plan) : j)))
+      setPeekJob(p => (p && p.id === job.id ? applyPlanLocally(p, plan) : p))
+    }
+    apply(code)
+    undo?.show(`${familyNameOf(job.order)} — ${fdnStatusLabel(code)}`, async () => {
+      const rr = await setOrderFdnStatus(job.id, prevCode)
+      if (rr?.ok) apply(prevCode)
+    })
+  }
+
   const total = groups ? groups.reduce((n, [, rows]) => n + rows.length, 0) : null
 
   return (
@@ -181,7 +225,7 @@ export default function FoundationsScreen({ onOpenJob }) {
 
       {peekJob && (
         <FdnPeek job={peekJob} onClose={() => setPeekJob(null)}
-          onOpenJob={onOpenJob} onRemove={remove} busy={busy} />
+          onOpenJob={onOpenJob} onRemove={remove} onSetStatus={setStatus} busy={busy} />
       )}
     </div>
   )
@@ -218,12 +262,15 @@ function FdnRow({ job, onPeek, todayMs }) {
   )
 }
 
-// One tap → what the dig needs: base size, section, directions, the job.
-function FdnPeek({ job, onClose, onOpenJob, onRemove, busy }) {
+// One tap → what the dig needs: base size, section, status verbs, directions,
+// the job. Status commits instantly (8s undo) — milestones stay the truth, so
+// the desktop Foundations board and the install gates read the same tap.
+function FdnPeek({ job, onClose, onOpenJob, onRemove, onSetStatus, busy }) {
   const o = job.order
   const orderId = job.order_id || o?.id
   const { base, grave } = digFacts(o)
   const dir = directionsUrl(o?.cemetery)
+  const code = deriveFdnStatus(job)
   return (
     <>
       <div className="fl-sheet-scrim" onClick={onClose} />
@@ -236,6 +283,19 @@ function FdnPeek({ job, onClose, onOpenJob, onRemove, busy }) {
         <div style={{ margin: '2px 0 12px' }}>
           {base && <div className="fl-statusrow"><span>Base</span><b>{base}</b></div>}
           <div className="fl-statusrow"><span>Grave</span><b>{grave || 'No section on file'}</b></div>
+        </div>
+        <div className="fl-label">
+          Foundation status — now <b style={{ color: '#16150F' }}>{fdnStatusLabel(code)}</b>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0 14px' }}>
+          {DIG_STATUSES.map(([c, label]) => (
+            <button key={c} type="button"
+              className={`fl-chip-btn${code === c ? ' on' : ''}`}
+              disabled={busy}
+              onClick={() => onSetStatus(job, c)}>
+              {label}
+            </button>
+          ))}
         </div>
         <button type="button" className="fl-btn"
           onClick={() => { onClose(); onOpenJob?.({ jobId: job.id, orderId }, 'jobs') }}>

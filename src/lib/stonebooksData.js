@@ -2362,15 +2362,23 @@ async function _filterRealWorkJobIds(jobIds) {
 // Brought to Line or Cut — before Stencil Cut), keyed by job. The cut list
 // screams about these when the stencil milestone is still open: a stone on
 // the line with no stencil queued is the most urgent cut of all.
+// Map value = { phase, confirmed } — confirmed is the FIELD-measured cut size
+// ({ l, w, by, at } or null); when a job has several pieces up, a piece WITH
+// a confirmed size wins the slot (the measured one is the one that matters).
 export async function getStoneUpByJob() {
   const { data, error } = await supabase.from('job_components')
-    .select('job_id, current_phase')
+    .select('job_id, current_phase, confirmed_size')
     .eq('track', 'new_stone').eq('on_floor', true)
     .in('current_phase', ['brought_to_line', 'cut'])
     .not('job_id', 'is', null)
   if (error) { console.warn('[cutlist] stoneUp:', error.message); return new Map() }
   const m = new Map()
-  for (const c of (data || [])) m.set(c.job_id, c.current_phase)
+  for (const c of (data || [])) {
+    const prev = m.get(c.job_id)
+    if (!prev || (!prev.confirmed && c.confirmed_size)) {
+      m.set(c.job_id, { phase: c.current_phase, confirmed: c.confirmed_size || null })
+    }
+  }
   return m
 }
 
@@ -5882,6 +5890,24 @@ export async function setComponentBlocker(id, blocker, { actor = null, source = 
   const r = await _patchComponent(id, { blocker: val })
   if (!r.ok) return r
   await _componentEvent(c, val ? 'component_blocked' : 'component_unblocked', { note: val ? `Blocked: ${val}` : 'Blocker cleared', payload: { blocker: val }, actor, source })
+  return r
+}
+// Confirmed cut size (FIELD-FDN-CUT, 2026-07-29) — Paul measures the stone
+// that's physically on the line and the stencil cutter cuts to THAT, not the
+// spec (actual is normally off an inch). { l, w } inches as typed; null
+// clears. Stamped with who measured and when; event-logged like every other
+// component write. The cut list surfaces it via getStoneUpByJob.
+export async function setComponentConfirmedSize(id, size, { actor = null, source = 'board' } = {}) {
+  const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
+  const l = String(size?.l ?? '').trim()
+  const w = String(size?.w ?? '').trim()
+  const val = (l || w) ? { l: l || null, w: w || null, by: actor, at: new Date().toISOString() } : null
+  const r = await _patchComponent(id, { confirmed_size: val })
+  if (!r.ok) return r
+  await _componentEvent(c, val ? 'component_size_confirmed' : 'component_size_cleared', {
+    note: val ? `Cut size confirmed ${[l, w].filter(Boolean).join(' x ')} (measured on the line)` : 'Confirmed cut size cleared',
+    payload: { size: val, previous: c.confirmed_size || null }, actor, source,
+  })
   return r
 }
 export async function setComponentNotes(id, notes, { actor = null, source = 'board' } = {}) {

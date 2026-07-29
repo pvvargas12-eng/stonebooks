@@ -20,6 +20,7 @@ import {
   advanceComponent, reverseComponent, setComponentOnFloor, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
+  setComponentConfirmedSize,
 } from '../lib/stonebooksData'
 import { trackPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC } from '../lib/jobComponents'
 
@@ -27,6 +28,11 @@ const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
 const TRACK_CHIP = { new_stone: 'NEW STONE', inscription: 'INSCRIPTION', bronze: 'BRONZE', door: 'DOORS' }
 const TYPE_LABEL = { die: 'Die', base: 'Base', inscription: 'Inscription', door: 'Door', bronze: 'Bronze' }
 const DAY_MS = 86400000
+// Confirm-size lives where the stone physically is when Paul measures it —
+// Brought to Line / Cut, the same two phases the cut list's stone-up read
+// covers (FIELD-FDN-CUT, 2026-07-29).
+const SIZE_PHASES = new Set(['brought_to_line', 'cut'])
+const sizeText = (cs) => (cs && (cs.l || cs.w)) ? [cs.l, cs.w].filter(Boolean).join(' × ') : null
 
 // Order age in days (signed first, created fallback, piece created for trade).
 const ageDaysOf = (c, todayMs) => {
@@ -83,6 +89,9 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const [busyId, setBusyId] = useState(null)
   const [denyFor, setDenyFor] = useState(null)   // component id with the QC deny input open
   const [denyText, setDenyText] = useState('')
+  const [sizeFor, setSizeFor] = useState(null)   // component with the confirm-size sheet open
+  const [sizeL, setSizeL] = useState('')
+  const [sizeW, setSizeW] = useState('')
 
   const [todayMs, setTodayMs] = useState(0)
   const load = useCallback(async () => {
@@ -175,6 +184,37 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
     setDenyFor(null); setDenyText('')
   }
   const qcClear = (c) => run(c.id, () => clearComponentQcIssue(c.id, { actor, source: 'field' }))
+
+  // Confirm size for the cutter (Paul 2026-07-29): measure the stone that's
+  // actually on the line — the stencil gets cut to THIS, not the spec. Undo
+  // restores whatever was confirmed before (usually nothing).
+  const openSize = (c) => {
+    setSizeFor(c)
+    setSizeL(c.confirmed_size?.l || '')
+    setSizeW(c.confirmed_size?.w || '')
+  }
+  const saveSize = () => {
+    const c = sizeFor
+    if (!c) return
+    const l = sizeL.trim(), w = sizeW.trim()
+    if (!l || !w) { undo.showError('Enter both length and width.'); return }
+    const prev = c.confirmed_size || null
+    setSizeFor(null)
+    run(c.id,
+      () => setComponentConfirmedSize(c.id, { l, w }, { actor, source: 'field' }),
+      `${famOf(c)} cut size confirmed ${l} × ${w}`,
+      () => setComponentConfirmedSize(c.id, prev ? { l: prev.l, w: prev.w } : null, { actor, source: 'field' }))
+  }
+  const clearSize = () => {
+    const c = sizeFor
+    if (!c?.confirmed_size) { setSizeFor(null); return }
+    const prev = c.confirmed_size
+    setSizeFor(null)
+    run(c.id,
+      () => setComponentConfirmedSize(c.id, null, { actor, source: 'field' }),
+      `${famOf(c)} confirmed size cleared`,
+      () => setComponentConfirmedSize(c.id, { l: prev.l, w: prev.w }, { actor, source: 'field' }))
+  }
 
   const openPiece = (c) => {
     if (c.job_id || c.order_id) onOpenJob?.({ jobId: c.job_id || null, orderId: c.order_id || null })
@@ -273,6 +313,11 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                 <span className="fl-chip fl-c-neutral" title={`Main card is at ${phaseLabel(c.current_phase)}`}>ALSO</span>
               </div>
               <div className="fl-spec">{metaOf(c)} · main: {phaseLabel(c.current_phase)}</div>
+              {sizeText(c.confirmed_size) && (
+                <div className="fl-spec" style={{ color: '#14775A', fontWeight: 700, fontFamily: 'inherit' }}>
+                  Cut size confirmed: {sizeText(c.confirmed_size)}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                 <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
                   disabled={busyId === c.id}
@@ -282,6 +327,12 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                     () => addComponentExtraPhase(c.id, bucket, { actor, source: 'field' }))}>
                   ADVANCE →
                 </button>
+                {track === 'new_stone' && SIZE_PHASES.has(bucket) && (
+                  <button type="button" className="fl-verb" style={{ borderColor: '#9A7209', color: '#9A7209' }}
+                    disabled={busyId === c.id} onClick={() => openSize(c)}>
+                    {c.confirmed_size ? 'EDIT SIZE' : 'CONFIRM SIZE'}
+                  </button>
+                )}
                 <button type="button" className="fl-verb" disabled={busyId === c.id}
                   onClick={() => run(c.id,
                     () => moveComponentExtraPhase(c.id, bucket, -1, { actor, source: 'field' }),
@@ -312,6 +363,11 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                     : c.blocker ? <span className="fl-chip fl-c-warn">BLOCKED</span> : null}
                 </div>
                 <div className="fl-spec">{metaOf(c)}</div>
+                {sizeText(c.confirmed_size) && (
+                  <div className="fl-spec" style={{ color: '#14775A', fontWeight: 700, fontFamily: 'inherit' }}>
+                    Cut size confirmed: {sizeText(c.confirmed_size)}
+                  </div>
+                )}
                 {held && <div className="fl-spec" style={{ color: '#B3261E', fontFamily: 'inherit' }}>QC: {c.qc_issue}</div>}
                 {c.blocker && !held && <div className="fl-spec" style={{ fontFamily: 'inherit' }}>{c.blocker}</div>}
 
@@ -340,6 +396,12 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                         disabled={busy} onClick={() => advance(c)}>{busy ? '…' : 'ADVANCE →'}</button>
                     )}
                     <button type="button" className="fl-verb" disabled={busy || first} onClick={() => back(c)}>← BACK</button>
+                    {track === 'new_stone' && SIZE_PHASES.has(bucket) && (
+                      <button type="button" className="fl-verb" style={{ borderColor: '#9A7209', color: '#9A7209' }}
+                        disabled={busy} onClick={() => openSize(c)}>
+                        {c.confirmed_size ? 'EDIT SIZE' : 'CONFIRM SIZE'}
+                      </button>
+                    )}
                     {(c.job_id || c.order_id) && (
                       <button type="button" className="fl-verb" style={{ marginLeft: 'auto' }} onClick={() => openPiece(c)}>OPEN</button>
                     )}
@@ -426,6 +488,42 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
               })()}
             </div>
             <button type="button" className="fl-btn-ghost" style={{ marginTop: 12 }} onClick={() => setAddOpen(false)}>Done</button>
+          </div>
+        </>
+      )}
+
+      {/* CONFIRM SIZE — measure the stone that's actually on the line; the
+          stencil cutter cuts to THIS (actual runs off an inch from spec).
+          Shows up on the desktop Cut list next to STONE IS UP. */}
+      {sizeFor && (
+        <>
+          <div className="fl-sheet-scrim" onClick={() => setSizeFor(null)} />
+          <div className="fl-sheet">
+            <div className="fl-sheet-grab" />
+            <div className="fl-sheet-title">Confirm size for the cutter</div>
+            <div className="fl-spec" style={{ marginTop: -6 }}>{famOf(sizeFor)} · {metaOf(sizeFor)}</div>
+            <div className="fl-label">
+              Measure the stone on the line — the stencil gets cut to this, not the spec.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div className="fl-label" style={{ margin: '0 0 5px' }}>Length (in)</div>
+                <input className="fl-input" type="text" inputMode="decimal" autoFocus
+                  placeholder="e.g. 36" value={sizeL} onChange={e => setSizeL(e.target.value)} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div className="fl-label" style={{ margin: '0 0 5px' }}>Width (in)</div>
+                <input className="fl-input" type="text" inputMode="decimal"
+                  placeholder="e.g. 8" value={sizeW} onChange={e => setSizeW(e.target.value)} />
+              </div>
+            </div>
+            <button type="button" className="fl-btn" onClick={saveSize}>SAVE CONFIRMED SIZE</button>
+            {sizeFor.confirmed_size && (
+              <button type="button" className="fl-btn fl-btn-ghost" style={{ color: '#B3261E' }} onClick={clearSize}>
+                Clear confirmed size
+              </button>
+            )}
+            <button type="button" className="fl-btn-ghost" style={{ marginTop: 8 }} onClick={() => setSizeFor(null)}>Cancel</button>
           </div>
         </>
       )}

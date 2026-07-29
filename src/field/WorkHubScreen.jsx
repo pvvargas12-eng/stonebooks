@@ -71,7 +71,7 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
     return (
       <div>
         {back}
-        <FoundationsScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
+        <FoundationsScreen undo={undo} onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
       </div>
     )
   }

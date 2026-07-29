@@ -29,6 +29,12 @@ const msFind = (job, key) => (job.milestones || []).find(m => m.milestone_key ==
 const msDone = (job, key) => msFind(job, key)?.status === 'done'
 const hasKey = (job, key) => !!msFind(job, key)
 
+// FIELD-FDN-CUT (2026-07-29): the field-measured cut size, confirmed at
+// Brought to Line / Cut. The cutter adjusts the stencil to THIS — the stone
+// actually on the line runs off an inch from spec. Rides getStoneUpByJob
+// ({ phase, confirmed }); a stone-up row with no confirmed size gets nagged.
+const confirmedSizeText = (cs) => (cs && (cs.l || cs.w)) ? [cs.l, cs.w].filter(Boolean).join(' × ') : null
+
 // HARD RULE (Paul 2026-07-22): drafts and leads NEVER touch the cut list or
 // production. Not addable, not counted, not even amber-gated — a lead is not
 // work. Lead = pre-contract status OR no locked deposit on the books (the
@@ -182,9 +188,13 @@ export default function CutListBoard({ onOpenJob }) {
     if (!isRealWork(j)) return <span className="scc-chip scc-chip-red">DRAFT / LEAD — not production work</span>
     const r = readiness(j)
     if (r.cut) return <span className="scc-chip scc-chip-green">CUT</span>
+    const upSize = stoneUp.has(j.id) ? confirmedSizeText(stoneUp.get(j.id)?.confirmed) : null
     return (
       <>
         {stoneUp.has(j.id) && <span className="scc-chip scc-chip-red">STONE IS UP</span>}
+        {stoneUp.has(j.id) && (upSize
+          ? <span className="scc-chip scc-chip-green">CUT SIZE {upSize}</span>
+          : <span className="scc-chip scc-chip-amber">SIZE NOT CONFIRMED</span>)}
         {r.stoneOk
           ? <span className="scc-chip scc-chip-green">STONE IN SHOP</span>
           : <span className="scc-chip scc-chip-amber">STONE NOT HERE</span>}
@@ -203,7 +213,7 @@ export default function CutListBoard({ onOpenJob }) {
         <div>
           <h2 className="scc-title">Cut list</h2>
           <div className="scc-sub">
-            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet — and a stone that's UP ON THE LINE with no stencil cut screams loudest of all. Drafts and leads never appear here — no deposit, no production.
+            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet — and a stone that's UP ON THE LINE with no stencil cut screams loudest of all. Stone-up rows carry the CUT SIZE measured on the line — cut to that, not the spec. Drafts and leads never appear here — no deposit, no production.
           </div>
         </div>
         <div className="scc-actions">
@@ -250,6 +260,7 @@ export default function CutListBoard({ onOpenJob }) {
           {alerts.map(j => {
             const spec = specOf.get(j.id) || {}
             const up = stoneUp.has(j.id)
+            const upSize = up ? confirmedSizeText(stoneUp.get(j.id)?.confirmed) : null
             return (
               <div key={j.id} className="scc-alert-row">
                 <button type="button" className="scc-fam" onClick={() => onOpenJob?.(j.id, 'design')}>{famOf(j)}</button>
@@ -260,6 +271,9 @@ export default function CutListBoard({ onOpenJob }) {
                 {up
                   ? <span className="scc-alert-why scc-alert-why-up">STONE IS UP — stencil not cut</span>
                   : <span className="scc-alert-why">stone in shop · layout approved</span>}
+                {up && (upSize
+                  ? <span className="scc-chip scc-chip-green">CUT SIZE {upSize}</span>
+                  : <span className="scc-chip scc-chip-amber">SIZE NOT CONFIRMED</span>)}
                 <button type="button" className="scc-btn scc-btn-gold" disabled={busyId === j.id}
                   onClick={() => add(j.id)}>
                   Add to cut list
