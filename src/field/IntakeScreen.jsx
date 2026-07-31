@@ -24,7 +24,7 @@ const SERVICES = [
   { code: 'INSCRIPTION', label: 'Add an inscription',        sub: 'Add a name or dates to an existing stone' },
   { code: 'REPAIR',      label: 'Repair',                    sub: 'Straighten, reset, or fix a monument' },
   { code: 'ACID_WASH',   label: 'Cleaning',                  sub: 'Professional cleaning of an existing stone' },
-  { code: 'BRONZE',      label: 'Bronze',                    sub: 'Bronze marker or plaque work' },
+  { code: 'BRONZE',      label: 'Bronze Services',           sub: 'Markers, scrolls, emblems, plaques' },
   { code: 'MAUSOLEUM',   label: 'Mausoleum or crypt',        sub: 'Doors, crypt fronts, mausoleum work' },
   { code: '',            label: 'Not sure yet',              sub: 'Our staff will walk you through it' },
 ]

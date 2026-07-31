@@ -353,7 +353,7 @@ function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
 // deceased[0].lastName — the generated primary_lastname recomputes, so the
 // Production floor / boards pick the name up immediately.
 const SVC_LABEL = {
-  NEW_STONE: 'New Stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze', BRONZE_MARKER: 'Bronze',
+  NEW_STONE: 'New Stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze Services', BRONZE_MARKER: 'Bronze Services',
   MAUSOLEUM: 'Mausoleum', MAUSOLEUM_DOOR: 'Mausoleum', REPAIR: 'Repair', ACID_WASH: 'Acid Wash',
   CIVIC_MEMORIAL: 'Civic', ADD_PHOTO: 'Photo', OTHER: 'Other',
 }

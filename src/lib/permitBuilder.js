@@ -65,6 +65,7 @@ export async function updatePermitTemplate(id, patch) {
   const row = { updated_at: new Date().toISOString() }
   if ('title' in patch)      row.title = (patch.title || '').trim() || 'Untitled permit'
   if ('cemeteryId' in patch) row.cemetery_id = patch.cemeteryId || null
+  if ('extraCemeteryIds' in patch) row.extra_cemetery_ids = Array.isArray(patch.extraCemeteryIds) ? patch.extraCemeteryIds.filter(Boolean) : []
   if ('pages' in patch)      row.pages = patch.pages || []
   if ('fields' in patch)     row.fields = patch.fields || []
   if ('layoutSlot' in patch) row.layout_slot = patch.layoutSlot || null
@@ -73,6 +74,17 @@ export async function updatePermitTemplate(id, patch) {
   const { error } = await supabase.from('permit_templates').update(row).eq('id', id)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+}
+
+// One form, several cemeteries (PERMIT-MULTI-CEM, 2026-07-31): a template
+// serves its PRIMARY cemetery_id plus every id in extra_cemetery_ids. This is
+// THE matcher — every "which templates fit this cemetery" read goes through
+// it so Build, the cemetery hub, and future surfaces can never disagree.
+export function templateMatchesCemetery(template, cemeteryId) {
+  if (!template || !cemeteryId) return false
+  if (template.cemetery_id === cemeteryId) return true
+  const extras = template.extra_cemetery_ids
+  return Array.isArray(extras) && extras.includes(cemeteryId)
 }
 
 // ── CRUD — docs ─────────────────────────────────────────────────────────────

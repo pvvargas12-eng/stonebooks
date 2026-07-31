@@ -21,6 +21,7 @@ import {
 } from './lib/stonebooksData'
 import {
   listPermitTemplates, getPermitTemplate, createPermitTemplate, updatePermitTemplate,
+  templateMatchesCemetery,
   listPermitDocs, getPermitDoc, createPermitDoc, updatePermitDoc, deletePermitDoc,
   uploadPermitAsset, rasterizePdfFile, readImageSize,
   AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf, fmtPhoneUS,
@@ -206,7 +207,7 @@ function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTempl
     }).slice(0, 14)
   }, [activeOrders, q])
 
-  const templatesFor = (order) => templates.filter(t => t.cemetery_id && order.cemetery_id && t.cemetery_id === order.cemetery_id)
+  const templatesFor = (order) => templates.filter(t => templateMatchesCemetery(t, order.cemetery_id))
 
   return (
     <div className="pbt-home">
@@ -327,6 +328,9 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
   const [slot, setSlot] = useState(null)
   const [title, setTitle] = useState('')
   const [cemId, setCemId] = useState('')
+  // Additional cemeteries this same form serves (PERMIT-MULTI-CEM) — Build
+  // offers the template at the primary AND every one of these.
+  const [extraCems, setExtraCems] = useState([])
   const [page, setPage] = useState(0)
   const [sel, setSel] = useState(null)
   const [selAll, setSelAll] = useState(false)   // one size for every box at once
@@ -340,6 +344,7 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
       if (!t) { say('Template not found.', true); onBack(); return }
       setTpl(t); setPages(t.pages || []); setFields(t.fields || [])
       setSlot(t.layout_slot || null); setTitle(t.title || ''); setCemId(t.cemetery_id || '')
+      setExtraCems(Array.isArray(t.extra_cemetery_ids) ? t.extra_cemetery_ids : [])
     })
   }, [id])   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -437,11 +442,15 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
 
   const save = async () => {
     setBusy(true)
-    const r = await updatePermitTemplate(id, { title, cemeteryId: cemId || null, pages, fields, layoutSlot: slot })
+    // The primary never repeats in the extras — dedupe at save time.
+    const extras = [...new Set(extraCems)].filter(cid => cid && cid !== cemId)
+    const r = await updatePermitTemplate(id, { title, cemeteryId: cemId || null, extraCemeteryIds: extras, pages, fields, layoutSlot: slot })
     setBusy(false)
     if (!r.ok) { say(r.error, true); return }
+    setExtraCems(extras)
     say('Template saved.')
   }
+  const cemName = (cid) => (cemeteries || []).find(c => c.id === cid)?.name || 'Unknown cemetery'
 
   if (!tpl) return <div className="pbt-empty" style={{ padding: 30 }}>Loading…</div>
 
@@ -458,6 +467,36 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
         <button type="button" className="pbt-btn pbt-btn-danger-quiet" onClick={() => setDelOpen(true)} disabled={busy}>Delete</button>
         <button type="button" className="pbt-btn pbt-btn-gold" onClick={save} disabled={busy}>{busy ? 'Working…' : 'Save template'}</button>
       </header>
+
+      {/* One form, several cemeteries — Build offers this template at the
+          primary above AND every cemetery added here (Paul 2026-07-31). */}
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '8px 2px 2px' }}>
+        <span className="pbt-tool-label" style={{ flexShrink: 0 }}>Also for:</span>
+        {extraCems.length === 0 && (
+          <span className="pbt-hint" style={{ marginTop: 0 }}>only the cemetery picked above — add more if this same form serves other cemeteries</span>
+        )}
+        {extraCems.map(cid => (
+          <span key={cid} className="pbt-pill pbt-pill-neutral" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {cemName(cid)}
+            <button type="button" title="Remove this cemetery"
+              style={{ font: 'inherit', fontWeight: 800, border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
+              onClick={() => setExtraCems(prev => prev.filter(x => x !== cid))}>
+              ×
+            </button>
+          </span>
+        ))}
+        <select className="pbt-input" style={{ maxWidth: 220 }} value=""
+          onChange={e => {
+            const cid = e.target.value
+            if (cid) setExtraCems(prev => (prev.includes(cid) || cid === cemId) ? prev : [...prev, cid])
+          }}>
+          <option value="">+ add a cemetery</option>
+          {(cemeteries || [])
+            .filter(c => c.id !== cemId && !extraCems.includes(c.id))
+            .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <span className="pbt-hint" style={{ marginTop: 0 }}>Save the template to keep changes.</span>
+      </div>
 
       {delOpen && (
         <PbtConfirm

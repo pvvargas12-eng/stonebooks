@@ -25,7 +25,7 @@ const SERVICE_TYPE_OPTIONS = [
   { code: 'INSCRIPTION', label: 'Additional inscription' },
   { code: 'REPAIR',      label: 'Repair' },
   { code: 'ACID_WASH',   label: 'Acid wash / cleaning' },
-  { code: 'BRONZE',      label: 'Bronze' },
+  { code: 'BRONZE',      label: 'Bronze Services' },
   { code: 'MAUSOLEUM',   label: 'Mausoleum / crypt' },
 ]
 

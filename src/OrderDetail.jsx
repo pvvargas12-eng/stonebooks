@@ -180,6 +180,7 @@ function ManualBlockerControl({ order, onSaved }) {
     setEditing(true)
   }
   const save = async () => {
+    if (kind === 'hold' && !note.trim()) { setErr('Type the hold reason — a hold always says why.'); return }
     setBusy(true); setErr(null)
     const r = await setOrderManualBlocker(order.id, { kind, label: flagLabel, note })
     setBusy(false)
@@ -196,7 +197,8 @@ function ManualBlockerControl({ order, onSaved }) {
   if (editing) {
     return (
       <span className="sb-od-mb-edit">
-        <select value={kind} onChange={e => setKind(e.target.value)} disabled={busy} aria-label="Blocker kind">
+        <select value={kind} onChange={e => setKind(e.target.value)} disabled={busy} aria-label="Blocker kind"
+          style={kind === 'hold' ? { color: '#B3261E', borderColor: '#B3261E', fontWeight: 700 } : undefined}>
           {MANUAL_BLOCKER_KINDS.map(k => <option key={k.code} value={k.code}>{k.label}</option>)}
         </select>
         {kind === 'custom' && (
@@ -206,7 +208,8 @@ function ManualBlockerControl({ order, onSaved }) {
             onKeyDown={e => { if (e.key === 'Enter') save() }} />
         )}
         <input type="text" value={note} maxLength={80} disabled={busy}
-          placeholder="Brief blocker — e.g. confirm plot with sexton"
+          placeholder={kind === 'hold' ? 'Hold reason — required' : 'Brief blocker — e.g. confirm plot with sexton'}
+          style={kind === 'hold' && !note.trim() ? { borderColor: '#B3261E' } : undefined}
           onChange={e => setNote(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') save() }} />
         {err && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#b3261e' }}>{err}</span>}
@@ -220,7 +223,7 @@ function ManualBlockerControl({ order, onSaved }) {
   }
   if (mb) {
     return (
-      <button type="button" className="sb-od-mb-chip" onClick={openEdit}
+      <button type="button" className={`sb-od-mb-chip${mb.kind === 'hold' ? ' sb-od-mb-chip-hold' : ''}`} onClick={openEdit}
         title={`Set by ${mb.setBy || 'staff'}${mb.setAt ? ' · ' + String(mb.setAt).slice(0, 10) : ''} — click to edit`}>
         {manualBlockerChipText(mb)}{mb.note ? ` — ${mb.note}` : ''}
       </button>
@@ -3951,8 +3954,11 @@ const OD_CSS = `
   .sb-od-sc-na { font-size: 12px; color: #a09a8c; font-style: italic; padding: 6px 0; }
 
   /* Manual blocker (status card) — red kind chip like the Orders CALL pill */
-  .sb-od-mb-chip { font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #B3261E; background: rgba(179,38,30,0.06); border: 0.5px solid rgba(179,38,30,0.4); border-radius: 999px; padding: 4px 10px; cursor: pointer; text-align: left; }
-  .sb-od-mb-chip:hover { background: rgba(179,38,30,0.12); }
+  .sb-od-mb-chip { font: inherit; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; color: #B3261E; background: rgba(179,38,30,0.12); border: 1px solid rgba(179,38,30,0.65); border-radius: 999px; padding: 4px 10px; cursor: pointer; text-align: left; }
+  .sb-od-mb-chip:hover { background: rgba(179,38,30,0.2); }
+  /* HOLD — solid red, the loudest blocker there is. */
+  .sb-od-mb-chip-hold { background: #B3261E; color: #fff; border-color: #B3261E; }
+  .sb-od-mb-chip-hold:hover { background: #96201a; }
   .sb-od-mb-add { font: inherit; font-size: 12px; font-weight: 600; color: #8a8a85; background: none; border: 1px dashed #cfc7b4; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
   .sb-od-mb-add:hover { color: #6a4d0c; border-color: #9A7209; }
   .sb-od-mb-edit { display: flex; flex-direction: column; gap: 6px; }

@@ -49,7 +49,7 @@ const leadName = customerDisplay   // the lead's identity in the task table + me
 // Job type from service_types (leads have no job yet).
 const SERVICE_LABELS = {
   NEW_STONE: 'New stone', INSCRIPTION: 'Inscription', REPAIR: 'Repair',
-  ACID_WASH: 'Acid wash', BRONZE: 'Bronze', MAUSOLEUM: 'Mausoleum',
+  ACID_WASH: 'Acid wash', BRONZE: 'Bronze Services', MAUSOLEUM: 'Mausoleum',
 }
 const jobTypeLabel = (o) => {
   const st = o.service_types || []

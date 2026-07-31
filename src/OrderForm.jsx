@@ -39,7 +39,7 @@ import {
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
   MONUMENT_TYPES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
   computeFormLineItems, priceOrderTotals, addonPrice, stoneFaceArea,
-  BRONZE_SIZES, BRONZE_BACKERS, BRONZE_BACKER_MATCH,
+  BRONZE_SIZES, BRONZE_BACKERS, BRONZE_BACKER_MATCH, BRONZE_WORK_TYPES,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -57,7 +57,7 @@ const ORDER_TYPES = {
     sections: ['customer', 'cemetery', 'monument', 'deceased', 'inscription', 'catalog', 'attachments', 'addons', 'finance'],
   },
   bronze: {
-    label: 'Bronze Marker', jobType: 'bronze', serviceTypes: ['BRONZE'], deceasedVariant: 'monument',
+    label: 'Bronze Services', jobType: 'bronze', serviceTypes: ['BRONZE'], deceasedVariant: 'monument',
     // Stripped flow — NO monument/size/base/add-ons; just the bronze card + people.
     sections: ['customer', 'cemetery', 'bronze', 'deceased', 'attachments', 'finance'],
   },
@@ -754,14 +754,18 @@ function CemeteryCard({ order, update }) {
 // =============================================================================
 // MONUMENT (new-stone)
 // =============================================================================
-// Bronze Marker — the stripped New-Order card: size (flat price) + optional
-// unitized backer + a description override. NO shape/base/add-ons. Writes
+// Bronze Services — the stripped New-Order card. ONE service, four kinds of
+// bronze work (Paul 2026-07-31): Marker keeps the priced size catalog +
+// matched backer; Scroll / Emblem / Bronze Inscription take a typed size or
+// description + a typed price (no sheet — never invent one). Writes
 // pricing.bronze; orderRates.bronzeBaseItems turns it into the line items.
 function BronzeCard({ order, updatePricing }) {
   const b = order.pricing?.bronze || {}
   const setB = (patch) => updatePricing({ bronze: { ...b, ...patch } })
-  const isCustom = b.size === 'custom'
-  const sizeRow = BRONZE_SIZES.find(s => s.code === b.size)
+  const workType = b.workType || 'marker'
+  const nonMarker = workType !== 'marker'
+  const isCustom = nonMarker || b.size === 'custom'
+  const sizeRow = nonMarker ? null : BRONZE_SIZES.find(s => s.code === b.size)
   // Catalog sizes with no sheet price (Lawn Crypt, 28×16, 36×13) — the
   // operator types the plate price. Never a silent $0.
   const needsPrice = !isCustom && sizeRow && sizeRow.price == null
@@ -776,21 +780,27 @@ function BronzeCard({ order, updatePricing }) {
   const matchedCode = BRONZE_BACKER_MATCH[b.size] || null
   const stoneColors = getActiveStoneColors()
   return (
-    <Card title="Bronze Marker" sub="Bronze plate + its granite backer — sizes matched automatically, both overridable.">
+    <Card title="Bronze Services" sub="Pick the bronze work, then size and price it. Markers carry the priced size catalog and their matched granite backer.">
       <Grid cols={2}>
-        <SelectField label="Bronze size" value={b.size || ''} onChange={onSize}
-          options={[
-            ...BRONZE_SIZES.map(s => ({ value: s.code, label: s.price == null ? s.label : `${s.label} — ${fmtUSD(s.price)}` })),
-            { value: 'custom', label: 'Custom size…' },
-          ]} placeholder="Select bronze size…" />
+        <SelectField label="Bronze work" value={workType} onChange={v => setB({ workType: v })}
+          options={BRONZE_WORK_TYPES.map(w => ({ value: w.code, label: w.label }))} />
+        {!nonMarker && (
+          <SelectField label="Bronze size" value={b.size || ''} onChange={onSize}
+            options={[
+              ...BRONZE_SIZES.map(s => ({ value: s.code, label: s.price == null ? s.label : `${s.label} — ${fmtUSD(s.price)}` })),
+              { value: 'custom', label: 'Custom size…' },
+            ]} placeholder="Select bronze size…" />
+        )}
         {needsPrice && (
           <NumberField label="Plate price ($)" value={b.customPrice} onChange={v => setB({ customPrice: v })} placeholder="e.g. 3500" />
         )}
       </Grid>
       {isCustom && (
         <Grid cols={2}>
-          <TextField label="Custom size" value={b.customSizeText || ''} onChange={v => setB({ customSizeText: v })} placeholder="e.g. 30 × 16" />
-          <NumberField label="Price ($)" value={b.customPrice} onChange={v => setB({ customPrice: v })} placeholder="e.g. 3500" />
+          <TextField label={nonMarker ? 'Size / description' : 'Custom size'} value={b.customSizeText || ''}
+            onChange={v => setB({ customSizeText: v })}
+            placeholder={nonMarker ? 'e.g. 10 7/8 × 3 date scroll' : 'e.g. 30 × 16'} />
+          <NumberField label="Price ($)" value={b.customPrice} onChange={v => setB({ customPrice: v })} placeholder="e.g. 695" />
         </Grid>
       )}
       <CheckRow checked={!!(b.backer || b.backerSize)} onChange={v => setB(v

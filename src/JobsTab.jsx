@@ -1215,7 +1215,7 @@ function formatServiceTypes(arr) {
   const human = {
     NEW_STONE: 'New stone',
     INSCRIPTION: 'Inscription',
-    BRONZE: 'Bronze memorial',
+    BRONZE: 'Bronze Services',
     ACID_WASH: 'Acid wash',
     REPAIR: 'Repair',
     CIVIC_MEMORIAL: 'Civic memorial',

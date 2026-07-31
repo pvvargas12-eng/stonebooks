@@ -57,8 +57,8 @@ const SERVICE_TYPES = [
   },
   {
     code: 'BRONZE',
-    label: 'Bronze',
-    blurb: 'Bronze plaque. Often paired with a granite base or installed flush.',
+    label: 'Bronze Services',
+    blurb: 'All bronze work — markers, scrolls, emblems, plaques, and bronze inscriptions.',
     icon: '',
     needsStoneConfig: true,
     needsExistingStone: false,
@@ -268,7 +268,7 @@ const REFERRAL_SOURCES = [
 // rep enters target date manually".
 const SERVICE_TIMELINES = {
   NEW_STONE:      { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Monument' },
-  BRONZE:         { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Bronze' },
+  BRONZE:         { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Bronze Services' },
   CIVIC_MEMORIAL: { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Civic memorial' },
   MAUSOLEUM:      { standardTime: '6–9 months (large) / 3–6 months', rushTime: null, rushFee: null, label: 'Mausoleum', custom: true },
   MAUSOLEUM_DOOR: { standardTime: '6–9 months (large) / 3–6 months', rushTime: null, rushFee: null, label: 'Mausoleum door', custom: true },

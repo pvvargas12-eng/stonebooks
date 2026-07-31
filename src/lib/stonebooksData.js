@@ -3363,6 +3363,10 @@ export function permitStatusTone(code) { return PERMIT_STATUS_TONE[code] || 'neu
 export const MANUAL_BLOCKER_KINDS = [
   { code: 'needs_call',  label: 'Needs call' },
   { code: 'needs_email', label: 'Needs email' },
+  // HOLD (Paul 2026-07-31): the loud full stop — solid red everywhere, and
+  // the reason is REQUIRED (enforced in setOrderManualBlocker, the one
+  // chokepoint, so every editor inherits the rule).
+  { code: 'hold',        label: 'Hold' },
   // Custom flag — the operator names it (label carried on the blocker).
   { code: 'custom',      label: 'Custom flag' },
 ]
@@ -3698,6 +3702,10 @@ export async function setOrderManualBlocker(orderId, blocker) {
   if (blocker && blocker.kind) {
     if (blocker.kind === 'custom' && !(blocker.label || '').trim()) {
       return { ok: false, error: 'Name the custom flag.' }
+    }
+    // A HOLD without a reason is just a mystery — the reason is the hold.
+    if (blocker.kind === 'hold' && !(blocker.note || '').trim()) {
+      return { ok: false, error: 'Type the hold reason — a hold always says why.' }
     }
     value = {
       kind: blocker.kind,
@@ -4096,6 +4104,23 @@ export async function mergeCemeteries(fromId, toId) {
     if (error) return { ok: false, error: `Re-pointing ${table} failed: ${error.message}. Nothing was deleted — fix and run the merge again.` }
     moved[table] = (data || []).length
   }
+  // Multi-cemetery templates (PERMIT-MULTI-CEM): swap the duplicate's id out
+  // of every extra_cemetery_ids array too — and drop it when the keeper is
+  // already the template's primary (no self-reference). Idempotent, runs
+  // before the delete so a re-run still finds nothing left to fix.
+  {
+    const { data: tpls, error } = await supabase.from('permit_templates')
+      .select('id, cemetery_id, extra_cemetery_ids')
+      .filter('extra_cemetery_ids', 'cs', JSON.stringify([fromId]))
+    if (error) return { ok: false, error: `Re-pointing template extras failed: ${error.message}. Nothing was deleted — fix and run the merge again.` }
+    for (const t of (tpls || [])) {
+      const next = [...new Set((t.extra_cemetery_ids || []).map(cid => (cid === fromId ? toId : cid)))]
+        .filter(cid => cid !== t.cemetery_id)
+      const { error: uErr } = await supabase.from('permit_templates')
+        .update({ extra_cemetery_ids: next }).eq('id', t.id)
+      if (uErr) return { ok: false, error: `Re-pointing template extras failed: ${uErr.message}. Nothing was deleted — fix and run the merge again.` }
+    }
+  }
   const { error: delErr } = await supabase.from('cemeteries').delete().eq('id', fromId).eq('tenant_id', TENANT_ID)
   if (delErr) return { ok: false, error: `Everything re-pointed, but the duplicate row would not delete: ${delErr.message}` }
   // PB-2 dup-copied templates across duplicate cemetery ROWS — after a merge
@@ -4143,8 +4168,13 @@ export async function listOrdersAtCemetery(cemeteryId, { limit = 80 } = {}) {
 }
 export async function listPermitTemplatesForCemetery(cemeteryId) {
   if (!cemeteryId) return []
+  // Primary binding OR listed in the template's extra_cemetery_ids (one form,
+  // several cemeteries — PERMIT-MULTI-CEM). `cs` = jsonb contains; a uuid has
+  // no commas so the .or() expression parses safely.
   const { data, error } = await supabase.from('permit_templates')
-    .select('id, title').eq('cemetery_id', cemeteryId).eq('archived', false).order('title')
+    .select('id, title')
+    .or(`cemetery_id.eq.${cemeteryId},extra_cemetery_ids.cs.${JSON.stringify([cemeteryId])}`)
+    .eq('archived', false).order('title')
   if (error) { console.warn('[cem] listPermitTemplatesForCemetery:', error.message); return [] }
   return data || []
 }
@@ -4820,6 +4850,8 @@ const SERVICE_TYPE_TO_JOB_TYPE = {
   INSCRIPTION:     'inscription',
   ADD_PHOTO:       'inscription',
   BRONZE:          'bronze',
+  // Legacy code seen on imported data — same bucket as BRONZE (Bronze Services).
+  BRONZE_MARKER:   'bronze',
   ACID_WASH:       'cleaning_repair',
   REPAIR:          'cleaning_repair',
   // OTHER is its OWN bucket now (was 'new_stone' — which silently mislabeled every
@@ -4851,7 +4883,8 @@ export function jobTypeForServiceTypes(serviceTypes) {
 // Tolerant of BOTH the camelCase order model (rowToOrder) AND raw snake_case rows;
 // `job` is optional (its job_type, else order._jobType/job_type, drives (b)).
 const _SERVICE_TYPE_LABEL = {
-  NEW_STONE: 'New stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze Marker',
+  NEW_STONE: 'New stone', INSCRIPTION: 'Inscription', BRONZE: 'Bronze Services',
+  BRONZE_MARKER: 'Bronze Services',
   ACID_WASH: 'Acid wash', REPAIR: 'Repair', CIVIC_MEMORIAL: 'Civic memorial',
   MAUSOLEUM: 'Mausoleum', MAUSOLEUM_DOOR: 'Crypt door', ADD_PHOTO: 'Add photo',
   OTHER: 'Other',
@@ -4859,7 +4892,7 @@ const _SERVICE_TYPE_LABEL = {
 const _JOB_TYPE_LABEL = {
   new_stone: 'New stone', mausoleum_door: 'Crypt door',
   cleaning_repair: 'Cleaning / repair', inscription: 'Inscription',
-  bronze: 'Bronze Marker', civic_memorial: 'Civic memorial', other: 'Other',
+  bronze: 'Bronze Services', civic_memorial: 'Civic memorial', other: 'Other',
 }
 const _humanizeType = (s) =>
   (s == null || s === '') ? null : String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -4905,7 +4938,7 @@ export function orderTypeLabel(order, job) {
 // across multi-service orders) — mirrors orderTypeLabel's precedence.
 export const ORDER_CATEGORIES = [
   { code: 'new_stone',       label: 'New stone' },
-  { code: 'bronze',          label: 'Bronze markers' },
+  { code: 'bronze',          label: 'Bronze services' },
   { code: 'inscription',     label: 'Inscriptions' },
   { code: 'cleaning_repair', label: 'Acid wash/repair' },
   { code: 'mausoleum',       label: 'Mausoleum' },
@@ -4921,7 +4954,7 @@ export const ORDER_CATEGORIES = [
 //   5. nothing resolves (bare draft) → 'other'
 const _SVC_TO_CATEGORY = {
   NEW_STONE: 'new_stone', CIVIC_MEMORIAL: 'new_stone',
-  BRONZE: 'bronze', INSCRIPTION: 'inscription', ADD_PHOTO: 'inscription',
+  BRONZE: 'bronze', BRONZE_MARKER: 'bronze', INSCRIPTION: 'inscription', ADD_PHOTO: 'inscription',
   ACID_WASH: 'cleaning_repair', REPAIR: 'cleaning_repair',
 }
 const _JT_TO_CATEGORY = {

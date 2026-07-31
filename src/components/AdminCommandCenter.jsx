@@ -317,7 +317,7 @@ export default function AdminCommandCenter({ jobs, proofsByJob, onOpenOrderDetai
         <div className="sbacc-mhd">
           <h3>Layouts</h3>
           <span className="sbacc-typechips">
-            {[['all', 'All'], ['new_stone', 'New stone'], ['bronze', 'Bronze'], ['inscription', 'Inscription']].map(([c, l]) => (
+            {[['all', 'All'], ['new_stone', 'New stone'], ['bronze', 'Bronze Services'], ['inscription', 'Inscription']].map(([c, l]) => (
               <button type="button" key={c} className={`sbacc-chipbtn${typeFilter === c ? ' on' : ''}`} onClick={() => setTypeFilter(c)}>{l}</button>
             ))}
           </span>

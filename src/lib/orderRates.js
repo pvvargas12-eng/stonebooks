@@ -268,11 +268,25 @@ export function classifyLineItem(code) {
 // and must never appear in the line-item list (B2). Guard by code OR label.
 const _isPaymentRow = (it) => /\b(payment|deposit|balance)\b/i.test(`${it.code || ''} ${it.label || ''}`)
 
-// ── Bronze Marker — a stripped order flow (no die / base / monument complexity) ──
+// ── Bronze Services — a stripped order flow (no die / base / monument complexity) ──
 // FLAT plate prices per the pricing sheet; Custom lets the operator type a price.
 // A unitized backer is a flat $489 add. The bronze line label can be overridden
 // (display-only, mirrors dieTextOverride). Pricing data lives on pricing.bronze =
-// { size, customPrice, customSizeText, backer, descOverride }.
+// { workType, size, customPrice, customSizeText, backer, descOverride }.
+//
+// BRONZE SERVICES (Paul 2026-07-31): ONE service, four kinds of bronze work.
+// Markers keep the priced size catalog below; scrolls / emblems / bronze
+// inscriptions have no sheet — size/description is typed and the price is
+// OPERATOR-TYPED (never invent sheet prices, standing rule). workType absent
+// on every pre-existing order = 'marker', so nothing repriced underneath Paul.
+export const BRONZE_WORK_TYPES = [
+  { code: 'marker',      label: 'Bronze Marker' },
+  { code: 'scroll',      label: 'Bronze Scroll' },
+  { code: 'emblem',      label: 'Bronze Emblem' },
+  { code: 'inscription', label: 'Bronze Inscription' },
+]
+export const bronzeWorkTypeLabel = (code) =>
+  (BRONZE_WORK_TYPES.find(w => w.code === code) || BRONZE_WORK_TYPES[0]).label
 export const BRONZE_SIZES = [
   { code: '24x12', label: '24″ × 12″', price: 2873 },
   { code: '24x14', label: '24″ × 14″', price: 3089 },
@@ -327,19 +341,25 @@ export function isBronzeMarker(order) {
 }
 
 // The bronze plate line (+ optional unitized backer). No base/die/foundation.
+// workType 'marker' (or absent — every legacy order) keeps the priced size
+// catalog; scroll/emblem/inscription take a typed size/description + typed
+// price and the line label carries their own name.
 function bronzeBaseItems(order) {
   const b = order?.pricing?.bronze || {}
-  const isCustom = b.size === 'custom'
-  const sizeRow = BRONZE_SIZES.find(s => s.code === b.size)
-  const sizeLabel = isCustom ? (String(b.customSizeText || '').trim() || 'Custom') : (sizeRow?.label || '—')
+  const workType = b.workType || 'marker'
+  const nonMarker = workType !== 'marker'
+  const isCustom = nonMarker || b.size === 'custom'
+  const sizeRow = nonMarker ? null : BRONZE_SIZES.find(s => s.code === b.size)
+  const sizeLabel = isCustom ? String(b.customSizeText || '').trim() : (sizeRow?.label || '—')
   // A catalog size with price:null (Lawn Crypt) prices from the typed customPrice.
   const price = isCustom || (sizeRow && sizeRow.price == null)
     ? (Number(b.customPrice) || 0)
     : (sizeRow?.price || 0)
   const override = String(b.descOverride || '').trim()
+  const wtLabel = bronzeWorkTypeLabel(workType)
   const items = [{
     code: 'bronze-marker',
-    label: override || `Bronze Marker — ${sizeLabel}`,
+    label: override || (sizeLabel ? `${wtLabel} — ${sizeLabel}` : (nonMarker ? wtLabel : `${wtLabel} — Custom`)),
     amount: price,
     editable: true,
   }]

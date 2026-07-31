@@ -24,7 +24,7 @@ function buildServiceChecks(order) {
   const hasInsc = st.includes('INSCRIPTION')
   return [
     { label: 'New stone',  on: st.includes('NEW_STONE') },
-    { label: 'Bronze',     on: st.includes('BRONZE') },
+    { label: 'Bronze Services', on: st.includes('BRONZE') },
     { label: 'Full insc.', on: hasInsc && t === 'full' },
     { label: 'M/D/Y insc.', on: hasInsc && (t === 'date' || t === 'mdy') },
     { label: 'Year only',  on: hasInsc && t === 'year' },

@@ -31,6 +31,10 @@ export default function StatusSheet({ order, job, who, undo, onClose, onChanged 
   const [stone, setStone] = useState(() => deriveStoneStatus(job))
   const [fdn, setFdn] = useState(() => deriveFdnStatus(job))
   const [blocker, setBlocker] = useState(() => order?.manual_blocker || null)
+  // HOLD needs a typed reason (the one blocker rule) — tapping HOLD opens this
+  // inline input instead of writing straight away.
+  const [holdOpen, setHoldOpen] = useState(false)
+  const [holdReason, setHoldReason] = useState('')
   // One write in flight per group — extra taps on a busy group are dropped.
   const inflight = useRef({})
 
@@ -62,14 +66,22 @@ export default function StatusSheet({ order, job, who, undo, onClose, onChanged 
   // Blocker rides orders.manual_blocker (order id, not job) — kind chips plus
   // Clear. The server stamps setAt/setBy itself; undo restores the previous
   // blocker object (kind/label/note — custom flags keep their name).
-  const tapBlocker = async (kind) => {
+  const tapBlocker = async (kind, holdNote = null) => {
     if (inflight.current.blocker) return
     const prev = blocker || null
-    if ((prev?.kind || null) === kind) return
+    if ((prev?.kind || null) === kind && kind !== 'hold') return
+    // HOLD requires a typed reason — open the inline input, write on SET HOLD.
+    if (kind === 'hold' && holdNote == null) {
+      setHoldReason(prev?.kind === 'hold' ? (prev?.note || '') : '')
+      setHoldOpen(true)
+      return
+    }
+    setHoldOpen(false)
     inflight.current.blocker = true
-    setBlocker(kind ? { kind, note: prev?.note || null, setBy: who?.name || null } : null)
+    const noteForWrite = kind === 'hold' ? holdNote : (prev?.note || '')
+    setBlocker(kind ? { kind, note: noteForWrite || null, setBy: who?.name || null } : null)
     const res = await setOrderManualBlocker(order.id,
-      kind ? { kind, note: prev?.note || '', setBy: who?.name } : null)
+      kind ? { kind, note: noteForWrite, setBy: who?.name } : null)
     inflight.current.blocker = false
     if (!res?.ok) {
       setBlocker(prev)
@@ -153,19 +165,49 @@ export default function StatusSheet({ order, job, who, undo, onClose, onChanged 
 
         <div className="fl-label">Blocker</div>
         <div style={CHIP_ROW}>
-          {blockerChips.map(k => (
-            <button key={k.code} type="button"
-              className={`fl-chip-btn${currentKind === k.code ? ' on' : ''}`}
-              onClick={() => tapBlocker(k.code)}>
-              {k.label}
-            </button>
-          ))}
+          {blockerChips.map(k => {
+            const isHold = k.code === 'hold'
+            const on = currentKind === k.code
+            // HOLD wears solid red when set; red outline otherwise — the
+            // loudest chip in the row, per Paul.
+            const holdStyle = isHold
+              ? (on ? { background: '#B3261E', borderColor: '#B3261E', color: '#fff' }
+                    : { borderColor: '#B3261E', color: '#B3261E' })
+              : undefined
+            return (
+              <button key={k.code} type="button"
+                className={`fl-chip-btn${on ? ' on' : ''}`} style={holdStyle}
+                onClick={() => tapBlocker(k.code)}>
+                {isHold ? 'HOLD' : k.label}
+              </button>
+            )
+          })}
           <button type="button"
             className={`fl-chip-btn${currentKind ? '' : ' on'}`}
-            onClick={() => tapBlocker(null)}>
+            onClick={() => { setHoldOpen(false); tapBlocker(null) }}>
             Clear
           </button>
         </div>
+        {holdOpen && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <input className="fl-input" style={{ flex: 1, margin: 0 }} autoFocus
+              placeholder="Hold reason — required"
+              value={holdReason} onChange={e => setHoldReason(e.target.value)} />
+            <button type="button" className="fl-verb" style={{ borderColor: '#B3261E', color: '#B3261E' }}
+              onClick={() => {
+                if (!holdReason.trim()) { toast.showError('Type the hold reason.'); return }
+                tapBlocker('hold', holdReason.trim())
+              }}>
+              SET HOLD
+            </button>
+            <button type="button" className="fl-verb" onClick={() => setHoldOpen(false)}>X</button>
+          </div>
+        )}
+        {currentKind === 'hold' && blocker?.note && !holdOpen && (
+          <div className="fl-spec" style={{ color: '#B3261E', fontWeight: 700, fontFamily: 'inherit', marginTop: 8 }}>
+            HOLD: {blocker.note}
+          </div>
+        )}
 
         <button type="button" className="fl-btn-ghost" onClick={onClose} style={{ marginTop: 20 }}>
           Done

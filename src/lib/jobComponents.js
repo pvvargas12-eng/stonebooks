@@ -29,7 +29,7 @@ export const PHASE_LABEL = {
   bronze_on_order: 'Bronze on Order', bronze_received: 'Bronze Received',
   mounted_on_base: 'Mounted on Base', delivered: 'Delivered',
 }
-export const TRACK_LABEL = { new_stone: 'New Stone', inscription: 'Inscription', door: 'Mausoleum Door', bronze: 'Bronze Marker' }
+export const TRACK_LABEL = { new_stone: 'New Stone', inscription: 'Inscription', door: 'Mausoleum Door', bronze: 'Bronze Services' }
 export const INITIAL_PHASE = { new_stone: 'ready_to_bring_up', inscription: 'needs_rubbing', door: 'pickup_doors', bronze: 'bronze_on_order' }
 // Quality Check is a hold-gate on new_stone + doors only (inscriptions have none).
 export const QC_PHASE = 'quality_check'

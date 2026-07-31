@@ -87,7 +87,7 @@ const TILES = [
 const TYPE_CHIPS = [
   { code: 'all',         label: 'All' },
   { code: 'new_stone',   label: 'New stone',   svc: ['NEW_STONE'] },
-  { code: 'bronze',      label: 'Bronze',      svc: ['BRONZE', 'BRONZE_MARKER'] },
+  { code: 'bronze',      label: 'Bronze Services', svc: ['BRONZE', 'BRONZE_MARKER'] },
   { code: 'inscription', label: 'Inscription', svc: ['INSCRIPTION'] },
 ]
 const SORTS = [

@@ -460,7 +460,7 @@ const OVERDUE_HEATMAP = {
   },
 }
 
-const JOB_TYPE_LABEL = { new_stone: 'New stone', inscription: 'Inscription', cleaning_repair: 'Cleaning / repair', mausoleum_door: 'Mausoleum door', bronze: 'Bronze', civic_memorial: 'Civic memorial' }
+const JOB_TYPE_LABEL = { new_stone: 'New stone', inscription: 'Inscription', cleaning_repair: 'Cleaning / repair', mausoleum_door: 'Mausoleum door', bronze: 'Bronze Services', civic_memorial: 'Civic memorial' }
 const jobTypeLabel = (t) => JOB_TYPE_LABEL[t] || (t ? t.replace(/_/g, ' ') : 'Other')
 
 // Job start→finish window in days (signed/created → installed status_date, else

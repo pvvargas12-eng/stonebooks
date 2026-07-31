@@ -95,7 +95,7 @@ const PAYMENT_FILTERS = [
 const JOB_TYPES = [
   { code: 'new_stone',       label: 'New stone' },
   { code: 'inscription',     label: 'Inscription' },
-  { code: 'bronze',          label: 'Bronze' },
+  { code: 'bronze',          label: 'Bronze Services' },
   { code: 'cleaning_repair', label: 'Cleaning / repair' },
   { code: 'mausoleum_door',  label: 'Crypt door' },
 ]
@@ -1474,7 +1474,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
                 derived needs-call pill is gone; callReasons live on in the
                 Needs-call filter and tooltips, never as a row chip). */}
             {o.manual_blocker && (
-              <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
+              <span className={`sb-ord-callpill${o.manual_blocker.kind === 'hold' ? ' sb-ord-callpill-hold' : ''}`} title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
                 {manualBlockerChipText(o.manual_blocker)}
               </span>
             )}
@@ -1673,7 +1673,7 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
           {/* CALL/EMAIL chips only from an explicitly-selected blocker (Paul
               2026-07-22) — the derived needs-call pill is gone. */}
           {o.manual_blocker && (
-            <span className="sb-ord-callpill" title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
+            <span className={`sb-ord-callpill${o.manual_blocker.kind === 'hold' ? ' sb-ord-callpill-hold' : ''}`} title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
               {manualBlockerChipText(o.manual_blocker)}
             </span>
           )}
@@ -1734,6 +1734,8 @@ const TW_CSS = `
   .sb-ord-bpill-blue  { color: #1D6FA8; background: rgba(29,111,168,0.09); }
   .sb-ord-callpill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
     color: #B3261E; border: 0.5px solid rgba(179,38,30,0.4); border-radius: 999px; padding: 1px 8px; }
+  /* HOLD — solid red, same weight class as the LEAD pill. */
+  .sb-ord-callpill-hold { color: #fff; background: #B3261E; border-color: #B3261E; font-weight: 800; }
   /* LEAD pill — solid red, the loudest badge on any row/card. */
   .sb-ord-leadpill { font-size: 10px; font-weight: 800; letter-spacing: 0.07em;
     color: #fff; background: #B3261E; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
