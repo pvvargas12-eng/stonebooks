@@ -1784,6 +1784,10 @@ export const PAYMENT_STATUS = [
 ]
 export const DESIGN_STATUS = [
   { code: 'not_created',       label: 'Not created' },
+  // Waiting on a rubbing from the cemetery before layout can start (Paul
+  // 2026-07-31). Backed by a seeded 'rubbing_needed' flag milestone — done =
+  // flag set; picking any other design status clears it.
+  { code: 'need_rub',          label: 'Need rub' },
   { code: 'layout_created',    label: 'Layout created' },
   { code: 'needs_adjustments', label: 'Needs adjustments' },
   { code: 'layout_approved',   label: 'Layout approved' },
@@ -1864,6 +1868,9 @@ export function deriveDesignStatus(job) {
   if (v.cut && _msDone(job, v.cut)) return 'cut'
   if (_msDone(job, v.approved)) return 'layout_approved'
   if (v.changes && _msDone(job, v.changes)) return 'needs_adjustments'
+  // The rub flag outranks created — waiting on the cemetery IS the state,
+  // even when an early layout exists. Any other status pick clears the flag.
+  if (_msDone(job, 'rubbing_needed')) return 'need_rub'
   if (_msDone(job, v.created) || (v.sent && _msDone(job, v.sent))) return 'layout_created'
   return 'not_created'
 }
@@ -1958,7 +1965,7 @@ export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 // hasn't begun should look like it's waiting on someone, same red as the
 // CALL chip. Mid-flight = info/warn, done = good, true N/A stays neutral.
 export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : c === 'quoted' ? 'bad' : 'neutral'
-export const designStatusTone   = (c) => (c === 'layout_approved' || c === 'cut') ? 'good' : c === 'needs_adjustments' ? 'warn' : c === 'layout_created' ? 'info' : 'bad'
+export const designStatusTone   = (c) => (c === 'layout_approved' || c === 'cut') ? 'good' : (c === 'needs_adjustments' || c === 'need_rub') ? 'warn' : c === 'layout_created' ? 'info' : 'bad'
 export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'received') ? 'good'
   : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'bad'
 export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : c === 'na' ? 'neutral' : 'bad'
@@ -1973,17 +1980,22 @@ function _designPlan(code, v = DESIGN_VOCABS[0]) {
   const cutKeys = v.cut ? [...(v.cutPre || []), v.cut] : []
   const preCut = [v.created, v.sent, v.changes, v.approved].filter(Boolean)
   const all = [...preCut, ...cutKeys]
+  // The rub flag ('rubbing_needed', seeded on demand): need_rub SETS it and
+  // touches nothing else; every other pick CLEARS it. Jobs without the row
+  // just match zero rows on that key — harmless.
+  const RUB = 'rubbing_needed'
   switch (code) {
-    case 'not_created':       return { done: [], notStarted: all }
-    case 'layout_created':    return { done: [v.created], notStarted: all.filter(k => k !== v.created) }
+    case 'need_rub':          return { done: [RUB], notStarted: [] }
+    case 'not_created':       return { done: [], notStarted: [...all, RUB] }
+    case 'layout_created':    return { done: [v.created], notStarted: [...all.filter(k => k !== v.created), RUB] }
     case 'needs_adjustments': return v.changes
-      ? { done: [v.created, v.changes], notStarted: [v.approved, ...cutKeys] }
-      : { done: [v.created, v.sent].filter(Boolean), notStarted: [v.approved, ...cutKeys] }
+      ? { done: [v.created, v.changes], notStarted: [v.approved, ...cutKeys, RUB] }
+      : { done: [v.created, v.sent].filter(Boolean), notStarted: [v.approved, ...cutKeys, RUB] }
     case 'layout_approved':   return v.changes
-      ? { done: [v.created, v.approved], notStarted: cutKeys }
-      : { done: preCut, notStarted: cutKeys }
+      ? { done: [v.created, v.approved], notStarted: [...cutKeys, RUB] }
+      : { done: preCut, notStarted: [...cutKeys, RUB] }
     case 'cut':               return v.cut
-      ? { done: all.filter(k => k !== v.changes), notStarted: [] }
+      ? { done: all.filter(k => k !== v.changes), notStarted: [RUB] }
       : null
     default: return null
   }
@@ -2068,7 +2080,8 @@ export async function setOrderDesignStatus(jobId, code) {
     .select('milestone_key')
     .eq('job_id', jobId)
   if (error) return { ok: false, error: error.message }
-  let v = _designVocabForKeys((data || []).map(r => r.milestone_key))
+  const keys = (data || []).map(r => r.milestone_key)
+  let v = _designVocabForKeys(keys)
   let seeded = false
   if (!v) {
     const rows = DESIGN_SEED_ROWS.map(r => ({ ...r, job_id: jobId, group: 'design', team: 'design', status: 'not_started' }))
@@ -2076,6 +2089,16 @@ export async function setOrderDesignStatus(jobId, code) {
     // 23505 = another writer seeded first; the rows exist, proceed.
     if (seedErr && seedErr.code !== '23505') return { ok: false, error: seedErr.message }
     v = DESIGN_VOCABS[0]
+    seeded = true
+  }
+  // The rub flag milestone is seeded the first time a job is flagged — no
+  // template carries it (Need Rub, Paul 2026-07-31).
+  if (code === 'need_rub' && !keys.includes('rubbing_needed')) {
+    const { error: rubErr } = await supabase.from('job_milestones').insert([{
+      job_id: jobId, milestone_key: 'rubbing_needed', label: 'Needs rubbing from cemetery',
+      group: 'design', team: 'design', status: 'not_started', sort_order: 2,
+    }])
+    if (rubErr && rubErr.code !== '23505') return { ok: false, error: rubErr.message }
     seeded = true
   }
   const plan = _designPlan(code, v)
@@ -4960,6 +4983,23 @@ const _SVC_TO_CATEGORY = {
 const _JT_TO_CATEGORY = {
   new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription',
   cleaning_repair: 'cleaning_repair', mausoleum_door: 'mausoleum', other: 'other',
+}
+// EVERY category an order belongs to (Paul 2026-07-31: "orders that are
+// multiple service type must show up in both" — the Dziamba case, Inscription
+// + Acid wash only counted under Acid wash). The Orders-tab chip row filters
+// and counts with THIS, so chip counts deliberately overlap across categories.
+// orderCategory (singular) stays canonical for one-bucket consumers (the
+// production-track classifier chain must never double-track an order).
+export function orderCategories(order, job) {
+  const o = order || {}
+  const svc = o.service_types ?? o.serviceTypes ?? []
+  const codes = (Array.isArray(svc) ? svc : []).map(s => String(s).toUpperCase())
+  const out = new Set()
+  if (codes.includes('OTHER')) out.add('other')
+  if (codes.includes('MAUSOLEUM') || codes.includes('MAUSOLEUM_DOOR')) out.add('mausoleum')
+  for (const c of codes) { const cat = _SVC_TO_CATEGORY[c]; if (cat) out.add(cat) }
+  if (!out.size) out.add(orderCategory(order, job))
+  return out
 }
 export function orderCategory(order, job) {
   const o = order || {}

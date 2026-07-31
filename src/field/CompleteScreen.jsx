@@ -3,8 +3,10 @@
 // =============================================================================
 // Photos go through the SAME completion-photo path the desktop Install Board
 // uses (orders-attachments-public/<orderId>/completion/), so they show on the
-// order instantly and unlock the closeout email. Mark installed is gated on
-// at least one photo — no photo, no done.
+// order instantly and unlock the closeout email. Camera AND library upload
+// both offered (Paul 2026-07-31). The photo gate is GONE — "i can override
+// that and mark install complete anyway": no photo → an explicit red
+// mark-installed-without-photo button, same undo as everything else.
 // =============================================================================
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
@@ -21,7 +23,8 @@ export default function CompleteScreen({ jobId, orderId, onBack }) {
   const [busy, setBusy] = useState(false)
   const [uploadErr, setUploadErr] = useState(null)
   const [doneState, setDoneState] = useState(null)   // { prevStatus, key } after marking
-  const fileRef = useRef(null)
+  const fileRef = useRef(null)     // capture="environment" — the camera
+  const uploadRef = useRef(null)   // no capture attr — the photo library picker
 
   const refreshPhotos = useCallback(() => {
     if (!orderId) return
@@ -97,13 +100,13 @@ export default function CompleteScreen({ jobId, orderId, onBack }) {
     <div>
       <button type="button" className="fl-back" onClick={onBack}>&#8249; Back{fam ? ` to ${fam}` : ''}</button>
       <div className="fl-detfam" style={{ fontSize: 19 }}>Finish the job</div>
-      <div className="fl-detsub">A final photo is required — it goes on the order record and into the family's closeout email.</div>
+      <div className="fl-detsub">A final photo goes on the order record and into the family's closeout email — take one or upload one if you can.</div>
 
       <div className="fl-card">
         <div className="fl-eyebrow">Final photos</div>
         {photos === null && <div className="fl-photo-empty">Loading photos…</div>}
         {photos && photos.length === 0 && (
-          <div className="fl-photo-empty">No photos yet — the camera opens straight from here.</div>
+          <div className="fl-photo-empty">No photos yet — open the camera or upload from the phone.</div>
         )}
         {photos && photos.length > 0 && (
           <div className="fl-photo-strip">
@@ -117,10 +120,18 @@ export default function CompleteScreen({ jobId, orderId, onBack }) {
         {uploadErr && <div style={{ fontSize: 12, color: '#B3261E', marginBottom: 8 }}>{uploadErr}</div>}
         <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple
           style={{ display: 'none' }} onChange={onPick} />
-        <button type="button" className="fl-btn" style={{ marginBottom: 0 }} disabled={busy}
-          onClick={() => fileRef.current?.click()}>
-          {busy ? 'Working…' : 'Open camera'}
-        </button>
+        <input ref={uploadRef} type="file" accept="image/*" multiple
+          style={{ display: 'none' }} onChange={onPick} />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" className="fl-btn" style={{ marginBottom: 0, flex: 1 }} disabled={busy}
+            onClick={() => fileRef.current?.click()}>
+            {busy ? 'Working…' : 'Open camera'}
+          </button>
+          <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0, flex: 1 }} disabled={busy}
+            onClick={() => uploadRef.current?.click()}>
+            Upload photos
+          </button>
+        </div>
       </div>
 
       {job === undefined && <div className="fl-empty">Loading job…</div>}
@@ -139,10 +150,19 @@ export default function CompleteScreen({ jobId, orderId, onBack }) {
               </button>
             )}
           </>
-        ) : (
-          <button type="button" className="fl-btn fl-btn-green" disabled={busy || !photos || photos.length === 0}
+        ) : photos && photos.length > 0 ? (
+          <button type="button" className="fl-btn fl-btn-green" disabled={busy}
             onClick={markInstalled}>
-            {photos && photos.length > 0 ? 'Mark installed' : 'Add a photo to mark installed'}
+            Mark installed
+          </button>
+        ) : (
+          // No photo, his call anyway (Paul 2026-07-31) — explicit wording,
+          // red so it never reads as the happy path; undo capsule as always.
+          <button type="button" className="fl-btn"
+            style={{ background: 'none', border: '1.5px solid #B3261E', color: '#B3261E' }}
+            disabled={busy || photos === null}
+            onClick={markInstalled}>
+            Mark installed without a photo
           </button>
         )
       )}

@@ -28,7 +28,7 @@ import {
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
   setBlockReason, milestoneDone, orderContractTotal,
-  orderTypeLabel, orderCategory, ORDER_CATEGORIES,
+  orderTypeLabel, orderCategories, ORDER_CATEGORIES,
   // Permit (orders.permit_status — single source of truth, shared with Permit Hub)
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
@@ -467,7 +467,9 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         _contractTotal: orderContractTotal(o),
         _setBlock: setBlock,
         _serviceTypesUp: new Set((o.service_types || []).map(s => String(s).toUpperCase())),
-        _category: orderCategory(o, job),   // one canonical category for the chip row
+        // EVERY category the order's services map to — a multi-service order
+        // shows under each of its chips (the Dziamba rule, 2026-07-31).
+        _categories: orderCategories(o, job),
       }
     })
   }, [orders, allJobs])
@@ -572,7 +574,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const boardActive = boardOpen && primaryView === 'active'
   const boardColumns = useMemo(() => {
     if (!boardActive) return null
-    const list = categoryFilter ? preView.filter(o => o._category === categoryFilter) : preView
+    const list = categoryFilter ? preView.filter(o => o._categories.has(categoryFilter)) : preView
     const cols = {}
     for (const s of BOARD_STAGES) cols[s.code] = { rows: [], usd: 0 }
     for (const o of list) {
@@ -591,12 +593,14 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const categoryCounts = useMemo(() => {
     const counts = { all: preCategory.length }
     for (const c of ORDER_CATEGORIES) counts[c.code] = 0
-    for (const o of preCategory) counts[o._category] = (counts[o._category] || 0) + 1
+    // Multi-service orders count under EVERY matching chip — the chip counts
+    // deliberately sum past All (one order, several memberships).
+    for (const o of preCategory) for (const c of o._categories) counts[c] = (counts[c] || 0) + 1
     return counts
   }, [preCategory])
 
   const filtered = useMemo(() => {
-    const list = categoryFilter ? preCategory.filter(o => o._category === categoryFilter) : preCategory
+    const list = categoryFilter ? preCategory.filter(o => o._categories.has(categoryFilter)) : preCategory
     const sorted = [...list].sort(ROW_SORTERS[sortKey] || ROW_SORTERS.actionPriority)
     // Direction toggle only applies to the click-sortable columns; the dropdown
     // sorters carry their own fixed direction.
