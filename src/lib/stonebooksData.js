@@ -3206,10 +3206,32 @@ async function _deleteOrderStorage(orderId) {
   }
 }
 
-// Set lifecycle status (plain enum set — no paid_in_full snapshot, no side
-// effects; "Set status from the status enum").
-export function bulkSetOrderStatus(ids, status) {
-  return bulkUpdateOrders(ids, { status })
+// A closed/cancelled ORDER closes its JOB, and reopening reopens it (Paul
+// 2026-07-31: "when i close it out in the pipeline that job is closed").
+// Two-directional so the bulk bar's undo-by-prior-value restores the job too.
+// Best-effort — a jobs miss never fails the order write.
+export async function syncJobsForOrderStatus(orderIds, status) {
+  const ids = (orderIds || []).filter(Boolean)
+  if (!ids.length) return
+  const nowIso = new Date().toISOString()
+  const terminal = status === 'closed' || status === 'cancelled'
+  const q = terminal
+    ? supabase.from('jobs')
+        .update({ overall_status: status, closed_at: nowIso, last_update_at: nowIso })
+        .in('order_id', ids).not('overall_status', 'in', '(closed,cancelled)')
+    : supabase.from('jobs')
+        .update({ overall_status: 'active', closed_at: null, last_update_at: nowIso })
+        .in('order_id', ids).in('overall_status', ['closed', 'cancelled'])
+  const { error } = await q
+  if (error) console.warn('[jobs] status-sync-with-order:', error.message)
+}
+
+// Set lifecycle status (plain enum set — no paid_in_full snapshot; the one
+// side effect is the job-closure mirror above).
+export async function bulkSetOrderStatus(ids, status) {
+  const r = await bulkUpdateOrders(ids, { status })
+  if (r?.ok !== false) await syncJobsForOrderStatus(ids, status)
+  return r
 }
 
 // Set cemetery (FK).

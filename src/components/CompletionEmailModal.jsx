@@ -12,6 +12,7 @@ import { useState, useEffect } from 'react'
 import {
   getOrderById, listCompletionPhotos, buildCompletionEmailDraft,
   sendShopEmail, addTaskReply, logOrderActivity, updateShopTask, getCurrentStaffName,
+  closeOrder,
 } from '../lib/stonebooksData'
 import ConfirmSend from './ConfirmSend'
 
@@ -81,6 +82,18 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
     await updateShopTask(task.id, {
       details: { ...(task.details || {}), completionEmailSentAt: new Date().toISOString(), completionEmailTo: to.trim() },
     }).catch(() => {})
+    // Send email AND close the order (Paul 2026-07-31): the completion email
+    // IS the closeout — closeOrder also closes the linked job. A close hiccup
+    // never undoes the send; it just says so.
+    if (order?.status !== 'closed') {
+      const cr = await closeOrder(orderId).catch(() => ({ ok: false }))
+      if (cr?.ok) {
+        setOrder(o => (o ? { ...o, status: 'closed' } : o))
+        await logOrderActivity(orderId, { type: 'change', field: 'Order status', newValue: 'Closed', note: 'Closed automatically after the completion email', actor: me }).catch(() => {})
+      } else {
+        setErr('Email sent — but the order could not be closed. Close it from the order page.')
+      }
+    }
     setBusy(false); setGate(false); setSentTo(to.trim())
     onChanged?.()
   }
@@ -93,7 +106,7 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
         {order === null && <div className="sb-cem-note">This task isn't linked to an order — link it first, then send from here.</div>}
 
         {order && sentTo && (
-          <div className="sb-cem-sent">Sent to {sentTo}{task?.details?.completionEmailSentAt ? '' : ''} — sending again is allowed, but check the thread first.</div>
+          <div className="sb-cem-sent">Sent to {sentTo}{order?.status === 'closed' ? ' — order closed.' : ''} Sending again is allowed, but check the thread first.</div>
         )}
 
         {order && (
@@ -132,7 +145,7 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
             <div className="sb-cem-actions">
               <button type="button" className="sb-cem-cancel" onClick={onClose} disabled={busy}>Close</button>
               <button type="button" className="sb-cem-go" disabled={busy || !to.trim() || !body.trim()} onClick={openGate}>
-                {busy ? 'Preparing…' : 'Preview + send'}
+                {busy ? 'Preparing…' : (order?.status === 'closed' ? 'Preview + send' : 'Preview + send + close order')}
               </button>
             </div>
           </>
