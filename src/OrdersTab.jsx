@@ -39,6 +39,7 @@ import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
 import { cachedFetch, peekCache, invalidateCache } from './lib/dataCache'
 import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
+import { bronzeWorkTypeLabel } from './lib/orderRates'
 
 // Trimmed column set for the Orders board — the list/status fields PLUS the
 // full ORDER_PRICING_COLUMNS contract (lib/pricingCore). The 2026-07-07
@@ -1488,11 +1489,17 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Order # */}
       <div style={{ minWidth: 0 }}><span className="sb-crm-secondary sb-crm-mono" style={{ fontSize: 12 }}>{o.order_number || 'DRAFT'}</span></div>
 
-      {/* Job Type — combined orders stack each service type on its own line */}
+      {/* Job Type — combined orders stack each service type on its own line.
+          Bronze Services rows say WHICH bronze work underneath (Paul
+          2026-07-31): pricing.bronze.workType, absent = Bronze Marker (every
+          legacy/wizard bronze order is a marker). */}
       <div>
         {orderTypeLabels(o).map(l => (
           <div key={l}><span className="sb-crm-secondary">{l}</span></div>
         ))}
+        {(o.service_types || []).some(s => s === 'BRONZE' || s === 'BRONZE_MARKER') && (
+          <div><span className="sb-crm-muted" style={{ fontSize: 11.5 }}>{bronzeWorkTypeLabel(o.pricing?.bronze?.workType)}</span></div>
+        )}
       </div>
 
       {/* Cemetery */}
