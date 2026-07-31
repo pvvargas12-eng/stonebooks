@@ -17,7 +17,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
   updateMilestone, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO,
-  getInstallList, addToInstallList, removeFromInstallList, fmtUSD } from '../lib/stonebooksData'
+  getInstallList, addToInstallList, removeFromInstallList, fmtUSD, installGates } from '../lib/stonebooksData'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -154,6 +154,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       const ci = byJob.get(job.id) || { track: null, cemetery: job.order?.cemetery?.name || '', orderNumber: job.order?.order_number || '' }
       out.push(makeRow(job, ci, job.order || {}, {
         blockers: blockersFor(job),
+        gates4: installGates(job.order || {}, job),
         installKey: ms?.milestone_key || null,
         scheduled: ms?.status === 'in_progress',
         scheduledDate: ms?.status === 'in_progress' ? (ms?.due_date || null) : null,
@@ -421,13 +422,25 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
       {/* SET-LIST rows: blockers inform, they never gate. Foundation is the
           headline — Paul: "i do however want to see blockers like is the
           foundation done or not thats important." */}
+      {/* THE FOUR GATES (Paul 2026-07-31): Paid · Foundation in · Permit
+          approved · Blasted — green when good, red when it would strand the
+          truck, neutral when the gate doesn't apply. Inform, never gate. */}
       {b && (
         <div className="ib-gates">
-          {b.fdn === false && <span className="ib-flag ib-flag-red">FOUNDATION NOT IN</span>}
-          {b.fdn === true && <span className="ib-flag ib-flag-ok">FOUNDATION IN</span>}
-          {b.fdn === null && <span className="ib-flag ib-flag-na">NO FOUNDATION NEEDED</span>}
-          {b.balance > 0 && <span className="ib-flag ib-flag-amber">BALANCE {fmtUSD(b.balance)}</span>}
-          {!b.permit && <span className="ib-flag ib-flag-amber">PERMIT</span>}
+          {row.gates4 && (
+            <>
+              <span className={`ib-flag ${row.gates4.paid ? 'ib-flag-ok' : 'ib-flag-red'}`}>
+                {row.gates4.paid ? 'PAID' : (b.balance > 0 ? `BALANCE ${fmtUSD(b.balance)}` : 'NOT PAID')}
+              </span>
+              {row.gates4.fdn === null
+                ? <span className="ib-flag ib-flag-na">NO FOUNDATION NEEDED</span>
+                : <span className={`ib-flag ${row.gates4.fdn ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.fdn ? 'FOUNDATION IN' : 'FOUNDATION NOT IN'}</span>}
+              {row.gates4.permit === null
+                ? <span className="ib-flag ib-flag-na">NO PERMIT NEEDED</span>
+                : <span className={`ib-flag ${row.gates4.permit ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
+              <span className={`ib-flag ${row.gates4.blasted ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.blasted ? 'BLASTED' : 'NOT BLASTED'}</span>
+            </>
+          )}
           {!b.cem && <span className="ib-flag ib-flag-amber">NO CEMETERY</span>}
         </div>
       )}

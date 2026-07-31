@@ -2159,6 +2159,23 @@ export function setBlockReason(order, job) {
 }
 export function isReadyToSet(order, job) { return setBlockReason(order, job) === null }
 
+// The FOUR install gates Paul reads before loading the truck (2026-07-31:
+// "green Paid, foundation in, permit approved, blasted... I CANT GET OUT
+// THERE AND IT NOT BE DONE"). true = green, false = red, null = doesn't
+// apply (no foundation concept / no permit needed). Blasted on a bronze job
+// = the bronze arrived — the same setBlockReason rule. Rendered on the
+// desktop set list AND the field Installations rows; inform, never gate.
+export function installGates(order, job) {
+  const paid = derivePaymentStatus(order) === 'paid_in_full'
+  const keys = _jobMilestoneKeys(job)
+  const blasted = _isBronzeStoneJob(keys) ? _msDone(job, 'bronze_received') : _msDone(job, 'production_completed')
+  const fdnCode = deriveFdnStatus(job)
+  const fdn = fdnCode === 'na' ? null : fdnCode === 'in'
+  const permitRequired = permitNeeded(order) && order?.permit_status !== 'not_required'
+  const permit = permitRequired ? order?.permit_status === 'approved' : null
+  return { paid, fdn, permit, blasted }
+}
+
 // ── FIELD DAY HELPERS (2026-07-24) ──────────────────────────────────────────
 
 // Light order/lead search for link pickers (sales sign search, field task
@@ -2306,9 +2323,11 @@ export async function addToInstallList(jobId) {
   const { error } = await supabase
     .from('install_list')
     .insert({ job_id: jobId, added_by })
-  // Unique violation = already on the list; double-tap safe.
-  if (error && error.code !== '23505') return { ok: false, error: error.message }
-  return { ok: true }
+  // Unique violation = already on the list; double-tap safe. `existed` lets
+  // the auto-queue skip its event log when nothing actually changed.
+  if (error && error.code === '23505') return { ok: true, existed: true }
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, existed: false }
 }
 
 export async function removeFromInstallList(jobId) {
@@ -5890,6 +5909,25 @@ async function _rollupNewStoneStatus(jobId) {
   if (min) { try { await setOrderStoneStatus(jobId, min) } catch (e) { console.warn('[rollup] stone-status:', e?.message) } }
 }
 
+// Blasted-and-approved stones flow straight onto the installation queue
+// (Paul 2026-07-31: "ONCE stones are blasted they move to the installation
+// queue — i can also override and manually add or remove"). Reaching
+// ready_to_set = through the blast + QC gauntlet → the job joins the
+// hand-picked install_list automatically. Remove stays Paul's override;
+// membership add is 23505-safe; best-effort, never fails the phase write.
+async function _queueInstallOnReadyToSet(comp, newPhase, { actor = null, source = 'board' } = {}) {
+  if (comp.track !== 'new_stone' || !comp.job_id || newPhase !== 'ready_to_set') return
+  try {
+    const r = await addToInstallList(comp.job_id)
+    if (r?.ok && !r.existed) {
+      await _componentEvent(comp, 'component_install_queued', {
+        note: 'Blasted and approved — added to the installation queue',
+        payload: { phase: newPhase }, actor, source,
+      })
+    }
+  } catch (e) { console.warn('[components] install-queue:', e?.message) }
+}
+
 export async function setComponentPhase(id, newPhase, { actor = null, eventType = 'component_phase_set', source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (!isValidPhase(c.track, newPhase)) return { ok: false, error: `Invalid phase for ${c.track}` }
@@ -5898,6 +5936,7 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   if (!r.ok) return r
   await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor, source })
   if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  await _queueInstallOnReadyToSet(c, newPhase, { actor, source })
   return r
 }
 // Pull a piece onto the board (optionally straight into a phase column) or
@@ -5920,6 +5959,7 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
     payload: { phase: phase || c.current_phase }, actor, source,
   })
   if (on && phase && c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  if (on && phase) await _queueInstallOnReadyToSet(c, phase, { actor, source })
   return r
 }
 
@@ -5993,6 +6033,7 @@ export async function qcApproveComponent(id, { actor = null, source = 'board' } 
   if (!r.ok) return r
   await _componentEvent(c, 'component_qc_approved', { note: `QC approved → ${phaseLabel(next)}`, payload: { previous_phase: c.current_phase, new_phase: next }, actor, source })
   if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  await _queueInstallOnReadyToSet(c, next, { actor, source })
   return r
 }
 export async function qcDenyComponent(id, issue, { actor = null, source = 'board' } = {}) {

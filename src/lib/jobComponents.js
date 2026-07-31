@@ -21,7 +21,12 @@ export const TRACK_PHASES = {
 
 export const PHASE_LABEL = {
   ready_to_bring_up: 'Ready to Bring Up', brought_to_line: 'Brought to Line', cut: 'Cut',
-  stencil_cut: 'Stencil Cut', stencil_stuck: 'Stencil Stuck', blast: 'Blast',
+  // Paul's sandblast vocabulary (2026-07-31): a stone with the stencil STUCK
+  // is opened + stuck + ready to blast — that column IS the blasting queue.
+  // Advancing out of it means "I blasted it" — the next column says so.
+  // (Codes unchanged — display only; 'blast' is shared with the door track,
+  // where "Blasted" reads the same way.)
+  stencil_cut: 'Stencil Cut', stencil_stuck: 'Blasting Queue', blast: 'Blasted',
   quality_check: 'Quality Check', ready_to_set: 'Ready to Set',
   needs_rubbing: 'Needs Rubbing from Cemetery', inscription_complete: 'Inscription Complete',
   pickup_doors: 'Pickup Doors', cut_stencil: 'Cut Stencil', stick_stencil: 'Stick Stencil',

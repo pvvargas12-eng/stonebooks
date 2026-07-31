@@ -14,7 +14,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getInstallList, addToInstallList, removeFromInstallList, getJobs,
-  getProofVersions, getProofVersionsByOrder, setBlockReason,
+  getProofVersions, getProofVersionsByOrder, setBlockReason, installGates,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { buildDieSpec, buildBaseSpec, displayGraniteColor, composeGraveLocation } from '../lib/monumentCatalog'
@@ -36,6 +36,25 @@ const AgeDot = ({ n }) => n == null ? null : (
 )
 const hasPhoto = (order) => (order?.service_types || []).includes('ADD_PHOTO')
 const installMsOf = (job) => (job?.milestones || []).find(m => INSTALL_KEYS.includes(m.milestone_key)) || null
+
+// The four gates, on EVERY install row (Paul 2026-07-31: "I CANT GET OUT
+// THERE AND IT NOT BE DONE") — green when good, red when it would strand the
+// truck, neutral when the gate doesn't apply to this job.
+function GateChips({ order, job }) {
+  const g = installGates(order, job)
+  return (
+    <>
+      <span className={`fl-chip ${g.paid ? 'fl-c-good' : 'fl-c-bad'}`}>{g.paid ? 'PAID' : 'NOT PAID'}</span>
+      {g.fdn === null
+        ? <span className="fl-chip fl-c-neutral">NO FDN</span>
+        : <span className={`fl-chip ${g.fdn ? 'fl-c-good' : 'fl-c-bad'}`}>{g.fdn ? 'FDN IN' : 'FDN NOT IN'}</span>}
+      {g.permit === null
+        ? <span className="fl-chip fl-c-neutral">NO PERMIT NEEDED</span>
+        : <span className={`fl-chip ${g.permit ? 'fl-c-good' : 'fl-c-bad'}`}>{g.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
+      <span className={`fl-chip ${g.blasted ? 'fl-c-good' : 'fl-c-bad'}`}>{g.blasted ? 'BLASTED' : 'NOT BLASTED'}</span>
+    </>
+  )
+}
 
 export default function InstallListScreen({ onOpenJob, onComplete }) {
   const [sub, setSub] = useState('list')          // 'list' | 'runs'
@@ -161,6 +180,11 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
               <div className="fl-row-main">
                 <div className="fl-fam">{familyNameOf(j.order)}</div>
                 <div className="fl-spec">{j.order.order_number || 'DRAFT'}</div>
+                {/* The four gates, below the name next to the order number
+                    (Paul 2026-07-31) — what the truck needs to know. */}
+                <div className="fl-chips" style={{ marginTop: 5 }}>
+                  <GateChips order={j.order} job={j} />
+                </div>
               </div>
               <div className="fl-chips" style={{ flexShrink: 0 }}>
                 {hasPhoto(j.order) && <span className="fl-chip fl-c-photo">PHOTO</span>}
@@ -255,8 +279,11 @@ function InstallPeek({ job, onClose, onOpenJob, onComplete, onRemove, busy }) {
       <div className="fl-sheet">
         <div className="fl-sheet-grab" />
         <div className="fl-sheet-title">{familyNameOf(o)}</div>
-        <div className="fl-spec" style={{ marginTop: -6, marginBottom: 10 }}>
+        <div className="fl-spec" style={{ marginTop: -6, marginBottom: 8 }}>
           {[o?.order_number, o?.cemetery?.name].filter(Boolean).join(' · ')}
+        </div>
+        <div className="fl-chips" style={{ marginBottom: 10 }}>
+          <GateChips order={o} job={job} />
         </div>
 
         {hasPhoto(o) && (
