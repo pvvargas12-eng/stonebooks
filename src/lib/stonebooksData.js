@@ -3589,20 +3589,52 @@ export async function ensureCloseoutTask(orderId, familyLabel, orderNumber) {
 // "AI generated" email, template v1 per Paul 2026-07-24). The Email CC's
 // closeout voice + the photo line. Staff edit before the ConfirmSend gate;
 // nothing sends without the explicit click (send-safety doctrine).
+// Review links for the completion email (Paul 2026-07-31): the words Google /
+// Yelp / Facebook read as words and CLICK through — completionEmailHtml swaps
+// the first occurrence of each word for an anchor. The Google URL is the
+// review-panel deep link (q + #lrd) distilled from Paul's shared link.
+export const COMPLETION_REVIEW_LINKS = {
+  Google: 'https://www.google.com/search?q=shevchenko+monuments#lrd=0x89c3b5f4a0f31c2f:0xaa1fb18836654,1,,,,',
+  Yelp: 'https://www.yelp.com/biz/shevchenko-monuments-perth-amboy-2',
+  Facebook: 'https://www.facebook.com/Shevchenko.Monuments/',
+}
+// Plain text (what the modal edits) → the HTML part that actually sends:
+// escape, hyperlink the review words + the website, then <br> the newlines.
+export function completionEmailHtml(text) {
+  let h = String(text || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  for (const [word, url] of Object.entries(COMPLETION_REVIEW_LINKS)) {
+    h = h.replace(new RegExp(`\\b${word}\\b`), `<a href="${url}" style="color:#1a5fb4">${word}</a>`)
+  }
+  h = h.replace(/\bwww\.shevchenkomonuments\.com\b/,
+    '<a href="https://www.shevchenkomonuments.com" style="color:#1a5fb4">www.shevchenkomonuments.com</a>')
+  return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#222">${h.replace(/\n/g, '<br>')}</div>`
+}
+
 export function buildCompletionEmailDraft(orderRow, customer) {
   const first = (customer?.first_name || '').trim() || 'there'
   const fam = orderRow?.primary_lastname ? ` ${orderRow.primary_lastname}` : ''
   const ord = orderRow?.order_number ? ` (${orderRow.order_number})` : ''
   const cem = orderRow?.cemetery?.name ? ` at ${orderRow.cemetery.name}` : ''
   const subject = `Your${fam ? fam + ' family' : ''} memorial is complete`
+  // Closing + signature are Paul's words verbatim (2026-07-31) — the review
+  // words become links in the HTML part; includeSignature is OFF on this send
+  // so the mailbox signature never stacks under this one.
   const body =
     `Hi ${first},\n\n` +
     `We're glad to share that your memorial${ord} has been completed and set${cem}. ` +
     `A photo of the finished work is attached so you can see it right away.\n\n` +
-    `It was our privilege to craft this for your family, and we hope it brings you ` +
-    `comfort for years to come. Thank you for trusting Shevchenko Monuments with ` +
-    `something so meaningful.\n\n` +
-    `If there's ever anything we can do for you, please don't hesitate to reach out.`
+    `It has been a pleasure serving you, and we truly appreciate you trusting us ` +
+    `with something so meaningful. It was an honor for us to bless you. If you were ` +
+    `pleased with our service, please consider giving us a good review on either ` +
+    `Google, Yelp or Facebook.\n\n` +
+    `God Bless You,\n\n` +
+    `Lonnie, Cathy & the Shevchenko Team\n` +
+    `Shevchenko Monuments LLC.\n` +
+    `732-442-1286\n` +
+    `www.shevchenkomonuments.com\n` +
+    `329 Florida Grove Road\n` +
+    `Perth Amboy, NJ 08861`
   return { subject, body }
 }
 

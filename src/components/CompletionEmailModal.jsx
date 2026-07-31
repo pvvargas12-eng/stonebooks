@@ -10,7 +10,7 @@
 // =============================================================================
 import { useState, useEffect } from 'react'
 import {
-  getOrderById, listCompletionPhotos, buildCompletionEmailDraft,
+  getOrderById, listCompletionPhotos, buildCompletionEmailDraft, completionEmailHtml,
   sendShopEmail, addTaskReply, logOrderActivity, updateShopTask, getCurrentStaffName,
   closeOrder,
 } from '../lib/stonebooksData'
@@ -69,9 +69,15 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
 
   const doSend = async (edited) => {
     setBusy(true); setErr(null)
-    // The gate's preview is editable — typed-over words win.
+    // The gate's preview is editable — typed-over words win. The HTML part
+    // carries the hyperlinked review words (Google / Yelp / Facebook) and the
+    // signature IS the body (Paul's block), so the mailbox signature stays off.
+    const finalText = edited?.text || body
     const r = await sendShopEmail({
-      to: to.trim(), subject, text: edited?.text || body, attachments: attachments || [],
+      to: to.trim(), subject, text: finalText,
+      html: edited?.html || completionEmailHtml(finalText),
+      includeSignature: false,
+      attachments: attachments || [],
       orderId, customerId: order?.customer_id || order?.customer?.id || null,
     })
     if (!r?.ok) { setBusy(false); setErr(r?.error || 'Send failed.'); setGate(false); return }
@@ -153,6 +159,7 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
       </div>
 
       <ConfirmSend open={gate} to={to.trim()} subject={subject} text={body}
+        html={completionEmailHtml(body)}
         busy={busy} onConfirm={doSend} onClose={() => setGate(false)} />
       <style>{CSS}</style>
     </div>
