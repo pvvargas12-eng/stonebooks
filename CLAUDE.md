@@ -8,6 +8,7 @@ Paul: "when customers fill out a contact us form it goes to our email can that g
 - **Shell wiring (Stonebooks.jsx):** sweep 20s after boot + every 3 min. **DYNAMIC import only — websiteLeads drags the SalesMode chunk (saveOrder); never static-import it from entry** (PERF-1 discipline).
 - First sweep auto-backfills the last 14 days of submissions into Leads.
 - NOTE: an alternate webhook endpoint (Duda form → api route) was considered and skipped — the email path needs nothing from the website and covers history. If Paul ever wants instant (sub-minute) capture, that's the upgrade.
+- **Round 2 (same day, Paul's Duda-envy notes): the Leads page wears the pulse.** LeadsView summary strip gains **website · 7 days / website · 30 days** stat cards (`getWebsiteLeadStats` — head-count queries over website_leads status created); the task table's CONTACT column is **click-to-call** (`tel:` links, digits-only href); task rows wear a blue **Website** kind-chip when task.created_by/tasked_by === 'Website' OR lead.sales_rep === 'Website' (the auto-created ones read at a glance, like the Check-job chip).
 
 ## Sprint YARD-TRUST (2026-08-03) — SHIPPED: the inventory trust system (audit + links + stone position + Count the Yard)
 

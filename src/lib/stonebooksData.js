@@ -10831,6 +10831,25 @@ export async function listStoneDeadlines() {
 // (Paul 2026-07-27: "you cant view gotta be able to open and view the orders
 // then go back and select which one it is"): cemetery, deceased, money,
 // created date, service types.
+// Website-lead pulse for the Leads page header (WEB-LEAD-1, Paul 2026-08-03:
+// "in the top we need stat that shows how many form submissions we have
+// week / month"): submissions that became leads in the last 7 / 30 days.
+export async function getWebsiteLeadStats() {
+  const now = Date.now()
+  const countSince = async (sinceMs) => {
+    const { count } = await supabase.from('website_leads')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'created')
+      .gte('created_at', new Date(sinceMs).toISOString())
+    return count || 0
+  }
+  const [week, month] = await Promise.all([
+    countSince(now - 7 * 86400000),
+    countSince(now - 30 * 86400000),
+  ])
+  return { week, month }
+}
+
 export async function listOpenOrdersLight() {
   const { data, error } = await supabase
     .from('orders')

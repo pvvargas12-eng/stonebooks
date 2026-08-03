@@ -21,7 +21,7 @@ import {
   rowGrandTotal, rowTotalPaid, fmtUSD, fmtDate, fmtPhone, statusInfo,
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
-  bulkArchiveOrders, hardDeleteOrder, TASK_KINDS, STAFF_NAMES,
+  bulkArchiveOrders, hardDeleteOrder, TASK_KINDS, STAFF_NAMES, getWebsiteLeadStats,
 } from '../lib/stonebooksData'
 import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES } from '../lib/leads'
 
@@ -105,6 +105,13 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   const [lastTouch, setLastTouch] = useState({})      // most-recent activity per lead
   const [taskTab, setTaskTab] = useState('open')      // 'open' | 'completed'
   const [sortKey, setSortKey] = useState('due')       // tasks-table sort
+  // Website form-submission pulse (7d / 30d counts of auto-created leads).
+  const [webStats, setWebStats] = useState(null)
+  useEffect(() => {
+    let alive = true
+    getWebsiteLeadStats().then(s => { if (alive) setWebStats(s) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
   const [leadSort, setLeadSort] = useState({ key: 'started', dir: 'desc' })   // leads-table sort
   const [allLeadsOpen, setAllLeadsOpen] = useState(true)
   const [refreshNonce, setRefreshNonce] = useState(0)
@@ -308,6 +315,10 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
         <div className="sb-leads-stat"><span className="sb-leads-stat-num">{fmtUSD(summary.total)}</span><span className="sb-leads-stat-lab">open estimates</span></div>
         <div className="sb-leads-stat"><span className={`sb-leads-stat-num${summary.overdue > 0 ? ' sb-leads-red' : ''}`}>{summary.overdue}</span><span className="sb-leads-stat-lab">due / overdue</span></div>
         <div className="sb-leads-stat"><span className="sb-leads-stat-num">{summary.count}</span><span className="sb-leads-stat-lab">{summary.count === 1 ? 'lead' : 'leads'}</span></div>
+        {/* Website form submissions → leads (Paul 2026-08-03: "how many form
+            submissions we have week / month"). */}
+        <div className="sb-leads-stat"><span className="sb-leads-stat-num sb-leads-web">{webStats ? webStats.week : '—'}</span><span className="sb-leads-stat-lab">website · 7 days</span></div>
+        <div className="sb-leads-stat"><span className="sb-leads-stat-num sb-leads-web">{webStats ? webStats.month : '—'}</span><span className="sb-leads-stat-lab">website · 30 days</span></div>
       </div>
 
       <div className="sb-leads-bar">
@@ -362,6 +373,10 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                   <td className="sb-lt-c-rem">
                     {task.kind === 'layout' && <span className="sb-lt-kindchip">Layout</span>}
                     {task.kind === 'check_job' && <span className="sb-lt-kindchip sb-lt-checkchip">Check job</span>}
+                    {/* Auto-created from a site form submission (WEB-LEAD-1). */}
+                    {(task.created_by === 'Website' || task.tasked_by === 'Website' || lead.sales_rep === 'Website') && (
+                      <span className="sb-lt-kindchip sb-lt-webchip">Website</span>
+                    )}
                     <button type="button" className="sb-lt-link sb-lt-rem" onClick={() => onOpenDetail?.(lead.id)}>{task.note}</button>
                     {task.assignee && <span className="sb-lt-assignee"> · {task.assignee}</span>}
                     {completed && <span className="sb-lt-donetag">Completed ✓</span>}
@@ -374,7 +389,10 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                       ? <span className={`sb-lt-due${completed ? '' : ` sb-lt-due-${urgency}`}`}>{fmtDate(task.due_date)}</span>
                       : <span className="sb-lt-due-none">—</span>}
                   </td>
-                  <td className="sb-lt-c-contact">{lead.customer?.phone_primary ? fmtPhone(lead.customer.phone_primary) : '—'}</td>
+                  {/* Click-to-call (Paul: "i need to be able to go and call the people"). */}
+                  <td className="sb-lt-c-contact">{lead.customer?.phone_primary
+                    ? <a className="sb-lt-calllink" href={`tel:${String(lead.customer.phone_primary).replace(/\D/g, '')}`}>{fmtPhone(lead.customer.phone_primary)}</a>
+                    : '—'}</td>
                   <td className="sb-lt-c-act">
                     <RowMenu open={menuKey === key} onToggle={() => setMenuKey(menuKey === key ? null : key)} items={menuItems(lead, task, completed)} />
                   </td>
@@ -580,6 +598,10 @@ const CSS = `
 .sb-lt-checkchip { color: #1d7a55; background: #e7f4ec; }
 .sb-lt-dash { color: #c2bdb2; }
 .sb-lt-nocontact { font-size: 12px; font-weight: 600; color: #b3261e; }
+.sb-lt-webchip { background: rgba(29,111,168,0.12); color: #185F8F; }
+.sb-lt-calllink { color: #185F8F; text-decoration: none; font-weight: 600; }
+.sb-lt-calllink:hover { color: #9A7209; text-decoration: underline; }
+.sb-leads-web { color: #185F8F; }
 
 /* ⋯ menu — fixed positioning (never clipped) */
 .sb-lt-menuwrap { position: relative; display: inline-block; }
