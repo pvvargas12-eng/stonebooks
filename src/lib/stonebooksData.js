@@ -930,6 +930,30 @@ export async function getSignatureRequestsForOrder(orderId) {
   })
 }
 
+// orderIds → Map(orderId → created_at of the newest LIVE signing link:
+// pending/viewed and not lazily expired) — the "Contract sent" evidence for
+// lead lists. Deploy-safe: table missing / error → empty map.
+export async function getPendingContractSentByOrder(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  const map = new Map()
+  if (!ids.length) return map
+  const now = Date.now()
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await supabase
+      .from('signature_requests')
+      .select('order_id, status, created_at, expires_at')
+      .in('order_id', ids.slice(i, i + 150))
+      .in('status', ['pending', 'viewed'])
+      .order('created_at', { ascending: false })
+    if (error) { console.warn('[signing] getPendingContractSentByOrder:', error.message); return map }
+    for (const r of (data || [])) {
+      if (r.expires_at && new Date(r.expires_at).getTime() < now) continue
+      if (!map.has(r.order_id)) map.set(r.order_id, r.created_at)
+    }
+  }
+  return map
+}
+
 // Void a pending/viewed signing request so its link stops working (the signing-*
 // functions reject 'voided'). Staff RLS write.
 export async function voidSignatureRequest(requestId) {
@@ -10909,7 +10933,7 @@ export async function listOpenOrdersLight() {
 export async function listOpenLeadsLight() {
   const { data, error } = await supabase
     .from('orders')
-    .select('id, order_number, primary_lastname, status, sales_rep, created_at, signed_at, lost_at, payments, ' +
+    .select('id, order_number, primary_lastname, status, sales_rep, created_at, signed_at, lost_at, payments, waiting_on, ' +
       'customer:customers(first_name, last_name, phone_primary)')
     .or('archived.is.null,archived.eq.false')
     .not('status', 'in', '(closed,cancelled)')
@@ -10917,7 +10941,10 @@ export async function listOpenLeadsLight() {
     .order('created_at', { ascending: false })
     .limit(2000)
   if (error) { console.warn('listOpenLeadsLight:', error.message); return [] }
-  return (data || []).filter(o => !isOrderRow(o, rowTotalPaid(o)))
+  const rows = (data || []).filter(o => !isOrderRow(o, rowTotalPaid(o)))
+  // "Contract sent" evidence for the left-off chip (leadLeftOff).
+  const sent = await getPendingContractSentByOrder(rows.map(r => r.id))
+  return sent.size ? rows.map(r => (sent.has(r.id) ? { ...r, signing_sent_at: sent.get(r.id) } : r)) : rows
 }
 
 export async function applyStoneDeadline(rowId, orderId, dateIso, appliedBy = null) {

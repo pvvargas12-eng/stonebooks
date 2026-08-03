@@ -51,6 +51,20 @@ export const LOST_REASONS = [
 ]
 export function lostReasonLabel(code) { return (LOST_REASONS.find(r => r.code === code)?.label) || code }
 
+// "Where it left off" — the one-glance chip for lead lists (Paul 2026-08-03:
+// "a very very quick status of where it left off: waiting, contract sent,
+// price shopping"). Precedence: an explicitly-set waiting_on beats derived
+// signals; a live signing link ("Contract sent") beats pipeline status.
+// `o.signing_sent_at` is stamped by the callers that fetched signature_requests.
+export function leadLeftOff(o) {
+  const w = waitingOnOption(o?.waiting_on)
+  if (w) return { code: o.waiting_on, label: w.label, tone: w.side === 'us' ? 'us' : 'them' }
+  if (o?.signing_sent_at) return { code: 'contract_sent', label: 'Contract sent', tone: 'sent' }
+  if (o?.status === 'quoted') return { code: 'quoted', label: 'Quoted', tone: 'them' }
+  if (o?.status === 'scoping') return { code: 'scoping', label: 'Scoping', tone: 'new' }
+  return { code: 'new', label: 'New lead', tone: 'new' }
+}
+
 // Follow-up urgency for a next_follow_up date (local, no timezone drift).
 // 'overdue' (red) · 'today' (amber) · 'future' (neutral) · null (none set).
 export function followUpUrgency(nextFollowUp, todayISO) {

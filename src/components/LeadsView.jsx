@@ -22,9 +22,9 @@ import {
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
   bulkArchiveOrders, hardDeleteOrder, TASK_KINDS, STAFF_NAMES, getWebsiteLeadStats,
-  getActiveStaffUser,
+  getActiveStaffUser, getPendingContractSentByOrder,
 } from '../lib/stonebooksData'
-import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES } from '../lib/leads'
+import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES, WAITING_ON_OPTIONS, leadLeftOff } from '../lib/leads'
 
 const pad = (n) => String(n).padStart(2, '0')
 // today as YYYY-MM-DD — call only in event handlers / effects (never in render).
@@ -247,6 +247,21 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     leads.filter(o => (o.sales_rep || '') === myRep)
       .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))),
   [leads, myRep])
+  // Left-off chip inputs: live signing links ("Contract sent") + local
+  // overrides so a pick shows instantly without reloading the whole pool.
+  const [contractSent, setContractSent] = useState(new Map())
+  useEffect(() => {
+    let alive = true
+    const ids = leadIdsKey ? leadIdsKey.split(',') : []
+    if (!ids.length) { setContractSent(new Map()); return }
+    getPendingContractSentByOrder(ids).then(m => { if (alive) setContractSent(m) })
+    return () => { alive = false }
+  }, [leadIdsKey])
+  const [waitingSel, setWaitingSel] = useState({})   // orderId → waiting_on override
+  const setLeftOff = async (o, v) => {
+    setWaitingSel(m => ({ ...m, [o.id]: v || null }))
+    await updateOrderLeadFields(o.id, { waiting_on: v || null })
+  }
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const openReminder = (leadId) => { setMenuKey(null); setReminderDue(todayStr()); setReminderFor(leadId) }
@@ -347,13 +362,20 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
         {myRep && myLeads.length > 0 && (
           <div className="sb-myleads-list">
             {myLeads.map(o => {
-              const st = statusInfo(o.status)
               const phone = o.customer?.phone_primary
+              const waitingOn = waitingSel[o.id] !== undefined ? waitingSel[o.id] : o.waiting_on
+              const left = leadLeftOff({ ...o, waiting_on: waitingOn, signing_sent_at: contractSent.get(o.id) || null })
               return (
                 <div key={o.id} className="sb-myleads-row">
                   <button type="button" className="sb-myleads-name" onClick={() => onOpenDetail?.(o.id)}>{customerDisplay(o)}</button>
                   {familyDisplay(o) !== '—' && <span className="sb-myleads-fam">{familyDisplay(o)}</span>}
-                  {st?.label && <span className="sb-myleads-st">{st.label}</span>}
+                  {/* Where it left off — read at a glance, set in one click. */}
+                  <select className={`sb-myleads-left tone-${left.tone}`} value={waitingOn || ''}
+                    title="Where this lead left off — pick to set, blank clears"
+                    onChange={e => setLeftOff(o, e.target.value)}>
+                    <option value="">{waitingOn ? '— clear (auto)' : left.label}</option>
+                    {WAITING_ON_OPTIONS.map(w => <option key={w.code} value={w.code}>{w.label}</option>)}
+                  </select>
                   {rowGrandTotal(o) > 0 && <span className="sb-myleads-val">{fmtUSD(rowGrandTotal(o))}</span>}
                   <span className="sb-myleads-when">started {fmtDate(o.created_at)}</span>
                   {phone && <a className="sb-myleads-call" href={`tel:${String(phone).replace(/\D/g, '')}`}>{fmtPhone(phone)}</a>}
@@ -589,6 +611,11 @@ const CSS = `
 .sb-myleads-name:hover { color: #9A7209; text-decoration: underline; }
 .sb-myleads-fam { font-size: 12px; color: #8B8578; }
 .sb-myleads-st { font: 700 10px/1 inherit; letter-spacing: .05em; text-transform: uppercase; color: #6B6455; background: #F5F1E6; border: 1px solid #E4DCC8; border-radius: 999px; padding: 2px 8px; }
+.sb-myleads-left { font: 700 11px/1 inherit; font-family: inherit; border-radius: 999px; padding: 3px 8px; cursor: pointer; max-width: 190px; }
+.sb-myleads-left.tone-them { color: #1D6FA8; background: #EAF2FA; border: 1px solid rgba(29,111,168,.35); }
+.sb-myleads-left.tone-us { color: #B3261E; background: #FBEAE8; border: 1px solid rgba(179,38,30,.4); }
+.sb-myleads-left.tone-sent { color: #1D7A55; background: #E7F4EC; border: 1px solid rgba(29,122,85,.4); }
+.sb-myleads-left.tone-new { color: #6B6455; background: #F5F1E6; border: 1px solid #E4DCC8; }
 .sb-myleads-val { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #1D7A55; }
 .sb-myleads-when { font-size: 11.5px; color: #A39B8B; margin-left: auto; }
 .sb-myleads-call { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; color: #1D6FA8; text-decoration: none; white-space: nowrap; }

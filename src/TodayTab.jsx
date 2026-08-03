@@ -33,9 +33,10 @@ import {
   TASK_TYPES, taskTypeLabel,
   STAFF_NAMES, getActiveStaffUser, setActiveStaffUser,
   fmtDate, customerName, fmtPhone, listUpcomingAppointments,
-  createBatch, updateBatch, searchOrdersLight, listOpenLeadsLight,
+  createBatch, updateBatch, searchOrdersLight, listOpenLeadsLight, updateOrderLeadFields,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
+import { WAITING_ON_OPTIONS, leadLeftOff } from './lib/leads'
 import CompletionEmailModal from './components/CompletionEmailModal'
 
 const pad = (n) => String(n).padStart(2, '0')
@@ -462,9 +463,22 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
                 {rows.map(o => {
                   const age = daysBetween(o.created_at, todayISO)
                   const phone = o.customer?.phone_primary
+                  const left = leadLeftOff(o)
                   return (
                     <div key={o.id} className="sb-tcc-lead">
                       <button type="button" className="sb-tcc-appt-fam" onClick={() => openOrder?.(o.id)}>{famOf(o)}</button>
+                      {/* Where it left off — read at a glance, set in one click
+                          (writes orders.waiting_on; blank = derived). */}
+                      <select className={`sb-tcc-lead-left tone-${left.tone}`} value={o.waiting_on || ''}
+                        title="Where this lead left off — pick to set, blank clears"
+                        onChange={async e => {
+                          const v = e.target.value || null
+                          setLeadPool(pool => (pool || []).map(r => r.id === o.id ? { ...r, waiting_on: v } : r))
+                          await updateOrderLeadFields(o.id, { waiting_on: v })
+                        }}>
+                        <option value="">{o.waiting_on ? '— clear (auto)' : left.label}</option>
+                        {WAITING_ON_OPTIONS.map(w => <option key={w.code} value={w.code}>{w.label}</option>)}
+                      </select>
                       {o.sales_rep === 'Website'
                         ? <span className="sb-tcc-lead-web">Website</span>
                         : o.sales_rep ? <span className="sb-tcc-lead-rep">by {o.sales_rep}</span> : null}
@@ -1326,6 +1340,11 @@ const CSS = `
   .sb-tcc-lead-age{font-family:var(--font-m,'JetBrains Mono'),monospace;font-size:11px;color:#8A5A12}
   .sb-tcc-lead-no{font-family:var(--font-m,'JetBrains Mono'),monospace;font-size:11px;color:#8B8578}
   .sb-tcc-lead-web{font:700 10px/1 inherit;letter-spacing:.05em;text-transform:uppercase;color:#1D6FA8;background:#EAF2FA;border:1px solid rgba(29,111,168,.35);border-radius:999px;padding:2px 7px}
+  .sb-tcc-lead-left{font:700 11px/1 inherit;font-family:inherit;border-radius:999px;padding:3px 8px;cursor:pointer;max-width:190px;appearance:auto}
+  .sb-tcc-lead-left.tone-them{color:#1D6FA8;background:#EAF2FA;border:1px solid rgba(29,111,168,.35)}
+  .sb-tcc-lead-left.tone-us{color:#B3261E;background:#FBEAE8;border:1px solid rgba(179,38,30,.4)}
+  .sb-tcc-lead-left.tone-sent{color:#1D7A55;background:#E7F4EC;border:1px solid rgba(29,122,85,.4)}
+  .sb-tcc-lead-left.tone-new{color:#6B6455;background:#F5F1E6;border:1px solid #E4DCC8}
 
   /* Completed view */
   .sb-tcc .dchip.green .dl{color:#1D7A55}
