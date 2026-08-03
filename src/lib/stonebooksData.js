@@ -10831,6 +10831,34 @@ export async function listStoneDeadlines() {
 // (Paul 2026-07-27: "you cant view gotta be able to open and view the orders
 // then go back and select which one it is"): cemetery, deceased, money,
 // created date, service types.
+// Upcoming appointments (Paul 2026-08-03: "in today I want an appointment
+// list or log so we all see that") — the calendar's own 'appointment'
+// work_batches, next N days, with the linked order joined client-side (the
+// order_id column predates any FK, so no PostgREST embed). Everyone sees it.
+export async function listUpcomingAppointments({ days = 14 } = {}) {
+  const start = todayISO()
+  const end = todayISO(new Date(Date.now() + days * 86400000))
+  const { data, error } = await supabase.from('work_batches')
+    .select('id, kind, title, scheduled_date, start_time, end_time, attendees, notes, order_id, owner_name, status')
+    .eq('kind', 'appointment')
+    .gte('scheduled_date', start)
+    .lte('scheduled_date', end)
+    .not('status', 'in', '(cancelled,completed)')
+    .order('scheduled_date', { ascending: true })
+    .order('start_time', { ascending: true, nullsFirst: false })
+  if (error) { console.warn('[appts] listUpcomingAppointments:', error.message); return [] }
+  const rows = data || []
+  const orderIds = [...new Set(rows.map(r => r.order_id).filter(Boolean))]
+  const byId = new Map()
+  if (orderIds.length) {
+    const { data: ords } = await supabase.from('orders')
+      .select('id, order_number, primary_lastname, customer:customers(first_name, last_name, phone_primary)')
+      .in('id', orderIds)
+    for (const o of (ords || [])) byId.set(o.id, o)
+  }
+  return rows.map(r => ({ ...r, order: r.order_id ? byId.get(r.order_id) || null : null }))
+}
+
 // Website-lead pulse for the Leads page header (WEB-LEAD-1, Paul 2026-08-03:
 // "in the top we need stat that shows how many form submissions we have
 // week / month"): submissions that became leads in the last 7 / 30 days.

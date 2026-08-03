@@ -10,6 +10,14 @@ Paul: "when customers fill out a contact us form it goes to our email can that g
 - NOTE: an alternate webhook endpoint (Duda form → api route) was considered and skipped — the email path needs nothing from the website and covers history. If Paul ever wants instant (sub-minute) capture, that's the upgrade.
 - **Round 2 (same day, Paul's Duda-envy notes): the Leads page wears the pulse.** LeadsView summary strip gains **website · 7 days / website · 30 days** stat cards (`getWebsiteLeadStats` — head-count queries over website_leads status created); the task table's CONTACT column is **click-to-call** (`tel:` links, digits-only href); task rows wear a blue **Website** kind-chip when task.created_by/tasked_by === 'Website' OR lead.sales_rep === 'Website' (the auto-created ones read at a glance, like the Check-job chip).
 
+## Sprint APPT-1 (2026-08-03) — SHIPPED: Add appointment on the order + the shared Today log
+
+Paul: "here in Lead I need in big and a different color maybe in purple to Add appointment... describe who when the time what theyre looking for and then in today I want an appointment list so we all see that. Also it would be on the calendar." NO new store — an appointment IS a calendar `work_batches` row (kind 'appointment', CAL-3 columns), so the Calendar renders it with zero extra work and the three surfaces can never disagree.
+
+- **OrderDetail: purple `Add appointment`** (`sb-od-btn-appt`, #6D28D9, sized up) in the quick-action row before Record payment. Modal: WITH (STAFF_NAMES, seeded getActiveStaffUser) · DAY (today) · TIME · "What are they looking for?" textarea → `createBatch({ kind:'appointment', title:'Appointment — FAM', scheduled_date, start_time, attendees:[who], owner_name: who, order_id, notes, calendar_scope:'all' })` + activity log ("Appointment with X — what").
+- **TodayTab: "Appointments — next 14 days"** violet panel (`sb-tcc-appts`, #6D28D9 rail) above the Show row — EVERYONE'S, deliberately never who-filtered. Rows: `Mon 8/4 · 1:00p` (fmtTime12) · family (opens the order) · "with Lonnie" · what they're looking for · **click-to-call phone** at the right. Data: `listUpcomingAppointments({days})` in stonebooksData — kind='appointment', not cancelled/completed, **orders joined CLIENT-SIDE** (work_batches.order_id predates any FK — no PostgREST embed).
+- Calendar: nothing changed — appointment kind already renders (CAL-3 blue).
+
 ## Sprint YARD-TRUST (2026-08-03) — SHIPPED: the inventory trust system (audit + links + stone position + Count the Yard)
 
 Paul's crisis, verbatim: "WE KEEP ORDERING CAUSE WE JUST DONT KNOW... EVERYONE IN MY SHOP IS STILL WORKING OFF SPREADSHEETS BECAUSE THEY DONT TRUST STONEBOOKS." Migration `20260803_yard_count.sql` ✅ APPLIED + verified (`inventory_stock.verified_at/verified_by`; status 'missing' by convention — NO CHECK constraint on inventory_stock.status, verified via pg_constraint).

@@ -32,7 +32,7 @@ import {
   uploadTaskAttachment, listOrderAttachments,
   TASK_TYPES, taskTypeLabel,
   STAFF_NAMES, getActiveStaffUser, setActiveStaffUser,
-  fmtDate, customerName,
+  fmtDate, customerName, fmtPhone, listUpcomingAppointments,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
 import CompletionEmailModal from './components/CompletionEmailModal'
@@ -44,6 +44,16 @@ const dayLabel = (d) => d.toLocaleDateString('en-US', { weekday: 'long', month: 
 const shortDay = (iso) => {
   const d = new Date(String(iso).slice(0, 10) + 'T00:00:00')
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })
+}
+// "13:00" → "1:00p" for the appointments log.
+const fmtTime12 = (hhmm) => {
+  const [h, m] = String(hhmm || '').split(':').map(Number)
+  if (!Number.isFinite(h)) return String(hhmm || '')
+  return `${h % 12 || 12}:${pad(m || 0)}${h >= 12 ? 'p' : 'a'}`
+}
+const apptWhen = (a) => {
+  const day = shortDay(a.scheduled_date)
+  return a.start_time ? `${day} · ${fmtTime12(a.start_time)}` : day
 }
 const famOf = (o) => {
   const raw = (o?.primary_lastname && String(o.primary_lastname).trim())
@@ -95,6 +105,13 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const [busyId, setBusyId] = useState(null)
 
   const [view, setView] = useState('list')          // list | board | people | dash
+  // The shared appointments log (next 14 days) — everyone's, never who-filtered.
+  const [appts, setAppts] = useState([])
+  useEffect(() => {
+    let alive = true
+    listUpcomingAppointments({ days: 14 }).then(r => { if (alive) setAppts(r || []) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
   const [dayFilter, setDayFilter] = useState('all') // all | overdue | nodate | <iso>
   // Multi-select who-filter: tokens 'p:<name>' / 'd:<dept>' — any combo
   // (Chelsea + Paul + Design). Empty set = everyone. Defaults to YOU once
@@ -309,6 +326,33 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
               </span>
             )
           })}
+        </div>
+      )}
+
+      {/* APPOINTMENTS — the shared log (Paul 2026-08-03: "in today I want an
+          appointment list so we all see that"). Everyone's, never filtered by
+          the who-chips; created from the lead page's Add appointment (and the
+          Calendar — same work_batches rows, so the two can never disagree). */}
+      {appts.length > 0 && (
+        <div className="sb-tcc-appts">
+          <div className="sb-tcc-appts-h">Appointments — next 14 days</div>
+          {appts.map(a => (
+            <div key={a.id} className="sb-tcc-appt">
+              <span className="sb-tcc-appt-when">{apptWhen(a)}</span>
+              {a.order
+                ? <button type="button" className="sb-tcc-appt-fam" onClick={() => openOrder?.(a.order.id)}>
+                    {famOf(a.order)}
+                  </button>
+                : <span className="sb-tcc-appt-fam-plain">{a.title || 'Appointment'}</span>}
+              {a.owner_name && <span className="sb-tcc-appt-with">with {a.owner_name}</span>}
+              {a.notes && <span className="sb-tcc-appt-what">{a.notes}</span>}
+              {a.order?.customer?.phone_primary && (
+                <a className="sb-tcc-appt-call" href={`tel:${String(a.order.customer.phone_primary).replace(/\D/g, '')}`}>
+                  {fmtPhone(a.order.customer.phone_primary)}
+                </a>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
@@ -1080,6 +1124,18 @@ const CSS = `
   .sb-tcc-trow .chain{font-size:12px;color:#79735F;white-space:nowrap}
   .sb-tcc-trow .chain em{font-style:normal}
   .sb-tcc-trow .chain b{color:#1A1E24}
+  .sb-tcc-appts{background:#F6F1FB;border:1px solid #CECBF6;border-left:5px solid #6D28D9;border-radius:12px;padding:10px 14px;margin:0 0 12px}
+  .sb-tcc-appts-h{font:800 11px/1 inherit;font-family:inherit;letter-spacing:.07em;text-transform:uppercase;color:#3C3489;margin-bottom:6px}
+  .sb-tcc-appt{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:6px 0;border-top:1px solid #E6E2F8}
+  .sb-tcc-appt:first-of-type{border-top:none}
+  .sb-tcc-appt-when{font:700 12px var(--sb-font-mono,monospace);color:#3C3489;white-space:nowrap}
+  .sb-tcc-appt-fam{font:700 13.5px inherit;font-family:inherit;color:#1A1E24;background:none;border:none;padding:0;cursor:pointer}
+  .sb-tcc-appt-fam:hover{color:#6D28D9}
+  .sb-tcc-appt-fam-plain{font-weight:700;font-size:13.5px}
+  .sb-tcc-appt-with{font-size:12px;font-weight:600;color:#534AB7}
+  .sb-tcc-appt-what{font-size:12.5px;color:#55503F}
+  .sb-tcc-appt-call{font-size:12px;font-weight:600;color:#185F8F;text-decoration:none;margin-left:auto}
+  .sb-tcc-appt-call:hover{color:#6D28D9;text-decoration:underline}
   .sb-tcc-trow .chain-l{font-style:normal;font-weight:700;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#9a948a;margin-right:2px}
   .sb-tcc-trow .chain-l+em+.chain-l,.sb-tcc-trow .chain-l:not(:first-child){margin-left:6px}
   .sb-tcc .efield{display:flex;flex-direction:column;gap:2px}

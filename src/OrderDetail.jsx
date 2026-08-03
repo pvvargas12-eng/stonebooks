@@ -44,7 +44,7 @@ import {
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef, dueDateTone,
-  installGates, STAFF_NAMES, getJobComponents, dueRelativeText, getActiveStaffUser,
+  installGates, STAFF_NAMES, getJobComponents, dueRelativeText, getActiveStaffUser, createBatch,
   markApprovalLinkEmailed,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
@@ -410,6 +410,9 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const [drafting, setDrafting] = useState(null)      // the mode currently being AI-drafted | null
   // Record payment
   const [payModal, setPayModal] = useState(null)      // open payment modal state | null
+  // Add appointment (Paul 2026-08-03) — writes a calendar 'appointment'
+  // work_batch linked to this order; Today's log + the Calendar read the same row.
+  const [apptModal, setApptModal] = useState(null)    // { who, date, time, what, busy, err } | null
   const [lastReceiptPayment, setLastReceiptPayment] = useState(null)  // just-saved payment → post-save receipt offer
   const [receiptPreview, setReceiptPreview] = useState(null)          // { payment } → click-to-preview modal
   const [editPay, setEditPay] = useState(null)        // { id, amount, method, receivedAt, ref } inline editor
@@ -2318,6 +2321,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           <button type="button" className="sb-od-btn" onClick={() => fileRef.current?.click()} disabled={uploadBusy}>
             {uploadBusy ? 'Uploading…' : 'Upload attachment'}
           </button>
+          <button type="button" className="sb-od-btn sb-od-btn-appt"
+            title="Book an appointment — shows on Today and the Calendar"
+            onClick={() => setApptModal({ who: getActiveStaffUser() || STAFF_NAMES[0] || '', date: todayISO(), time: '', what: '', busy: false, err: null })}>
+            Add appointment
+          </button>
           <button type="button" className="sb-od-btn sb-od-btn-pay" onClick={openPayment}>Record payment</button>
           <button type="button" className="sb-od-btn" style={{ color: '#b3261e', borderColor: '#dda9a4' }}
             title="Permanently delete this order — confirmation required"
@@ -3536,6 +3544,69 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           onSave={saveContractEdits} />
       )}
 
+      {/* ADD APPOINTMENT (Paul 2026-08-03): who · when · what they're looking
+          for → one calendar 'appointment' batch linked to this order. Today's
+          shared log and the Calendar both read that row. */}
+      {apptModal && (
+        <div className="sb-od-modal-backdrop" onClick={() => { if (!apptModal.busy) setApptModal(null) }}>
+          <div className="sb-od-modal" role="dialog" aria-modal="true" aria-label="Add appointment" onClick={e => e.stopPropagation()}>
+            <div className="sb-od-modal-title">Add appointment — {properName(order.primary_lastname || customerName(order.customer) || 'this lead')}</div>
+            <div className="sb-od-appt-grid">
+              <label className="sb-od-appt-f"><b>With</b>
+                <select value={apptModal.who} disabled={apptModal.busy}
+                  onChange={e => setApptModal(m => ({ ...m, who: e.target.value }))}>
+                  {STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
+              <label className="sb-od-appt-f"><b>Day</b>
+                <input type="date" value={apptModal.date} disabled={apptModal.busy}
+                  onChange={e => setApptModal(m => ({ ...m, date: e.target.value }))} />
+              </label>
+              <label className="sb-od-appt-f"><b>Time</b>
+                <input type="time" value={apptModal.time} disabled={apptModal.busy}
+                  onChange={e => setApptModal(m => ({ ...m, time: e.target.value }))} />
+              </label>
+            </div>
+            <label className="sb-od-appt-f"><b>What are they looking for?</b>
+              <textarea rows={3} value={apptModal.what} disabled={apptModal.busy}
+                placeholder="e.g. upright for two, gray, budget around $6k — bringing photos of the plot"
+                onChange={e => setApptModal(m => ({ ...m, what: e.target.value }))} />
+            </label>
+            {apptModal.err && <div className="sb-msg sb-msg-err" style={{ marginBottom: 10 }}>{apptModal.err}</div>}
+            <div className="sb-od-modal-actions">
+              <button type="button" className="sb-od-btn" disabled={apptModal.busy} onClick={() => setApptModal(null)}>Cancel</button>
+              <button type="button" className="sb-od-btn sb-od-btn-appt" disabled={apptModal.busy} onClick={async () => {
+                const m = apptModal
+                if (!m.date) { setApptModal({ ...m, err: 'Pick the day.' }); return }
+                setApptModal({ ...m, busy: true, err: null })
+                const fam = properName(order.primary_lastname || customerName(order.customer) || '')
+                const r = await createBatch({
+                  kind: 'appointment',
+                  title: `Appointment — ${fam || 'walk-in'}`,
+                  scheduled_date: m.date,
+                  start_time: m.time || null,
+                  attendees: m.who ? [m.who] : [],
+                  owner_name: m.who || null,
+                  order_id: orderId,
+                  notes: (m.what || '').trim() || null,
+                  calendar_scope: 'all',
+                })
+                if (!r?.ok) { setApptModal({ ...m, busy: false, err: r?.error || 'Could not save the appointment.' }); return }
+                logOrderActivity(orderId, {
+                  type: 'change', field: 'Appointment', newValue: `${m.date}${m.time ? ` ${m.time}` : ''}`,
+                  note: `Appointment with ${m.who}${m.what ? ` — ${m.what.trim()}` : ''}`,
+                  actor: await getCurrentStaffName(),
+                }).then(() => refreshActivity()).catch(() => {})
+                setApptModal(null)
+                setActionNote(`Appointment saved — it's on Today and the Calendar. ✓`)
+              }}>
+                {apptModal.busy ? 'Saving…' : 'Save appointment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {deleteModal && (
         <div className="sb-od-modal-backdrop" onClick={() => { if (!deleteBusy) setDeleteModal(false) }}>
           <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Confirm permanent delete" onClick={e => e.stopPropagation()}>
@@ -3943,6 +4014,14 @@ const OD_CSS = `
   .sb-od-btn-pay:hover:not(:disabled) { background: #1a6a35; }
   .sb-od-btn-sales { background: #F4EBD4; border-color: #9A7209; color: #6d5106; font-weight: 700; }
   .sb-od-btn-sales:hover:not(:disabled) { background: #eddfba; }
+  /* Add appointment — the big purple door (Paul 2026-08-03). */
+  .sb-od-btn-appt { background: #6D28D9; border-color: #6D28D9; color: #fff; font-weight: 700; font-size: 14px; padding: 9px 16px; }
+  .sb-od-btn-appt:hover:not(:disabled) { background: #5a1fb8; }
+  .sb-od-appt-grid { display: grid; grid-template-columns: 1.2fr 1fr 0.8fr; gap: 10px; margin-bottom: 10px; }
+  .sb-od-appt-f { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin-bottom: 10px; }
+  .sb-od-appt-f > b { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8472; }
+  .sb-od-appt-f select, .sb-od-appt-f input, .sb-od-appt-f textarea { font: inherit; font-size: 13.5px; padding: 8px 10px; border: 0.5px solid #D9D2C0; border-radius: 8px; background: #fff; }
+  .sb-od-appt-f textarea { resize: vertical; }
 
   /* Email drafts strip — parked composers, one chip each. */
   .sb-od-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }
