@@ -26,21 +26,29 @@ export default defineConfig([
     // — stays at error; everything else is informational until we
     // explicitly decide to address it.
     //
-    // Note: no-undef is downgraded because the only current violations
-    // are 7× 'process is not defined' in upload-from-backup.js, a Node
-    // CLI script being linted with browser globals. Functionally fine.
+    // no-undef is an ERROR as of 2026-08-03: a missing import shipped a
+    // render crash to prod (OrderDetail, properName) because warn-level lint
+    // let it through — and the sweep found two more latent ones (SalesMode
+    // rankDiversify, reportDefs orderName). Node files get their own globals
+    // block below so process/Buffer/__dirname stop false-positive.
     rules: {
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/set-state-in-effect': 'warn',
       'react-hooks/immutability': 'warn',
       'react-hooks/refs': 'warn',
       'no-unused-vars': 'warn',
-      'no-undef': 'warn',
+      'no-undef': 'error',
       // Additional pre-existing legacy patterns flagged by js.configs.recommended:
       // empty catch blocks (common error-swallow pattern across sprints) and
       // an isolated useless-assignment. Same downgrade rationale as above.
       'no-empty': 'warn',
       'no-useless-assignment': 'warn',
     },
+  },
+  // Node contexts — Vercel api routes, CLI scripts, root config files. These
+  // run under Node, so its globals are real here, keeping no-undef honest.
+  {
+    files: ['api/**/*.js', 'scripts/**/*.{js,mjs}', '*.js'],
+    languageOptions: { globals: { ...globals.node } },
   },
 ])

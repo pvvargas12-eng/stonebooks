@@ -221,7 +221,7 @@ const MONEY_PULSE = {
       csv: {
         filename: 'money-pulse',
         headers: ['Family', 'Order #', 'Balance due'],
-        rows: owers.map(({ o, bal }) => [orderName(o), o.order_number || '', (Math.round(bal * 100) / 100).toFixed(2)]),
+        rows: owers.map(({ o, bal }) => [o.primary_lastname || '—', o.order_number || '', (Math.round(bal * 100) / 100).toFixed(2)]),
       },
       body: (
         <>

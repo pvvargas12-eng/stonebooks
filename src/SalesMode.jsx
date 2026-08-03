@@ -37,7 +37,7 @@ import DieOverrideField from './components/DieOverrideField'
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
 import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus } from './lib/stonebooksData'
-import { designTags } from './lib/monumentSearch'
+import { designTags, rankDiversify } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 
