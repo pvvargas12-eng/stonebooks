@@ -364,6 +364,15 @@ export default function Stonebooks() {
     setSalesKind('cemetery')
     setSalesOpen(true)
   }
+  // Fresh cemetery order straight from the Cemetery Orders tab (Paul
+  // 2026-08-03: "i have 16 doors to do I need to be able to create new
+  // cemetery order in HERE") — skips the order-type chooser.
+  const openCemeteryNew = () => {
+    setSalesCemeteryId(null)
+    setSalesCemeteryEdit(false)
+    setSalesKind('cemetery')
+    setSalesOpen(true)
+  }
   // Edit a submitted cemetery order — wizard opens in edit mode (doors editor).
   const openCemeteryEdit = (cemeteryOrderId) => {
     setSalesCemeteryId(cemeteryOrderId)
@@ -722,7 +731,7 @@ export default function Stonebooks() {
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} returnTo={orderDetailReturn} onReturn={() => { const r = orderDetailReturn; setOrderDetailReturn(null); setOrderDetailId(null); if (r?.tab) setTab(r.tab) }} />}
-{tab === 'cemetery-orders' && <CemeteryOrdersTab onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
+{tab === 'cemetery-orders' && <CemeteryOrdersTab onNewOrder={openCemeteryNew} onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenOrderDetail={(id, action) => { setOrderDetailId(id); if (action && action !== 'production') setOrderDetailAction(action); setOrderDetailReturn({ label: action === 'design' ? 'Design hub' : action === 'production' ? 'Production floor' : 'Jobs', tab: 'jobs' }); setTab('orders') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
 {tab === 'permitbuilder' && <PermitBuilderTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Permit Builder', tab: 'permitbuilder' }); setTab('orders') }} />}
 {tab === 'cemeteries' && <CemeteriesTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Cemeteries', tab: 'cemeteries' }); setTab('orders') }} />}

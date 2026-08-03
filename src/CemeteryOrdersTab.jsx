@@ -46,7 +46,7 @@ const rowTotal = (o) => {
 }
 const payStateOf = (total, paid) => (total > 0 && paid >= total ? 'paid' : (paid > 0 ? 'partial' : 'unpaid'))
 
-export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJob, staffName, initialSelectedId = null, onConsumeInitialSelected }) {
+export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrder, onOpenJob, staffName, initialSelectedId = null, onConsumeInitialSelected }) {
   const [orders, setOrders] = useState([])
   const [paidTotals, setPaidTotals] = useState({})
   const [loading, setLoading] = useState(true)
@@ -115,9 +115,16 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
 
   return (
     <div className="sb-page sb-page-wide col">
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">Workspace</div>
-        <h1 className="sb-page-title">Cemetery Orders</h1>
+      <div className="sb-page-head" style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div className="sb-page-eyebrow">Workspace</div>
+          <h1 className="sb-page-title">Cemetery Orders</h1>
+        </div>
+        {/* Straight into the cemetery wizard — no New-sale detour (Paul
+            2026-08-03: "i have 16 doors to do"). */}
+        {onNewOrder && (
+          <button type="button" className="col-new" onClick={onNewOrder}>+ New cemetery order</button>
+        )}
       </div>
 
       <div className="col-toolbar">
@@ -147,7 +154,12 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
       {loading ? (
         <div className="sb-empty">Loading cemetery orders…</div>
       ) : rows.length === 0 ? (
-        <div className="sb-empty">No cemetery orders{statusFilter !== 'all' || cemeteryFilter !== 'all' ? ' match these filters' : ' yet'}. Start one from <strong>New sale → Cemetery order</strong>.</div>
+        <div className="sb-empty">
+          No cemetery orders{statusFilter !== 'all' || cemeteryFilter !== 'all' ? ' match these filters' : ' yet'}.
+          {onNewOrder
+            ? <> <button type="button" className="col-new" style={{ marginLeft: 8 }} onClick={onNewOrder}>+ New cemetery order</button></>
+            : <> Start one from <strong>New sale → Cemetery order</strong>.</>}
+        </div>
       ) : (
         <div className="col-table">
           <div className="col-row col-head" style={{ gridTemplateColumns: GRID }}>
@@ -195,6 +207,8 @@ export default function CemeteryOrdersTab({ onResumeDraft, onEditOrder, onOpenJo
 }
 
 const styles = `
+  .col-new{ font:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:8px; border:none; background:#9A7209; color:#fff; cursor:pointer; white-space:nowrap; }
+  .col-new:hover{ background:#7d5d07; }
   .col-toolbar{ display:flex; gap:16px; margin:18px 0 16px; flex-wrap:wrap; }
   .col-filter{ display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--sb-text-muted); }
   .col-filter select{ font:inherit; font-size:13px; padding:7px 10px; border:.5px solid var(--sb-border); border-radius:6px; background:var(--sb-surface); color:var(--sb-text); }
