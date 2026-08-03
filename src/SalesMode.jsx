@@ -12177,10 +12177,10 @@ function CancelOrderSection({ order, update }) {
   }
 
   const doHardDelete = async () => {
-    const ack = prompt(
-      'PERMANENTLY DELETE this order? This cannot be undone. Type DELETE to confirm.'
+    const ok = window.confirm(
+      'PERMANENTLY DELETE this order? This cannot be undone.'
     )
-    if (ack !== 'DELETE') return
+    if (!ok) return
     setBusy('delete'); setErr(null)
     try {
       // Full cascade delete — the raw orders.delete() used to hit the jobs

@@ -715,17 +715,17 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     }),
   })
   // Permanent delete (Paul 2026-07-22: "not only close/archive — delete").
-  // Typed confirmation, no soft modal — this one really erases.
+  // Plain OK/Cancel confirm (Paul 2026-08-03: the typed-DELETE gate was
+  // "annoying — just have a message pop up to confirm deletion").
   const askDelete = () => {
     const n = selectedIds.size
     if (!n) return
-    const ack = window.prompt(
+    const ok = window.confirm(
       `PERMANENTLY DELETE ${n} order${n === 1 ? '' : 's'}?\n\n` +
       'This erases the selected order(s) plus their jobs, tasks, activity, permits, and attachments. ' +
-      'Money already recorded in Payments (outgoing) is kept but unlinked. This cannot be undone.\n\n' +
-      'Type DELETE to confirm.'
+      'Money already recorded in Payments (outgoing) is kept but unlinked. This cannot be undone.'
     )
-    if (ack !== 'DELETE') return
+    if (!ok) return
     runBulk(() => bulkHardDeleteOrders(ids()), {
       successText: r => `Deleted ${r.count} order${r.count === 1 ? '' : 's'}${r.failed?.length ? ` · ${r.failed.length} failed` : ''}.`,
     })

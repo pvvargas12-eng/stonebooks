@@ -299,8 +299,8 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   }
   const deleteLead = async (leadId, name) => {
     setMenuKey(null)
-    const ack = window.prompt(`PERMANENTLY DELETE this lead${name ? ` — ${name}` : ''}?\n\nJobs, tasks, and files on it are erased. This cannot be undone.\n\nType DELETE to confirm.`)
-    if (ack !== 'DELETE') return
+    const ok = window.confirm(`PERMANENTLY DELETE this lead${name ? ` — ${name}` : ''}?\n\nJobs, tasks, and files on it are erased. This cannot be undone.`)
+    if (!ok) return
     setBusyId(leadId)
     const res = await hardDeleteOrder(leadId)
     setBusyId(null)

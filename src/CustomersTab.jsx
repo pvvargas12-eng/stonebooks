@@ -870,8 +870,8 @@ function CustomerDetail({ customer: customerProp, onBack, onArchived, onDeleted,
       alert(`Can't permanently delete — ${customerName(customer)} has ${orders.length} order${orders.length === 1 ? '' : 's'} attached. Archive instead to preserve the history.`)
       return
     }
-    const ack = prompt(`PERMANENTLY DELETE ${customerName(customer)}? This cannot be undone. Type DELETE to confirm.`)
-    if (ack !== 'DELETE') return
+    const ok = window.confirm(`PERMANENTLY DELETE ${customerName(customer)}? This cannot be undone.`)
+    if (!ok) return
     setBusy('delete'); setErr(null)
     const r = await deleteCustomer(customer.id)
     setBusy(null)

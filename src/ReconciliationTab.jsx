@@ -77,14 +77,14 @@ export default function ReconciliationTab({ onOpenOrder }) {
   }
 
   // PERMANENT delete — wipe the order from Stonebooks entirely (Paul
-  // 2026-07-22: "no mercy, my worker understands that"). Typed-DELETE gate,
-  // then hardDeleteOrder clears jobs/proofs/ledger children and the row.
+  // 2026-07-22: "no mercy, my worker understands that"). Plain confirm (Paul
+  // 2026-08-03), then hardDeleteOrder clears jobs/proofs/ledger children + row.
   const doDelete = async (r) => {
     const id = r.orderId
     if (deleting[id] === 'busy' || deleting[id] === 'done') return
-    const typed = window.prompt(
-      `This permanently WIPES ${r.orderNumber || 'this order'} (${r.surnameRaw || 'no surname'}) from Stonebooks — the order, its jobs, proofs, and activity. There is no undo.\n\nType DELETE to confirm.`)
-    if (typed !== 'DELETE') return
+    const ok = window.confirm(
+      `This permanently WIPES ${r.orderNumber || 'this order'} (${r.surnameRaw || 'no surname'}) from Stonebooks — the order, its jobs, proofs, and activity. There is no undo.`)
+    if (!ok) return
     setDeleting(s => ({ ...s, [id]: 'busy' }))
     const res = await hardDeleteOrder(id)
     if (!res.ok) {
