@@ -44,6 +44,7 @@ import {
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef, dueDateTone,
+  installGates, STAFF_NAMES, getJobComponents, dueRelativeText, getActiveStaffUser,
   markApprovalLinkEmailed,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
@@ -62,6 +63,7 @@ import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
 import { CONTRACTED_STATUSES } from './lib/leads'
 import { buildPipeline } from './lib/orderPipeline'
+import { phaseLabel } from './lib/jobComponents'
 import { OrderProductionStatus } from './components/ProductionFloor'
 import { TEAM_ROSTER } from './lib/team'
 import CheckJobModal from './components/CheckJobModal.jsx'
@@ -230,6 +232,62 @@ function ManualBlockerControl({ order, onSaved }) {
     )
   }
   return <button type="button" className="sb-od-mb-add" onClick={openEdit}>+ Add blocker</button>
+}
+
+// A WAITING ON chip that tasks somebody in two clicks (Paul 2026-08-03:
+// "FDN Not in → Task Paul to do foundation... SUPER EASY"). Click the red
+// chip → person picker + prefilled title + optional due → Task it. Writes the
+// same shop_tasks every task surface reads (addOrderTask).
+function GateTaskChip({ label, taskTitle, orderId, onTasked }) {
+  const [open, setOpen] = useState(false)
+  const [who, setWho] = useState('')
+  const [title, setTitle] = useState('')
+  const [due, setDue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const openIt = () => {
+    setWho(getActiveStaffUser() || STAFF_NAMES[0] || '')
+    setTitle(taskTitle)
+    setDue('')
+    setErr(null)
+    setOpen(true)
+  }
+  const taskIt = async () => {
+    if (!title.trim()) { setErr('Type the task.'); return }
+    if (!who) { setErr('Pick who.'); return }
+    setBusy(true); setErr(null)
+    const actor = await getCurrentStaffName()
+    const r = await addOrderTask(orderId, { note: title.trim(), assignee: who, dueDate: due || null, actor })
+    setBusy(false)
+    if (!r?.ok) { setErr(r?.error || 'Could not create the task.'); return }
+    setOpen(false)
+    onTasked?.(who)
+  }
+  return (
+    <span className="sb-od-gate-wrap">
+      <button type="button" className="sb-od-lanechip sb-od-lanechip-wait" onClick={() => (open ? setOpen(false) : openIt())}
+        title="Click to task somebody about this">
+        {label}
+      </button>
+      {open && (
+        <span className="sb-od-gatepop">
+          <span className="sb-od-gatepop-h">Task somebody</span>
+          <select value={who} onChange={e => setWho(e.target.value)} disabled={busy} aria-label="Who">
+            {STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <input type="text" value={title} maxLength={140} disabled={busy}
+            onChange={e => setTitle(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') taskIt() }} aria-label="Task" />
+          <span className="sb-od-gatepop-row">
+            <input type="date" value={due} disabled={busy} onChange={e => setDue(e.target.value)} aria-label="Due date" />
+            <button type="button" className="sb-od-gatepop-go" disabled={busy} onClick={taskIt}>{busy ? 'Tasking…' : 'Task it'}</button>
+            <button type="button" className="sb-od-gatepop-x" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+          </span>
+          {err && <span className="sb-od-gatepop-err">{err}</span>}
+        </span>
+      )}
+    </span>
+  )
 }
 
 function ODDateField({ value, onCommit, ariaLabel, disabled, tone = null }) {
@@ -724,6 +782,18 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     }
   }
 
+  // ── Status Overview v2 (Paul 2026-08-03) — the floor position chip reads the
+  // order's own job_components (same rows the boards move). Light fetch, and
+  // the Production status card below has its own refresh for deep work.
+  const [floorComps, setFloorComps] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    getJobComponents({ orderId }).then(r => { if (!cancelled) setFloorComps(r || []) }).catch(() => { if (!cancelled) setFloorComps([]) })
+    return () => { cancelled = true }
+  }, [orderId])
+  // Which phase pill is peeked open (click SALES/ADMIN/… → that group's steps).
+  const [phasePeek, setPhasePeek] = useState(null)
+
   // ── Pipeline rail handlers ──────────────────────────────────────────────────
   const milestoneStatusLabel = (s) => s === 'done' ? 'Done' : s === 'in_progress' ? 'In progress' : s === 'blocked' ? 'Blocked' : s === 'not_needed' ? 'Removed (not needed)' : 'Not started'
 
@@ -738,10 +808,28 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       res = await updateMilestoneWithOverride(job.id, key, { status }, 'Set from order pipeline rail')
     }
     if (!res.ok) { setActionNote(`Could not update ${label} — ${res.error || 'blocked'}.`); return }
+    // CASCADE (Paul 2026-08-03): marking a later step done backfills every
+    // earlier not-done step in the SAME group — "layout approved by customer
+    // automatically means layout created." Forward only; unchecking never
+    // cascades. Best-effort per step so one hiccup doesn't strand the rest.
+    let autoCount = 0
+    if (status === 'done' && prev) {
+      const earlier = (job.milestones || []).filter(m =>
+        m.group === prev.group && m.milestone_key !== key
+        && (m.sort_order ?? 0) < (prev.sort_order ?? 0)
+        && m.status !== 'done' && m.status !== 'not_needed')
+      for (const m of earlier) {
+        let r = await updateMilestone(job.id, m.milestone_key, { status: 'done' })
+        if (!r.ok && r.requiresOverride) {
+          r = await updateMilestoneWithOverride(job.id, m.milestone_key, { status: 'done' }, `Auto — implied by ${label}`)
+        }
+        if (r.ok) autoCount++
+      }
+    }
     await logOrderActivity(orderId, {
       type: 'change', field: 'Milestone',
       oldValue: milestoneStatusLabel(prev?.status), newValue: milestoneStatusLabel(status),
-      note: `${label}: ${milestoneStatusLabel(prev?.status)} → ${milestoneStatusLabel(status)}`,
+      note: `${label}: ${milestoneStatusLabel(prev?.status)} → ${milestoneStatusLabel(status)}${autoCount ? ` (+${autoCount} earlier step${autoCount === 1 ? '' : 's'} auto-completed)` : ''}`,
       actor: await getCurrentStaffName(),
     })
     await refreshJob(); refreshActivity()
@@ -1838,8 +1926,15 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     : null
 
   // Left-rail section nav (Completion photos only when present).
+  // Design summary shows for the making trades (Paul 2026-08-03: "new stones
+  // orders, inscriptions orders, and bronze services") or whenever a catalog
+  // design was actually picked.
+  const _svcUp = new Set((order.service_types || []).map(s => String(s).toUpperCase()))
+  const showMake = _svcUp.has('NEW_STONE') || _svcUp.has('INSCRIPTION') || _svcUp.has('BRONZE')
+    || (Array.isArray(order.designs) && order.designs.length > 0)
   const railItems = [
     { id: 'od-customer', label: 'Customer & contact' },
+    ...(showMake ? [{ id: 'od-make', label: 'Design summary' }] : []),
     { id: 'od-cemetery', label: 'Cemetery & grave' },
     { id: 'od-monument', label: 'Monument' },
     { id: 'od-financial', label: 'Financial' },
@@ -1874,6 +1969,43 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // Status Overview card — same engine as the rail (they can never disagree).
   const overviewPipe = buildPipeline(order, job)
   const overviewPressure = computeOrderPressure(order, job, job?.milestones)
+
+  // ── Status Overview v2 derives (Paul 2026-08-03) ───────────────────────────
+  // Current floor position — the die leads (it's the piece being worked).
+  const _floorPiece = (floorComps || []).find(c => c.on_floor && c.component_type === 'die')
+    || (floorComps || []).find(c => c.on_floor) || null
+  const floorPhaseCode = _floorPiece?.current_phase || null
+  // The install milestone: in_progress + due_date = scheduled.
+  const _installMsRow = (job?.milestones || []).find(m => ['installed', 'door_installed', 'work_completed'].includes(m.milestone_key)) || null
+  const installScheduledDate = _installMsRow?.status === 'in_progress' ? (_installMsRow.due_date || null) : null
+  const ovInstalledDone = _installMsRow?.status === 'done'
+  const ovGates = job ? installGates(order, job) : null
+  // Waiting on / Already good — every waiting chip is one click from a task.
+  const fam2 = properName(order.primary_lastname || customerName(order.customer) || '')
+  const ordTag = `${fam2}${order.order_number ? ` (${order.order_number})` : ''}`
+  const waitingOn = []
+  if (!order.signed_at) waitingOn.push({ key: 'contract', label: 'CONTRACT UNSIGNED', short: 'the contract', task: `Get the contract signed — ${ordTag}` })
+  if (order.signed_at && balance > 0) waitingOn.push({ key: 'payment', label: `FINAL PAYMENT ${fmtUSD(balance)}`, short: 'final payment', task: `Call about the final payment — ${fmtUSD(balance)} due — ${ordTag}` })
+  if (ovGates?.fdn === false) waitingOn.push({ key: 'fdn', label: 'FDN NOT IN', short: 'the foundation', task: `Do the foundation — ${ordTag}${order.cemetery?.name ? ` at ${order.cemetery.name}` : ''}` })
+  if (ovGates?.permit === false) waitingOn.push({ key: 'permit', label: 'PERMIT NOT APPROVED', short: 'the permit', task: `Get the permit approved — ${ordTag}` })
+  if (ovGates && !ovGates.blasted && !ovInstalledDone) waitingOn.push({ key: 'blast', label: 'NOT BLASTED', short: 'blasting', task: `Blast the stone — ${ordTag}` })
+  if (job && !installScheduledDate && !ovInstalledDone && ovGates?.blasted) waitingOn.push({ key: 'sched', label: 'INSTALL NOT SCHEDULED', short: 'the install date', task: `Schedule the install — ${ordTag}` })
+  const alreadyGood = []
+  if (paid > 0) alreadyGood.push(order.signed_at && balance <= 0 ? 'PAID IN FULL' : 'DEPOSIT COLLECTED')
+  if (job && ['layout_approved', 'cut'].includes(deriveDesignStatus(job))) alreadyGood.push('LAYOUT APPROVED')
+  if (ovGates?.permit === true) alreadyGood.push('PERMIT APPROVED')
+  if (ovGates?.fdn === true) alreadyGood.push('FDN IN')
+  if (ovGates?.blasted) alreadyGood.push('BLASTED')
+  // The plain-words headline.
+  const _joinAnd = (a) => a.length <= 1 ? (a[0] || '') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`
+  const ovHeadline = ovInstalledDone
+    ? 'Installed — closeout is what remains.'
+    : (floorPhaseCode
+        ? `On the floor: ${phaseLabel(floorPhaseCode)}${waitingOn.length ? ` — waiting on ${_joinAnd(waitingOn.map(w => w.short))}` : ''}.`
+        : (waitingOn.length ? `Waiting on ${_joinAnd(waitingOn.map(w => w.short))}.` : 'Moving — nothing waiting.'))
+  // Due proximity, in words (library call — render stays pure).
+  const dueText = dueRelativeText(order.target_completion_date)
+  const dueTone2 = dueDateTone(order.target_completion_date)
 
   // ── Quick actions ──────────────────────────────────────────────────────────
   const handleOpenContract = async () => {
@@ -2207,24 +2339,85 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             <span className="sb-od-status-pct">{overviewPipe.overallPct}% complete</span>
           </div>
           <div className="sb-od-status-bar"><i style={{ width: `${overviewPipe.overallPct}%` }} /></div>
+          {/* The plain-words headline (v2, Paul 2026-08-03): where the stone is
+              and what it's waiting on, in one sentence. */}
+          <div className="sb-od-status-headline">{ovHeadline}</div>
           <div className="sb-od-status-phases">
             {(() => {
               const activeIdx = overviewPipe.phases.findIndex(ph => ph.total > 0 && ph.done < ph.total)
               return overviewPipe.phases.map((ph, i) => (
-                <span key={ph.code} className={`sb-od-ph${ph.total > 0 && ph.done >= ph.total ? ' done' : i === activeIdx ? ' now' : ''}`}>
+                <button key={ph.code} type="button"
+                  className={`sb-od-ph${ph.total > 0 && ph.done >= ph.total ? ' done' : i === activeIdx ? ' now' : ''}${phasePeek === ph.code ? ' peek' : ''}`}
+                  title="Click to see this group's steps"
+                  onClick={() => setPhasePeek(p => (p === ph.code ? null : ph.code))}>
                   {ph.label}{ph.total > 0 ? ` ${ph.done}/${ph.total}` : ''}
-                </span>
+                </button>
               ))
             })()}
           </div>
+          {/* Click a phase → its steps right here. Ticking a later step
+              auto-completes the earlier ones in its group (the cascade). */}
+          {phasePeek && (() => {
+            const ph = overviewPipe.phases.find(p => p.code === phasePeek)
+            if (!ph) return null
+            return (
+              <div className="sb-od-phasepeek">
+                {ph.items.length === 0 && <span className="sb-od-phasepeek-empty">No steps in {ph.label} for this order.</span>}
+                {ph.items.map(it => (
+                  <button key={it.key} type="button" className={`sb-od-peekstep${it.status === 'done' ? ' done' : ''}`}
+                    disabled={it.readOnly || !job}
+                    title={it.readOnly ? undefined : (it.status === 'done' ? 'Click to un-tick' : 'Click to mark done — earlier steps in this group follow')}
+                    onClick={() => handleRailMilestone(it.key, it.status === 'done' ? 'not_started' : 'done')}>
+                    <i>{it.status === 'done' ? '✓' : ''}</i>{it.label}
+                  </button>
+                ))}
+              </div>
+            )
+          })()}
           <div className="sb-od-status-foot">
             <div className="sb-od-status-kv"><b>Next action</b><span>{nra?.label || '—'}</span></div>
+            {floorPhaseCode && (
+              <div className="sb-od-status-kv"><b>Production</b>
+                <span className="sb-od-ovpill sb-od-ovpill-floor">{phaseLabel(floorPhaseCode).toUpperCase()}</span>
+              </div>
+            )}
+            <div className="sb-od-status-kv"><b>Install</b>
+              {ovInstalledDone ? <span>Installed</span>
+                : installScheduledDate ? <span className="sb-od-install-sched">Scheduled {fmtDate(installScheduledDate)}</span>
+                : <span className="sb-od-status-muted">Not scheduled</span>}
+            </div>
+            <div className="sb-od-status-kv"><b>Due</b>
+              {dueText
+                ? <span className={`sb-od-ovpill${dueTone2 ? ` sb-od-ovpill-due-${dueTone2}` : ' sb-od-ovpill-quiet'}`}>{dueText}</span>
+                : <span>—</span>}
+            </div>
+            <div className="sb-od-status-kv"><b>Balance</b><span className={balance > 0 ? 'sb-od-status-due' : ''}>{balance > 0 ? `${fmtUSD(balance)} due` : 'Paid in full'}</span></div>
             <div className="sb-od-status-kv"><b>Blocker</b>{overviewPressure.blocker
               ? <span className={`sb-od-ovpill sb-od-ovpill-${overviewPressure.blocker.severity}`}>{overviewPressure.blocker.label}</span>
               : <span>None</span>}</div>
-            <div className="sb-od-status-kv"><b>Balance</b><span className={balance > 0 ? 'sb-od-status-due' : ''}>{balance > 0 ? `${fmtUSD(balance)} due` : 'Paid in full'}</span></div>
-            <div className="sb-od-status-kv"><b>Target</b><span>{order.target_completion_date ? fmtDate(order.target_completion_date) : '—'}</span></div>
           </div>
+          {/* WAITING ON (click a chip → task somebody, prefilled) / ALREADY GOOD */}
+          {(waitingOn.length > 0 || alreadyGood.length > 0) && (
+            <div className="sb-od-status-lanes">
+              <div className="sb-od-lane">
+                <b className="sb-od-lane-h sb-od-lane-h-wait">Waiting on</b>
+                <span className="sb-od-lane-chips">
+                  {waitingOn.length === 0 && <span className="sb-od-status-muted">Nothing</span>}
+                  {waitingOn.map(w => (
+                    <GateTaskChip key={w.key} label={w.label} taskTitle={w.task} orderId={orderId}
+                      onTasked={(who) => { setActionNote(`Tasked ${who}. ✓`); refreshActivity() }} />
+                  ))}
+                </span>
+              </div>
+              <div className="sb-od-lane">
+                <b className="sb-od-lane-h sb-od-lane-h-good">Already good</b>
+                <span className="sb-od-lane-chips">
+                  {alreadyGood.length === 0 && <span className="sb-od-status-muted">Nothing yet</span>}
+                  {alreadyGood.map(g => <span key={g} className="sb-od-lanechip sb-od-lanechip-good">{g}</span>)}
+                </span>
+              </div>
+            </div>
+          )}
           {/* Inline status controls (Paul, 2026-07-10) — the SAME dropdowns as the
               Orders table columns, adjustable right here. Same write paths too. */}
           <div className="sb-od-status-edit">
@@ -2330,6 +2523,63 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             <Field label="Secondary contact" value={[cust.phone_alt, cust.email_alt].filter(Boolean).join(' · ')} />
             <Field label="Funeral home / referral" value={referral || null} />
           </Section>
+
+          {/* 1b — DESIGN SUMMARY (Paul 2026-08-03): what we're making, at a
+              glance — the catalog pick, the verse, every name (with space for
+              the next), and the design description. New stone / inscription /
+              bronze orders. Reads what the order already holds — designs[],
+              deceased[], inscription.epitaph, design_preferences. */}
+          {showMake && (() => {
+            const designsArr = Array.isArray(order.designs) ? order.designs : []
+            const primaryDesign = designsArr[0] || null
+            const altCount = Math.max(0, designsArr.length - 1)
+            const primaryImg = primaryDesign?.snapshot?.img || null
+            const primaryName = primaryDesign?.snapshot?.name || primaryDesign?.snapshot?.title || ''
+            const verse = (order.inscription?.epitaph || '').trim()
+            const makeNotes = (order.design_preferences || '').trim() || (order.inscription?.customNotes || '').trim()
+            const people = Array.isArray(order.deceased) ? order.deceased : []
+            const nameOf = (d) => [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ').toUpperCase()
+            const yearsOf = (d) => {
+              const b = String(d.dateOfBirth || '').slice(0, 4), e = String(d.dateOfDeath || '').slice(0, 4)
+              return b && e ? `${b} – ${e}` : b ? `b. ${b}` : e ? `d. ${e}` : ''
+            }
+            const realPeople = people.filter(d => !d.isReserved && (d.firstName || d.lastName))
+            const reservedCount = people.filter(d => d.isReserved).length
+            return (
+              <Section id="od-make" title="Design — what we're making">
+                <div className="sb-od-make">
+                  <div className="sb-od-make-img">
+                    {primaryImg
+                      ? <img src={primaryImg} alt="Catalog design" loading="lazy" />
+                      : <div className="sb-od-make-noimg">No catalog design picked</div>}
+                    <div className="sb-od-make-imgcap">
+                      {primaryImg ? `Catalog${primaryName ? ` · ${primaryName}` : ''} · primary${altCount ? ` + ${altCount} alternate${altCount === 1 ? '' : 's'}` : ''}` : 'Pick one in the Design step of the wizard'}
+                    </div>
+                  </div>
+                  <div className="sb-od-make-rows">
+                    {verse && <div className="sb-od-make-row"><b>Verse</b><span className="sb-od-make-verse">“{verse}”</span></div>}
+                    {realPeople.map((d, i) => (
+                      <div key={i} className="sb-od-make-row"><b>Name {i + 1}</b>
+                        <span className="sb-od-make-name">{nameOf(d)}{yearsOf(d) ? <em> · {yearsOf(d)}</em> : null}</span>
+                      </div>
+                    ))}
+                    {realPeople.length === 0 && <div className="sb-od-make-row"><b>Names</b><span className="sb-od-status-muted">None entered yet</span></div>}
+                    {Array.from({ length: reservedCount }, (_, i) => (
+                      <div key={`r${i}`} className="sb-od-make-row"><b>Name {realPeople.length + i + 1}</b>
+                        <span className="sb-od-make-reserved">Space reserved</span>
+                      </div>
+                    ))}
+                    {reservedCount === 0 && realPeople.length > 0 && realPeople.length < 3 && (
+                      <div className="sb-od-make-row"><b>Name {realPeople.length + 1}</b>
+                        <span className="sb-od-make-reserved">Space for another name</span>
+                      </div>
+                    )}
+                    {makeNotes && <div className="sb-od-make-row sb-od-make-notes"><b>Notes</b><span>{makeNotes}</span></div>}
+                  </div>
+                </div>
+              </Section>
+            )
+          })()}
 
           {/* 2 — Cemetery / grave */}
           <Section id="od-cemetery" title="Cemetery & grave" headerAction={
@@ -3924,9 +4174,61 @@ const OD_CSS = `
   .sb-od-status-bar { height: 7px; border-radius: 4px; background: #E9E4D8; margin: 9px 0 11px; overflow: hidden; }
   .sb-od-status-bar i { display: block; height: 100%; background: linear-gradient(90deg, #9A7209, #B8933A); border-radius: 4px; transition: width 0.3s; }
   .sb-od-status-phases { display: flex; gap: 6px; flex-wrap: wrap; }
-  .sb-od-ph { flex: 1; min-width: 90px; text-align: center; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 4px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #8a8a85; }
+  .sb-od-ph { flex: 1; min-width: 90px; text-align: center; font: inherit; cursor: pointer; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 4px; border-radius: 7px; border: 0.5px solid #E2D8C6; background: #fff; color: #8a8a85; }
+  .sb-od-ph:hover { border-color: #9A7209; }
   .sb-od-ph.done { color: #2d7a4f; border-color: rgba(45,122,79,0.35); background: #e8f5ea; }
   .sb-od-ph.now { color: #876307; border-color: #9A7209; background: rgba(154,114,9,0.09); box-shadow: inset 0 -2px 0 #9A7209; }
+  .sb-od-ph.peek { outline: 2px solid #9A7209; outline-offset: 1px; }
+  /* v2 (2026-08-03): plain-words headline + phase peek + lanes + gate popover */
+  .sb-od-status-headline { font-size: 15px; font-weight: 700; color: #1a1a17; margin: 8px 0 10px; }
+  .sb-od-phasepeek { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px; border: 0.5px solid #F0ECE2; border-radius: 8px; background: #FCFBF7; }
+  .sb-od-phasepeek-empty { font-size: 12px; color: #8a8a85; }
+  .sb-od-peekstep { font: inherit; cursor: pointer; font-size: 12px; font-weight: 600; color: #6b6456; background: #fff; border: 0.5px solid #E2D8C6; border-radius: 999px; padding: 4px 11px; display: inline-flex; align-items: center; gap: 5px; }
+  .sb-od-peekstep i { font-style: normal; width: 12px; text-align: center; color: #2d7a4f; }
+  .sb-od-peekstep.done { color: #2d7a4f; border-color: rgba(45,122,79,0.4); background: #e8f5ea; }
+  .sb-od-peekstep:hover:not(:disabled) { border-color: #9A7209; }
+  .sb-od-peekstep:disabled { opacity: 0.55; cursor: default; }
+  .sb-od-ovpill-floor { color: #8a5a12; background: rgba(216,144,31,0.15); }
+  .sb-od-ovpill-due-amber { color: #8a5a12; background: rgba(216,144,31,0.15); }
+  .sb-od-ovpill-due-red { color: #B3261E; background: rgba(179,38,30,0.10); }
+  .sb-od-ovpill-quiet { color: #55503F; background: #F1EFE8; }
+  .sb-od-install-sched { color: #185F8F; }
+  .sb-od-status-muted { color: #8a8a85; font-weight: 500; }
+  .sb-od-status-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 0.5px solid #F0ECE2; }
+  .sb-od-lane-h { display: block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+  .sb-od-lane-h-wait { color: #B3261E; }
+  .sb-od-lane-h-good { color: #14775A; }
+  .sb-od-lane-chips { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .sb-od-lanechip { font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; border-radius: 999px; padding: 3px 10px; }
+  .sb-od-lanechip-good { color: #14775A; background: rgba(29,158,117,0.13); }
+  .sb-od-lanechip-wait { font: inherit; font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; cursor: pointer; color: #B3261E; background: rgba(179,38,30,0.10); border: 0.5px solid rgba(179,38,30,0.35); border-radius: 999px; padding: 3px 10px; }
+  .sb-od-lanechip-wait:hover { background: rgba(179,38,30,0.18); }
+  .sb-od-gate-wrap { position: relative; display: inline-block; }
+  .sb-od-gatepop { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: 300px; background: #fff; border: 0.5px solid #D9D2C0; border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(15,20,25,0.12); display: flex; flex-direction: column; gap: 7px; }
+  .sb-od-gatepop-h { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8472; }
+  .sb-od-gatepop select, .sb-od-gatepop input { font: inherit; font-size: 13px; padding: 6px 9px; border: 0.5px solid #D9D2C0; border-radius: 7px; width: 100%; box-sizing: border-box; }
+  .sb-od-gatepop-row { display: flex; gap: 6px; align-items: center; }
+  .sb-od-gatepop-row input[type="date"] { flex: 1; min-width: 0; }
+  .sb-od-gatepop-go { font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; background: #9A7209; color: #fff; border: none; border-radius: 7px; padding: 7px 12px; white-space: nowrap; }
+  .sb-od-gatepop-go:disabled { opacity: 0.6; }
+  .sb-od-gatepop-x { font: inherit; font-size: 12.5px; cursor: pointer; background: none; border: 0.5px solid #D9D2C0; border-radius: 7px; padding: 6px 10px; color: #6b6456; }
+  .sb-od-gatepop-err { font-size: 11.5px; font-weight: 600; color: #B3261E; }
+  /* Design summary (what we're making) */
+  .sb-od-make { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 18px; align-items: start; }
+  .sb-od-make-img img { width: 100%; border: 0.5px solid #E6E1D4; border-radius: 10px; display: block; background: #fff; }
+  .sb-od-make-noimg { border: 1px dashed #D9D2C0; border-radius: 10px; height: 120px; display: flex; align-items: center; justify-content: center; color: #8a8472; font-size: 12px; text-align: center; padding: 0 10px; }
+  .sb-od-make-imgcap { font-size: 11.5px; color: #8a8472; margin-top: 5px; text-align: center; }
+  .sb-od-make-rows { display: flex; flex-direction: column; gap: 8px; }
+  .sb-od-make-row { display: flex; gap: 10px; align-items: baseline; }
+  .sb-od-make-row > b { flex-shrink: 0; min-width: 62px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8472; }
+  .sb-od-make-row > span { font-size: 13.5px; }
+  .sb-od-make-verse { font-style: italic; color: #444441; }
+  .sb-od-make-name { font-weight: 700; }
+  .sb-od-make-name em { font-style: normal; font-weight: 500; color: #5F5E5A; }
+  .sb-od-make-reserved { border: 1px dashed #D9D2C0; border-radius: 6px; color: #8a8472; font-size: 12px; padding: 2px 10px; }
+  .sb-od-make-notes { border-top: 0.5px solid #F0ECE2; padding-top: 8px; }
+  .sb-od-make-notes > span { color: #444441; }
+  @media (max-width: 760px) { .sb-od-make { grid-template-columns: 1fr; } }
   .sb-od-status-foot { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
   .sb-od-status-kv b { display: block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; }
   .sb-od-status-kv span { font-size: 13.5px; font-weight: 600; }

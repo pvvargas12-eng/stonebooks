@@ -2171,6 +2171,18 @@ export function dueDateTone(iso) {
   if (days <= 14) return 'amber'
   return null
 }
+// The due date in words — "08/19/2026 — in 16 days" / "due today" / "6 days
+// over". Library function (not render-inline) so React 19 purity holds.
+export function dueRelativeText(iso) {
+  if (!iso) return null
+  const d = new Date(String(iso).slice(0, 10) + 'T00:00:00')
+  if (isNaN(d.getTime())) return null
+  const days = Math.ceil((d.getTime() - Date.now()) / 86400000)
+  const dateStr = fmtDate(iso)
+  if (days < 0) return `${dateStr} — ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} over`
+  if (days === 0) return `${dateStr} — due today`
+  return `${dateStr} — in ${days} day${days === 1 ? '' : 's'}`
+}
 
 // The FOUR install gates Paul reads before loading the truck (2026-07-31:
 // "green Paid, foundation in, permit approved, blasted... I CANT GET OUT
