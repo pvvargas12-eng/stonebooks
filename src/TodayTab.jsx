@@ -536,18 +536,24 @@ function NewTaskForm({ me, staff, orders, todayISO, onCreated }) {
         <input type="text" className="big" placeholder="Task them — e.g. order the Perez photo, 8×10 porcelain"
           value={title} onChange={e => setTitle(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') submit() }} />
-        <select value={assignee} onChange={e => setAssignee(e.target.value)} title="Assign to">
-          <optgroup label="People">
-            {staff.map(n => <option key={n} value={n}>{n === me ? `Me (${n})` : n}</option>)}
-          </optgroup>
-          <optgroup label="Departments">
-            {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-          </optgroup>
-        </select>
-        <select value={type} onChange={e => setType(e.target.value)} title="Task type">
-          {FORM_TYPES.map(c => <option key={c} value={c}>{taskTypeLabel(c)}</option>)}
-        </select>
-        <input type="date" value={due} onChange={e => setDue(e.target.value)} title="Due date" />
+        <label className="efield"><i>For</i>
+          <select value={assignee} onChange={e => setAssignee(e.target.value)}>
+            <optgroup label="People">
+              {staff.map(n => <option key={n} value={n}>{n === me ? `Me (${n})` : n}</option>)}
+            </optgroup>
+            <optgroup label="Departments">
+              {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+            </optgroup>
+          </select>
+        </label>
+        <label className="efield"><i>Type</i>
+          <select value={type} onChange={e => setType(e.target.value)}>
+            {FORM_TYPES.map(c => <option key={c} value={c}>{taskTypeLabel(c)}</option>)}
+          </select>
+        </label>
+        <label className="efield"><i>Due</i>
+          <input type="date" value={due} onChange={e => setDue(e.target.value)} />
+        </label>
         <button type="button" className="act solid" disabled={busy} onClick={submit}>Task it</button>
       </div>
       <div className="row sub">
@@ -657,8 +663,11 @@ function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpa
             {t.order.order_number || famOf(t.order)}
           </button>
         )}
+        {/* Labeled, not an arrow (Paul 2026-08-03: "its confusing sometimes
+            who it was tasked by and who is tasked — label it"). */}
         <span className="chain">
-          <em>{t.tasked_by || t.created_by || '—'}</em> → <b>{t.assignee}{t.assignee_kind === 'department' ? ' (dept)' : ''}</b>
+          <i className="chain-l">by</i> <em>{t.tasked_by || t.created_by || '—'}</em>
+          <i className="chain-l">for</i> <b>{t.assignee}{t.assignee_kind === 'department' ? ' (dept)' : ''}</b>
         </span>
         <span className={`due${over ? ' over' : t.due_date === todayISO && t.status !== 'done' ? ' today' : ''}`}>{dueText}</span>
         {t.status !== 'done' && (
@@ -768,17 +777,25 @@ function TaskDetail({ t, me, staff, replies, onChanged, onOpenOrder }) {
         <div className="cemline">Cemetery: <b>{details.cemeteryName || details.cemetery}</b>{details.notes ? ` — ${details.notes}` : ''}</div>
       )}
 
+      {/* Labeled fields (Paul 2026-08-03) — the two selects read as "for whom"
+          and "tasked by whom" without guessing. */}
       <div className="editrow">
         <input type="text" value={title} onChange={e => setTitle(e.target.value)} />
-        <select value={assignee} onChange={e => setAssignee(e.target.value)}>
-          <optgroup label="People">{staff.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
-          <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
-        </select>
-        <select value={taskedBy} onChange={e => setTaskedBy(e.target.value)} title="Tasked by">
-          <option value="">Tasked by…</option>
-          {staff.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-        <input type="date" value={due} onChange={e => setDue(e.target.value)} />
+        <label className="efield"><i>For</i>
+          <select value={assignee} onChange={e => setAssignee(e.target.value)}>
+            <optgroup label="People">{staff.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+            <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+          </select>
+        </label>
+        <label className="efield"><i>Tasked by</i>
+          <select value={taskedBy} onChange={e => setTaskedBy(e.target.value)}>
+            <option value="">—</option>
+            {staff.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <label className="efield"><i>Due</i>
+          <input type="date" value={due} onChange={e => setDue(e.target.value)} />
+        </label>
         {dirty && <button type="button" className="act solid" disabled={busy} onClick={save}>Save</button>}
         {errMsg && <span className="terr">{errMsg}</span>}
       </div>
@@ -1063,6 +1080,10 @@ const CSS = `
   .sb-tcc-trow .chain{font-size:12px;color:#79735F;white-space:nowrap}
   .sb-tcc-trow .chain em{font-style:normal}
   .sb-tcc-trow .chain b{color:#1A1E24}
+  .sb-tcc-trow .chain-l{font-style:normal;font-weight:700;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#9a948a;margin-right:2px}
+  .sb-tcc-trow .chain-l+em+.chain-l,.sb-tcc-trow .chain-l:not(:first-child){margin-left:6px}
+  .sb-tcc .efield{display:flex;flex-direction:column;gap:2px}
+  .sb-tcc .efield>i{font-style:normal;font-weight:700;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:#8a8472}
   .sb-tcc-trow .due{font:600 11.5px var(--sb-font-mono,monospace);color:#79735F;white-space:nowrap}
   .sb-tcc-trow .due.today{color:#8A5A12}.sb-tcc-trow .due.over{color:#B3261E}
   .sb-tcc .pendbtn{font:600 11.5px/1 inherit;font-family:inherit;color:#8A5A12;background:none;border:1px solid rgba(184,132,42,.4);border-radius:7px;padding:5px 10px;cursor:pointer;white-space:nowrap}

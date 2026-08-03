@@ -16,7 +16,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder, designStatusOptions, statusDimApplies,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
-  fmtUSD, fmtDate, fmtPhone, statusInfo, jobStatusInfo, customerName,
+  fmtUSD, fmtDate, fmtPhone, statusInfo, jobStatusInfo, customerName, properName,
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
