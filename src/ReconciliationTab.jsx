@@ -21,6 +21,7 @@ import { matchReconciliation } from './lib/reconciliationEngine'
 import { RECONCILIATION_BATCH } from './lib/reconciliationSchedule'
 import StoneDeadlines from './components/StoneDeadlines'
 import InventoryReconcile from './components/InventoryReconcile'
+import YardStockReconcile from './components/YardStockReconcile'
 
 const OPEN_STATUSES = ['contracted', 'in_production', 'installed', 'paid_in_full']
 const RECON_SELECT =
@@ -129,6 +130,12 @@ export default function ReconciliationTab({ onOpenOrder }) {
       </div>
 
       {err && <div className="sb-recon-err">{err}</div>}
+
+      {/* Yard stock vs orders (2026-08-03) — link the free-text yard
+          assignments to real open orders so every surface knows what's
+          already HERE. The inventory-crisis fix; Paul clicks, nothing
+          links itself. */}
+      <YardStockReconcile onOpenOrder={onOpenOrder} />
 
       {/* Stone deadline chart (RECON-3) — Sabina's workbook vs the order due
           dates. TOP of this tab: it's the reconcile work Paul does most. */}

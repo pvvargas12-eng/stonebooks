@@ -5,15 +5,30 @@
 // (getInventoryStock / addInventoryItem / updateInventoryItem) — one source of
 // truth. Receive = qty bump w/ confirm; every write offers UNDO (patches the
 // previous values back).
+//
+// COUNT THE YARD (Paul 2026-08-03: "GIVE ME A SYSTEM... BY GOING TO MY YARD
+// AND CONFIRMING THROUGH STONEBOOKS FIELD"): a walk-the-yard mode — every
+// stone gets FOUND (stamps verified_at/by = the phone's person) or NOT HERE
+// (flags missing; Reconcile decides). Unconfirmed rows list first, progress
+// on top, allocated rows show whose stone it is so the assignment gets eyes
+// too. The verified stamp is what makes every other surface trustworthy.
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { getInventoryStock, addInventoryItem, updateInventoryItem } from '../lib/stonebooksData'
+import {
+  getInventoryStock, addInventoryItem, updateInventoryItem,
+  verifyYardStock, restoreYardVerification, flagYardStockMissing, restoreYardStockStatus,
+  getActiveStaffUser, properName,
+} from '../lib/stonebooksData'
 
 const STATUS_CHIP = {
   available: 'fl-c-good',
   allocated: 'fl-c-info',
   hold:      'fl-c-warn',
+  missing:   'fl-c-bad',
 }
+const DAY_MS = 86400000
+// A verification older than 90 days counts as unconfirmed on the walk.
+const FRESH_MS = 90 * DAY_MS
 
 export default function InventoryScreen({ undo }) {
   const [items, setItems] = useState(null)
@@ -21,6 +36,10 @@ export default function InventoryScreen({ undo }) {
   const [q, setQ] = useState('')
   const [adding, setAdding] = useState(false)
   const [receiving, setReceiving] = useState(null)   // item being received
+  const [counting, setCounting] = useState(false)    // Count-the-yard mode
+  const [countBusy, setCountBusy] = useState(null)
+  // Stamped once when the count starts — the freshness line (React 19 purity).
+  const [nowMs, setNowMs] = useState(0)
 
   // getInventoryStock resolves { ok, rows, error } — NOT an array. Treating it
   // as one made items an object, so list.map() threw and took the whole app
@@ -37,22 +56,84 @@ export default function InventoryScreen({ undo }) {
   }, [])
   useEffect(() => { refresh() }, [refresh])
 
+  const isFresh = useCallback((it) => {
+    if (!it.verified_at || !nowMs) return false
+    const t = Date.parse(it.verified_at)
+    return Number.isFinite(t) && nowMs - t < FRESH_MS
+  }, [nowMs])
+
   const list = useMemo(() => {
     if (!items) return []
     const needle = q.trim().toLowerCase()
-    if (!needle) return items
-    return items.filter(it =>
-      [it.item_type, it.color, it.size, it.location, it.notes, it.status]
-        .filter(Boolean).join(' ').toLowerCase().includes(needle))
-  }, [items, q])
+    let l = items
+    if (needle) {
+      l = l.filter(it =>
+        [it.item_type, it.color, it.size, it.location, it.notes, it.status, it.assigned_to]
+          .filter(Boolean).join(' ').toLowerCase().includes(needle))
+    }
+    if (counting) {
+      // Walk order: unconfirmed first, grouped by location so the walk flows.
+      l = [...l].sort((a, b) =>
+        ((isFresh(a) ? 1 : 0) - (isFresh(b) ? 1 : 0))
+        || String(a.location || '~').localeCompare(String(b.location || '~'))
+        || String(a.item_type || '').localeCompare(String(b.item_type || '')))
+    }
+    return l
+  }, [items, q, counting, isFresh])
+
+  // FOUND — one tap, stamps who + when; undo restores the exact prior stamp.
+  const markFound = async (it) => {
+    if (countBusy) return
+    setCountBusy(it.id)
+    const prev = { verified_at: it.verified_at || null, verified_by: it.verified_by || null }
+    const by = getActiveStaffUser() || null
+    const r = await verifyYardStock(it.id, { by })
+    setCountBusy(null)
+    if (!r.ok) { undo.showError(r.error || 'Could not confirm.'); return }
+    refresh()
+    undo.show(`${[it.item_type, it.size].filter(Boolean).join(' ')} confirmed`, async () => {
+      await restoreYardVerification(it.id, prev).catch(() => {})
+      refresh()
+    })
+  }
+  // NOT HERE — flags missing (keeps the assignment); Reconcile decides.
+  const markMissing = async (it) => {
+    if (countBusy) return
+    setCountBusy(it.id)
+    const prevStatus = it.status
+    const by = getActiveStaffUser() || null
+    const r = await flagYardStockMissing(it.id, { by })
+    setCountBusy(null)
+    if (!r.ok) { undo.showError(r.error || 'Could not flag it.'); return }
+    refresh()
+    undo.show(`${[it.item_type, it.size].filter(Boolean).join(' ')} flagged missing`, async () => {
+      await restoreYardStockStatus(it.id, prevStatus).catch(() => {})
+      refresh()
+    })
+  }
 
   if (err) return <div className="fl-empty">{err}</div>
   if (items === null) return <div className="fl-empty">Loading inventory…</div>
 
+  const countable = items.filter(it => it.status !== 'missing')
+  const confirmed = countable.filter(isFresh).length
+
   return (
     <div>
-      <input className="fl-search" type="search" placeholder="Search type, color, size, location"
+      <input className="fl-search" type="search" placeholder="Search type, color, size, location, name"
         value={q} onChange={e => setQ(e.target.value)} />
+
+      {/* COUNT THE YARD — the trust walk. */}
+      <button type="button" className={counting ? 'fl-btn fl-btn-green' : 'fl-btn'}
+        onClick={() => { setCounting(v => !v); setNowMs(Date.now()); setAdding(false) }}>
+        {counting ? `Counting — ${confirmed}/${countable.length} confirmed · tap to stop` : 'Count the yard'}
+      </button>
+      {counting && (
+        <div className="fl-spec" style={{ margin: '-4px 2px 10px', fontFamily: 'inherit' }}>
+          Walk the rows. FOUND stamps your name on the stone; NOT HERE sends it to Reconcile.
+          Unconfirmed stones list first. Anything you find that is not in the list — add it below.
+        </div>
+      )}
 
       {adding ? (
         <AddItemForm undo={undo} onDone={() => { setAdding(false); refresh() }} onCancel={() => setAdding(false)} />
@@ -61,14 +142,21 @@ export default function InventoryScreen({ undo }) {
       )}
 
       {list.length === 0 && <div className="fl-empty">Nothing in stock matches.</div>}
-      {list.map(it => (
-        <div key={it.id} className="fl-row" style={{ cursor: 'default' }}>
+      {list.map(it => {
+        const fresh = isFresh(it)
+        return (
+        <div key={it.id} className="fl-row" style={{ cursor: 'default', ...(counting && fresh ? { opacity: 0.62 } : null) }}>
           <div className="fl-row-flex">
             <div className="fl-row-main">
               <div className="fl-fam" style={{ fontSize: 14.5 }}>
                 {[it.item_type, it.color].filter(Boolean).join(' · ') || 'Item'}
               </div>
               <div className="fl-spec">{[it.size, it.location && `@ ${it.location}`].filter(Boolean).join(' · ') || '—'}</div>
+              {it.assigned_to && (
+                <div className="fl-spec" style={{ fontFamily: 'inherit', fontWeight: 700 }}>
+                  for {properName(it.assigned_to)}
+                </div>
+              )}
             </div>
             <div className={`fl-inv-qty${Number(it.quantity) <= 0 ? ' fl-inv-low' : ''}`}>
               <small>QTY</small>{Number(it.quantity) || 0}
@@ -76,7 +164,24 @@ export default function InventoryScreen({ undo }) {
           </div>
           <div className="fl-chips">
             <span className={`fl-chip ${STATUS_CHIP[it.status] || 'fl-c-neutral'}`}>{String(it.status || 'unknown').toUpperCase()}</span>
-            {receiving?.id === it.id ? null : (
+            {it.verified_at && (
+              <span className={`fl-chip ${fresh ? 'fl-c-good' : 'fl-c-neutral'}`}>
+                SEEN {String(it.verified_at).slice(5, 10).replace('-', '/')}{it.verified_by ? ` · ${it.verified_by.toUpperCase()}` : ''}
+              </span>
+            )}
+            {counting && it.status !== 'missing' ? (
+              <>
+                <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
+                  disabled={countBusy === it.id} onClick={() => markFound(it)}>
+                  {countBusy === it.id ? '…' : 'FOUND'}
+                </button>
+                <button type="button" className="fl-verb" style={{ borderColor: '#B3261E', color: '#B3261E' }}
+                  disabled={countBusy === it.id} onClick={() => markMissing(it)}>
+                  NOT HERE
+                </button>
+                <button type="button" className="fl-event-undo" onClick={() => setReceiving(it)}>Fix</button>
+              </>
+            ) : receiving?.id === it.id ? null : (
               <button type="button" className="fl-event-undo" onClick={() => setReceiving(it)}>Receive / adjust</button>
             )}
           </div>
@@ -86,7 +191,8 @@ export default function InventoryScreen({ undo }) {
               onCancel={() => setReceiving(null)} />
           )}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

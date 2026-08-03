@@ -10232,6 +10232,39 @@ export async function updateInventoryItem(id, patch = {}) {
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+// ── YARD COUNT + YARD↔ORDER LINKS (2026-08-03) ──────────────────────────────
+// The trust system (Paul: "everyone in my shop is still working off
+// spreadsheets because they dont trust stonebooks"): verified_* = a human
+// stood in front of the stone (stamped from the field count mode). 'missing'
+// = counted and NOT found — it KEEPS its assignment so Reconcile can show
+// whose stone vanished, which is why these write directly instead of riding
+// updateInventoryItem (its status branch clears assigned_to/allocated_order_id).
+async function _yardPatch(id, patch) {
+  if (!id) return { ok: false, error: 'Missing stock id.' }
+  const { error } = await supabase.from('inventory_stock')
+    .update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export function verifyYardStock(id, { by = null } = {}) {
+  return _yardPatch(id, { verified_at: new Date().toISOString(), verified_by: by || null })
+}
+// Undo path — restore whatever verification state the row had before.
+export function restoreYardVerification(id, prev = {}) {
+  return _yardPatch(id, { verified_at: prev.verified_at || null, verified_by: prev.verified_by || null })
+}
+export function flagYardStockMissing(id, { by = null } = {}) {
+  return _yardPatch(id, { status: 'missing', verified_at: new Date().toISOString(), verified_by: by || null })
+}
+export function restoreYardStockStatus(id, status) {
+  return _yardPatch(id, { status: status || 'allocated' })
+}
+// Link a yard row to its REAL order (assigned_to stays as the human label).
+// orderId null = unlink. Linking marks the row allocated.
+export function linkYardStockToOrder(id, orderId) {
+  return _yardPatch(id, { allocated_order_id: orderId || null, ...(orderId ? { status: 'allocated' } : {}) })
+}
+
 // Bulk-insert many stock items (the importer's confirm action). Chunked so a big
 // workbook doesn't hit a single-request limit; returns the count inserted so far
 // even on a mid-run error. Strips any importer-internal fields (_flags/_rawType).
