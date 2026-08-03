@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint WEB-LEAD-1 (2026-08-03) — SHIPPED: website form submissions → draft leads + Sales follow-up tasks
+
+Paul: "when customers fill out a contact us form it goes to our email can that go directly to stonebooks and generate a lead with a task to follow up." **ZERO website changes needed** — the site is Duda (agency = Visual Media, sender `no-reply@multiscreensite.com`, subject `New form submission - <form> - <page>`, labeled body lines `Name:` / `Email:` / `Phone Number: … [tel:…]`), and those emails ALREADY sync into `messages`. They arrive DAILY (the Catalog-popup form is live traffic). Migration `20260803_website_leads.sql` ✅ APPLIED + verified (claim ledger, message_id UNIQUE, standard 3-role RLS trio).
+
+- **`src/lib/websiteLeads.js` — `sweepWebsiteLeadForms()`:** recent (14d, 50-cap) unprocessed form messages → **CLAIM-before-create** (insert website_leads w/ unique message_id; 23505 = another desk has it — the push-sender pattern, several open desks safe) → parse labeled lines (strips Duda's `[tel:…]`/`[mailto:…]` tails) → **draft lead via the EXACT desktop path** (`makeBlankOrder` + `saveOrder`, the IntakeScreen precedent; **salesRep 'Website'** so Created-by filters find them; single-word names double as first+last) → order note with the form name + their message → **Sales-DEPARTMENT task due today** (`addShopTask` assigneeKind 'department', taskType 'lead', createdBy 'Website') → claim row updated to `created` w/ order/customer/task ids. Empty name+email+phone → `skipped_empty` (junk stays out of Leads); failures → `error` w/ reason in parsed.
+- **Shell wiring (Stonebooks.jsx):** sweep 20s after boot + every 3 min. **DYNAMIC import only — websiteLeads drags the SalesMode chunk (saveOrder); never static-import it from entry** (PERF-1 discipline).
+- First sweep auto-backfills the last 14 days of submissions into Leads.
+- NOTE: an alternate webhook endpoint (Duda form → api route) was considered and skipped — the email path needs nothing from the website and covers history. If Paul ever wants instant (sub-minute) capture, that's the upgrade.
+
 ## Sprint YARD-TRUST (2026-08-03) — SHIPPED: the inventory trust system (audit + links + stone position + Count the Yard)
 
 Paul's crisis, verbatim: "WE KEEP ORDERING CAUSE WE JUST DONT KNOW... EVERYONE IN MY SHOP IS STILL WORKING OFF SPREADSHEETS BECAUSE THEY DONT TRUST STONEBOOKS." Migration `20260803_yard_count.sql` ✅ APPLIED + verified (`inventory_stock.verified_at/verified_by`; status 'missing' by convention — NO CHECK constraint on inventory_stock.status, verified via pg_constraint).

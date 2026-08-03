@@ -342,6 +342,17 @@ export default function Stonebooks() {
     window.addEventListener('sb-open-permit-builder', go)
     return () => window.removeEventListener('sb-open-permit-builder', go)
   }, [])
+  // Website form submissions → draft leads + Sales follow-up tasks (WEB-LEAD-1,
+  // 2026-08-03). Dynamic import on purpose — websiteLeads drags the SalesMode
+  // chunk (saveOrder) and must never ride in the entry bundle. First sweep 20s
+  // after boot, then every 3 minutes; claim-before-create in the module makes
+  // several open desks safe.
+  useEffect(() => {
+    const run = () => { import('./lib/websiteLeads').then(m => m.sweepWebsiteLeadForms()).catch(() => {}) }
+    const t0 = setTimeout(run, 20000)
+    const iv = setInterval(run, 3 * 60 * 1000)
+    return () => { clearTimeout(t0); clearInterval(iv) }
+  }, [])
   const [orderDetailId, setOrderDetailId] = useState(null) // ITEM 5 — Jobs Admin Hub closeout → OrderDetail
   // Where the OrderDetail back button returns to when the order was opened
   // from another surface (Design hub / Jobs / Reconcile) — "go back to where I
