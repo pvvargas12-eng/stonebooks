@@ -22,6 +22,7 @@ import {
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
   bulkArchiveOrders, hardDeleteOrder, TASK_KINDS, STAFF_NAMES, getWebsiteLeadStats,
+  getActiveStaffUser,
 } from '../lib/stonebooksData'
 import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES } from '../lib/leads'
 
@@ -230,6 +231,23 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     count: leads.length,
   }), [leads, taskRows])
 
+  // ── My leads (Paul 2026-08-03: "a space at the top that says My Leads — you
+  // can see every lead that you open... for right now you should be able to
+  // select who you are"). Mine = sales_rep, the name written on the order at
+  // create. Per-person accounts are the flagged future fix; the picker seeds
+  // from the app-wide "I am" identity until then.
+  const [myRep, setMyRep] = useState(() => getActiveStaffUser() || '')
+  const repOptions = useMemo(() => {
+    const seen = new Set(STAFF_NAMES)
+    const extras = [...new Set(leads.map(o => o.sales_rep).filter(Boolean))]
+      .filter(n => !seen.has(n)).sort()
+    return [...STAFF_NAMES, ...extras]   // Website + legacy names land at the end
+  }, [leads])
+  const myLeads = useMemo(() =>
+    leads.filter(o => (o.sales_rep || '') === myRep)
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))),
+  [leads, myRep])
+
   // ── Actions ───────────────────────────────────────────────────────────────
   const openReminder = (leadId) => { setMenuKey(null); setReminderDue(todayStr()); setReminderFor(leadId) }
 
@@ -310,6 +328,41 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   return (
     <div className="sb-leads">
       <style>{CSS}</style>
+
+      {/* MY LEADS — every lead the selected person opened (sales_rep). */}
+      <div className="sb-myleads">
+        <div className="sb-myleads-top">
+          <span className="sb-myleads-h">My leads</span>
+          <span className="sb-myleads-iam">I am</span>
+          <select className="sb-myleads-sel" value={myRep} onChange={e => setMyRep(e.target.value)}>
+            {!myRep && <option value="">— pick yourself —</option>}
+            {repOptions.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <span className="sb-myleads-cnt">{myRep ? `${myLeads.length} open` : ''}</span>
+          <span className="sb-myleads-hint">every lead you created, newest first — until everyone has their own login, pick your name</span>
+        </div>
+        {myRep && myLeads.length === 0 && (
+          <div className="sb-myleads-empty">No open leads created by {myRep}. New leads carry the name picked at intake.</div>
+        )}
+        {myRep && myLeads.length > 0 && (
+          <div className="sb-myleads-list">
+            {myLeads.map(o => {
+              const st = statusInfo(o.status)
+              const phone = o.customer?.phone_primary
+              return (
+                <div key={o.id} className="sb-myleads-row">
+                  <button type="button" className="sb-myleads-name" onClick={() => onOpenDetail?.(o.id)}>{customerDisplay(o)}</button>
+                  {familyDisplay(o) !== '—' && <span className="sb-myleads-fam">{familyDisplay(o)}</span>}
+                  {st?.label && <span className="sb-myleads-st">{st.label}</span>}
+                  {rowGrandTotal(o) > 0 && <span className="sb-myleads-val">{fmtUSD(rowGrandTotal(o))}</span>}
+                  <span className="sb-myleads-when">started {fmtDate(o.created_at)}</span>
+                  {phone && <a className="sb-myleads-call" href={`tel:${String(phone).replace(/\D/g, '')}`}>{fmtPhone(phone)}</a>}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="sb-leads-summary">
         <div className="sb-leads-stat"><span className="sb-leads-stat-num">{fmtUSD(summary.total)}</span><span className="sb-leads-stat-lab">open estimates</span></div>
@@ -522,6 +575,24 @@ function RowMenu({ open, onToggle, items }) {
 
 const CSS = `
 .sb-leads { padding: 4px 0 24px; }
+.sb-myleads { background: #fff; border: 1px solid #ece6d8; border-left: 4px solid #9A7209; border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; }
+.sb-myleads-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sb-myleads-h { font: 800 12px/1 inherit; letter-spacing: .08em; text-transform: uppercase; color: #9A7209; }
+.sb-myleads-iam { font: 700 10.5px/1 inherit; letter-spacing: .06em; text-transform: uppercase; color: #8B8578; }
+.sb-myleads-sel { font: 600 13px/1.2 inherit; font-family: inherit; padding: 6px 9px; border: 1px solid #D9D2C0; border-radius: 8px; background: #fff; }
+.sb-myleads-cnt { font: 700 12.5px/1 inherit; color: #1D6FA8; }
+.sb-myleads-hint { font-size: 11px; color: #A39B8B; }
+.sb-myleads-empty { font-size: 12.5px; color: #8B8578; padding: 8px 0 2px; }
+.sb-myleads-list { max-height: 300px; overflow-y: auto; margin-top: 6px; }
+.sb-myleads-row { display: flex; align-items: center; gap: 12px; padding: 6px 2px; border-top: 1px solid #F1ECDF; }
+.sb-myleads-name { font: 700 13px/1.2 inherit; font-family: inherit; color: #16150F; background: none; border: none; padding: 0; cursor: pointer; text-align: left; }
+.sb-myleads-name:hover { color: #9A7209; text-decoration: underline; }
+.sb-myleads-fam { font-size: 12px; color: #8B8578; }
+.sb-myleads-st { font: 700 10px/1 inherit; letter-spacing: .05em; text-transform: uppercase; color: #6B6455; background: #F5F1E6; border: 1px solid #E4DCC8; border-radius: 999px; padding: 2px 8px; }
+.sb-myleads-val { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #1D7A55; }
+.sb-myleads-when { font-size: 11.5px; color: #A39B8B; margin-left: auto; }
+.sb-myleads-call { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; color: #1D6FA8; text-decoration: none; white-space: nowrap; }
+.sb-myleads-call:hover { text-decoration: underline; }
 .sb-leads-summary { display: flex; gap: 26px; padding: 12px 16px; background: #fff; border: 1px solid #ece6d8; border-radius: 10px; margin-bottom: 12px; }
 .sb-leads-stat { display: flex; flex-direction: column; }
 .sb-leads-stat-num { font-size: 20px; font-weight: 700; color: #1a1a1a; line-height: 1.15; }

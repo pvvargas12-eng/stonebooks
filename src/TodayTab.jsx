@@ -33,7 +33,7 @@ import {
   TASK_TYPES, taskTypeLabel,
   STAFF_NAMES, getActiveStaffUser, setActiveStaffUser,
   fmtDate, customerName, fmtPhone, listUpcomingAppointments,
-  createBatch, updateBatch, searchOrdersLight,
+  createBatch, updateBatch, searchOrdersLight, listOpenLeadsLight,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
 import CompletionEmailModal from './components/CompletionEmailModal'
@@ -135,8 +135,22 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const [hideLeads, setHideLeads] = useState(false)   // focus mode: lead tasks out
   const [openTaskId, setOpenTaskId] = useState(null) // expanded row (thread/edit)
 
+  // Follow-up offer after completing a task (Paul 2026-08-03: "you click
+  // complete and add follow on task... 3 days later, 7 days later.. custom").
+  const [fuOffer, setFuOffer] = useState(null)   // null | {task, created?: iso}
+  // The Open leads panel — never lose a lead you're working (Paul 2026-08-03).
+  const [leadsOpen, setLeadsOpen] = useState(false)
+  const [leadPool, setLeadPool] = useState(null)   // null = not fetched yet
+  const [leadScope, setLeadScope] = useState('mine')   // mine | all
+  useEffect(() => {
+    if (!leadsOpen || leadPool !== null) return
+    let alive = true
+    listOpenLeadsLight().then(rows => { if (alive) setLeadPool(rows || []) }).catch(() => { if (alive) setLeadPool([]) })
+    return () => { alive = false }
+  }, [leadsOpen, leadPool])
+
   const reloadTasks = useCallback(async () => {
-    const ts = await listShopTasks()
+    const ts = await listShopTasks({ doneWithinDays: 30 })
     setTasks(ts)
     setReplies(await listTaskReplies(ts.map(t => t.id)))
   }, [])
@@ -152,7 +166,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
           archived: false, limit: 2000,
           select: 'id, order_number, primary_lastname, status, signed_at, archived, cemetery_id, customer:customers(first_name, last_name), cemetery:cemeteries(id, name)',
         }),
-        listShopTasks(),
+        listShopTasks({ doneWithinDays: 30 }),
       ])
       setOrders(os || [])
       setTasks(ts || [])
@@ -228,6 +242,13 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   }, [filteredLive, weekISOs, isOverdue])
 
   const listTasks = useMemo(() => {
+    // Completed view — newest-done first (Paul 2026-08-03: "very important to
+    // be able to see completed tasks"). Window = the 30-day fetch.
+    if (dayFilter === 'done') {
+      return filteredDone.slice()
+        .sort((a, b) => String(b.done_at || b.created_at || '').localeCompare(String(a.done_at || a.created_at || '')))
+        .slice(0, 200)
+    }
     let rows = filteredLive
     if (dayFilter === 'overdue') rows = rows.filter(isOverdue)
     else if (dayFilter === 'nodate') rows = rows.filter(t => !t.due_date && !isOverdue(t))
@@ -266,7 +287,33 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     setBusyId(t.id)
     await setShopTaskStatus(t.id, status, me || null)
     setBusyId(null); reloadTasks()
+    // Every completion (any view — they all route here) offers a follow-up.
+    if (status === 'done') setFuOffer({ task: t })
   }
+  const createFollowUp = async (iso) => {
+    const t = fuOffer?.task
+    if (!t || !iso) return
+    const r = await addShopTask({
+      title: `Follow up: ${t.title}`.slice(0, 180),
+      assignee: t.assignee || me || '',
+      assigneeKind: t.assignee_kind || 'person',
+      orderId: t.order_id || null,
+      dueDate: iso,
+      // Check jobs are their own beast — the follow-up is a general task.
+      taskType: t.task_type === 'check_job' ? 'general' : (t.task_type || 'general'),
+      createdBy: me || null, taskedBy: me || null,
+    })
+    if (r?.ok === false) { setFuOffer(null); return }
+    setFuOffer({ task: t, created: iso })
+    reloadTasks()
+  }
+  // The capsule fades on its own — quickly once a follow-up is set.
+  useEffect(() => {
+    if (!fuOffer) return
+    const ms = fuOffer.created ? 2600 : 16000
+    const id = setTimeout(() => setFuOffer(null), ms)
+    return () => clearTimeout(id)
+  }, [fuOffer])
   const removeTask = async (t) => {
     if (!window.confirm(`Delete "${t.title}"? It keeps a "deleted by ${me || 'staff'}" trail.`)) return
     await deleteShopTask(t.id, me || null); reloadTasks()
@@ -312,10 +359,18 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
           ))}
         </div>
         <span className="spacer" />
+        <button type="button" className={`leadsbtn${leadsOpen ? ' on' : ''}`}
+          title="Every open lead — so nobody gets forgotten"
+          onClick={() => setLeadsOpen(v => !v)}>
+          Open leads{leadPool ? ` · ${leadPool.length}` : ''}
+        </button>
         <span className="stat blue">{stats.open} open</span>
         <span className="stat amber">{stats.pending} pending</span>
         <span className={`stat${stats.overdue ? ' red' : ''}`}>{stats.overdue} overdue</span>
-        <span className="stat green">{stats.doneToday} done today</span>
+        <button type="button" className="stat green statbtn" title="See completed tasks"
+          onClick={() => { setView('list'); setDayFilter('done') }}>
+          {stats.doneToday} done today
+        </button>
         {snoozedCount > 0 && <span className="stat">{snoozedCount} snoozed</span>}
       </div>
 
@@ -383,6 +438,50 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
           onSaved={() => { setApptEdit(null); setApptRev(v => v + 1) }} />
       )}
 
+      {/* OPEN LEADS — "i may call 15 people today all open i dont want to ever
+          forget or lose a lead" (Paul 2026-08-03). Same lead rule as the Sales
+          tab (listOpenLeadsLight); Mine = leads you created (sales_rep). */}
+      {leadsOpen && (
+        <div className="sb-tcc-leads">
+          <div className="sb-tcc-leads-top">
+            <span className="sb-tcc-leads-h">Open leads</span>
+            <button type="button" className={`sb-tcc-appt-chip${leadScope === 'mine' ? ' on' : ''}`} onClick={() => setLeadScope('mine')}>
+              {me ? `Mine (${me})` : 'Mine'}
+            </button>
+            <button type="button" className={`sb-tcc-appt-chip${leadScope === 'all' ? ' on' : ''}`} onClick={() => setLeadScope('all')}>Everyone</button>
+            <span className="sb-tcc-leads-hint">leads = no signed contract + no deposit · created-by name from the order</span>
+            <span className="spacer" />
+            <button type="button" className="sb-tcc-leads-x" onClick={() => setLeadsOpen(false)}>×</button>
+          </div>
+          {leadPool === null && <div className="sb-tcc-appt-empty">Loading leads…</div>}
+          {leadPool !== null && (() => {
+            const rows = leadScope === 'mine' && me ? leadPool.filter(o => (o.sales_rep || '') === me) : leadPool
+            if (!rows.length) return <div className="sb-tcc-appt-empty">{leadScope === 'mine' ? `No open leads created by ${me || 'you'}.` : 'No open leads.'}</div>
+            return (
+              <div className="sb-tcc-leads-list">
+                {rows.map(o => {
+                  const age = daysBetween(o.created_at, todayISO)
+                  const phone = o.customer?.phone_primary
+                  return (
+                    <div key={o.id} className="sb-tcc-lead">
+                      <button type="button" className="sb-tcc-appt-fam" onClick={() => openOrder?.(o.id)}>{famOf(o)}</button>
+                      {o.sales_rep === 'Website'
+                        ? <span className="sb-tcc-lead-web">Website</span>
+                        : o.sales_rep ? <span className="sb-tcc-lead-rep">by {o.sales_rep}</span> : null}
+                      {age != null && <span className="sb-tcc-lead-age">{age}d</span>}
+                      {o.order_number && <span className="sb-tcc-lead-no">{o.order_number}</span>}
+                      {phone && (
+                        <a className="sb-tcc-appt-call" href={`tel:${String(phone).replace(/\D/g, '')}`}>{fmtPhone(phone)}</a>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
       <div className="sb-tcc-whorow">
         <span className="lab">Show</span>
         <button type="button" className={`wchip${whoSel.size === 0 ? ' on' : ''}`} onClick={() => setWhoSel(new Set())}>Everyone</button>
@@ -439,7 +538,14 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             <button type="button" className={`dchip${dayFilter === 'nodate' ? ' on' : ''}`} onClick={() => setDayFilter('nodate')}>
               <span className="dl">No date</span><b>{dayCounts.nodate}</b>
             </button>
+            <button type="button" className={`dchip green${dayFilter === 'done' ? ' on' : ''}`}
+              title="Tasks completed in the last 30 days" onClick={() => setDayFilter('done')}>
+              <span className="dl">Completed</span><b>{filteredDone.length}</b>
+            </button>
           </div>
+          {dayFilter === 'done' && (
+            <div className="sb-tcc-donehint">Completed in the last 30 days, newest first — the checkbox reopens one.</div>
+          )}
 
           <div className="sb-tcc-card">
             {listTasks.length === 0 && <div className="sb-tcc-empty">Nothing here — task somebody.</div>}
@@ -523,6 +629,26 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
       {view === 'dash' && (
         <Dashboard me={me} staff={staff} tasks={tasks} live={live} todayISO={todayISO} isOverdue={isOverdue}
           onDrill={(token) => { setWhoSel(new Set([token])); setView('list') }} />
+      )}
+
+      {/* Complete-with-follow-up capsule — fires on ANY completion in this tab
+          (all views route through cycleStatus). 3d / 7d / pick a date; the
+          follow-up keeps the assignee + linked order. */}
+      {fuOffer && (
+        <div className="sb-tcc-fu">
+          {fuOffer.created ? (
+            <span className="fu-msg">Follow-up set for <b>{fuOffer.task.assignee}</b> — due {fmtDate(fuOffer.created)}. ✓</span>
+          ) : (
+            <>
+              <span className="fu-msg">Done — follow up on <b>"{String(fuOffer.task.title || '').slice(0, 46)}{String(fuOffer.task.title || '').length > 46 ? '…' : ''}"</b>?</span>
+              <button type="button" className="fu-btn" onClick={() => createFollowUp(isoOf(addDays(now, 3)))}>In 3 days</button>
+              <button type="button" className="fu-btn" onClick={() => createFollowUp(isoOf(addDays(now, 7)))}>In 7 days</button>
+              <input type="date" className="fu-date" min={todayISO}
+                onChange={e => { if (e.target.value) createFollowUp(e.target.value) }} />
+              <button type="button" className="fu-x" onClick={() => setFuOffer(null)}>×</button>
+            </>
+          )}
+        </div>
       )}
     </div>
   )
@@ -1180,6 +1306,40 @@ const CSS = `
   .sb-tcc .stat.amber{color:#8A5A12;border-color:rgba(184,132,42,.35);background:#FBF2DE}
   .sb-tcc .stat.blue{color:#1D6FA8;border-color:rgba(29,111,168,.3);background:#EAF2FA}
   .sb-tcc .stat.green{color:#1D7A55;border-color:rgba(29,122,85,.3);background:#E7F4EC}
+  .sb-tcc .statbtn{cursor:pointer;font-family:inherit}
+  .sb-tcc .statbtn:hover{border-color:#1D7A55}
+  .sb-tcc .leadsbtn{font:700 12.5px/1 inherit;font-family:inherit;color:#1D6FA8;background:#fff;border:1px solid rgba(29,111,168,.45);border-radius:999px;padding:6px 12px;cursor:pointer;white-space:nowrap}
+  .sb-tcc .leadsbtn:hover{background:#EAF2FA}
+  .sb-tcc .leadsbtn.on{background:#1D6FA8;color:#fff;border-color:#1D6FA8}
+
+  /* Open-leads panel — blue rail sibling of the violet appointments panel. */
+  .sb-tcc-leads{background:#F4F8FC;border:1px solid rgba(29,111,168,.28);border-left:4px solid #1D6FA8;border-radius:12px;padding:10px 14px;margin-bottom:12px}
+  .sb-tcc-leads-top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .sb-tcc-leads-top .spacer{flex:1}
+  .sb-tcc-leads-h{font:800 12px/1 inherit;letter-spacing:.08em;text-transform:uppercase;color:#1D6FA8}
+  .sb-tcc-leads-hint{font-size:11px;color:#8B8578}
+  .sb-tcc-leads-x{font:700 15px/1 inherit;font-family:inherit;border:none;background:none;color:#8B8578;cursor:pointer;padding:2px 6px}
+  .sb-tcc-leads-list{max-height:320px;overflow-y:auto;display:flex;flex-direction:column}
+  .sb-tcc-lead{display:flex;align-items:center;gap:10px;padding:6px 2px;border-top:1px solid rgba(29,111,168,.12)}
+  .sb-tcc-lead:first-child{border-top:none}
+  .sb-tcc-lead-rep{font-size:12px;color:#8B8578}
+  .sb-tcc-lead-age{font-family:var(--font-m,'JetBrains Mono'),monospace;font-size:11px;color:#8A5A12}
+  .sb-tcc-lead-no{font-family:var(--font-m,'JetBrains Mono'),monospace;font-size:11px;color:#8B8578}
+  .sb-tcc-lead-web{font:700 10px/1 inherit;letter-spacing:.05em;text-transform:uppercase;color:#1D6FA8;background:#EAF2FA;border:1px solid rgba(29,111,168,.35);border-radius:999px;padding:2px 7px}
+
+  /* Completed view */
+  .sb-tcc .dchip.green .dl{color:#1D7A55}
+  .sb-tcc .dchip.green.on{border-color:#1D7A55;background:#E7F4EC}
+  .sb-tcc-donehint{font-size:12px;color:#8B8578;margin:-6px 0 8px 2px}
+
+  /* Complete-with-follow-up capsule */
+  .sb-tcc-fu{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:80;display:flex;align-items:center;gap:8px;background:#16150F;color:#EFEAE0;border:1px solid #C9A468;border-radius:999px;padding:9px 14px;box-shadow:0 12px 34px rgba(0,0,0,.35);max-width:min(94vw,860px)}
+  .sb-tcc-fu .fu-msg{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sb-tcc-fu .fu-msg b{color:#C9A468}
+  .sb-tcc-fu .fu-btn{font:700 12.5px/1 inherit;font-family:inherit;color:#16150F;background:#C9A468;border:none;border-radius:999px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+  .sb-tcc-fu .fu-btn:hover{background:#D9B87E}
+  .sb-tcc-fu .fu-date{font:600 12px/1 inherit;font-family:inherit;background:#241F15;color:#EFEAE0;border:1px solid #4A4232;border-radius:8px;padding:6px 8px;cursor:pointer}
+  .sb-tcc-fu .fu-x{font:700 15px/1 inherit;font-family:inherit;border:none;background:none;color:#8B8578;cursor:pointer;padding:2px 4px}
 
   .sb-tcc .act{font:600 12.5px/1 inherit;font-family:inherit;color:#9A7209;background:#fff;border:1px solid #9A7209;border-radius:8px;padding:7px 13px;cursor:pointer;white-space:nowrap}
   .sb-tcc .act:hover{background:#F4EBD4}

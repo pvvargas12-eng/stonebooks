@@ -6,6 +6,7 @@
 // =============================================================================
 
 import { supabase } from './supabase'
+import { isOrderRow } from './leads'
 import { pokePushSender } from './pushPoke'
 import { recordTaskAssigned } from './taskStreak'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
@@ -10899,6 +10900,24 @@ export async function listOpenOrdersLight() {
     .limit(3000)
   if (error) { console.error('listOpenOrdersLight:', error); return [] }
   return data || []
+}
+
+// Open LEADS, light select — Paul's rule via isOrderRow (signed + money down =
+// order; everything else open, incl. contracted-no-deposit, is still a lead).
+// Same test the Leads tab applies to its full pool, so the two lists agree.
+// Powers the Task CC "Open leads" panel + the Leads tab's My Leads strip.
+export async function listOpenLeadsLight() {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, order_number, primary_lastname, status, sales_rep, created_at, signed_at, lost_at, payments, ' +
+      'customer:customers(first_name, last_name, phone_primary)')
+    .or('archived.is.null,archived.eq.false')
+    .not('status', 'in', '(closed,cancelled)')
+    .is('lost_at', null)
+    .order('created_at', { ascending: false })
+    .limit(2000)
+  if (error) { console.warn('listOpenLeadsLight:', error.message); return [] }
+  return (data || []).filter(o => !isOrderRow(o, rowTotalPaid(o)))
 }
 
 export async function applyStoneDeadline(rowId, orderId, dateIso, appliedBy = null) {
