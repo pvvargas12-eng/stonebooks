@@ -11,7 +11,7 @@ import { recordTaskAssigned } from './taskStreak'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
 import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
-  isValidPhase, nextPhase, prevPhase, phaseLabel, QC_PHASE, INITIAL_PHASE } from './jobComponents'
+  isValidPhase, nextPhase, prevPhase, phaseLabel, phaseIndex, QC_PHASE, INITIAL_PHASE } from './jobComponents'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
 export const NJ_TAX_RATE = 0.06625
@@ -1576,7 +1576,7 @@ export const TASK_KINDS = [
 // Writes shop_tasks (the ONE task store) so it shows up in the Today command
 // center immediately. task_type: design kinds map to 'design'; otherwise the
 // order's pipeline decides lead vs order (same test as ensureLeadCadence).
-export async function addOrderTask(orderId, { note, assignee, dueDate, actor, kind, phase } = {}) {
+export async function addOrderTask(orderId, { note, assignee, assigneeKind, dueDate, actor, kind, phase } = {}) {
   if (!orderId) return { ok: false }
   let taskType = (kind === 'design' || kind === 'layout') ? kind : null
   if (!taskType) {
@@ -1585,7 +1585,7 @@ export async function addOrderTask(orderId, { note, assignee, dueDate, actor, ki
     taskType = (o && !o.signed_at && ['draft', 'scoping', 'quoted'].includes(o.status)) ? 'lead' : 'order'
   }
   const r = await addShopTask({
-    title: note, assignee, dueDate, orderId,
+    title: note, assignee, assigneeKind: assigneeKind || 'person', dueDate, orderId,
     createdBy: actor, taskedBy: actor, taskType,
     details: phase ? { phase } : null,   // pipeline-rail tasks group by phase
   })
@@ -5957,7 +5957,17 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (!isValidPhase(c.track, newPhase)) return { ok: false, error: `Invalid phase for ${c.track}` }
   const leavingQc = c.current_phase === QC_PHASE && newPhase !== QC_PHASE
-  const r = await _patchComponent(id, { previous_phase: c.current_phase, current_phase: newPhase, phase_changed_at: new Date().toISOString(), ...(leavingQc ? { qc_issue: null } : {}) })
+  // Stale parallel memberships fall away (Paul 2026-08-03: "if a stone is
+  // blasted its obviously cut and stuck — remove it from those lists"):
+  // any extra phase at or before the NEW primary is history, not a queue.
+  // Retired phases (blast/QC on new_stone) index at -1 and drop too.
+  const exArr = Array.isArray(c.extra_phases) ? c.extra_phases : []
+  const keptExtras = exArr.filter(p => phaseIndex(c.track, p) > phaseIndex(c.track, newPhase))
+  const r = await _patchComponent(id, {
+    previous_phase: c.current_phase, current_phase: newPhase, phase_changed_at: new Date().toISOString(),
+    ...(leavingQc ? { qc_issue: null } : {}),
+    ...(keptExtras.length !== exArr.length ? { extra_phases: keptExtras } : {}),
+  })
   if (!r.ok) return r
   await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor, source })
   if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)

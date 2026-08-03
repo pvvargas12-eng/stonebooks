@@ -33,6 +33,7 @@ import {
   TASK_TYPES, taskTypeLabel,
   STAFF_NAMES, getActiveStaffUser, setActiveStaffUser,
   fmtDate, customerName, fmtPhone, listUpcomingAppointments,
+  createBatch, updateBatch, searchOrdersLight,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
 import CompletionEmailModal from './components/CompletionEmailModal'
@@ -105,13 +106,22 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const [busyId, setBusyId] = useState(null)
 
   const [view, setView] = useState('list')          // list | board | people | dash
-  // The shared appointments log (next 14 days) — everyone's, never who-filtered.
+  // The shared appointments log — everyone's, never who-filtered. Fetch 60
+  // days once; the Today / Week / All chips slice client-side.
   const [appts, setAppts] = useState([])
+  const [apptRange, setApptRange] = useState('week')   // today | week | all
+  const [apptEdit, setApptEdit] = useState(null)       // null | {mode:'new'} | {mode:'edit', appt}
+  const [apptRev, setApptRev] = useState(0)
   useEffect(() => {
     let alive = true
-    listUpcomingAppointments({ days: 14 }).then(r => { if (alive) setAppts(r || []) }).catch(() => {})
+    listUpcomingAppointments({ days: 60 }).then(r => { if (alive) setAppts(r || []) }).catch(() => {})
     return () => { alive = false }
-  }, [])
+  }, [apptRev])
+  const apptsShown = useMemo(() => {
+    if (apptRange === 'all') return appts
+    const limit = apptRange === 'today' ? todayISO : isoOf(addDays(now, 7))
+    return appts.filter(a => String(a.scheduled_date).slice(0, 10) <= limit)
+  }, [appts, apptRange, todayISO, now])
   const [dayFilter, setDayFilter] = useState('all') // all | overdue | nodate | <iso>
   // Multi-select who-filter: tokens 'p:<name>' / 'd:<dept>' — any combo
   // (Chelsea + Paul + Design). Empty set = everyone. Defaults to YOU once
@@ -329,31 +339,48 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
         </div>
       )}
 
-      {/* APPOINTMENTS — the shared log (Paul 2026-08-03: "in today I want an
-          appointment list so we all see that"). Everyone's, never filtered by
-          the who-chips; created from the lead page's Add appointment (and the
-          Calendar — same work_batches rows, so the two can never disagree). */}
-      {appts.length > 0 && (
-        <div className="sb-tcc-appts">
-          <div className="sb-tcc-appts-h">Appointments — next 14 days</div>
-          {appts.map(a => (
-            <div key={a.id} className="sb-tcc-appt">
-              <span className="sb-tcc-appt-when">{apptWhen(a)}</span>
-              {a.order
-                ? <button type="button" className="sb-tcc-appt-fam" onClick={() => openOrder?.(a.order.id)}>
-                    {famOf(a.order)}
-                  </button>
-                : <span className="sb-tcc-appt-fam-plain">{a.title || 'Appointment'}</span>}
-              {a.owner_name && <span className="sb-tcc-appt-with">with {a.owner_name}</span>}
-              {a.notes && <span className="sb-tcc-appt-what">{a.notes}</span>}
-              {a.order?.customer?.phone_primary && (
-                <a className="sb-tcc-appt-call" href={`tel:${String(a.order.customer.phone_primary).replace(/\D/g, '')}`}>
-                  {fmtPhone(a.order.customer.phone_primary)}
-                </a>
-              )}
-            </div>
+      {/* APPOINTMENTS — the shared log (Paul 2026-08-03). Everyone's, never
+          who-filtered; same work_batches rows the Calendar renders. Click a
+          row to change the day/time or cancel it; + books a new one (with or
+          without an order); each booking also cuts a Sales-department task. */}
+      <div className="sb-tcc-appts">
+        <div className="sb-tcc-appts-top">
+          <span className="sb-tcc-appts-h">Appointments</span>
+          {['today', 'week', 'all'].map(r => (
+            <button key={r} type="button" className={`sb-tcc-appt-chip${apptRange === r ? ' on' : ''}`}
+              onClick={() => setApptRange(r)}>
+              {r === 'today' ? 'Today' : r === 'week' ? 'Week' : 'All'}
+            </button>
           ))}
+          <button type="button" className="sb-tcc-appt-add" onClick={() => setApptEdit({ mode: 'new' })}>+ Add appointment</button>
         </div>
+        {apptsShown.length === 0 && <div className="sb-tcc-appt-empty">No appointments {apptRange === 'today' ? 'today' : apptRange === 'week' ? 'this week' : 'coming up'}.</div>}
+        {apptsShown.map(a => (
+          <div key={a.id} className="sb-tcc-appt" role="button" tabIndex={0}
+            title="Click to change or cancel"
+            onClick={() => setApptEdit({ mode: 'edit', appt: a })}
+            onKeyDown={e => { if (e.key === 'Enter') setApptEdit({ mode: 'edit', appt: a }) }}>
+            <span className="sb-tcc-appt-when">{apptWhen(a)}</span>
+            {a.order
+              ? <button type="button" className="sb-tcc-appt-fam" onClick={e => { e.stopPropagation(); openOrder?.(a.order.id) }}>
+                  {famOf(a.order)}
+                </button>
+              : <span className="sb-tcc-appt-fam-plain">{a.title || 'Appointment'}</span>}
+            {a.owner_name && <span className="sb-tcc-appt-with">with {a.owner_name}</span>}
+            {a.notes && <span className="sb-tcc-appt-what">{a.notes}</span>}
+            {a.order?.customer?.phone_primary && (
+              <a className="sb-tcc-appt-call" onClick={e => e.stopPropagation()}
+                href={`tel:${String(a.order.customer.phone_primary).replace(/\D/g, '')}`}>
+                {fmtPhone(a.order.customer.phone_primary)}
+              </a>
+            )}
+          </div>
+        ))}
+      </div>
+      {apptEdit && (
+        <ApptEditor init={apptEdit} me={me}
+          onClose={() => setApptEdit(null)}
+          onSaved={() => { setApptEdit(null); setApptRev(v => v + 1) }} />
       )}
 
       <div className="sb-tcc-whorow">
@@ -727,6 +754,130 @@ function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpa
       {expanded && (
         <TaskDetail t={t} me={me} staff={staff} replies={replies} onChanged={onChanged} onOpenOrder={onOpenOrder} />
       )}
+    </div>
+  )
+}
+
+// Book / change / cancel an appointment (Paul 2026-08-03: "click and preview
+// this appointment change the date cancel it... in appointments gotta be able
+// to add to it"). Writes the SAME calendar batch the Calendar and the order
+// page share; a NEW booking also cuts a Sales-department task for that day.
+function ApptEditor({ init, me, onClose, onSaved }) {
+  const editing = init.mode === 'edit' ? init.appt : null
+  const [who, setWho] = useState(() => editing?.owner_name || me || STAFF_NAMES[0] || '')
+  const [date, setDate] = useState(() => (editing ? String(editing.scheduled_date).slice(0, 10) : isoOf(new Date())))
+  const [time, setTime] = useState(() => (editing?.start_time ? String(editing.start_time).slice(0, 5) : ''))
+  const [name, setName] = useState(() => (editing && !editing.order ? String(editing.title || '').replace(/^Appointment — /, '') : ''))
+  const [what, setWhat] = useState(() => editing?.notes || '')
+  const [picked, setPicked] = useState(() => (editing?.order ? { id: editing.order.id, label: famOf(editing.order) } : null))
+  const [oq, setOq] = useState('')
+  const [hits, setHits] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    const needle = oq.trim()
+    if (needle.length < 2) { setHits([]); return }
+    let alive = true
+    const t0 = setTimeout(() => {
+      searchOrdersLight(needle, 10).then(rows => { if (alive) setHits(rows || []) }).catch(() => {})
+    }, 300)
+    return () => { alive = false; clearTimeout(t0) }
+  }, [oq])
+
+  const label = picked?.label || name.trim() || 'walk-in'
+  const save = async () => {
+    if (busy) return
+    if (!date) { setErr('Pick the day.'); return }
+    setBusy(true); setErr(null)
+    const payload = {
+      title: `Appointment — ${label}`,
+      scheduled_date: date,
+      start_time: time || null,
+      attendees: who ? [who] : [],
+      owner_name: who || null,
+      order_id: picked ? picked.id : null,
+      notes: what.trim() || null,
+    }
+    const r = editing
+      ? await updateBatch(editing.id, payload)
+      : await createBatch({ kind: 'appointment', calendar_scope: 'all', ...payload })
+    if (!r?.ok) { setBusy(false); setErr(r?.error || 'Could not save.'); return }
+    if (!editing) {
+      await addShopTask({
+        title: `Appointment ${shortDay(date)}${time ? ` ${fmtTime12(time)}` : ''} — ${label}${what.trim() ? ` — ${what.trim()}` : ''}`.slice(0, 140),
+        assignee: 'Sales', assigneeKind: 'department',
+        orderId: picked?.id || null, dueDate: date,
+        createdBy: me || null, taskedBy: me || null, taskType: 'general',
+      }).catch(() => {})
+    }
+    setBusy(false)
+    onSaved()
+  }
+  const cancelAppt = async () => {
+    if (!editing || busy) return
+    setBusy(true); setErr(null)
+    const r = await updateBatch(editing.id, { status: 'cancelled' })
+    setBusy(false)
+    if (!r?.ok) { setErr(r?.error || 'Could not cancel.'); return }
+    onSaved()
+  }
+
+  return (
+    <div className="sb-tcc-apped-scrim" onClick={() => !busy && onClose()}>
+      <div className="sb-tcc-apped" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
+        <div className="sb-tcc-apped-t">{editing ? 'Appointment' : 'New appointment'}</div>
+        <div className="sb-tcc-apped-grid">
+          <label><i>With</i>
+            <select value={who} onChange={e => setWho(e.target.value)} disabled={busy}>
+              {STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label><i>Day</i><input type="date" value={date} disabled={busy} onChange={e => setDate(e.target.value)} /></label>
+          <label><i>Time</i><input type="time" value={time} disabled={busy} onChange={e => setTime(e.target.value)} /></label>
+        </div>
+        {picked ? (
+          <div className="sb-tcc-apped-picked">
+            <span>{picked.label}</span>
+            <button type="button" disabled={busy} onClick={() => setPicked(null)}>× unlink</button>
+          </div>
+        ) : (
+          <>
+            <label className="sb-tcc-apped-f"><i>Who is coming (or link their lead below)</i>
+              <input type="text" value={name} disabled={busy} placeholder="e.g. the Kowalski family"
+                onChange={e => setName(e.target.value)} />
+            </label>
+            <label className="sb-tcc-apped-f"><i>Link an order or lead</i>
+              <input type="text" value={oq} disabled={busy} placeholder="Type a family or order number…"
+                onChange={e => setOq(e.target.value)} />
+            </label>
+            {hits.length > 0 && (
+              <div className="sb-tcc-apped-hits">
+                {hits.map(h => (
+                  <button key={h.id} type="button" disabled={busy}
+                    onClick={() => { setPicked({ id: h.id, label: famOf(h) }); setOq(''); setHits([]) }}>
+                    {famOf(h)}{h.order_number ? ` · ${h.order_number}` : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        <label className="sb-tcc-apped-f"><i>What are they looking for?</i>
+          <textarea rows={3} value={what} disabled={busy}
+            placeholder="e.g. upright for two, gray, bringing plot photos"
+            onChange={e => setWhat(e.target.value)} />
+        </label>
+        {err && <div className="sb-tcc-apped-err">{err}</div>}
+        <div className="sb-tcc-apped-actions">
+          {editing && (
+            <button type="button" className="sb-tcc-apped-cancelappt" disabled={busy} onClick={cancelAppt}>Cancel appointment</button>
+          )}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="sb-tcc-apped-x" disabled={busy} onClick={onClose}>Close</button>
+          <button type="button" className="sb-tcc-apped-go" disabled={busy} onClick={save}>{busy ? 'Saving…' : (editing ? 'Save changes' : 'Book it')}</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1125,7 +1276,36 @@ const CSS = `
   .sb-tcc-trow .chain em{font-style:normal}
   .sb-tcc-trow .chain b{color:#1A1E24}
   .sb-tcc-appts{background:#F6F1FB;border:1px solid #CECBF6;border-left:5px solid #6D28D9;border-radius:12px;padding:10px 14px;margin:0 0 12px}
-  .sb-tcc-appts-h{font:800 11px/1 inherit;font-family:inherit;letter-spacing:.07em;text-transform:uppercase;color:#3C3489;margin-bottom:6px}
+  .sb-tcc-appts-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .sb-tcc-appts-h{font:800 11px/1 inherit;font-family:inherit;letter-spacing:.07em;text-transform:uppercase;color:#3C3489}
+  .sb-tcc-appt-chip{font:700 11.5px inherit;font-family:inherit;border:1px solid #CECBF6;background:#fff;color:#534AB7;border-radius:999px;padding:4px 12px;cursor:pointer}
+  .sb-tcc-appt-chip.on{background:#6D28D9;border-color:#6D28D9;color:#fff}
+  .sb-tcc-appt-add{font:700 12px inherit;font-family:inherit;margin-left:auto;background:#6D28D9;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer}
+  .sb-tcc-appt-add:hover{background:#5a1fb8}
+  .sb-tcc-appt-empty{font-size:12.5px;color:#7a71a8;padding:4px 0}
+  .sb-tcc-appt[role="button"]{cursor:pointer;border-radius:8px}
+  .sb-tcc-appt[role="button"]:hover{background:#EFE9FA}
+  .sb-tcc-apped-scrim{position:fixed;inset:0;background:rgba(15,20,25,.5);z-index:1200;display:flex;align-items:center;justify-content:center;padding:20px}
+  .sb-tcc-apped{background:#fff;border-radius:12px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;padding:18px 20px}
+  .sb-tcc-apped-t{font-size:16px;font-weight:800;margin-bottom:10px}
+  .sb-tcc-apped-grid{display:grid;grid-template-columns:1.2fr 1fr .8fr;gap:10px;margin-bottom:10px}
+  .sb-tcc-apped label{display:flex;flex-direction:column;gap:3px;font-size:13px}
+  .sb-tcc-apped label>i{font-style:normal;font:700 10.5px inherit;font-family:inherit;letter-spacing:.06em;text-transform:uppercase;color:#8a8472}
+  .sb-tcc-apped select,.sb-tcc-apped input,.sb-tcc-apped textarea{font:inherit;font-size:13.5px;padding:8px 10px;border:1px solid #D9D2C0;border-radius:8px;background:#fff}
+  .sb-tcc-apped textarea{resize:vertical}
+  .sb-tcc-apped-f{margin-bottom:10px}
+  .sb-tcc-apped-picked{display:flex;align-items:center;gap:10px;background:#F6F1FB;border:1px solid #CECBF6;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-weight:700}
+  .sb-tcc-apped-picked button{font:600 12px inherit;font-family:inherit;border:none;background:none;color:#B3261E;cursor:pointer}
+  .sb-tcc-apped-hits{display:flex;flex-direction:column;border:1px solid #E6E2F8;border-radius:8px;margin:-4px 0 10px;overflow:hidden}
+  .sb-tcc-apped-hits button{font:600 13px inherit;font-family:inherit;text-align:left;background:#fff;border:none;border-top:1px solid #F3F0FA;padding:8px 12px;cursor:pointer}
+  .sb-tcc-apped-hits button:hover{background:#F6F1FB}
+  .sb-tcc-apped-err{font-size:12.5px;font-weight:700;color:#B3261E;margin-bottom:8px}
+  .sb-tcc-apped-actions{display:flex;gap:8px;align-items:center;margin-top:6px}
+  .sb-tcc-apped-cancelappt{font:700 12.5px inherit;font-family:inherit;border:1px solid rgba(179,38,30,.5);color:#B3261E;background:none;border-radius:8px;padding:8px 12px;cursor:pointer}
+  .sb-tcc-apped-cancelappt:hover{background:rgba(179,38,30,.08)}
+  .sb-tcc-apped-x{font:600 13px inherit;font-family:inherit;border:1px solid #D9D2C0;background:none;border-radius:8px;padding:8px 14px;cursor:pointer}
+  .sb-tcc-apped-go{font:800 13px inherit;font-family:inherit;background:#6D28D9;color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer}
+  .sb-tcc-apped-go:disabled,.sb-tcc-apped-x:disabled,.sb-tcc-apped-cancelappt:disabled{opacity:.6}
   .sb-tcc-appt{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:6px 0;border-top:1px solid #E6E2F8}
   .sb-tcc-appt:first-of-type{border-top:none}
   .sb-tcc-appt-when{font:700 12px var(--sb-font-mono,monospace);color:#3C3489;white-space:nowrap}

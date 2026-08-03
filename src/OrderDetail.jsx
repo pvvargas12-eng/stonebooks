@@ -20,7 +20,7 @@ import {
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
-  listShopTasksForOrder, deleteShopTask, getChangeRequestThread,
+  listShopTasksForOrder, deleteShopTask, getChangeRequestThread, updateShopTask, uploadTaskAttachment, addShopTask,
   updateOrderLeadFields, TASK_KINDS,
   uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
   closeOrder, photoAttachment, setJobOverallStatus, setOrderFamilyName,
@@ -54,6 +54,7 @@ import {
 } from './lib/stonebooksData'
 import CardQuickEdit, { CqeText, CqeArea, CqeSelect, CqeDate, CqeRow, CqeNote } from './components/CardQuickEdit'
 import { orderHasBase, buildBaseSpec, buildDieSpec, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
+import { DEPARTMENTS } from './lib/employees'
 import { MonumentCard, OF_CSS } from './OrderForm'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
 import { paymentTone, paymentLabel } from './lib/crmTheme'
@@ -1572,21 +1573,39 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   }
   const closeEmailComposer = () => setEmailModal(m => (m && m.busy ? m : null))
 
-  // ── Quick task (Paul 2026-07-28: "+add Task at the top") ───────────────────
+  // ── Quick task (Paul 2026-07-28 "+add Task at the top"; 2026-08-03 "I NEED
+  // ALL THE TASK OPTIONS — who when what add attachments then add task") ────
   const [quickTask, setQuickTask] = useState('')
+  const [quickWho, setQuickWho] = useState('')       // '' = me at submit time
+  const [quickDue, setQuickDue] = useState('')
+  const [quickFile, setQuickFile] = useState(null)
+  const quickFileRef = useRef(null)
   const [quickTaskBusy, setQuickTaskBusy] = useState(false)
   const addQuickTask = async () => {
     const t = quickTask.trim()
     if (!t || quickTaskBusy) return
     setQuickTaskBusy(true)
     const me = await getCurrentStaffName()
-    const r = await addOrderTask(orderId, { note: t, assignee: me, actor: me })
+    const assignee = quickWho || me
+    const isDept = DEPARTMENTS.includes(assignee)
+    const r = await addOrderTask(orderId, {
+      note: t, assignee, assigneeKind: isDept ? 'department' : 'person',
+      dueDate: quickDue || null, actor: me,
+    })
+    if (!r?.ok) { setQuickTaskBusy(false); setActionNote(r?.error || 'Could not add the task.'); return }
+    // Attachment rides after the task exists (the upload path needs its id).
+    if (quickFile && r.task?.id) {
+      const up = await uploadTaskAttachment({ orderId, taskId: r.task.id }, quickFile).catch(() => null)
+      if (up?.ok) await updateShopTask(r.task.id, { attachments: [{ name: up.name, url: up.url, path: up.path }] }).catch(() => {})
+    }
     setQuickTaskBusy(false)
-    if (!r?.ok) { setActionNote(r?.error || 'Could not add the task.'); return }
-    setQuickTask('')
+    setQuickTask(''); setQuickWho(''); setQuickDue(''); setQuickFile(null)
     refreshActivity()
-    setActionNote(`Task added, assigned to ${me} — reassign it on the Today tab if it's for someone else.`)
+    setActionNote(`Task added for ${assignee}${quickDue ? `, due ${fmtDate(quickDue)}` : ''}.`)
   }
+  // Inline edit for the tasks in the activity trail (Paul 2026-08-03: "i must
+  // be able to edit the task at the bottom of the page").
+  const [editTask, setEditTask] = useState(null)   // { id, note, assignee, due, busy } | null
 
   // ── Email drafts (Paul 2026-07-28: "i gotta keep restarting") ──────────────
   // Park the composer as a draft; the drafts strip under the quick actions
@@ -2284,9 +2303,21 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             (Paul 2026-07-28: "+add Task at the top — auto create a task to
             that order when you type the task in"). */}
         <div className="sb-od-quicktask">
-          <input className="sb-od-quicktask-in" value={quickTask} placeholder="+ Add a task for this order — type it and hit Add…"
+          <input className="sb-od-quicktask-in" value={quickTask} placeholder="+ Add a task for this order — what needs doing…"
             onChange={e => setQuickTask(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') addQuickTask() }} />
+          <select className="sb-od-quicktask-sel" value={quickWho} onChange={e => setQuickWho(e.target.value)} aria-label="For" title="Who it's for">
+            <option value="">For: me</option>
+            <optgroup label="People">{STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+            <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+          </select>
+          <input type="date" className="sb-od-quicktask-sel" value={quickDue} onChange={e => setQuickDue(e.target.value)} aria-label="Due date" title="Due date" />
+          <input ref={quickFileRef} type="file" style={{ display: 'none' }}
+            onChange={e => { setQuickFile(e.target.files?.[0] || null); e.target.value = '' }} />
+          <button type="button" className="sb-od-quicktask-attach" onClick={() => quickFileRef.current?.click()}
+            title={quickFile ? quickFile.name : 'Attach a file to the task'}>
+            {quickFile ? `${quickFile.name.slice(0, 16)}${quickFile.name.length > 16 ? '…' : ''}` : 'Attach'}
+          </button>
           <button type="button" className="sb-od-quicktask-go" onClick={addQuickTask} disabled={quickTaskBusy || !quickTask.trim()}>
             {quickTaskBusy ? 'Adding…' : 'Add task'}
           </button>
@@ -3256,7 +3287,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                     <div className="sb-od-act-main">
                       {a.type === 'change' && <span className="sb-od-act-text"><strong>{a.field}</strong>: {a.old_value} → {a.new_value}</span>}
                       {a.type === 'activity' && <span className="sb-od-act-text">{a.note}</span>}
-                      {a.type === 'task' && (
+                      {a.type === 'task' && editTask?.id !== a.id && (
                         <span className="sb-od-act-text">
                           <span className={`sb-od-act-badge ${a.task_status === 'done' ? 'done' : 'open'}`}>{a.task_status === 'done' ? '✓ Done' : 'Task'}</span>
                           {a.note}
@@ -3264,10 +3295,41 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                           {a.due_date && <span className="sb-od-act-due"> · due {fmtDate(a.due_date)}</span>}
                         </span>
                       )}
+                      {/* Inline task editor (Paul 2026-08-03: "i must be able
+                          to edit the task at the bottom of the page"). */}
+                      {a.type === 'task' && editTask?.id === a.id && (
+                        <span className="sb-od-act-editor">
+                          <input type="text" value={editTask.note} disabled={editTask.busy}
+                            onChange={e => setEditTask(m => ({ ...m, note: e.target.value }))} />
+                          <select value={editTask.assignee} disabled={editTask.busy}
+                            onChange={e => setEditTask(m => ({ ...m, assignee: e.target.value }))}>
+                            <optgroup label="People">{STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+                            <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+                          </select>
+                          <input type="date" value={editTask.due} disabled={editTask.busy}
+                            onChange={e => setEditTask(m => ({ ...m, due: e.target.value }))} />
+                          <button type="button" className="sb-od-link" disabled={editTask.busy} onClick={async () => {
+                            const m = editTask
+                            if (!m.note.trim()) return
+                            setEditTask({ ...m, busy: true })
+                            const r = await updateShopTask(m.id, {
+                              title: m.note.trim(), assignee: m.assignee,
+                              assigneeKind: DEPARTMENTS.includes(m.assignee) ? 'department' : 'person',
+                              dueDate: m.due || null,
+                            })
+                            if (!r?.ok) { setEditTask({ ...m, busy: false }); setActionNote(r?.error || 'Could not save the task.'); return }
+                            setEditTask(null); refreshActivity()
+                          }}>Save</button>
+                          <button type="button" className="sb-od-link" disabled={editTask.busy} onClick={() => setEditTask(null)}>Cancel</button>
+                        </span>
+                      )}
                       <span className="sb-od-act-meta">{fmtDate(a.created_at)}{a.actor ? ` · ${a.actor}` : ''}</span>
                     </div>
-                    {a.type === 'task' && (
-                      <button type="button" className="sb-od-link" onClick={() => toggleTask(a)}>{a.task_status === 'done' ? 'Reopen' : 'Mark done'}</button>
+                    {a.type === 'task' && editTask?.id !== a.id && (
+                      <span style={{ display: 'inline-flex', gap: 10, flexShrink: 0 }}>
+                        <button type="button" className="sb-od-link" onClick={() => setEditTask({ id: a.id, note: a.note || '', assignee: a.assignee || STAFF_NAMES[0] || '', due: a.due_date ? String(a.due_date).slice(0, 10) : '', busy: false })}>Edit</button>
+                        <button type="button" className="sb-od-link" onClick={() => toggleTask(a)}>{a.task_status === 'done' ? 'Reopen' : 'Mark done'}</button>
+                      </span>
                     )}
                   </div>
                 ))}
@@ -3592,13 +3654,21 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                   calendar_scope: 'all',
                 })
                 if (!r?.ok) { setApptModal({ ...m, busy: false, err: r?.error || 'Could not save the appointment.' }); return }
+                // The Sales department gets a task for the day (Paul
+                // 2026-08-03: "add it to sales department").
+                addShopTask({
+                  title: `Appointment ${m.date}${m.time ? ` ${m.time}` : ''} — ${fam || 'walk-in'}${m.what.trim() ? ` — ${m.what.trim()}` : ''}`.slice(0, 140),
+                  assignee: 'Sales', assigneeKind: 'department',
+                  orderId, dueDate: m.date,
+                  createdBy: m.who || null, taskedBy: m.who || null, taskType: 'general',
+                }).catch(() => {})
                 logOrderActivity(orderId, {
                   type: 'change', field: 'Appointment', newValue: `${m.date}${m.time ? ` ${m.time}` : ''}`,
                   note: `Appointment with ${m.who}${m.what ? ` — ${m.what.trim()}` : ''}`,
                   actor: await getCurrentStaffName(),
                 }).then(() => refreshActivity()).catch(() => {})
                 setApptModal(null)
-                setActionNote(`Appointment saved — it's on Today and the Calendar. ✓`)
+                setActionNote(`Appointment saved — it's on Today, the Calendar, and Sales' tasks. ✓`)
               }}>
                 {apptModal.busy ? 'Saving…' : 'Save appointment'}
               </button>
@@ -4007,6 +4077,12 @@ const OD_CSS = `
   .sb-od-quicktask-in:focus { outline: none; border-style: solid; border-color: #9A7209; background: #fff; }
   .sb-od-quicktask-go { border: none; border-radius: 9px; background: #16150F; color: #C9A468; font: 700 13px/1 inherit; padding: 9px 16px; cursor: pointer; }
   .sb-od-quicktask-go:disabled { opacity: 0.5; cursor: default; }
+  .sb-od-quicktask-sel { font: inherit; font-size: 12.5px; padding: 8px 9px; border: 0.5px solid #D9D2C0; border-radius: 9px; background: #fff; max-width: 150px; }
+  .sb-od-quicktask-attach { font: 600 12.5px inherit; font-family: inherit; border: 1px dashed #C9A468; background: none; color: #876307; border-radius: 9px; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+  .sb-od-quicktask-attach:hover { border-style: solid; }
+  .sb-od-act-editor { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .sb-od-act-editor input[type="text"] { font: inherit; font-size: 13px; padding: 5px 9px; border: 0.5px solid #D9D2C0; border-radius: 7px; min-width: 240px; }
+  .sb-od-act-editor input[type="date"], .sb-od-act-editor select { font: inherit; font-size: 12.5px; padding: 5px 8px; border: 0.5px solid #D9D2C0; border-radius: 7px; background: #fff; }
 
   /* Emphasis tiers (Paul 2026-07-28: "bold some of the important ones"). */
   .sb-od-btn-strong { font-weight: 700; border-color: #b3a880; }

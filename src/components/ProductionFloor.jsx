@@ -19,7 +19,7 @@ import {
   getBringUpReady,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
 } from '../lib/stonebooksData'
-import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases } from '../lib/jobComponents'
+import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, advanceVerb } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
@@ -529,7 +529,9 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
                 : <button type="button" className="pf-btn pf-btn-deny" disabled={busy} onClick={() => openMode('deny')}>✕ Deny</button>}
             </>
           ) : (
-            <button type="button" className="pf-btn pf-btn-go" disabled={busy} onClick={() => run(a => advanceComponent(comp.id, { actor: a }))}>Advance →</button>
+            <button type="button" className="pf-btn pf-btn-go" disabled={busy} onClick={() => run(a => advanceComponent(comp.id, { actor: a }))}>
+              {advanceVerb(comp.track, comp.current_phase) || 'Done'} →
+            </button>
           )}
           <button type="button" className="pf-btn" disabled={busy} onClick={() => run(a => reverseComponent(comp.id, { actor: a }))}>← Back</button>
           <button type="button" className="pf-btn pf-btn-more" onClick={() => setMenu(m => !m)}>⋯</button>
@@ -627,7 +629,9 @@ function OpsRow({ comp, onChanged }) {
                 : <button type="button" className="ops-btn ops-btn-deny" disabled={busy} onClick={() => setMode('deny')}>✕ Deny</button>}
             </>
           ) : (
-            <button type="button" className="ops-btn ops-btn-go" disabled={busy} onClick={() => run(a => advanceComponent(comp.id, { actor: a, source: 'order' }))}>Advance →</button>
+            <button type="button" className="ops-btn ops-btn-go" disabled={busy} onClick={() => run(a => advanceComponent(comp.id, { actor: a, source: 'order' }))}>
+              {advanceVerb(comp.track, comp.current_phase) || 'Done'} →
+            </button>
           )}
           <button type="button" className="ops-btn" disabled={busy} onClick={() => run(a => reverseComponent(comp.id, { actor: a, source: 'order' }))}>← Back</button>
           <button type="button" className="ops-btn ops-btn-ghost" onClick={() => { setMode('override'); setText('') }}>Set phase…</button>

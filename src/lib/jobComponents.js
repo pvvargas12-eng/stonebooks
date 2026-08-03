@@ -13,7 +13,13 @@ import { SHAPES, buildDieSpec, buildBaseSpec, orderHasBase } from './monumentCat
 // Ordered phases per track (the funnel order). current_phase is validated against
 // the matching list both here and by the DB CHECK in 20260630_job_components.sql.
 export const TRACK_PHASES = {
-  new_stone:   ['ready_to_bring_up', 'brought_to_line', 'cut', 'stencil_cut', 'stencil_stuck', 'blast', 'quality_check', 'ready_to_set'],
+  // NEW STONE (Paul 2026-08-03, from the field): QC and the Blasted parking
+  // column are GONE — tapping BLASTED in the Blasting Queue lands the stone
+  // at Ready to Install and auto-joins the installations list. 'blast' +
+  // 'quality_check' stay DB-legal (history; doors keep both) but the app
+  // never writes them for new_stone again (prod rows moved forward by
+  // 20260803_stone_qc_removed.sql).
+  new_stone:   ['ready_to_bring_up', 'brought_to_line', 'cut', 'stencil_cut', 'stencil_stuck', 'ready_to_set'],
   inscription: ['needs_rubbing', 'stencil_cut', 'inscription_complete'],
   door:        ['pickup_doors', 'cut_stencil', 'stick_stencil', 'blast', 'quality_check', 'drop_off_doors'],
   bronze:      ['bronze_on_order', 'bronze_received', 'mounted_on_base', 'delivered'],
@@ -27,7 +33,7 @@ export const PHASE_LABEL = {
   // (Codes unchanged — display only; 'blast' is shared with the door track,
   // where "Blasted" reads the same way.)
   stencil_cut: 'Stencil Cut', stencil_stuck: 'Blasting Queue', blast: 'Blasted',
-  quality_check: 'Quality Check', ready_to_set: 'Ready to Set',
+  quality_check: 'Quality Check', ready_to_set: 'Ready to Install',
   needs_rubbing: 'Needs Rubbing from Cemetery', inscription_complete: 'Inscription Complete',
   pickup_doors: 'Pickup Doors', cut_stencil: 'Cut Stencil', stick_stencil: 'Stick Stencil',
   drop_off_doors: 'Drop Off Doors',
@@ -36,9 +42,26 @@ export const PHASE_LABEL = {
 }
 export const TRACK_LABEL = { new_stone: 'New Stone', inscription: 'Inscription', door: 'Mausoleum Door', bronze: 'Bronze Services' }
 export const INITIAL_PHASE = { new_stone: 'ready_to_bring_up', inscription: 'needs_rubbing', door: 'pickup_doors', bronze: 'bronze_on_order' }
-// Quality Check is a hold-gate on new_stone + doors only (inscriptions have none).
+// Quality Check is a hold-gate on DOORS only now (Paul 2026-08-03 removed it
+// from stones; inscriptions never had one).
 export const QC_PHASE = 'quality_check'
-export const TRACKS_WITH_QC = new Set(['new_stone', 'door'])
+export const TRACKS_WITH_QC = new Set(['door'])
+
+// The ADVANCE button says what you're DOING, never "Advance" (Paul, from the
+// field: "still hate how it says advance not blasted"). new_stone gets the
+// shop's own verbs; every other track reads the next phase's name.
+const NEW_STONE_VERB = {
+  ready_to_bring_up: 'Brought to Line',
+  brought_to_line: 'Cut',
+  cut: 'Stencil Cut',
+  stencil_cut: 'Stencil Stuck',
+  stencil_stuck: 'Blasted',
+}
+export function advanceVerb(track, code) {
+  if (track === 'new_stone' && NEW_STONE_VERB[code]) return NEW_STONE_VERB[code]
+  const next = nextPhase(track, code)
+  return next ? phaseLabel(next) : null
+}
 
 export const phaseLabel = (code) => PHASE_LABEL[code] || code
 export const trackPhases = (track) => TRACK_PHASES[track] || []

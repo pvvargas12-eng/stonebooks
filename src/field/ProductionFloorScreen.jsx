@@ -22,7 +22,7 @@ import {
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
   setComponentConfirmedSize,
 } from '../lib/stonebooksData'
-import { trackPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC } from '../lib/jobComponents'
+import { trackPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb } from '../lib/jobComponents'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
 const TRACK_CHIP = { new_stone: 'NEW STONE', inscription: 'INSCRIPTION', bronze: 'BRONZE', door: 'DOORS' }
@@ -392,8 +392,13 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                           disabled={busy} onClick={() => { setDenyFor(c.id); setDenyText('') }}>DENY</button>
                       </>
                     )) : (
+                      // The verb IS the work (Paul 2026-08-03: "still hate how
+                      // it says advance not blasted") — BLASTED, CUT, STENCIL
+                      // STUCK… never "advance".
                       <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
-                        disabled={busy} onClick={() => advance(c)}>{busy ? '…' : 'ADVANCE →'}</button>
+                        disabled={busy} onClick={() => advance(c)}>
+                        {busy ? '…' : `${(advanceVerb(c.track, c.current_phase) || 'Done').toUpperCase()} →`}
+                      </button>
                     )}
                     <button type="button" className="fl-verb" disabled={busy || first} onClick={() => back(c)}>← BACK</button>
                     {track === 'new_stone' && SIZE_PHASES.has(bucket) && (
