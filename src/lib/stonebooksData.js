@@ -2159,6 +2159,19 @@ export function setBlockReason(order, job) {
 }
 export function isReadyToSet(order, job) { return setBlockReason(order, job) === null }
 
+// Due-date proximity tone (Paul 2026-08-03: "DUE DATES THAT ARE CLOSE MUST BE
+// COLOR CODED — AMBER THEN RED"). red = due today or overdue, amber = inside
+// 14 days, null = far out / unset. Local-midnight parse, no timezone shift.
+export function dueDateTone(iso) {
+  if (!iso) return null
+  const d = new Date(String(iso).slice(0, 10) + 'T00:00:00')
+  if (isNaN(d.getTime())) return null
+  const days = Math.ceil((d.getTime() - Date.now()) / 86400000)
+  if (days <= 0) return 'red'
+  if (days <= 14) return 'amber'
+  return null
+}
+
 // The FOUR install gates Paul reads before loading the truck (2026-07-31:
 // "green Paid, foundation in, permit approved, blasted... I CANT GET OUT
 // THERE AND IT NOT BE DONE"). true = green, false = red, null = doesn't

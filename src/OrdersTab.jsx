@@ -33,7 +33,7 @@ import {
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
   logOrderActivity, getCurrentStaffName,
-  properName, todayISO,
+  properName, todayISO, dueDateTone,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
@@ -470,6 +470,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         // EVERY category the order's services map to — a multi-service order
         // shows under each of its chips (the Dziamba rule, 2026-07-31).
         _categories: orderCategories(o, job),
+        // Amber inside 14 days, red due/overdue (Paul 2026-08-03).
+        _dueTone: dueDateTone(o.target_completion_date),
       }
     })
   }, [orders, allJobs])
@@ -1407,7 +1409,7 @@ function BulkSelect({ label, options, onPick, disabled }) {
 // we hold the typed value in local state and only commit on blur / Enter, and
 // only when the date is complete with a plausible 4-digit year. While the field
 // is focused the prop never resets the value (no mid-type re-render / refocus).
-function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
+function InlineDateField({ value, disabled, onCommit, ariaLabel, tone = null }) {
   const [local, setLocal] = useState(value || '')
   const focusedRef = useRef(false)
   // Resync from the saved value only when NOT actively editing.
@@ -1427,7 +1429,7 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel }) {
   return (
     <input
       type="date"
-      className="sb-ord-date-input"
+      className={`sb-ord-date-input${tone ? ` sb-ord-due-${tone}` : ''}`}
       value={local}
       disabled={disabled}
       onFocus={() => { focusedRef.current = true }}
@@ -1579,10 +1581,11 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
           onCommit={v => onInlineDate(o, 'signed_at', v)} ariaLabel="Contract date" />
       </div>
 
-      {/* Due date (target_completion_date) — commits on blur/Enter only */}
+      {/* Due date (target_completion_date) — commits on blur/Enter only.
+          Amber inside 14 days, red due/overdue (Paul 2026-08-03). */}
       <div onClick={e => e.stopPropagation()}>
         <InlineDateField value={toDateInput(o.target_completion_date)} disabled={busy}
-          onCommit={v => onInlineDate(o, 'target', v)} ariaLabel="Due date" />
+          tone={o._dueTone} onCommit={v => onInlineDate(o, 'target', v)} ariaLabel="Due date" />
       </div>
     </div>
   )
@@ -1810,6 +1813,11 @@ const TW_CSS = `
   .sb-ord-date-input { font: inherit; font-size: 12px; padding: 5px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; width: 100%; box-sizing: border-box; cursor: pointer; }
   .sb-ord-date-input:hover:not(:disabled) { border-color: #9A7209; }
   .sb-ord-date-input:disabled { opacity: 0.5; }
+  /* Due-date proximity (Paul 2026-08-03): amber inside 14 days, red due/overdue. */
+  .sb-ord-due-amber { border-color: #b8842a; background: rgba(216,144,31,0.12); color: #8a5a12; font-weight: 700; }
+  .sb-ord-due-amber:hover:not(:disabled) { border-color: #b8842a; }
+  .sb-ord-due-red { border-color: #B3261E; background: rgba(179,38,30,0.10); color: #B3261E; font-weight: 800; }
+  .sb-ord-due-red:hover:not(:disabled) { border-color: #B3261E; }
 
   .sb-tw-bulkbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 16px;
     background: #1e2d3d; color: #fff; border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; box-shadow: 0 6px 20px rgba(15,20,25,0.18); flex-wrap: wrap; }

@@ -43,7 +43,7 @@ import {
   deleteOutgoingPayment, permitOutgoingKey,
   deriveStoneStatus, setOrderStoneStatus, listOrderingVendors, addOrderingVendor,
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
-  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef,
+  MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef, dueDateTone,
   markApprovalLinkEmailed,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
@@ -232,7 +232,7 @@ function ManualBlockerControl({ order, onSaved }) {
   return <button type="button" className="sb-od-mb-add" onClick={openEdit}>+ Add blocker</button>
 }
 
-function ODDateField({ value, onCommit, ariaLabel, disabled }) {
+function ODDateField({ value, onCommit, ariaLabel, disabled, tone = null }) {
   const [local, setLocal] = useState(value || '')
   const focusedRef = useRef(false)
   useEffect(() => { if (!focusedRef.current) setLocal(value || '') }, [value])
@@ -245,7 +245,7 @@ function ODDateField({ value, onCommit, ariaLabel, disabled }) {
     if (v !== (value || '')) onCommit(v)
   }
   return (
-    <input type="date" className="sb-od-sc-date" value={local} disabled={disabled}
+    <input type="date" className={`sb-od-sc-date${tone ? ` sb-od-due-${tone}` : ''}`} value={local} disabled={disabled}
       onFocus={() => { focusedRef.current = true }}
       onChange={e => setLocal(e.target.value)}
       onBlur={commit}
@@ -2277,6 +2277,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             </label>
             <label className="sb-od-sc"><b>Due date</b>
               <ODDateField value={order.target_completion_date ? String(order.target_completion_date).slice(0, 10) : ''}
+                tone={dueDateTone(order.target_completion_date)}
                 onCommit={v => inlineDateField('target', v)} ariaLabel="Due date" />
             </label>
             <label className="sb-od-sc"><b>Blocker</b>
@@ -3949,6 +3950,9 @@ const OD_CSS = `
   .sb-od-tone-bad     { background: #fbedec; border-color: #e39b95; color: #b3261e; }
   .sb-od-tone-neutral { background: #fff; border-color: #d8d6d1; color: #4a4a45; }
   .sb-od-sc-date { font: inherit; font-size: 12px; padding: 4px 6px; border: 0.5px solid #d8d6d1; border-radius: 7px; background: #fff; color: #1a1a17; }
+  /* Due-date proximity: amber inside 14 days, red due/overdue (2026-08-03). */
+  .sb-od-due-amber { border-color: #b8842a; background: rgba(216,144,31,0.12); color: #8a5a12; font-weight: 700; }
+  .sb-od-due-red { border-color: #B3261E; background: rgba(179,38,30,0.10); color: #B3261E; font-weight: 800; }
   .sb-od-sc-date:focus { outline: none; border-color: #9A7209; }
   .sb-od-sc-pair { display: flex; flex-direction: column; gap: 4px; }
   .sb-od-sc-na { font-size: 12px; color: #a09a8c; font-style: italic; padding: 6px 0; }

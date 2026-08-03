@@ -1267,16 +1267,25 @@ function InscriptionCarveTextCard({ order, updateInsc }) {
   // Until a tier is picked there's nothing to auto-fill from.
   if (!insc.tier) return null
 
+  const centered = insc.carveAlign === 'center'
   return (
     <Card title="Engraving text" sub="Exactly what gets carved — auto-filled from the name & dates, editable.">
       <textarea
         className="of-input of-carve-text"
+        style={centered ? { textAlign: 'center' } : undefined}
         value={insc.carveText || ''}
         onChange={e => updateInsc({ carveText: e.target.value, carveTextEdited: true })}
         rows={insc.tier === 'full' ? 3 : 2}
         placeholder="Auto-fills from the deceased name and dates"
         spellCheck={false}
       />
+      {/* Center on the contract (Paul 2026-08-03): the PDF centers each line —
+          no more space-padding the layout by hand. */}
+      <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, margin: '6px 0 0', cursor: 'pointer' }}>
+        <input type="checkbox" checked={centered}
+          onChange={e => updateInsc({ carveAlign: e.target.checked ? 'center' : 'left' })} />
+        Center on the contract
+      </label>
       <div className="of-carve-foot">
         {insc.carveTextEdited ? (
           <>

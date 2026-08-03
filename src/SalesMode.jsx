@@ -4700,12 +4700,19 @@ export function InscriptionStep({ order, update }) {
         <Section title="Carve text" eyebrow="Exactly what gets carved — auto-filled, editable">
           <textarea
             className="sm-textinput sm-carve-text"
+            style={order.inscription.carveAlign === 'center' ? { textAlign: 'center' } : undefined}
             value={order.inscription.carveText || ''}
             onChange={e => updateInsc({ carveText: e.target.value, carveTextEdited: true })}
             rows={order.inscription.type === 'full' ? 3 : 2}
             placeholder="Auto-fills from the name and dates above"
             spellCheck={false}
           />
+          {/* Center on the contract — the PDF centers each line; no space-padding. */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, margin: '6px 0 0', cursor: 'pointer' }}>
+            <input type="checkbox" checked={order.inscription.carveAlign === 'center'}
+              onChange={e => updateInsc({ carveAlign: e.target.checked ? 'center' : 'left' })} />
+            Center on the contract
+          </label>
           <div className="sm-carve-text-foot">
             {order.inscription.carveTextEdited ? (
               <>
@@ -7834,23 +7841,27 @@ export async function generateEstimatePDF(order, opts = {}) {
     // helpers the PDF's "In Memory Of" block uses — display only, no new data.
     ensure(28)
     sectionHeader('Inscription — please verify the wording')
-    if (order.inscription?.familyName) kvRow('Family name', order.inscription.familyName)
+    if (order.inscription?.familyName) kvRow('Family name', sanitizePdfText(order.inscription.familyName))
     // VERBATIM engraving text — the exact value of the order form's "Engraving
     // text" textarea (order.inscription.carveText), INCLUDING any manual override.
     // That typed text is what actually gets carved, so that's what the customer
     // must verify — not the reconstructed name/dates. Rendered line-by-line,
-    // preserving the typed line breaks. Display only; reused as-is (no re-derive).
+    // preserving the typed line breaks. sanitizePdfText only swaps unicode
+    // spaces for plain ones (the Colburn '&' poisoning) — words untouched.
+    // carveAlign 'center' centers every line (no more space-padding a layout).
     // GUARDRAIL: if it's blank, fall back to the derived name/dates rows so the
     // section never prints empty.
-    const _carve = (order.inscription?.carveText || '').trim()
+    const _carve = sanitizePdfText(order.inscription?.carveText || '').trim()
     if (_carve) {
+      const _carveCentered = order.inscription?.carveAlign === 'center'
       doc.setFont('helvetica', 'bold')
       doc.setFontSize(10.5)
       doc.setTextColor(...TEXT)
       for (const cl of _carve.split(/\r?\n/)) {
         ensure(5)
         const wrapped = doc.splitTextToSize(cl, W - 2 * M)
-        doc.text(wrapped, M, y)
+        if (_carveCentered) doc.text(wrapped, W / 2, y, { align: 'center' })
+        else doc.text(wrapped, M, y)
         y += 4.5 * wrapped.length + 1
       }
       doc.setFont('helvetica', 'normal')
@@ -7862,7 +7873,7 @@ export async function generateEstimatePDF(order, opts = {}) {
         if (ln.dates) kvRow('Dates', ln.dates)
       }
     }
-    const _epi = (order.inscription?.epitaph || '').trim()
+    const _epi = sanitizePdfText(order.inscription?.epitaph || '').trim()
     if (_epi) kvRow('Epitaph', _epi)
     y += 2
   }
@@ -8388,6 +8399,19 @@ export async function generateEstimatePDF(order, opts = {}) {
   if (opts.returnDoc) return { doc, filename, signFields }
   doc.save(filename)
   return { doc, filename, signFields }
+}
+
+// WinAnsi-safe user text for jsPDF: ONE unicode space (em/en/thin — an iPad
+// inserts them without anyone noticing) poisons the whole line into UTF-16
+// byte soup that renders as '&' between every letter — the Colburn contract,
+// 2026-08-03. Wide spaces keep their width as plain spaces; zero-widths drop.
+// Run every USER-TYPED string through this before doc.text.
+function sanitizePdfText(s) {
+  return String(s || '')
+    .replace(/[\u2001\u2003\u3000]/g, '   ')                  // em-width spaces stay wide
+    .replace(/\u2002/g, '  ')                                   // en space
+    .replace(/[\u2000\u2004-\u200A\u00A0\u202F\u205F]/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')                    // zero-widths vanish
 }
 
 // Thin wrapper for contract PDFs. Exported so the Order Detail View can open
