@@ -57,8 +57,14 @@ export function lostReasonLabel(code) { return (LOST_REASONS.find(r => r.code ==
 // signals; a live signing link ("Contract sent") beats pipeline status.
 // `o.signing_sent_at` is stamped by the callers that fetched signature_requests.
 export function leadLeftOff(o) {
-  const w = waitingOnOption(o?.waiting_on)
-  if (w) return { code: o.waiting_on, label: w.label, tone: w.side === 'us' ? 'us' : 'them' }
+  const raw = o?.waiting_on
+  if (raw) {
+    const w = waitingOnOption(raw)
+    if (w) return { code: raw, label: w.label, tone: w.side === 'us' ? 'us' : 'them' }
+    // Anything outside the vocabulary is a free-typed custom status —
+    // waiting_on is a plain text column, display it verbatim.
+    return { code: 'custom', label: String(raw), tone: 'them' }
+  }
   if (o?.signing_sent_at) return { code: 'contract_sent', label: 'Contract sent', tone: 'sent' }
   if (o?.status === 'quoted') return { code: 'quoted', label: 'Quoted', tone: 'them' }
   if (o?.status === 'scoping') return { code: 'scoping', label: 'Scoping', tone: 'new' }

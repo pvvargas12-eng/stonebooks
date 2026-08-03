@@ -262,6 +262,23 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     setWaitingSel(m => ({ ...m, [o.id]: v || null }))
     await updateOrderLeadFields(o.id, { waiting_on: v || null })
   }
+  // Quick reminder off a My-Leads row — 3d / 7d / pick a date; a lead task for
+  // the picked person, linked to the lead, lands in the table below + Task CC.
+  const [remindQuick, setRemindQuick] = useState(null)   // lead id with the strip open
+  const isoPlusDays = (n) => {
+    const d = new Date(); d.setDate(d.getDate() + n)
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+  const quickRemind = async (o, iso) => {
+    if (!iso) return
+    setRemindQuick(null)
+    await addOrderTask(o.id, {
+      note: `Follow up: ${customerDisplay(o)}`.slice(0, 160),
+      assignee: myRep || 'Sales', assigneeKind: myRep ? 'person' : 'department',
+      dueDate: iso, actor: myRep || null, kind: 'lead',
+    })
+    refresh()
+  }
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const openReminder = (leadId) => { setMenuKey(null); setReminderDue(todayStr()); setReminderFor(leadId) }
@@ -369,13 +386,36 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
                 <div key={o.id} className="sb-myleads-row">
                   <button type="button" className="sb-myleads-name" onClick={() => onOpenDetail?.(o.id)}>{customerDisplay(o)}</button>
                   {familyDisplay(o) !== '—' && <span className="sb-myleads-fam">{familyDisplay(o)}</span>}
-                  {/* Where it left off — read at a glance, set in one click. */}
+                  {/* Where it left off — read at a glance, set in one click;
+                      Custom… takes any typed status. */}
                   <select className={`sb-myleads-left tone-${left.tone}`} value={waitingOn || ''}
                     title="Where this lead left off — pick to set, blank clears"
-                    onChange={e => setLeftOff(o, e.target.value)}>
+                    onChange={e => {
+                      let v = e.target.value
+                      if (v === '__custom') {
+                        const txt = window.prompt('Type the status — e.g. "Waiting on granite sample":')
+                        if (!txt || !txt.trim()) { e.target.value = waitingOn || ''; return }
+                        v = txt.trim().slice(0, 60)
+                      }
+                      setLeftOff(o, v)
+                    }}>
                     <option value="">{waitingOn ? '— clear (auto)' : left.label}</option>
                     {WAITING_ON_OPTIONS.map(w => <option key={w.code} value={w.code}>{w.label}</option>)}
+                    {left.code === 'custom' && <option value={waitingOn}>{left.label}</option>}
+                    <option value="__custom">Custom…</option>
                   </select>
+                  {remindQuick === o.id ? (
+                    <span className="sb-myleads-rem">
+                      <button type="button" onClick={() => quickRemind(o, isoPlusDays(3))}>3 days</button>
+                      <button type="button" onClick={() => quickRemind(o, isoPlusDays(7))}>7 days</button>
+                      <input type="date" min={todayISO} onChange={e => quickRemind(o, e.target.value)} />
+                      <button type="button" className="x" onClick={() => setRemindQuick(null)}>×</button>
+                    </span>
+                  ) : (
+                    <button type="button" className="sb-myleads-rembtn"
+                      title="Task yourself a follow-up on this lead"
+                      onClick={() => setRemindQuick(o.id)}>+ Remind</button>
+                  )}
                   {rowGrandTotal(o) > 0 && <span className="sb-myleads-val">{fmtUSD(rowGrandTotal(o))}</span>}
                   <span className="sb-myleads-when">started {fmtDate(o.created_at)}</span>
                   {phone && <a className="sb-myleads-call" href={`tel:${String(phone).replace(/\D/g, '')}`}>{fmtPhone(phone)}</a>}
@@ -616,6 +656,13 @@ const CSS = `
 .sb-myleads-left.tone-us { color: #B3261E; background: #FBEAE8; border: 1px solid rgba(179,38,30,.4); }
 .sb-myleads-left.tone-sent { color: #1D7A55; background: #E7F4EC; border: 1px solid rgba(29,122,85,.4); }
 .sb-myleads-left.tone-new { color: #6B6455; background: #F5F1E6; border: 1px solid #E4DCC8; }
+.sb-myleads-rembtn { font: 700 11px/1 inherit; font-family: inherit; color: #9A7209; background: none; border: 1px dashed #C9A468; border-radius: 999px; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
+.sb-myleads-rembtn:hover { background: #F4EBD4; border-style: solid; }
+.sb-myleads-rem { display: inline-flex; align-items: center; gap: 5px; }
+.sb-myleads-rem button { font: 700 11px/1 inherit; font-family: inherit; color: #16150F; background: #C9A468; border: none; border-radius: 999px; padding: 4px 9px; cursor: pointer; white-space: nowrap; }
+.sb-myleads-rem button:hover { background: #D9B87E; }
+.sb-myleads-rem button.x { background: none; color: #8B8578; padding: 2px 4px; font-size: 14px; }
+.sb-myleads-rem input[type="date"] { font: 600 11px/1 inherit; font-family: inherit; border: 1px solid #D9D2C0; border-radius: 8px; padding: 3px 6px; background: #fff; }
 .sb-myleads-val { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #1D7A55; }
 .sb-myleads-when { font-size: 11.5px; color: #A39B8B; margin-left: auto; }
 .sb-myleads-call { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; color: #1D6FA8; text-decoration: none; white-space: nowrap; }

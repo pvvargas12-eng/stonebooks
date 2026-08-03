@@ -143,6 +143,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const [leadsOpen, setLeadsOpen] = useState(false)
   const [leadPool, setLeadPool] = useState(null)   // null = not fetched yet
   const [leadScope, setLeadScope] = useState('mine')   // mine | all
+  const [remindFor, setRemindFor] = useState(null)   // lead id with the 3d/7d/date strip open
   useEffect(() => {
     if (!leadsOpen || leadPool !== null) return
     let alive = true
@@ -315,6 +316,24 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     const id = setTimeout(() => setFuOffer(null), ms)
     return () => clearTimeout(id)
   }, [fuOffer])
+  // Quick reminder from an Open-leads row (Paul 2026-08-03: "create alert or
+  // task from here — 3 days 7 days custom time"). A lead-typed task for ME,
+  // linked to the lead; the confirmation rides the same capsule.
+  const leadRemind = async (o, iso) => {
+    if (!iso) return
+    const left = leadLeftOff(o)
+    const r = await addShopTask({
+      title: `Follow up: ${famOf(o)}${left.code !== 'new' ? ` — ${left.label}` : ''}`.slice(0, 160),
+      assignee: me || 'Sales',
+      assigneeKind: me ? 'person' : 'department',
+      orderId: o.id, dueDate: iso, taskType: 'lead',
+      createdBy: me || null, taskedBy: me || null,
+    })
+    setRemindFor(null)
+    if (r?.ok === false) return
+    setFuOffer({ task: { title: `Follow up: ${famOf(o)}`, assignee: me || 'Sales' }, created: iso })
+    reloadTasks()
+  }
   const removeTask = async (t) => {
     if (!window.confirm(`Delete "${t.title}"? It keeps a "deleted by ${me || 'staff'}" trail.`)) return
     await deleteShopTask(t.id, me || null); reloadTasks()
@@ -468,17 +487,37 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
                     <div key={o.id} className="sb-tcc-lead">
                       <button type="button" className="sb-tcc-appt-fam" onClick={() => openOrder?.(o.id)}>{famOf(o)}</button>
                       {/* Where it left off — read at a glance, set in one click
-                          (writes orders.waiting_on; blank = derived). */}
+                          (writes orders.waiting_on; blank = derived; Custom…
+                          takes any typed status). */}
                       <select className={`sb-tcc-lead-left tone-${left.tone}`} value={o.waiting_on || ''}
                         title="Where this lead left off — pick to set, blank clears"
                         onChange={async e => {
-                          const v = e.target.value || null
+                          let v = e.target.value || null
+                          if (v === '__custom') {
+                            const txt = window.prompt('Type the status — e.g. "Waiting on granite sample":')
+                            if (!txt || !txt.trim()) { e.target.value = o.waiting_on || ''; return }
+                            v = txt.trim().slice(0, 60)
+                          }
                           setLeadPool(pool => (pool || []).map(r => r.id === o.id ? { ...r, waiting_on: v } : r))
                           await updateOrderLeadFields(o.id, { waiting_on: v })
                         }}>
                         <option value="">{o.waiting_on ? '— clear (auto)' : left.label}</option>
                         {WAITING_ON_OPTIONS.map(w => <option key={w.code} value={w.code}>{w.label}</option>)}
+                        {left.code === 'custom' && <option value={o.waiting_on}>{left.label}</option>}
+                        <option value="__custom">Custom…</option>
                       </select>
+                      {remindFor === o.id ? (
+                        <span className="sb-tcc-lead-rem">
+                          <button type="button" onClick={() => leadRemind(o, isoOf(addDays(now, 3)))}>3 days</button>
+                          <button type="button" onClick={() => leadRemind(o, isoOf(addDays(now, 7)))}>7 days</button>
+                          <input type="date" min={todayISO} onChange={e => leadRemind(o, e.target.value)} />
+                          <button type="button" className="x" onClick={() => setRemindFor(null)}>×</button>
+                        </span>
+                      ) : (
+                        <button type="button" className="sb-tcc-lead-rembtn"
+                          title="Task yourself a follow-up on this lead"
+                          onClick={() => setRemindFor(o.id)}>+ Remind</button>
+                      )}
                       {o.sales_rep === 'Website'
                         ? <span className="sb-tcc-lead-web">Website</span>
                         : o.sales_rep ? <span className="sb-tcc-lead-rep">by {o.sales_rep}</span> : null}
@@ -1345,6 +1384,13 @@ const CSS = `
   .sb-tcc-lead-left.tone-us{color:#B3261E;background:#FBEAE8;border:1px solid rgba(179,38,30,.4)}
   .sb-tcc-lead-left.tone-sent{color:#1D7A55;background:#E7F4EC;border:1px solid rgba(29,122,85,.4)}
   .sb-tcc-lead-left.tone-new{color:#6B6455;background:#F5F1E6;border:1px solid #E4DCC8}
+  .sb-tcc-lead-rembtn{font:700 11px/1 inherit;font-family:inherit;color:#9A7209;background:none;border:1px dashed #C9A468;border-radius:999px;padding:3px 9px;cursor:pointer;white-space:nowrap}
+  .sb-tcc-lead-rembtn:hover{background:#F4EBD4;border-style:solid}
+  .sb-tcc-lead-rem{display:inline-flex;align-items:center;gap:5px}
+  .sb-tcc-lead-rem button{font:700 11px/1 inherit;font-family:inherit;color:#16150F;background:#C9A468;border:none;border-radius:999px;padding:4px 9px;cursor:pointer;white-space:nowrap}
+  .sb-tcc-lead-rem button:hover{background:#D9B87E}
+  .sb-tcc-lead-rem button.x{background:none;color:#8B8578;padding:2px 4px;font-size:14px}
+  .sb-tcc-lead-rem input[type="date"]{font:600 11px/1 inherit;font-family:inherit;border:1px solid #D9D2C0;border-radius:8px;padding:3px 6px;background:#fff}
 
   /* Completed view */
   .sb-tcc .dchip.green .dl{color:#1D7A55}
