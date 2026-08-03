@@ -1,5 +1,12 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## INCIDENT + HARDENING (2026-08-03): OrderDetail crashed on open — missing import; no-undef is now an ERROR
+
+- **The crash (Paul: "IT CRASHES NEED THAT FIXED RIGHT NOW"):** Status Overview v2 (5100d49) used `properName` in OrderDetail WITHOUT importing it → ReferenceError the moment ANY order rendered. **Lint passed and the build passed because `no-undef` was warn-level** (J1-P1 stabilization downgrade), and the dev boot check never exercises OrderDetail (auth wall). Hotfix f804d39 (one-line import) deployed within minutes.
+- **The sweep found TWO MORE latent crashes of the same disease, pre-existing:** SalesMode:3795 called `rankDiversify` unimported (the wizard Design step's DEFAULT All tab → throw) and reportDefs:224 used `orderName` (a PaymentsTab-local helper) in the Money Pulse CSV rows. Both fixed in c1547bb.
+- **HARDENED (c1547bb): `no-undef` is an ERROR.** eslint.config.js gained a node-globals block (`api/**/*.js`, `scripts/**/*.{js,mjs}`, root `*.js`) so process/Buffer/__dirname stop false-positive. A missing import now FAILS `npm run build` — locally and on Vercel. **Standing rules: (1) never downgrade no-undef again; (2) a green dev-boot proves only the login screen — any OrderDetail/behind-auth change needs its identifiers verified (the build now does it); (3) when a warn-level lint rule hides a crash class, fix the rule, not just the instance.**
+- **Same day, Paul's follow-ups:** task rows read "by X · for Y" instead of the ambiguous arrow + the task editors' selects wear For / Tasked by / Due labels (TodayTab). **Design summary v2:** moved DOWN to sit directly above Design / proof (original section order restored — "the location of the boxes before were good"), rail entry after Monument, and gained a quick-edit pencil (CardQuickEdit → verse/epitaph + design notes via bulkUpdateOrders; names stay on the order form).
+
 ## Sprint CARVE-FIX + DUE-TONE (2026-08-03) — SHIPPED: the Colburn '&' audit + centered carve text + due-date colors
 
 - **The Colburn audit (E-26-0518): the contract printed `&` between every letter of the inscription.** Root cause proven from prod hex: the typed `inscription.carveText` contains **EM SPACE characters (U+2003)** — `1948⟨U+2003⟩MARGARET COLBURN⟨U+2003⟩2018` — an iPad inserts them invisibly. jsPDF's standard Helvetica can't encode them; ONE such char makes jsPDF emit the whole line as UTF-16 byte soup, which the viewer renders as '&' interleaved with every letter. **The stored names were never corrupted.**

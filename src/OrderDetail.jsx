@@ -1167,6 +1167,29 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     return { ok: true }
   }
 
+  // Design summary quick-edit (Paul 2026-08-03: "must be able to edit what
+  // they want") — verse + design notes, the two free-text facts the card
+  // shows. Names stay edited on the order form (deceased is its own surface).
+  const [makeDraft, setMakeDraft] = useState(null)
+  const seedMakeDraft = () => setMakeDraft({
+    epitaph: order.inscription?.epitaph || '',
+    notes: order.design_preferences || '',
+  })
+  const saveMake = async () => {
+    if (!makeDraft) return { ok: false, error: 'Nothing to edit.' }
+    const r = await bulkUpdateOrders([orderId], {
+      inscription: { ...(order.inscription || {}), epitaph: makeDraft.epitaph.trim() },
+      design_preferences: makeDraft.notes.trim() || null,
+    })
+    if (!r.ok) return r
+    await refreshOrder()
+    logOrderActivity(orderId, {
+      type: 'change', field: 'Design summary', newValue: 'updated',
+      note: 'Verse / design notes edited', actor: await getCurrentStaffName(),
+    }).then(() => refreshActivity()).catch(() => {})
+    return { ok: true }
+  }
+
   // ── Cemetery & Grave + permit quick-edit (the canonical permit editor) ───────
   // Permit STATUS/dates/meta live on the orders row (single source of truth — the
   // Orders table + Permit Hub read the same fields). The permit FEE is an OUTGOING
@@ -1934,9 +1957,9 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     || (Array.isArray(order.designs) && order.designs.length > 0)
   const railItems = [
     { id: 'od-customer', label: 'Customer & contact' },
-    ...(showMake ? [{ id: 'od-make', label: 'Design summary' }] : []),
     { id: 'od-cemetery', label: 'Cemetery & grave' },
     { id: 'od-monument', label: 'Monument' },
+    ...(showMake ? [{ id: 'od-make', label: 'Design summary' }] : []),
     { id: 'od-financial', label: 'Financial' },
     { id: 'od-permit', label: 'Permit' },
     { id: 'od-job', label: 'Related job' },
@@ -2524,63 +2547,6 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             <Field label="Funeral home / referral" value={referral || null} />
           </Section>
 
-          {/* 1b — DESIGN SUMMARY (Paul 2026-08-03): what we're making, at a
-              glance — the catalog pick, the verse, every name (with space for
-              the next), and the design description. New stone / inscription /
-              bronze orders. Reads what the order already holds — designs[],
-              deceased[], inscription.epitaph, design_preferences. */}
-          {showMake && (() => {
-            const designsArr = Array.isArray(order.designs) ? order.designs : []
-            const primaryDesign = designsArr[0] || null
-            const altCount = Math.max(0, designsArr.length - 1)
-            const primaryImg = primaryDesign?.snapshot?.img || null
-            const primaryName = primaryDesign?.snapshot?.name || primaryDesign?.snapshot?.title || ''
-            const verse = (order.inscription?.epitaph || '').trim()
-            const makeNotes = (order.design_preferences || '').trim() || (order.inscription?.customNotes || '').trim()
-            const people = Array.isArray(order.deceased) ? order.deceased : []
-            const nameOf = (d) => [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ').toUpperCase()
-            const yearsOf = (d) => {
-              const b = String(d.dateOfBirth || '').slice(0, 4), e = String(d.dateOfDeath || '').slice(0, 4)
-              return b && e ? `${b} – ${e}` : b ? `b. ${b}` : e ? `d. ${e}` : ''
-            }
-            const realPeople = people.filter(d => !d.isReserved && (d.firstName || d.lastName))
-            const reservedCount = people.filter(d => d.isReserved).length
-            return (
-              <Section id="od-make" title="Design — what we're making">
-                <div className="sb-od-make">
-                  <div className="sb-od-make-img">
-                    {primaryImg
-                      ? <img src={primaryImg} alt="Catalog design" loading="lazy" />
-                      : <div className="sb-od-make-noimg">No catalog design picked</div>}
-                    <div className="sb-od-make-imgcap">
-                      {primaryImg ? `Catalog${primaryName ? ` · ${primaryName}` : ''} · primary${altCount ? ` + ${altCount} alternate${altCount === 1 ? '' : 's'}` : ''}` : 'Pick one in the Design step of the wizard'}
-                    </div>
-                  </div>
-                  <div className="sb-od-make-rows">
-                    {verse && <div className="sb-od-make-row"><b>Verse</b><span className="sb-od-make-verse">“{verse}”</span></div>}
-                    {realPeople.map((d, i) => (
-                      <div key={i} className="sb-od-make-row"><b>Name {i + 1}</b>
-                        <span className="sb-od-make-name">{nameOf(d)}{yearsOf(d) ? <em> · {yearsOf(d)}</em> : null}</span>
-                      </div>
-                    ))}
-                    {realPeople.length === 0 && <div className="sb-od-make-row"><b>Names</b><span className="sb-od-status-muted">None entered yet</span></div>}
-                    {Array.from({ length: reservedCount }, (_, i) => (
-                      <div key={`r${i}`} className="sb-od-make-row"><b>Name {realPeople.length + i + 1}</b>
-                        <span className="sb-od-make-reserved">Space reserved</span>
-                      </div>
-                    ))}
-                    {reservedCount === 0 && realPeople.length > 0 && realPeople.length < 3 && (
-                      <div className="sb-od-make-row"><b>Name {realPeople.length + 1}</b>
-                        <span className="sb-od-make-reserved">Space for another name</span>
-                      </div>
-                    )}
-                    {makeNotes && <div className="sb-od-make-row sb-od-make-notes"><b>Notes</b><span>{makeNotes}</span></div>}
-                  </div>
-                </div>
-              </Section>
-            )
-          })()}
-
           {/* 2 — Cemetery / grave */}
           <Section id="od-cemetery" title="Cemetery & grave" headerAction={
             <CardQuickEdit title="Cemetery & Grave" onOpen={seedCgDraft} onSave={saveCemeteryGrave} width={360}>
@@ -2730,6 +2696,73 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           <Section id="od-production" title="Production status">
             <OrderProductionStatus orderId={orderId} />
           </Section>
+
+          {/* 1b — DESIGN SUMMARY (Paul 2026-08-03): what we're making, at a
+              glance — the catalog pick, the verse, every name (with space for
+              the next), and the design description. New stone / inscription /
+              bronze orders. Reads what the order already holds — designs[],
+              deceased[], inscription.epitaph, design_preferences. */}
+          {showMake && (() => {
+            const designsArr = Array.isArray(order.designs) ? order.designs : []
+            const primaryDesign = designsArr[0] || null
+            const altCount = Math.max(0, designsArr.length - 1)
+            const primaryImg = primaryDesign?.snapshot?.img || null
+            const primaryName = primaryDesign?.snapshot?.name || primaryDesign?.snapshot?.title || ''
+            const verse = (order.inscription?.epitaph || '').trim()
+            const makeNotes = (order.design_preferences || '').trim() || (order.inscription?.customNotes || '').trim()
+            const people = Array.isArray(order.deceased) ? order.deceased : []
+            const nameOf = (d) => [d.firstName, d.middleName, d.lastName].filter(Boolean).join(' ').toUpperCase()
+            const yearsOf = (d) => {
+              const b = String(d.dateOfBirth || '').slice(0, 4), e = String(d.dateOfDeath || '').slice(0, 4)
+              return b && e ? `${b} – ${e}` : b ? `b. ${b}` : e ? `d. ${e}` : ''
+            }
+            const realPeople = people.filter(d => !d.isReserved && (d.firstName || d.lastName))
+            const reservedCount = people.filter(d => d.isReserved).length
+            return (
+              <Section id="od-make" title="Design — what we're making" headerAction={
+                <CardQuickEdit title="Design summary" onOpen={seedMakeDraft} onSave={saveMake} width={380}>
+                  {makeDraft && (
+                    <>
+                      <CqeArea label="Verse / epitaph" value={makeDraft.epitaph} onChange={v => setMakeDraft(d => ({ ...d, epitaph: v }))} rows={2} />
+                      <CqeArea label="Design notes" value={makeDraft.notes} onChange={v => setMakeDraft(d => ({ ...d, notes: v }))} rows={4}
+                        hint="What the design should be — names edit on the order form" />
+                    </>
+                  )}
+                </CardQuickEdit>
+              }>
+                <div className="sb-od-make">
+                  <div className="sb-od-make-img">
+                    {primaryImg
+                      ? <img src={primaryImg} alt="Catalog design" loading="lazy" />
+                      : <div className="sb-od-make-noimg">No catalog design picked</div>}
+                    <div className="sb-od-make-imgcap">
+                      {primaryImg ? `Catalog${primaryName ? ` · ${primaryName}` : ''} · primary${altCount ? ` + ${altCount} alternate${altCount === 1 ? '' : 's'}` : ''}` : 'Pick one in the Design step of the wizard'}
+                    </div>
+                  </div>
+                  <div className="sb-od-make-rows">
+                    {verse && <div className="sb-od-make-row"><b>Verse</b><span className="sb-od-make-verse">“{verse}”</span></div>}
+                    {realPeople.map((d, i) => (
+                      <div key={i} className="sb-od-make-row"><b>Name {i + 1}</b>
+                        <span className="sb-od-make-name">{nameOf(d)}{yearsOf(d) ? <em> · {yearsOf(d)}</em> : null}</span>
+                      </div>
+                    ))}
+                    {realPeople.length === 0 && <div className="sb-od-make-row"><b>Names</b><span className="sb-od-status-muted">None entered yet</span></div>}
+                    {Array.from({ length: reservedCount }, (_, i) => (
+                      <div key={`r${i}`} className="sb-od-make-row"><b>Name {realPeople.length + i + 1}</b>
+                        <span className="sb-od-make-reserved">Space reserved</span>
+                      </div>
+                    ))}
+                    {reservedCount === 0 && realPeople.length > 0 && realPeople.length < 3 && (
+                      <div className="sb-od-make-row"><b>Name {realPeople.length + 1}</b>
+                        <span className="sb-od-make-reserved">Space for another name</span>
+                      </div>
+                    )}
+                    {makeNotes && <div className="sb-od-make-row sb-od-make-notes"><b>Notes</b><span>{makeNotes}</span></div>}
+                  </div>
+                </div>
+              </Section>
+            )
+          })()}
 
           {/* 3b — Design / proof quick-view (item B) */}
           <Section id="od-design" title="Design / proof" headerAction={
