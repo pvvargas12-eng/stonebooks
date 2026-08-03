@@ -490,7 +490,9 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
         <span className="pf-card-fam">{famOf(comp)}</span>
         <span className="pf-card-type">{TYPE_LABEL[comp.component_type] || comp.label}</span>
       </div>
-      {comp.size && <div className="pf-card-spec">{comp.size}{comp.color ? ` · ${comp.color}` : ''}</div>}
+      {/* buildDieSpec already ends with the color NAME — appending comp.color
+          (the raw code) printed "Mountain Rose · mountain-rose". */}
+      {comp.size && <div className="pf-card-spec">{comp.size}</div>}
       <div className="pf-card-meta">{[orderNoOf(comp), cemOf(comp)].filter(Boolean).join(' · ')}{ageD != null ? ` · ${ageD}d` : ''}</div>
 
       {held && <div className="pf-card-issue">⚠ HELD — {comp.qc_issue}</div>}
@@ -737,7 +739,10 @@ const PF_CSS = `
   .pf-board-track-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .pf-board-track-label { font-size: 15px; font-weight: 700; color: #f4f6fa; }
   .pf-cols { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; }
-  .pf-col { flex: 0 0 200px; background: #11151c; border: 1px solid #20262f; border-radius: 10px; padding: 9px; }
+  /* Columns SHARE the panel width (desktop-first): grow evenly to fill, never
+     shrink below readable, and still scroll sideways on a genuinely narrow
+     window. The cap keeps 2-3-column tracks from stretching into slabs. */
+  .pf-col { flex: 1 1 200px; min-width: 200px; max-width: 380px; background: #11151c; border: 1px solid #20262f; border-radius: 10px; padding: 9px; }
   .pf-col-bn { border-color: #5a4a1e; }
   .pf-col-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; flex-wrap: wrap; gap: 2px 6px; }
   .pf-col-l { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #8b95a5; }

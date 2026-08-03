@@ -51,7 +51,9 @@ const famOf = (c) => String(
   || c.cemetery_order?.cemetery_name || c.order?.cemetery?.name || '—',
 ).toUpperCase()
 const metaOf = (c) => [
-  TYPE_LABEL[c.component_type] || c.label, c.size, c.color,
+  // c.size (buildDieSpec) already ends with the color name — c.color is the
+  // raw code and read as a duplicate ("Mountain Rose · mountain-rose").
+  TYPE_LABEL[c.component_type] || c.label, c.size,
   c.order?.order_number || c.cemetery_order?.order_number,
   c.order?.cemetery?.name || c.cemetery_order?.cemetery_name,
 ].filter(Boolean).join(' · ')
