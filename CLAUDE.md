@@ -1,5 +1,9 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix ebd911c (2026-08-04) — Add appointment + Delete modals were INVISIBLE: phantom wrapper class
+
+Paul: "this add appointment button is not working." Both modals were wrapped in `sb-od-modal-backdrop` — a class with **zero CSS anywhere** — so the dialog mounted as an unstyled in-flow div at the very bottom of the page instead of a fixed overlay. Clicking looked like nothing happened. Fix: both now use `.sb-od-modal-overlay` (the styled wrapper every other OrderDetail modal uses). **The Delete confirm had shipped broken since D2 (abe7e64, 2026-06-04)** — APPT-1 copied its wrapper and inherited the bug. **Rules: (1) new modals copy a modal that provably opens (grep the class for a CSS definition before reusing it); (2) forensic trick that cracked it: the companion task's title format identifies WHICH surface wrote an appointment — OrderDetail stamps raw ISO (`Appointment 2026-08-15 09:30 —`), TodayTab's ApptEditor stamps pretty (`Appointment Sat, 8/15 9:30a —`); the prod row was pretty-format, proving Paul's save came from the Today workaround, not the order button.** Also noted for Paul: the Today Appointments panel defaults to the **Week** chip, so a booking further out (his Zec-Gasser 8/15) only shows under **All** — by design (APPT-2), but reads as "it vanished."
+
 ## Sprint TASK-LOOP + MY-LEADS (2026-08-03) — SHIPPED: completed view, complete-with-follow-up, open-leads panel, My Leads strip
 
 Paul: "very important to be able to see completed tasks... some tasks require follow up tasks... you click complete and add follow on task 3 days later, 7 days later.. custom... in task command center gotta be able to hit a button and see Active or Open Leads... i may call 15 people today all open i dont want to ever forget or lose a lead... in leads I need a space at the top that says My Leads... for right now you should be able to select who you are."
