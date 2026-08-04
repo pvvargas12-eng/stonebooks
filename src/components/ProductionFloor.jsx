@@ -19,7 +19,7 @@ import {
   getBringUpReady,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
 } from '../lib/stonebooksData'
-import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
+import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
@@ -108,8 +108,8 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob, components: component
       <style>{PF_CSS}</style>
       <div className="pf-funnel-tracks">
         {TRACK_ORDER.map(track => {
-          const phases = TRACK_PHASES[track]
-          const inTrack = (components || []).filter(c => c.track === track && c.on_floor)
+          const phases = boardPhases(track)
+          const inTrack = (components || []).filter(c => c.track === track && c.on_floor && phases.includes(c.current_phase))
           const counts = phases.map(p => inTrack.filter(c => inColumn(c, p)).length)
           const max = Math.max(1, ...counts)
           const bottleneckIdx = counts.indexOf(Math.max(...counts))
@@ -186,7 +186,10 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const loading = components == null
-  const inTrack = (components || []).filter(c => c.track === track)
+  // Board vocabulary only — a new-stone piece at ready_to_set is BLASTED and
+  // lives on the installation list, not on the floor (no column, no queue row).
+  const phases = boardPhases(track)
+  const inTrack = (components || []).filter(c => c.track === track && phases.includes(c.current_phase))
   const floor = inTrack.filter(c => c.on_floor)
   const queue = inTrack.filter(c => !c.on_floor)
   // BRING-UP CONDITIONS (Paul 2026-07-23): design approved + stone here/in
@@ -205,7 +208,6 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   const queueSorted = [...queueVisible].sort((a, b) =>
     ((readyOf(b) ? 1 : 0) - (readyOf(a) ? 1 : 0))
     || ((ageDaysOf(b, todayMs) ?? -1) - (ageDaysOf(a, todayMs) ?? -1)))
-  const phases = trackPhases(track)
   const counts = phases.map(p => floor.filter(c => c.current_phase === p).length)
   const bnIdx = counts.indexOf(Math.max(...counts))
 
@@ -292,7 +294,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       {/* Track tabs */}
       <div className="pf-tabs">
         {TRACK_ORDER.map(t => {
-          const n = (components || []).filter(c => c.track === t && c.on_floor).length
+          const n = (components || []).filter(c => c.track === t && c.on_floor && boardPhases(t).includes(c.current_phase)).length
           const need = recs.readyByTrack[t] || 0
           return (
             <button key={t} type="button" className={`pf-tab${track === t ? ' on' : ''}`}

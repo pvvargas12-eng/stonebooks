@@ -1,5 +1,15 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint FLOOR-HANDOFF (2026-08-04, same day round 2) — SHIPPED: the floor ends at the Blasting Queue; blasted = installation list
+
+Paul: "why are ready to install not on my installation list? also when i press done nothing happens... from blasting que it should say instead of advance blasted send to installation list... we should remove ready to install and then just rely on the installation list."
+
+- **The Ready to Install COLUMN is gone from both boards + the funnel.** New **`boardPhases(track)`** in jobComponents = the columns a floor board RENDERS (new_stone minus `ready_to_set`); `trackPhases` stays the full ladder (validity, index math, the card override dropdowns still offer Ready to Install as a manual handoff). Board pools now exclude ready_to_set pieces entirely — no column, no queue-log row, no tab count. `ready_to_set` remains a REAL phase: history, the stone-status mirror's 'blasted', `_queueInstallOnReadyToSet`.
+- **Blasting out of the queue = the handoff.** Verb reads **"Blasted → Install list"** (NEW_STONE_VERB, both boards inherit). `setComponentPhase` landing a new_stone piece at ready_to_set now also sets `on_floor: false` in the same patch — advance, override, and the dropdowns all hand off identically; the existing auto-add puts the job on install_list. **Field undo re-floors**: the 8s undo for that one transition runs reverse + `setComponentOnFloor(true)` (a plain reverse would have stranded the piece off-board); the install_list row deliberately stays (Paul's list tolerates extras, Remove is one tap). Desktop mis-clicks have no board-side undo — the piece leaves the board; fix via the phone undo window or the Install list.
+- **ALSO cards can't half-blast:** `moveComponentExtraPhase` advancing an extra into ready_to_set PROMOTES THE PRIMARY via setComponentPhase (extras cleared, off-board, install list) — you can't blast part of a die.
+- **The "press Done nothing happens" bug is dissolved** — that was the last column's advance at the ladder end (`nextPhase` null → error nobody read). No last column, no dead verb. (Inscription/door tracks keep their final columns + Done; not raised, unchanged.)
+- **Prod reconcile (logged `_floor_blasted_reconcile_log`, 10 rows):** every new_stone piece at ready_to_set flipped off-floor; **ZSAK E-26-0064 was the real gap** — blasted but never on install_list (predates/missed the Round-6 auto-add) — inserted (`added_by 'floor-reconcile 2026-08-04'`). Verified after: 0 blasted pieces on-floor, 0 jobs missing from the list.
+
 ## Sprint FLOOR-TRUTH (2026-08-04) — SHIPPED: dies-only floor, stale-ALSO purge, dashboard reads the real stores
 
 Paul's screenshot batch: "i already told you i didnt want bases to show up... ready to install means its blasted so remove it from cut or stencil cut... cut list isnt talking to the cut list section... we do not have 369 active orders: active means deposit paid and contract signed.. if closed its closed... this is also not talking with the others."

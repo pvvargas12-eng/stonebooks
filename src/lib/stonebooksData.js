@@ -6004,6 +6004,10 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
     previous_phase: c.current_phase, current_phase: newPhase, phase_changed_at: new Date().toISOString(),
     ...(leavingQc ? { qc_issue: null } : {}),
     ...(keptExtras.length !== exArr.length ? { extra_phases: keptExtras } : {}),
+    // Blasted = off the board (Paul 2026-08-04: "remove ready to install and
+    // then just rely on the installation list") — the piece's job joins
+    // install_list below; the floor is done with it.
+    ...(c.track === 'new_stone' && newPhase === 'ready_to_set' ? { on_floor: false } : {}),
   })
   if (!r.ok) return r
   await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor, source })
@@ -6083,6 +6087,12 @@ export async function moveComponentExtraPhase(id, fromPhase, dir, { actor = null
   if (!ex.includes(fromPhase)) return { ok: false, error: 'Not in that column.' }
   const to = dir > 0 ? nextPhase(c.track, fromPhase) : prevPhase(c.track, fromPhase)
   if (!to) return { ok: false, error: dir > 0 ? 'Already at the final phase.' : 'Already at the first phase.' }
+  // You can't blast PART of a die: advancing an ALSO card out of the Blasting
+  // Queue means the whole piece got blasted — promote the primary (which
+  // clears every membership, takes it off the board, and joins install_list).
+  if (dir > 0 && c.track === 'new_stone' && to === 'ready_to_set') {
+    return setComponentPhase(id, 'ready_to_set', { actor, eventType: 'component_advanced', source })
+  }
   const without = ex.filter(p => p !== fromPhase)
   // Landing on the primary (or an existing extra) merges — one card there.
   const next = (to === c.current_phase || without.includes(to)) ? without : [...without, to]

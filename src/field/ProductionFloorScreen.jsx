@@ -22,7 +22,7 @@ import {
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
   setComponentConfirmedSize,
 } from '../lib/stonebooksData'
-import { trackPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb } from '../lib/jobComponents'
+import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb } from '../lib/jobComponents'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
 const TRACK_CHIP = { new_stone: 'NEW STONE', inscription: 'INSCRIPTION', bronze: 'BRONZE', door: 'DOORS' }
@@ -109,10 +109,12 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const loading = comps == null
-  const inTrack = (comps || []).filter(c => c.track === track)
+  // Board vocabulary only — a blasted new-stone piece (ready_to_set) lives on
+  // the installation list, never in a floor column or the add queue.
+  const phases = boardPhases(track)
+  const inTrack = (comps || []).filter(c => c.track === track && phases.includes(c.current_phase))
   const floor = inTrack.filter(c => c.on_floor)
   const queue = inTrack.filter(c => !c.on_floor)
-  const phases = trackPhases(track)
   const readyOf = (c) => !!(c.job_id && recs.byJob.get(c.job_id)?.ready)
   // HARD RULE (Paul 2026-07-23, cut-list doctrine): pieces we positively KNOW
   // are not contracted — drafts/leads — never appear in the add sheet at all.
@@ -145,10 +147,18 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
 
   const advance = (c) => {
     const next = nextPhase(c.track, c.current_phase)
+    // Blasting out of the queue hands the piece to the installation list and
+    // off the board — the undo has to bring it BACK onto the floor too.
+    const handoff = c.track === 'new_stone' && next === 'ready_to_set'
     run(c.id,
       () => advanceComponent(c.id, { actor, source: 'field' }),
-      `${famOf(c)} → ${next ? phaseLabel(next) : 'done'}`,
-      () => reverseComponent(c.id, { actor, source: 'field' }))
+      handoff ? `${famOf(c)} blasted → installation list` : `${famOf(c)} → ${next ? phaseLabel(next) : 'done'}`,
+      handoff
+        ? async () => {
+            await reverseComponent(c.id, { actor, source: 'field' })
+            await setComponentOnFloor(c.id, true, { actor, source: 'field' })
+          }
+        : () => reverseComponent(c.id, { actor, source: 'field' }))
   }
   const back = (c) => {
     const prev = prevPhase(c.track, c.current_phase)

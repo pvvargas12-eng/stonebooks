@@ -49,13 +49,15 @@ export const TRACKS_WITH_QC = new Set(['door'])
 
 // The ADVANCE button says what you're DOING, never "Advance" (Paul, from the
 // field: "still hate how it says advance not blasted"). new_stone gets the
-// shop's own verbs; every other track reads the next phase's name.
+// shop's own verbs; every other track reads the next phase's name. Blasting
+// out of the queue HANDS OFF to the installation list (Paul 2026-08-04) —
+// the verb says so.
 const NEW_STONE_VERB = {
   ready_to_bring_up: 'Brought to Line',
   brought_to_line: 'Cut',
   cut: 'Stencil Cut',
   stencil_cut: 'Stencil Stuck',
-  stencil_stuck: 'Blasted',
+  stencil_stuck: 'Blasted → Install list',
 }
 export function advanceVerb(track, code) {
   if (track === 'new_stone' && NEW_STONE_VERB[code]) return NEW_STONE_VERB[code]
@@ -65,6 +67,13 @@ export function advanceVerb(track, code) {
 
 export const phaseLabel = (code) => PHASE_LABEL[code] || code
 export const trackPhases = (track) => TRACK_PHASES[track] || []
+// The COLUMNS a floor board renders. new_stone's ready_to_set is a real phase
+// (history, the stone-status rollup's 'blasted', the install auto-add) but
+// NOT a column (Paul 2026-08-04: "remove ready to install and then just rely
+// on the installation list") — blasting out of the queue moves the piece off
+// the board and its job onto install_list.
+export const boardPhases = (track) =>
+  track === 'new_stone' ? trackPhases(track).filter(p => p !== 'ready_to_set') : trackPhases(track)
 export const trackLabel = (track) => TRACK_LABEL[track] || track
 export const phaseIndex = (track, code) => trackPhases(track).indexOf(code)
 export const isValidPhase = (track, code) => phaseIndex(track, code) >= 0
