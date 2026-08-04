@@ -1812,6 +1812,15 @@ function cemeteryToRow(c) {
   }
 }
 
+// A die/stone dimension is physical inches — anything zero, negative, or
+// non-numeric is entry junk (number-input steppers go negative from an empty
+// field; the Moskowitz "-2 thickness" printed a "-1--2" trade token on the
+// die line, 2026-08-04). Save NULL instead so readers fall back honestly.
+const posDimOrNull = (v) => {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 function orderToRow(order) {
   // Sprint M2 Phase 2 — authority reversal: payments[] is authoritative, the
   // legacy deposit_*/balance_* columns are mirrored from the first two entries.
@@ -1859,10 +1868,13 @@ function orderToRow(order) {
     shape: order.shape || null,
     standard_size_code: order.standardSizeCode || null,
     granite_color: order.graniteColor || null,
-    width_inches: order.width ?? null,
-    depth_inches: order.depth ?? null,
-    thickness_inches: order.thickness ?? null,
-    height_inches: order.height ?? null,
+    // Dimensions are physical inches — zero/negative is stepper/typo junk
+    // (the Moskowitz thickness "-2" that printed a "-1--2" die line,
+    // 2026-08-04) and saves as NULL so readers fall back to a real column.
+    width_inches: posDimOrNull(order.width),
+    depth_inches: posDimOrNull(order.depth),
+    thickness_inches: posDimOrNull(order.thickness),
+    height_inches: posDimOrNull(order.height),
 
     top_shape: order.topShape || null,
     sides: order.sides || null,

@@ -446,6 +446,14 @@ export function effectiveColorPremium(order) {
   return GRANITE_COLORS.find(c => c.code === code)?.premium || 0
 }
 
+// Physical-inches guard: zero/negative/non-numeric dims are entry junk (a
+// number-input stepper below an empty field wrote thickness "-2" on Moskowitz
+// E-26-0412 → the die line printed "-1--2"). Junk reads as absent so the next
+// fallback column supplies the real value. orderToRow nulls these at save too.
+const posDim = (v) => {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
 export function dieSize3(order, shape) {
   const std = order.standardSizeCode ? shape?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
   // A die is ALWAYS three explicit dims — L × W × H — never a collapsed pair, never a
@@ -456,9 +464,9 @@ export function dieSize3(order, shape) {
   // LABEL ONLY: dieSize3 feeds buildDieSpec (a label); face-area pricing reads
   // order.height directly in computeFormLineItems, so this change moves NO total.
   return dimsFromWDT({
-    w: std?.w ?? order.width,
-    d: std?.d ?? order.thickness ?? order.depth,
-    t: std?.t ?? order.height,
+    w: std?.w ?? posDim(order.width),
+    d: std?.d ?? posDim(order.thickness) ?? posDim(order.depth),
+    t: std?.t ?? posDim(order.height),
   })
 }
 // Shared top-shape resolver (Phase 6) — the SAME value the die line item AND the
