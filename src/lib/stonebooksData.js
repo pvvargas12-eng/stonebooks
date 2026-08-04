@@ -2129,7 +2129,24 @@ export async function setOrderDesignStatus(jobId, code) {
   const plan = _designPlan(code, v)
   if (!plan) return { ok: false, error: 'That status doesn’t apply to this job type' }
   const res = await _applyMilestonePlan(jobId, plan)
-  return res.ok ? { ok: true, seeded } : res
+  if (!res.ok) return res
+  // Paul 2026-08-04: "if i mark cut in order then that automatically uploads
+  // here" — for INSCRIPTION work, Design = Cut IS the floor state: the job's
+  // inscription piece lands on the board at Stencil Cut. Deliberate exception
+  // to the hand-picked floor doctrine, inscription track only, forward-only
+  // (a completed piece never demotes). Best-effort — the status write stuck.
+  if (code === 'cut') { try { await _syncInscriptionFloorCut(jobId) } catch (e) { console.warn('[design-cut] floor sync:', e?.message) } }
+  return { ok: true, seeded }
+}
+async function _syncInscriptionFloorCut(jobId) {
+  const { data: comps } = await supabase.from('job_components')
+    .select('id, track, current_phase, on_floor')
+    .eq('job_id', jobId).eq('track', 'inscription')
+  for (const c of (comps || [])) {
+    if (c.current_phase === 'inscription_complete') continue
+    if (c.on_floor && c.current_phase === 'stencil_cut') continue
+    await setComponentOnFloor(c.id, true, { phase: 'stencil_cut', source: 'design-status' })
+  }
 }
 // Stone writes resolve the job's vocabulary first (bronze vs standard) —
 // same key-fetch-first pattern as setOrderDesignStatus.
@@ -5912,7 +5929,7 @@ export async function getProductionComponents() {
   const { data, error } = await supabase.from('job_components')
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
-      order:orders(id, order_number, primary_lastname, permit_status, signed_at, created_at, customer:customers(last_name), cemetery:cemeteries(name)),
+      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at, customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name),
       vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
     // THE DIE IS THE STONE (Paul 2026-07-27 "i dont want the bases showing

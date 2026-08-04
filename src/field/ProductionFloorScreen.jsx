@@ -20,7 +20,7 @@ import {
   advanceComponent, reverseComponent, setComponentOnFloor, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
-  setComponentConfirmedSize,
+  setComponentConfirmedSize, permitStatusLabel,
 } from '../lib/stonebooksData'
 import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb } from '../lib/jobComponents'
 
@@ -57,6 +57,14 @@ const metaOf = (c) => [
   c.order?.order_number || c.cemetery_order?.order_number,
   c.order?.cemetery?.name || c.cemetery_order?.cemetery_name,
 ].filter(Boolean).join(' · ')
+// Blockers on the card (Paul 2026-08-04: "i need to see blockers like permit
+// not approved, not paid in full") — same rules as the desktop board.
+const permitCtx = (c) => {
+  const s = c.order?.permit_status
+  return (s && s !== 'approved' && s !== 'not_required' && s !== 'unknown') ? permitStatusLabel(s) : null
+}
+const permitRed = (c) => !['submitted', 'pending'].includes(c.order?.permit_status)
+const notPaidInFull = (c) => !!c.order?.status && !['paid_in_full', 'closed'].includes(c.order.status)
 
 // Group queue pieces into ONE ROW PER ORDER, preserving the incoming sort.
 const groupByOrder = (pieces) => {
@@ -382,6 +390,14 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                 {sizeText(c.confirmed_size) && (
                   <div className="fl-spec" style={{ color: '#14775A', fontWeight: 700, fontFamily: 'inherit' }}>
                     Cut size confirmed: {sizeText(c.confirmed_size)}
+                  </div>
+                )}
+                {notPaidInFull(c) && (
+                  <div className="fl-spec" style={{ color: '#B3261E', fontWeight: 700, fontFamily: 'inherit' }}>NOT PAID IN FULL</div>
+                )}
+                {permitCtx(c) && (
+                  <div className="fl-spec" style={{ color: permitRed(c) ? '#B3261E' : '#8A5A12', fontWeight: 700, fontFamily: 'inherit' }}>
+                    Permit: {permitCtx(c)}
                   </div>
                 )}
                 {held && <div className="fl-spec" style={{ color: '#B3261E', fontFamily: 'inherit' }}>QC: {c.qc_issue}</div>}

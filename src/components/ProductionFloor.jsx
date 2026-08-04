@@ -64,6 +64,13 @@ const permitContext = (c) => {
   const s = c.order?.permit_status
   return (s && s !== 'approved' && s !== 'not_required' && s !== 'unknown') ? permitStatusLabel(s) : null
 }
+// Blocker tones (Paul 2026-08-04: "i need to see blockers like permit not
+// approved, not paid in full"): submitted/pending permits are in flight
+// (amber); any other unapproved state is red. Money: anything short of
+// paid-in-full wears the red line — leads can't reach the floor, so these
+// are contracted orders still owing.
+const permitTone = (c) => (['submitted', 'pending'].includes(c.order?.permit_status) ? 'amber' : 'red')
+const notPaidInFull = (c) => !!c.order?.status && !['paid_in_full', 'closed'].includes(c.order.status)
 
 // Order age in days (signed date first — production clocks start at contract;
 // created as fallback; the piece's own created_at for order-less trade work).
@@ -513,7 +520,8 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
 
       {held && <div className="pf-card-issue">⚠ HELD — {comp.qc_issue}</div>}
       {comp.blocker && !held && <div className="pf-card-blk">⛔ {comp.blocker}</div>}
-      {permit && <div className="pf-card-ctx">🔒 Permit: {permit}</div>}
+      {notPaidInFull(comp) && <div className="pf-card-ctx pf-card-ctx-red">NOT PAID IN FULL</div>}
+      {permit && <div className={`pf-card-ctx pf-card-ctx-${permitTone(comp)}`}>🔒 Permit: {permit}</div>}
       {comp.notes && mode !== 'note' && <div className="pf-card-note">📝 {comp.notes}</div>}
       {err && <div className="pf-card-err">{err}</div>}
 
@@ -779,6 +787,8 @@ const PF_CSS = `
   .pf-card-issue { font-size: 11px; color: #f87171; margin-top: 6px; font-weight: 600; }
   .pf-card-blk { font-size: 11px; color: #fbbf24; margin-top: 6px; }
   .pf-card-ctx { font-size: 10.5px; color: #a78bfa; margin-top: 4px; }
+  .pf-card-ctx-red { color: #f87171; font-weight: 700; }
+  .pf-card-ctx-amber { color: #fbbf24; }
   .pf-card-note { font-size: 10.5px; color: #8b95a5; margin-top: 4px; }
   .pf-card-err { font-size: 10.5px; color: #f87171; margin-top: 4px; }
   .pf-card-actions { display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
