@@ -3610,7 +3610,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           for → one calendar 'appointment' batch linked to this order. Today's
           shared log and the Calendar both read that row. */}
       {apptModal && (
-        <div className="sb-od-modal-backdrop" onClick={() => { if (!apptModal.busy) setApptModal(null) }}>
+        <div className="sb-od-modal-overlay" onClick={() => { if (!apptModal.busy) setApptModal(null) }}>
           <div className="sb-od-modal" role="dialog" aria-modal="true" aria-label="Add appointment" onClick={e => e.stopPropagation()}>
             <div className="sb-od-modal-title">Add appointment — {properName(order.primary_lastname || customerName(order.customer) || 'this lead')}</div>
             <div className="sb-od-appt-grid">
@@ -3678,7 +3678,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       )}
 
       {deleteModal && (
-        <div className="sb-od-modal-backdrop" onClick={() => { if (!deleteBusy) setDeleteModal(false) }}>
+        <div className="sb-od-modal-overlay" onClick={() => { if (!deleteBusy) setDeleteModal(false) }}>
           <div className="sb-od-modal sb-od-modal-danger" role="dialog" aria-modal="true" aria-label="Confirm permanent delete" onClick={e => e.stopPropagation()}>
             <div className="sb-od-modal-title">Permanently delete this order?</div>
             <p className="sb-od-danger-summary">
