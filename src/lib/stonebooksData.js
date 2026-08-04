@@ -10870,15 +10870,18 @@ export async function listStoneDeadlines() {
 // list or log so we all see that") — the calendar's own 'appointment'
 // work_batches, next N days, with the linked order joined client-side (the
 // order_id column predates any FK, so no PostgREST embed). Everyone sees it.
-export async function listUpcomingAppointments({ days = 14 } = {}) {
-  const start = todayISO()
+// APPT-3: daysBack widens the window into the past and the rows now INCLUDE
+// completed / no_show (only cancelled stays hidden) — the panel's Past view
+// is the closeout ledger, so resolved rows must come back.
+export async function listUpcomingAppointments({ days = 14, daysBack = 0 } = {}) {
+  const start = todayISO(new Date(Date.now() - daysBack * 86400000))
   const end = todayISO(new Date(Date.now() + days * 86400000))
   const { data, error } = await supabase.from('work_batches')
     .select('id, kind, title, scheduled_date, start_time, end_time, attendees, notes, order_id, owner_name, status')
     .eq('kind', 'appointment')
     .gte('scheduled_date', start)
     .lte('scheduled_date', end)
-    .not('status', 'in', '(cancelled,completed)')
+    .neq('status', 'cancelled')
     .order('scheduled_date', { ascending: true })
     .order('start_time', { ascending: true, nullsFirst: false })
   if (error) { console.warn('[appts] listUpcomingAppointments:', error.message); return [] }

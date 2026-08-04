@@ -34,6 +34,7 @@ import {
   STAFF_NAMES, getActiveStaffUser, setActiveStaffUser,
   fmtDate, customerName, fmtPhone, listUpcomingAppointments,
   createBatch, updateBatch, searchOrdersLight, listOpenLeadsLight, updateOrderLeadFields,
+  logOrderActivity,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
 import { WAITING_ON_OPTIONS, leadLeftOff } from './lib/leads'
@@ -57,6 +58,12 @@ const apptWhen = (a) => {
   const day = shortDay(a.scheduled_date)
   return a.start_time ? `${day} · ${fmtTime12(a.start_time)}` : day
 }
+const apptDateOf = (a) => String(a.scheduled_date).slice(0, 10)
+// Closed out = somebody resolved it (Complete / No show); cancelled rows
+// never come back from the fetch.
+const apptOpen = (a) => a.status !== 'completed' && a.status !== 'no_show'
+const apptFamOf = (a) =>
+  (a.order ? famOf(a.order) : String(a.title || '').replace(/^Appointment — /, '').trim()) || 'walk-in'
 const famOf = (o) => {
   const raw = (o?.primary_lastname && String(o.primary_lastname).trim())
     || (o?.customer?.last_name && String(o.customer.last_name).trim())
@@ -107,22 +114,86 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const [busyId, setBusyId] = useState(null)
 
   const [view, setView] = useState('list')          // list | board | people | dash
-  // The shared appointments log — everyone's, never who-filtered. Fetch 60
-  // days once; the Today / Week / All chips slice client-side.
+  // The shared appointments log — everyone's, never who-filtered. Fetch a
+  // 120-day window once (60 back for the Past ledger, 60 forward); the
+  // Today / Week / All / Past chips slice client-side.
   const [appts, setAppts] = useState([])
-  const [apptRange, setApptRange] = useState('week')   // today | week | all
+  const [apptRange, setApptRange] = useState('week')   // today | week | all | past
   const [apptEdit, setApptEdit] = useState(null)       // null | {mode:'new'} | {mode:'edit', appt}
   const [apptRev, setApptRev] = useState(0)
+  // No-show follow-up strip: null | { appt, created?: iso, assignee?: name }
+  const [apptFu, setApptFu] = useState(null)
   useEffect(() => {
     let alive = true
-    listUpcomingAppointments({ days: 60 }).then(r => { if (alive) setAppts(r || []) }).catch(() => {})
+    listUpcomingAppointments({ days: 60, daysBack: 60 }).then(r => { if (alive) setAppts(r || []) }).catch(() => {})
     return () => { alive = false }
   }, [apptRev])
   const apptsShown = useMemo(() => {
-    if (apptRange === 'all') return appts
+    if (apptRange === 'past') {
+      // Newest past first — the desk works backwards from yesterday.
+      return appts
+        .filter(a => apptDateOf(a) < todayISO)
+        .sort((a, b) => apptDateOf(b).localeCompare(apptDateOf(a))
+          || String(b.start_time || '').localeCompare(String(a.start_time || '')))
+    }
+    const upcoming = appts.filter(a => apptDateOf(a) >= todayISO)
+    if (apptRange === 'all') return upcoming
     const limit = apptRange === 'today' ? todayISO : isoOf(addDays(now, 7))
-    return appts.filter(a => String(a.scheduled_date).slice(0, 10) <= limit)
+    return upcoming.filter(a => apptDateOf(a) <= limit)
   }, [appts, apptRange, todayISO, now])
+  // The closeout debt (Paul 2026-08-04: "notification for appintments that
+  // werent clsoed out or followed up on") — past rows nobody ever resolved.
+  const apptsPastOpen = useMemo(
+    () => appts.filter(a => apptDateOf(a) < todayISO && apptOpen(a)),
+    [appts, todayISO]
+  )
+  // Mark Complete / No show — optimistic; a failure resyncs from the server.
+  const markAppt = async (a, status) => {
+    setAppts(prev => prev.map(x => (x.id === a.id ? { ...x, status } : x)))
+    if (status === 'no_show') setApptFu({ appt: a })
+    else if (apptFu?.appt?.id === a.id) setApptFu(null)
+    const r = await updateBatch(a.id, { status })
+    if (!r?.ok) {
+      window.alert(r?.error || 'Could not update the appointment.')
+      setApptRev(v => v + 1)
+      return
+    }
+    if (a.order_id) {
+      logOrderActivity(a.order_id, {
+        type: 'change', field: 'Appointment',
+        newValue: `${shortDay(a.scheduled_date)} — ${status === 'completed' ? 'completed' : 'no show'}`,
+        note: a.owner_name ? `Was with ${a.owner_name}` : null,
+        actor: me || null,
+      }).catch(() => {})
+    }
+  }
+  // No-show follow-up task: 1 day / 3 days / 1 week / custom date (Paul
+  // 2026-08-04). Chases as the person who owned the appointment; unknown
+  // owner falls back to the Sales department (the booking-task precedent).
+  const createApptFollowUp = async (iso) => {
+    const a = apptFu?.appt
+    if (!a || !iso) return
+    const owner = a.owner_name && staff.includes(a.owner_name) ? a.owner_name : null
+    const r = await addShopTask({
+      title: `Follow up: ${apptFamOf(a)} — no-show appointment ${shortDay(a.scheduled_date)}`.slice(0, 140),
+      assignee: owner || 'Sales',
+      assigneeKind: owner ? 'person' : 'department',
+      orderId: a.order_id || null,
+      dueDate: iso,
+      taskType: 'general',
+      createdBy: me || null, taskedBy: me || null,
+    })
+    if (r?.ok === false) { window.alert('Could not create the follow-up task.'); return }
+    setApptFu({ appt: a, created: iso, assignee: owner || 'Sales' })
+    reloadTasks()
+  }
+  // The strip fades on its own — quickly once the follow-up is set.
+  useEffect(() => {
+    if (!apptFu) return
+    const ms = apptFu.created ? 2600 : 16000
+    const id = setTimeout(() => setApptFu(null), ms)
+    return () => clearTimeout(id)
+  }, [apptFu])
   const [dayFilter, setDayFilter] = useState('all') // all | overdue | nodate | <iso>
   // Multi-select who-filter: tokens 'p:<name>' / 'd:<dept>' — any combo
   // (Chelsea + Paul + Design). Empty set = everyone. Defaults to YOU once
@@ -421,36 +492,74 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
       <div className="sb-tcc-appts">
         <div className="sb-tcc-appts-top">
           <span className="sb-tcc-appts-h">Appointments</span>
-          {['today', 'week', 'all'].map(r => (
+          {['today', 'week', 'all', 'past'].map(r => (
             <button key={r} type="button" className={`sb-tcc-appt-chip${apptRange === r ? ' on' : ''}`}
               onClick={() => setApptRange(r)}>
-              {r === 'today' ? 'Today' : r === 'week' ? 'Week' : 'All'}
+              {r === 'today' ? 'Today' : r === 'week' ? 'Week' : r === 'all' ? 'All' : 'Past'}
+              {r === 'past' && apptsPastOpen.length > 0 && <i className="nag">{apptsPastOpen.length}</i>}
             </button>
           ))}
           <button type="button" className="sb-tcc-appt-add" onClick={() => setApptEdit({ mode: 'new' })}>+ Add appointment</button>
         </div>
-        {apptsShown.length === 0 && <div className="sb-tcc-appt-empty">No appointments {apptRange === 'today' ? 'today' : apptRange === 'week' ? 'this week' : 'coming up'}.</div>}
-        {apptsShown.map(a => (
-          <div key={a.id} className="sb-tcc-appt" role="button" tabIndex={0}
-            title="Click to change or cancel"
-            onClick={() => setApptEdit({ mode: 'edit', appt: a })}
-            onKeyDown={e => { if (e.key === 'Enter') setApptEdit({ mode: 'edit', appt: a }) }}>
-            <span className="sb-tcc-appt-when">{apptWhen(a)}</span>
-            {a.order
-              ? <button type="button" className="sb-tcc-appt-fam" onClick={e => { e.stopPropagation(); openOrder?.(a.order.id) }}>
-                  {famOf(a.order)}
-                </button>
-              : <span className="sb-tcc-appt-fam-plain">{a.title || 'Appointment'}</span>}
-            {a.owner_name && <span className="sb-tcc-appt-with">with {a.owner_name}</span>}
-            {a.notes && <span className="sb-tcc-appt-what">{a.notes}</span>}
-            {a.order?.customer?.phone_primary && (
-              <a className="sb-tcc-appt-call" onClick={e => e.stopPropagation()}
-                href={`tel:${String(a.order.customer.phone_primary).replace(/\D/g, '')}`}>
-                {fmtPhone(a.order.customer.phone_primary)}
-              </a>
-            )}
+        {apptRange === 'past' && apptsPastOpen.length > 0 && (
+          <div className="sb-tcc-appt-nag">
+            {apptsPastOpen.length === 1 ? 'One past appointment was' : `${apptsPastOpen.length} past appointments were`} never
+            closed out — mark Complete or No show on each.
           </div>
-        ))}
+        )}
+        {apptsShown.length === 0 && <div className="sb-tcc-appt-empty">No appointments {apptRange === 'today' ? 'today' : apptRange === 'week' ? 'this week' : apptRange === 'past' ? 'in the last 60 days' : 'coming up'}.</div>}
+        {apptsShown.map(a => {
+          const isPast = apptDateOf(a) < todayISO
+          const open = apptOpen(a)
+          return (
+            <div key={a.id} className="sb-tcc-appt" role="button" tabIndex={0}
+              title="Click to change or cancel"
+              onClick={() => setApptEdit({ mode: 'edit', appt: a })}
+              onKeyDown={e => { if (e.key === 'Enter') setApptEdit({ mode: 'edit', appt: a }) }}>
+              <span className="sb-tcc-appt-when">{apptWhen(a)}</span>
+              {a.order
+                ? <button type="button" className="sb-tcc-appt-fam" onClick={e => { e.stopPropagation(); openOrder?.(a.order.id) }}>
+                    {famOf(a.order)}
+                  </button>
+                : <span className="sb-tcc-appt-fam-plain">{a.title || 'Appointment'}</span>}
+              {a.owner_name && <span className="sb-tcc-appt-with">with {a.owner_name}</span>}
+              {a.notes && <span className="sb-tcc-appt-what">{a.notes}</span>}
+              {a.status === 'completed' && <span className="sb-tcc-appt-st done">COMPLETED</span>}
+              {a.status === 'no_show' && <span className="sb-tcc-appt-st noshow">NO SHOW</span>}
+              {isPast && open && <span className="sb-tcc-appt-st open">NOT CLOSED OUT</span>}
+              {open && apptDateOf(a) <= todayISO && (
+                <span className="sb-tcc-appt-verbs" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                  <button type="button" title="It happened — close it out" onClick={() => markAppt(a, 'completed')}>Complete</button>
+                  <button type="button" className="noshow" title="They never came — close it out, then schedule the follow-up"
+                    onClick={() => markAppt(a, 'no_show')}>No show</button>
+                </span>
+              )}
+              {a.order?.customer?.phone_primary && (
+                <a className="sb-tcc-appt-call" onClick={e => e.stopPropagation()}
+                  href={`tel:${String(a.order.customer.phone_primary).replace(/\D/g, '')}`}>
+                  {fmtPhone(a.order.customer.phone_primary)}
+                </a>
+              )}
+              {apptFu?.appt?.id === a.id && (
+                <span className="sb-tcc-appt-fu" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                  {apptFu.created ? (
+                    <span className="msg">Follow-up set for <b>{apptFu.assignee}</b> — due {fmtDate(apptFu.created)}</span>
+                  ) : (
+                    <>
+                      <span className="msg">No show — schedule the follow-up?</span>
+                      <button type="button" onClick={() => createApptFollowUp(isoOf(addDays(now, 1)))}>In 1 day</button>
+                      <button type="button" onClick={() => createApptFollowUp(isoOf(addDays(now, 3)))}>In 3 days</button>
+                      <button type="button" onClick={() => createApptFollowUp(isoOf(addDays(now, 7)))}>In 1 week</button>
+                      <input type="date" aria-label="Follow up on a custom date"
+                        onChange={e => { if (e.target.value) createApptFollowUp(e.target.value) }} />
+                      <button type="button" className="x" title="No follow-up" onClick={() => setApptFu(null)}>×</button>
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
+          )
+        })}
       </div>
       {apptEdit && (
         <ApptEditor init={apptEdit} me={me}
@@ -1541,6 +1650,25 @@ const CSS = `
   .sb-tcc-appt-what{font-size:12.5px;color:#55503F}
   .sb-tcc-appt-call{font-size:12px;font-weight:600;color:#185F8F;text-decoration:none;margin-left:auto}
   .sb-tcc-appt-call:hover{color:#6D28D9;text-decoration:underline}
+  .sb-tcc-appt-chip .nag{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;font:800 10px/1 inherit;font-family:inherit;font-style:normal;background:#B3261E;color:#fff;border-radius:999px;padding:0 4px;margin-left:6px;vertical-align:middle}
+  .sb-tcc-appt-st{font:800 9.5px/1 inherit;font-family:inherit;letter-spacing:.05em;border-radius:6px;padding:3px 7px;white-space:nowrap}
+  .sb-tcc-appt-st.done{color:#1D7A55;background:#E7F4EC}
+  .sb-tcc-appt-st.noshow{color:#B3261E;background:#FBEAE9}
+  .sb-tcc-appt-st.open{color:#8A5A12;background:#FBF3DF;border:1px solid rgba(184,132,42,.45)}
+  .sb-tcc-appt-verbs{display:inline-flex;gap:6px}
+  .sb-tcc-appt-verbs button{font:700 11px inherit;font-family:inherit;border:1px solid #B7D8C2;background:#fff;color:#1D7A55;border-radius:7px;padding:4px 9px;cursor:pointer;white-space:nowrap}
+  .sb-tcc-appt-verbs button:hover{background:#E7F4EC}
+  .sb-tcc-appt-verbs button.noshow{border-color:rgba(179,38,30,.45);color:#B3261E}
+  .sb-tcc-appt-verbs button.noshow:hover{background:#FBEAE9}
+  .sb-tcc-appt-nag{font:700 12.5px inherit;font-family:inherit;color:#B3261E;background:#FBEAE9;border:1px solid rgba(179,38,30,.35);border-radius:8px;padding:6px 10px;margin:2px 0 6px}
+  .sb-tcc-appt-fu{flex-basis:100%;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#16150F;color:#EFEAE0;border:1px solid #C9A468;border-radius:10px;padding:7px 10px;margin:4px 0 2px}
+  .sb-tcc-appt-fu .msg{font-size:12.5px}
+  .sb-tcc-appt-fu .msg b{color:#C9A468}
+  .sb-tcc-appt-fu button{font:700 11.5px/1 inherit;font-family:inherit;color:#16150F;background:#C9A468;border:none;border-radius:999px;padding:6px 10px;cursor:pointer;white-space:nowrap}
+  .sb-tcc-appt-fu button:hover{background:#D9B87E}
+  .sb-tcc-appt-fu input[type="date"]{font:600 11.5px/1 inherit;font-family:inherit;background:#241F15;color:#EFEAE0;border:1px solid #4A4232;border-radius:7px;padding:5px 7px}
+  .sb-tcc-appt-fu .x{background:none;color:#8B8578;font-size:14px;padding:2px 4px}
+  .sb-tcc-appt-fu .x:hover{background:none;color:#EFEAE0}
   .sb-tcc-trow .chain-l{font-style:normal;font-weight:700;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#9a948a;margin-right:2px}
   .sb-tcc-trow .chain-l+em+.chain-l,.sb-tcc-trow .chain-l:not(:first-child){margin-left:6px}
   .sb-tcc .efield{display:flex;flex-direction:column;gap:2px}

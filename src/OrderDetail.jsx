@@ -94,6 +94,16 @@ const todayISO = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
+// "2026-08-15" / "09:30" → "Sat, 8/15" / "9:30a" — the appointment task-title
+// format TodayTab's ApptEditor writes (its shortDay/fmtTime12 twins). Keep in
+// lockstep: the task title is the shared surface the desk reads.
+const apptDayLabel = (iso) =>
+  new Date(String(iso).slice(0, 10) + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })
+const apptTime12 = (hhmm) => {
+  const [h, m] = String(hhmm || '').split(':').map(Number)
+  if (!Number.isFinite(h)) return String(hhmm || '')
+  return `${h % 12 || 12}:${String(m || 0).padStart(2, '0')}${h >= 12 ? 'p' : 'a'}`
+}
 const PAY_METHODS = [
   { code: 'cash', label: 'Cash' }, { code: 'check', label: 'Check' },
   { code: 'card', label: 'Card' }, { code: 'zelle', label: 'Zelle' }, { code: 'other', label: 'Other' },
@@ -3657,7 +3667,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                 // The Sales department gets a task for the day (Paul
                 // 2026-08-03: "add it to sales department").
                 addShopTask({
-                  title: `Appointment ${m.date}${m.time ? ` ${m.time}` : ''} — ${fam || 'walk-in'}${m.what.trim() ? ` — ${m.what.trim()}` : ''}`.slice(0, 140),
+                  title: `Appointment ${apptDayLabel(m.date)}${m.time ? ` ${apptTime12(m.time)}` : ''} — ${fam || 'walk-in'}${m.what.trim() ? ` — ${m.what.trim()}` : ''}`.slice(0, 140),
                   assignee: 'Sales', assigneeKind: 'department',
                   orderId, dueDate: m.date,
                   createdBy: m.who || null, taskedBy: m.who || null, taskType: 'general',
