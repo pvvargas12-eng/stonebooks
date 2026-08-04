@@ -19,7 +19,7 @@ import {
   getBringUpReady,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
 } from '../lib/stonebooksData'
-import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, advanceVerb } from '../lib/jobComponents'
+import { TRACK_PHASES, TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
@@ -84,15 +84,24 @@ const AgeDot = ({ n }) => n == null ? null : (
 const PF_MEM = { track: 'new_stone', queueOpen: false, addCol: null, addQ: '' }
 
 // ── Dashboard funnel ─────────────────────────────────────────────────────────
-export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
-  const [components, setComponents] = useState(null)
+// MIRRORS THE BOARD (Paul 2026-08-04: "this is also not talking with the
+// others"): only on-floor pieces, and each phase row counts exactly what the
+// board's column shows — primary cards + parallel memberships strictly ahead
+// of the primary. The queue lives on the board's Queue log, not here.
+export function ThreeTrackFunnel({ onOpenBoard, onOpenJob, components: componentsProp }) {
+  const [fetched, setFetched] = useState(null)
   const [open, setOpen] = useState(null)   // `${track}|${phase}` expanded
   useEffect(() => {
+    if (componentsProp !== undefined) return
     let alive = true
-    getProductionComponents().then(d => { if (alive) setComponents(d || []) })
+    getProductionComponents().then(d => { if (alive) setFetched(d || []) })
     return () => { alive = false }
-  }, [])
+  }, [componentsProp])
+  const components = componentsProp !== undefined ? componentsProp : fetched
   const loading = components == null
+  const inColumn = (c, p) => c.current_phase === p
+    || (Array.isArray(c.extra_phases) && c.extra_phases.includes(p)
+        && phaseIndex(c.track, p) > phaseIndex(c.track, c.current_phase))
 
   return (
     <div className="pf-funnel-wrap">
@@ -100,8 +109,8 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
       <div className="pf-funnel-tracks">
         {TRACK_ORDER.map(track => {
           const phases = TRACK_PHASES[track]
-          const inTrack = (components || []).filter(c => c.track === track)
-          const counts = phases.map(p => inTrack.filter(c => c.current_phase === p).length)
+          const inTrack = (components || []).filter(c => c.track === track && c.on_floor)
+          const counts = phases.map(p => inTrack.filter(c => inColumn(c, p)).length)
           const max = Math.max(1, ...counts)
           const bottleneckIdx = counts.indexOf(Math.max(...counts))
           const hasWork = inTrack.length > 0
@@ -114,7 +123,7 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
               {phases.map((p, i) => {
                 const key = `${track}|${p}`
                 const isOpen = open === key
-                const cards = inTrack.filter(c => c.current_phase === p)
+                const cards = inTrack.filter(c => inColumn(c, p))
                 return (
                   <div key={p}>
                     <button type="button" className={`pf-funnel-row ${hasWork && i === bottleneckIdx && counts[i] > 0 ? 'pf-funnel-bottleneck' : ''} ${isOpen ? 'pf-funnel-row-open' : ''}`}
@@ -139,7 +148,7 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob }) {
           )
         })}
       </div>
-      <div className="pf-funnel-note">Longest bar = each track's bottleneck. Click a phase to see its pieces · <button type="button" className="pf-funnel-link" onClick={() => onOpenBoard?.()}>open full board →</button></div>
+      <div className="pf-funnel-note">On the board now — same pieces, same columns as the Production floor. Longest bar = the bottleneck. Click a phase to see its pieces · <button type="button" className="pf-funnel-link" onClick={() => onOpenBoard?.()}>open full board →</button></div>
     </div>
   )
 }
@@ -327,8 +336,13 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
               const cards = floor.filter(c => c.current_phase === p)
               // Parallel memberships (Paul, the Boyd case): a piece ALSO sits
               // here while its primary card is elsewhere — separate steps
-              // happening at the same time.
-              const alsoCards = floor.filter(c => c.current_phase !== p && Array.isArray(c.extra_phases) && c.extra_phases.includes(p))
+              // happening at the same time. Guard: a membership at or BEHIND
+              // the primary is stale history, never a queue (Paul 2026-08-04:
+              // "ready to install means its blasted — remove it from cut or
+              // stencil cut") — render only extras strictly ahead.
+              const alsoCards = floor.filter(c => c.current_phase !== p
+                && Array.isArray(c.extra_phases) && c.extra_phases.includes(p)
+                && phaseIndex(c.track, p) > phaseIndex(c.track, c.current_phase))
               return (
                 <div key={p} className={`pf-col ${i === bnIdx && counts[i] > 0 ? 'pf-col-bn' : ''}`}>
                   <div className="pf-col-head">

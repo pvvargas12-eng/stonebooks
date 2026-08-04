@@ -12,15 +12,33 @@
 // reconciliation closes the phantom orders. That drop is expected and correct.
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getJobs, computeOrderPressure, backfillJobComponents } from './lib/stonebooksData'
+import { getJobs, computeOrderPressure, backfillJobComponents, rowTotalPaid, getProductionComponents, getInstallList } from './lib/stonebooksData'
 import { currentStage } from './lib/jobsRowHelpers'
 import { ThreeTrackFunnel } from './components/ProductionFloor'
+import { phaseIndex, trackPhases } from './lib/jobComponents'
 
 const REFRESH_MS = 30000
 const DAY_MS = 86400000
 
 const familyOf = (o) => o?.primary_lastname || o?.customer?.last_name || '—'
 const msDone = (job, key) => (job?.milestones || []).some(m => m.milestone_key === key && m.status === 'done')
+// ACTIVE = contract signed + deposit on the books, nothing terminal (Paul
+// 2026-08-04: "active means deposit paid and contract signed.. if closed its
+// closed"). The EXACT rule _filterRealWorkJobIds applies to every production
+// alert count — keep the two in lockstep.
+const isRealJob = (j) => {
+  const o = j?.order
+  if (!o || o.archived) return false
+  if (['draft', 'scoping', 'quoted', 'closed', 'cancelled'].includes(o.status)) return false
+  return rowTotalPaid(o) > 0
+}
+// "Being worked" = an on-floor piece past its track's first rung and before
+// its last (e.g. new stone: Brought to Line → Blasting Queue).
+const isWorkingPiece = (c) => {
+  if (!c.on_floor) return false
+  const idx = phaseIndex(c.track, c.current_phase)
+  return idx > 0 && idx < trackPhases(c.track).length - 1
+}
 // new Date(<string>) is deterministic (pure) — only bare new Date()/Date.now() in
 // render is the React 19 violation. Current time is read once in load() (todayMs).
 const dateMs = (d) => (d ? new Date(`${String(d).slice(0, 10)}T00:00:00`).getTime() : null)
@@ -43,6 +61,8 @@ function toRow(job) {
 export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dashboard' }) {
   const isProductionView = view === 'production'
   const [jobs, setJobs] = useState(null)
+  const [components, setComponents] = useState(null)   // floor pieces (dies only — the helper excludes bases)
+  const [setList, setSetList] = useState([])           // install_list rows — THE set list
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [syncedAt, setSyncedAt] = useState('')
@@ -57,9 +77,17 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
   const load = useCallback(async () => {
     const token = ++reqRef.current
     try {
-      const data = await getJobs({ includeClosed: false, limit: 2000 })
+      const [data, comps, list] = await Promise.all([
+        getJobs({ includeClosed: false, limit: 2000 }),
+        getProductionComponents().catch(() => []),
+        getInstallList().catch(() => []),
+      ])
       if (token !== reqRef.current) return
-      setJobs((data || []).filter(j => j.overall_status !== 'cancelled'))
+      // Active = real work only: contract signed + deposit paid, nothing
+      // closed/cancelled/archived, never a draft lead.
+      setJobs((data || []).filter(j => j.overall_status !== 'cancelled').filter(isRealJob))
+      setComponents(comps || [])
+      setSetList(list || [])
       setErr(null)
       // Read the clock once, outside render (avoids the React 19 purity lint).
       const d = new Date(); d.setHours(0, 0, 0, 0); setTodayMs(d.getTime())
@@ -97,11 +125,16 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
     return { red, amber }
   }, [jobs])
 
-  // Milestone/date-derived metric sets (all from existing truth). The date buckets
-  // (onTrack / dueWeek / dateOverdue) are arrays so the gauge segments are clickable.
+  // Metric sets from the SAME stores the other tabs read (Paul 2026-08-04:
+  // "this is also not talking with the others"): Ready to set = install_list
+  // (the Installation tab's set list), In production = jobs with an on-floor
+  // piece being worked (the Production floor board). Date buckets stay
+  // milestone/date-derived; arrays so the gauge segments are clickable.
   const metrics = useMemo(() => {
     const list = jobs || []
     const wk = todayMs + 7 * DAY_MS
+    const onList = new Set((setList || []).map(r => r.job_id))
+    const workingJobs = new Set((components || []).filter(isWorkingPiece).map(c => c.job_id).filter(Boolean))
     const dueWeek = [], readySet = [], inProd = [], onTrack = [], dateOverdue = []
     for (const j of list) {
       const tm = dateMs(j.order?.target_completion_date)
@@ -110,11 +143,11 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
         else if (tm <= wk) dueWeek.push(j)
         else onTrack.push(j)
       }
-      if (msDone(j, 'ready_to_install') && !msDone(j, 'installed')) readySet.push(j)
-      if (msDone(j, 'production_started') && !msDone(j, 'production_completed')) inProd.push(j)
+      if (onList.has(j.id) && !msDone(j, 'installed')) readySet.push(j)
+      if (workingJobs.has(j.id)) inProd.push(j)
     }
     return { active: list, dueWeek, readySet, inProd, onTrack, dateOverdue }
-  }, [jobs, todayMs])
+  }, [jobs, todayMs, setList, components])
 
   // On-time gauge — derived from the metric arrays (so a segment click filters them).
   const gauge = useMemo(() => ({
@@ -134,12 +167,12 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
   }, [jobs, todayMs])
 
   const kpis = useMemo(() => ([
-    { key: 'active',        label: 'Active jobs',   tone: 'green',  value: metrics.active.length, sub: 'in production' },
+    { key: 'active',        label: 'Active jobs',   tone: 'green',  value: metrics.active.length, sub: 'contract signed · deposit paid' },
     { key: 'due_week',      label: 'Due this week', tone: 'amber',  value: metrics.dueWeek.length, sub: 'target within 7 days' },
     { key: 'overdue',       label: 'Overdue',       tone: 'red',    value: pressure.red.length,   sub: 'red — past due / unpaid' },
     { key: 'blocked',       label: 'Blocked',       tone: 'amber',  value: pressure.amber.length, sub: 'amber — waiting / stalled' },
-    { key: 'ready_set',     label: 'Ready to set',  tone: 'purple', value: metrics.readySet.length, sub: 'stone ready, not installed' },
-    { key: 'in_production', label: 'In production', tone: 'green',  value: metrics.inProd.length, sub: 'cutting → blasting' },
+    { key: 'ready_set',     label: 'Ready to set',  tone: 'purple', value: metrics.readySet.length, sub: 'on the set list — not installed' },
+    { key: 'in_production', label: 'In production', tone: 'green',  value: metrics.inProd.length, sub: 'pieces on the floor now' },
   ]), [metrics, pressure])
 
   const listRows = useMemo(() => {
@@ -163,7 +196,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
         <span className="jobcc-panel-title">Production floor — three tracks</span>
         {onOpenBoard && <button type="button" className="jobcc-btn jobcc-floor-open" onClick={onOpenBoard}>Open board →</button>}
       </div>
-      <ThreeTrackFunnel onOpenBoard={onOpenBoard} onOpenJob={onOpenJob} />
+      <ThreeTrackFunnel onOpenBoard={onOpenBoard} onOpenJob={onOpenJob} components={components} />
       <div className="jobcc-floor-seed">
         <button type="button" className="jobcc-btn" disabled={seedBusy} onClick={async () => {
           setSeedBusy(true); setSeedResult(null)

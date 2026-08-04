@@ -227,10 +227,14 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const bucketCards = bucket ? floor.filter(c => c.current_phase === bucket) : []
   // Parallel memberships (the Boyd case): pieces ALSO in this column while
   // their primary card sits elsewhere — separate steps happening together.
+  // Only extras strictly AHEAD of the primary render: a membership at or
+  // behind it is stale history (Paul: "ready to install means its blasted").
+  const aheadExtra = (c, p) => Array.isArray(c.extra_phases) && c.extra_phases.includes(p)
+    && phaseIndex(c.track, p) > phaseIndex(c.track, c.current_phase)
   const bucketAlso = bucket
-    ? floor.filter(c => c.current_phase !== bucket && Array.isArray(c.extra_phases) && c.extra_phases.includes(bucket))
+    ? floor.filter(c => c.current_phase !== bucket && aheadExtra(c, bucket))
     : []
-  const inCol = (c, p) => c.current_phase === p || (Array.isArray(c.extra_phases) && c.extra_phases.includes(p))
+  const inCol = (c, p) => c.current_phase === p || aheadExtra(c, p)
   const hasQc = TRACKS_WITH_QC.has(track)
 
   return (

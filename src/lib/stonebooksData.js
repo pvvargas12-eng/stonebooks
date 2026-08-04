@@ -2463,6 +2463,7 @@ export async function getStoneUpByJob() {
     .eq('track', 'new_stone').eq('on_floor', true)
     .in('current_phase', ['brought_to_line', 'cut'])
     .not('job_id', 'is', null)
+    .neq('component_type', 'base')
   if (error) { console.warn('[cutlist] stoneUp:', error.message); return new Map() }
   const m = new Map()
   for (const c of (data || [])) {
@@ -2531,6 +2532,9 @@ export async function getBringUpReady() {
     .select('job_id, track')
     .eq('on_floor', false)
     .not('job_id', 'is', null)
+    // The die is the stone — bases never count toward the red bring-up
+    // numbers or the Jobs-tab Production badge (Paul 2026-08-04).
+    .neq('component_type', 'base')
   if (error) { console.warn('[floor] bringUpReady comps:', error.message); return empty }
   const queueJobs = new Set((comps || []).map(c => c.job_id))
   if (!queueJobs.size) return empty
@@ -5911,6 +5915,11 @@ export async function getProductionComponents() {
       order:orders(id, order_number, primary_lastname, permit_status, signed_at, created_at, customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name),
       vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
+    // THE DIE IS THE STONE (Paul 2026-07-27 "i dont want the bases showing
+    // up", re-flagged 2026-08-04): bases never ride the carving ladder, so
+    // they don't exist to the floor surfaces at all — no base cards, no base
+    // counts, and InstallBoard's every-piece stone-done gate reads dies only.
+    .neq('component_type', 'base')
     .order('track', { ascending: true }).order('sort_order', { ascending: true })
   if (error) { console.warn('[components] floor:', error.message); return [] }
   // Drop components whose job is closed/cancelled (phantoms after reconciliation).
@@ -5949,7 +5958,10 @@ const _NEWSTONE_PHASE_TO_STONE = {
 }
 async function _rollupNewStoneStatus(jobId) {
   if (!jobId) return
-  const { data: comps } = await supabase.from('job_components').select('current_phase').eq('job_id', jobId).eq('track', 'new_stone')
+  // Dies only — a base parked at the first rung must never drag the Orders
+  // Stone column below what the die (the stone) has actually reached.
+  const { data: comps } = await supabase.from('job_components').select('current_phase')
+    .eq('job_id', jobId).eq('track', 'new_stone').neq('component_type', 'base')
   if (!comps || !comps.length) return
   let min = null
   for (const c of comps) {
@@ -6011,6 +6023,12 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
     patch.previous_phase = c.current_phase
     patch.current_phase = phase
     patch.phase_changed_at = new Date().toISOString()
+    // Same stale-membership rule as setComponentPhase: extras at or before
+    // the new primary are history, not queues (Paul: "ready to install means
+    // its blasted — remove it from cut or stencil cut").
+    const exArr = Array.isArray(c.extra_phases) ? c.extra_phases : []
+    const kept = exArr.filter(p => phaseIndex(c.track, p) > phaseIndex(c.track, phase))
+    if (kept.length !== exArr.length) patch.extra_phases = kept
   }
   const r = await _patchComponent(id, patch)
   if (!r.ok) return r
@@ -6035,6 +6053,12 @@ export async function addComponentExtraPhase(id, phase, { actor = null, source =
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (!isValidPhase(c.track, phase)) return { ok: false, error: `Invalid phase for ${c.track}` }
   if (c.current_phase === phase) return { ok: false, error: 'Already in this column.' }
+  // Parallel steps only run AHEAD of the primary (the Boyd case). A column
+  // behind the primary is already complete by definition — never re-enterable
+  // (Paul: "ready to install means its blasted").
+  if (phaseIndex(c.track, phase) <= phaseIndex(c.track, c.current_phase)) {
+    return { ok: false, error: `Already past ${phaseLabel(phase)} — its card is at ${phaseLabel(c.current_phase)}.` }
+  }
   const ex = _extras(c)
   if (ex.includes(phase)) return { ok: false, error: 'Already in this column.' }
   const r = await _patchComponent(id, { extra_phases: [...ex, phase] })
@@ -6089,7 +6113,12 @@ export async function qcApproveComponent(id, { actor = null, source = 'board' } 
   if (c.current_phase !== QC_PHASE) return { ok: false, error: 'Not at Quality Check.' }
   if (c.qc_issue) return { ok: false, error: 'Clear the QC issue before approving.' }
   const next = nextPhase(c.track, c.current_phase)
-  const r = await _patchComponent(id, { previous_phase: c.current_phase, current_phase: next, phase_changed_at: new Date().toISOString(), qc_issue: null })
+  const exArr = Array.isArray(c.extra_phases) ? c.extra_phases : []
+  const keptExtras = exArr.filter(p => phaseIndex(c.track, p) > phaseIndex(c.track, next))
+  const r = await _patchComponent(id, {
+    previous_phase: c.current_phase, current_phase: next, phase_changed_at: new Date().toISOString(), qc_issue: null,
+    ...(keptExtras.length !== exArr.length ? { extra_phases: keptExtras } : {}),
+  })
   if (!r.ok) return r
   await _componentEvent(c, 'component_qc_approved', { note: `QC approved → ${phaseLabel(next)}`, payload: { previous_phase: c.current_phase, new_phase: next }, actor, source })
   if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
