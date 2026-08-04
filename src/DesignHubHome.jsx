@@ -25,13 +25,14 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   getLatestChangeRequestNotes, listAllApprovalLinks, properName,
-  designStateFor, orderIsEstimateLayout,
+  designStateFor, orderIsEstimateLayout, listFloorDesignDoneJobIds,
   setOrderDesignStatus, addOrderTask, setOrderTaskStatus, getOpenTasksList,
-  getCurrentStaffName,
+  getCurrentStaffName, STAFF_NAMES, getActiveStaffUser,
   getProofVersionsByOrder, getProofVersions, uploadProofLayout, createProofVersion,
   sendShopEmail, markApprovalLinkEmailed, addShopTask,
   getJobByOrderId, deriveDesignStatus, listCurrentProofRefs,
 } from './lib/stonebooksData'
+import { DEPARTMENTS } from './lib/employees'
 import { generateEstimatePDF, rowToOrder } from './SalesMode'
 
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
@@ -115,6 +116,16 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     return (order?.service_types || []).some(t => chip?.svc?.includes(t))
   }, [typeFilter])
 
+  // A stone physically past Ready to Bring Up = its design was approved (Paul
+  // 2026-08-04: "we only bring up stones with approved designs") — those jobs
+  // resolve to 'approved' instead of clogging Layouts due.
+  const [floorDone, setFloorDone] = useState(() => new Set())
+  useEffect(() => {
+    let alive = true
+    listFloorDesignDoneJobIds().then(s => { if (alive) setFloorDone(s) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
   // ── ONE state machine → rows (contracted, 4 states) ────────────────────────
   const layoutRows = useMemo(() => {
     const rows = []
@@ -126,13 +137,14 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
       // even though the customer's name was sitting right on the job.
       const raw = job.order || null
       const order = raw ? (raw.customer ? raw : { ...raw, customer: job.customer || null }) : null
-      const state = designStateFor(order, job, currentProofsByJob)
+      let state = designStateFor(order, job, currentProofsByJob)
       if (!state) continue
+      if (state === 'due' && floorDone.has(job.id)) state = 'approved'
       const ageDays = ageDaysOf(order, nowMs)
       rows.push({ job, order, state, ageDays, urgency: urgencyFor(state, ageDays) })
     }
     return rows
-  }, [jobs, currentProofsByJob, nowMs])
+  }, [jobs, currentProofsByJob, nowMs, floorDone])
 
   // ── Scroll memory — coming back from a job/order lands where you left off,
   // not at the top. Saved on row click, consumed once on the next mount.
@@ -390,13 +402,52 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
   }, [libRefs, jobs, orders, search, typeMatch])
 
   // ── Actions ────────────────────────────────────────────────────────────────
+  // Failures SAY SO (Paul 2026-08-04: "the page refreshes and doesnt change
+  // anything") — and a pick this list can't display (no layout image on file)
+  // explains itself instead of silently snapping back.
   const changeStatus = useCallback(async (row, code) => {
     const target = STATUS_BOX.find(s => s.code === code)
     if (!target || code === row.state) return
+    if (!row.job?.id) { window.alert('No job on this order yet — the design status lives on the job. Open the order first.'); return }
     setBusyId(row.job.id)
-    try { await setOrderDesignStatus(row.job.id, target.write); await onReload?.() }
-    finally { setBusyId(null) }
-  }, [onReload])
+    try {
+      const r = await setOrderDesignStatus(row.job.id, target.write)
+      if (r && r.ok === false) { window.alert(r.error || 'Could not update the design status.'); return }
+      if ((code === 'need_approval' || code === 'revision') && !currentProofsByJob?.get(row.job.id)) {
+        window.alert('Saved on the job — but there is no layout image on file, so the row stays under "Needs design" until one is uploaded (Upload layout) or it is marked Approved.')
+      }
+      await onReload?.()
+    } finally { setBusyId(null) }
+  }, [onReload, currentProofsByJob])
+
+  // Per-row "Task…" — task a person or department with THIS order's layout
+  // (Paul 2026-08-04: "from here i need a button to task people with specific
+  // orders.. that way it gets done"). Lands in the Task CC linked to the order.
+  const [taskFor, setTaskFor] = useState(null)   // { orderId, fam } | null
+  const [taskWho, setTaskWho] = useState('')
+  const [taskNote, setTaskNote] = useState('')
+  const [taskDue, setTaskDue] = useState('')
+  const [taskBusy, setTaskBusy] = useState(false)
+  const openTaskFor = useCallback((r) => {
+    const fam = familyOf(r.order)
+    setTaskFor({ orderId: r.order?.id || null, fam })
+    setTaskWho(getActiveStaffUser() || STAFF_NAMES[0] || '')
+    setTaskNote(`Layout for ${fam}${r.order?.order_number ? ` (${r.order.order_number})` : ''}`)
+    setTaskDue('')
+  }, [])
+  const sendRowTask = useCallback(async () => {
+    if (!taskFor?.orderId || !taskNote.trim() || taskBusy) return
+    setTaskBusy(true)
+    const actor = await getCurrentStaffName().catch(() => null)
+    const r = await addOrderTask(taskFor.orderId, {
+      note: taskNote.trim(), kind: 'design', actor,
+      assignee: taskWho, assigneeKind: DEPARTMENTS.includes(taskWho) ? 'department' : 'person',
+      dueDate: taskDue || todayStr(),
+    })
+    setTaskBusy(false)
+    if (r?.ok === false) { window.alert('Could not create the task.'); return }
+    setTaskFor(null); setTaskNonce(n => n + 1)
+  }, [taskFor, taskNote, taskWho, taskDue, taskBusy])
 
   const completeTask = useCallback(async (id) => {
     await setOrderTaskStatus(id, 'done'); setTaskNonce(n => n + 1)
@@ -677,6 +728,11 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     title="The order's Design/proof card — approval links, statuses, change requests">
                     Order design
                   </button>
+                  <button type="button" className="sb-dh2-jobbtn"
+                    onClick={e => { e.stopPropagation(); (taskFor && taskFor.orderId === r.order?.id) ? setTaskFor(null) : openTaskFor(r) }}
+                    title="Task a person or department with this order — lands in the Task Command Center, linked here">
+                    Task…
+                  </button>
                   <select
                     className={`sb-dh2-statusbox sb-dh2-st-${r.state}`}
                     value={r.state}
@@ -695,6 +751,20 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     const note = (r.state === 'revision' && changeNotes[r.job.id]) || linkNote
                     return note ? <span className="sb-dh2-changenote">“{note}”</span> : null
                   })()}
+                  {taskFor && taskFor.orderId && taskFor.orderId === r.order?.id && (
+                    <div className="sb-dh2-rowtask" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                      <select value={taskWho} onChange={e => setTaskWho(e.target.value)} aria-label="Who gets the task">
+                        <optgroup label="People">{STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+                        <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+                      </select>
+                      <input style={{ flex: 1, minWidth: 200 }} value={taskNote} onChange={e => setTaskNote(e.target.value)} placeholder="What needs doing…" />
+                      <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)} title="Due date — blank means today" />
+                      <button type="button" className="sb-dh2-createbtn" disabled={taskBusy || !taskNote.trim()} onClick={sendRowTask}>
+                        {taskBusy ? '…' : 'Task it'}
+                      </button>
+                      <button type="button" className="sb-dh2-jobbtn" onClick={() => setTaskFor(null)}>×</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -980,6 +1050,8 @@ const CSS = `
   .sb-dh2-link-changes_requested { color: #b3261e; background: rgba(179,38,30,.12); }
   .sb-dh2-link-expired, .sb-dh2-link-revoked { color: #8a8a85; background: rgba(0,0,0,.06); }
   .sb-dh2-changenote { flex-basis: 100%; font-size: 12.5px; color: #7a2a25; background: rgba(179,38,30,.07); border-radius: 6px; padding: 5px 10px; margin-top: 4px; }
+  .sb-dh2-rowtask { flex-basis: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px; background: #F6F3EC; border: 1px solid #E2DCC8; border-radius: 8px; }
+  .sb-dh2-rowtask select, .sb-dh2-rowtask input { font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid #D9D2C0; border-radius: 7px; background: #fff; }
   .sb-dh2-jobbtn { font: inherit; font-size: 12px; font-weight: 600; border-radius: 7px; cursor: pointer; padding: 6px 10px; border: 0.5px solid #c9c2b0; background: #fff; color: #6b6256; }
   .sb-dh2-jobbtn:hover { border-color: #9A7209; color: #9A7209; }
   .sb-dh2-pill-green { color: #38704f; background: rgba(56,122,79,.12); }

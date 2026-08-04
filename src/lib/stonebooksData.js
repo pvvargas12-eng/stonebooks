@@ -11622,8 +11622,11 @@ export function designStateFor(order, job, currentProofsByJob) {
   if (!types.some(t => LAYOUT_SERVICE_TYPES.has(t))) return null
   const proof = currentProofsByJob ? currentProofsByJob.get(job.id) : null
   if (proof) {
-    // A current proof exists → classify off it (unchanged).
-    if (proof.approved_at || _msDone(job, 'proof_approved')) return 'approved'
+    // A current proof exists → classify off it. Approved reads BOTH design
+    // vocabularies — bronze jobs approve via bronze_proof_approved (the
+    // 2026-08-04 Vargas bug: the hub only knew the new-stone key, so a bronze
+    // job could never leave "Needs design" no matter what the box wrote).
+    if (proof.approved_at || _msDone(job, 'proof_approved') || _msDone(job, 'bronze_proof_approved')) return 'approved'
     const cr = (job.milestones || []).find(m => m.milestone_key === 'proof_changes_requested')
     if (cr && cr.status === 'in_progress') return 'revision'
     return 'need_approval'
@@ -11636,12 +11639,29 @@ export function designStateFor(order, job, currentProofsByJob) {
   return 'due'                                                      // genuinely needs a layout
 }
 
+// Jobs whose new-stone die has physically moved past Ready to Bring Up — on
+// the line or beyond (off-floor later phases count too: the stone MOVED).
+// "we only bring up stones with approved designs" (Paul 2026-08-04), so floor
+// position IS design sign-off — the Design hub drops these from Layouts due.
+export async function listFloorDesignDoneJobIds() {
+  const { data, error } = await supabase.from('job_components')
+    .select('job_id')
+    .eq('track', 'new_stone')
+    .neq('component_type', 'base')
+    .not('job_id', 'is', null)
+    .neq('current_phase', 'ready_to_bring_up')
+  if (error) { console.warn('[design] floorDone:', error.message); return new Set() }
+  return new Set((data || []).map(r => r.job_id))
+}
+
 // Active design-phase order statuses — the ONLY statuses this hub classifies.
 const DESIGN_ACTIVE_STATUSES = new Set(['contracted', 'in_production'])
 // Milestones whose completion means the design is already done — used to keep a
 // no-current-proof legacy order out of 'due'. proof_approved is primary; the
 // downstream stage keys (stencil/blast/production) can only happen after a layout.
-const DESIGN_DONE_MILESTONES = ['proof_approved', 'stencil_created', 'stencil_cut', 'sandblast', 'production_started', 'production_completed']
+// bronze_proof_approved is the BRONZE vocabulary's approved key (Vargas bug,
+// 2026-08-04) — without it a bronze job was stuck at 'due' forever.
+const DESIGN_DONE_MILESTONES = ['proof_approved', 'bronze_proof_approved', 'stencil_created', 'stencil_cut', 'sandblast', 'production_started', 'production_completed']
 
 // PRE-CONTRACT sibling for the "Estimate layouts" tab: same 3 layout-bearing
 // types, but the order is still an estimate/lead (status draft/scoping/quoted and
