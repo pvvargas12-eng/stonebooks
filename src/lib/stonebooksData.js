@@ -6059,7 +6059,40 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
   })
   if (on && phase && c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
   if (on && phase) await _queueInstallOnReadyToSet(c, phase, { actor, source })
+  if (on) await _autoCutListOnBringUp(c)
   return r
+}
+
+// Anything brought up on the floor joins the cut list by itself (Paul
+// 2026-08-04: "anything on the bring up should automatically go to this cut
+// list"). New-stone dies only, and only while the stencil is still uncut —
+// already-listed jobs are a 23505 no-op, and a deliberate Remove stays
+// removable (this fires on bring-up, not on every phase move).
+async function _autoCutListOnBringUp(c) {
+  if (c.track !== 'new_stone' || c.component_type === 'base' || !c.job_id) return
+  try {
+    const { data: ms } = await supabase.from('job_milestones')
+      .select('status').eq('job_id', c.job_id).eq('milestone_key', 'stencil_cut').maybeSingle()
+    if (!ms || ms.status === 'done') return
+    await addToStencilCutList(c.job_id)
+  } catch (e) { console.warn('[cutlist] bring-up sync:', e?.message) }
+}
+
+// The cut list's MARK CUT talks back to the floor (Paul 2026-08-04: "click
+// cut once cut then that would move to stencil cut") — the job's die lands in
+// the Stencil Cut column. Forward-only; pieces at or past stencil_cut stay.
+export async function syncFloorStencilCut(jobId) {
+  if (!jobId) return { ok: true }
+  const { data: comps } = await supabase.from('job_components')
+    .select('id, track, component_type, current_phase, on_floor')
+    .eq('job_id', jobId).eq('track', 'new_stone').neq('component_type', 'base')
+  const cutIdx = phaseIndex('new_stone', 'stencil_cut')
+  for (const c of (comps || [])) {
+    if (phaseIndex('new_stone', c.current_phase) >= cutIdx) continue
+    if (c.on_floor) await setComponentPhase(c.id, 'stencil_cut', { source: 'cut-list' })
+    else await setComponentOnFloor(c.id, true, { phase: 'stencil_cut', source: 'cut-list' })
+  }
+  return { ok: true }
 }
 
 // ── PARALLEL MEMBERSHIPS (FLOOR-PARALLEL, 2026-07-27) ───────────────────────

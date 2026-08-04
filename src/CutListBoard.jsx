@@ -19,7 +19,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getJobs, getStencilCutList, addToStencilCutList, removeFromStencilCutList,
-  getCurrentProofsByJob, designStateFor, setOrderStoneStatus, orderStatusWritePlan,
+  getCurrentProofsByJob, designStateFor, setOrderStoneStatus, orderStatusWritePlan, syncFloorStencilCut,
   customerName, properName, rowTotalPaid, getStoneUpByJob,
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
@@ -59,6 +59,7 @@ export default function CutListBoard({ onOpenJob }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [typeFilter, setTypeFilter] = useState('all')   // all | new_stone | inscription | door
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -153,6 +154,8 @@ export default function CutListBoard({ onOpenJob }) {
   }
   // MARK CUT — the stone ladder's needs_blasting write (stencil_created +
   // stencil_cut flip done); optimistic local milestone apply, no refetch.
+  // The FLOOR follows (Paul 2026-08-04: "click cut once cut then that would
+  // move to stencil cut") — the job's die lands in the Stencil Cut column.
   const markCut = async (job) => {
     if (busyId) return
     setBusyId(job.id)
@@ -161,6 +164,7 @@ export default function CutListBoard({ onOpenJob }) {
     if (res.ok) {
       const plan = orderStatusWritePlan('stone', 'needs_blasting', job)
       setJobs(js => js.map(j => (j.id === job.id ? applyPlanLocally(j, plan) : j)))
+      syncFloorStencilCut(job.id).catch(() => {})
     } else {
       setErr(res.error || 'Could not mark it cut')
     }
@@ -201,8 +205,25 @@ export default function CutListBoard({ onOpenJob }) {
         {r.layoutOk
           ? <span className="scc-chip scc-chip-green">LAYOUT APPROVED</span>
           : <span className="scc-chip scc-chip-amber">LAYOUT NOT APPROVED</span>}
+        {!proofs.get(j.id) && <span className="scc-chip scc-chip-amber">NO LAYOUT — UPLOAD TO ORDER</span>}
       </>
     )
+  }
+
+  // What kind of cut is this? (Paul 2026-08-04: "i need to be able to
+  // distinguish between new stone cut and inscription cut and door cut").
+  const typeTag = (j) => (
+    j.job_type === 'inscription' ? { code: 'inscription', label: 'INSCRIPTION', cls: 'insc' }
+    : j.job_type === 'mausoleum_door' ? { code: 'door', label: 'DOOR', cls: 'door' }
+    : { code: 'new_stone', label: 'NEW STONE', cls: 'stone' }
+  )
+  const typeOk = (j) => typeFilter === 'all' || typeTag(j).code === typeFilter
+  const alertsShown = alerts.filter(typeOk)
+  const listShown = listJobs.filter(typeOk)
+  const poolShown = poolFiltered.filter(typeOk)
+  const TypeTag = ({ j }) => {
+    const t = typeTag(j)
+    return <span className={`scc-ttag scc-ttag-${t.cls}`}>{t.label}</span>
   }
 
   return (
@@ -213,7 +234,7 @@ export default function CutListBoard({ onOpenJob }) {
         <div>
           <h2 className="scc-title">Cut list</h2>
           <div className="scc-sub">
-            The stencils we're cutting — hand-picked, never auto-added. A stone earns the red call-out when it's IN THE SHOP with an APPROVED layout and isn't on your list yet — and a stone that's UP ON THE LINE with no stencil cut screams loudest of all. Stone-up rows carry the CUT SIZE measured on the line — cut to that, not the spec. Drafts and leads never appear here — no deposit, no production.
+            The stencils we're cutting. Bringing a stone up on the Production floor adds it here automatically; everything else is hand-picked. Marking CUT moves the stone to the floor's Stencil Cut column. Stone-up rows carry the CUT SIZE measured on the line — cut to that, not the spec. Drafts and leads never appear here — no deposit, no production.
           </div>
         </div>
         <div className="scc-actions">
@@ -249,21 +270,36 @@ export default function CutListBoard({ onOpenJob }) {
         </div>
       </div>
 
+      {/* Cut KINDS are different work (Paul 2026-08-04) — slice every list. */}
+      <div className="scc-typechips">
+        {[['all', 'All'], ['new_stone', 'New stone'], ['inscription', 'Inscription'], ['door', 'Doors']].map(([c, lab]) => {
+          const uni = [...new Map([...pool, ...listJobs].map(j => [j.id, j])).values()]
+          const n = c === 'all' ? uni.length : uni.filter(j => typeTag(j).code === c).length
+          return (
+            <button key={c} type="button" className={`scc-typechip${typeFilter === c ? ' on' : ''}`}
+              onClick={() => setTypeFilter(c)}>
+              {lab} <span className="scc-typechip-n">{loading ? '' : n}</span>
+            </button>
+          )
+        })}
+      </div>
+
       {/* THE RED NOTIFICATION — stones that should be on the list and aren't:
           stone-up-no-stencil rows first, then the gate-ready ones. Nothing
           here is ever added for you; each row is one click. */}
-      {!loading && alerts.length > 0 && (
+      {!loading && alertsShown.length > 0 && (
         <div className="scc-alert">
           <div className="scc-alert-head">
-            {alerts.length} stone{alerts.length === 1 ? '' : 's'} need{alerts.length === 1 ? 's' : ''} cutting and NOT on your list
+            {alertsShown.length} stone{alertsShown.length === 1 ? '' : 's'} need{alertsShown.length === 1 ? 's' : ''} cutting and NOT on your list
           </div>
-          {alerts.map(j => {
+          {alertsShown.map(j => {
             const spec = specOf.get(j.id) || {}
             const up = stoneUp.has(j.id)
             const upSize = up ? confirmedSizeText(stoneUp.get(j.id)?.confirmed) : null
             return (
               <div key={j.id} className="scc-alert-row">
                 <button type="button" className="scc-fam" onClick={() => onOpenJob?.(j.id, 'design')}>{famOf(j)}</button>
+                <TypeTag j={j} />
                 <span className="scc-meta">
                   {j.order?.order_number || 'DRAFT'}
                   {spec.die ? ` · ${spec.die}` : ''}{spec.color ? ` · ${spec.color}` : ''}
@@ -274,6 +310,7 @@ export default function CutListBoard({ onOpenJob }) {
                 {up && (upSize
                   ? <span className="scc-chip scc-chip-green">CUT SIZE {upSize}</span>
                   : <span className="scc-chip scc-chip-amber">SIZE NOT CONFIRMED</span>)}
+                {!proofs.get(j.id) && <span className="scc-chip scc-chip-amber">NO LAYOUT — UPLOAD TO ORDER</span>}
                 <button type="button" className="scc-btn scc-btn-gold" disabled={busyId === j.id}
                   onClick={() => add(j.id)}>
                   Add to cut list
@@ -288,22 +325,23 @@ export default function CutListBoard({ onOpenJob }) {
         <div className="scc-panel">
           <div className="scc-panel-head">
             <span className="scc-panel-title">Uncut stencils</span>
-            <span className="scc-panel-count">{poolFiltered.length}</span>
+            <span className="scc-panel-count">{poolShown.length}</span>
             <input type="search" className="scc-search" placeholder="Search family, order #, cemetery…"
               value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           {loading ? (
             <div className="scc-empty">Loading…</div>
-          ) : poolFiltered.length === 0 ? (
+          ) : poolShown.length === 0 ? (
             <div className="scc-empty">Nothing matches — everything is already on your list or already cut.</div>
           ) : (
             <div className="scc-rows">
-              {poolFiltered.slice(0, 60).map(j => {
+              {poolShown.slice(0, 60).map(j => {
                 const spec = specOf.get(j.id) || {}
                 return (
                   <div key={j.id} className="scc-row">
                     <div className="scc-row-main">
                       <button type="button" className="scc-fam" onClick={() => onOpenJob?.(j.id, 'design')}>{famOf(j)}</button>
+                      <TypeTag j={j} />
                       <span className="scc-meta">
                         {j.order?.order_number || 'DRAFT'}
                         {spec.die ? ` · ${spec.die}` : ''}{spec.color ? ` · ${spec.color}` : ''}
@@ -315,27 +353,28 @@ export default function CutListBoard({ onOpenJob }) {
                   </div>
                 )
               })}
-              {poolFiltered.length > 60 && <div className="scc-empty">Narrow the search to see the rest.</div>}
+              {poolShown.length > 60 && <div className="scc-empty">Narrow the search to see the rest.</div>}
             </div>
           )}
         </div>
       )}
 
       <div className="scc-listwrap">
-        <div className="scc-listhead">Your cut list <span className="scc-panel-count">{listJobs.length}</span></div>
+        <div className="scc-listhead">Your cut list <span className="scc-panel-count">{listShown.length}</span></div>
         {loading ? (
           <div className="scc-empty">Loading…</div>
-        ) : listJobs.length === 0 ? (
-          <div className="scc-empty">Nothing on the list yet — the red call-outs above and the picker feed it, but only when you say so.</div>
+        ) : listShown.length === 0 ? (
+          <div className="scc-empty">Nothing on the list{typeFilter !== 'all' ? ' for this type' : ''} — stones you bring up on the floor land here automatically; the red call-outs and the picker feed it too.</div>
         ) : (
           <div className="scc-rows">
-            {listJobs.map(j => {
+            {listShown.map(j => {
               const r = readiness(j)
               const spec = specOf.get(j.id) || {}
               return (
                 <div key={j.id} className={`scc-row${r.cut ? ' scc-row-done' : ''}`}>
                   <div className="scc-row-main">
                     <button type="button" className="scc-fam" onClick={() => onOpenJob?.(j.id, 'design')}>{famOf(j)}</button>
+                    <TypeTag j={j} />
                     <span className="scc-meta">
                       {j.order?.order_number || 'DRAFT'}
                       {spec.die ? ` · ${spec.die}` : ''}{spec.color ? ` · ${spec.color}` : ''}
@@ -388,6 +427,14 @@ const CSS = `
   .scc-btn-gold { background: #9A7209; border-color: #9A7209; color: #fff; }
   .scc-btn-gold:hover:not(:disabled) { background: #7d5d07; color: #fff; }
   .scc-btn-quiet { border-color: transparent; color: #8a8a85; }
+  .scc-typechips { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+  .scc-typechip { font: 700 12px/1 inherit; font-family: inherit; border: 1px solid #DCD6C8; background: #fff; color: #55503F; border-radius: 999px; padding: 7px 14px; cursor: pointer; }
+  .scc-typechip.on { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .scc-typechip-n { font-weight: 600; opacity: 0.75; margin-left: 2px; }
+  .scc-ttag { font: 800 9px/1 inherit; font-family: inherit; letter-spacing: 0.05em; border-radius: 5px; padding: 3px 7px; white-space: nowrap; }
+  .scc-ttag-stone { color: #3C5A80; background: #E8F0FA; }
+  .scc-ttag-insc { color: #534AB7; background: #EFEBFA; }
+  .scc-ttag-door { color: #6B4FA0; background: #F1EBF9; }
   .scc-err { background: #fdeceb; color: #b3261e; padding: 10px 12px; border-radius: 9px; margin-bottom: 12px; font-size: 13px; }
 
   .scc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }

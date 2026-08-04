@@ -97,6 +97,15 @@ const SORTS = [
   { code: 'newest',  label: 'Newest first' },
   { code: 'status',  label: 'By status' },
 ]
+// Which design stream a row belongs to, readable ON the row (Paul 2026-08-04:
+// "distinguish new stone that needs layout and bronze marker that needs layout").
+const svcTag = (o) => {
+  const svc = o?.service_types || []
+  if (svc.includes('NEW_STONE')) return { label: 'NEW STONE', cls: 'stone' }
+  if (svc.includes('BRONZE') || svc.includes('BRONZE_MARKER')) return { label: 'BRONZE', cls: 'bronze' }
+  if (svc.includes('INSCRIPTION')) return { label: 'INSCRIPTION', cls: 'insc' }
+  return null
+}
 const TASK_CAP = 10   // visible manual-task cap; overflow shows "+N more"
 
 export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJob, currentProofOrderIds, onOpenJob, onOpenOrder, onReload }) {
@@ -266,6 +275,32 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
       </span>
     )
   }
+
+  // Approval email from the hub (Paul 2026-08-04: "when i upload the design
+  // there i want the option to preview the approval email like in the orders
+  // page"). Re-sends the order's ACTIVE link through the same preview-first
+  // composer; the FIRST send needs the approval packet, which only the order
+  // page builds — so that path routes there instead of half-working here.
+  const openApprovalEmail = useCallback((order) => {
+    const l = order?.id ? approvalByOrder[order.id] : null
+    const s = l ? (l.displayStatus || l.status) : null
+    if (!l || !['pending', 'viewed'].includes(s)) {
+      if (window.confirm('Layout saved. Send it for approval now? The first send builds the approval packet from the order page — open the Design card?')) {
+        rememberScroll(); onOpenOrder?.(order.id, 'design')
+      }
+      return
+    }
+    const fam = properName(order?.primary_lastname || '') || 'your family'
+    const num = order?.order_number || ''
+    const url = l.share_url || ''
+    setFollowup({
+      kind: 'approval', link: { ...l, order }, days: null, status: s,
+      to: order?.customer?.email || l.order?.customer?.email || '',
+      subject: `The layout for ${fam}'s memorial${num ? ` — ${num}` : ''}`,
+      body: `Hello,\n\nThe layout for ${fam}'s memorial is ready for your review. You can view it, approve it, or ask for changes here:\n\n${url}\n\nNothing goes to production until you approve it. If anything in the layout should be different, reply to this email and we'll take care of it.\n\nThank you.`,
+      busy: false, error: null,
+    })
+  }, [approvalByOrder, onOpenOrder])
 
   // Revision notes (the customer's words) for revision rows + tasks.
   const [changeNotes, setChangeNotes] = useState({})
@@ -517,7 +552,11 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     setUploadFor(null); setOrderProof(null)
     setLibRefs(null)   // library refetches with the new version
     await onReload?.()
-  }, [uploadFor, onReload])
+    // The option Paul asked for (2026-08-04): straight from the upload to the
+    // approval-email preview. Contracted rows only — estimates have nobody to
+    // approve yet. Cancel on the composer declines; nothing sends itself.
+    if (job && order?.id) openApprovalEmail(order)
+  }, [uploadFor, onReload, openApprovalEmail])
   const hasLayout = (orderId) => !!(currentProofOrderIds && currentProofOrderIds.has(orderId))
 
   // ESTIMATE SHEET (Paul, 2026-07-20): the layout ON a one-page estimate —
@@ -711,6 +750,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                   title="Open the design packet"
                 >
                   <span className="sb-dh2-fam">{familyOf(r.order)}</span>
+                  {(() => { const t = svcTag(r.order); return t ? <span className={`sb-dh2-typetag sb-dh2-typetag-${t.cls}`}>{t.label}</span> : null })()}
                   {r.state === 'revision' ? (
                     <span className="sb-dh2-pill sb-dh2-pill-amber">Adjustment needed</span>
                   ) : (
@@ -884,13 +924,15 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
         <div className="sb-dh2-modal-overlay" onClick={() => { if (!followup.busy) setFollowup(null) }}>
           <div className="sb-dh2-modal sb-dh2-modal-wide" onClick={e => e.stopPropagation()}>
             <div className="sb-dh2-modal-title">
-              Follow-up · {properName(followup.link.order?.primary_lastname || '') || followup.link.order?.order_number || 'Order'}
+              {followup.kind === 'approval' ? 'Approval email' : 'Follow-up'} · {properName(followup.link.order?.primary_lastname || '') || followup.link.order?.order_number || 'Order'}
             </div>
             <div className="sb-dh2-modal-sub">
-              {followup.status === 'viewed'
-                ? `The family opened the layout ${followup.days} days ago and hasn't answered.`
-                : `Sent ${followup.days} days ago, never opened.`}
-              {' '}Review the email, adjust anything, then send. The approval record is stamped on send.
+              {followup.kind === 'approval'
+                ? 'The approval link for the current layout. Review the email, adjust anything, then send — nothing goes out without this preview.'
+                : <>{followup.status === 'viewed'
+                    ? `The family opened the layout ${followup.days} days ago and hasn't answered.`
+                    : `Sent ${followup.days} days ago, never opened.`}
+                  {' '}Review the email, adjust anything, then send. The approval record is stamped on send.</>}
             </div>
             <label className="sb-dh2-fu-field">
               <span>To</span>
@@ -912,7 +954,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             <div className="sb-dh2-fu-actions">
               <button type="button" className="sb-dh2-modal-cancel" onClick={() => setFollowup(null)} disabled={followup.busy}>Cancel</button>
               <button type="button" className="sb-dh2-savebtn" onClick={sendFollowup} disabled={followup.busy || !followup.to.trim()}>
-                {followup.busy ? 'Sending…' : 'Send follow-up'}
+                {followup.busy ? 'Sending…' : followup.kind === 'approval' ? 'Send approval email' : 'Send follow-up'}
               </button>
             </div>
           </div>
@@ -1052,6 +1094,10 @@ const CSS = `
   .sb-dh2-changenote { flex-basis: 100%; font-size: 12.5px; color: #7a2a25; background: rgba(179,38,30,.07); border-radius: 6px; padding: 5px 10px; margin-top: 4px; }
   .sb-dh2-rowtask { flex-basis: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px; background: #F6F3EC; border: 1px solid #E2DCC8; border-radius: 8px; }
   .sb-dh2-rowtask select, .sb-dh2-rowtask input { font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid #D9D2C0; border-radius: 7px; background: #fff; }
+  .sb-dh2-typetag { font: 800 9px/1 inherit; font-family: inherit; letter-spacing: 0.05em; border-radius: 5px; padding: 3px 7px; white-space: nowrap; }
+  .sb-dh2-typetag-stone { color: #3C5A80; background: #E8F0FA; }
+  .sb-dh2-typetag-bronze { color: #8A5A12; background: #FBF3DF; }
+  .sb-dh2-typetag-insc { color: #534AB7; background: #EFEBFA; }
   .sb-dh2-jobbtn { font: inherit; font-size: 12px; font-weight: 600; border-radius: 7px; cursor: pointer; padding: 6px 10px; border: 0.5px solid #c9c2b0; background: #fff; color: #6b6256; }
   .sb-dh2-jobbtn:hover { border-color: #9A7209; color: #9A7209; }
   .sb-dh2-pill-green { color: #38704f; background: rgba(56,122,79,.12); }
