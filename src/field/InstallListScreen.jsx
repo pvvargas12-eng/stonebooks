@@ -36,6 +36,10 @@ const AgeDot = ({ n }) => n == null ? null : (
 )
 const hasPhoto = (order) => (order?.service_types || []).includes('ADD_PHOTO')
 const installMsOf = (job) => (job?.milestones || []).find(m => INSTALL_KEYS.includes(m.milestone_key)) || null
+// getJobs flattens the customer onto the JOB, not the order — merge it in so
+// familyNameOf's customer fallback works (blank deceased name → the customer,
+// the Fiechter case 2026-08-04: a visible name must also be searchable).
+const famOfJob = (j) => familyNameOf(j?.order?.customer ? j.order : { ...(j?.order || {}), customer: j?.customer || null })
 
 // The four gates, on EVERY install row (Paul 2026-07-31: "I CANT GET OUT
 // THERE AND IT NOT BE DONE") — green when good, red when it would strand the
@@ -124,7 +128,7 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
       j,
       gate: setBlockReason(j.order, j),
       age: ageDaysOf(j.order, todayMs),
-      hay: [familyNameOf(j.order), j.order.order_number, j.order.cemetery?.name].filter(Boolean).join(' ').toLowerCase(),
+      hay: [famOfJob(j), j.order.order_number, j.order.cemetery?.name].filter(Boolean).join(' ').toLowerCase(),
     }))
     const hit = query ? scored.filter(c => c.hay.includes(query)) : scored
     hit.sort((a, z) => (a.gate ? 1 : 0) - (z.gate ? 1 : 0) || (z.age ?? 0) - (a.age ?? 0))
@@ -180,7 +184,7 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
           {rows.map(j => (
             <button key={j.id} type="button" className="fl-row fl-row-flex" onClick={() => setPeekJob(j)}>
               <div className="fl-row-main">
-                <div className="fl-fam">{familyNameOf(j.order)}</div>
+                <div className="fl-fam">{famOfJob(j)}</div>
                 <div className="fl-spec">{j.order.order_number || 'DRAFT'}</div>
                 {/* The four gates, below the name next to the order number
                     (Paul 2026-07-31) — what the truck needs to know. */}
@@ -218,7 +222,7 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
                 <button key={j.id} type="button" className="fl-row fl-row-flex" disabled={busy}
                   onClick={() => add(j.id)}>
                   <div className="fl-row-main">
-                    <div className="fl-fam">{familyNameOf(j.order)}</div>
+                    <div className="fl-fam">{famOfJob(j)}</div>
                     <div className="fl-spec">
                       {[j.order.order_number, j.order.cemetery?.name].filter(Boolean).join(' · ')}
                     </div>
@@ -280,7 +284,7 @@ function InstallPeek({ job, onClose, onOpenJob, onComplete, onRemove, busy }) {
       <div className="fl-sheet-scrim" onClick={onClose} />
       <div className="fl-sheet">
         <div className="fl-sheet-grab" />
-        <div className="fl-sheet-title">{familyNameOf(o)}</div>
+        <div className="fl-sheet-title">{famOfJob(job)}</div>
         <div className="fl-spec" style={{ marginTop: -6, marginBottom: 8 }}>
           {[o?.order_number, o?.cemetery?.name].filter(Boolean).join(' · ')}
         </div>

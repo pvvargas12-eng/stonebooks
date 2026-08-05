@@ -179,8 +179,12 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       if (o.archived || o.status === 'closed' || o.status === 'cancelled') return false
       return true
     })
+    // Search EVERYTHING the rows can display — deceased family AND the
+    // customer's name (the visible fallback when no deceased is entered):
+    // a name you can SEE is a name you can TYPE (Paul 2026-08-04).
     const hit = t
-      ? pool.filter(j => [j.order?.primary_lastname, j.order?.order_number, j.order?.cemetery?.name]
+      ? pool.filter(j => [j.order?.primary_lastname, j.customer?.first_name, j.customer?.last_name,
+        j.order?.order_number, j.order?.cemetery?.name]
         .filter(Boolean).join(' ').toLowerCase().includes(t))
       : pool
     return hit.slice(0, t ? 40 : 25)
@@ -327,7 +331,8 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
                 return (
                   <div key={j.id} className="ib-addrow">
                     <div className="ib-addmain">
-                      <span className="ib-addfam">{o.primary_lastname || '—'}</span>
+                      <span className="ib-addfam">{o.primary_lastname || j.customer?.last_name
+                        || [j.customer?.first_name, j.customer?.last_name].filter(Boolean).join(' ') || '—'}</span>
                       <span className="ib-addmeta">{[o.order_number, o.cemetery?.name, o.status].filter(Boolean).join(' · ')}</span>
                     </div>
                     <span className="ib-addflags">
