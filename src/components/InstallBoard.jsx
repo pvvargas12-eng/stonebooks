@@ -17,7 +17,9 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
   updateMilestone, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO,
-  getInstallList, addToInstallList, removeFromInstallList, fmtUSD, installGates } from '../lib/stonebooksData'
+  getInstallList, addToInstallList, removeFromInstallList, fmtUSD, installGates,
+  addOrderTask, STAFF_NAMES, getActiveStaffUser } from '../lib/stonebooksData'
+import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
@@ -265,14 +267,16 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     { key: 'foundation', label: 'Foundation needed', tone: 'amber', value: slFdn.length, sub: 'pour not in' },
     { key: 'done', label: 'Done this month', tone: 'green', value: buckets.doneThisMonth.length, sub: 'installed' },
   ]
-  // The set-list view sorts Paul's way; the other tiles are pre-filtered
-  // slices of the SAME rows, oldest first.
+  // The chips FILTER, not just reorder (Paul 2026-08-04: "when i select
+  // [balance owed] i only want to see things with a balance owed so i can
+  // action those and have someone call"). By cemetery / Oldest show the
+  // whole list; the other three show ONLY their rows.
   const byAgeDesc = (a, b) => (rowAge(b) ?? 0) - (rowAge(a) ?? 0)
   const listSorted = (() => {
-    const flat = [...setListRows]
-    if (listSort === 'ready') flat.sort((a, b) => ((rowReady(b) ? 1 : 0) - (rowReady(a) ? 1 : 0)) || byAgeDesc(a, b))
-    else if (listSort === 'foundation') flat.sort((a, b) => (((b.gates4?.fdn === false) ? 1 : 0) - ((a.gates4?.fdn === false) ? 1 : 0)) || byAgeDesc(a, b))
-    else if (listSort === 'balance') flat.sort((a, b) => (b.blockers?.balance || 0) - (a.blockers?.balance || 0))
+    let flat = [...setListRows]
+    if (listSort === 'ready') flat = flat.filter(rowReady).sort(byAgeDesc)
+    else if (listSort === 'foundation') flat = flat.filter(r => r.gates4?.fdn === false).sort(byAgeDesc)
+    else if (listSort === 'balance') flat = flat.filter(r => (r.blockers?.balance || 0) > 0).sort((a, b) => (b.blockers?.balance || 0) - (a.blockers?.balance || 0))
     else if (listSort === 'oldest') flat.sort(byAgeDesc)
     return flat
   })()
@@ -459,6 +463,34 @@ function groupByCemetery(rows) {
 function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0 }) {
   const tone = TRACK_TONE[row.track] || 'neutral'
   const b = row.blockers
+  // Task-a-call popover (Paul 2026-08-04: "a button next to remove to add
+  // task... it would task someone to call customer for balance").
+  const [taskOpen, setTaskOpen] = useState(false)
+  const [taskWho, setTaskWho] = useState('')
+  const [taskNote, setTaskNote] = useState('')
+  const [taskDue, setTaskDue] = useState('')
+  const [taskBusy, setTaskBusy] = useState(false)
+  const [taskDone, setTaskDone] = useState(false)
+  const openTasker = () => {
+    const bal = b?.balance || 0
+    setTaskWho(getActiveStaffUser() || 'Admin')
+    setTaskNote(`Call ${row.family} — ${bal > 0 ? `balance ${fmtUSD(bal)}` : 'installation'}${row.orderNumber ? ` (${row.orderNumber})` : ''}`)
+    setTaskDue(''); setTaskDone(false); setTaskOpen(true)
+  }
+  const sendTask = async () => {
+    if (!row.orderId || !taskNote.trim() || taskBusy) return
+    setTaskBusy(true)
+    const actor = await getCurrentStaffName().catch(() => null)
+    const r = await addOrderTask(row.orderId, {
+      note: taskNote.trim(), assignee: taskWho,
+      assigneeKind: DEPARTMENTS.includes(taskWho) ? 'department' : 'person',
+      dueDate: taskDue || todayISO(), actor,
+    })
+    setTaskBusy(false)
+    if (r?.ok === false) return
+    setTaskDone(true)
+    setTimeout(() => { setTaskOpen(false); setTaskDone(false) }, 2200)
+  }
   // Order age from signing (Paul 2026-08-04): red at 6+ months, amber 3-5.
   const ageD = row.signedAt && todayMs ? Math.floor((todayMs - Date.parse(row.signedAt)) / 86400000) : null
   const ageCls = ageD == null ? '' : ageD >= 180 ? 'ib-age-red' : ageD >= 90 ? 'ib-age-amber' : 'ib-age-quiet'
@@ -533,6 +565,30 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
             <button type="button" className="ib-act ib-act-x" disabled={listBusy === row.jobId}
               onClick={() => onRemove(row.jobId)}>Remove</button>
           )}
+          {row.orderId && (
+            <button type="button" className="ib-act" title="Task somebody to call this customer — lands in the Task Command Center linked to the order"
+              onClick={() => (taskOpen ? setTaskOpen(false) : openTasker())}>Task call</button>
+          )}
+        </div>
+      )}
+      {taskOpen && (
+        <div className="ib-tasker">
+          {taskDone ? (
+            <span className="ib-tasker-ok">Task created — {taskWho} has it.</span>
+          ) : (
+            <>
+              <select value={taskWho} onChange={e => setTaskWho(e.target.value)} aria-label="Who gets the call">
+                <optgroup label="People">{STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+                <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+              </select>
+              <input value={taskNote} onChange={e => setTaskNote(e.target.value)} placeholder="What needs doing…" />
+              <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)} title="Due — blank means today" />
+              <button type="button" className="ib-act ib-act-go" disabled={taskBusy || !taskNote.trim()} onClick={sendTask}>
+                {taskBusy ? '…' : 'Task it'}
+              </button>
+              <button type="button" className="ib-act" onClick={() => setTaskOpen(false)}>×</button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -564,6 +620,10 @@ const IB_CSS = `
   .ib-sortchip { font: 600 12px/1 inherit; font-family: inherit; border: 1px solid #2a313c; background: #1a212b; color: #c7cedb; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
   .ib-sortchip:hover { border-color: #3a4452; }
   .ib-sortchip.on { background: #9A7209; border-color: #9A7209; color: #fff; font-weight: 700; }
+  .ib-tasker { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 9px; padding: 8px 9px; background: #151a22; border: 1px solid #2a313c; border-radius: 8px; }
+  .ib-tasker select, .ib-tasker input { font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid #2a313c; border-radius: 7px; background: #0E1116; color: #e6e9ef; }
+  .ib-tasker input:not([type=date]) { flex: 1; min-width: 160px; }
+  .ib-tasker-ok { font-size: 12.5px; font-weight: 700; color: #34d399; }
   .ib-card-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
   .ib-card-ord { font: inherit; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6fb3f0; background: none; border: none; cursor: pointer; padding: 0; }
   .ib-card-cem { font-size: 11.5px; color: #8b95a5; }
