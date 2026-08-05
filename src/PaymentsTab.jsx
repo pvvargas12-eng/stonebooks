@@ -24,6 +24,7 @@ import {
   fmtUSD, fmtDate, customerName, getCurrentStaffName, properName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
   missingCheckRef,
+  updateOrderPayment, voidOrderPayment, updateOutgoingPayment, deleteOutgoingPayment,
 } from './lib/stonebooksData'
 import { ReceiptActions, rowToOrder, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
@@ -124,6 +125,72 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [addBill, setAddBill] = useState(false)
   const [payBill, setPayBill] = useState(null)   // a bill instance pending "Update & pay"
   const [preview, setPreview] = useState(null)   // { order, payment } → receipt preview modal
+
+  // ── Edit / remove money records (Paul 2026-08-04: "edit payments both
+  // incoming and outgoing, remove or delete, change the date, the amount…
+  // if you do make an edit allow it have an are you sure button"). Incoming
+  // edits ride updateOrderPayment (the OrderDetail path); incoming removal is
+  // a VOID with a reason (money records stay on the books, struck). Outgoing
+  // rows edit/delete their own ledger row. EVERY save and delete goes through
+  // an explicit are-you-sure step.
+  const [payEdit, setPayEdit] = useState(null)   // { kind:'in'|'out', …ids, label, draft, confirm, busy, err }
+  const [payKill, setPayKill] = useState(null)   // { kind, …ids, label, reason, busy, err }
+  const pidOf = (r) => r.key.slice(r.key.indexOf(':') + 1)
+  const isLegacyRow = (r) => pidOf(r).startsWith('legacy-')
+  const legacyNote = () => window.alert('This entry predates the payment ledger — open the order and edit it on its Payments card.')
+  const openEditIn = (r) => {
+    if (isLegacyRow(r)) { legacyNote(); return }
+    setPayEdit({
+      kind: 'in', orderId: r.orderId, paymentId: pidOf(r),
+      label: `${properName(r.name)}${r.orderNumber ? ` · ${r.orderNumber}` : ''}`,
+      draft: { date: (r.dateISO || '').slice(0, 10), amount: String(r.amount ?? ''), method: r.method || 'check', ref: r.ref || '' },
+      confirm: false, busy: false, err: null,
+    })
+  }
+  const openEditOut = (o) => {
+    setPayEdit({
+      kind: 'out', outId: o.id,
+      label: o.payee || 'Outgoing payment',
+      draft: { date: o.paid_date || '', amount: String(o.amount ?? ''), method: o.method || 'check', ref: o.reference || '' },
+      confirm: false, busy: false, err: null,
+    })
+  }
+  const saveEdit = async () => {
+    if (!payEdit || payEdit.busy) return
+    const d = payEdit.draft
+    const amt = Number(d.amount)
+    if (!Number.isFinite(amt) || amt <= 0) { setPayEdit(p => ({ ...p, err: 'Amount must be greater than zero.', confirm: false })); return }
+    if (!payEdit.confirm) { setPayEdit(p => ({ ...p, confirm: true, err: null })); return }
+    setPayEdit(p => ({ ...p, busy: true, err: null }))
+    const r = payEdit.kind === 'in'
+      ? await updateOrderPayment(payEdit.orderId, payEdit.paymentId, { amount: amt, method: d.method, ref: d.ref, receivedAt: d.date || null })
+      : await updateOutgoingPayment(payEdit.outId, { amount: amt, method: d.method, reference: d.ref, paidDate: d.date || null })
+    if (r?.ok === false) { setPayEdit(p => ({ ...p, busy: false, confirm: false, err: r.error || 'Could not save.' })); return }
+    setPayEdit(null)
+    if (payEdit.kind === 'in') loadOrders(); else loadOutgoing()
+  }
+  const openKillIn = (r) => {
+    if (isLegacyRow(r)) { legacyNote(); return }
+    setPayKill({ kind: 'in', orderId: r.orderId, paymentId: pidOf(r), label: `${fmtUSD(r.amount)} — ${properName(r.name)}`, reason: '', busy: false, err: null })
+  }
+  const openKillOut = (o) => {
+    setPayKill({ kind: 'out', outId: o.id, label: `${fmtUSD(Number(o.amount) || 0)} — ${o.payee || 'outgoing'}`, reason: '', busy: false, err: null })
+  }
+  const doKill = async () => {
+    if (!payKill || payKill.busy) return
+    if (payKill.kind === 'in' && !payKill.reason.trim()) { setPayKill(p => ({ ...p, err: 'Type the reason — voided money stays on the record.' })); return }
+    setPayKill(p => ({ ...p, busy: true, err: null }))
+    if (payKill.kind === 'in') {
+      const actor = await getCurrentStaffName().catch(() => null)
+      const r = await voidOrderPayment(payKill.orderId, payKill.paymentId, { reason: payKill.reason.trim(), actor })
+      if (r?.ok === false) { setPayKill(p => ({ ...p, busy: false, err: r.error || 'Could not void.' })); return }
+      setPayKill(null); loadOrders()
+    } else {
+      const r = await deleteOutgoingPayment(payKill.outId)
+      if (r?.ok === false) { setPayKill(p => ({ ...p, busy: false, err: r.error || 'Could not delete.' })); return }
+      setPayKill(null); loadOutgoing()
+    }
+  }
 
   // Open the receipt preview for an incoming row (family orders only — cemetery
   // payments aren't in this list; they live on CemeteryOrderDetail). Looks the
@@ -246,6 +313,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
           loading={loading} rows={incomingFiltered} search={search} setSearch={setSearch}
           openBalances={openBalances} onOpenOrder={onOpenOrder} onOpenReceipt={openReceipt}
           onLog={() => setLogIn({})} onLogFor={(order) => setLogIn({ prefill: order })}
+          onEditPay={openEditIn} onVoidPay={openKillIn}
         />
       )}
       {view === 'outgoing' && (
@@ -255,6 +323,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
           orders={orders || []}
           onAddBill={() => setAddBill(true)} onAddOutgoing={() => setAddOutgoing(true)}
           onPayBill={(instance) => setPayBill(instance)}
+          onEditOut={openEditOut} onDeleteOut={openKillOut}
         />
       )}
       {view === 'estimates' && (
@@ -291,6 +360,79 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       {preview && (
         <ReceiptPreviewModal order={preview.order} payment={preview.payment} onClose={() => setPreview(null)} />
       )}
+
+      {/* Edit a payment (in OR out) — every save passes the are-you-sure step. */}
+      {payEdit && (
+        <div className="sb-pay-backdrop" onClick={() => { if (!payEdit.busy) setPayEdit(null) }}>
+          <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Edit payment" onClick={e => e.stopPropagation()}>
+            <h3 className="sb-pay-modal-title">Edit {payEdit.kind === 'in' ? 'payment' : 'outgoing payment'} · {payEdit.label}</h3>
+            <div className="sb-pay-field">
+              <label>Date</label>
+              <input type="date" className="sb-pay-input" value={payEdit.draft.date} disabled={payEdit.busy}
+                onChange={e => setPayEdit(p => ({ ...p, draft: { ...p.draft, date: e.target.value }, confirm: false }))} />
+            </div>
+            <div className="sb-pay-field">
+              <label>Amount</label>
+              <input type="number" step="0.01" min="0" className="sb-pay-input" value={payEdit.draft.amount} disabled={payEdit.busy}
+                onChange={e => setPayEdit(p => ({ ...p, draft: { ...p.draft, amount: e.target.value }, confirm: false }))} />
+            </div>
+            <div className="sb-pay-field">
+              <label>Method</label>
+              <select className="sb-pay-input" value={payEdit.draft.method} disabled={payEdit.busy}
+                onChange={e => setPayEdit(p => ({ ...p, draft: { ...p.draft, method: e.target.value }, confirm: false }))}>
+                {(payEdit.kind === 'in' ? IN_METHODS : OUT_METHODS).map(m => <option key={m.code} value={m.code}>{m.label}</option>)}
+              </select>
+            </div>
+            <div className="sb-pay-field">
+              <label>Reference</label>
+              <input className="sb-pay-input" value={payEdit.draft.ref} disabled={payEdit.busy} placeholder="Check # / confirmation #"
+                onChange={e => setPayEdit(p => ({ ...p, draft: { ...p.draft, ref: e.target.value }, confirm: false }))} />
+            </div>
+            {payEdit.confirm && (
+              <div className="sb-pay-confirm-note">
+                Are you sure? This saves {fmtUSD(Number(payEdit.draft.amount) || 0)} ({(payEdit.kind === 'in' ? inMethodLabel : outMethodLabel)(payEdit.draft.method)})
+                {payEdit.draft.date ? ` on ${fmtDate(payEdit.draft.date)}` : ''} over the current record.
+              </div>
+            )}
+            {payEdit.err && <div className="sb-pay-modal-err">{payEdit.err}</div>}
+            <div className="sb-pay-modal-actions">
+              <button type="button" className="sb-pay-cancel" disabled={payEdit.busy} onClick={() => setPayEdit(null)}>Cancel</button>
+              <button type="button" className="sb-pay-confirm" disabled={payEdit.busy} onClick={saveEdit}>
+                {payEdit.busy ? 'Saving…' : payEdit.confirm ? 'Yes — save the change' : 'Save…'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Void (incoming — reason required, stays on the record) / Delete (outgoing). */}
+      {payKill && (
+        <div className="sb-pay-backdrop" onClick={() => { if (!payKill.busy) setPayKill(null) }}>
+          <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Remove payment" onClick={e => e.stopPropagation()}>
+            <h3 className="sb-pay-modal-title">{payKill.kind === 'in' ? 'Void this payment?' : 'Delete this outgoing payment?'}</h3>
+            <div className="sb-pay-confirm-note">
+              {payKill.label}. {payKill.kind === 'in'
+                ? 'Voided money stays on the order, struck through, with your reason — totals and the balance update on their own.'
+                : 'This removes the row from the outgoing ledger. Are you sure?'}
+            </div>
+            {payKill.kind === 'in' && (
+              <div className="sb-pay-field">
+                <label>Reason</label>
+                <input className="sb-pay-input" value={payKill.reason} autoFocus disabled={payKill.busy}
+                  placeholder="e.g. logged twice, wrong order"
+                  onChange={e => setPayKill(p => ({ ...p, reason: e.target.value }))} />
+              </div>
+            )}
+            {payKill.err && <div className="sb-pay-modal-err">{payKill.err}</div>}
+            <div className="sb-pay-modal-actions">
+              <button type="button" className="sb-pay-cancel" disabled={payKill.busy} onClick={() => setPayKill(null)}>Cancel</button>
+              <button type="button" className="sb-pay-confirm sb-pay-confirm-red" disabled={payKill.busy} onClick={doKill}>
+                {payKill.busy ? 'Working…' : payKill.kind === 'in' ? 'Yes — void it' : 'Yes — delete it'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -306,7 +448,7 @@ function SummaryCard({ label, value, sub, tone }) {
 }
 
 // ── Incoming view ────────────────────────────────────────────────────────────
-function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOrder, onOpenReceipt, onLog, onLogFor }) {
+function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOrder, onOpenReceipt, onLog, onLogFor, onEditPay, onVoidPay }) {
   const total = rows.reduce((s, r) => s + r.amount, 0)
   return (
     <>
@@ -334,9 +476,15 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
               <div className="sb-pay-mono">{r.orderNumber || '—'}</div>
               <div>{inMethodLabel(r.method)}</div>
               <div className="num sb-pay-amt">{fmtUSD(r.amount)}</div>
-              <div className="sb-pay-ref" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+              <div className="sb-pay-ref" style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.ref || '—'}</span>
-                <button type="button" className="sb-pay-receiptbtn" onClick={e => { e.stopPropagation(); onOpenReceipt?.(r) }}>Receipt</button>
+                <span style={{ display: 'inline-flex', gap: 6 }}>
+                  <button type="button" className="sb-pay-receiptbtn" onClick={e => { e.stopPropagation(); onOpenReceipt?.(r) }}>Receipt</button>
+                  <button type="button" className="sb-pay-receiptbtn" title="Edit the date, amount, method, or reference"
+                    onClick={e => { e.stopPropagation(); onEditPay?.(r) }}>Edit</button>
+                  <button type="button" className="sb-pay-receiptbtn sb-pay-btn-red" title="Void this payment — stays on the record, struck through"
+                    onClick={e => { e.stopPropagation(); onVoidPay?.(r) }}>Void</button>
+                </span>
               </div>
             </div>
           ))}
@@ -396,7 +544,7 @@ function billInstancesForMonth(bills, payments, monthPrefix) {
 }
 
 // ── Outgoing view ────────────────────────────────────────────────────────────
-function OutgoingView({ loading, payments, bills, monthPrefix, orders = [], onAddBill, onAddOutgoing, onPayBill }) {
+function OutgoingView({ loading, payments, bills, monthPrefix, orders = [], onAddBill, onAddOutgoing, onPayBill, onEditOut, onDeleteOut }) {
   const instances = useMemo(() => billInstancesForMonth(bills, payments, monthPrefix), [bills, payments, monthPrefix])
   // Family name per linked order — permit rows display "Cemetery — Family" and
   // every order-linked row is searchable by family name (Paul, 2026-07-14).
@@ -490,7 +638,13 @@ function OutgoingView({ loading, payments, bills, monthPrefix, orders = [], onAd
                 <div>{o.category || '—'}</div>
                 <div>{outMethodLabel(o.method)}</div>
                 <div className="num sb-pay-amt">{fmtUSD(Number(o.amount) || 0)}</div>
-                <div className="sb-pay-ref">{o.reference || '—'}</div>
+                <div className="sb-pay-ref" style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.reference || '—'}</span>
+                  <span style={{ display: 'inline-flex', gap: 6 }}>
+                    <button type="button" className="sb-pay-receiptbtn" title="Edit the date, amount, method, or reference" onClick={() => onEditOut?.(o)}>Edit</button>
+                    <button type="button" className="sb-pay-receiptbtn sb-pay-btn-red" title="Delete this outgoing payment" onClick={() => onDeleteOut?.(o)}>Delete</button>
+                  </span>
+                </div>
               </div>
             )
           })}
@@ -987,6 +1141,10 @@ const PAY_CSS = `
   .sb-pay-ref { color: #6b6b66; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sb-pay-receiptbtn { flex: 0 0 auto; font: inherit; font-size: 11px; font-weight: 600; color: #9A7209; border: 0.5px solid #d8c89a; background: #fdf8ec; border-radius: 6px; padding: 3px 9px; cursor: pointer; }
   .sb-pay-receiptbtn:hover { background: #f7efd8; }
+  .sb-pay-btn-red { color: #B3261E; border-color: #dda9a4; background: #fdf1f0; }
+  .sb-pay-btn-red:hover { background: #f8e2e0; }
+  .sb-pay-confirm-red { background: #B3261E !important; border-color: #B3261E !important; }
+  .sb-pay-modal-err { font-size: 12.5px; font-weight: 700; color: #B3261E; margin: 8px 0 2px; }
   .sb-pay-age { color: #6b6b66; }
   .sb-pay-age.stale { color: #b54040; font-weight: 600; }
   .sb-pay-empty { padding: 28px 16px; text-align: center; color: #8a8a85; font-size: 14px; }

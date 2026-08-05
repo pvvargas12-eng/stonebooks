@@ -2885,6 +2885,27 @@ export async function recordOutgoingPayment(input = {}) {
   return { ok: true, payment: data }
 }
 
+// Edit an outgoing-payment ledger row (Paul 2026-08-04: "i need to be able to
+// edit payments both incoming and outgoing... change the date, the amount").
+export async function updateOutgoingPayment(id, patch = {}) {
+  if (!id) return { ok: false, error: 'Missing payment id' }
+  const row = {}
+  if ('payee' in patch) row.payee = (patch.payee || '').trim() || null
+  if ('amount' in patch) {
+    const a = Number(patch.amount)
+    if (!Number.isFinite(a) || a <= 0) return { ok: false, error: 'Amount must be greater than zero.' }
+    row.amount = a
+  }
+  if ('method' in patch) row.method = patch.method || null
+  if ('reference' in patch) row.reference = (patch.reference || '').trim() || null
+  if ('paidDate' in patch) row.paid_date = patch.paidDate || null
+  if ('category' in patch) row.category = patch.category || null
+  if (!Object.keys(row).length) return { ok: true }
+  const { error } = await supabase.from('outgoing_payments').update(row).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function deleteOutgoingPayment(id) {
   if (!id) return { ok: false, error: 'Missing id' }
   const { error } = await supabase.from('outgoing_payments').delete().eq('id', id)
