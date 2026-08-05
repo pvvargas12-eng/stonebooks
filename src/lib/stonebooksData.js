@@ -2233,14 +2233,20 @@ export function dueRelativeText(iso) {
 // = the bronze arrived — the same setBlockReason rule. Rendered on the
 // desktop set list AND the field Installations rows; inform, never gate.
 export function installGates(order, job) {
-  const paid = derivePaymentStatus(order) === 'paid_in_full'
+  // Paid = the status says so OR nothing is owed (Paul 2026-08-04: "it has
+  // 0.00 balance" — a fully covered order reads PAID even when the status
+  // never flipped, e.g. $0-total legacy pricing or a stale status).
+  const paid = derivePaymentStatus(order) === 'paid_in_full' || rowBalanceDue(order) <= 0
   const keys = _jobMilestoneKeys(job)
   const blasted = _isBronzeStoneJob(keys) ? _msDone(job, 'bronze_received') : _msDone(job, 'production_completed')
   const fdnCode = deriveFdnStatus(job)
-  const fdn = fdnCode === 'na' ? null : fdnCode === 'in'
+  // Drop Off = we drop the stone, nothing to pour — that gate reads GOOD and
+  // the cards label it DROP OFF (Paul 2026-08-04: "fiechter is a dropoff and
+  // must not say foundation not in").
+  const fdn = fdnCode === 'na' ? null : (fdnCode === 'in' || fdnCode === 'drop_off')
   const permitRequired = permitNeeded(order) && order?.permit_status !== 'not_required'
   const permit = permitRequired ? order?.permit_status === 'approved' : null
-  return { paid, fdn, permit, blasted }
+  return { paid, fdn, fdnCode, permit, blasted }
 }
 
 // The Installation tab's ready notification (Paul 2026-08-04: "how many are

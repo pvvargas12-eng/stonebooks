@@ -1,5 +1,13 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix INSTALL-GATES-2 (2026-08-04, round 7) — Drop Off reads green, balance-0 reads PAID, blank-name cards read the customer
+
+Paul: "fiechter is a dropoff and must not say foundation not in should say dropoff and be in green... blue say not paid its paid it has 0.00 balance... why cant i see fiechter in this list?"
+
+- **`installGates` returns `fdnCode` too**, and `drop_off` counts as a GOOD foundation gate (we drop the stone, nothing to pour) — desktop InstallCard + field GateChips render a green **DROP OFF** chip for it. The READY label + Installation badge inherit (fdn true).
+- **Paid gate:** `derivePaymentStatus === 'paid_in_full' OR rowBalanceDue(order) <= 0` — a fully covered order reads PAID even when the status never flipped (Blue E-26-0167: $2,272 in, $0 owed, status stuck 'contracted'; also $0-total legacy pricing). The old NOT PAID fallback branch (paid=false + balance<=0) is now unreachable.
+- **Fiechter WAS on the list** — its card read "—": E-26-0497 has an EMPTY primary_lastname (deceased never entered; customer Mark Fiechter). `makeRow` family now falls back to the customer's name so a card can never render nameless. The DATA gap remains Paul's to fill (deceased name on the order) — same disease as Schapowal E-26-0544 and Singer E-26-0335.
+
 ## Sprint INSTALL-READY (2026-08-04, round 6) — SHIPPED: READY TO INSTALL label, NO CEMETERY chip killed, blue stone tag, ready badge
 
 Paul: "Why do these all say no cemetery remove that.... also I want a label on these READY TO INSTALL for once that are paid in full permit not required or approved foundation in and blasted... new stone instead of green make that blue... i want a notification for installation for how many are ready to be installed."

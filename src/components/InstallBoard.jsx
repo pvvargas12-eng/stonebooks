@@ -395,7 +395,11 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
 function makeRow(job, ci, order, extra) {
   return {
     jobId: job.id, orderId: order.id || null,
-    family: order.primary_lastname || '—',
+    // Deceased name first; orders with no deceased entered fall back to the
+    // CUSTOMER's name so the card never reads "—" (the Fiechter case,
+    // 2026-08-04 — findable by the name Paul actually calls the job).
+    family: order.primary_lastname || job.customer?.last_name
+      || [job.customer?.first_name, job.customer?.last_name].filter(Boolean).join(' ') || '—',
     orderNumber: ci.orderNumber || order.order_number || '',
     track: ci.track, cemetery: ci.cemetery || '',
     grave: composeGraveLocation(order) || '',
@@ -438,12 +442,16 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
         <div className="ib-gates">
           {row.gates4 && (
             <>
-              <span className={`ib-flag ${row.gates4.paid ? 'ib-flag-ok' : 'ib-flag-red'}`}>
+              <button type="button" className={`ib-flag ib-flag-btn ${row.gates4.paid ? 'ib-flag-ok' : 'ib-flag-red'}`}
+                title="Open the order — payments and status live there"
+                onClick={() => row.orderId && onOpenOrderDetail?.(row.orderId)}>
                 {row.gates4.paid ? 'PAID' : (b.balance > 0 ? `BALANCE ${fmtUSD(b.balance)}` : 'NOT PAID')}
-              </span>
+              </button>
               {row.gates4.fdn === null
                 ? <span className="ib-flag ib-flag-na">NO FOUNDATION NEEDED</span>
-                : <span className={`ib-flag ${row.gates4.fdn ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.fdn ? 'FOUNDATION IN' : 'FOUNDATION NOT IN'}</span>}
+                : row.gates4.fdnCode === 'drop_off'
+                  ? <span className="ib-flag ib-flag-ok">DROP OFF</span>
+                  : <span className={`ib-flag ${row.gates4.fdn ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.fdn ? 'FOUNDATION IN' : 'FOUNDATION NOT IN'}</span>}
               {row.gates4.permit === null
                 ? <span className="ib-flag ib-flag-na">NO PERMIT NEEDED</span>
                 : <span className={`ib-flag ${row.gates4.permit ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
@@ -493,6 +501,8 @@ const IB_CSS = `
   .ib-track-purple { background: #261f3a; color: #a78bfa; } .ib-track-blue { background: #16263a; color: #6fb3f0; }
   .ib-track-neutral { background: #1a212b; color: #8b95a5; }
   .ib-ready { background: #123524; color: #34d399; border: 1px solid #1d7a55; font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
+  .ib-flag-btn { border: none; cursor: pointer; font-family: inherit; }
+  .ib-flag-btn:hover { filter: brightness(1.25); }
   .ib-card-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
   .ib-card-ord { font: inherit; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6fb3f0; background: none; border: none; cursor: pointer; padding: 0; }
   .ib-card-cem { font-size: 11.5px; color: #8b95a5; }

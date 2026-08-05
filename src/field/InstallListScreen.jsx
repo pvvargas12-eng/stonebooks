@@ -47,7 +47,9 @@ function GateChips({ order, job }) {
       <span className={`fl-chip ${g.paid ? 'fl-c-good' : 'fl-c-bad'}`}>{g.paid ? 'PAID' : 'NOT PAID'}</span>
       {g.fdn === null
         ? <span className="fl-chip fl-c-neutral">NO FDN</span>
-        : <span className={`fl-chip ${g.fdn ? 'fl-c-good' : 'fl-c-bad'}`}>{g.fdn ? 'FDN IN' : 'FDN NOT IN'}</span>}
+        : g.fdnCode === 'drop_off'
+          ? <span className="fl-chip fl-c-good">DROP OFF</span>
+          : <span className={`fl-chip ${g.fdn ? 'fl-c-good' : 'fl-c-bad'}`}>{g.fdn ? 'FDN IN' : 'FDN NOT IN'}</span>}
       {g.permit === null
         ? <span className="fl-chip fl-c-neutral">NO PERMIT NEEDED</span>
         : <span className={`fl-chip ${g.permit ? 'fl-c-good' : 'fl-c-bad'}`}>{g.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
