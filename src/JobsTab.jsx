@@ -36,6 +36,7 @@ import {
   getNextRequiredAction,
   countCutReady,
   getBringUpReady,
+  countInstallReady,
   SOLD_STATUSES, // eslint-disable-line no-unused-vars
   BLOCK_REASON_CODES,
   listAllBulkOrders,
@@ -125,10 +126,14 @@ export default function JobsTab({
   // numbers are the nag.
   const [cutBadge, setCutBadge] = useState(0)
   const [bringUpBadge, setBringUpBadge] = useState(0)
+  // Installation badge — set-list jobs with every gate green (Paul 2026-08-04:
+  // "a notification for installation for how many are ready to be installed").
+  const [installBadge, setInstallBadge] = useState(0)
   useEffect(() => {
     let alive = true
     countCutReady().then(n => { if (alive) setCutBadge(n) }).catch(() => { /* badge is additive */ })
     getBringUpReady().then(r => { if (alive) setBringUpBadge(r.count) }).catch(() => { /* badge is additive */ })
+    countInstallReady().then(n => { if (alive) setInstallBadge(n) }).catch(() => { /* badge is additive */ })
     return () => { alive = false }
   }, [tab])
 
@@ -217,7 +222,7 @@ export default function JobsTab({
     <div className="sb-jobs-tabshell">
       <style>{JOBS_TABROW_CSS}</style>
       <div className="sb-crm-container sb-jobs-tabrow-wrap">
-        <JobsTabRow tab={tab} onChange={handleTabChange} badges={{ cutlist: cutBadge, production: bringUpBadge }} />
+        <JobsTabRow tab={tab} onChange={handleTabChange} badges={{ cutlist: cutBadge, production: bringUpBadge, installation: installBadge }} />
       </div>
       {body}
     </div>

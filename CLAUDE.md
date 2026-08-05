@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint INSTALL-READY (2026-08-04, round 6) — SHIPPED: READY TO INSTALL label, NO CEMETERY chip killed, blue stone tag, ready badge
+
+Paul: "Why do these all say no cemetery remove that.... also I want a label on these READY TO INSTALL for once that are paid in full permit not required or approved foundation in and blasted... new stone instead of green make that blue... i want a notification for installation for how many are ready to be installed."
+
+- **NO CEMETERY chip REMOVED from InstallCard** — it rendered on every set-list card (blockersFor's cem check read a field the rows don't carry, while the meta line showed the cemetery fine — crying wolf). Paul said remove; removed.
+- **READY TO INSTALL label** (green, in the card top row) when NO gate reads red — paid + permit approved-or-not-required + foundation in-or-not-needed + blasted; n/a gates count as good; installed rows excluded. Set-list cards only (they carry gates4).
+- **TRACK_TONE.new_stone → 'blue'** (green is reserved for the READY label now; doors were already blue).
+- **`countInstallReady()`** (stonebooksData, by installGates): install_list jobs, chunked jobs+milestones+JOBS_ORDER_EMBED fetch, counts rows where no gate is false and not installed. Wired as the **Installation tab badge** in the JobsTab strip (same red badge chrome as Production/Cut list — the strip's badges map is generic, key 'installation').
+
 ## Sprint CUT-LIST-TALKS (2026-08-04, round 5) — SHIPPED: bring-up feeds the cut list, CUT feeds the floor, type slices, hub approval email
 
 Paul's "OK do it!!!!" batch: "anything on the bring up should automatically go to this cut list... click cut once cut then that would move to stencil cut... if no layout is uploaded have an indicator... distinguish new stone cut and inscription cut and door cut... distinguish in design hub new stone vs bronze that needs layout... when i upload the design there i want the option to preview the approval email."

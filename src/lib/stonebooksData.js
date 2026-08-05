@@ -2243,6 +2243,32 @@ export function installGates(order, job) {
   return { paid, fdn, permit, blasted }
 }
 
+// The Installation tab's ready notification (Paul 2026-08-04: "how many are
+// ready to be installed"): set-list jobs where NO gate reads red — paid in
+// full, permit approved or not required, foundation in or not needed,
+// blasted — and the stone isn't installed yet.
+export async function countInstallReady() {
+  const list = await getInstallList()
+  const ids = (list || []).map(r => r.job_id).filter(Boolean)
+  if (!ids.length) return 0
+  let n = 0
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data: rows, error } = await supabase.from('jobs')
+      .select(`id, job_type, overall_status, milestones:job_milestones(*), order:orders(${JOBS_ORDER_EMBED})`)
+      .in('id', ids.slice(i, i + 150))
+    if (error) { console.warn('[install] ready count:', error.message); continue }
+    for (const j of (rows || [])) {
+      if (!j.order || ['closed', 'cancelled'].includes(j.overall_status)) continue
+      const installed = (j.milestones || []).some(m =>
+        ['installed', 'door_installed', 'work_completed'].includes(m.milestone_key) && m.status === 'done')
+      if (installed) continue
+      const g = installGates(j.order, j)
+      if (g.paid !== false && g.fdn !== false && g.permit !== false && g.blasted !== false) n++
+    }
+  }
+  return n
+}
+
 // ── FIELD DAY HELPERS (2026-07-24) ──────────────────────────────────────────
 
 // Light order/lead search for link pickers (sales sign search, field task

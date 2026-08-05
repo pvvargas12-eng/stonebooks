@@ -26,7 +26,9 @@ import CompletionPhotoUploader from './CompletionPhotoUploader'
 // Track's STRICT terminal phase for "stone done" (decision-locked).
 const TERMINAL = { new_stone: 'ready_to_set', bronze: 'mounted_on_base', inscription: 'inscription_complete', door: 'drop_off_doors' }
 const FDN_TRACKS = new Set(['new_stone', 'bronze'])   // inscription + door need no foundation
-const TRACK_TONE = { new_stone: 'green', inscription: 'amber', bronze: 'purple', door: 'blue' }
+// new_stone reads BLUE (Paul 2026-08-04: "new stone instead of green make
+// that blue") — green is reserved for the READY TO INSTALL label.
+const TRACK_TONE = { new_stone: 'blue', inscription: 'amber', bronze: 'purple', door: 'blue' }
 const GATE_DEFS = [
   { key: 'stone', label: 'Stone' }, { key: 'fdn', label: 'Fdn' }, { key: 'paid', label: 'Paid' },
   { key: 'cem', label: 'Cemetery' }, { key: 'permit', label: 'Permit' },
@@ -409,10 +411,17 @@ function groupByCemetery(rows) {
 function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null }) {
   const tone = TRACK_TONE[row.track] || 'neutral'
   const b = row.blockers
+  // ALL FOUR GATES GREEN (n/a counts as good) = the truck can roll (Paul
+  // 2026-08-04: "a label on these READY TO INSTALL for once that are paid in
+  // full permit not required or approved foundation in and blasted").
+  const readyNow = !row.installed && row.gates4
+    && row.gates4.paid !== false && row.gates4.fdn !== false
+    && row.gates4.permit !== false && row.gates4.blasted !== false
   return (
     <div className={`ib-card${row.onList ? ' ib-card-list' : ''}`}>
       <div className="ib-card-top">
         <button type="button" className="ib-card-fam" onClick={() => onOpenJob?.(row.jobId)}>{row.family}</button>
+        {readyNow && <span className="ib-ready">READY TO INSTALL</span>}
         <span className={`ib-track ib-track-${tone}`}>{TRACK_LABEL[row.track] || row.track}</span>
       </div>
       <div className="ib-card-meta">
@@ -441,7 +450,6 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
               <span className={`ib-flag ${row.gates4.blasted ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.blasted ? 'BLASTED' : 'NOT BLASTED'}</span>
             </>
           )}
-          {!b.cem && <span className="ib-flag ib-flag-amber">NO CEMETERY</span>}
         </div>
       )}
       {!row.installed && !b && (
@@ -484,6 +492,7 @@ const IB_CSS = `
   .ib-track-green { background: #15301f; color: #34d399; } .ib-track-amber { background: #322712; color: #fbbf24; }
   .ib-track-purple { background: #261f3a; color: #a78bfa; } .ib-track-blue { background: #16263a; color: #6fb3f0; }
   .ib-track-neutral { background: #1a212b; color: #8b95a5; }
+  .ib-ready { background: #123524; color: #34d399; border: 1px solid #1d7a55; font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
   .ib-card-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
   .ib-card-ord { font: inherit; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6fb3f0; background: none; border: none; cursor: pointer; padding: 0; }
   .ib-card-cem { font-size: 11.5px; color: #8b95a5; }
