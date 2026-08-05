@@ -197,7 +197,7 @@ export default function CutListBoard({ onOpenJob }) {
       <>
         {stoneUp.has(j.id) && <span className="scc-chip scc-chip-red">STONE IS UP</span>}
         {stoneUp.has(j.id) && (upSize
-          ? <span className="scc-chip scc-chip-green">CUT SIZE {upSize}</span>
+          ? <span className="scc-chip scc-chip-redsolid">CONFIRMED SIZE {upSize} — CUT TO THIS</span>
           : <span className="scc-chip scc-chip-amber">SIZE NOT CONFIRMED</span>)}
         {r.stoneOk
           ? <span className="scc-chip scc-chip-green">STONE IN SHOP</span>
@@ -308,7 +308,7 @@ export default function CutListBoard({ onOpenJob }) {
                   ? <span className="scc-alert-why scc-alert-why-up">STONE IS UP — stencil not cut</span>
                   : <span className="scc-alert-why">stone in shop · layout approved</span>}
                 {up && (upSize
-                  ? <span className="scc-chip scc-chip-green">CUT SIZE {upSize}</span>
+                  ? <span className="scc-chip scc-chip-redsolid">CONFIRMED SIZE {upSize} — CUT TO THIS</span>
                   : <span className="scc-chip scc-chip-amber">SIZE NOT CONFIRMED</span>)}
                 {!proofs.get(j.id) && <span className="scc-chip scc-chip-amber">NO LAYOUT — UPLOAD TO ORDER</span>}
                 <button type="button" className="scc-btn scc-btn-gold" disabled={busyId === j.id}
@@ -475,5 +475,9 @@ const CSS = `
   .scc-chip-green { color: #1d7a55; background: rgba(29,122,85,0.12); }
   .scc-chip-amber { color: #8a5a12; background: rgba(216,144,31,0.15); }
   .scc-chip-red { color: #b3261e; background: rgba(179,38,30,0.12); }
+  /* The cutter's number — solid red, unmissable (Paul 2026-08-04: "in solid
+     red so you cant miss it... my cutter will look at that, make the update,
+     cut it, then mark as cut"). */
+  .scc-chip-redsolid { color: #fff; background: #B3261E; font-weight: 800; }
   .scc-empty { font-size: 13px; color: #9a948a; padding: 12px 2px; }
 `

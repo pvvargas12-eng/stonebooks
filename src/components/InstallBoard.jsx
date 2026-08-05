@@ -16,7 +16,7 @@
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
-  updateMilestone, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO,
+  updateMilestoneWithOverride, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO,
   getInstallList, addToInstallList, removeFromInstallList, fmtUSD, installGates,
   addOrderTask, STAFF_NAMES, getActiveStaffUser } from '../lib/stonebooksData'
 import { DEPARTMENTS } from '../lib/employees'
@@ -216,9 +216,16 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const openSchedule = (row) => { setScheduleDate(todayISO()); setScheduleRow(row) }
   const doSchedule = async () => {
     if (!scheduleRow || !scheduleDate || busy) return
+    if (!scheduleRow.installKey) { window.alert('This job has no install milestone to schedule — open the job and check its checklist.'); return }
     setBusy(true)
     const actor = await getCurrentStaffName()
-    if (scheduleRow.installKey) await updateMilestone(scheduleRow.jobId, scheduleRow.installKey, { status: 'in_progress', dueDate: scheduleDate })
+    // OVERRIDE, not the plain write: the readiness gate blocks advancing a
+    // milestone whose upstream steps are open — which is EVERY set-list stone
+    // (Paul's list IS the override). The plain call returned blocked and the
+    // result was ignored — the "nothing happens" bug (2026-08-04).
+    const r = await updateMilestoneWithOverride(scheduleRow.jobId, scheduleRow.installKey,
+      { status: 'in_progress', dueDate: scheduleDate }, 'Scheduled from the set list')
+    if (r?.ok === false) { window.alert(r.error || 'Could not schedule the install.'); setBusy(false); return }
     await logOrderActivity(scheduleRow.orderId, { type: 'change', field: 'Install', newValue: 'Scheduled', note: `Install scheduled for ${scheduleDate}`, actor })
     setBusy(false); setScheduleRow(null); setScheduleDate('')
     load()
@@ -232,7 +239,12 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     setBusy(true)
     const r = installRow
     const actor = await getCurrentStaffName()
-    if (r.installKey) await updateMilestone(r.jobId, r.installKey, { status: 'done' })
+    // Same override rule as doSchedule — the readiness gate must never block
+    // Paul's explicit "it's in the ground" click.
+    if (r.installKey) {
+      const res = await updateMilestoneWithOverride(r.jobId, r.installKey, { status: 'done' }, 'Marked installed from the set list')
+      if (res?.ok === false) { window.alert(res.error || 'Could not mark it installed.'); setBusy(false); return }
+    }
     // Shared closeout auto-task (dedup-checked, dept Admin, task_type 'closeout'
     // → unlocks the one-button completion email in the task row).
     await ensureCloseoutTask(r.orderId, r.family, r.orderNumber)
