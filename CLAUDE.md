@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint INSTALL-TILES (2026-08-04, rounds 8-9) — SHIPPED: tiles read the set list, sort row, age chips, searchable fallback names
+
+Paul: "ready to set none not correct paid dropoff fdn in blasted its ready to set!!!... I want to see dates of order also how old they are in red over six months amber 3-5... need to be able to sort by cemetery, ready to install first, whats waiting on foundation, payment" + "gotta make sure all of the family names that are visible are searchable."
+
+- **Every Installation tile except Done-this-month is now a SLICE OF THE SET LIST through the four-gate engine** (the same rowReady predicate as the READY TO INSTALL label): Ready to set = no gate red; Blocked = a gate red; Foundation needed = fdn false; Scheduled = install date set. The old derived five-gate buckets no longer feed any tile (their engine remains only for doneThisMonth) — tiles can never disagree with the cards again. Tile views are pre-filtered set-list slices, oldest first; Remove works on all views but Done.
+- **Sort row on the set list:** By cemetery (grouped, default) / Ready first / Waiting on foundation / Balance owed / Oldest first — flat card list for every sort but cemetery.
+- **Order-age chips on every card:** `M/D/YY · Nmo` from signed_at (created fallback) — **red at 180d+, amber 90–180d** (Paul's 6-months/3-5-months bands — deliberately DIFFERENT from the floor AgeDot's 60/150 bands), quiet under 3 months. todayMs stamped at load (React 19 purity).
+- **Visible = searchable (c7c308e):** the desktop add-picker searches the CUSTOMER name too (blank-deceased rows were findable by eye, not by type); picker rows render the customer fallback instead of "—"; the field set list merges the job-flattened customer into familyNameOf (rows, search hay, peek title) — getJobs puts customer on the JOB, not the order, which is why the field rows still read "—" after the desktop fix.
+
 ## Fix INSTALL-GATES-2 (2026-08-04, round 7) — Drop Off reads green, balance-0 reads PAID, blank-name cards read the customer
 
 Paul: "fiechter is a dropoff and must not say foundation not in should say dropoff and be in green... blue say not paid its paid it has 0.00 balance... why cant i see fiechter in this list?"
