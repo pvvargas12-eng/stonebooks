@@ -50,6 +50,9 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const [addOpen, setAddOpen] = useState(false)
   const [addQ, setAddQ] = useState('')
   const [listBusy, setListBusy] = useState(null)   // job id mid-write
+  const [todayMs, setTodayMs] = useState(0)        // stamped at load — order-age chips
+  // Set-list sort (Paul 2026-08-04): cemetery | ready | foundation | balance | oldest
+  const [listSort, setListSort] = useState('cemetery')
   // Action state — schedule date modal + the confirm→photo→finalize install chain.
   const [scheduleRow, setScheduleRow] = useState(null)
   const [scheduleDate, setScheduleDate] = useState('')
@@ -65,6 +68,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     setComponents(d || [])
     setSetList(l || [])
     const now = new Date(); setMonthKey(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
+    setTodayMs(now.getTime())
   }, [])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
@@ -242,23 +246,49 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const closePhoto = () => { setInstallRow(null); setInstallStep(null); load() }
 
   const loading = components == null
-  const fdnOut = setListRows.filter(r => r.blockers?.fdn === false).length
+  // EVERY tile reads the SET LIST through the four-gate engine (Paul
+  // 2026-08-04: "paid dropoff fdn in blasted its ready to set!!!") — the old
+  // derived five-gate buckets are out of the tiles; one engine, no disagreement.
+  const rowReady = (r) => !r.installed && !!r.gates4
+    && r.gates4.paid !== false && r.gates4.fdn !== false
+    && r.gates4.permit !== false && r.gates4.blasted !== false
+  const rowAge = (r) => (r.signedAt && todayMs ? Math.floor((todayMs - Date.parse(r.signedAt)) / 86400000) : null)
+  const slReady = setListRows.filter(rowReady)
+  const slScheduled = setListRows.filter(r => r.scheduled)
+  const slBlocked = setListRows.filter(r => !r.installed && r.gates4 && !rowReady(r))
+  const slFdn = setListRows.filter(r => r.gates4?.fdn === false)
   const kpis = [
-    { key: 'setlist', label: 'My set list', tone: 'gold', value: setListRows.length, sub: fdnOut > 0 ? `${fdnOut} waiting on foundation` : 'hand-picked to schedule' },
-    { key: 'ready', label: 'Ready to set', tone: 'green', value: buckets.ready.length, sub: 'all 5 gates green' },
-    { key: 'scheduled', label: 'Scheduled', tone: 'purple', value: buckets.scheduled.length, sub: 'install date set' },
-    { key: 'blocked', label: 'Blocked', tone: 'red', value: buckets.blocked.length, sub: 'stone done, gate unmet' },
-    { key: 'foundation', label: 'Foundation needed', tone: 'amber', value: buckets.foundationNeeded.length, sub: 'pour not in' },
+    { key: 'setlist', label: 'My set list', tone: 'gold', value: setListRows.length, sub: slFdn.length > 0 ? `${slFdn.length} waiting on foundation` : 'hand-picked to schedule' },
+    { key: 'ready', label: 'Ready to set', tone: 'green', value: slReady.length, sub: 'paid · foundation · permit · blasted' },
+    { key: 'scheduled', label: 'Scheduled', tone: 'purple', value: slScheduled.length, sub: 'install date set' },
+    { key: 'blocked', label: 'Blocked', tone: 'red', value: slBlocked.length, sub: 'a gate reads red' },
+    { key: 'foundation', label: 'Foundation needed', tone: 'amber', value: slFdn.length, sub: 'pour not in' },
     { key: 'done', label: 'Done this month', tone: 'green', value: buckets.doneThisMonth.length, sub: 'installed' },
   ]
-  const sectionRows = { setlist: setListRows, ready: buckets.ready, scheduled: buckets.scheduled, blocked: buckets.blocked, foundation: buckets.foundationNeeded, done: buckets.doneThisMonth }[activeKpi] || buckets.ready
+  // The set-list view sorts Paul's way; the other tiles are pre-filtered
+  // slices of the SAME rows, oldest first.
+  const byAgeDesc = (a, b) => (rowAge(b) ?? 0) - (rowAge(a) ?? 0)
+  const listSorted = (() => {
+    const flat = [...setListRows]
+    if (listSort === 'ready') flat.sort((a, b) => ((rowReady(b) ? 1 : 0) - (rowReady(a) ? 1 : 0)) || byAgeDesc(a, b))
+    else if (listSort === 'foundation') flat.sort((a, b) => (((b.gates4?.fdn === false) ? 1 : 0) - ((a.gates4?.fdn === false) ? 1 : 0)) || byAgeDesc(a, b))
+    else if (listSort === 'balance') flat.sort((a, b) => (b.blockers?.balance || 0) - (a.blockers?.balance || 0))
+    else if (listSort === 'oldest') flat.sort(byAgeDesc)
+    return flat
+  })()
+  const sectionRows = {
+    setlist: listSorted,
+    ready: [...slReady].sort(byAgeDesc), scheduled: slScheduled,
+    blocked: [...slBlocked].sort(byAgeDesc), foundation: [...slFdn].sort(byAgeDesc),
+    done: buckets.doneThisMonth,
+  }[activeKpi] || setListRows
   const sectionLabel = kpis.find(k => k.key === activeKpi)?.label || ''
-  const groupByCem = activeKpi !== 'done'
   const onSetList = activeKpi === 'setlist'
-  const canAct = onSetList || activeKpi === 'ready' || activeKpi === 'scheduled'
+  const groupByCem = activeKpi === 'done' ? false : onSetList ? listSort === 'cemetery' : false
+  const canAct = activeKpi !== 'done'
   const cardProps = {
     onOpenJob, onOpenOrderDetail, canAct, onSchedule: openSchedule, onMarkInstalled: openInstall,
-    onRemove: onSetList ? removeFromList : null, listBusy,
+    onRemove: activeKpi !== 'done' ? removeFromList : null, listBusy, todayMs,
   }
 
   return (
@@ -267,7 +297,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       <header className="jobcc-cmd">
         <div className="jobcc-cmd-left">
           <h1 className="jobcc-title">Installation</h1>
-          <div className="jobcc-purpose">Stones physically done — gated to "Ready to set" by foundation, payment, cemetery, and permit. Ready ones cluster by cemetery so loading a run is obvious.</div>
+          <div className="jobcc-purpose">Your set list, four gates on every card — paid · foundation · permit · blasted. READY TO INSTALL means nothing would strand the truck. Every tile is a slice of the same list.</div>
         </div>
         <div className="jobcc-cmd-right"><div className="jobcc-actions"><button type="button" className="jobcc-btn" onClick={load}>Refresh</button></div></div>
       </header>
@@ -295,6 +325,14 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
           <div className="ib-listhint">
             Your list, your call — anything you add is treated as ready to schedule regardless of what the stone status says.
             Blockers below are information only; <strong>foundation</strong> is the one worth chasing.
+          </div>
+        )}
+        {onSetList && (
+          <div className="ib-sortrow">
+            <span className="ib-sortlab">Sort</span>
+            {[['cemetery', 'By cemetery'], ['ready', 'Ready first'], ['foundation', 'Waiting on foundation'], ['balance', 'Balance owed'], ['oldest', 'Oldest first']].map(([c, lab]) => (
+              <button key={c} type="button" className={`ib-sortchip${listSort === c ? ' on' : ''}`} onClick={() => setListSort(c)}>{lab}</button>
+            ))}
           </div>
         )}
         {loading ? <div className="jobcc-empty">Loading…</div>
@@ -405,6 +443,7 @@ function makeRow(job, ci, order, extra) {
     // 2026-08-04 — findable by the name Paul actually calls the job).
     family: order.primary_lastname || job.customer?.last_name
       || [job.customer?.first_name, job.customer?.last_name].filter(Boolean).join(' ') || '—',
+    signedAt: order.signed_at || order.created_at || null,
     orderNumber: ci.orderNumber || order.order_number || '',
     track: ci.track, cemetery: ci.cemetery || '',
     grave: composeGraveLocation(order) || '',
@@ -417,9 +456,16 @@ function groupByCemetery(rows) {
   return [...m.entries()].sort((a, b) => (a[0] || '~').localeCompare(b[0] || '~'))
 }
 
-function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null }) {
+function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0 }) {
   const tone = TRACK_TONE[row.track] || 'neutral'
   const b = row.blockers
+  // Order age from signing (Paul 2026-08-04): red at 6+ months, amber 3-5.
+  const ageD = row.signedAt && todayMs ? Math.floor((todayMs - Date.parse(row.signedAt)) / 86400000) : null
+  const ageCls = ageD == null ? '' : ageD >= 180 ? 'ib-age-red' : ageD >= 90 ? 'ib-age-amber' : 'ib-age-quiet'
+  const signedDt = row.signedAt ? new Date(row.signedAt) : null
+  const ageText = signedDt && ageD != null
+    ? `${signedDt.getMonth() + 1}/${signedDt.getDate()}/${String(signedDt.getFullYear()).slice(2)} · ${ageD >= 60 ? `${Math.floor(ageD / 30)}mo` : `${ageD}d`}`
+    : null
   // ALL FOUR GATES GREEN (n/a counts as good) = the truck can roll (Paul
   // 2026-08-04: "a label on these READY TO INSTALL for once that are paid in
   // full permit not required or approved foundation in and blasted").
@@ -436,6 +482,7 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
       <div className="ib-card-meta">
         {row.orderNumber && <button type="button" className="ib-card-ord" onClick={() => row.orderId && onOpenOrderDetail?.(row.orderId)}>{row.orderNumber}</button>}
         <span className="ib-card-cem">{[row.cemetery, row.grave].filter(Boolean).join(' · ') || '—'}</span>
+        {ageText && <span className={`ib-age ${ageCls}`} title="Order date and age since signing — red 6+ months, amber 3-5">{ageText}</span>}
       </div>
       {/* SET-LIST rows: blockers inform, they never gate. Foundation is the
           headline — Paul: "i do however want to see blockers like is the
@@ -508,6 +555,15 @@ const IB_CSS = `
   .ib-ready { background: #123524; color: #34d399; border: 1px solid #1d7a55; font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
   .ib-flag-btn { border: none; cursor: pointer; font-family: inherit; }
   .ib-flag-btn:hover { filter: brightness(1.25); }
+  .ib-age { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
+  .ib-age-red { background: #3a1d1d; color: #f87171; }
+  .ib-age-amber { background: #322712; color: #fbbf24; }
+  .ib-age-quiet { background: #1a212b; color: #8b95a5; }
+  .ib-sortrow { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 2px 0 12px; }
+  .ib-sortlab { font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #6f7a8a; }
+  .ib-sortchip { font: 600 12px/1 inherit; font-family: inherit; border: 1px solid #2a313c; background: #1a212b; color: #c7cedb; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  .ib-sortchip:hover { border-color: #3a4452; }
+  .ib-sortchip.on { background: #9A7209; border-color: #9A7209; color: #fff; font-weight: 700; }
   .ib-card-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
   .ib-card-ord { font: inherit; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6fb3f0; background: none; border: none; cursor: pointer; padding: 0; }
   .ib-card-cem { font-size: 11.5px; color: #8b95a5; }
