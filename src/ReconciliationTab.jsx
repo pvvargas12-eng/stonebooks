@@ -35,17 +35,39 @@ const BUCKET_META = {
 }
 const REVIEW_LABEL = { collision: 'Same-surname collision', non_customer: 'Looks non-customer', low_confidence: 'Low confidence' }
 
+// The tab strip (Paul 2026-08-14: "in the reconcile tab i want tabs for
+// different things to be able to sort through") — each reconcile job gets its
+// own tab instead of one long stack. Last-picked tab persists per browser.
+const RECON_TABS = [
+  ['layouts', 'Missing layouts'],
+  ['deadlines', 'Stone deadlines'],
+  ['yard', 'Yard stock'],
+  ['pos', 'Stone POs'],
+  ['names', 'Family names'],
+  ['schedule', 'Schedule cleanup'],
+]
+const RECON_TAB_KEY = 'sb_recon_tab'
+
 export default function ReconciliationTab({ onOpenOrder }) {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [orders, setOrders] = useState([])
+  const [tab, setTab] = useState(() => {
+    try { const t = localStorage.getItem(RECON_TAB_KEY); return RECON_TABS.some(([c]) => c === t) ? t : 'layouts' }
+    catch { return 'layouts' }
+  })
   const [decisions, setDecisions] = useState({})   // orderId -> 'keep' | 'close' | 'reviewed' (LOCAL only)
   const [closing, setClosing] = useState({})       // orderId -> 'busy' | 'done' | 'error' (actual DB close)
   const [deleting, setDeleting] = useState({})     // orderId -> 'busy' | 'done' | 'error' (hard delete)
-  const [layoutCount, setLayoutCount] = useState(null)   // catch-up card number
+  const [layoutCount, setLayoutCount] = useState(null)   // Missing-layouts tab badge
   const [execText, setExecText] = useState('')
   const [executing, setExecuting] = useState(false)
   const [execMsg, setExecMsg] = useState(null)
+
+  const pickTab = (code) => {
+    setTab(code)
+    try { localStorage.setItem(RECON_TAB_KEY, code) } catch { /* per-browser nicety only */ }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -131,47 +153,69 @@ export default function ReconciliationTab({ onOpenOrder }) {
 
       {err && <div className="sb-recon-err">{err}</div>}
 
-      {/* Yard stock vs orders (2026-08-03) — link the free-text yard
-          assignments to real open orders so every surface knows what's
-          already HERE. The inventory-crisis fix; Paul clicks, nothing
-          links itself. */}
-      <YardStockReconcile onOpenOrder={onOpenOrder} />
-
-      {/* Stone deadline chart (RECON-3) — Sabina's workbook vs the order due
-          dates. TOP of this tab: it's the reconcile work Paul does most. */}
-      <StoneDeadlines onOpenOrder={onOpenOrder} />
-
-      {/* Stone PRs vs orders (RECON-4) — used to be a SECOND tab also called
-          "Reconcile" inside Inventory, which is exactly what confused Paul.
-          One Reconcile now; the PR work moved here whole. */}
-      <section className="sb-recon-bucket">
-        <div className="sb-recon-bucket-head">
-          <span className="sb-recon-dot neutral" /> <strong>Stone POs vs orders</strong>
-        </div>
-        <InventoryReconcile onOpenOrder={onOpenOrder} />
-      </section>
-
-      {/* Summary cards */}
-      <div className="sb-recon-cards">
-        <Card label="Confirmed" value={c.confirmed} tone="good" sub="surname + cemetery" />
-        <Card label="Needs review" value={c.review} tone="warn" sub={`${c.review_collision} collision · ${c.review_non_customer} non-customer · ${c.review_low_confidence} low-conf`} />
-        <Card label="Close candidates" value={c.closeCandidate} tone="red" sub="not on schedule" />
-        <Card label="Unmatched schedule" value={c.unmatchedSchedule} tone="neutral" sub="jobs with no open order" />
-        <Card label="Surname backfill" value={backfillNeeded} tone="info" sub="blank primary_lastname → customer.last_name" />
-        <Card label="Needs family name" value={result.rows.filter(r => r.surnameSource !== 'order').length} tone="warn" sub="no family name on the order — fix below" />
-        <Card label="Missing layouts" value={layoutCount ?? '…'} tone="red" sub="bronze + new stone, no approved layout" />
+      {/* Tab strip (2026-08-14) — one reconcile job per tab. */}
+      <div className="sb-recon-tabs">
+        {RECON_TABS.map(([code, label]) => (
+          <button key={code} type="button"
+            className={`sb-recon-tab${tab === code ? ' on' : ''}`}
+            onClick={() => pickTab(code)}>
+            {label}
+            {code === 'layouts' && layoutCount != null && layoutCount > 0 && (
+              <span className="sb-recon-tab-n">{layoutCount}</span>
+            )}
+          </button>
+        ))}
       </div>
 
-      {/* Layout catch-up (Paul, 2026-07-22): every active bronze / new-stone
-          order with no APPROVED layout on file — upload it right here. */}
-      {!loading && <LayoutCatchUp orders={orders} onOpenOrder={onOpenOrder} onCount={setLayoutCount} />}
+      {/* Missing layouts (Paul 2026-08-14): active open new-stone (+ bronze)
+          orders with no layout — upload lands as the approved proof so the
+          carvers see it in the field. Mounted regardless of tab so the badge
+          count is live; hidden when another tab is up. */}
+      {!loading && (
+        <div style={tab === 'layouts' ? undefined : { display: 'none' }}>
+          <LayoutCatchUp orders={orders} onOpenOrder={onOpenOrder} onCount={setLayoutCount} />
+        </div>
+      )}
+
+      {tab === 'yard' && (
+        /* Yard stock vs orders (2026-08-03) — link the free-text yard
+           assignments to real open orders. Paul clicks, nothing links itself. */
+        <YardStockReconcile onOpenOrder={onOpenOrder} />
+      )}
+
+      {tab === 'deadlines' && (
+        /* Stone deadline chart (RECON-3) — Sabina's workbook vs order due dates. */
+        <StoneDeadlines onOpenOrder={onOpenOrder} />
+      )}
+
+      {tab === 'pos' && (
+        /* Stone PRs vs orders (RECON-4) — moved here whole from Inventory. */
+        <section className="sb-recon-bucket">
+          <div className="sb-recon-bucket-head">
+            <span className="sb-recon-dot neutral" /> <strong>Stone POs vs orders</strong>
+          </div>
+          <InventoryReconcile onOpenOrder={onOpenOrder} />
+        </section>
+      )}
 
       {/* Needs family name — rapid fix workbench (Paul, 2026-07-08) */}
-      {!loading && <NeedsFamilyName rows={result.rows.filter(r => r.surnameSource !== 'order')} orders={orders} onOpenOrder={onOpenOrder} />}
+      {!loading && tab === 'names' && (
+        <NeedsFamilyName rows={result.rows.filter(r => r.surnameSource !== 'order')} orders={orders} onOpenOrder={onOpenOrder} />
+      )}
 
-      {/* Buckets */}
-      {!loading && (
+      {/* Schedule cleanup — cards + buckets + the Phase 3 close gate */}
+      {!loading && tab === 'schedule' && (
         <>
+          <div className="sb-recon-cards">
+            <Card label="Confirmed" value={c.confirmed} tone="good" sub="surname + cemetery" />
+            <Card label="Needs review" value={c.review} tone="warn" sub={`${c.review_collision} collision · ${c.review_non_customer} non-customer · ${c.review_low_confidence} low-conf`} />
+            <Card label="Close candidates" value={c.closeCandidate} tone="red" sub="not on schedule" />
+            <Card label="Unmatched schedule" value={c.unmatchedSchedule} tone="neutral" sub="jobs with no open order" />
+            <Card label="Surname backfill" value={backfillNeeded} tone="info" sub="blank primary_lastname → customer.last_name" />
+            <Card label="Needs family name" value={result.rows.filter(r => r.surnameSource !== 'order').length} tone="warn" sub="no family name on the order — Family names tab" />
+            <Card label="Missing layouts" value={layoutCount ?? '…'} tone="red" sub="no layout on file — Missing layouts tab" />
+          </div>
+
           <Bucket meta={BUCKET_META.closeCandidate} rows={byBucket('closeCandidate')} decisionOf={decisionOf} setDecision={setDecision} closing={closing} doClose={doClose} deleting={deleting} doDelete={doDelete} onOpenOrder={onOpenOrder} bulk={(d) => {
             setDecisions(prev => { const n = { ...prev }; for (const r of byBucket('closeCandidate')) n[r.orderId] = d; return n })
           }} />
@@ -216,13 +260,17 @@ export default function ReconciliationTab({ onOpenOrder }) {
   )
 }
 
-// ── Layout catch-up (Paul, 2026-07-22) ──────────────────────────────────────
-// Every ACTIVE (non-lead open) bronze / new-stone order with no APPROVED
-// layout on file — the records backlog. Upload the layout right on the row:
-// it lands as the next proof version, gets stamped approved (this IS the
-// historically-approved artwork), bumps the design milestone when a job
-// exists, and the row drops off. Bronze + new stone only, per Paul.
+// ── Missing layouts (Paul 2026-07-22, promoted to its own TAB 2026-08-14) ───
+// Every ACTIVE open (non-lead) new-stone / bronze order with no APPROVED
+// layout on file. Upload the layout right on the row: it lands as the next
+// proof version, gets stamped approved with NO customer approval loop (Paul:
+// "most of these are approved already... i just want to upload it to the
+// profiles"), bumps the design milestone when a job exists, and the row drops
+// off — which puts the image in front of the carvers on the phone.
+// Default scope = contracted + in_production ("active and open"); a toggle
+// widens to installed/paid_in_full for the records backlog.
 const LAYOUT_CATCHUP_TYPES = new Set(['NEW_STONE', 'BRONZE', 'BRONZE_MARKER'])
+const LAYOUT_ACTIVE_STATUSES = new Set(['contracted', 'in_production'])
 function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
   const [refs, setRefs] = useState(null)              // current proof refs
   const [jobByOrder, setJobByOrder] = useState(null)  // order_id -> job id
@@ -230,6 +278,9 @@ function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
   const [doneIds, setDoneIds] = useState(() => new Set())
   const [errById, setErrById] = useState({})
   const [open, setOpen] = useState(true)
+  const [svc, setSvc] = useState('all')               // 'all' | 'NEW_STONE' | 'BRONZE'
+  const [q, setQ] = useState('')
+  const [allStatuses, setAllStatuses] = useState(false)
   const fileRef = useRef(null)
   const uploadForRef = useRef(null)
 
@@ -258,6 +309,8 @@ function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
     return { has, approved }
   }, [refs, jobByOrder])
 
+  // The full pool (before the view filters) — the tab badge counts this, so
+  // the number never changes as Paul narrows the view.
   const rows = useMemo(() => {
     if (!layoutState) return null
     return (orders || [])
@@ -268,6 +321,29 @@ function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
         ? String(a.o.primary_lastname || 'zz').localeCompare(String(b.o.primary_lastname || 'zz'))
         : (a.hasLayout ? 1 : -1))
   }, [orders, layoutState, doneIds])
+
+  const visible = useMemo(() => {
+    if (!rows) return null
+    const query = q.trim().toLowerCase()
+    const svcMatch = (o) => svc === 'all'
+      || (svc === 'BRONZE'
+        ? (o.service_types || []).some(t => t === 'BRONZE' || t === 'BRONZE_MARKER')
+        : (o.service_types || []).includes(svc))
+    return rows.filter(({ o }) => {
+      if (!allStatuses && !LAYOUT_ACTIVE_STATUSES.has(o.status)) return false
+      if (!svcMatch(o)) return false
+      if (!query) return true
+      const custFull = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
+      const hay = [o.primary_lastname, custFull, o.order_number, o.cemetery?.name].filter(Boolean).join(' ').toLowerCase()
+      return hay.includes(query)
+    })
+  }, [rows, svc, q, allStatuses])
+
+  const countOf = (code) => (rows || []).filter(({ o }) =>
+    (allStatuses || LAYOUT_ACTIVE_STATUSES.has(o.status)) &&
+    (code === 'all' ? true
+      : code === 'BRONZE' ? (o.service_types || []).some(t => t === 'BRONZE' || t === 'BRONZE_MARKER')
+      : (o.service_types || []).includes(code))).length
 
   useEffect(() => { if (rows) onCount?.(rows.length) }, [rows, onCount])
 
@@ -308,20 +384,43 @@ function LayoutCatchUp({ orders, onOpenOrder, onCount }) {
   }
 
   if (!rows) return <section className="sb-recon-bucket sb-recon-lay"><div className="sb-recon-bucket-hint">Checking layouts on file…</div></section>
-  if (rows.length === 0) return null
+  if (rows.length === 0) {
+    return (
+      <section className="sb-recon-bucket sb-recon-lay">
+        <div className="sb-recon-bucket-head"><span className="sb-recon-dot good" /> <strong>Missing layouts</strong></div>
+        <div className="sb-recon-bucket-hint">Every active new-stone and bronze order has an approved layout on file.</div>
+      </section>
+    )
+  }
   return (
     <section className="sb-recon-bucket sb-recon-lay">
       <div className="sb-recon-bucket-head" onClick={() => setOpen(v => !v)} style={{ cursor: 'pointer' }}>
-        <span className="sb-recon-dot red" /> <strong>Layout catch-up</strong> <span className="sb-recon-n">{rows.length}</span>
+        <span className="sb-recon-dot red" /> <strong>Missing layouts</strong> <span className="sb-recon-n">{visible?.length ?? 0}</span>
         <span className="sb-recon-toggle">{open ? '▾' : '▸'}</span>
       </div>
       <div className="sb-recon-bucket-hint">
-        Active bronze and new-stone orders with no APPROVED layout on file. Upload the layout here — it saves as the proof, marks approved, and the row drops off.
+        Active open new-stone and bronze orders with no approved layout on file. Upload the layout here — it saves to the order as the approved proof (no approval email), and the carvers see it on the phone.
+      </div>
+      <div className="sb-recon-fam-chips">
+        {[['all', 'All'], ['NEW_STONE', 'New stone'], ['BRONZE', 'Bronze']].map(([code, label]) => (
+          <button key={code} type="button" className={`sb-recon-fam-chip${svc === code ? ' on' : ''}`} onClick={() => setSvc(code)}>
+            {label} · {countOf(code)}
+          </button>
+        ))}
+        <input className="sb-recon-lay-search" placeholder="Search family, order number, cemetery…"
+          value={q} onChange={e => setQ(e.target.value)} />
+        <label className="sb-recon-lay-scope">
+          <input type="checkbox" checked={allStatuses} onChange={e => setAllStatuses(e.target.checked)} />
+          include installed / paid in full
+        </label>
       </div>
       <input ref={fileRef} type="file" accept="image/jpeg,image/png" style={{ display: 'none' }} onChange={onPick} />
       {open && (
         <div className="sb-recon-fam-list">
-          {rows.map(({ o, hasLayout }) => {
+          {(visible || []).length === 0 && (
+            <div className="sb-recon-bucket-hint">Nothing matches this view — clear the search or widen the filters.</div>
+          )}
+          {(visible || []).map(({ o, hasLayout }) => {
             const custFull = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ')
             return (
               <div key={o.id} className="sb-recon-fam-row">
@@ -512,6 +611,15 @@ const RECON_CSS = `
   .sb-recon-title { font-size: 24px; font-weight: 700; color: #0f1419; margin: 0; }
   .sb-recon-sub { font-size: 13px; color: #7a756a; margin-top: 4px; }
   .sb-recon-err { background: #fdeceb; color: #b3261e; padding: 10px 12px; border-radius: 8px; margin-bottom: 14px; }
+  .sb-recon-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; border-bottom: 2px solid #e6e2d8; padding-bottom: 0; }
+  .sb-recon-tab { font: inherit; font-size: 13.5px; font-weight: 600; color: #6b6256; background: none; border: none;
+    border-bottom: 3px solid transparent; padding: 8px 14px 10px; cursor: pointer; margin-bottom: -2px;
+    display: inline-flex; align-items: center; gap: 7px; }
+  .sb-recon-tab:hover { color: #0f1419; }
+  .sb-recon-tab.on { color: #0f1419; font-weight: 700; border-bottom-color: #9a7209; }
+  .sb-recon-tab-n { font-size: 11px; font-weight: 800; color: #fff; background: #b3261e; border-radius: 999px; padding: 1px 7px; }
+  .sb-recon-lay-search { font: inherit; font-size: 12.5px; padding: 5px 10px; border: 1px solid #d8d2c6; border-radius: 999px; width: 240px; margin-left: 8px; }
+  .sb-recon-lay-scope { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #6b6256; margin-left: 8px; cursor: pointer; }
   .sb-recon-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 22px; }
   .sb-recon-card { background: #fff; border: 1px solid #e6e2d8; border-radius: 12px; padding: 14px 16px; }
   .sb-recon-card-n { font-size: 30px; font-weight: 700; line-height: 1; }

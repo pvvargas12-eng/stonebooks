@@ -60,7 +60,10 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
         const ordProofs = orderId ? await getProofVersionsByOrder(orderId).catch(() => []) : []
         const all = [...(jobProofs || []), ...(ordProofs || [])]
         const approved = all.find(p => p.approved_at) || all.find(p => p.is_current) || all[0]
-        const url = approved?.image_url || approved?.url || null
+        // The proof_versions image column is layout_image_url — the old
+        // image_url/url read matched NOTHING, so uploaded proofs were
+        // invisible in the field forever (found 2026-08-14).
+        const url = approved?.layout_image_url || null
         if (!cancelled && url) { setProofImg({ url, approved: !!approved.approved_at }); return }
         const mapped = order ? rowToOrder(order, order.customer, order.cemetery) : null
         const designImg = mapped?.designs?.[0]?.snapshot?.img || null

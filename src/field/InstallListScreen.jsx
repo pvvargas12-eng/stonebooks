@@ -262,7 +262,9 @@ function InstallPeek({ job, onClose, onOpenJob, onComplete, onRemove, busy }) {
         const ordProofs = orderId ? await getProofVersionsByOrder(orderId).catch(() => []) : []
         const all = [...(jobProofs || []), ...(ordProofs || [])]
         const best = all.find(p => p.approved_at) || all.find(p => p.is_current) || all[0]
-        const url = best?.image_url || best?.url || null
+        // proof_versions carries layout_image_url (the old image_url/url read
+        // matched nothing — same 2026-08-14 fix as JobDetailScreen).
+        const url = best?.layout_image_url || null
         if (!cancelled && url) { setImg({ url, approved: !!best.approved_at }); return }
         const mapped = o ? rowToOrder(o, o.customer, o.cemetery) : null
         const designImg = mapped?.designs?.[0]?.snapshot?.img || null
