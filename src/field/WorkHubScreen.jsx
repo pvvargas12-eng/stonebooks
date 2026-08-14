@@ -16,6 +16,7 @@ import InstallListScreen from './InstallListScreen'
 import ProductionFloorScreen from './ProductionFloorScreen'
 import FoundationsScreen from './FoundationsScreen'
 import InscriptionsScreen from './InscriptionsScreen'
+import BronzeScreen from './BronzeScreen'
 
 // Deterministic chip text from an ISO date (local-midnight parse, no shift).
 function dueChipLabel(iso) {
@@ -25,7 +26,7 @@ function dueChipLabel(iso) {
 }
 
 export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComplete }) {
-  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'foundations' | 'inscriptions' | 'check' | 'production'
+  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'foundations' | 'inscriptions' | 'bronze' | 'check' | 'production'
   const [counts, setCounts] = useState({ installs: null, foundations: null, check: null })
   const [checkTasks, setCheckTasks] = useState(null)
 
@@ -81,6 +82,15 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
       <div>
         {back}
         <InscriptionsScreen onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
+      </div>
+    )
+  }
+
+  if (sub === 'bronze') {
+    return (
+      <div>
+        {back}
+        <BronzeScreen undo={undo} onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
       </div>
     )
   }
@@ -156,6 +166,13 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
           <div className="fl-tile-main">
             <div className="fl-tile-name">Inscriptions</div>
             <div className="fl-tile-sub">Cemetery lettering</div>
+          </div>
+          <div className="fl-tile-count">&#8250;</div>
+        </button>
+        <button type="button" className="fl-tile" onClick={() => setSub('bronze')}>
+          <div className="fl-tile-main">
+            <div className="fl-tile-name">Bronze</div>
+            <div className="fl-tile-sub">Order, receive, set</div>
           </div>
           <div className="fl-tile-count">&#8250;</div>
         </button>

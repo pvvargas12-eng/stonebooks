@@ -2154,12 +2154,34 @@ export async function setOrderStoneStatus(jobId, code) {
   if (!jobId) return { ok: false, error: 'Invalid status change' }
   const { data, error } = await supabase
     .from('job_milestones')
-    .select('milestone_key')
+    .select('milestone_key, status')
     .eq('job_id', jobId)
   if (error) return { ok: false, error: error.message }
   const keys = (data || []).map(r => r.milestone_key)
-  const plan = _isBronzeStoneJob(keys) ? _bronzeStonePlan(code) : _stonePlan(code)
-  return _applyMilestonePlan(jobId, plan)
+  const isBronze = _isBronzeStoneJob(keys)
+  const plan = isBronze ? _bronzeStonePlan(code) : _stonePlan(code)
+  const res = await _applyMilestonePlan(jobId, plan)
+  if (!res.ok) return res
+  // BRONZE-WIRE: marking a bronze received = ready for the truck — the job
+  // joins the install list (same handoff a blasted stone gets; Remove stays
+  // the override) and its floor piece catches up to Bronze Received.
+  if (isBronze && plan?.done?.includes('bronze_received')) {
+    const installedDone = (data || []).some(r => r.milestone_key === 'installed' && r.status === 'done')
+    if (!installedDone) { try { await addToInstallList(jobId) } catch (e) { console.warn('[bronze] install-queue:', e?.message) } }
+    try { await _syncBronzeReceivedFloor(jobId) } catch (e) { console.warn('[bronze] floor sync:', e?.message) }
+  }
+  return res
+}
+// The bronze component mirrors the milestone (forward-only — a mounted or
+// delivered piece never demotes back to Bronze Received).
+async function _syncBronzeReceivedFloor(jobId) {
+  const { data: comps } = await supabase.from('job_components')
+    .select('id, track, current_phase')
+    .eq('job_id', jobId).eq('track', 'bronze')
+  for (const c of (comps || [])) {
+    if (c.current_phase !== 'bronze_on_order') continue
+    await setComponentPhase(c.id, 'bronze_received', { source: 'stone-status' })
+  }
 }
 export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(jobId, _fdnPlan(code)) }
 
@@ -6048,12 +6070,19 @@ async function _rollupNewStoneStatus(jobId) {
 // hand-picked install_list automatically. Remove stays Paul's override;
 // membership add is 23505-safe; best-effort, never fails the phase write.
 async function _queueInstallOnReadyToSet(comp, newPhase, { actor = null, source = 'board' } = {}) {
-  if (comp.track !== 'new_stone' || !comp.job_id || newPhase !== 'ready_to_set') return
+  const stoneHandoff = comp.track === 'new_stone' && newPhase === 'ready_to_set'
+  // Bronze arriving IS the shop-readiness signal (setBlockReason's own rule:
+  // "blasted" on bronze = bronze_received) — a received or mounted bronze
+  // joins the installation list exactly like a blasted stone (BRONZE-WIRE).
+  const bronzeHandoff = comp.track === 'bronze' && (newPhase === 'bronze_received' || newPhase === 'mounted_on_base')
+  if ((!stoneHandoff && !bronzeHandoff) || !comp.job_id) return
   try {
     const r = await addToInstallList(comp.job_id)
     if (r?.ok && !r.existed) {
       await _componentEvent(comp, 'component_install_queued', {
-        note: 'Blasted and approved — added to the installation queue',
+        note: stoneHandoff
+          ? 'Blasted and approved — added to the installation queue'
+          : 'Bronze received — added to the installation queue',
         payload: { phase: newPhase }, actor, source,
       })
     }
@@ -9517,11 +9546,24 @@ function _bucketNewStoneSetting(jobs) {
 // TODO(L3+): inspect milestone_templates row for job_type='inscription' and
 // wire the on-site install milestone if one exists.
 
-// Bronze setting — same situation as inscriptions on-site. Known bronze keys
-// (bronze_proof_sent, bronze_proof_approved) cover the layout cycle, not
-// install. Treat as a gap bucket.
-// TODO(L3+): inspect milestone_templates row for job_type='bronze' and wire
-// the install milestone (likely `bronze_set_on_site` or similar).
+// Bronze setting — the bronze template's install milestone IS `installed`
+// (verified against prod milestone_templates 2026-08-14: contract → layout
+// cycle → bronze_ordered/received → permit/foundation → installed → closeout).
+// A bronze job surfaces here once the bronze has ARRIVED and install is still
+// open — the same "shop-ready, field pending" read as new-stone setting.
+function _bucketBronzeSetting(jobs) {
+  const rows = []
+  for (const job of (jobs || [])) {
+    if (job.overall_status === 'closed') continue
+    if (job.job_type !== 'bronze') continue
+    const byKey = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
+    const m = byKey.get('installed')
+    if (!m || m.status === 'done' || m.status === 'not_needed') continue
+    if (!_msDone(job, 'bronze_received')) continue
+    rows.push(_buildMilestoneRow(job, m))
+  }
+  return _attachUrgency(rows, BUCKET_AGING_THRESHOLDS.bronze_setting)
+}
 
 // Doors to pick up / Doors to drop off — mausoleum door pickup/dropoff. No
 // milestones exist anywhere. Pure gap buckets, surfaced so the operational
@@ -9964,6 +10006,7 @@ export function getDesignBuckets(jobs) {
 
 export function getInstallationBuckets(jobs) {
   const newStone = _bucketNewStoneSetting(jobs)
+  const bronzeSetting = _bucketBronzeSetting(jobs)
   return [
     _bucket('inscriptions_onsite', 'Inscriptions on-site', [], {
       dataGap: true,
@@ -9985,9 +10028,8 @@ export function getInstallationBuckets(jobs) {
       dataGap: true,
       subline: 'Not wired yet — needs a new milestone',
     }),
-    _bucket('bronze_setting', 'Bronze setting', [], {
-      dataGap: true,
-      subline: 'Not wired yet — needs bronze template install milestone',
+    _bucket('bronze_setting', 'Bronze setting', bronzeSetting, {
+      subline: _agingSummary(bronzeSetting, BUCKET_AGING_THRESHOLDS.bronze_setting),
     }),
     _bucket('doors_pick_up', 'Doors to pick up', [], {
       dataGap: true,
@@ -13151,7 +13193,11 @@ export function routeStopForKind(job, kind) {
 
   if (kind === 'setting' || kind === 'delivery') {
     if (done('installed')) return none('Already installed')
-    const src  = open('ready_to_install') ? 'ready_to_install' : null
+    // Bronze has no ready_to_install — its open `installed` milestone IS the
+    // set stage (BRONZE-WIRE; source-as-completion, the foundation_trip
+    // pattern). The set gate below still reads "Bronze not received" honestly.
+    const bronzeSrc = (job.job_type === 'bronze' && open('installed')) ? 'installed' : null
+    const src  = open('ready_to_install') ? 'ready_to_install' : bronzeSrc
     const comp = byKey.has('installed') ? 'installed' : null
     const gate = (kind === 'setting') ? setBlockReason(job.order, job) : null
     const ready = !!src && !gate
@@ -13275,6 +13321,20 @@ export function getSchedulableJobs(jobs, batches) {
           // gate is new_stone-specific (physical setting), so delivery routes
           // ungated; completion stays 'installed'.
           pushCard('delivery', m, 'installed')
+        }
+        continue
+      }
+
+      // Bronze setting (BRONZE-WIRE): the bronze template has no
+      // ready_to_install — its `installed` milestone (requires bronze_received
+      // + foundation_poured, so it only surfaces once those clear) is the set
+      // signal. Same setBlockReason gate as new_stone.
+      if (m.milestone_key === 'installed' && job.job_type === 'bronze') {
+        const reason = setBlockReason(job.order, job)
+        if (!reason) {
+          pushCard('setting', m, 'installed')
+        } else {
+          blocked.push({ job, milestone: m, completion_milestone_key: 'installed', reasons: [reason] })
         }
         continue
       }
