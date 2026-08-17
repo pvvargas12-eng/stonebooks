@@ -318,6 +318,13 @@ Deno.serve(async (req) => {
           payload: { from: ms.status, to: 'done', source: 'remote_approval' },
         })
       }
+      // The sent milestone rides in_progress while awaiting the customer
+      // (Layout sent, 2026-08-17) — approval ends the wait, so complete it
+      // or the job haunts the awaiting-approval buckets forever.
+      await admin.from('job_milestones')
+        .update({ status: 'done', status_date: signedAtIso.slice(0, 10), updated_at: signedAtIso })
+        .eq('job_id', pv.job_id).in('milestone_key', ['proof_sent', 'bronze_proof_sent'])
+        .eq('status', 'in_progress')
     }
   }
 

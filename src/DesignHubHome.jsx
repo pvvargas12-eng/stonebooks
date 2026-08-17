@@ -69,7 +69,9 @@ function urgencyFor(state, ageDays) {
 // milestone-ladder writer the Orders/Jobs design dropdowns use.
 const STATUS_BOX = [
   { code: 'due',           label: 'Needs design',     write: 'not_created' },
-  { code: 'need_approval', label: 'Sent to customer', write: 'layout_created' },
+  // Writes layout_sent since 2026-08-17 — "Sent to customer" used to write
+  // layout_created because the sent status didn't exist yet.
+  { code: 'need_approval', label: 'Sent to customer', write: 'layout_sent' },
   { code: 'revision',      label: 'Revision',         write: 'needs_adjustments' },
   { code: 'approved',      label: 'Approved',         write: 'layout_approved' },
 ]

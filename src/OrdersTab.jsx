@@ -221,7 +221,7 @@ function payRank(o) {
 // Status-dimension progress ranks (workflow order). Null/absent → -1 so
 // not-started/no-job rows group together at the top of an ascending sort.
 const _PAY_DIM_RANK    = { quoted: 0, deposit: 1, paid_in_full: 2 }
-const _DESIGN_DIM_RANK = { not_created: 0, layout_created: 1, needs_adjustments: 2, layout_approved: 3, cut: 4 }
+const _DESIGN_DIM_RANK = { not_created: 0, layout_created: 1, layout_sent: 2, needs_adjustments: 3, layout_approved: 4, cut: 5 }
 const _STONE_DIM_RANK  = { not_ordered: 0, ordered: 1, in_stock: 2, needs_pickup: 3, needs_stencil_cut: 4, needs_blasting: 5, blasted: 6, received: 6 }
 const _FDN_DIM_RANK    = { na: 0, not_in: 1, need_map: 2, drop_off: 2, dug: 3, poured: 4, in: 5 }
 const dimRank = (map, v) => (v != null && map[v] != null ? map[v] : -1)

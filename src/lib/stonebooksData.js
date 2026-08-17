@@ -1814,6 +1814,11 @@ export const DESIGN_STATUS = [
   // flag set; picking any other design status clears it.
   { code: 'need_rub',          label: 'Need rub' },
   { code: 'layout_created',    label: 'Layout created' },
+  // Proof went out to the customer, awaiting their word (Paul 2026-08-17).
+  // Backed by the vocab's `sent` milestone at in_progress ("waiting on
+  // customer" — the Design-hub awaiting buckets read exactly that); sending
+  // the approval email flips it automatically.
+  { code: 'layout_sent',       label: 'Layout sent' },
   { code: 'needs_adjustments', label: 'Needs adjustments' },
   { code: 'layout_approved',   label: 'Layout approved' },
   // Inscription-only terminal stage — the stencil is cut. Hidden on other job
@@ -1846,6 +1851,7 @@ const FDN_KEYS = ['foundation_needed', 'foundation_need_map', 'foundation_schedu
 
 const _msList = (job) => (job?.milestones) || []
 const _msDone = (job, key) => { const m = _msList(job).find(x => x.milestone_key === key); return !!m && (m.status === 'done') }
+const _msInProg = (job, key) => { const m = _msList(job).find(x => x.milestone_key === key); return !!m && (m.status === 'in_progress') }
 const _msHas  = (job, key) => _msList(job).some(x => x.milestone_key === key)
 export function milestoneDone(job, key) { return _msDone(job, key) }
 
@@ -1878,7 +1884,9 @@ export function derivePaymentStatus(order) {
 // safe. Order matters: proof_created wins when both vocabularies coexist.
 const DESIGN_VOCABS = [
   // New stone — design ends at the CUT stencil too (Paul, 2026-07-14).
-  { created: 'proof_created', sent: null, changes: 'proof_changes_requested', approved: 'proof_approved', cut: 'stencil_cut', cutPre: ['stencil_created'] },
+  // `proof_sent` joined the vocab for Layout sent (2026-08-17) — older jobs
+  // without the row get it seeded on demand by setOrderDesignStatus.
+  { created: 'proof_created', sent: 'proof_sent', changes: 'proof_changes_requested', approved: 'proof_approved', cut: 'stencil_cut', cutPre: ['stencil_created'] },
   { created: 'bronze_layout_created', sent: 'bronze_proof_sent', changes: null, approved: 'bronze_proof_approved' },
   // Inscription — design ends at the CUT stencil (Paul, 2026-07-14).
   { created: 'layout_created', sent: 'proof_sent', changes: null, approved: 'proof_approved', cut: 'stencil_cut', cutPre: ['stencil_created'] },
@@ -1896,7 +1904,11 @@ export function deriveDesignStatus(job) {
   // The rub flag outranks created — waiting on the cemetery IS the state,
   // even when an early layout exists. Any other status pick clears the flag.
   if (_msDone(job, 'rubbing_needed')) return 'need_rub'
-  if (_msDone(job, v.created) || (v.sent && _msDone(job, v.sent))) return 'layout_created'
+  // Sent = the proof is out with the customer (in_progress per the awaiting
+  // buckets' convention; done means the send step fully cleared, e.g. legacy
+  // rows) — either way it went out and hasn't come back approved yet.
+  if (v.sent && (_msInProg(job, v.sent) || _msDone(job, v.sent))) return 'layout_sent'
+  if (_msDone(job, v.created)) return 'layout_created'
   return 'not_created'
 }
 
@@ -1909,6 +1921,7 @@ export function designStatusOptions(job, order = null) {
   if (!v) v = _designVocabForJobType(job?.job_type || jobTypeForServiceTypes(order?.service_types || order?.serviceTypes || []))
   return DESIGN_STATUS.filter(s =>
     s.code === 'needs_adjustments' ? !!v.changes
+    : s.code === 'layout_sent' ? !!v.sent
     : s.code === 'cut' ? !!v.cut
     : true)
 }
@@ -1990,7 +2003,7 @@ export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 // hasn't begun should look like it's waiting on someone, same red as the
 // CALL chip. Mid-flight = info/warn, done = good, true N/A stays neutral.
 export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : c === 'quoted' ? 'bad' : 'neutral'
-export const designStatusTone   = (c) => (c === 'layout_approved' || c === 'cut') ? 'good' : (c === 'needs_adjustments' || c === 'need_rub') ? 'warn' : c === 'layout_created' ? 'info' : 'bad'
+export const designStatusTone   = (c) => (c === 'layout_approved' || c === 'cut') ? 'good' : (c === 'needs_adjustments' || c === 'need_rub') ? 'warn' : (c === 'layout_created' || c === 'layout_sent') ? 'info' : 'bad'
 export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'received') ? 'good'
   : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'bad'
 export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : c === 'na' ? 'neutral' : 'bad'
@@ -1999,7 +2012,7 @@ export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
 // Write plans — flip the milestone ladder so the derived status is deterministic.
 // Plans are built against the job's vocabulary. Vocabs without a changes key
 // (bronze, inscription) map needs_adjustments to created+sent done — honest
-// (proof went out, not approved), and the derived status reads layout_created.
+// (proof went out, not approved), and the derived status reads layout_sent.
 // Inscription's cut stage flips stencil_created + stencil_cut on top.
 function _designPlan(code, v = DESIGN_VOCABS[0]) {
   const cutKeys = v.cut ? [...(v.cutPre || []), v.cut] : []
@@ -2013,11 +2026,18 @@ function _designPlan(code, v = DESIGN_VOCABS[0]) {
     case 'need_rub':          return { done: [RUB], notStarted: [] }
     case 'not_created':       return { done: [], notStarted: [...all, RUB] }
     case 'layout_created':    return { done: [v.created], notStarted: [...all.filter(k => k !== v.created), RUB] }
+    // Sent rides as in_progress ("waiting on customer" — what the awaiting-
+    // approval buckets and NEXT_ACTION_VERB already read), not done.
+    case 'layout_sent':       return v.sent
+      ? { done: [v.created], inProgress: [v.sent], notStarted: [...all.filter(k => k !== v.created && k !== v.sent), RUB] }
+      : null
     case 'needs_adjustments': return v.changes
       ? { done: [v.created, v.changes], notStarted: [v.approved, ...cutKeys, RUB] }
       : { done: [v.created, v.sent].filter(Boolean), notStarted: [v.approved, ...cutKeys, RUB] }
     case 'layout_approved':   return v.changes
-      ? { done: [v.created, v.approved], notStarted: [...cutKeys, RUB] }
+      // v.sent completes too — approval ends the wait, so the sent milestone
+      // can't linger in_progress (it would haunt the awaiting-approval bucket).
+      ? { done: [v.created, v.sent, v.approved].filter(Boolean), notStarted: [...cutKeys, RUB] }
       : { done: preCut, notStarted: [...cutKeys, RUB] }
     case 'cut':               return v.cut
       ? { done: all.filter(k => k !== v.changes), notStarted: [RUB] }
@@ -2080,6 +2100,7 @@ async function _applyMilestonePlan(jobId, plan) {
   const nowIso = new Date().toISOString()
   const steps = [
     plan.done?.length      ? supabase.from('job_milestones').update({ status: 'done',        status_date: today, updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.done)      : null,
+    plan.inProgress?.length? supabase.from('job_milestones').update({ status: 'in_progress', status_date: today, updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.inProgress) : null,
     plan.notStarted?.length? supabase.from('job_milestones').update({ status: 'not_started', status_date: null,  updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.notStarted) : null,
     plan.notNeeded?.length ? supabase.from('job_milestones').update({ status: 'not_needed',  status_date: null,  updated_at: nowIso }).eq('job_id', jobId).in('milestone_key', plan.notNeeded)  : null,
   ].filter(Boolean)
@@ -2093,6 +2114,7 @@ async function _applyMilestonePlan(jobId, plan) {
 // (their local job row doesn't have the new milestone rows yet).
 const DESIGN_SEED_ROWS = [
   { milestone_key: 'proof_created',           label: 'Layout created',              sort_order: 3 },
+  { milestone_key: 'proof_sent',              label: 'Layout sent to customer',     sort_order: 4 },
   { milestone_key: 'proof_changes_requested', label: 'Changes requested',           sort_order: 5 },
   { milestone_key: 'proof_approved',          label: 'Layout approved by customer', sort_order: 5 },
 ]
@@ -2124,6 +2146,17 @@ export async function setOrderDesignStatus(jobId, code) {
       group: 'design', team: 'design', status: 'not_started', sort_order: 2,
     }])
     if (rubErr && rubErr.code !== '23505') return { ok: false, error: rubErr.message }
+    seeded = true
+  }
+  // The sent milestone joined the new-stone vocab late (Layout sent,
+  // 2026-08-17) — older jobs miss the row, so seed it on demand exactly like
+  // the rub flag. 23505 = someone else seeded it between our read and write.
+  if (code === 'layout_sent' && v.sent && !keys.includes(v.sent)) {
+    const { error: sentErr } = await supabase.from('job_milestones').insert([{
+      job_id: jobId, milestone_key: v.sent, label: 'Layout sent to customer',
+      group: 'design', team: 'design', status: 'not_started', sort_order: 4,
+    }])
+    if (sentErr && sentErr.code !== '23505') return { ok: false, error: sentErr.message }
     seeded = true
   }
   const plan = _designPlan(code, v)
@@ -9714,7 +9747,9 @@ function _bucketLayoutsToDraw(jobs) {
 // Awaiting customer approval — `proof_sent` in_progress on non-inscription
 // jobs. Inscription approvals route to `inscriptions_to_approve` below.
 function _bucketAwaitingLayoutApproval(jobs) {
-  const nonInscription = (jobs || []).filter(j => j.job_type !== 'inscription')
+  // Approved-done jobs drop out even if the sent milestone lingers in_progress
+  // (remote approvals flip proof_approved without touching proof_sent).
+  const nonInscription = (jobs || []).filter(j => j.job_type !== 'inscription' && !_msDone(j, 'proof_approved'))
   const rows = _actionableMilestonesByPredicate(
     nonInscription,
     m => m.milestone_key === 'proof_sent' || m.milestone_key === 'layout_sent',
@@ -9746,7 +9781,7 @@ function _bucketInscriptionsToDesign(jobs) {
 }
 
 function _bucketInscriptionsToApprove(jobs) {
-  const inscriptionJobs = (jobs || []).filter(j => j.job_type === 'inscription')
+  const inscriptionJobs = (jobs || []).filter(j => j.job_type === 'inscription' && !_msDone(j, 'proof_approved'))
   const rows = _actionableMilestonesByPredicate(
     inscriptionJobs,
     m => m.milestone_key === 'proof_sent' || m.milestone_key === 'layout_sent',
@@ -9778,7 +9813,7 @@ function _bucketBronzeLayoutsToDraw(jobs) {
 // Awaiting bronze approval — `bronze_proof_sent` in_progress.
 function _bucketAwaitingBronzeApproval(jobs) {
   const rows = _actionableMilestonesByPredicate(
-    jobs,
+    (jobs || []).filter(j => !_msDone(j, 'bronze_proof_approved')),
     m => m.milestone_key === 'bronze_proof_sent',
     { status: 'in_progress' },
   )

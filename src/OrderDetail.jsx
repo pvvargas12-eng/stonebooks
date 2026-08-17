@@ -1714,7 +1714,21 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
     // Approval emails stamp the link the moment they ACTUALLY send — the
     // Today tab's Approvals panel reads this as hard proof (Paul, 2026-07-14).
-    if (emailModal.approvalLinkId) markApprovalLinkEmailed(emailModal.approvalLinkId, to).catch(() => {})
+    if (emailModal.approvalLinkId) {
+      markApprovalLinkEmailed(emailModal.approvalLinkId, to).catch(() => {})
+      // …and flip Design status to Layout sent (Paul 2026-08-17: "i sent the
+      // email for approval should automatically change the status"). Never
+      // downgrade an already-approved/cut job (re-sends happen).
+      if (job?.id && !['layout_approved', 'cut'].includes(deriveDesignStatus(job))) {
+        setOrderDesignStatus(job.id, 'layout_sent')
+          .then(() => { refreshJob() })
+          .catch(() => {})
+        logOrderActivity(orderId, {
+          type: 'change', field: 'Design status', newValue: 'Layout sent',
+          note: `Approval email sent to ${to}`, actor: await getCurrentStaffName(),
+        }).then(() => refreshActivity()).catch(() => {})
+      }
+    }
     // A sent draft is no longer a draft.
     if (emailModal.draftId) { deleteEmailDraft(emailModal.draftId).catch(() => {}); refreshDrafts() }
     setEmailModal(m => ({ ...m, busy: false, sent: true }))
@@ -2119,9 +2133,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // proof version. Reuses generateApprovalSheetPDF (frozen snapshot + live
   // balance + signature when approved). Read-only here; send/approve/request-
   // changes live in the Design Hub for the related job.
-  const openApprovalPacket = async () => {
+  // vArg: open the sheet for a SPECIFIC proof version (the attachment rows'
+  // "Approval form" links) — default stays the current version.
+  const openApprovalPacket = async (vArg = null) => {
     setActionNote(null)
-    const v = proofVers.find(p => p.is_current) || proofVers[0]
+    const v = vArg || proofVers.find(p => p.is_current) || proofVers[0]
     if (!v) { setActionNote(job ? 'No proof yet — add a layout in the Design Hub for this job.' : 'No production job yet, so there is no proof to approve.'); return }
     try {
       const signatureImageUrl = (v.approved_at && v.signature_url) ? await getProofSignatureSignedUrl(v.signature_url) : null
@@ -2163,6 +2179,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       label: `${v.order_id ? 'Estimate layout' : 'Layout'} v${v.version_number}`,
       sub: v.uploaded_at ? fmtDate(v.uploaded_at) : null, href: v.layout_image_url,
       estimateSheet: v.layout_image_url,
+      approvalForm: v,
     })),
     ...proofVers.filter(v => v.signature_url).map(v => ({
       key: `sig-${v.id}`, kind: 'Signature', label: `Signature v${v.version_number}`,
@@ -2886,6 +2903,10 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                     <div><strong>Proof v{proof.version_number}</strong>{proof.is_current ? ' · current' : ''}</div>
                     <div>{statusText}</div>
                     {proof.layout_image_url && <button type="button" className="sb-od-link" onClick={viewProof}>View proof</button>}
+                    <button type="button" className="sb-od-link" onClick={() => openApprovalPacket(proof)}
+                      title="The layout on the printable approval form — print it and the family signs on paper">
+                      Approval form
+                    </button>
                     {!proof.approved_at && (
                       <button type="button" className="sb-od-link sb-od-mark-approved" onClick={markProofApproved}
                         title="Already approved by the family (paper / in person)? Mark it approved — no customer link needed.">
@@ -3208,6 +3229,13 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                         title="The layout on a one-page estimate — line items with per-item prices hidden, final price shown"
                         onClick={() => downloadEstimateSheet(a.estimateSheet)}>
                         {sheetBusy ? 'Building…' : 'Estimate sheet'}
+                      </button>
+                    )}
+                    {a.approvalForm && (
+                      <button type="button" className="sb-od-link sb-od-attach-open"
+                        title="This layout on the printable approval form — print it and the family signs on paper"
+                        onClick={() => openApprovalPacket(a.approvalForm)}>
+                        Approval form
                       </button>
                     )}
                     {a.signed && (

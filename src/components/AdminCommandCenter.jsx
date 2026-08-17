@@ -61,7 +61,7 @@ function deriveCommand(jobs, proofsByJob) {
       const sitting = _days(j.last_update_at) ?? _days(o.updated_at) ?? 0
       if (ds === 'needs_adjustments') designState = 'denied'
       else if (ds === 'layout_approved' || ds === 'cut' || proof?.approved_at) designState = 'approved'
-      else if (proof?.sent_at) designState = 'sent'
+      else if (ds === 'layout_sent' || proof?.sent_at) designState = 'sent'
       else if (ds === 'layout_created') designState = 'drawn'
       else designState = 'needs'
       const card = { ...base, type, jobType: j.job_type, sitting, drawn: designState === 'drawn' }

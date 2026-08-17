@@ -62,6 +62,8 @@ import {
   createApprovalLink,
   sendShopEmail,
   logOrderActivity,
+  setOrderDesignStatus,
+  deriveDesignStatus,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF, SignatureCanvas } from './SalesMode'
 import { dieDisplayInches, standardSizeCodeLabel, orderHasBase, buildBaseSpec, displayGraniteColor, composeGraveLocation, SHAPES } from './lib/monumentCatalog'
@@ -1207,6 +1209,11 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     const who = await getCurrentStaffName()
     if (order?.id) logOrderActivity(order.id, { type: 'change', field: 'Approval link', newValue: 'emailed', note: `Approval link emailed to ${to} (from Design Hub)`, actor: who }).catch(() => {})
     if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: `Approval link emailed to ${to}`, createdBy: who }).catch(() => {})
+    // Sending the approval email IS the "layout sent" moment (Paul 2026-08-17).
+    // Never downgrade an already-approved/cut job on a re-send.
+    if (job?.id && !['layout_approved', 'cut'].includes(deriveDesignStatus(job))) {
+      setOrderDesignStatus(job.id, 'layout_sent').catch(() => {})
+    }
   }
   const downloadSheet = () => { if (sheet.doc) sheet.doc.save(sheet.filename) }
   const printSheet = () => {
