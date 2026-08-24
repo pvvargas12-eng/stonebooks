@@ -2194,8 +2194,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     ...uploads.map((u, i) => {
       const isCurrentContract = u.name === 'Contract (current).pdf'
       return {
-        key: `up-${i}`, kind: 'Upload',
-        label: (isCurrentContract && signedContract) ? 'Contract (draft)' : u.name,
+        key: `up-${i}`, kind: u.isCompletion ? 'Completion photo' : 'Upload',
+        // The kind chip already says "Completion photo" — drop the name prefix
+        // here (other consumers of listOrderAttachments keep it as the marker).
+        label: (isCurrentContract && signedContract) ? 'Contract (draft)'
+          : u.isCompletion ? u.name.replace(/^Completion photo — /, '') : u.name,
         sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
         path: u.path, deletable: true,
         draft: isCurrentContract && !!signedContract,

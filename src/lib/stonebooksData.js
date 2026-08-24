@@ -1172,19 +1172,36 @@ export async function removeApprovalSigned(orderId) {
 export async function listOrderAttachments(orderId) {
   if (!orderId) return []
   const dir = `attachments/${orderId}`
-  const { data, error } = await supabase.storage
-    .from('orders-attachments-public')
-    .list(dir, { sortBy: { column: 'created_at', order: 'desc' } })
-  if (error) { console.warn('[orders] listOrderAttachments:', error.message); return [] }
-  return (data || [])
+  // Completion photos live under <orderId>/completion/ (uploadCompletionPhoto's
+  // path) — merged in here so they surface as order attachments too (Paul,
+  // 2026-08-24). Same objects as the Completion-photos section: deleting one
+  // from Attachments removes the photo itself, not a copy.
+  const compDir = `${orderId}/completion`
+  const [main, comp] = await Promise.all([
+    supabase.storage.from('orders-attachments-public')
+      .list(dir, { sortBy: { column: 'created_at', order: 'desc' } }),
+    supabase.storage.from('orders-attachments-public')
+      .list(compDir, { sortBy: { column: 'created_at', order: 'desc' } }),
+  ])
+  if (main.error) console.warn('[orders] listOrderAttachments:', main.error.message)
+  if (comp.error) console.warn('[orders] listOrderAttachments (completion):', comp.error.message)
+  const rowsFrom = (res, base, opts = {}) => (res.data || [])
     .filter(f => f && f.name && f.id) // skip folder placeholders
     .map(f => {
-      const path = `${dir}/${f.name}`
+      const path = `${base}/${f.name}`
       const { data: u } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
       // Stored name is `${uuid}_${original}` — strip the uuid prefix for display.
       const display = f.name.replace(/^[0-9a-f-]{36}_/i, '')
-      return { name: display, url: u.publicUrl, path, createdAt: f.created_at || null }
+      return {
+        name: opts.prefix ? `${opts.prefix}${display}` : display,
+        url: u.publicUrl, path, createdAt: f.created_at || null,
+        ...(opts.isCompletion ? { isCompletion: true } : {}),
+      }
     })
+  return [
+    ...rowsFrom(main, dir),
+    ...rowsFrom(comp, compDir, { prefix: 'Completion photo — ', isCompletion: true }),
+  ].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
 }
 
 // ── Completion photos (ITEM 4) ──────────────────────────────────────────────
