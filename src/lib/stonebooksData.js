@@ -2232,7 +2232,19 @@ async function _syncBronzeReceivedFloor(jobId) {
   const { data: comps } = await supabase.from('job_components')
     .select('id, track, current_phase, on_floor')
     .eq('job_id', jobId).eq('track', 'bronze')
-  for (const c of (comps || [])) {
+  // Orders re-typed to bronze after their components were seeded carry only
+  // old-track pieces (the Sarmiento case, 2026-08-25) — mint the bronze piece
+  // so the Bronze Received column has something to show.
+  if (!comps || !comps.length) {
+    const { data: j } = await supabase.from('jobs').select('order_id').eq('id', jobId).maybeSingle()
+    if (!j) return
+    await supabase.from('job_components').insert({
+      job_id: jobId, order_id: j.order_id, track: 'bronze', component_type: 'bronze',
+      label: 'Bronze', current_phase: 'bronze_received', on_floor: true, sort_order: 0,
+    })
+    return
+  }
+  for (const c of comps) {
     if (c.current_phase === 'bronze_on_order') {
       await setComponentOnFloor(c.id, true, { phase: 'bronze_received', source: 'stone-status' })
     } else if (c.current_phase === 'bronze_received' && !c.on_floor) {
