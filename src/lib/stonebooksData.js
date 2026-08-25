@@ -2223,17 +2223,72 @@ export async function setOrderStoneStatus(jobId, code) {
   return res
 }
 // The bronze component mirrors the milestone (forward-only — a mounted or
-// delivered piece never demotes back to Bronze Received).
+// delivered piece never demotes back to Bronze Received). Received bronze
+// must SHOW in the board's Bronze Received column (Paul 2026-08-25: "in order
+// bronze received it must automatically go on bronze received list in jobs"),
+// so the piece is pulled on-floor too — the deliberate bronze exception to
+// the hand-picked floor doctrine, like the inscription-cut sync.
 async function _syncBronzeReceivedFloor(jobId) {
   const { data: comps } = await supabase.from('job_components')
-    .select('id, track, current_phase')
+    .select('id, track, current_phase, on_floor')
     .eq('job_id', jobId).eq('track', 'bronze')
   for (const c of (comps || [])) {
-    if (c.current_phase !== 'bronze_on_order') continue
-    await setComponentPhase(c.id, 'bronze_received', { source: 'stone-status' })
+    if (c.current_phase === 'bronze_on_order') {
+      await setComponentOnFloor(c.id, true, { phase: 'bronze_received', source: 'stone-status' })
+    } else if (c.current_phase === 'bronze_received' && !c.on_floor) {
+      await setComponentOnFloor(c.id, true, { source: 'stone-status' })
+    }
   }
 }
-export function setOrderFdnStatus(jobId, code)    { return _applyMilestonePlan(jobId, _fdnPlan(code)) }
+// Bronze board moves talk back to the Stone/Bronze milestone (the bronze twin
+// of _rollupNewStoneStatus — without it a piece advanced to Bronze Received on
+// the floor left the Orders dropdown reading "Ordered"). Skipped when the
+// write ORIGINATED from the milestone side (source 'stone-status') so the two
+// mirrors can't ping-pong.
+const _BRONZE_PHASE_TO_STONE = { bronze_on_order: 'ordered', bronze_received: 'received', mounted_on_base: 'received', delivered: 'received' }
+async function _rollupBronzeStatus(jobId) {
+  if (!jobId) return
+  const { data: comps } = await supabase.from('job_components').select('current_phase')
+    .eq('job_id', jobId).eq('track', 'bronze')
+  if (!comps || !comps.length) return
+  // Most-behind piece wins (the new-stone rule) — every piece received before
+  // the milestone reads Received.
+  const code = comps.some(c => _BRONZE_PHASE_TO_STONE[c.current_phase] !== 'received') ? 'ordered' : 'received'
+  try { await setOrderStoneStatus(jobId, code) } catch (e) { console.warn('[rollup] bronze-status:', e?.message) }
+}
+// Foundation writes are key-fetch-first too: templates differ (the bronze
+// ladder ends at foundation_poured — no foundation_in row), so the pick's
+// milestones are seeded on demand exactly like the design vocab seeds. This
+// is why the Aber bronze job could never leave "FDN poured" (2026-08-25).
+const _FDN_SEED_LABELS = {
+  foundation_needed: 'Foundation needed?', foundation_need_map: 'Need map',
+  foundation_scheduled: 'Foundation scheduled', foundation_dug: 'FDN dug',
+  foundation_poured: 'Foundation poured', foundation_in: 'FDN in',
+}
+export async function setOrderFdnStatus(jobId, code) {
+  const plan = _fdnPlan(code)
+  if (!jobId || !plan) return { ok: false, error: 'Invalid status change' }
+  const { data, error } = await supabase.from('job_milestones')
+    .select('milestone_key, sort_order').eq('job_id', jobId).in('milestone_key', FDN_KEYS)
+  if (error) return { ok: false, error: error.message }
+  const have = new Set((data || []).map(r => r.milestone_key))
+  const wanted = [...(plan.done || []), ...(plan.inProgress || [])]
+  const missing = FDN_KEYS.filter(k => wanted.includes(k) && !have.has(k))
+  let seeded = false
+  if (missing.length) {
+    let sort = Math.max(0, ...(data || []).map(r => r.sort_order || 0))
+    const rows = missing.map(k => ({
+      job_id: jobId, milestone_key: k, label: _FDN_SEED_LABELS[k],
+      group: 'foundation', team: 'installation', status: 'not_started', sort_order: ++sort,
+    }))
+    const { error: seedErr } = await supabase.from('job_milestones').insert(rows)
+    // 23505 = a concurrent writer seeded first; the rows exist, proceed.
+    if (seedErr && seedErr.code !== '23505') return { ok: false, error: seedErr.message }
+    seeded = true
+  }
+  const res = await _applyMilestonePlan(jobId, plan)
+  return res.ok ? { ok: true, seeded } : res
+}
 
 // The write plan for a dimension+code — lets a caller mirror the milestone flip
 // in LOCAL state (optimistic update) instead of refetching after an inline edit.
@@ -2498,7 +2553,24 @@ export async function addToInstallList(jobId) {
   // the auto-queue skip its event log when nothing actually changed.
   if (error && error.code === '23505') return { ok: true, existed: true }
   if (error) return { ok: false, error: error.message }
+  // Paul 2026-08-25: "for bronze services on the install list it also must be
+  // in bronze received — its the same thing." A bronze job joining the set
+  // list reads Received (milestone + board column) automatically. Best-effort;
+  // fresh inserts only, so the re-entrant add from the floor sync no-ops here.
+  try { await _syncBronzeInstallAdd(jobId) } catch (e) { console.warn('[install-list] bronze sync:', e?.message) }
   return { ok: true, existed: false }
+}
+// Install-list membership implies Received for bronze work (the reverse of
+// the bronze_received → install_list auto-add). Forward-only: an already-
+// received job is left alone; non-bronze jobs are untouched.
+async function _syncBronzeInstallAdd(jobId) {
+  const { data } = await supabase.from('job_milestones')
+    .select('milestone_key, status').eq('job_id', jobId)
+  const keys = (data || []).map(r => r.milestone_key)
+  if (!_isBronzeStoneJob(keys)) return
+  const receivedDone = (data || []).some(r => r.milestone_key === 'bronze_received' && r.status === 'done')
+  if (!receivedDone) await _applyMilestonePlan(jobId, _bronzeStonePlan('received'))
+  await _syncBronzeReceivedFloor(jobId)
 }
 
 export async function removeFromInstallList(jobId) {
@@ -6161,6 +6233,9 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   if (!r.ok) return r
   await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor, source })
   if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  // Bronze mirrors back to the Stone/Bronze milestone — unless this write CAME
+  // from the milestone side ('stone-status'), which would ping-pong.
+  if (c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   await _queueInstallOnReadyToSet(c, newPhase, { actor, source })
   return r
 }
@@ -6190,6 +6265,7 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
     payload: { phase: phase || c.current_phase }, actor, source,
   })
   if (on && phase && c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  if (on && phase && c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   if (on && phase) await _queueInstallOnReadyToSet(c, phase, { actor, source })
   if (on) await _autoCutListOnBringUp(c)
   return r

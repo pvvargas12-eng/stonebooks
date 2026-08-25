@@ -284,11 +284,16 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   // action those and have someone call"). By cemetery / Oldest show the
   // whole list; the other three show ONLY their rows.
   const byAgeDesc = (a, b) => (rowAge(b) ?? 0) - (rowAge(a) ?? 0)
+  // Track of a row: the component track when one exists, else the job type
+  // (bronze jobs re-typed without components still filter right).
+  const rowTrack = (r) => r.track || ({ new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }[r.jobType] || null)
   const listSorted = (() => {
     let flat = [...setListRows]
     if (listSort === 'ready') flat = flat.filter(rowReady).sort(byAgeDesc)
     else if (listSort === 'foundation') flat = flat.filter(r => r.gates4?.fdn === false).sort(byAgeDesc)
     else if (listSort === 'balance') flat = flat.filter(r => (r.blockers?.balance || 0) > 0).sort((a, b) => (b.blockers?.balance || 0) - (a.blockers?.balance || 0))
+    else if (listSort === 'newstone') flat = flat.filter(r => rowTrack(r) === 'new_stone').sort(byAgeDesc)
+    else if (listSort === 'bronze') flat = flat.filter(r => rowTrack(r) === 'bronze').sort(byAgeDesc)
     else if (listSort === 'oldest') flat.sort(byAgeDesc)
     return flat
   })()
@@ -346,7 +351,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
         {onSetList && (
           <div className="ib-sortrow">
             <span className="ib-sortlab">Sort</span>
-            {[['cemetery', 'By cemetery'], ['ready', 'Ready first'], ['foundation', 'Waiting on foundation'], ['balance', 'Balance owed'], ['oldest', 'Oldest first']].map(([c, lab]) => (
+            {[['cemetery', 'By cemetery'], ['ready', 'Ready first'], ['foundation', 'Waiting on foundation'], ['balance', 'Balance owed'], ['newstone', 'New stone'], ['bronze', 'Bronze services'], ['oldest', 'Oldest first']].map(([c, lab]) => (
               <button key={c} type="button" className={`ib-sortchip${listSort === c ? ' on' : ''}`} onClick={() => setListSort(c)}>{lab}</button>
             ))}
           </div>
@@ -461,7 +466,7 @@ function makeRow(job, ci, order, extra) {
       || [job.customer?.first_name, job.customer?.last_name].filter(Boolean).join(' ') || '—',
     signedAt: order.signed_at || order.created_at || null,
     orderNumber: ci.orderNumber || order.order_number || '',
-    track: ci.track, cemetery: ci.cemetery || '',
+    track: ci.track, jobType: job.job_type || null, cemetery: ci.cemetery || '',
     grave: composeGraveLocation(order) || '',
     ...extra,
   }
@@ -473,7 +478,10 @@ function groupByCemetery(rows) {
 }
 
 function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0 }) {
-  const tone = TRACK_TONE[row.track] || 'neutral'
+  // Component track when one exists, else the job type — a bronze job whose
+  // components predate BRONZE-WIRE still wears its BRONZE SERVICES tag.
+  const cardTrack = row.track || ({ new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }[row.jobType] || null)
+  const tone = TRACK_TONE[cardTrack] || 'neutral'
   const b = row.blockers
   // Task-a-call popover (Paul 2026-08-04: "a button next to remove to add
   // task... it would task someone to call customer for balance").
@@ -521,7 +529,7 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
       <div className="ib-card-top">
         <button type="button" className="ib-card-fam" onClick={() => onOpenJob?.(row.jobId)}>{row.family}</button>
         {readyNow && <span className="ib-ready">READY TO INSTALL</span>}
-        <span className={`ib-track ib-track-${tone}`}>{TRACK_LABEL[row.track] || row.track}</span>
+        {cardTrack && <span className={`ib-track ib-track-${tone}`}>{TRACK_LABEL[cardTrack] || cardTrack}</span>}
       </div>
       <div className="ib-card-meta">
         {row.orderNumber && <button type="button" className="ib-card-ord" onClick={() => row.orderId && onOpenOrderDetail?.(row.orderId)}>{row.orderNumber}</button>}

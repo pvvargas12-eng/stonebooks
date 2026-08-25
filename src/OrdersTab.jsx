@@ -909,7 +909,10 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     if (!j) return
     if (o._job) patchJobMilestonesLocal(o.id, orderStatusWritePlan('fdn', code, o._job))
     const r = await setOrderFdnStatus(j.id, code)
-    if (!r.ok || !o._job) reload()
+    // seeded = the pick's foundation milestones had to be created (bronze
+    // templates end at poured) — the local mirror can't flip rows it doesn't
+    // have, so resync.
+    if (!r.ok || r.seeded || !o._job) reload()
   }
   // Permit — writes orders.permit_status (single source of truth; Permit Hub +
   // Cemetery & Grave card read the same field). Auto-stamps the submitted/approved
