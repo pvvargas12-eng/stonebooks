@@ -47,7 +47,7 @@ Deno.serve(async (req) => {
 
   const { data: reqRow, error: reqErr } = await admin
     .from('signature_requests')
-    .select('id, order_id, status, expires_at, unsigned_pdf_path, customer_email')
+    .select('id, order_id, kind, status, expires_at, unsigned_pdf_path, customer_email')
     .eq('token', token)
     .maybeSingle()
   if (reqErr) return json({ error: 'lookup_failed' }, 500)
@@ -63,7 +63,7 @@ Deno.serve(async (req) => {
 
   // Terminal / non-signable states — page shows the right message, no PDF.
   if (reqRow.status !== 'pending' && reqRow.status !== 'viewed') {
-    return json({ ok: true, status: reqRow.status })
+    return json({ ok: true, status: reqRow.status, doc_kind: reqRow.kind || 'contract' })
   }
 
   // First valid load: pending -> viewed.
@@ -98,6 +98,7 @@ Deno.serve(async (req) => {
   return json({
     ok: true,
     status: 'viewed',
+    doc_kind: reqRow.kind || 'contract',
     order_number: orderNumber,
     surname,
     signer_prefill: signerPrefill,

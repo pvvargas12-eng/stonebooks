@@ -33,14 +33,14 @@ const btnPrimary = (enabled) => ({
 
 // Page shell — module-level so it isn't re-created each render. Loads the
 // Dancing Script webfont so the on-screen cursive matches the stamped PDF.
-function Frame({ children }) {
+function Frame({ children, title = 'Document signature' }) {
   return (
     <div style={shell}>
       <style>{"@import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap');"}</style>
       <div style={card}>
         <div style={{ background: INK, color: '#fff', padding: '18px 26px' }}>
           <div style={{ fontSize: 13, letterSpacing: 1.5, color: BRONZE, fontWeight: 600 }}>SHEVCHENKO MONUMENTS</div>
-          <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2 }}>Contract signature</div>
+          <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2 }}>{title}</div>
         </div>
         {children}
       </div>
@@ -106,7 +106,12 @@ export default function SignPage({ token }) {
     }
   }
 
-  if (loading) return <Frame><div style={pad}>Loading your contract…</div></Frame>
+  // The link may carry a contract OR a permit (PB-ESIGN) — every visible word
+  // follows what the loader says the document is.
+  const docWord = data?.doc_kind === 'permit' ? 'permit' : 'contract'
+  const frameTitle = data?.doc_kind === 'permit' ? 'Permit signature' : 'Contract signature'
+
+  if (loading) return <Frame><div style={pad}>Loading your document…</div></Frame>
 
   if (loadErr) return (
     <Frame><div style={pad}>
@@ -118,20 +123,20 @@ export default function SignPage({ token }) {
   // Terminal states from the loader.
   if (data && data.status && data.status !== 'viewed' && data.status !== 'pending') {
     const msg = data.status === 'signed'
-      ? 'This contract has already been signed. Thank you!'
+      ? `This ${docWord} has already been signed. Thank you!`
       : data.status === 'expired'
         ? 'This signing link has expired. Please contact Shevchenko Monuments for a new link.'
         : data.status === 'voided'
           ? 'This signing link is no longer active. Please contact Shevchenko Monuments.'
           : 'This signing link is not available.'
-    return <Frame><div style={pad}><p style={{ fontSize: 15 }}>{msg}</p>
+    return <Frame title={frameTitle}><div style={pad}><p style={{ fontSize: 15 }}>{msg}</p>
       <p style={{ color: '#6b7682', fontSize: 14 }}>Shevchenko Monuments · 732-442-1286</p></div></Frame>
   }
 
   // Success — signed.
   if (signedUrl) return (
-    <Frame><div style={pad}>
-      <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 6 }}>✓ Your contract is signed</div>
+    <Frame title={frameTitle}><div style={pad}>
+      <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 6 }}>✓ Your {docWord} is signed</div>
       <p style={{ fontSize: 15, color: '#3a4753' }}>
         Thank you, {signerName.trim()}. A copy has been saved for Shevchenko Monuments. Download your signed copy below.
       </p>
@@ -144,22 +149,22 @@ export default function SignPage({ token }) {
 
   // Main signing flow.
   return (
-    <Frame>
+    <Frame title={frameTitle}>
       <div style={pad}>
         <p style={{ fontSize: 15, marginTop: 0 }}>
           {data?.order_number ? <>Order <strong>{data.order_number}</strong>{data.surname ? <> · {data.surname}</> : null}. </> : null}
-          Please review the contract below, then sign to accept.
+          Please review the {docWord} below, then sign to accept.
         </p>
 
         {data?.pdf_url ? (
           <>
-            <iframe src={data.pdf_url} title="Contract" style={{ width: '100%', height: 520, border: '1px solid #cfd6de', borderRadius: 8 }} />
+            <iframe src={data.pdf_url} title="Document" style={{ width: '100%', height: 520, border: '1px solid #cfd6de', borderRadius: 8 }} />
             <a href={data.pdf_url} target="_blank" rel="noreferrer" style={{ color: BRONZE, fontSize: 13, display: 'inline-block', marginTop: 6 }}>
-              Open contract in a new tab
+              Open {docWord} in a new tab
             </a>
           </>
         ) : (
-          <div style={{ color: '#6b7682', fontSize: 14 }}>The contract document is unavailable. Please contact the office.</div>
+          <div style={{ color: '#6b7682', fontSize: 14 }}>The document is unavailable. Please contact the office.</div>
         )}
 
         {/* Print name */}
@@ -176,7 +181,7 @@ export default function SignPage({ token }) {
         {/* Consent */}
         <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 18, fontSize: 14, lineHeight: 1.45, cursor: 'pointer' }}>
           <input type="checkbox" checked={consent} onChange={(e) => onConsentChange(e.target.checked)} style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }} />
-          <span>I have reviewed this contract and agree to sign it electronically. I understand my electronic
+          <span>I have reviewed this {docWord} and agree to sign it electronically. I understand my electronic
             signature is legally binding, the same as a handwritten signature.</span>
         </label>
 
@@ -224,7 +229,7 @@ export default function SignPage({ token }) {
         </button>
         {generated && !submitting && (
           <div style={{ color: '#6b7682', fontSize: 13, marginTop: 8, textAlign: 'center' }}>
-            Submitting applies this signature to your contract.
+            Submitting applies this signature to your {docWord}.
           </div>
         )}
       </div>

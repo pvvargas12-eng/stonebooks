@@ -28,6 +28,7 @@ import {
   missingAutofill, MISSING_ORDER_WRITEBACK, getOrderContext, attachPermitPdfToOrder,
 } from './lib/permitBuilder'
 import PermitCanvas from './components/permit/PermitCanvas'
+import PermitSignModal from './components/permit/PermitSignModal'
 
 const _todayISO = () => {
   const d = new Date()
@@ -686,6 +687,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [sources, setSources] = useState(null)
   const [delOpen, setDelOpen] = useState(false)
+  const [signOpen, setSignOpen] = useState(false)   // Email-to-sign composer (PB-ESIGN)
   const layFileRef = useRef(null)
   const pageFileRef = useRef(null)
 
@@ -787,6 +789,16 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     setData(prev => ({ ...prev, extras: [...(prev.extras || []), ex] }))
     setSel(ex.id)
   }
+  // E-signature box (PB-ESIGN): drag it over the form's signature line; the
+  // customer's cursive gets stamped into that exact rect when they sign the
+  // emailed link. Form pages only — the synthetic back sheet isn't signable.
+  const addEsign = () => {
+    if (typeof page !== 'number') { say('Put the e-signature box on a form page, not the back sheet.', true); return }
+    const ex = { id: `x-${rid()}`, kind: 'esign', page, x: 0.5, y: 0.82, w: 0.34, h: 0.035, sizePct: 0.016 }
+    setData(prev => ({ ...prev, extras: [...(prev.extras || []), ex] }))
+    setSel(ex.id)
+  }
+  const hasEsign = (data?.extras || []).some(e => e.kind === 'esign')
   const duplicateSel = () => {
     if (!selBox) return
     const ex = { ...selBox, id: `x-${rid()}`, page, x: Math.min(0.95, selBox.x + 0.02), y: Math.min(0.95, selBox.y + 0.02) }
@@ -990,9 +1002,19 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
         <div className="pbt-edhead-spacer" />
         <button type="button" className="pbt-btn pbt-btn-danger-quiet" onClick={() => setDelOpen(true)} disabled={busy}>Delete</button>
         <button type="button" className="pbt-btn" onClick={save} disabled={busy}>Save</button>
+        {hasEsign && (
+          <button type="button" className="pbt-btn" onClick={() => setSignOpen(true)} disabled={busy}>Email to sign</button>
+        )}
         <button type="button" className="pbt-btn" onClick={printPdf} disabled={busy}>Print</button>
         <button type="button" className="pbt-btn pbt-btn-gold" onClick={download} disabled={busy}>{busy ? 'Working…' : 'Download PDF'}</button>
       </header>
+
+      {signOpen && (
+        <PermitSignModal
+          doc={doc} order={order} template={exportTemplate()} docData={data}
+          onSaveFirst={save} onClose={() => setSignOpen(false)} say={say}
+        />
+      )}
 
       {delOpen && (
         <PbtConfirm
@@ -1063,6 +1085,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
             <button type="button" className="pbt-btn" onClick={addText}>+ Text</button>
             <button type="button" className="pbt-btn" onClick={addCheck}>+ Checkmark</button>
             <button type="button" className="pbt-btn" onClick={addDim}>+ Dimension</button>
+            <button type="button" className="pbt-btn" onClick={addEsign}>+ E-signature</button>
             {!layout
               ? <button type="button" className="pbt-btn" onClick={openPicker}>Insert layout</button>
               : <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { setData(prev => ({ ...prev, layout: null })); setLaySel(false) }}>Remove layout</button>}
@@ -1086,8 +1109,8 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
 
           {selBox && (
             <div className="pbt-toolbar">
-              <span className="pbt-tool-label">{selBox.kind === 'check' ? 'Checkmark — click it to toggle' : selIsField ? (AUTOFILL_LABEL.get(fields.find(f => f.id === sel)?.key) || 'Field') : 'Text box'}</span>
-              {selBox.kind === 'check' ? (
+              <span className="pbt-tool-label">{selBox.kind === 'esign' ? 'E-signature box — drag it over the signature line; the customer signs here from the emailed link' : selBox.kind === 'check' ? 'Checkmark — click it to toggle' : selIsField ? (AUTOFILL_LABEL.get(fields.find(f => f.id === sel)?.key) || 'Field') : 'Text box'}</span>
+              {selBox.kind === 'esign' ? null : selBox.kind === 'check' ? (
                 <>
                   <button type="button" className={`pbt-btn ${(selBox.mark || 'check') === 'check' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { mark: 'check' })}>Checkmark</button>
                   <button type="button" className={`pbt-btn ${selBox.mark === 'x' ? 'pbt-btn-on' : ''}`} onClick={() => patchBox(sel, { mark: 'x' })}>X</button>
@@ -1108,7 +1131,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
                   patchBox(sel, { text: autofillValue(f.key, order) })
                 }}>Re-autofill</button>
               )}
-              <button type="button" className="pbt-btn" onClick={duplicateSel}>Duplicate</button>
+              {selBox.kind !== 'esign' && <button type="button" className="pbt-btn" onClick={duplicateSel}>Duplicate</button>}
               {selIsField
                 ? <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { patchBox(sel, { hidden: true }); setSel(null) }}>Hide</button>
                 : <button type="button" className="pbt-btn pbt-btn-quiet" onClick={() => { setData(prev => ({ ...prev, extras: prev.extras.filter(e => e.id !== sel) })); setSel(null) }}>Delete</button>}

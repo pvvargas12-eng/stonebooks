@@ -884,15 +884,18 @@ export async function deleteEmailDraft(id) {
 // Deploy-safe: if the 20260618 migration isn't applied or the function isn't
 // deployed, this returns { ok:false, error } with a clear setup message instead
 // of throwing — same posture as the foundation_type / quote-status columns.
-export async function createSigningLink({ orderId, pdfBase64, sigFieldRects, customerEmail }) {
+export async function createSigningLink({ orderId, pdfBase64, sigFieldRects, customerEmail, kind = 'contract' }) {
   if (!orderId) return { ok: false, error: 'Missing order id.' }
-  if (!pdfBase64) return { ok: false, error: 'Contract PDF could not be generated.' }
+  if (!pdfBase64) return { ok: false, error: 'The PDF could not be generated.' }
   const { data, error } = await supabase.functions.invoke('signing-create', {
     body: {
       order_id: orderId,
       pdf_base64: pdfBase64,
       sig_field_rects: sigFieldRects || null,
       customer_email: customerEmail || null,
+      // 'contract' (default) or 'permit' — permit signings skip the
+      // contracted flip and land the signed PDF in the order's attachments.
+      kind,
     },
   })
   if (error) {
@@ -916,7 +919,7 @@ export async function getSignatureRequestsForOrder(orderId) {
   if (!orderId) return []
   const { data, error } = await supabase
     .from('signature_requests')
-    .select('id, order_id, token, status, expires_at, signed_pdf_path, signer_name, customer_email, viewed_at, signed_at, created_at')
+    .select('id, order_id, kind, token, status, expires_at, signed_pdf_path, signer_name, customer_email, viewed_at, signed_at, created_at')
     .eq('order_id', orderId)
     .order('created_at', { ascending: false })
   if (error) { console.warn('[signing] getSignatureRequestsForOrder:', error.message); return [] }
@@ -941,12 +944,14 @@ export async function getPendingContractSentByOrder(orderIds) {
   for (let i = 0; i < ids.length; i += 150) {
     const { data, error } = await supabase
       .from('signature_requests')
-      .select('order_id, status, created_at, expires_at')
+      .select('order_id, kind, status, created_at, expires_at')
       .in('order_id', ids.slice(i, i + 150))
       .in('status', ['pending', 'viewed'])
       .order('created_at', { ascending: false })
     if (error) { console.warn('[signing] getPendingContractSentByOrder:', error.message); return map }
     for (const r of (data || [])) {
+      // Permit e-sign links (PB-ESIGN) are not "Contract sent" evidence.
+      if ((r.kind || 'contract') !== 'contract') continue
       if (r.expires_at && new Date(r.expires_at).getTime() < now) continue
       if (!map.has(r.order_id)) map.set(r.order_id, r.created_at)
     }

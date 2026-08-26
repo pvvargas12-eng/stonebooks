@@ -196,11 +196,12 @@ export default function PermitCanvas({
         const fontPx = Math.max(7, b.sizePct * cw)
         const isCheck = b.kind === 'check'
         const isFixed = b.kind === 'fixed'
-        const canType = !templateMode || isFixed
+        const isEsign = b.kind === 'esign'
+        const canType = (!templateMode || isFixed) && !isEsign
         return (
           <div
             key={b.id}
-            className={`pmc-box ${selected ? 'on' : ''} ${templateMode ? 'tpl' : ''} ${isCheck ? 'pmc-check' : ''} ${isCheck && !b.on ? 'off' : ''}`}
+            className={`pmc-box ${selected ? 'on' : ''} ${templateMode ? 'tpl' : ''} ${isCheck ? 'pmc-check' : ''} ${isCheck && !b.on ? 'off' : ''} ${isEsign ? 'pmc-esign' : ''}`}
             style={{
               left: pct(b.x), top: pct(b.y), width: pct(b.w), minHeight: pct(b.h),
               fontSize: fontPx, textAlign: b.align, fontWeight: b.bold ? 600 : 400,
@@ -231,6 +232,8 @@ export default function PermitCanvas({
               <span className="pmc-check-glyph" style={{ fontSize: Math.max(10, Math.min(b.w, b.h * (wrapRef.current?.clientHeight || cw) / cw) * cw * 0.9) }}>
                 {b.mark === 'x' ? '×' : '✓'}
               </span>
+            ) : isEsign ? (
+              <span className="pmc-esign-label">CUSTOMER E-SIGNS HERE</span>
             ) : templateMode && !isFixed ? (
               <span className="pmc-box-key">{labelFor ? labelFor(b) : b.id}</span>
             ) : (
@@ -315,6 +318,9 @@ const localStyles = `
      so I can see exactly how it will look"). */
   .pmc-box-key { font-size: inherit; color: #534AB7; font-weight: 600; letter-spacing: 0.02em; }
   .pmc-box-text { display: block; }
+  .pmc-esign { border: 1.5px dashed #9A7209; background: rgba(154, 114, 9, 0.08); display: flex; align-items: center; justify-content: center; }
+  .pmc-esign.on { border-color: #9A7209; background: rgba(154, 114, 9, 0.16); }
+  .pmc-esign-label { font-size: 9px; color: #9A7209; font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; }
   .pmc-check { display: flex; align-items: center; justify-content: flex-start; cursor: pointer; }
   .pmc-check-glyph { line-height: 1; font-weight: 700; color: #14161a; }
   .pmc-check.off .pmc-check-glyph { opacity: 0.18; }

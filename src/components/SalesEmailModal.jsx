@@ -108,7 +108,10 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
       // The customer's monument layout — current proof first (list is version-desc).
       const l = (proofs || []).find(v => v.is_current && v.layout_image_url)
         || (proofs || []).find(v => v.layout_image_url) || null
-      const s = (reqs || []).find(r => r.displayStatus === 'pending' || r.displayStatus === 'viewed') || null
+      // Contract links only — a live PERMIT e-sign link (PB-ESIGN) must never
+      // be re-sent as the contract.
+      const s = (reqs || []).find(r => (r.kind || 'contract') === 'contract'
+        && (r.displayStatus === 'pending' || r.displayStatus === 'viewed')) || null
       setPermitRow(p); setLayoutRow(l); setActiveSign(s)
       // Fresh sales email defaults its bundle from what's on file; a resumed
       // draft keeps exactly what was checked when it was parked.

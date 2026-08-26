@@ -60,11 +60,15 @@ Deno.serve(async (req) => {
     pdf_base64?: string
     sig_field_rects?: unknown
     customer_email?: string
+    kind?: string
   }
   try { payload = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
 
   const orderId = (payload.order_id || '').trim()
   const pdfBase64 = payload.pdf_base64 || ''
+  // What the link signs: 'contract' (default) or 'permit' (Permit Builder
+  // e-sign — signing-submit skips the contracted flip for those).
+  const kind = payload.kind === 'permit' ? 'permit' : 'contract'
   if (!orderId) return json({ error: 'missing_order_id' }, 400)
   if (!pdfBase64) return json({ error: 'missing_pdf' }, 400)
 
@@ -106,6 +110,7 @@ Deno.serve(async (req) => {
     tenant_id: TENANT_ID,
     order_id: orderId,
     token: signToken,
+    kind,
     status: 'pending',
     expires_at: expiresAt,
     unsigned_pdf_path: unsignedPath,

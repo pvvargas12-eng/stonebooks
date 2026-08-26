@@ -556,6 +556,9 @@ function pageTransform(pageMeta) {
 
 function drawBox(doc, t, box) {
   if (box.hidden) return
+  // E-signature boxes (PB-ESIGN) print NOTHING — the customer's cursive gets
+  // stamped into that exact rect server-side when they sign the emailed link.
+  if (box.kind === 'esign') return
   // Checkmark spots — vector-drawn (WinAnsi fonts have no U+2713 glyph).
   if (box.kind === 'check') {
     if (!box.on) return
@@ -692,4 +695,27 @@ export async function exportPermitPdf({ template, docData, filename = 'permit.pd
   if (returnDoc) return doc
   doc.save(filename)
   return true
+}
+
+// ── E-signature rects (PB-ESIGN) ────────────────────────────────────────────
+// The signing-submit Edge Function stamps the customer's cursive into
+// sig_field_rects.customer_signature — mm, top-left origin, exactly the
+// contract generator's signFields contract, plus a 0-based `page` (permits
+// can carry the signature box on any form page). Geometry mirrors drawBox:
+// mm = pageTransform offset + fraction × transform size. Returns null when the
+// permit has no esign box on a numbered page (the back sheet is synthetic and
+// only exists when a layout rides it — not a signable surface).
+export function permitEsignRects(template, docData) {
+  const pages = template?.pages || []
+  const box = (docData?.extras || []).find(e => e.kind === 'esign' && typeof e.page === 'number' && pages[e.page])
+  if (!box) return null
+  const t = pageTransform(pages[box.page])
+  return {
+    unit: 'mm', origin: 'top-left', pageWidth: LETTER.w, pageHeight: LETTER.h,
+    customer_signature: {
+      page: box.page,
+      x: t.x + box.x * t.w, y: t.y + box.y * t.h,
+      w: box.w * t.w, h: box.h * t.h,
+    },
+  }
 }

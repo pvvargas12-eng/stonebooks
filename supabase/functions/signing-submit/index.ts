@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
   // Re-validate the token.
   const { data: reqRow, error: reqErr } = await admin
     .from('signature_requests')
-    .select('id, order_id, status, expires_at, unsigned_pdf_path, sig_field_rects, customer_email, viewed_at')
+    .select('id, order_id, kind, status, expires_at, unsigned_pdf_path, sig_field_rects, customer_email, viewed_at')
     .eq('token', token)
     .maybeSingle()
   if (reqErr) return json({ error: 'lookup_failed' }, 500)
@@ -112,7 +112,13 @@ Deno.serve(async (req) => {
     // Dancing Script — the SAME cursive the signer saw on the /sign page, embedded
     // (subset) into the output PDF so the stamped signature matches exactly.
     const scriptFont = await pdf.embedFont(bytesFromBase64(DANCING_SCRIPT_BASE64), { subset: true })
-    const page = pdf.getPages()[0]
+    // Contract rects always sit on page 1; permit rects (PB-ESIGN) carry an
+    // optional per-rect `page` (0-based) since the signature box can live on
+    // any form page. Missing/old rects default to page 1.
+    const allPages = pdf.getPages()
+    const pageFor = (r: { page?: number } | null | undefined) =>
+      allPages[Math.min(Math.max(0, r?.page ?? 0), allPages.length - 1)]
+    const page = allPages[0]
     const pageH = page.getHeight()
 
     const rects = reqRow.sig_field_rects || {}
@@ -122,34 +128,51 @@ Deno.serve(async (req) => {
     // Cursive signature — the typed name in Dancing Script, drawn ON the signature
     // line and auto-sized down to fit the box width.
     if (sigRect) {
+      const sigPage = pageFor(sigRect)
+      const sigPageH = sigPage.getHeight()
       const boxX = sigRect.x * MM_TO_PT
       const boxW = sigRect.w * MM_TO_PT
       const boxH = sigRect.h * MM_TO_PT
-      const boxYBottom = pageH - sigRect.y * MM_TO_PT - boxH
+      const boxYBottom = sigPageH - sigRect.y * MM_TO_PT - boxH
       const maxW = boxW - 6
       let size = 22
       while (size > 9 && scriptFont.widthOfTextAtSize(signerName, size) > maxW) size -= 1
-      page.drawText(signerName, { x: boxX + 3, y: boxYBottom + 2, size, font: scriptFont, color: rgb(0.06, 0.08, 0.1) })
+      sigPage.drawText(signerName, { x: boxX + 3, y: boxYBottom + 2, size, font: scriptFont, color: rgb(0.06, 0.08, 0.1) })
+      // Permits: stamp the signing date in small type just under the signature
+      // box (permits have no dedicated date rect — the form's own date lines
+      // are filled by staff; this documents WHEN the e-signature landed).
+      if (reqRow.kind === 'permit' && !dateRect) {
+        const dateStr = new Date(nowMs).toLocaleDateString('en-US', {
+          timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
+        })
+        sigPage.drawText(`Signed electronically ${dateStr}`, {
+          x: boxX + 3, y: Math.max(6, boxYBottom - 8), size: 6.5, font, color: rgb(0.35, 0.38, 0.42),
+        })
+      }
     }
 
     // Date — numeric M/D/YYYY in SHOP time (the builder-formats rule; a 9pm ET
     // signature must not stamp tomorrow's UTC date), drawn in the date box.
     if (dateRect) {
+      const dPage = pageFor(dateRect)
+      const dPageH = dPage.getHeight()
       const dateStr = new Date(nowMs).toLocaleDateString('en-US', {
         timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
       })
       const boxH = dateRect.h * MM_TO_PT
-      const boxYBottom = pageH - dateRect.y * MM_TO_PT - boxH
-      page.drawText(dateStr, { x: dateRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 11, font, color: rgb(0.06, 0.08, 0.1) })
+      const boxYBottom = dPageH - dateRect.y * MM_TO_PT - boxH
+      dPage.drawText(dateStr, { x: dateRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 11, font, color: rgb(0.06, 0.08, 0.1) })
     }
 
     // Printed name — the typed name in plain type on the Printed Name line
     // (older links carry no rect; they simply skip this).
     const pnRect = rects.customer_printed_name
     if (pnRect) {
+      const pPage = pageFor(pnRect)
+      const pPageH = pPage.getHeight()
       const boxH = pnRect.h * MM_TO_PT
-      const boxYBottom = pageH - pnRect.y * MM_TO_PT - boxH
-      page.drawText(signerName, { x: pnRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 10, font, color: rgb(0.06, 0.08, 0.1) })
+      const boxYBottom = pPageH - pnRect.y * MM_TO_PT - boxH
+      pPage.drawText(signerName, { x: pnRect.x * MM_TO_PT + 3, y: boxYBottom + 2, size: 10, font, color: rgb(0.06, 0.08, 0.1) })
     }
 
     // ── Audit certificate page (Letter, matches contract) ──
@@ -161,8 +184,9 @@ Deno.serve(async (req) => {
       cert.drawText(txt, { x: M, y: cy, size, font: opts.bold ? fontBold : font, color: rgb(...(opts.color ?? [0.1, 0.12, 0.14])) })
       cy -= (opts.gap ?? size + 6)
     }
+    const docWord = reqRow.kind === 'permit' ? 'permit' : 'contract'
     line('ELECTRONIC SIGNATURE CERTIFICATE', { size: 15, bold: true, gap: 26 })
-    line('This certificate documents the electronic signing of the attached contract', { size: 9, color: [0.4, 0.45, 0.5] })
+    line(`This certificate documents the electronic signing of the attached ${docWord}`, { size: 9, color: [0.4, 0.45, 0.5] })
     line('under the U.S. ESIGN Act and the Uniform Electronic Transactions Act (UETA).', { size: 9, color: [0.4, 0.45, 0.5], gap: 22 })
 
     const field = (label: string, value: string) => {
@@ -176,7 +200,7 @@ Deno.serve(async (req) => {
     field('Order', reqRow.order_id)
     field('Signer name', signerName)
     field('Signer email', reqRow.customer_email || '—')
-    field('Consent', 'Accepted — "I have reviewed this contract and agree to sign it electronically."')
+    field('Consent', `Accepted — "I have reviewed this ${docWord} and agree to sign it electronically."`)
     field('IP address', signerIp || '—')
     field('Device / browser', userAgent || '—')
     field('Opened (viewed) at', reqRow.viewed_at || '—')
@@ -186,7 +210,7 @@ Deno.serve(async (req) => {
     cy -= 8
     const disclaimer =
       'The signer affirmed their intent to sign and to conduct this transaction electronically. ' +
-      'The SHA-256 hash above is computed over the original unsigned contract bytes and binds this ' +
+      `The SHA-256 hash above is computed over the original unsigned ${docWord} bytes and binds this ` +
       'certificate to that exact document. Shevchenko Monuments, LLC retains this record.'
     wrapText(disclaimer, 92).forEach((dl2) => {
       cert.drawText(dl2, { x: M, y: cy, size: 8.5, font, color: rgb(0.4, 0.45, 0.5) })
@@ -216,17 +240,33 @@ Deno.serve(async (req) => {
   }).eq('id', reqRow.id)
   if (updErr) return json({ error: 'update_failed', detail: updErr.message }, 500)
 
-  // Flip the order to contracted — mirrors the in-app signing status change.
-  // (Job creation stays on the existing backfill path; remote signing does not
-  // run the client-side createJobFromOrder. See R5 / backfill follow-up.)
-  await admin.from('orders').update({
-    status: 'contracted',
-    signed_at: signedAtIso,
-    pricing_locked_at: signedAtIso,
-    // The typed name IS the printed name — the same field the iPad on-glass
-    // flow writes, so regenerated contracts stamp it on the Printed Name line.
-    customer_printed_name: signerName,
-  }).eq('id', reqRow.order_id)
+  if (reqRow.kind === 'permit') {
+    // PERMIT signings (PB-ESIGN): no order-status side effects at all. The
+    // signed permit ALSO lands in the order's public attachments folder so
+    // listOrderAttachments (OrderDetail, Sales email picker, Permit Builder
+    // rail) surfaces it like any staff upload. Best-effort — the signing
+    // itself already succeeded.
+    try {
+      const dateTag = new Date(nowMs).toLocaleDateString('en-US', {
+        timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
+      }).replace(/\//g, '-')
+      const attPath = `attachments/${reqRow.order_id}/${reqRow.id}_Permit_SIGNED_${dateTag}.pdf`
+      await admin.storage.from('orders-attachments-public')
+        .upload(attPath, signedBytes, { contentType: 'application/pdf', upsert: true })
+    } catch { /* attachments copy is a convenience */ }
+  } else {
+    // Flip the order to contracted — mirrors the in-app signing status change.
+    // (Job creation stays on the existing backfill path; remote signing does not
+    // run the client-side createJobFromOrder. See R5 / backfill follow-up.)
+    await admin.from('orders').update({
+      status: 'contracted',
+      signed_at: signedAtIso,
+      pricing_locked_at: signedAtIso,
+      // The typed name IS the printed name — the same field the iPad on-glass
+      // flow writes, so regenerated contracts stamp it on the Printed Name line.
+      customer_printed_name: signerName,
+    }).eq('id', reqRow.order_id)
+  }
 
   // Short-lived signed URL so the customer can download immediately.
   const { data: signedUrlData } = await admin.storage.from('signatures').createSignedUrl(signedPath, 600)
