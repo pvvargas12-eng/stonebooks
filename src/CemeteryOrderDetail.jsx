@@ -429,7 +429,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
             <div className="cod-ppo-addr">329 S Florida Grove Rd · Perth Amboy, NJ 08861<br />732-442-1286 · shevcoteam@gmail.com</div>
           </div>
           <div className="cod-ppo-poblock">
-            <div className="cod-ppo-potitle">Purchase Order</div>
+            <div className="cod-ppo-potitle">Invoice</div>
             <div className="cod-ppo-ponum sb-mono">{order.order_number || 'DRAFT'}</div>
             <div className="cod-ppo-podate">{fmtDate(order.submitted_at || order.created_at)}</div>
           </div>
@@ -519,12 +519,13 @@ const styles = `
     .sb-page > *:not(.cod-print){ display:none !important; }
     .cod{ padding:0; }
     .cod-print{ display:block; color:#111; font-size:12.5px; }
-    .cod-ppo-lh{ display:flex; justify-content:space-between; border-bottom:2px solid #a8761f; padding-bottom:16px; }
+    /* Printed doc is BLACK AND WHITE (Paul 2026-08-27) — no gold on paper. */
+    .cod-ppo-lh{ display:flex; justify-content:space-between; border-bottom:2px solid #111; padding-bottom:16px; }
     .cod-ppo-name{ font-size:21px; font-weight:700; letter-spacing:.03em; }
-    .cod-ppo-estd{ font-size:10px; text-transform:uppercase; letter-spacing:.14em; color:#a8761f; margin-top:3px; font-weight:600; }
+    .cod-ppo-estd{ font-size:10px; text-transform:uppercase; letter-spacing:.14em; color:#555; margin-top:3px; font-weight:600; }
     .cod-ppo-addr{ font-size:11px; color:#555; margin-top:8px; line-height:1.5; }
     .cod-ppo-poblock{ text-align:right; }
-    .cod-ppo-potitle{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#888; font-weight:600; }
+    .cod-ppo-potitle{ font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:#111; font-weight:800; }
     .cod-ppo-ponum{ font-size:22px; font-weight:700; }
     .cod-ppo-podate{ font-size:11px; color:#555; margin-top:6px; }
     .cod-ppo-billto{ margin:18px 0 14px; font-size:13px; }

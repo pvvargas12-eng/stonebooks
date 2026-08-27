@@ -682,7 +682,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
             <div className="co-ppo-addr">{COMPANY.addr}<br />{COMPANY.phone} · {COMPANY.email}</div>
           </div>
           <div className="co-ppo-poblock">
-            <div className="co-ppo-potitle">Purchase Order</div>
+            <div className="co-ppo-potitle">Invoice</div>
             <div className="co-ppo-ponum mono">CO-{new Date().getFullYear()}-NNN</div>
             <div className="co-ppo-podate">Issued: {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
           </div>
@@ -836,12 +836,13 @@ const styles = `
     .co-root > *:not(.co-print-po){ display:none !important; }
     .co-root{ position:static; padding:0; background:#fff; }
     .co-print-po{ display:block; color:#111; font-size:12.5px; }
-    .co-ppo-lh{ display:flex; justify-content:space-between; border-bottom:2px solid var(--co-accent); padding-bottom:16px; }
+    /* Printed doc is BLACK AND WHITE (Paul 2026-08-27) — no gold on paper. */
+    .co-ppo-lh{ display:flex; justify-content:space-between; border-bottom:2px solid #111; padding-bottom:16px; }
     .co-ppo-name{ font-size:21px; font-weight:700; letter-spacing:.03em; }
-    .co-ppo-estd{ font-size:10px; text-transform:uppercase; letter-spacing:.14em; color:var(--co-accent); margin-top:3px; font-weight:600; }
+    .co-ppo-estd{ font-size:10px; text-transform:uppercase; letter-spacing:.14em; color:#555; margin-top:3px; font-weight:600; }
     .co-ppo-addr{ font-size:11px; color:#555; margin-top:8px; line-height:1.5; }
     .co-ppo-poblock{ text-align:right; }
-    .co-ppo-potitle{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#888; font-weight:600; }
+    .co-ppo-potitle{ font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:#111; font-weight:800; }
     .co-ppo-ponum{ font-size:22px; font-weight:700; margin-top:2px; }
     .co-ppo-podate{ font-size:11px; color:#555; margin-top:6px; }
     .co-ppo-billto{ margin:18px 0 14px; font-size:13px; }
