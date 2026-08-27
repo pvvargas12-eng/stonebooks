@@ -24,12 +24,15 @@ export function loadSigningRequest(token) {
   return invoke('signing-load', { token })
 }
 
-// Submit the signature. Type-name-to-cursive: the server stamps the typed name
-// in a script font (no image is sent).
-export function submitSignature({ token, signerName, consent }) {
+// Submit the signature. Contracts: type-name-to-cursive — the server stamps
+// the typed name in a script font. Permits (PB-ESIGN): the customer DRAWS the
+// signature; `signaturePng` is the transparent PNG of their strokes (base64,
+// no data: prefix) and the server stamps it as an image.
+export function submitSignature({ token, signerName, consent, signaturePng }) {
   return invoke('signing-submit', {
     token,
     signer_name: signerName,
     consent: !!consent,
+    ...(signaturePng ? { signature_png: signaturePng } : {}),
   })
 }

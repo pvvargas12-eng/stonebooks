@@ -16,8 +16,92 @@
 // The ESIGN/UETA legal backbone is the consent checkbox + the audit trail the
 // signing-submit function records (IP, user agent, timestamps, name, hash).
 // =============================================================================
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { loadSigningRequest, submitSignature } from './lib/signing'
+
+// ── Draw-your-signature pad (permits) ───────────────────────────────────────
+// Finger/mouse strokes on a canvas, exported as a transparent PNG the server
+// stamps into the permit's e-signature box. Self-contained on purpose — this
+// page never imports the staff bundles.
+function DrawPad({ onChange, exportRef }) {
+  const canvasRef = useRef(null)
+  const drawingRef = useRef(false)
+  const hasInkRef = useRef(false)
+
+  useEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    const w = c.clientWidth, h = 170
+    c.width = w * dpr; c.height = h * dpr
+    const ctx = c.getContext('2d')
+    ctx.scale(dpr, dpr)
+    ctx.lineWidth = 2.4
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = '#101820'
+    // Parent pulls the drawing at submit time: base64 PNG of the strokes
+    // (no data: prefix), or null when the pad is blank.
+    if (exportRef) {
+      exportRef.current = () => {
+        if (!canvasRef.current || !hasInkRef.current) return null
+        return canvasRef.current.toDataURL('image/png').split(',')[1] || null
+      }
+    }
+  }, [exportRef])
+
+  const pos = (e) => {
+    const r = canvasRef.current.getBoundingClientRect()
+    return { x: e.clientX - r.left, y: e.clientY - r.top }
+  }
+  const down = (e) => {
+    e.preventDefault()
+    canvasRef.current.setPointerCapture?.(e.pointerId)
+    drawingRef.current = true
+    const ctx = canvasRef.current.getContext('2d')
+    const p = pos(e)
+    ctx.beginPath()
+    ctx.moveTo(p.x, p.y)
+    // A dot counts as ink — some people sign with short taps.
+    ctx.lineTo(p.x + 0.1, p.y + 0.1)
+    ctx.stroke()
+    if (!hasInkRef.current) { hasInkRef.current = true; onChange?.(true) }
+  }
+  const move = (e) => {
+    if (!drawingRef.current) return
+    const ctx = canvasRef.current.getContext('2d')
+    const p = pos(e)
+    ctx.lineTo(p.x, p.y)
+    ctx.stroke()
+  }
+  const up = () => { drawingRef.current = false }
+  const clear = () => {
+    const c = canvasRef.current
+    c.getContext('2d').clearRect(0, 0, c.width, c.height)
+    hasInkRef.current = false
+    onChange?.(false)
+  }
+
+  return (
+    <div>
+      <div style={{ position: 'relative', border: '1.5px dashed #9aa6b1', borderRadius: 10, background: '#fbfcfd' }}>
+        <canvas
+          ref={canvasRef}
+          style={{ width: '100%', height: 170, display: 'block', touchAction: 'none', cursor: 'crosshair' }}
+          onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerLeave={up}
+        />
+        <div style={{ position: 'absolute', left: 18, right: 18, bottom: 34, borderBottom: '1px solid #2b333b', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', left: 18, bottom: 14, fontSize: 11, color: '#8a929b', letterSpacing: 0.4, pointerEvents: 'none' }}>
+          SIGN ABOVE THE LINE
+        </div>
+      </div>
+      <button type="button" onClick={clear}
+        style={{ marginTop: 8, background: 'none', border: '1px solid #cfd6de', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer', color: '#3a4753' }}>
+        Clear and start over
+      </button>
+    </div>
+  )
+}
 
 const BRONZE = '#9a6a3a'
 const INK = '#0F1419'
@@ -54,8 +138,10 @@ export default function SignPage({ token }) {
   const [data, setData] = useState(null)          // loaded request
   const [signerName, setSignerName] = useState('')
   const [consent, setConsent] = useState(false)
-  const [generated, setGenerated] = useState(false)  // cursive signature generated
+  const [generated, setGenerated] = useState(false)  // cursive signature generated (contracts)
   const [sigDate, setSigDate] = useState('')         // display date stamped with it
+  const [drawn, setDrawn] = useState(false)          // pad has ink (permits)
+  const padExportRef = useRef(null)                  // DrawPad → base64 PNG
   const [submitting, setSubmitting] = useState(false)
   const [submitErr, setSubmitErr] = useState(null)
   const [signedUrl, setSignedUrl] = useState(null)
@@ -80,8 +166,13 @@ export default function SignPage({ token }) {
   const onNameChange = (v) => { setSignerName(v); if (generated) setGenerated(false) }
   const onConsentChange = (v) => { setConsent(v); if (!v && generated) setGenerated(false) }
 
+  // Permits are DRAWN (Paul 2026-08-26: "i want them to draw the signature and
+  // hit send"); contracts keep the type-name-to-cursive flow.
+  const isPermit = data?.doc_kind === 'permit'
   const canGenerate = !!(signerName.trim() && consent && !generated)
-  const canSubmit = !!(generated && signerName.trim() && consent && !submitting)
+  const canSubmit = isPermit
+    ? !!(drawn && signerName.trim() && consent && !submitting)
+    : !!(generated && signerName.trim() && consent && !submitting)
 
   const handleGenerate = () => {
     if (!canGenerate) return
@@ -95,8 +186,11 @@ export default function SignPage({ token }) {
     if (!canSubmit) return
     setSubmitting(true); setSubmitErr(null)
     try {
-      // No image — the server stamps the typed name in the script font.
-      const res = await submitSignature({ token, signerName: signerName.trim(), consent: true })
+      // Permits send the drawn strokes as a PNG; contracts send no image —
+      // the server stamps the typed name in the script font.
+      const signaturePng = isPermit ? padExportRef.current?.() : null
+      if (isPermit && !signaturePng) { setSubmitErr('Please draw your signature above the line first.'); setSubmitting(false); return }
+      const res = await submitSignature({ token, signerName: signerName.trim(), consent: true, signaturePng })
       if (!res.ok) { setSubmitErr(res.error || 'Could not record your signature. Please try again.'); return }
       setSignedUrl(res.signed_url || null)
     } catch (e) {
@@ -185,26 +279,37 @@ export default function SignPage({ token }) {
             signature is legally binding, the same as a handwritten signature.</span>
         </label>
 
-        {/* Generate */}
-        <button
-          type="button"
-          onClick={handleGenerate}
-          disabled={!canGenerate}
-          style={{
-            ...btnPrimary(canGenerate), marginTop: 18, width: 'auto', padding: '11px 20px',
-            background: canGenerate ? BRONZE : '#c4ccd4',
-          }}
-        >
-          {generated ? 'Signature generated ✓' : 'Generate e-signature'}
-        </button>
-        {!generated && (
+        {/* Permits: draw the signature. Contracts: generate the cursive. */}
+        {isPermit && (
+          <div style={{ marginTop: 20 }}>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+              Draw your signature — use your finger or mouse
+            </label>
+            <DrawPad onChange={setDrawn} exportRef={padExportRef} />
+          </div>
+        )}
+
+        {!isPermit && (
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            style={{
+              ...btnPrimary(canGenerate), marginTop: 18, width: 'auto', padding: '11px 20px',
+              background: canGenerate ? BRONZE : '#c4ccd4',
+            }}
+          >
+            {generated ? 'Signature generated ✓' : 'Generate e-signature'}
+          </button>
+        )}
+        {!isPermit && !generated && (
           <div style={{ color: '#6b7682', fontSize: 13, marginTop: 8 }}>
             Type your name and check the box, then generate your signature.
           </div>
         )}
 
         {/* Generated cursive signature + date */}
-        {generated && (
+        {!isPermit && generated && (
           <div style={{ marginTop: 18, border: '1px solid #d7dee6', borderRadius: 10, background: '#fbfcfd', padding: '18px 20px', display: 'flex', gap: 24, alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 280px', minWidth: 220 }}>
               <div style={{ fontFamily: SCRIPT_FONT, fontSize: 40, lineHeight: 1.1, color: INK, paddingBottom: 4, borderBottom: '1px solid #2b333b' }}>
@@ -225,9 +330,9 @@ export default function SignPage({ token }) {
 
         {/* Submit */}
         <button type="button" onClick={handleSubmit} disabled={!canSubmit} style={{ ...btnPrimary(canSubmit), marginTop: 18 }}>
-          {submitting ? 'Submitting…' : 'Sign & submit'}
+          {submitting ? 'Submitting…' : isPermit ? 'Send my signature' : 'Sign & submit'}
         </button>
-        {generated && !submitting && (
+        {(isPermit ? drawn : generated) && !submitting && (
           <div style={{ color: '#6b7682', fontSize: 13, marginTop: 8, textAlign: 'center' }}>
             Submitting applies this signature to your {docWord}.
           </div>

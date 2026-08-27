@@ -32,18 +32,23 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'server_not_configured' })
   }
 
-  // Verify the caller is authenticated STAFF (not a portal user).
+  // Verify the caller is authenticated STAFF (not a portal user). Our own
+  // server-side callers (the signing-submit Edge Function's signed-permit
+  // notification, PB-ESIGN) authenticate with the SERVICE ROLE KEY itself —
+  // both sides already hold that secret, no extra config.
   const admin = (SUPABASE_URL && SERVICE_ROLE)
     ? createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
     : null
   if (admin) {
     const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '')
     if (!token) return res.status(401).json({ error: 'not_authenticated' })
-    const { data: caller, error: callerErr } = await admin.auth.getUser(token)
-    if (callerErr || !caller?.user) return res.status(401).json({ error: 'not_authenticated' })
-    const { data: partner } = await admin
-      .from('partner_users').select('id').eq('auth_user_id', caller.user.id).maybeSingle()
-    if (partner) return res.status(403).json({ error: 'forbidden' })
+    if (token !== SERVICE_ROLE) {
+      const { data: caller, error: callerErr } = await admin.auth.getUser(token)
+      if (callerErr || !caller?.user) return res.status(401).json({ error: 'not_authenticated' })
+      const { data: partner } = await admin
+        .from('partner_users').select('id').eq('auth_user_id', caller.user.id).maybeSingle()
+      if (partner) return res.status(403).json({ error: 'forbidden' })
+    }
   }
 
   let body = req.body

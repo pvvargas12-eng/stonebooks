@@ -65,13 +65,17 @@ Deno.serve(async (req) => {
   const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
   if (!SUPABASE_URL || !SERVICE_ROLE) return json({ error: 'server_not_configured' }, 500)
 
-  let body: { token?: string; signer_name?: string; consent?: boolean }
+  let body: { token?: string; signer_name?: string; consent?: boolean; signature_png?: string }
   try { body = await req.json() } catch { return json({ error: 'invalid_json' }, 400) }
   const token = (body.token || '').trim()
   const signerName = (body.signer_name || '').trim()
+  // Optional hand-DRAWN signature (PB-ESIGN permits): a transparent PNG of the
+  // customer's strokes, stamped as an image instead of the cursive text.
+  const signaturePng = (body.signature_png || '').trim() || null
   if (!token) return json({ error: 'missing_token' }, 400)
   if (body.consent !== true) return json({ error: 'consent_required' }, 400)
   if (!signerName) return json({ error: 'missing_signer_name' }, 400)
+  if (signaturePng && signaturePng.length > 1_400_000) return json({ error: 'signature_too_large' }, 400)
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
 
@@ -125,8 +129,13 @@ Deno.serve(async (req) => {
     const sigRect = rects.customer_signature
     const dateRect = rects.customer_date
 
-    // Cursive signature — the typed name in Dancing Script, drawn ON the signature
-    // line and auto-sized down to fit the box width.
+    // Hand-drawn signature image (when the signer drew one) — else the typed
+    // name in Dancing Script, drawn ON the signature line and auto-sized down
+    // to fit the box width.
+    let drawnImg: Awaited<ReturnType<typeof pdf.embedPng>> | null = null
+    if (signaturePng) {
+      try { drawnImg = await pdf.embedPng(bytesFromBase64(signaturePng)) } catch { drawnImg = null }
+    }
     if (sigRect) {
       const sigPage = pageFor(sigRect)
       const sigPageH = sigPage.getHeight()
@@ -134,10 +143,18 @@ Deno.serve(async (req) => {
       const boxW = sigRect.w * MM_TO_PT
       const boxH = sigRect.h * MM_TO_PT
       const boxYBottom = sigPageH - sigRect.y * MM_TO_PT - boxH
-      const maxW = boxW - 6
-      let size = 22
-      while (size > 9 && scriptFont.widthOfTextAtSize(signerName, size) > maxW) size -= 1
-      sigPage.drawText(signerName, { x: boxX + 3, y: boxYBottom + 2, size, font: scriptFont, color: rgb(0.06, 0.08, 0.1) })
+      if (drawnImg) {
+        // Contain-fit the drawing over the line, bottom-anchored; a signature
+        // may ride a little taller than the box the way real ink does.
+        const scale = Math.min((boxW - 4) / drawnImg.width, (boxH * 1.6) / drawnImg.height)
+        const w = drawnImg.width * scale, h = drawnImg.height * scale
+        sigPage.drawImage(drawnImg, { x: boxX + 2, y: boxYBottom + 1, width: w, height: h })
+      } else {
+        const maxW = boxW - 6
+        let size = 22
+        while (size > 9 && scriptFont.widthOfTextAtSize(signerName, size) > maxW) size -= 1
+        sigPage.drawText(signerName, { x: boxX + 3, y: boxYBottom + 2, size, font: scriptFont, color: rgb(0.06, 0.08, 0.1) })
+      }
       // Permits: stamp the signing date in small type just under the signature
       // box (permits have no dedicated date rect — the form's own date lines
       // are filled by staff; this documents WHEN the e-signature landed).
@@ -199,6 +216,7 @@ Deno.serve(async (req) => {
     }
     field('Order', reqRow.order_id)
     field('Signer name', signerName)
+    field('Signature method', drawnImg ? 'Hand-drawn on screen' : 'Typed name rendered in cursive')
     field('Signer email', reqRow.customer_email || '—')
     field('Consent', `Accepted — "I have reviewed this ${docWord} and agree to sign it electronically."`)
     field('IP address', signerIp || '—')
@@ -246,14 +264,51 @@ Deno.serve(async (req) => {
     // listOrderAttachments (OrderDetail, Sales email picker, Permit Builder
     // rail) surfaces it like any staff upload. Best-effort — the signing
     // itself already succeeded.
+    const dateStamp = new Date(nowMs).toLocaleDateString('en-US', {
+      timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
+    })
     try {
-      const dateTag = new Date(nowMs).toLocaleDateString('en-US', {
-        timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
-      }).replace(/\//g, '-')
-      const attPath = `attachments/${reqRow.order_id}/${reqRow.id}_Permit_SIGNED_${dateTag}.pdf`
+      const attPath = `attachments/${reqRow.order_id}/${reqRow.id}_Permit_SIGNED_${dateStamp.replace(/\//g, '-')}.pdf`
       await admin.storage.from('orders-attachments-public')
         .upload(attPath, signedBytes, { contentType: 'application/pdf', upsert: true })
     } catch { /* attachments copy is a convenience */ }
+
+    // Hard copy to the shop inbox so the admin team sees the signed permit
+    // land (Paul 2026-08-26). Server-to-server call into our own email relay
+    // authenticated with the shared service-role key. Best-effort.
+    try {
+      // The customer signs on the app's own origin, so the Origin header is
+      // the same fallback signing-create uses for building the link.
+      const base = (Deno.env.get('SIGN_BASE_URL') || req.headers.get('Origin') || '').replace(/\/+$/, '')
+      if (base) {
+        const { data: ord } = await admin.from('orders')
+          .select('order_number, primary_lastname').eq('id', reqRow.order_id).maybeSingle()
+        const fam = ord?.primary_lastname || ''
+        const num = ord?.order_number || ''
+        const label = [fam, num ? `(${num})` : ''].filter(Boolean).join(' ')
+        let b64 = ''
+        for (let i = 0; i < signedBytes.length; i += 0x8000) {
+          b64 += String.fromCharCode.apply(null, Array.from(signedBytes.subarray(i, i + 0x8000)))
+        }
+        b64 = btoa(b64)
+        const text = `${signerName} signed the cemetery permit electronically on ${dateStamp}.\n\n`
+          + `The signed copy is attached, and it's also saved on the order's attachments in Stonebooks${label ? ` (${label})` : ''}.`
+        await fetch(`${base}/api/email/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+          body: JSON.stringify({
+            to: 'shevcoteam@gmail.com',
+            subject: `SIGNED permit — ${label || 'order'} · signed by ${signerName}`,
+            text,
+            attachments: [{
+              filename: `Permit SIGNED - ${(fam || 'permit').replace(/[^\w -]+/g, '')} ${dateStamp.replace(/\//g, '-')}.pdf`,
+              contentBase64: b64, contentType: 'application/pdf',
+            }],
+            order_id: reqRow.order_id,
+          }),
+        })
+      }
+    } catch { /* the notification is a convenience — signing already stuck */ }
   } else {
     // Flip the order to contracted — mirrors the in-app signing status change.
     // (Job creation stays on the existing backfill path; remote signing does not
