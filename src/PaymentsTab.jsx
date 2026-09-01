@@ -16,7 +16,7 @@
 // Archived orders are excluded from every figure (query-level + status filters).
 // =============================================================================
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { supabase } from './lib/supabase'
 import {
   fetchAllPaged, recordOrderPayment, recordOutgoingPayment, listOutgoingPayments,
@@ -229,9 +229,12 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const loadOutgoing = useCallback(async () => setOutgoing(await listOutgoingPayments() || []), [])
   const loadBills = useCallback(async () => setBills(await listRecurringBills() || []), [])
   // Sweep Chase Zelle alerts into the claim ledger, then list — claim-before-
-  // create makes overlapping desks safe (websiteLeads pattern).
+  // create makes overlapping desks safe (websiteLeads pattern). The tried-set
+  // stops a failed auto-match write from retrying forever.
+  const zelleAutoTried = useRef(new Set())
   const loadZelle = useCallback(async () => {
     try { await sweepZelleAlerts() } catch { /* sweep is best-effort */ }
+    zelleAutoTried.current = new Set()   // manual refresh re-runs auto-matching
     setZelleRows(await listZelleAlerts())
   }, [])
 
@@ -248,6 +251,26 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
     })()
     return () => { cancelled = true }
   }, [])
+
+  // Auto-mark alerts whose payment is already logged (see
+  // computeZelleAutoMatches). Attempted ids are remembered so a failed write
+  // can't retry forever; a clean pass re-lists and the effect quiets down.
+  useEffect(() => {
+    if (!orders || !zelleRows) return
+    const fresh = zelleRows.filter(z => (z.status === 'new' || z.status === 'claimed') && !zelleAutoTried.current.has(z.id))
+    if (!fresh.length) return
+    let cancelled = false
+    ;(async () => {
+      const matches = computeZelleAutoMatches(fresh, orders)
+      for (const z of fresh) zelleAutoTried.current.add(z.id)
+      if (!matches.length) return
+      for (const m of matches) {
+        await markZelleMatched(m.alertId, { orderId: m.orderId, paymentId: m.paymentId, by: 'auto — already logged' }).catch(() => {})
+      }
+      if (!cancelled) setZelleRows(await listZelleAlerts())
+    })()
+    return () => { cancelled = true }
+  }, [orders, zelleRows])
 
   // ── Derivations ────────────────────────────────────────────────────────────
   const incomingRows = useMemo(() => {
@@ -741,6 +764,47 @@ const zAmt = (z) => (z.amount != null ? fmtUSD(Number(z.amount)) : '—')
 const zWho = (z) => properName(z.sender_name || '') || '—'
 const zDate = (z) => z.sent_date ? fmtDate(z.sent_date) : (z.received_at ? fmtDate(String(z.received_at).slice(0, 10)) : '—')
 
+// Auto-reconcile: an alert whose payment is ALREADY on an order must not sit
+// in the worklist (Paul 2026-09-01: "if they are already logged i do not want
+// them showing up... this is just to catch things ive missed"). Two proofs,
+// strongest first: (1) a logged payment whose reference carries the Chase
+// transaction number; (2) exactly ONE logged Zelle payment with the same
+// amount within 3 days of the alert — two candidates is ambiguity, and
+// ambiguity stays on the list for Paul. Each payment absorbs one alert.
+const _digits = (s) => String(s || '').replace(/\D/g, '')
+const _dayMs = 86400000
+function computeZelleAutoMatches(alerts, orders) {
+  const pays = orders.flatMap(paymentsOf)   // locked, non-voided incoming rows
+  const byRef = new Map()
+  for (const p of pays) {
+    const r = _digits(p.ref)
+    if (r.length >= 5 && !byRef.has(r)) byRef.set(r, p)
+  }
+  const used = new Set()
+  const out = []
+  for (const z of alerts) {
+    const txn = _digits(z.txn_number)
+    let hit = null
+    if (txn && byRef.has(txn) && !used.has(byRef.get(txn).key)) {
+      hit = byRef.get(txn)
+    } else if (z.amount != null && z.sent_date) {
+      const zMs = Date.parse(`${z.sent_date}T12:00:00`)
+      const cands = pays.filter(p => {
+        if (used.has(p.key) || p.method !== 'zelle') return false
+        if (Math.abs((Number(p.amount) || 0) - Number(z.amount)) > 0.005) return false
+        const pMs = Date.parse(`${String(p.dateISO || '').slice(0, 10)}T12:00:00`)
+        return Number.isFinite(pMs) && Number.isFinite(zMs) && Math.abs(pMs - zMs) <= 3 * _dayMs
+      })
+      if (cands.length === 1) hit = cands[0]
+    }
+    if (hit) {
+      used.add(hit.key)
+      out.push({ alertId: z.id, orderId: hit.orderId, paymentId: hit.key.slice(hit.key.indexOf(':') + 1) })
+    }
+  }
+  return out
+}
+
 function ZelleReconcileView({ loading, rows, onRefresh, onOpenOrder, onAttach, onDismiss, onRestore, onSendReceipt }) {
   const [showDismissed, setShowDismissed] = useState(false)
   const fresh = rows.filter(z => z.status === 'new' || z.status === 'claimed')
@@ -790,7 +854,9 @@ function ZelleReconcileView({ loading, rows, onRefresh, onOpenOrder, onAttach, o
               <span className="num sb-pay-amt">{zAmt(z)}</span>
               <span>{z.receipt_sent_at
                 ? <span className="sb-pay-pill sb-pay-pill-paid">RECEIPT SENT</span>
-                : <span className="sb-pay-pill sb-pay-pill-due">NO RECEIPT SENT</span>}</span>
+                : String(z.matched_by || '').startsWith('auto')
+                  ? <span className="sb-pay-tag">ALREADY LOGGED</span>
+                  : <span className="sb-pay-pill sb-pay-pill-due">NO RECEIPT SENT</span>}</span>
               <button type="button" className="sb-pay-receiptbtn" onClick={() => onSendReceipt(z)}>
                 {z.receipt_sent_at ? 'Resend receipt' : 'Send receipt'}
               </button>
