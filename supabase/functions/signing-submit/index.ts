@@ -321,6 +321,19 @@ Deno.serve(async (req) => {
       // flow writes, so regenerated contracts stamp it on the Printed Name line.
       customer_printed_name: signerName,
     }).eq('id', reqRow.order_id)
+
+    // The signed contract ALSO lands in the order's public attachments folder
+    // so listOrderAttachments (OrderDetail, phone OrderFilesCard, Sales email
+    // picker) surfaces it like the iPad flow's saved copy — mirrors the permit
+    // copy above. Best-effort; the signing itself already succeeded.
+    const dateStamp = new Date(nowMs).toLocaleDateString('en-US', {
+      timeZone: 'America/New_York', year: 'numeric', month: 'numeric', day: 'numeric',
+    })
+    try {
+      const attPath = `attachments/${reqRow.order_id}/${reqRow.id}_Contract_SIGNED_${dateStamp.replace(/\//g, '-')}.pdf`
+      await admin.storage.from('orders-attachments-public')
+        .upload(attPath, signedBytes, { contentType: 'application/pdf', upsert: true })
+    } catch { /* attachments copy is a convenience */ }
   }
 
   // Short-lived signed URL so the customer can download immediately.

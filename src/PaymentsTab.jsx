@@ -23,12 +23,17 @@ import {
   listRecurringBills, createRecurringBill, OUTGOING_CATEGORIES,
   fmtUSD, fmtDate, customerName, getCurrentStaffName, properName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue, SOLD_STATUSES,
-  missingCheckRef,
+  missingCheckRef, logOrderActivity, sendShopEmail,
   updateOrderPayment, voidOrderPayment, updateOutgoingPayment, deleteOutgoingPayment,
 } from './lib/stonebooksData'
-import { ReceiptActions, rowToOrder, SALES_REPS } from './SalesMode'
+import { ReceiptActions, rowToOrder, generateReceiptPDF, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
+import ConfirmSend from './components/ConfirmSend'
 import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
+import {
+  sweepZelleAlerts, listZelleAlerts, markZelleMatched,
+  dismissZelleAlert, restoreZelleAlert, stampZelleReceiptSent,
+} from './lib/zelleReconcile'
 
 // Customer-payment methods + method-specific reference label.
 const IN_METHODS = [
@@ -62,6 +67,7 @@ const VIEWS = [
   { code: 'incoming',  label: 'Incoming' },
   { code: 'outgoing',  label: 'Outgoing' },
   { code: 'estimates', label: 'Estimates' },
+  { code: 'zelle',     label: 'Zelle reconcile' },
 ]
 
 // Order display name: stone/family name first, customer record second.
@@ -112,7 +118,7 @@ const ORDER_SELECT =
   'payments, primary_lastname, deceased, ' +
   'deposit_amount, deposit_method, deposit_ref, deposit_received_at, ' +
   'balance_amount, balance_method, balance_ref, balance_received_at, ' +
-  ORDER_PRICING_COLUMNS + ', customer:customers(first_name, last_name, email)'
+  ORDER_PRICING_COLUMNS + ', customer:customers(id, first_name, last_name, email)'
 
 export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [view, setView] = useState('incoming')
@@ -125,6 +131,9 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [addBill, setAddBill] = useState(false)
   const [payBill, setPayBill] = useState(null)   // a bill instance pending "Update & pay"
   const [preview, setPreview] = useState(null)   // { order, payment } → receipt preview modal
+  const [zelleRows, setZelleRows] = useState(null)   // zelle_alerts ledger
+  const [zelleAttach, setZelleAttach] = useState(null)   // alert row → attach modal
+  const [zelleReceipt, setZelleReceipt] = useState(null) // matched alert row → receipt email modal
 
   // ── Edit / remove money records (Paul 2026-08-04: "edit payments both
   // incoming and outgoing, remove or delete, change the date, the amount…
@@ -219,6 +228,12 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const loadOrders = useCallback(async () => { try { setOrders(await fetchAllPaged(ordersQuery) || []) } catch { setOrders([]) } }, [])
   const loadOutgoing = useCallback(async () => setOutgoing(await listOutgoingPayments() || []), [])
   const loadBills = useCallback(async () => setBills(await listRecurringBills() || []), [])
+  // Sweep Chase Zelle alerts into the claim ledger, then list — claim-before-
+  // create makes overlapping desks safe (websiteLeads pattern).
+  const loadZelle = useCallback(async () => {
+    try { await sweepZelleAlerts() } catch { /* sweep is best-effort */ }
+    setZelleRows(await listZelleAlerts())
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -226,6 +241,11 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
     fetchAllPaged(ordersQuery).then(r => { if (!cancelled) setOrders(r || []) }).catch(() => { if (!cancelled) setOrders([]) })
     listOutgoingPayments().then(r => { if (!cancelled) setOutgoing(r || []) })
     listRecurringBills().then(r => { if (!cancelled) setBills(r || []) })
+    ;(async () => {
+      try { await sweepZelleAlerts() } catch { /* best-effort */ }
+      const rows = await listZelleAlerts()
+      if (!cancelled) setZelleRows(rows)
+    })()
     return () => { cancelled = true }
   }, [])
 
@@ -298,14 +318,17 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
         <SummaryCard label="Paid out" value={paidOutThisMonth} sub="This month · outgoing" tone="red" />
       </div>
 
-      {/* View toggle */}
+      {/* View toggle — Zelle wears a red count of unmatched alerts. */}
       <div className="sb-pay-views" role="tablist" aria-label="Payments view">
-        {VIEWS.map(v => (
-          <button key={v.code} type="button" role="tab" aria-selected={view === v.code}
-            className={`sb-pay-view ${view === v.code ? 'on' : ''}`} onClick={() => setView(v.code)}>
-            {v.label}
-          </button>
-        ))}
+        {VIEWS.map(v => {
+          const zelleNew = v.code === 'zelle' ? (zelleRows || []).filter(z => z.status === 'new' || z.status === 'claimed').length : 0
+          return (
+            <button key={v.code} type="button" role="tab" aria-selected={view === v.code}
+              className={`sb-pay-view ${view === v.code ? 'on' : ''}`} onClick={() => setView(v.code)}>
+              {v.label}{zelleNew > 0 && <span className="sb-pay-viewbadge">{zelleNew}</span>}
+            </button>
+          )
+        })}
       </div>
 
       {view === 'incoming' && (
@@ -328,6 +351,16 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       )}
       {view === 'estimates' && (
         <EstimatesView loading={loading} rows={estimates} onOpenOrder={onOpenOrder} onContact={onContactOrder} />
+      )}
+      {view === 'zelle' && (
+        <ZelleReconcileView
+          loading={zelleRows === null} rows={zelleRows || []} orders={orders || []}
+          onOpenOrder={onOpenOrder} onRefresh={loadZelle}
+          onAttach={(z) => setZelleAttach(z)}
+          onDismiss={async (z) => { await dismissZelleAlert(z.id); loadZelle() }}
+          onRestore={async (z) => { await restoreZelleAlert(z.id); loadZelle() }}
+          onSendReceipt={(z) => setZelleReceipt(z)}
+        />
       )}
 
       {logIn && (
@@ -359,6 +392,25 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       )}
       {preview && (
         <ReceiptPreviewModal order={preview.order} payment={preview.payment} onClose={() => setPreview(null)} />
+      )}
+      {zelleAttach && (
+        <ZelleAttachModal
+          alert={zelleAttach} orders={orders || []}
+          onClose={() => setZelleAttach(null)}
+          onDone={(matchedAlert) => {
+            setZelleAttach(null)
+            loadOrders(); loadZelle()
+            // Straight into the receipt email — Paul's flow: attach, then send.
+            if (matchedAlert) setZelleReceipt(matchedAlert)
+          }}
+        />
+      )}
+      {zelleReceipt && (
+        <ZelleReceiptEmailModal
+          alert={zelleReceipt} orders={orders || []}
+          onClose={() => setZelleReceipt(null)}
+          onSent={() => { setZelleReceipt(null); loadZelle() }}
+        />
       )}
 
       {/* Edit a payment (in OR out) — every save passes the are-you-sure step. */}
@@ -675,6 +727,320 @@ function EstimatesView({ loading, rows, onOpenOrder, onContact }) {
           ))}
       </div>
     </>
+  )
+}
+
+// ── Zelle reconcile ──────────────────────────────────────────────────────────
+// Every Chase "You received money with Zelle" alert, out of the email pile and
+// into one worklist (Paul 2026-09-01: "some payments are getting missed from
+// zelle, too many emails"). Attach writes through the CANONICAL
+// recordOrderPayment (ref = the Chase transaction number, so a matched alert
+// is provable); the receipt email rides the ConfirmSend gate. Dismiss is for
+// alerts that aren't customer money (transfers between accounts, etc.).
+const zAmt = (z) => (z.amount != null ? fmtUSD(Number(z.amount)) : '—')
+const zWho = (z) => properName(z.sender_name || '') || '—'
+const zDate = (z) => z.sent_date ? fmtDate(z.sent_date) : (z.received_at ? fmtDate(String(z.received_at).slice(0, 10)) : '—')
+
+function ZelleReconcileView({ loading, rows, onRefresh, onOpenOrder, onAttach, onDismiss, onRestore, onSendReceipt }) {
+  const [showDismissed, setShowDismissed] = useState(false)
+  const fresh = rows.filter(z => z.status === 'new' || z.status === 'claimed')
+  const matched = rows.filter(z => z.status === 'matched')
+  const dismissed = rows.filter(z => z.status === 'dismissed')
+  return (
+    <>
+      <div className="sb-pay-summary">
+        <span><strong>{fresh.length}</strong> Zelle payment{fresh.length === 1 ? '' : 's'} waiting to be matched</span>
+        <span><strong>{matched.length}</strong> matched</span>
+        <button type="button" className="sb-pay-zlink" onClick={onRefresh}>Check for new Zelle emails</button>
+      </div>
+
+      <div className="sb-pay-table">
+        <div className="sb-pay-row sb-pay-z-row sb-pay-row-head">
+          <div>Received</div><div>From / memo</div><div>Txn #</div><div className="num">Amount</div><div /><div />
+        </div>
+        {loading ? <div className="sb-pay-empty">Reading the Chase alerts…</div>
+          : fresh.length === 0 ? <div className="sb-pay-empty">Every Zelle payment is matched — nothing slips through.</div>
+          : fresh.map(z => (
+            <div key={z.id} className="sb-pay-row sb-pay-z-row sb-pay-row-data2">
+              <span>{zDate(z)}</span>
+              <span><span className="sb-pay-name">{zWho(z)}</span>{z.memo && <span className="sb-pay-zmemo"> · {z.memo}</span>}</span>
+              <span className="sb-pay-mono">{z.txn_number || '—'}</span>
+              <span className="num sb-pay-amt">{zAmt(z)}</span>
+              <button type="button" className="sb-pay-log-btn sb-pay-zbtn" onClick={() => onAttach(z)}>Attach to order</button>
+              <button type="button" className="sb-pay-receiptbtn" onClick={() => onDismiss(z)}>Dismiss</button>
+            </div>
+          ))}
+      </div>
+
+      <div className="sb-pay-subhead">Matched — payment recorded on the order</div>
+      <div className="sb-pay-table">
+        <div className="sb-pay-row sb-pay-z-row sb-pay-row-head">
+          <div>Received</div><div>Order</div><div>Txn #</div><div className="num">Amount</div><div /><div />
+        </div>
+        {matched.length === 0 ? <div className="sb-pay-empty">Nothing matched yet.</div>
+          : matched.slice(0, 40).map(z => (
+            <div key={z.id} className="sb-pay-row sb-pay-z-row sb-pay-row-data2">
+              <span>{zDate(z)}</span>
+              <span>
+                {z.order_id
+                  ? <button type="button" className="sb-pay-bal-name" onClick={() => onOpenOrder?.(z.order_id)}>{zWho(z)}</button>
+                  : <span className="sb-pay-name">{zWho(z)}</span>}
+              </span>
+              <span className="sb-pay-mono">{z.txn_number || '—'}</span>
+              <span className="num sb-pay-amt">{zAmt(z)}</span>
+              <span>{z.receipt_sent_at
+                ? <span className="sb-pay-pill sb-pay-pill-paid">RECEIPT SENT</span>
+                : <span className="sb-pay-pill sb-pay-pill-due">NO RECEIPT SENT</span>}</span>
+              <button type="button" className="sb-pay-receiptbtn" onClick={() => onSendReceipt(z)}>
+                {z.receipt_sent_at ? 'Resend receipt' : 'Send receipt'}
+              </button>
+            </div>
+          ))}
+      </div>
+
+      {dismissed.length > 0 && (
+        <>
+          <button type="button" className="sb-pay-zlink" style={{ marginTop: 18 }}
+            onClick={() => setShowDismissed(s => !s)}>
+            {showDismissed ? 'Hide' : 'Show'} dismissed ({dismissed.length})
+          </button>
+          {showDismissed && (
+            <div className="sb-pay-table" style={{ marginTop: 8 }}>
+              {dismissed.map(z => (
+                <div key={z.id} className="sb-pay-row sb-pay-z-row sb-pay-row-data2" style={{ opacity: 0.65 }}>
+                  <span>{zDate(z)}</span>
+                  <span><span className="sb-pay-name">{zWho(z)}</span>{z.memo && <span className="sb-pay-zmemo"> · {z.memo}</span>}</span>
+                  <span className="sb-pay-mono">{z.txn_number || '—'}</span>
+                  <span className="num sb-pay-amt">{zAmt(z)}</span>
+                  <span />
+                  <button type="button" className="sb-pay-receiptbtn" onClick={() => onRestore(z)}>Restore</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
+// Attach a Zelle alert to an order — suggestions first (balance matches the
+// amount, or the memo carries the family name), search covers everything.
+function ZelleAttachModal({ alert, orders, onClose, onDone }) {
+  const [q, setQ] = useState('')
+  const [pick, setPick] = useState(null)
+  const [date, setDate] = useState(alert.sent_date || todayISO())
+  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const amount = Number(alert.amount) || 0
+
+  const candidates = useMemo(() => {
+    const pool = orders.filter(o => !['closed', 'cancelled'].includes(o.status))
+    const memoHay = `${alert.memo || ''} ${alert.sender_name || ''}`.toLowerCase()
+    const scored = pool.map(o => {
+      const bal = rowBalanceDue(o)
+      let score = 0
+      if (amount > 0 && Math.abs(bal - amount) < 1) score += 2
+      const fam = String(o.primary_lastname || '').toLowerCase()
+      if (fam && fam.length > 2 && memoHay.includes(fam)) score += 2
+      const cust = String(o.customer?.last_name || '').toLowerCase()
+      if (cust && cust.length > 2 && memoHay.includes(cust)) score += 1
+      return { o, bal, score }
+    })
+    const needle = q.trim().toLowerCase()
+    const hits = needle
+      ? scored.filter(c => `${orderName(c.o)} ${c.o.order_number || ''} ${customerName(c.o.customer)}`.toLowerCase().includes(needle))
+      : scored.filter(c => c.score > 0)
+    hits.sort((a, b) => b.score - a.score || b.bal - a.bal)
+    return hits.slice(0, 12)
+  }, [orders, q, alert, amount])
+
+  const record = async () => {
+    if (!pick || busy) return
+    if (!confirm) { setConfirm(true); setErr(null); return }
+    setBusy(true); setErr(null)
+    const actor = await getCurrentStaffName().catch(() => null)
+    const res = await recordOrderPayment(pick.o.id, {
+      amount, method: 'zelle', ref: alert.txn_number || '',
+      receivedAt: date || null, createdBy: actor,
+      note: alert.memo ? `Zelle memo: ${alert.memo}` : 'Matched from the Chase Zelle alert',
+    })
+    if (!res.ok) { setBusy(false); setConfirm(false); setErr(res.error || 'Could not record the payment.'); return }
+    await markZelleMatched(alert.id, { orderId: pick.o.id, paymentId: res.payment?.id || null, by: actor })
+    logOrderActivity(pick.o.id, {
+      type: 'change', field: 'Payment', newValue: fmtUSD(amount),
+      note: `Zelle ${fmtUSD(amount)} matched from the Chase alert (txn ${alert.txn_number || '—'})`, actor,
+    }).catch(() => {})
+    setBusy(false)
+    onDone({ ...alert, status: 'matched', order_id: pick.o.id, payment_id: res.payment?.id || null })
+  }
+
+  return (
+    <div className="sb-pay-backdrop" onClick={() => { if (!busy) onClose() }}>
+      <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Attach Zelle payment" onClick={e => e.stopPropagation()}>
+        <h3 className="sb-pay-modal-title">Attach {zAmt(alert)} — {zWho(alert)}</h3>
+        <div className="sb-pay-modal-sub">
+          {alert.memo ? <>Memo: “{alert.memo}” · </> : null}Txn {alert.txn_number || '—'} · sent {zDate(alert)}
+        </div>
+
+        {!pick ? (
+          <>
+            <div className="sb-pay-field">
+              <label>Which order is this payment for?</label>
+              <input className="sb-pay-input" autoFocus placeholder="Search family, customer, order number…"
+                value={q} onChange={e => { setQ(e.target.value) }} />
+            </div>
+            <div className="sb-pay-zpicklist">
+              {candidates.length === 0 && (
+                <div className="sb-pay-empty">{q ? 'No matching orders.' : 'No suggestions — search by family or order number.'}</div>
+              )}
+              {candidates.map(c => (
+                <button key={c.o.id} type="button" className="sb-pay-zpick" onClick={() => { setPick(c); setConfirm(false); setErr(null) }}>
+                  <span className="sb-pay-name">{properName(orderName(c.o))}</span>
+                  <span className="sb-pay-mono">{c.o.order_number || 'DRAFT'}</span>
+                  <span className="num">{c.bal > 0 ? `owes ${fmtUSD(c.bal)}` : 'paid up'}</span>
+                  {c.score >= 2 && <span className="sb-pay-pill sb-pay-pill-paid">LIKELY MATCH</span>}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="sb-pay-zconfirm">
+              <div><span>Order</span><b>{properName(orderName(pick.o))} · {pick.o.order_number || 'DRAFT'}</b></div>
+              <div><span>Amount</span><b>{fmtUSD(amount)} by Zelle</b></div>
+              <div><span>Reference</span><b>{alert.txn_number || '—'}</b></div>
+              <div><span>Balance</span><b>{fmtUSD(pick.bal)} → {fmtUSD(Math.max(0, pick.bal - amount))}</b></div>
+            </div>
+            <div className="sb-pay-field">
+              <label>Received date</label>
+              <input className="sb-pay-input" type="date" value={date} onChange={e => setDate(e.target.value)} />
+            </div>
+            {confirm && <div className="sb-pay-confirm-note">This records real money on the order — press once more to confirm.</div>}
+            {err && <div className="sb-pay-modal-err">{err}</div>}
+          </>
+        )}
+
+        <div className="sb-pay-modal-actions">
+          {pick && <button type="button" className="sb-pay-cancel" disabled={busy} onClick={() => { setPick(null); setConfirm(false); setErr(null) }}>Back</button>}
+          <button type="button" className="sb-pay-cancel" disabled={busy} onClick={onClose}>Cancel</button>
+          {pick && (
+            <button type="button" className="sb-pay-confirm" disabled={busy} onClick={record}>
+              {busy ? 'Recording…' : confirm ? `Yes — record ${fmtUSD(amount)}` : `Record ${fmtUSD(amount)} on this order`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Receipt email for a matched Zelle payment — To / subject / body all editable
+// here, the receipt PDF attached, and the ConfirmSend gate proves the exact
+// send (recipient + subject + rendered body + attachment) before anything goes.
+const zEsc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+function ZelleReceiptEmailModal({ alert, orders, onClose, onSent }) {
+  const ord = useMemo(() => orders.find(o => o.id === alert.order_id) || null, [orders, alert])
+  const receiptOrder = useMemo(() => (ord ? rowToOrder(ord, ord.customer) : null), [ord])
+  const payment = useMemo(() => {
+    if (!receiptOrder) return null
+    const arr = receiptOrder.payments || []
+    return arr.find(p => p.id === alert.payment_id)
+      || arr.find(p => alert.txn_number && p.ref === alert.txn_number)
+      || null
+  }, [receiptOrder, alert])
+
+  const balance = ord ? rowBalanceDue(ord) : 0
+  const firstName = ord?.customer?.first_name || ''
+  const [to, setTo] = useState(ord?.customer?.email || '')
+  const [subject, setSubject] = useState(`Payment receipt — ${ord?.order_number || ''}`.trim())
+  const [body, setBody] = useState(() => {
+    const amt = payment ? fmtUSD(Number(payment.amount) || 0) : zAmt(alert)
+    const when = alert.sent_date ? ` received ${fmtDate(alert.sent_date)}` : ''
+    return `Dear ${firstName || 'friend'},\n\nThank you for your Zelle payment of ${amt}${when}. Your receipt is attached.\n\n${balance > 0 ? `The remaining balance on the order is ${fmtUSD(balance)}.` : 'This order is paid in full — thank you.'}`
+  })
+  const [gate, setGate] = useState(null)   // { filename, contentBase64 }
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const composedHtml = useMemo(() =>
+    `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1c1c1c;line-height:1.55">${zEsc(body).replace(/\n/g, '<br>')}</div>`,
+  [body])
+
+  const openGate = async () => {
+    if (busy) return
+    if (!payment) { setErr('Could not find the recorded payment on the order — reopen from Matched.'); return }
+    setBusy(true); setErr(null)
+    try {
+      const { doc, filename } = await generateReceiptPDF(receiptOrder, payment, { returnDoc: true })
+      const contentBase64 = (doc.output('datauristring').split('base64,')[1]) || ''
+      setGate({ filename, contentBase64 })
+    } catch (e) {
+      setErr(e?.message || 'Could not build the receipt PDF.')
+    }
+    setBusy(false)
+  }
+
+  const doSend = async (edited) => {
+    if (!gate) return
+    setBusy(true)
+    const res = await sendShopEmail({
+      to: to.trim(), subject: subject.trim(),
+      html: edited?.html || composedHtml, text: edited?.text || body,
+      attachments: [{ filename: gate.filename, contentBase64: gate.contentBase64, contentType: 'application/pdf' }],
+      orderId: ord?.id || null, customerId: ord?.customer?.id || null,
+    })
+    setBusy(false)
+    if (!res.ok) { setGate(null); setErr(res.error || 'Send failed.'); return }
+    await stampZelleReceiptSent(alert.id, to.trim()).catch(() => {})
+    const actor = await getCurrentStaffName().catch(() => null)
+    logOrderActivity(ord.id, { type: 'change', field: 'Receipt', newValue: 'emailed', note: `Zelle receipt emailed to ${to.trim()}`, actor }).catch(() => {})
+    onSent()
+  }
+
+  return (
+    <div className="sb-pay-backdrop" onClick={() => { if (!busy) onClose() }}>
+      <div className="sb-pay-modal" role="dialog" aria-modal="true" aria-label="Send Zelle receipt" onClick={e => e.stopPropagation()}>
+        <h3 className="sb-pay-modal-title">Send receipt · {ord ? properName(orderName(ord)) : '—'}</h3>
+        {!ord ? (
+          <div className="sb-pay-modal-err">This alert's order is not in the loaded list — refresh the tab and try again.</div>
+        ) : (
+          <>
+            <div className="sb-pay-field">
+              <label>To — the email this receipt goes to</label>
+              <input className="sb-pay-input" type="email" value={to} onChange={e => setTo(e.target.value)}
+                placeholder={ord.customer?.email ? '' : 'No email on file — type one'} />
+            </div>
+            <div className="sb-pay-field">
+              <label>Subject</label>
+              <input className="sb-pay-input" value={subject} onChange={e => setSubject(e.target.value)} />
+            </div>
+            <div className="sb-pay-field">
+              <label>Message</label>
+              <textarea className="sb-pay-input" rows={6} value={body} onChange={e => setBody(e.target.value)} />
+            </div>
+            {err && <div className="sb-pay-modal-err">{err}</div>}
+          </>
+        )}
+        <div className="sb-pay-modal-actions">
+          <button type="button" className="sb-pay-cancel" disabled={busy} onClick={onClose}>Cancel</button>
+          {ord && (
+            <button type="button" className="sb-pay-confirm" disabled={busy || !to.trim() || !subject.trim()} onClick={openGate}>
+              {busy ? 'Working…' : 'Preview & send'}
+            </button>
+          )}
+        </div>
+      </div>
+      {/* The gate renders its own fixed overlay — stop clicks from bubbling to
+          this modal's backdrop, else closing the gate closes the composer. */}
+      <div onClick={e => e.stopPropagation()}>
+        <ConfirmSend open={!!gate} to={to.trim()} subject={subject.trim()}
+          html={composedHtml} text={body} attachments={gate ? [gate.filename] : null}
+          busy={busy} onConfirm={doSend} onClose={() => setGate(null)} />
+      </div>
+    </div>
   )
 }
 
@@ -1121,6 +1487,19 @@ const PAY_CSS = `
   .sb-pay-summary { display: flex; gap: 22px; font-size: 13px; color: #6b6b66; margin-bottom: 10px; }
   .sb-pay-summary strong { color: #1e2d3d; }
   .sb-pay-subhead { font-size: 13px; font-weight: 700; color: #1e2d3d; margin: 22px 0 8px; }
+
+  .sb-pay-viewbadge { display: inline-block; min-width: 17px; text-align: center; font-size: 10px; font-weight: 800; background: #b54040; color: #fff; border-radius: 999px; padding: 1px 5px; margin-left: 7px; }
+  .sb-pay-zlink { font: inherit; font-size: 12.5px; font-weight: 600; color: #9A7209; background: none; border: none; cursor: pointer; padding: 0; }
+  .sb-pay-zlink:hover { text-decoration: underline; }
+  .sb-pay-z-row { grid-template-columns: 92px 1.6fr 130px 110px 150px 110px; }
+  .sb-pay-zmemo { font-size: 12px; color: #8a8a85; }
+  .sb-pay-zbtn { padding: 6px 12px; font-size: 12.5px; }
+  .sb-pay-zpicklist { max-height: 320px; overflow-y: auto; border: 0.5px solid #e6e3dd; border-radius: 10px; }
+  .sb-pay-zpick { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; font: inherit; font-size: 13px; padding: 10px 12px; border: none; border-bottom: 0.5px solid #efece6; background: #fff; cursor: pointer; }
+  .sb-pay-zpick:hover { background: #faf8f3; }
+  .sb-pay-zpick .num { margin-left: auto; color: #6b6b66; font-variant-numeric: tabular-nums; }
+  .sb-pay-zconfirm { border: 0.5px solid #e6e3dd; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .sb-pay-zconfirm span { display: inline-block; min-width: 90px; color: #8a8a85; }
   .sb-pay-subhead-note { font-weight: 400; color: #a0a09a; }
 
   .sb-pay-table { background: #fff; border: 0.5px solid #e6e3dd; border-radius: 12px; overflow: hidden; }
