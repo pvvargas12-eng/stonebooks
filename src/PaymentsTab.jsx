@@ -118,7 +118,7 @@ const ORDER_SELECT =
   'payments, primary_lastname, deceased, ' +
   'deposit_amount, deposit_method, deposit_ref, deposit_received_at, ' +
   'balance_amount, balance_method, balance_ref, balance_received_at, ' +
-  ORDER_PRICING_COLUMNS + ', customer:customers(id, first_name, last_name, email)'
+  ORDER_PRICING_COLUMNS + ', customer:customers(id, first_name, last_name, email, phone_primary), cemetery:cemeteries(name)'
 
 export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [view, setView] = useState('incoming')
@@ -418,7 +418,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       )}
       {zelleAttach && (
         <ZelleAttachModal
-          alert={zelleAttach} orders={orders || []}
+          alert={zelleAttach} orders={orders || []} onOpenOrder={onOpenOrder}
           onClose={() => setZelleAttach(null)}
           onDone={(matchedAlert) => {
             setZelleAttach(null)
@@ -524,7 +524,12 @@ function SummaryCard({ label, value, sub, tone }) {
 
 // ── Incoming view ────────────────────────────────────────────────────────────
 function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOrder, onOpenReceipt, onLog, onLogFor, onEditPay, onVoidPay }) {
-  const total = rows.reduce((s, r) => s + r.amount, 0)
+  // Method chips filter the ledger (Paul 2026-09-01: "in incoming i must be
+  // able to sort by payment type") — counts on each chip, total follows.
+  const [methodF, setMethodF] = useState('all')
+  const shown = methodF === 'all' ? rows : rows.filter(r => (r.method || 'check') === methodF)
+  const total = shown.reduce((s, r) => s + r.amount, 0)
+  const countOf = (code) => rows.filter(r => (r.method || 'check') === code).length
   return (
     <>
       <div className="sb-pay-controls">
@@ -532,8 +537,15 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
           value={search} onChange={e => setSearch(e.target.value)} />
         <button type="button" className="sb-pay-log-btn" onClick={onLog}>+ Log incoming payment</button>
       </div>
+      <div className="sb-pay-methodrow">
+        <button type="button" className={`sb-pay-mchip${methodF === 'all' ? ' on' : ''}`} onClick={() => setMethodF('all')}>All · {rows.length}</button>
+        {IN_METHODS.map(m => (
+          <button key={m.code} type="button" className={`sb-pay-mchip${methodF === m.code ? ' on' : ''}`}
+            onClick={() => setMethodF(m.code)}>{m.label} · {countOf(m.code)}</button>
+        ))}
+      </div>
       <div className="sb-pay-summary">
-        <span><strong>{rows.length}</strong> payment{rows.length === 1 ? '' : 's'}</span>
+        <span><strong>{shown.length}</strong> payment{shown.length === 1 ? '' : 's'}</span>
         <span>Total: <strong>{fmtUSD(total)}</strong></span>
       </div>
 
@@ -543,8 +555,8 @@ function IncomingView({ loading, rows, search, setSearch, openBalances, onOpenOr
           <div className="num">Amount</div><div>Reference</div>
         </div>
         {loading ? <div className="sb-pay-empty">Loading…</div>
-          : rows.length === 0 ? <div className="sb-pay-empty">No payments {search ? 'match your search' : 'logged yet'}.</div>
-          : rows.map(r => (
+          : shown.length === 0 ? <div className="sb-pay-empty">No payments {search || methodF !== 'all' ? 'match the filter' : 'logged yet'}.</div>
+          : shown.map(r => (
             <div role="button" tabIndex={0} key={r.key} className="sb-pay-row sb-pay-row-data" onClick={() => onOpenOrder?.(r.orderId)} onKeyDown={e => { if (e.key === 'Enter') onOpenOrder?.(r.orderId) }} title="Open order">
               <div>{r.dateISO ? fmtDate(r.dateISO) : '—'}</div>
               <div className="sb-pay-name">{properName(r.name)}</div>
@@ -773,6 +785,22 @@ const zDate = (z) => z.sent_date ? fmtDate(z.sent_date) : (z.received_at ? fmtDa
 // ambiguity stays on the list for Paul. Each payment absorbs one alert.
 const _digits = (s) => String(s || '').replace(/\D/g, '')
 const _dayMs = 86400000
+// "Shirley Epstein (1934–2020) · Paul Epstein (space reserved)" — enough to
+// verify a suggested order is the right family before reconciling.
+function deceasedSummary(row) {
+  const arr = Array.isArray(row?.deceased) ? row.deceased : []
+  const parts = arr
+    .filter(d => d && (d.firstName || d.lastName))
+    .map(d => {
+      const name = properName([d.firstName, d.lastName].filter(Boolean).join(' '))
+      if (d.isReserved) return `${name} (space reserved)`
+      const yb = String(d.dateOfBirth || '').slice(0, 4)
+      const yd = String(d.dateOfDeath || '').slice(0, 4)
+      const yrs = yb || yd ? ` (${yb || '?'}–${yd || ''})` : ''
+      return `${name}${yrs}`
+    })
+  return parts.join(' · ')
+}
 function computeZelleAutoMatches(alerts, orders) {
   const pays = orders.flatMap(paymentsOf)   // locked, non-voided incoming rows
   const byRef = new Map()
@@ -892,7 +920,7 @@ function ZelleReconcileView({ loading, rows, onRefresh, onOpenOrder, onAttach, o
 
 // Attach a Zelle alert to an order — suggestions first (balance matches the
 // amount, or the memo carries the family name), search covers everything.
-function ZelleAttachModal({ alert, orders, onClose, onDone }) {
+function ZelleAttachModal({ alert, orders, onClose, onDone, onOpenOrder }) {
   const [q, setQ] = useState('')
   const [pick, setPick] = useState(null)
   const [date, setDate] = useState(alert.sent_date || todayISO())
@@ -961,20 +989,41 @@ function ZelleAttachModal({ alert, orders, onClose, onDone }) {
               {candidates.length === 0 && (
                 <div className="sb-pay-empty">{q ? 'No matching orders.' : 'No suggestions — search by family or order number.'}</div>
               )}
-              {candidates.map(c => (
-                <button key={c.o.id} type="button" className="sb-pay-zpick" onClick={() => { setPick(c); setConfirm(false); setErr(null) }}>
-                  <span className="sb-pay-name">{properName(orderName(c.o))}</span>
-                  <span className="sb-pay-mono">{c.o.order_number || 'DRAFT'}</span>
-                  <span className="num">{c.bal > 0 ? `owes ${fmtUSD(c.bal)}` : 'paid up'}</span>
-                  {c.score >= 2 && <span className="sb-pay-pill sb-pay-pill-paid">LIKELY MATCH</span>}
-                </button>
-              ))}
+              {candidates.map(c => {
+                const cust = customerName(c.o.customer)
+                const fam = properName(orderName(c.o))
+                const subBits = [
+                  cust !== '—' && cust.toLowerCase() !== fam.toLowerCase() ? `customer: ${cust}` : null,
+                  c.o.cemetery?.name || null,
+                ].filter(Boolean).join(' · ')
+                return (
+                  <button key={c.o.id} type="button" className="sb-pay-zpick" onClick={() => { setPick(c); setConfirm(false); setErr(null) }}
+                    title="Review the customer and deceased before recording">
+                    <span style={{ minWidth: 0 }}>
+                      <span className="sb-pay-name">{fam}</span>
+                      <span className="sb-pay-mono" style={{ marginLeft: 8 }}>{c.o.order_number || 'DRAFT'}</span>
+                      {subBits && <span className="sb-pay-zpicksub">{subBits}</span>}
+                    </span>
+                    <span className="num">{c.bal > 0 ? `owes ${fmtUSD(c.bal)}` : 'paid up'}</span>
+                    {c.score >= 2 && <span className="sb-pay-pill sb-pay-pill-paid">LIKELY MATCH</span>}
+                  </button>
+                )
+              })}
             </div>
           </>
         ) : (
           <>
+            {/* Verify before you reconcile (Paul 2026-09-01: "i must be able
+                to see the customer information and deceased information to
+                know if thats the right one"). Open order = the full record,
+                comes back to this list. */}
             <div className="sb-pay-zconfirm">
-              <div><span>Order</span><b>{properName(orderName(pick.o))} · {pick.o.order_number || 'DRAFT'}</b></div>
+              <div><span>Order</span><b>{properName(orderName(pick.o))} · {pick.o.order_number || 'DRAFT'}
+                {onOpenOrder && <button type="button" className="sb-pay-zlink" style={{ marginLeft: 10 }}
+                  onClick={() => onOpenOrder(pick.o.id)}>Open order</button>}</b></div>
+              <div><span>Customer</span><b>{[customerName(pick.o.customer), pick.o.customer?.phone_primary, pick.o.customer?.email].filter(x => x && x !== '—').join(' · ') || '—'}</b></div>
+              <div><span>Deceased</span><b>{deceasedSummary(pick.o) || '—'}</b></div>
+              <div><span>Cemetery</span><b>{pick.o.cemetery?.name || '—'}</b></div>
               <div><span>Amount</span><b>{fmtUSD(amount)} by Zelle</b></div>
               <div><span>Reference</span><b>{alert.txn_number || '—'}</b></div>
               <div><span>Balance</span><b>{fmtUSD(pick.bal)} → {fmtUSD(Math.max(0, pick.bal - amount))}</b></div>
@@ -1555,6 +1604,10 @@ const PAY_CSS = `
   .sb-pay-subhead { font-size: 13px; font-weight: 700; color: #1e2d3d; margin: 22px 0 8px; }
 
   .sb-pay-viewbadge { display: inline-block; min-width: 17px; text-align: center; font-size: 10px; font-weight: 800; background: #b54040; color: #fff; border-radius: 999px; padding: 1px 5px; margin-left: 7px; }
+  .sb-pay-methodrow { display: flex; gap: 6px; flex-wrap: wrap; margin: -4px 0 10px; }
+  .sb-pay-mchip { font: inherit; font-size: 12px; font-weight: 600; color: #6b6b66; background: #fff; border: 0.5px solid #e6e3dd; border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+  .sb-pay-mchip.on { background: #1e2d3d; border-color: #1e2d3d; color: #fff; }
+  .sb-pay-zpicksub { display: block; font-size: 11.5px; color: #8a8a85; margin-top: 2px; }
   .sb-pay-zlink { font: inherit; font-size: 12.5px; font-weight: 600; color: #9A7209; background: none; border: none; cursor: pointer; padding: 0; }
   .sb-pay-zlink:hover { text-decoration: underline; }
   .sb-pay-z-row { grid-template-columns: 92px 1.6fr 130px 110px 150px 110px; }
