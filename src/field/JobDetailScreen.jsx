@@ -20,6 +20,7 @@ import { buildDieSpec, buildBaseSpec, displayGraniteColor, composeGraveLocation 
 import { isLeadRaw, directionsUrl } from './fieldShared'
 
 import OwnerOrderPanel from './OwnerOrderPanel'
+import OrderFilesCard from './OrderFilesCard'
 
 // FIELD-2: showMoney gates the LEAD banner's balance line — crew builds pass
 // false and get the warning without the amount. FIELD-3 adds the owner panel
@@ -137,6 +138,10 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
           <div><div className="fl-speclab">Grave</div><div className="fl-specval sans">{grave || '—'}</div></div>
         </div>
       </div>
+
+      {/* Every file on the order — view + upload, one home with the desktop
+          Attachments section (Paul 2026-09-01). */}
+      <OrderFilesCard orderId={order.id} showMoney={showMoney} undo={undo} />
 
       {/* Mark the exact spot */}
       <div className="fl-card">

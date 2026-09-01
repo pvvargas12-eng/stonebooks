@@ -20,6 +20,7 @@ import {
 } from '../lib/stonebooksData'
 import { todayISO } from './fieldShared'
 import RecordPaymentSheet from './RecordPaymentSheet'
+import EmailComposeSheet from './EmailComposeSheet'
 
 const MONO = '"JetBrains Mono", Consolas, monospace'
 const HAIR = '1px solid #EEE9DD'
@@ -68,6 +69,7 @@ export default function OwnerOrderPanel({ order, who, undo, onChanged, onOrderCh
   const [doneIds, setDoneIds] = useState(() => new Set())  // optimistic strikethroughs
   const [today, setToday] = useState(() => todayISO())     // re-stamped on every fetch
   const [recOpen, setRecOpen] = useState(false)            // record-payment sheet
+  const [emailOpen, setEmailOpen] = useState(false)        // shop-email compose sheet
 
   useEffect(() => {
     if (!orderId) return undefined
@@ -167,24 +169,26 @@ export default function OwnerOrderPanel({ order, who, undo, onChanged, onOrderCh
                 {[phone, email].filter(Boolean).join(' · ')}
               </div>
             )}
-            {(digits || email) && (
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                {digits && (
-                  <button type="button" className="fl-verb" style={{ flex: 1 }}
-                    onClick={() => go('tel:' + digits)}>CALL</button>
-                )}
-                {digits && (
-                  <button type="button" className="fl-verb" style={{ flex: 1 }}
-                    onClick={() => go('sms:' + digits)}>TEXT</button>
-                )}
-                {email && (
-                  <button type="button" className="fl-verb" style={{ flex: 1 }}
-                    onClick={() => go('mailto:' + email)}>EMAIL</button>
-                )}
-              </div>
-            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              {digits && (
+                <button type="button" className="fl-verb" style={{ flex: 1 }}
+                  onClick={() => go('tel:' + digits)}>CALL</button>
+              )}
+              {digits && (
+                <button type="button" className="fl-verb" style={{ flex: 1 }}
+                  onClick={() => go('sms:' + digits)}>TEXT</button>
+              )}
+              {/* Real shop email — attachments from THIS order's files, gated
+                  by ConfirmSend (Paul 2026-09-01; mailto: handoff retired). */}
+              <button type="button" className="fl-verb" style={{ flex: 1 }}
+                onClick={() => setEmailOpen(true)}>EMAIL</button>
+            </div>
           </div>
         </>
+      )}
+      {emailOpen && (
+        <EmailComposeSheet customer={customer} order={order} who={who} undo={undo}
+          onClose={() => setEmailOpen(false)} />
       )}
 
       {/* ── 2. Balance & payments (entry lives here too now) ───────────── */}

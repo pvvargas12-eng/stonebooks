@@ -12,6 +12,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { customerName, statusInfo } from '../lib/stonebooksData'
 import { familyNameOf } from './fieldShared'
+import EmailComposeSheet from './EmailComposeSheet'
 
 const STATUS_CHIP = {
   draft: 'fl-c-neutral', scoping: 'fl-c-neutral', quoted: 'fl-c-neutral',
@@ -56,6 +57,7 @@ export default function CustomersScreen({ who, undo, onOpenJob, onBack }) {
   const [err, setErr] = useState(null)
   const [openId, setOpenId] = useState(null)     // expanded customer id
   const [ordersById, setOrdersById] = useState({})  // customer_id -> null(loading) | rows
+  const [emailCust, setEmailCust] = useState(null)  // compose sheet target
 
   const live = useMemo(() => cleanNeedle(q).length >= 2, [q])
 
@@ -115,16 +117,22 @@ export default function CustomersScreen({ who, undo, onOpenJob, onBack }) {
       {live && (results || []).map(c => (
         <CustomerRow key={c.id} c={c} open={openId === c.id}
           orders={ordersById[c.id]} onToggle={() => toggle(c)}
-          onGo={go} onOpenJob={onOpenJob} />
+          onGo={go} onOpenJob={onOpenJob} onEmail={() => setEmailCust(c)} />
       ))}
+
+      {/* Real shop email with attachments from their orders — the mailto:
+          handoff is dead (Paul 2026-09-01). ConfirmSend gates the send. */}
+      {emailCust && (
+        <EmailComposeSheet customer={emailCust} orders={ordersById[emailCust.id] || []}
+          who={who} undo={undo} onClose={() => setEmailCust(null)} />
+      )}
     </div>
   )
 }
 
-function CustomerRow({ c, open, orders, onToggle, onGo, onOpenJob }) {
+function CustomerRow({ c, open, orders, onToggle, onGo, onOpenJob, onEmail }) {
   const phone = c.phone_primary || c.phone_alt || null
   const digits = digitsOf(phone)
-  const email = c.email || c.email_alt || null
   const subBits = [c.city, phone].filter(Boolean).join(' · ')
 
   return (
@@ -139,22 +147,20 @@ function CustomerRow({ c, open, orders, onToggle, onGo, onOpenJob }) {
 
       {open && (
         <div onClick={(e) => e.stopPropagation()} style={{ cursor: 'default' }}>
-          {(digits || email) && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              {digits && (
-                <button type="button" className="fl-verb" style={{ flex: 1 }}
-                  onClick={() => onGo('tel:' + digits)}>CALL</button>
-              )}
-              {digits && (
-                <button type="button" className="fl-verb" style={{ flex: 1 }}
-                  onClick={() => onGo('sms:' + digits)}>TEXT</button>
-              )}
-              {email && (
-                <button type="button" className="fl-verb" style={{ flex: 1 }}
-                  onClick={() => onGo('mailto:' + email)}>EMAIL</button>
-              )}
-            </div>
-          )}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            {digits && (
+              <button type="button" className="fl-verb" style={{ flex: 1 }}
+                onClick={() => onGo('tel:' + digits)}>CALL</button>
+            )}
+            {digits && (
+              <button type="button" className="fl-verb" style={{ flex: 1 }}
+                onClick={() => onGo('sms:' + digits)}>TEXT</button>
+            )}
+            {/* EMAIL always offered — the compose sheet takes a typed address
+                when none is on file, and sends through the shop account. */}
+            <button type="button" className="fl-verb" style={{ flex: 1 }}
+              onClick={onEmail}>EMAIL</button>
+          </div>
 
           <div style={{ marginTop: 10, borderTop: '1px solid #F0ECE2' }}>
             {orders === null && (

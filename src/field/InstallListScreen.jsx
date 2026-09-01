@@ -15,6 +15,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getInstallList, addToInstallList, removeFromInstallList, getJobs,
   getProofVersions, getProofVersionsByOrder, setBlockReason, installGates,
+  rowBalanceDue,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { buildDieSpec, buildBaseSpec, displayGraniteColor, composeGraveLocation } from '../lib/monumentCatalog'
@@ -62,8 +63,20 @@ function GateChips({ order, job }) {
   )
 }
 
+// The desktop set list's sort chips, on the phone (Paul 2026-09-01: "install
+// list I must be able to sort same way as i can in the app"). Same semantics
+// as InstallBoard: the chips FILTER, not just reorder; By cemetery is the only
+// one that groups; everything else is a flat list, oldest first.
+const SORT_CHIPS = [
+  ['cemetery', 'By cemetery'], ['ready', 'Ready first'], ['foundation', 'Waiting on foundation'],
+  ['balance', 'Balance owed'], ['newstone', 'New stone'], ['bronze', 'Bronze services'], ['oldest', 'Oldest first'],
+]
+const JOB_TRACK = { new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }
+const gatesReady = (g) => !!g && g.paid !== false && g.fdn !== false && g.permit !== false && g.blasted !== false
+
 export default function InstallListScreen({ onOpenJob, onComplete }) {
   const [sub, setSub] = useState('list')          // 'list' | 'runs'
+  const [sort, setSort] = useState('cemetery')
   const [list, setList] = useState(null)
   const [jobs, setJobs] = useState(null)
   const [err, setErr] = useState(null)
@@ -92,10 +105,15 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
   const memberIds = useMemo(() => new Set((list || []).map(r => r.job_id)), [list])
   const listOrder = useMemo(() => new Map((list || []).map((r, i) => [r.job_id, r.sort_order ?? i])), [list])
 
-  // The list, grouped by cemetery (one block = one truck run).
-  const groups = useMemo(() => {
+  const mine = useMemo(() => {
     if (!jobs || !list) return null
-    const mine = jobs.filter(j => memberIds.has(j.id) && j.order)
+    return jobs.filter(j => memberIds.has(j.id) && j.order)
+  }, [jobs, list, memberIds])
+
+  // The list, grouped by cemetery (one block = one truck run) — only when the
+  // By-cemetery chip is on; the other sorts render flat, desktop parity.
+  const groups = useMemo(() => {
+    if (!mine || sort !== 'cemetery') return null
     const byCem = new Map()
     for (const j of mine) {
       const key = j.order.cemetery?.name || 'No cemetery on file'
@@ -109,7 +127,22 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
     })
     for (const [, rows] of out) rows.sort((a, z) => (listOrder.get(a.id) ?? 0) - (listOrder.get(z.id) ?? 0))
     return out
-  }, [jobs, list, memberIds, listOrder])
+  }, [mine, sort, listOrder])
+
+  // The non-cemetery sorts: filter to the chip's rows, oldest first (the
+  // desktop byAgeDesc); Balance owed sorts by amount owed, biggest first.
+  const flatRows = useMemo(() => {
+    if (!mine || sort === 'cemetery') return null
+    const byAgeDesc = (a, z) => (ageDaysOf(z.order, todayMs) ?? 0) - (ageDaysOf(a.order, todayMs) ?? 0)
+    let rows = [...mine]
+    if (sort === 'ready') rows = rows.filter(j => gatesReady(installGates(j.order, j))).sort(byAgeDesc)
+    else if (sort === 'foundation') rows = rows.filter(j => installGates(j.order, j).fdn === false).sort(byAgeDesc)
+    else if (sort === 'balance') rows = rows.filter(j => rowBalanceDue(j.order) > 0).sort((a, z) => rowBalanceDue(z.order) - rowBalanceDue(a.order))
+    else if (sort === 'newstone') rows = rows.filter(j => JOB_TRACK[j.job_type] === 'new_stone').sort(byAgeDesc)
+    else if (sort === 'bronze') rows = rows.filter(j => JOB_TRACK[j.job_type] === 'bronze').sort(byAgeDesc)
+    else rows.sort(byAgeDesc)   // oldest
+    return rows
+  }, [mine, sort, todayMs])
 
   // Add-picker pool: contracted work with an OPEN install step. Gates inform
   // (READY / reason chip), they never wall — Paul's standing rule. Drafts and
@@ -160,7 +193,30 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
     )
   }
 
-  const total = groups ? groups.reduce((n, [, rows]) => n + rows.length, 0) : null
+  const total = mine ? mine.length : null
+
+  // One row shape for every sort — the flat sorts show the cemetery in the
+  // sub-line since there's no group header carrying it.
+  const renderRow = (j, showCem) => (
+    <button key={j.id} type="button" className="fl-row fl-row-flex" onClick={() => setPeekJob(j)}>
+      <div className="fl-row-main">
+        <div className="fl-fam">{famOfJob(j)}</div>
+        <div className="fl-spec">
+          {[j.order.order_number || 'DRAFT', showCem ? j.order.cemetery?.name : null].filter(Boolean).join(' · ')}
+        </div>
+        {/* The four gates, below the name next to the order number
+            (Paul 2026-07-31) — what the truck needs to know. */}
+        <div className="fl-chips" style={{ marginTop: 5 }}>
+          <GateChips order={j.order} job={j} />
+        </div>
+      </div>
+      <div className="fl-chips" style={{ flexShrink: 0 }}>
+        {hasPhoto(j.order) && <span className="fl-chip fl-c-photo">PHOTO</span>}
+        <AgeDot n={ageDaysOf(j.order, todayMs)} />
+      </div>
+      <span className="fl-chev">&#8250;</span>
+    </button>
+  )
 
   return (
     <div>
@@ -172,35 +228,29 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
         + Add to list
       </button>
 
+      <div className="fl-chips" style={{ margin: '8px 0 4px', overflowX: 'auto', flexWrap: 'nowrap', WebkitOverflowScrolling: 'touch', paddingBottom: 4 }}>
+        {SORT_CHIPS.map(([c, lab]) => (
+          <button key={c} type="button" className={`fl-chip-btn${sort === c ? ' on' : ''}`}
+            style={{ flexShrink: 0 }} onClick={() => setSort(c)}>{lab}</button>
+        ))}
+      </div>
+
       {err && <div className="fl-empty">{err}</div>}
-      {!err && groups === null && <div className="fl-empty">Loading the set list…</div>}
-      {!err && groups !== null && groups.length === 0 && (
+      {!err && mine === null && <div className="fl-empty">Loading the set list…</div>}
+      {!err && mine !== null && mine.length === 0 && (
         <div className="fl-empty">Nothing on the set list — add the installs you're taking out.</div>
+      )}
+      {!err && mine !== null && mine.length > 0 && flatRows !== null && flatRows.length === 0 && (
+        <div className="fl-empty">Nothing matches this sort.</div>
       )}
 
       {(groups || []).map(([cem, rows]) => (
         <div key={cem}>
           <div className="fl-daylabel"><b>{cem}</b> · {rows.length}</div>
-          {rows.map(j => (
-            <button key={j.id} type="button" className="fl-row fl-row-flex" onClick={() => setPeekJob(j)}>
-              <div className="fl-row-main">
-                <div className="fl-fam">{famOfJob(j)}</div>
-                <div className="fl-spec">{j.order.order_number || 'DRAFT'}</div>
-                {/* The four gates, below the name next to the order number
-                    (Paul 2026-07-31) — what the truck needs to know. */}
-                <div className="fl-chips" style={{ marginTop: 5 }}>
-                  <GateChips order={j.order} job={j} />
-                </div>
-              </div>
-              <div className="fl-chips" style={{ flexShrink: 0 }}>
-                {hasPhoto(j.order) && <span className="fl-chip fl-c-photo">PHOTO</span>}
-                <AgeDot n={ageDaysOf(j.order, todayMs)} />
-              </div>
-              <span className="fl-chev">&#8250;</span>
-            </button>
-          ))}
+          {rows.map(j => renderRow(j, false))}
         </div>
       ))}
+      {(flatRows || []).map(j => renderRow(j, true))}
 
       <button type="button" className="fl-rowline" onClick={() => setSub('runs')} style={{ marginTop: 14 }}>
         <span style={{ fontSize: 13.5, fontWeight: 700, color: '#6B6456' }}>Scheduled runs (next 14 days) &#8250;</span>

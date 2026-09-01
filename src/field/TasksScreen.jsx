@@ -291,13 +291,22 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
     mutateReplies(t.id, list => list.map(r => (r.id === temp.id ? res.reply : r)))
   }
 
-  const pickPhoto = async (file) => {
-    if (!file || uploading) return
+  // Several photos in one pick (Paul 2026-09-01: "when doing a check job must
+  // be able to upload photos") — sequential uploads, ONE attachments write,
+  // one undo that restores the pre-pick list.
+  const pickPhotos = async (files) => {
+    if (!files.length || uploading) return
     setUploading(true)
-    const up = await uploadTaskAttachment({ taskId: t.id, orderId: t.order_id }, file)
-    if (!up.ok) { setUploading(false); undo.showError('Could not upload — try again.'); return }
+    const added = []
+    let failed = false
+    for (const file of files) {
+      const up = await uploadTaskAttachment({ taskId: t.id, orderId: t.order_id }, file)
+      if (up.ok) added.push({ name: up.name, url: up.url, path: up.path })
+      else { failed = true; break }
+    }
+    if (!added.length) { setUploading(false); undo.showError('Could not upload — try again.'); return }
     const prevAtts = Array.isArray(t.attachments) ? t.attachments : []
-    const nextAtts = [...prevAtts, { name: up.name, url: up.url, path: up.path }]
+    const nextAtts = [...prevAtts, ...added]
     onPatchTask(t.id, { attachments: nextAtts })
     const res = await updateShopTask(t.id, { attachments: nextAtts })
     setUploading(false)
@@ -306,7 +315,8 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
       undo.showError(SAVE_ERR)
       return
     }
-    undo.show('Photo attached', async () => {
+    if (failed) undo.showError('Some photos did not upload — the rest attached.')
+    else undo.show(added.length === 1 ? 'Photo attached' : `${added.length} photos attached`, async () => {
       const r = await updateShopTask(t.id, { attachments: prevAtts })
       if (r.ok) onPatchTask(t.id, { attachments: prevAtts })
       else undo.showError(SAVE_ERR)
@@ -314,9 +324,9 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
   }
 
   const onFilePick = (e) => {
-    const f = e.target.files && e.target.files[0]
+    const files = [...(e.target.files || [])]
     e.target.value = ''
-    if (f) pickPhoto(f)
+    if (files.length) pickPhotos(files)
   }
 
   return (
@@ -359,9 +369,11 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
           <div style={{ fontSize: 13.5, color: '#55503F', fontWeight: 600, marginTop: 7, lineHeight: 1.75 }}>
             {CHECK_SHOT_LIST.map(line => <div key={line}>· {line}</div>)}
           </div>
+          {/* No capture attr: iOS offers Take Photo OR Photo Library, and
+              multiple photos can ride one pick. */}
           <label className="fl-btn-gold" style={{ marginTop: 12 }}>
             {uploading ? 'Uploading…' : 'Add photos'}
-            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+            <input type="file" accept="image/*" multiple style={{ display: 'none' }}
               onChange={onFilePick} disabled={uploading} />
           </label>
         </div>
@@ -421,7 +433,7 @@ function TaskDetail({ task: t, thread, who, undo, today, onBack, onOpenJob, onMa
           onKeyDown={e => { if (e.key === 'Enter') send() }} />
         <label className="fl-btn-ghost" style={{ width: 56, flexShrink: 0 }} aria-label="Attach a photo">
           <CamGlyph />
-          <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+          <input type="file" accept="image/*" capture="environment" multiple style={{ display: 'none' }}
             onChange={onFilePick} disabled={uploading} />
         </label>
         <button type="button" className="fl-btn-dark" style={{ width: 84, flexShrink: 0 }}

@@ -4713,7 +4713,7 @@ export function fmtRelative(iso) {
 
 export function customerName(c) {
   if (!c) return '—'
-  const last = (c.last_name || c.lastName || '').toUpperCase()
+  const last = properName(c.last_name || c.lastName || '') || ''
   const first = c.first_name || c.firstName || ''
   if (last && first) return `${last}, ${first}`
   return last || first || '—'

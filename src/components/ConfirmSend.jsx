@@ -23,6 +23,9 @@ export default function ConfirmSend({
   viewOnly = false,
   confirmLabel,
   warning = 'This goes OUT to the recipient the moment you press send.',
+  // Filenames riding the email (strings or {filename}) — shown in the meta
+  // block so the confirm step proves the WHOLE send, attachments included.
+  attachments = null,
 }) {
   const frameRef = useRef(null)
   const srcDoc = useMemo(() => {
@@ -59,6 +62,12 @@ export default function ConfirmSend({
         <div className="sb-csend-meta">
           <div><span className="sb-csend-label">To</span><b>{to || '—'}</b></div>
           <div><span className="sb-csend-label">Subject</span>{subject || '—'}</div>
+          {Array.isArray(attachments) && attachments.length > 0 && (
+            <div>
+              <span className="sb-csend-label">Attached</span>
+              {attachments.map(a => (typeof a === 'string' ? a : a?.filename || a?.name || '')).filter(Boolean).join(' · ')}
+            </div>
+          )}
         </div>
         <iframe ref={frameRef} className="sb-csend-frame" title="Email preview" srcDoc={srcDoc} onLoad={armEditing} />
         <div className="sb-csend-actions">
