@@ -45,6 +45,7 @@ const SchedulerTab = lazy(() => import('./SchedulerTab'))
 const ReportsTab = lazy(() => import('./ReportsTab'))
 const ProfitTab = lazy(() => import('./ProfitTab'))
 const PaymentsTab = lazy(() => import('./PaymentsTab'))
+const AccountingTab = lazy(() => import('./AccountingTab'))
 const VendorsTab = lazy(() => import('./VendorsTab'))
 const InventoryTab = lazy(() => import('./InventoryTab'))
 const EmailTab = lazy(() => import('./EmailTab'))
@@ -223,6 +224,7 @@ const NAV_PRIMARY = [
   { key: 'calendar',  label: 'Calendar' },
   { key: 'email',     label: 'Email' },
   { key: 'payments',  label: 'Payments' },
+  { key: 'accounting', label: 'Accounting' },
   { key: 'vendors',   label: 'Vendors' },
   { key: 'inventory', label: 'Inventory' },
   { key: 'profit',    label: 'Profit' },
@@ -756,6 +758,7 @@ export default function Stonebooks() {
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={openJobSmart} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setOrderDetailReturn(null); setTab('orders') }} />}
+{tab === 'accounting' && <AccountingTab />}
 {tab === 'vendors'   && <VendorsTab />}
 {tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'profit'    && <ProfitTab onOpenJob={openJobSmart} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
