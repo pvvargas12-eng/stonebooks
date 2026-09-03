@@ -572,6 +572,7 @@ export const TRADE_NOTIFY_PREFS = [
   { key: 'layout_ready', label: 'Layout ready for approval' },
   { key: 'photo',        label: 'Finished-stone photo added' },
   { key: 'ready',        label: 'Ready for pickup' },
+  { key: 'completed',    label: 'Order completed' },
   { key: 'invoice',      label: 'Invoice sent' },
 ]
 const NOTIFY_PREF_KEY = { rush_approved: 'rush', rush_declined: 'rush' }
@@ -640,6 +641,7 @@ export async function notifyTradeDealer(requestId, kind, { extra = '', draft = f
       layout_ready:  { s: `Layout ready to review — ${fam}${num}`, b: 'Your layout is ready. Approve it or request changes with one tap.', cta: 'Review layout' },
       photo:         { s: `Finished stone — ${fam}${num}`,         b: 'A photo of the finished work was added to your order.', cta: 'See finished stone' },
       ready:         { s: `Ready for pickup — ${fam}${num}`,       b: 'Your stone is ready for pickup at the Perth Amboy shop.', cta: 'See your order' },
+      completed:     { s: `Order complete — ${fam}${num}`,         b: 'This order is complete on our end. Thank you for the work — reach out any time.', cta: 'See your order' },
     }
     const m = M[kind]
     if (!m) return { ok: false, error: `Unknown notify kind ${kind}` }

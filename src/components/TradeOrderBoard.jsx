@@ -207,6 +207,23 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
     })
   })
 
+  // Staff "Mark complete" — no photo, no signed pickup required (Paul,
+  // 2026-09-03: inscriptions/stones finish without either; the closeout email
+  // was stuck behind the photo upload). Completes the order + its job and
+  // opens the previewed dealer closeout email — never auto-sent.
+  const markComplete = (r) => withBusy(r.id, async () => {
+    const who = await actor()
+    const noPhoto = !(photosById[r.id] || []).length
+    await updateTradeOrder(r.id, { status: 'completed' })
+    if (r.job_id) await setJobOverallStatus(r.job_id, 'completed', 'Trade order marked complete from the board')
+    await logTradeEvent({
+      requestId: r.id, partnerId: r.partner_id, type: 'completed',
+      detail: noPhoto ? 'Order marked complete — no photo' : 'Order marked complete',
+      actor: who, actorRole: 'staff',
+    })
+    openDealerEmail(r.id, 'completed').catch(() => {})
+  })
+
   const setArchived = (r, on) => withBusy(r.id, async () => {
     const who = await actor()
     await updateTradeOrder(r.id, { archivedAt: on ? new Date().toISOString() : null, archivedBy: on ? who : null })
@@ -662,6 +679,21 @@ export default function TradeOrderBoard({ staffView = false, partnerId = null, a
                           ) : (r.accepted_at && r.status !== 'completed' && (
                             <button type="button" className="sb-tb-linkbtn" disabled={busy} onClick={() => setSigModal({ mode: 'pickup', order: r })}>Mark picked up (sign)…</button>
                           ))}
+                          {/* Complete without the photo/pickup ceremony — the
+                              button says the no-photo part out loud. */}
+                          {staffView && r.accepted_at && !['completed', 'cancelled'].includes(r.status) && (
+                            (photosById[r.id] || []).length ? (
+                              <button type="button" className="sb-tb-acceptbtn" disabled={busy} onClick={() => markComplete(r)}
+                                title="Marks the order and its job complete, then previews the closeout email to the dealer">
+                                Mark complete
+                              </button>
+                            ) : (
+                              <button type="button" className="sb-tb-nophotobtn" disabled={busy} onClick={() => markComplete(r)}
+                                title="Marks the order and its job complete with no photo on file, then previews the closeout email to the dealer">
+                                Complete without photo
+                              </button>
+                            )
+                          )}
                         </div>
 
                         {/* Completion photos — staff add; dealer sees the work
@@ -989,6 +1021,10 @@ const TB_CSS = `
   .sb-tb-deletebtn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 5px 12px; border-radius: 7px; border: 0.5px solid rgba(179,38,30,.5); background: #fff; color: #b3261e; cursor: pointer; margin-left: auto; }
   .sb-tb-deletebtn.armed, .sb-tb-deletebtn:hover:not(:disabled) { background: #b3261e; border-color: #b3261e; color: #fff; }
   .sb-tb-acceptbtn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px; border: none; background: #2f7d4f; color: #fff; cursor: pointer; }
+  .sb-tb-receipts .sb-tb-acceptbtn { align-self: flex-start; margin-top: 4px; }
+  .sb-tb-nophotobtn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px; border: 0.5px solid rgba(179,38,30,.55); background: #fff; color: #b3261e; cursor: pointer; align-self: flex-start; margin-top: 4px; }
+  .sb-tb-nophotobtn:hover:not(:disabled) { background: #fdf1f0; }
+  .sb-tb-nophotobtn:disabled { opacity: .5; }
   .sb-tb-acceptbtn:hover:not(:disabled) { background: #256a41; }
   .sb-tb-acceptbtn:disabled { opacity: .5; }
   .sb-tb-detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
