@@ -27,7 +27,7 @@ import {
   designStatusOptions, statusDimApplies, createJobFromOrder, combineOrders, orderTypeLabels,
   derivePaymentStatus, deriveDesignStatus, deriveStoneStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderStoneStatus, setOrderFdnStatus, orderStatusWritePlan,
-  setBlockReason, milestoneDone, orderContractTotal,
+  setBlockReason, milestoneDone, orderContractTotal, installGates,
   orderTypeLabel, orderCategories, ORDER_CATEGORIES,
   // Permit (orders.permit_status — single source of truth, shared with Permit Hub)
   PERMIT_STATUS_OPTIONS, PERMIT_SELECTABLE, permitStatusLabel, permitStatusTone, setOrderPermit,
@@ -449,6 +449,25 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
       const setBlock = (isNewStone && milestoneDone(job, 'production_completed') && !milestoneDone(job, 'installed'))
         ? setBlockReason(o, job)
         : null
+      // WAITING ON chips under the family name (Paul 2026-09-16: "these
+      // blockers must show up on the sales page under name... as much
+      // visibility on the order as possible"). Same derivation as the order
+      // page's Status Overview lane, so the two can never disagree. Signed,
+      // non-terminal orders only — leads already wear the LEAD pill.
+      let waiting = []
+      if (o.signed_at && !o.archived && !TERMINAL_STATUSES.has(o.status)) {
+        const insMs = (job?.milestones || []).find(m => ['installed', 'door_installed', 'work_completed'].includes(m.milestone_key)) || null
+        const installedDone = insMs?.status === 'done' || o.status === 'installed'
+        const installScheduled = insMs?.status === 'in_progress' && insMs.due_date
+        const g = job ? installGates(o, job) : null
+        if (balance > 0) waiting.push({ key: 'payment', label: `FINAL PAYMENT ${fmtUSD(balance)}` })
+        if (!installedDone && g) {
+          if (g.fdn === false) waiting.push({ key: 'fdn', label: 'FDN NOT IN' })
+          if (g.permit === false) waiting.push({ key: 'permit', label: 'PERMIT NOT APPROVED' })
+          if (!g.blasted) waiting.push({ key: 'blast', label: 'NOT BLASTED' })
+          if (g.blasted && !installScheduled) waiting.push({ key: 'sched', label: 'INSTALL NOT SCHEDULED' })
+        }
+      }
       return {
         ...o, _job: job, _pressure: pressure, _total: total, _paid: paid, _balance: balance,
         _fillRatio: total > 0 ? paid / total : 0,
@@ -466,6 +485,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         _fdn: (job && statusDimApplies('fdn', job, o)) ? deriveFdnStatus(job) : null,
         _contractTotal: orderContractTotal(o),
         _setBlock: setBlock,
+        _waiting: waiting,
         _serviceTypesUp: new Set((o.service_types || []).map(s => String(s).toUpperCase())),
         // EVERY category the order's services map to — a multi-service order
         // shows under each of its chips (the Dziamba rule, 2026-07-31).
@@ -1477,7 +1497,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
             })()}
           </div>
         )}
-        {(blocker || o.manual_blocker) && (
+        {(blocker || o.manual_blocker || o._waiting?.length > 0) && (
           <div className="sb-ord-blockline">
             {/* Manual blocker only — CALL/EMAIL chips appear ONLY when a human
                 selected that blocker (Paul 2026-07-22, the Sandy row: the
@@ -1490,6 +1510,11 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
             )}
             {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
             {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
+            {/* WAITING ON chips — the order page's Status Overview lane, on
+                the row (Paul 2026-09-16: visibility without clicking). */}
+            {(o._waiting || []).map(w => (
+              <span key={w.key} className="sb-ord-bpill sb-ord-bpill-wait">{w.label}</span>
+            ))}
           </div>
         )}
         {!blocker && !o.manual_blocker && o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
@@ -1684,7 +1709,7 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
         {o._total > 0 ? fmtUSD(o._total) : '—'}
         {o._balance > 0 && <span className="sb-kb-card-owes"> · owes {fmtUSD(o._balance)}</span>}
       </div>
-      {(blocker || unsigned || lead || o.manual_blocker) && (
+      {(blocker || unsigned || lead || o.manual_blocker || o._waiting?.length > 0) && (
         <div className="sb-ord-blockline">
           {lead && <span className="sb-ord-leadpill" title="No deposit received — still a lead">LEAD · NO DEPOSIT</span>}
           {/* CALL/EMAIL chips only from an explicitly-selected blocker (Paul
@@ -1697,6 +1722,9 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
           {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
           {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
           {unsigned && <span className="sb-ord-bpill sb-ord-bpill-red">Unsigned</span>}
+          {(o._waiting || []).map(w => (
+            <span key={w.key} className="sb-ord-bpill sb-ord-bpill-wait">{w.label}</span>
+          ))}
         </div>
       )}
     </div>
@@ -1741,6 +1769,9 @@ const TW_CSS = `
     border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
   .sb-ord-bpill-red   { color: #B3261E; background: rgba(179,38,30,0.08); }
   .sb-ord-bpill-amber { color: #8a5a12; background: rgba(183,121,31,0.1); }
+  /* WAITING ON chips — the order page's Status Overview lane, on the row
+     (Paul 2026-09-16). Quiet red outline so the manual HOLD stays loudest. */
+  .sb-ord-bpill-wait  { color: #B3261E; background: #fff; border: 0.5px solid rgba(179,38,30,0.35); }
   .sb-ord-allnote { font-size: 12.5px; font-weight: 600; color: #6a6a66; padding: 6px 2px; white-space: nowrap; }
   .sb-ord-scopeline { margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .sb-ord-scopepill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;

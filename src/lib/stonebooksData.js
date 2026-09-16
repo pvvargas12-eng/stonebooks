@@ -3872,9 +3872,23 @@ export async function ensurePermitBuildTask(orderId, formLabel, familyLabel) {
 // family, close out the order. Dedup-checked like ensurePermitBuildTask so the
 // field Finish flow and the desktop Install Board can both call it safely.
 // task_type 'closeout' is what unlocks the one-button email in the task row.
-export async function ensureCloseoutTask(orderId, familyLabel, orderNumber) {
+// familyLabel/orderNumber are optional (Paul 2026-09-16: inscription + service
+// closeouts fire from the milestone chokepoint, which only knows the job) —
+// when absent, the order's own identity fills them in. Terminal orders never
+// get a fresh closeout task.
+export async function ensureCloseoutTask(orderId, familyLabel = null, orderNumber = null) {
   if (!orderId) return { ok: false, error: 'Missing order' }
-  const title = `Completion email + call + closeout — ${familyLabel || 'order'}${orderNumber ? ` (${orderNumber})` : ''}`.slice(0, 300)
+  let fam = familyLabel, num = orderNumber
+  if (!fam || !num) {
+    const { data: o } = await supabase.from('orders')
+      .select('order_number, primary_lastname, status, archived, customer:customers(first_name, last_name)')
+      .eq('id', orderId).maybeSingle()
+    if (!o) return { ok: false, error: 'Order not found' }
+    if (o.archived || ['closed', 'cancelled'].includes(o.status)) return { ok: true, skipped: true }
+    fam = fam || properName(o.primary_lastname || [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' ') || '')
+    num = num || o.order_number
+  }
+  const title = `Completion email + call + closeout — ${fam || 'order'}${num ? ` (${num})` : ''}`.slice(0, 300)
   const { data: existing } = await supabase.from('shop_tasks')
     .select('id, status, deleted_at').eq('order_id', orderId).eq('task_type', 'closeout').limit(10)
   if ((existing || []).some(t => !t.deleted_at && t.status !== 'done')) {
@@ -3887,6 +3901,20 @@ export async function ensureCloseoutTask(orderId, familyLabel, orderNumber) {
     dueDate: todayISO(), taskType: 'closeout',
     details: { auto: 'install_completed' },
   })
+}
+
+// The closeout chokepoint (Paul 2026-09-16: "must be able to close out
+// inscription and other service orders here as well whenever its marked
+// complete in stonebooks with or without photo"). ANY surface that flips an
+// install-family milestone to done — the order rail, the master dropdowns,
+// the boards, the field Finish flow — lands here and mints the Admin closeout
+// task. ensureCloseoutTask dedups, so the surfaces that already call it
+// directly (CompleteScreen, InstallBoard) stay harmless double-callers.
+const WORK_COMPLETE_KEYS = ['installed', 'door_installed', 'work_completed']
+async function _closeoutOnWorkComplete(jobId) {
+  const { data: j } = await supabase.from('jobs').select('id, order_id').eq('id', jobId).maybeSingle()
+  if (!j?.order_id) return
+  await ensureCloseoutTask(j.order_id)
 }
 
 // The completion email draft — auto-written from the order's real data (the
@@ -6228,6 +6256,16 @@ async function _queueInstallOnReadyToSet(comp, newPhase, { actor = null, source 
   } catch (e) { console.warn('[components] install-queue:', e?.message) }
 }
 
+// Inscription work finishing on the floor IS the completion signal for that
+// job (Paul 2026-09-16: "close out inscription and other service orders...
+// whenever its marked complete"). Reaching Inscription Complete mints the
+// Admin closeout task — dedup'd, skipped on closed orders, never blocks the
+// phase write. No milestone is flipped here; the task is the nudge.
+async function _closeoutOnInscriptionComplete(comp, newPhase) {
+  if (comp.track !== 'inscription' || newPhase !== 'inscription_complete' || !comp.job_id) return
+  try { await _closeoutOnWorkComplete(comp.job_id) } catch (e) { console.warn('[closeout] inscription:', e?.message) }
+}
+
 export async function setComponentPhase(id, newPhase, { actor = null, eventType = 'component_phase_set', source = 'board' } = {}) {
   const c = await _loadComponent(id); if (!c) return { ok: false, error: 'Component not found' }
   if (!isValidPhase(c.track, newPhase)) return { ok: false, error: `Invalid phase for ${c.track}` }
@@ -6254,6 +6292,7 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   // from the milestone side ('stone-status'), which would ping-pong.
   if (c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   await _queueInstallOnReadyToSet(c, newPhase, { actor, source })
+  await _closeoutOnInscriptionComplete(c, newPhase)
   return r
 }
 // Pull a piece onto the board (optionally straight into a phase column) or
@@ -6284,6 +6323,7 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
   if (on && phase && c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
   if (on && phase && c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   if (on && phase) await _queueInstallOnReadyToSet(c, phase, { actor, source })
+  if (on && phase) await _closeoutOnInscriptionComplete(c, phase)
   if (on) await _autoCutListOnBringUp(c)
   return r
 }
@@ -8182,6 +8222,14 @@ async function _applyMilestoneUpdate(jobId, milestoneKey, patch, { actorUserId, 
   // 7. If a non-decision milestone was flipped back from not_needed to
   // not_started (rare), we don't auto-reset its downstream chain — that's a
   // manual decision. We just log nothing extra.
+
+  // 8. Work marked complete → the Admin closeout task (Paul 2026-09-16).
+  // Fire-and-forget: the closeout task is a bonus on top of the milestone
+  // write, never a reason for it to fail or slow down. Dedup lives inside
+  // ensureCloseoutTask, so cascades and double-writes can't stack tasks.
+  if (patch.status === 'done' && WORK_COMPLETE_KEYS.includes(milestoneKey) && current.status !== 'done') {
+    _closeoutOnWorkComplete(jobId).catch(e => console.warn('[closeout] auto-task:', e?.message))
+  }
 
   return { ok: true, milestone: updated, cascadeApplied }
 }

@@ -12,7 +12,7 @@ import { useState, useEffect } from 'react'
 import {
   getOrderById, listCompletionPhotos, buildCompletionEmailDraft, completionEmailHtml,
   sendShopEmail, addTaskReply, logOrderActivity, updateShopTask, getCurrentStaffName,
-  closeOrder,
+  closeOrder, setShopTaskStatus,
 } from '../lib/stonebooksData'
 import ConfirmSend from './ConfirmSend'
 
@@ -100,6 +100,11 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
         setErr('Email sent — but the order could not be closed. Close it from the order page.')
       }
     }
+    // AND complete the closeout task itself (Paul 2026-09-16: "we've been
+    // sending the email twice not knowing" — the task sat open in the Closeout
+    // queue after the send, so somebody else sent it again). One send = order
+    // closed + task done + queue cleared.
+    await setShopTaskStatus(task.id, 'done', me || null).catch(() => {})
     setBusy(false); setGate(false); setSentTo(to.trim())
     onChanged?.()
   }

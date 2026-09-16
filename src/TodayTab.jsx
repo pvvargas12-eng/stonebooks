@@ -270,6 +270,11 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
 
   // ── Filters (shared by every view) ──────────────────────────────────────────
   const matchesWho = useCallback((t) => {
+    // Closeout tasks are EVERYONE'S problem (Paul 2026-09-16: "in today for
+    // closeout I always want them to appear regardless of who is selected") —
+    // they ignore the Show filter so a finished job can never hide behind
+    // somebody else's name. The Closeout type chip still slices to them.
+    if ((t.task_type || '') === 'closeout') return true
     if (whoSel.size === 0) return true
     return t.assignee_kind === 'department'
       ? whoSel.has(`d:${t.assignee}`)

@@ -73,6 +73,7 @@ import ProductionBoard from './components/ProductionFloor'
 import FoundationsBoard from './FoundationsBoard'
 import CutListBoard from './CutListBoard'
 import CheckJobsBoard from './CheckJobsBoard'
+import HotListBoard from './HotListBoard'
 import { getJobsView, setJobsView } from './lib/workspaceState'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
 // view rendered as a tab inside JobDetail. Pure read-arrange of the joined
@@ -191,6 +192,8 @@ export default function JobsTab({
   let body
   if (tab === 'dashboard') {
     body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} onOpenBoard={() => handleTabChange('production')} /></div>
+  } else if (tab === 'hotlist') {
+    body = <div className="sb-crm-container"><HotListBoard onOpenOrderDetail={onOpenOrderDetail} onOpenJob={handleOpenJob} /></div>
   } else if (tab === 'production') {
     body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} /></div>
   } else if (tab === 'cutlist') {
@@ -234,6 +237,9 @@ export default function JobsTab({
 // as tabs + the flat list. One control, top of the page.
 const JOBS_TABS = [
   { code: 'dashboard',    label: 'Dashboard' },
+  // The HOT LIST (Paul 2026-09-16: "WE NEED TO SEE THE HOT STUFF") — blast
+  // now / set now / pour foundations, hottest first, fed by the real stores.
+  { code: 'hotlist',      label: 'Hot list' },
   { code: 'admin',        label: 'Admin' },
   { code: 'design',       label: 'Design' },
   { code: 'production',   label: 'Production' },
