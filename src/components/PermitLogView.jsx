@@ -21,12 +21,14 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import {
   listOutgoingPayments, rowTotalPaid, fmtUSD, properName, customerName,
-  permitStatusLabel, permitStatusTone,
+  permitStatusLabel, permitStatusTone, PERMIT_STATUS_OPTIONS, setOrderPermit,
 } from '../lib/stonebooksData'
 import { downloadReportCSV } from '../lib/reportsData'
 
+// Paul's vocabulary (2026-09-17): "New Stone (not monument), Insc. (not LTT),
+// Bronze Services (not Brnz)".
 const SERVICE_SHORT = {
-  NEW_STONE: 'Monument', BRONZE: 'Brnz', INSCRIPTION: 'LTT', ACID_WASH: 'Acid wash',
+  NEW_STONE: 'New Stone', BRONZE: 'Bronze Services', INSCRIPTION: 'Insc.', ACID_WASH: 'Acid wash',
   REPAIR: 'Repair', MAUSOLEUM: 'Mausoleum', MAUSOLEUM_DOOR: 'Door', CIVIC_MEMORIAL: 'Civic', ADD_PHOTO: 'Photo', OTHER: 'Other',
 }
 const jobLabel = (o) => {
@@ -42,6 +44,24 @@ export default function PermitLogView({ onOpenOrderDetail }) {
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
   const [year, setYear] = useState('')
+  const [savingPermit, setSavingPermit] = useState(null)   // order id mid-write
+
+  // Editable permit status (Paul 2026-09-17: "i must be able to change permit
+  // to approved") — same setOrderPermit chokepoint the Orders table uses, with
+  // an auto approved-date stamp. Optimistic map update, revert on failure.
+  const changePermit = async (orderId, code) => {
+    if (!orderId || savingPermit) return
+    const prev = orders.get(orderId)
+    if (!prev || prev.permit_status === code) return
+    setSavingPermit(orderId)
+    setOrders(m => { const n = new Map(m); n.set(orderId, { ...prev, permit_status: code }); return n })
+    const r = await setOrderPermit(orderId, { permit_status: code })
+    setSavingPermit(null)
+    if (!r.ok) {
+      setOrders(m => { const n = new Map(m); n.set(orderId, prev); return n })
+      setErr(r.error || 'Could not update the permit status')
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -167,9 +187,22 @@ export default function PermitLogView({ onOpenOrderDetail }) {
                 <td>{r.job}</td>
                 <td className="n mono">{fmtUSD(r.amount)}</td>
                 <td className="mono">{r.method || '—'}</td>
-                <td>{r.permitStatus
-                  ? <span className={`pbt-pill pbt-pill-${permitStatusTone(r.permitStatus)}`}>{permitStatusLabel(r.permitStatus)}</span>
-                  : '—'}</td>
+                <td>
+                  {r.orderId ? (
+                    <select
+                      className={`plog-permit plog-permit-${permitStatusTone(r.permitStatus || 'unknown')}`}
+                      value={PERMIT_STATUS_OPTIONS.some(o => o.code === r.permitStatus) ? r.permitStatus : ''}
+                      disabled={savingPermit === r.orderId}
+                      onChange={e => changePermit(r.orderId, e.target.value)}
+                      title="Change the order's permit status right here"
+                    >
+                      {!PERMIT_STATUS_OPTIONS.some(o => o.code === r.permitStatus) && (
+                        <option value="" disabled>{permitStatusLabel(r.permitStatus)}</option>
+                      )}
+                      {PERMIT_STATUS_OPTIONS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+                    </select>
+                  ) : '—'}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -214,4 +247,11 @@ const CSS = `
   .plog-closed { font-size: 9px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
     color: #6a6a66; background: #f0eee9; border-radius: 4px; padding: 1px 5px; margin-left: 7px; }
   .plog-table tfoot td { border-top: 2px solid var(--sb-border, #E2D8C6); border-bottom: none; font-weight: 800; }
+  .plog-permit { font: inherit; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; cursor: pointer; max-width: 100%; }
+  .plog-permit:disabled { opacity: 0.6; cursor: default; }
+  .plog-permit-good    { background: rgba(29,158,117,0.12); border: 1px solid rgba(29,158,117,0.5); color: #15724a; }
+  .plog-permit-info    { background: rgba(29,111,168,0.10); border: 1px solid rgba(29,111,168,0.45); color: #1D6FA8; }
+  .plog-permit-warn    { background: rgba(183,121,31,0.12); border: 1px solid rgba(183,121,31,0.5); color: #8a5a12; }
+  .plog-permit-bad     { background: rgba(179,38,30,0.10); border: 1px solid rgba(179,38,30,0.45); color: #B3261E; }
+  .plog-permit-neutral { background: #f0eee9; border: 1px solid #d8d6d1; color: #6a6a66; }
 `
