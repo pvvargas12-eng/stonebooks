@@ -131,7 +131,7 @@ const draftHasBase = (o) => !!o && orderHasBase(o.baseConfig, SHAPES.find(s => s
 // still reads as Ordered here; full production stages live on the Jobs tab).
 // Bronze 'received' = physically here → In stock, so re-saving this panel can
 // never silently knock a received bronze back to merely ordered (audit F3).
-const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : (s === 'in_stock' || s === 'received') ? 'in_stock' : 'ordered'
+const stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : (s === 'in_stock' || s === 'received' || s === 'arrived') ? 'in_stock' : 'ordered'
 // Contract date → +5 months due-date autofill for new stones (same rule as the
 // Orders table's inline signed handler).
 const plusFiveMonthsISO = (isoDate) => {

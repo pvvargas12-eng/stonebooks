@@ -1856,13 +1856,16 @@ export const STONE_STATUS = [
   { code: 'in_stock',          label: 'In stock' },
   { code: 'ordered',           label: 'Ordered' },
   { code: 'needs_pickup',      label: 'Needs pickup' },
+  // ARRIVED (Paul 2026-09-17): "under needs pickup... this should
+  // automatically update when we mark bronze received or stone received but
+  // i can also manually override it." Backed by stone_received /
+  // bronze_received — the same milestone every receive path already flips,
+  // so the Sales column updates itself. Replaces the bronze-only 'received'
+  // code (still accepted as a write alias for legacy callers).
+  { code: 'arrived',           label: 'Arrived' },
   { code: 'needs_stencil_cut', label: 'Needs stencil cut' },
   { code: 'needs_blasting',    label: 'Needs blasting' },
   { code: 'blasted',           label: 'Blasted' },
-  // Bronze-only terminal state (bronze markers aren't stencilled/blasted —
-  // ordered, then received in the shop). Hidden from non-bronze dropdowns
-  // via stoneStatusOptions(job).
-  { code: 'received',          label: 'Received' },
 ]
 export const FDN_STATUS = [
   { code: 'na',       label: 'N/A' },
@@ -1979,13 +1982,18 @@ const _isBronzeStoneJob = (keys) => keys.includes('bronze_ordered') && !keys.inc
 
 export function deriveStoneStatus(job) {
   if (_isBronzeStoneJob(_jobMilestoneKeys(job))) {
-    if (_msDone(job, 'bronze_received')) return 'received'
+    if (_msDone(job, 'bronze_received')) return 'arrived'
     if (_msDone(job, 'bronze_ordered')) return 'ordered'
     return 'not_ordered'
   }
   if (_msDone(job, 'production_completed')) return 'blasted'
   if (_msDone(job, 'stencil_cut')) return 'needs_blasting'
-  if (_msDone(job, 'stone_received')) return 'needs_stencil_cut'
+  // Needs stencil cut = the stencil is DESIGNED (stencil_created) and the
+  // physical cut is pending. A stone that merely landed reads Arrived —
+  // stone_received is the "it's here" milestone (Paul 2026-09-17), which is
+  // why every receive path auto-flips the Sales column to Arrived.
+  if (_msDone(job, 'stencil_created')) return 'needs_stencil_cut'
+  if (_msDone(job, 'stone_received')) return 'arrived'
   if (_msDone(job, 'stone_needs_pickup')) return 'needs_pickup'
   if (_msDone(job, 'stone_in_stock')) return 'in_stock'
   if (_msDone(job, 'stone_ordered')) return 'ordered'
@@ -1995,10 +2003,10 @@ export function deriveStoneStatus(job) {
 // The Stone / Bronze dropdown options a given job should offer. Bronze jobs
 // get the 3-step ladder; everything else keeps the standard 7 (and never
 // sees the bronze-only 'received' code).
-const _BRONZE_STONE_CODES = new Set(['not_ordered', 'ordered', 'received'])
+const _BRONZE_STONE_CODES = new Set(['not_ordered', 'ordered', 'arrived'])
 export function stoneStatusOptions(job) {
   const bronze = job && _isBronzeStoneJob(_jobMilestoneKeys(job))
-  return STONE_STATUS.filter(s => (bronze ? _BRONZE_STONE_CODES.has(s.code) : s.code !== 'received'))
+  return bronze ? STONE_STATUS.filter(s => _BRONZE_STONE_CODES.has(s.code)) : STONE_STATUS
 }
 export function deriveFdnStatus(job) {
   const present = FDN_KEYS.filter(k => _msHas(job, k))
@@ -2030,7 +2038,7 @@ export const fdnStatusLabel     = (c) => _statusLabel(FDN_STATUS, c)
 // CALL chip. Mid-flight = info/warn, done = good, true N/A stays neutral.
 export const paymentStatusTone  = (c) => c === 'paid_in_full' ? 'good' : c === 'quoted' ? 'bad' : 'neutral'
 export const designStatusTone   = (c) => (c === 'layout_approved' || c === 'cut') ? 'good' : (c === 'needs_adjustments' || c === 'need_rub') ? 'warn' : (c === 'layout_created' || c === 'layout_sent') ? 'info' : 'bad'
-export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'received') ? 'good'
+export const stoneStatusTone    = (c) => (c === 'ordered' || c === 'in_stock' || c === 'blasted' || c === 'arrived' || c === 'received') ? 'good'
   : (c === 'needs_pickup' || c === 'needs_stencil_cut' || c === 'needs_blasting') ? 'info' : 'bad'
 export const fdnStatusTone      = (c) => c === 'in' ? 'good' : (c === 'drop_off' || c === 'dug' || c === 'poured') ? 'info' : c === 'need_map' ? 'warn' : c === 'na' ? 'neutral' : 'bad'
 export const contractSignedTone = (signed) => signed ? 'good' : 'warn'
@@ -2079,7 +2087,14 @@ function _stonePlan(code) {
     case 'in_stock':          return after('stone_in_stock')
     case 'ordered':           return after('stone_ordered')
     case 'needs_pickup':      return after('stone_ordered', 'stone_needs_pickup')
-    case 'needs_stencil_cut': return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received'], notStarted: ['stencil_cut', 'production_started', 'production_completed'] }
+    // Arrived = the stone is physically here (stone_received), nothing
+    // stencil-side yet. Explicitly clears stencil_created so the manual
+    // override can downgrade a mis-picked Needs stencil cut.
+    case 'arrived':           return after('stone_ordered', 'stone_needs_pickup', 'stone_received')
+    // Needs stencil cut now also declares the stencil DESIGNED
+    // (stencil_created done) — that's what separates it from Arrived in
+    // deriveStoneStatus; the physical cut (stencil_cut) stays open.
+    case 'needs_stencil_cut': return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created'], notStarted: ['stencil_cut', 'production_started', 'production_completed'] }
     case 'needs_blasting':    return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut'], notStarted: ['production_started', 'production_completed'] }
     case 'blasted':           return { done: ['stone_ordered', 'stone_needs_pickup', 'stone_received', 'stencil_created', 'stencil_cut', 'production_started', 'production_completed'], notStarted: [] }
     default: return null
@@ -2099,7 +2114,8 @@ function _bronzeStonePlan(code) {
     case 'needs_stencil_cut':
     case 'needs_blasting':
     case 'blasted':
-    case 'received':    return { done: KEYS, notStarted: [] }
+    case 'received':    // legacy alias — same state as 'arrived'
+    case 'arrived':     return { done: KEYS, notStarted: [] }
     default: return null
   }
 }
@@ -2274,7 +2290,7 @@ async function _rollupBronzeStatus(jobId) {
   if (!comps || !comps.length) return
   // Most-behind piece wins (the new-stone rule) — every piece received before
   // the milestone reads Received.
-  const code = comps.some(c => _BRONZE_PHASE_TO_STONE[c.current_phase] !== 'received') ? 'ordered' : 'received'
+  const code = comps.some(c => _BRONZE_PHASE_TO_STONE[c.current_phase] !== 'received') ? 'ordered' : 'arrived'
   try { await setOrderStoneStatus(jobId, code) } catch (e) { console.warn('[rollup] bronze-status:', e?.message) }
 }
 // Foundation writes are key-fetch-first too: templates differ (the bronze
@@ -6317,7 +6333,7 @@ async function _componentEvent(comp, eventType, { note = null, payload = {}, act
 // job's rolled-up status = the LEAST-advanced component (the stone is only as far
 // as its slowest piece). Scoped to new_stone — the other tracks don't feed the
 // Stone column, so their component IS the only truth (no milestone to mirror).
-const _STONE_RANK = ['not_ordered', 'in_stock', 'ordered', 'needs_pickup', 'needs_stencil_cut', 'needs_blasting', 'blasted']
+const _STONE_RANK = ['not_ordered', 'in_stock', 'ordered', 'needs_pickup', 'arrived', 'needs_stencil_cut', 'needs_blasting', 'blasted']
 const _NEWSTONE_PHASE_TO_STONE = {
   ready_to_bring_up: 'needs_stencil_cut', brought_to_line: 'needs_stencil_cut', cut: 'needs_stencil_cut',
   stencil_cut: 'needs_blasting', stencil_stuck: 'needs_blasting', blast: 'needs_blasting', quality_check: 'needs_blasting',

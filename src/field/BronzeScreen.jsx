@@ -25,14 +25,16 @@ const DEAD_ORDER = new Set(['closed', 'cancelled'])
 const GROUPS = [
   ['not_ordered', 'To order'],
   ['ordered', 'On order'],
-  ['received', 'Received — ready for the set list'],
+  // 'arrived' replaced the bronze 'received' code (ARRIVED sprint 2026-09-17)
+  // — same bronze_received milestone, same truck-ready meaning.
+  ['arrived', 'Arrived — ready for the set list'],
 ]
 // The peek sheet's status verbs — the bronze 3-rung ladder (stoneStatusOptions
 // vocabulary; desktop Stone/Bronze dropdown reads the same milestones).
 const BRONZE_STATUSES = [
   ['not_ordered', 'NOT ORDERED'],
   ['ordered', 'ORDERED'],
-  ['received', 'RECEIVED'],
+  ['arrived', 'ARRIVED'],
 ]
 
 // Mirror a stone write plan onto the local job row (the FoundationsScreen
@@ -106,7 +108,7 @@ export default function BronzeScreen({ onOpenJob, undo = null }) {
     const plan = orderStatusWritePlan('stone', code, job)
     setJobs(js => (js || []).map(j => (j.id === job.id ? applyPlanLocally(j, plan) : j)))
     setPeekJob(p => (p && p.id === job.id ? applyPlanLocally(p, plan) : p))
-    if (code === 'received') setSetListIds(ids => new Set([...ids, job.id]))
+    if (code === 'arrived') setSetListIds(ids => new Set([...ids, job.id]))
   }
 
   if (err) return <div className="fl-empty">{err}</div>
@@ -199,7 +201,7 @@ function BronzePeek({ job, onClose, onOpenJob, onSetStatus, busy, onSetList }) {
           ))}
         </div>
         <div className="fl-spec" style={{ marginBottom: 12 }}>
-          RECEIVED adds it to the installation list automatically.
+          ARRIVED adds it to the installation list automatically.
         </div>
         <button type="button" className="fl-btn"
           onClick={() => { onClose(); onOpenJob?.({ jobId: job.id, orderId }, 'jobs') }}>

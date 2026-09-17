@@ -34,6 +34,7 @@ import {
   paymentStatusTone, designStatusTone, stoneStatusTone, fdnStatusTone, contractSignedTone,
   logOrderActivity, getCurrentStaffName,
   properName, todayISO, dueDateTone,
+  addOrderTask, STAFF_NAMES, DEPARTMENTS, getActiveStaffUser,
 } from './lib/stonebooksData'
 import { FilterChip } from './lib/crmComponents.jsx'
 import { toCSV, downloadCSV } from './lib/exportCsv'
@@ -222,7 +223,7 @@ function payRank(o) {
 // not-started/no-job rows group together at the top of an ascending sort.
 const _PAY_DIM_RANK    = { quoted: 0, deposit: 1, paid_in_full: 2 }
 const _DESIGN_DIM_RANK = { not_created: 0, layout_created: 1, layout_sent: 2, needs_adjustments: 3, layout_approved: 4, cut: 5 }
-const _STONE_DIM_RANK  = { not_ordered: 0, ordered: 1, in_stock: 2, needs_pickup: 3, needs_stencil_cut: 4, needs_blasting: 5, blasted: 6, received: 6 }
+const _STONE_DIM_RANK  = { not_ordered: 0, ordered: 1, in_stock: 2, needs_pickup: 3, arrived: 4, needs_stencil_cut: 5, needs_blasting: 6, blasted: 7, received: 7 }
 const _FDN_DIM_RANK    = { na: 0, not_in: 1, need_map: 2, drop_off: 2, dug: 3, poured: 4, in: 5 }
 const dimRank = (map, v) => (v != null && map[v] != null ? map[v] : -1)
 
@@ -1497,24 +1498,19 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
             })()}
           </div>
         )}
-        {(blocker || o.manual_blocker || o._waiting?.length > 0) && (
+        {o.manual_blocker && (
           <div className="sb-ord-blockline">
-            {/* Manual blocker only — CALL/EMAIL chips appear ONLY when a human
-                selected that blocker (Paul 2026-07-22, the Sandy row: the
-                derived needs-call pill is gone; callReasons live on in the
-                Needs-call filter and tooltips, never as a row chip). */}
-            {o.manual_blocker && (
-              <span className={`sb-ord-callpill${o.manual_blocker.kind === 'hold' ? ' sb-ord-callpill-hold' : ''}`} title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
-                {manualBlockerChipText(o.manual_blocker)}
-              </span>
-            )}
+            {/* MANUAL blocker ONLY (Paul 2026-09-17, Sandy round 2: "this is
+                the blocker I want shown I dont need the other blockers
+                showing... they already show up in the dropdowns to the
+                left"). The derived pills (payment / waiting-on / proof) are
+                gone from TABLE rows — the status dropdowns beside the row
+                say the same thing. Pipeline cards keep their chips (no
+                dropdowns there). */}
+            <span className={`sb-ord-callpill${o.manual_blocker.kind === 'hold' ? ' sb-ord-callpill-hold' : ''}`} title={`Set by ${o.manual_blocker.setBy || 'staff'}${o.manual_blocker.setAt ? ' · ' + String(o.manual_blocker.setAt).slice(0, 10) : ''}`}>
+              {manualBlockerChipText(o.manual_blocker)}
+            </span>
             {o.manual_blocker?.note && <span className="sb-ord-bpill sb-ord-bpill-amber">{o.manual_blocker.note}</span>}
-            {blocker && <span className={`sb-ord-bpill sb-ord-bpill-${blocker.severity}`}>{blocker.label}</span>}
-            {/* WAITING ON chips — the order page's Status Overview lane, on
-                the row (Paul 2026-09-16: visibility without clicking). */}
-            {(o._waiting || []).map(w => (
-              <span key={w.key} className="sb-ord-bpill sb-ord-bpill-wait">{w.label}</span>
-            ))}
           </div>
         )}
         {!blocker && !o.manual_blocker && o._setBlock && <div className="sb-ord-block" title="Ready to set, blocked">⚠ {o._setBlock}</div>}
@@ -1626,6 +1622,9 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
 function OrdersBoard({ columns, loading, onOpen, onMove, toast, onDismissToast, onResetFilters }) {
   const [drag, setDrag] = useState(null)       // { order } while a card is mid-drag
   const [overCol, setOverCol] = useState(null) // column code under the pointer
+  // Pipeline tasking (Paul 2026-09-17: "i must be able to click on a thing
+  // and task it to someone") — + Task on every card opens the composer.
+  const [taskFor, setTaskFor] = useState(null) // order with the task composer open
 
   if (loading) return <div className="sb-crm-card"><div className="sb-crm-empty">Loading orders…</div></div>
   const total = BOARD_STAGES.reduce((n, s) => n + columns[s.code].rows.length, 0)
@@ -1660,7 +1659,7 @@ function OrdersBoard({ columns, loading, onOpen, onMove, toast, onDismissToast, 
                     dragging={drag?.order.id === o.id}
                     onDragStart={(e) => { e.dataTransfer.setData('text/plain', o.id); e.dataTransfer.effectAllowed = 'move'; setDrag({ order: o }) }}
                     onDragEnd={() => { setDrag(null); setOverCol(null) }}
-                    onOpen={onOpen} />
+                    onOpen={onOpen} onTask={setTaskFor} />
                 ))}
                 {col.rows.length > BOARD_COL_CAP && (
                   <div className="sb-kb-more">+{col.rows.length - BOARD_COL_CAP} more — narrow with search or filters</div>
@@ -1678,7 +1677,69 @@ function OrdersBoard({ columns, loading, onOpen, onMove, toast, onDismissToast, 
           <button type="button" className="sb-kb-x" onClick={onDismissToast} aria-label="Dismiss">✕</button>
         </div>
       )}
+      {taskFor && <BoardTaskSheet order={taskFor} onClose={() => setTaskFor(null)} />}
     </>
+  )
+}
+
+// Small task composer over the board — assignee (people + departments), note,
+// due date. Lands in the Task Command Center linked to the order, exactly like
+// the Design hub's per-row "Task…" strip.
+function BoardTaskSheet({ order: o, onClose }) {
+  const [note, setNote] = useState('')
+  const [assignee, setAssignee] = useState('')
+  const [due, setDue] = useState(todayISO())
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const save = async () => {
+    if (!note.trim() || !assignee || busy) return
+    setBusy(true); setErr(null)
+    const isDept = assignee.startsWith('dept:')
+    const r = await addOrderTask(o.id, {
+      note: note.trim(),
+      assignee: isDept ? assignee.slice(5) : assignee,
+      assigneeKind: isDept ? 'department' : 'person',
+      dueDate: due || null,
+      actor: getActiveStaffUser() || await getCurrentStaffName(),
+    })
+    setBusy(false)
+    if (!r?.ok) { setErr(r?.error || 'Could not create the task'); return }
+    onClose()
+  }
+
+  return (
+    <div className="sb-kbt-scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="sb-kbt" role="dialog" aria-label="Task this order">
+        <div className="sb-kbt-title">
+          Task — {properName(o._familyName)} <span className="sb-kbt-num">{o.order_number || 'DRAFT'}</span>
+        </div>
+        {err && <div className="sb-kbt-err">{err}</div>}
+        <textarea
+          className="sb-kbt-note" autoFocus rows={3}
+          placeholder={`What needs doing on ${properName(o._familyName)}?`}
+          value={note} onChange={e => setNote(e.target.value)}
+        />
+        <div className="sb-kbt-row">
+          <select className="sb-kbt-input" value={assignee} onChange={e => setAssignee(e.target.value)}>
+            <option value="">Assign to…</option>
+            <optgroup label="People">
+              {STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+            </optgroup>
+            <optgroup label="Departments">
+              {DEPARTMENTS.map(d => <option key={d.code} value={`dept:${d.label}`}>{d.label}</option>)}
+            </optgroup>
+          </select>
+          <input className="sb-kbt-input" type="date" value={due} onChange={e => setDue(e.target.value)} />
+        </div>
+        <div className="sb-kbt-actions">
+          <button type="button" className="sb-kbt-btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="sb-kbt-btn go" onClick={save} disabled={busy || !note.trim() || !assignee}>
+            {busy ? 'Saving…' : 'Create task'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1690,7 +1751,7 @@ const isLeadRow = (o) => (o._paid ?? 0) <= 0 && !['closed', 'cancelled', 'archiv
 
 // One board card — same signals as the table row: severity stripe, blocker
 // pill, Call flag, Unsigned badge. Click (or Enter) opens OrderDetail.
-function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOpen }) {
+function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOpen, onTask }) {
   const blocker = o._pressure?.blocker || null
   const unsigned = !o.signed_at && CONTRACTED_STATUSES.includes(o.status)
   const lead = isLeadRow(o)
@@ -1703,6 +1764,14 @@ function BoardCard({ order: o, draggable, dragging, onDragStart, onDragEnd, onOp
       <div className="sb-kb-card-top">
         <span className="sb-kb-card-name">{properName(o._familyName)}</span>
         <span className="sb-kb-card-num">{o.order_number || 'DRAFT'}</span>
+        {onTask && (
+          <button type="button" className="sb-kb-taskbtn" title="Task this order to someone"
+            onClick={(e) => { e.stopPropagation(); onTask(o) }}
+            onKeyDown={(e) => e.stopPropagation()}
+            draggable={false} onDragStart={(e) => { e.preventDefault(); e.stopPropagation() }}>
+            + Task
+          </button>
+        )}
       </div>
       {o.cemetery?.name && <div className="sb-kb-card-cem">{o.cemetery.name}</div>}
       <div className="sb-kb-card-money">
@@ -1918,4 +1987,28 @@ const TW_CSS = `
   .sb-kb-toast button { font: inherit; font-size: 12.5px; font-weight: 700; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
   .sb-kb-toast .sb-kb-undo { background: #d6a85a; border: none; color: #1e2d3d; }
   .sb-kb-toast .sb-kb-x { background: transparent; border: 0.5px solid rgba(255,255,255,0.4); color: #fff; }
+
+  /* ── Pipeline card tasking (Paul 2026-09-17) ───────────────────────────── */
+  .sb-kb-taskbtn { flex-shrink: 0; font: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.04em;
+    border: 0.5px solid #C9A468; background: #fff; color: #9A7209; border-radius: 999px; padding: 1px 8px; cursor: pointer; }
+  .sb-kb-taskbtn:hover { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .sb-kbt-scrim { position: fixed; inset: 0; background: rgba(15,20,25,0.45); z-index: 1200;
+    display: flex; align-items: flex-start; justify-content: center; padding-top: 14vh; }
+  .sb-kbt { background: #fff; border: 0.5px solid #E2D8C6; border-radius: 14px; padding: 16px 18px;
+    width: 100%; max-width: 440px; box-shadow: 0 18px 50px rgba(15,20,25,0.25); }
+  .sb-kbt-title { font-size: 15px; font-weight: 800; color: #0F1419; margin-bottom: 10px; }
+  .sb-kbt-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: #8a8a85; font-weight: 400; margin-left: 4px; }
+  .sb-kbt-err { font-size: 12.5px; color: #B3261E; background: rgba(179,38,30,0.08); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
+  .sb-kbt-note { width: 100%; font: inherit; font-size: 13.5px; padding: 9px 11px; border-radius: 9px;
+    border: 0.5px solid #E2D8C6; resize: vertical; box-sizing: border-box; }
+  .sb-kbt-row { display: flex; gap: 8px; margin-top: 8px; }
+  .sb-kbt-input { flex: 1; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 9px;
+    border: 0.5px solid #E2D8C6; background: #fff; min-width: 0; }
+  .sb-kbt-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .sb-kbt-btn { font: inherit; font-size: 13px; font-weight: 700; padding: 8px 16px; border-radius: 9px;
+    border: 0.5px solid #E2D8C6; background: #fff; cursor: pointer; }
+  .sb-kbt-btn:disabled { opacity: 0.5; cursor: default; }
+  .sb-kbt-btn.ghost { color: #8a8a85; border-color: transparent; }
+  .sb-kbt-btn.go { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .sb-kbt-btn.go:not(:disabled):hover { background: #876307; }
 `

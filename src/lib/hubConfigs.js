@@ -31,8 +31,10 @@ const PRODUCTION_HUB = {
     // inscriptions/repairs were polluting "To order"). Bronze 'received' is
     // the bronze terminal state, grouped with Blasted.
     { code: 'to_order',   label: 'To order',        match: (it) => statusDimApplies('stone', _job(it)) && deriveStoneStatus(_job(it)) === 'not_ordered' },
-    { code: 'in_prod',    label: 'In production',   match: (it) => statusDimApplies('stone', _job(it)) && ['ordered', 'in_stock', 'needs_pickup', 'needs_stencil_cut', 'needs_blasting'].includes(deriveStoneStatus(_job(it))) },
-    { code: 'blasted',    label: 'Blasted / Received', match: (it) => statusDimApplies('stone', _job(it)) && ['blasted', 'received'].includes(deriveStoneStatus(_job(it))) },
+    // Arrived is mid-flight for stone (here, not blasted) but TERMINAL for
+    // bronze (arrived = received = truck-ready) — split on the bronze milestone.
+    { code: 'in_prod',    label: 'In production',   match: (it) => statusDimApplies('stone', _job(it)) && (['ordered', 'in_stock', 'needs_pickup', 'needs_stencil_cut', 'needs_blasting'].includes(deriveStoneStatus(_job(it))) || (deriveStoneStatus(_job(it)) === 'arrived' && !milestoneDone(_job(it), 'bronze_received'))) },
+    { code: 'blasted',    label: 'Blasted / Received', match: (it) => statusDimApplies('stone', _job(it)) && (['blasted', 'received'].includes(deriveStoneStatus(_job(it))) || (deriveStoneStatus(_job(it)) === 'arrived' && milestoneDone(_job(it), 'bronze_received'))) },
     { code: 'foundation', label: 'Foundation',      match: (it) => ['need_map', 'not_in', 'drop_off', 'dug', 'poured'].includes(deriveFdnStatus(_job(it))) },
     { code: 'stuck',      label: 'Stuck',           match: (it) => it.pressure?.blocker?.kind === 'production_blocked' },
   ],
@@ -43,7 +45,7 @@ const PRODUCTION_HUB = {
     const fdn = deriveFdnStatus(job)
     const fdnPart = fdn !== 'na' ? ` · FDN: ${fdnStatusLabel(fdn)}` : ''
     if (!stoneApplies) return { label: 'In progress', tone: 'bronze', prose: `In progress${fdnPart}` }
-    const tone = (stone === 'blasted' || stone === 'received') ? 'green' : stone === 'not_ordered' ? 'amber' : 'bronze'
+    const tone = (stone === 'blasted' || stone === 'received' || (stone === 'arrived' && milestoneDone(job, 'bronze_received'))) ? 'green' : stone === 'not_ordered' ? 'amber' : 'bronze'
     return { label: stoneStatusLabel(stone), tone, prose: `Stone: ${stoneStatusLabel(stone)}${fdnPart}` }
   },
   blockingFor: (it) => {
@@ -95,7 +97,8 @@ const INSTALLATION_HUB = {
     // Type-aware production gate (audit B1): bronze completes at received;
     // types with no stone dimension skip the stone blocker entirely.
     if (statusDimApplies('stone', job)) {
-      const stoneDone = milestoneDone(job, 'production_completed') || deriveStoneStatus(job) === 'received'
+      // Bronze completes at received; stone 'arrived' is NOT done (not blasted).
+      const stoneDone = milestoneDone(job, 'production_completed') || milestoneDone(job, 'bronze_received')
       if (!stoneDone) out.push({ key: 'blasted', label: job?.job_type === 'bronze' ? 'Bronze not received' : 'Stone not blasted' })
     } else if (statusDimApplies('design', job)) {
       // Inscription-style work: the gate is the cut stencil, not a stone.

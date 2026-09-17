@@ -34,10 +34,12 @@ export const SHAPES = [
     blurb: 'Flush marker installed at grass level.',
     icon: '',
     standardSizes: [
+      // One notation for the whole flat-marker list (Paul 2026-09-17: the two
+      // trade-notation labels read as a glitch next to the inch ones).
       { code: '16x8x4',     w: 16, d: 8,  t: 4, label: '16″ × 8″ × 4″',         price: 799 },
       { code: '20x10x4',    w: 20, d: 10, t: 4, label: '20″ × 10″ × 4″',        price: 899 },
-      { code: '24x12x4',    w: 24, d: 12, t: 4, label: '2-0 × 1-0 × 0-4',       price: 1100 },
-      { code: '24x14x4',    w: 24, d: 14, t: 4, label: '2-0 × 1-2 × 0-4',       price: 1250 },
+      { code: '24x12x4',    w: 24, d: 12, t: 4, label: '24″ × 12″ × 4″',        price: 1100 },
+      { code: '24x14x4',    w: 24, d: 14, t: 4, label: '24″ × 14″ × 4″',        price: 1250 },
     ],
     canHaveBase: false,
   },
