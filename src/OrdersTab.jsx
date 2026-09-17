@@ -1544,11 +1544,17 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
         </span>
       </div>
 
-      {/* Payment — editable manual override (orders.payment_status) */}
+      {/* Payment — editable manual override (orders.payment_status). The open
+          balance rides UNDER the dropdown in red until paid in full (Paul
+          2026-09-17: "i want to see the payment balance in red when its not
+          paid in full for all the orders here"). */}
       <div onClick={e => e.stopPropagation()}>
         <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${paymentStatusTone(o._payment || 'quoted')}`} value={o._payment || 'quoted'} disabled={busy} onChange={e => onInlinePayment(o, e.target.value)}>
           {PAYMENT_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
         </select>
+        {o._payment !== 'paid_in_full' && (o._balance ?? 0) > 0 && (
+          <div className="sb-tw-owes" title="Open balance on this order">owes {fmtUSD(o._balance)}</div>
+        )}
       </div>
 
       {/* Design (inline → milestone; jobless orders create the job on first
@@ -1906,6 +1912,8 @@ const TW_CSS = `
   .sb-tw-perm-good    { background: #e7f6ee; border-color: #8fceb0; color: #15724a; }
   .sb-tw-perm-neutral { background: #f3f1ec; border-color: #d8d6d1; color: #6a6a66; }
   .sb-tw-perm-bad     { background: #fbedec; border-color: #e39b95; color: #b3261e; }
+  .sb-tw-owes { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700;
+    color: #B3261E; margin-top: 3px; white-space: nowrap; }
 
   /* Orders-redesign cells */
   .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
