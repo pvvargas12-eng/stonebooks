@@ -108,7 +108,9 @@ function prevMonthLabel(now) {
 }
 
 // =============================================================================
-export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder }) {
+// `embedded` (Accounting › Profit, 2026-09-17): skip the page chrome — the
+// Accounting shell already provides the page head and width container.
+export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = false }) {
   const [ov, setOv] = useState(null)
   const [payments, setPayments] = useState([])
   const [expenses, setExpenses] = useState([])
@@ -232,10 +234,10 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder }) {
     return rows
   }, [enrichedRows, statusFilter, cemFilter, typeFilter, needsOnly, search, profSort])
 
-  if (loading) return <div className="sb-page sb-page-wide px"><div className="sb-page-head"><div className="sb-page-eyebrow">Workspace</div><h1 className="sb-page-title">Profit</h1></div><div className="sb-empty">Loading…</div></div>
+  if (loading) return <div className={embedded ? 'px' : 'sb-page sb-page-wide px'}>{!embedded && <div className="sb-page-head"><div className="sb-page-eyebrow">Workspace</div><h1 className="sb-page-title">Profit</h1></div>}<div className="sb-empty">Loading…</div></div>
   if (!ov) return (
-    <div className="sb-page sb-page-wide px">
-      <div className="sb-page-head"><div className="sb-page-eyebrow">Workspace</div><h1 className="sb-page-title">Profit</h1></div>
+    <div className={embedded ? 'px' : 'sb-page sb-page-wide px'}>
+      {!embedded && <div className="sb-page-head"><div className="sb-page-eyebrow">Workspace</div><h1 className="sb-page-title">Profit</h1></div>}
       <div className="px-err">
         <div className="px-err-h">Couldn't load Profit data</div>
         <div className="px-err-b">{loadError || 'Unknown error. Open the browser console for details.'}</div>
@@ -263,11 +265,13 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder }) {
   const activeJobsCount = enrichedRows.filter(r => r.active).length
 
   return (
-    <div className="sb-page sb-page-wide px">
-      <div className="sb-page-head">
-        <div className="sb-page-eyebrow">Workspace</div>
-        <h1 className="sb-page-title">Profit</h1>
-      </div>
+    <div className={embedded ? 'px' : 'sb-page sb-page-wide px'}>
+      {!embedded && (
+        <div className="sb-page-head">
+          <div className="sb-page-eyebrow">Workspace</div>
+          <h1 className="sb-page-title">Profit</h1>
+        </div>
+      )}
 
       {loadError && (
         <div className="px-err-banner">

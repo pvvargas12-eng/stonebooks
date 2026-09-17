@@ -27,6 +27,7 @@ import {
 } from '../lib/stonebooksData'
 import { rowToOrder, generateContractPDF, generateEstimatePDF } from '../SalesMode'
 import ConfirmSend from './ConfirmSend'
+import CatalogPhotoPicker from './CatalogPhotoPicker'
 
 const SIGN_ORIGIN = typeof window !== 'undefined' ? window.location.origin : ''
 
@@ -72,6 +73,11 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
   const [activeSign, setActiveSign] = useState(null)   // reusable pending/viewed link
   const [files, setFiles] = useState([])               // every order attachment (storage listing)
   const [picked, setPicked] = useState(() => new Set((dp?.files || []).map(f => f.path)))
+  // Catalog photos (Paul 2026-09-17): up to 10 designs the family wants to
+  // see, riding IN the email body as a linked photo grid — never attachments,
+  // so the email can't blow a size cap.
+  const [catalogPhotos, setCatalogPhotos] = useState(dp?.catalogPhotos || [])
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [draftId, setDraftId] = useState(draft?.id || null)
   const [savingDraft, setSavingDraft] = useState(false)
@@ -142,7 +148,7 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
     setUploading(false)
   }
   const pickedFiles = files.filter(f => picked.has(f.path))
-  const nothingPicked = !items.contract && !items.estimate && !items.layout && !items.permit && pickedFiles.length === 0
+  const nothingPicked = !items.contract && !items.estimate && !items.layout && !items.permit && pickedFiles.length === 0 && catalogPhotos.length === 0
   const toList = to.split(',').map(s => s.trim()).filter(Boolean)
   const toValid = toList.length > 0 && toList.every(emailish)
 
@@ -154,7 +160,7 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
     const r = await saveEmailDraft({
       id: draftId, orderId, customerId: order.customer_id || order.customer?.id || null,
       kind: mode,
-      payload: { to, note, items, files: pickedFiles.map(f => ({ name: f.name, url: f.url, path: f.path })) },
+      payload: { to, note, items, files: pickedFiles.map(f => ({ name: f.name, url: f.url, path: f.path })), catalogPhotos },
       by: me,
     })
     setSavingDraft(false)
@@ -234,6 +240,26 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
         bullets.push(`<li style="margin:0 0 6px"><b>${String(f.name).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</b> — attached.</li>`)
       }
 
+      if (catalogPhotos.length > 0) {
+        bullets.push(`<li style="margin:0 0 6px"><b>Design options</b> — ${catalogPhotos.length} photo${catalogPhotos.length === 1 ? '' : 's'} from our catalog, below.</li>`)
+      }
+
+      // Catalog photo grid — linked images IN the body (full size on click),
+      // never attachments, so the message stays small at any count.
+      const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      const fullImg = (u) => (u && u.includes('drive.google.com') ? u.replace(/sz=w\d+/i, 'sz=w1200') : u)
+      const photosHtml = catalogPhotos.length === 0 ? '' :
+        `<p style="margin:16px 0 6px"><b>Design options for you to look at:</b></p>` +
+        `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr>` +
+        catalogPhotos.map((p, i) =>
+          `${i > 0 && i % 2 === 0 ? '</tr><tr>' : ''}` +
+          `<td style="padding:6px;vertical-align:top;text-align:center">` +
+          `<a href="${fullImg(p.url)}" style="text-decoration:none;color:#17202a">` +
+          `<img src="${fullImg(p.url)}" alt="${esc(p.name)}" width="260" style="max-width:260px;border-radius:8px;border:1px solid #e2dcc9;display:block" />` +
+          `<span style="font-size:12.5px;font-weight:700">${esc(p.name)}${p.color ? ` · ${esc(p.color)}` : ''}</span></a></td>`
+        ).join('') +
+        `</tr></table>`
+
       const noteHtml = note.trim()
         ? `<p style="margin:0 0 10px">${note.trim().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>')}</p>` : ''
       const html =
@@ -248,7 +274,8 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
             `<p style="margin:18px 0"><a href="${signUrl}" style="background:#1e2d3d;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">Review &amp; sign your contract →</a></p>` +
             `<p style="margin:0 0 10px;color:#6b7682;font-size:12.5px">This link expires${expires}.</p>`
           : '') +
-        `<p style="margin:0">Thank you,<br>Shevchenko Monuments · 732-442-1286</p></div>`
+        photosHtml +
+        `<p style="margin:${catalogPhotos.length ? '16px' : '0'} 0 0">Thank you,<br>Shevchenko Monuments · 732-442-1286</p></div>`
 
       const textParts = ['Hello,']
       if (note.trim()) textParts.push(note.trim())
@@ -264,6 +291,9 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
         textParts.push('Please review and sign your contract at the link below.')
       }
       if (items.contract) textParts.push(`${depositLine}\n\nReview & sign: ${signUrl}\n(This link expires${expires}.)`)
+      if (catalogPhotos.length > 0) {
+        textParts.push('Design options:\n' + catalogPhotos.map(p => `- ${p.name}${p.color ? ` (${p.color})` : ''}: ${p.url}`).join('\n'))
+      }
       textParts.push('Thank you,\nShevchenko Monuments · 732-442-1286')
 
       setGate({ subject, html, text: textParts.join('\n\n'), attachments, signUrl })
@@ -291,6 +321,7 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
       items.contract && 'contract sign link',
       items.estimate && 'estimate', items.layout && 'layout', items.permit && 'permit',
       pickedFiles.length > 0 && `${pickedFiles.length} file${pickedFiles.length === 1 ? '' : 's'}`,
+      catalogPhotos.length > 0 && `${catalogPhotos.length} catalog photo${catalogPhotos.length === 1 ? '' : 's'}`,
     ].filter(Boolean).join(' + ')
     await logOrderActivity(orderId, {
       type: 'change', field: contractMode ? 'Contract for signature' : 'Sales email', newValue: 'Sent',
@@ -367,6 +398,23 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
               </div>
             </div>
 
+            <div className="sb-sem-l" style={{ display: 'block' }}>Catalog photos
+              <span className="sb-sem-l-soft"> — design options in the email body (up to 10; never counts against attachment size)</span>
+              <div className="sb-sem-files">
+                {catalogPhotos.length === 0 && <div className="sb-sem-note">No catalog photos picked.</div>}
+                {catalogPhotos.map(p => (
+                  <div key={p.id} className="sb-sem-file">
+                    <a href={p.url} target="_blank" rel="noreferrer" title="Open photo">{p.name}{p.color ? ` · ${p.color}` : ''}</a>
+                    <button type="button" className="sb-sem-upbtn" style={{ marginTop: 0, padding: '2px 8px' }}
+                      onClick={() => setCatalogPhotos(list => list.filter(x => x.id !== p.id))}>×</button>
+                  </div>
+                ))}
+                <button type="button" className="sb-sem-upbtn" onClick={() => setPickerOpen(true)}>
+                  {catalogPhotos.length ? 'Change catalog photos' : '+ Pick from catalog'}
+                </button>
+              </div>
+            </div>
+
             <label className="sb-sem-l">Add a personal note <span className="sb-sem-l-soft">(optional)</span>
               <textarea className="sb-sem-in sb-sem-body" rows={3} value={note} onChange={e => setNote(e.target.value)}
                 placeholder="e.g. It was a pleasure meeting with you today…" />
@@ -386,6 +434,12 @@ export default function SalesEmailModal({ order, mode = 'sales', draft = null, o
           </>
         )}
       </div>
+
+      {pickerOpen && (
+        <CatalogPhotoPicker initial={catalogPhotos}
+          onDone={(list) => { setCatalogPhotos(list); setPickerOpen(false) }}
+          onClose={() => setPickerOpen(false)} />
+      )}
 
       <ConfirmSend open={!!gate} to={toList.join(', ')} subject={gate?.subject || ''} html={gate?.html || ''}
         busy={busy} onConfirm={doSend} onClose={() => setGate(null)} />

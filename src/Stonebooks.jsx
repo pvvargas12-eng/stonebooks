@@ -43,7 +43,6 @@ const CemeteriesTab = lazy(() => import('./CemeteriesTab'))
 const CalendarTab = lazy(() => import('./CalendarTab'))
 const SchedulerTab = lazy(() => import('./SchedulerTab'))
 const ReportsTab = lazy(() => import('./ReportsTab'))
-const ProfitTab = lazy(() => import('./ProfitTab'))
 const PaymentsTab = lazy(() => import('./PaymentsTab'))
 const AccountingTab = lazy(() => import('./AccountingTab'))
 const VendorsTab = lazy(() => import('./VendorsTab'))
@@ -55,6 +54,7 @@ const OrderForm = lazy(() => import('./OrderForm'))
 const PricingSettings = lazy(() => import('./components/PricingSettings'))
 const HotListTab = lazy(() => import('./HotListTab'))
 const StorageSettings = lazy(() => import('./components/StorageSettings'))
+const CatalogIntakeSettings = lazy(() => import('./components/CatalogIntakeSettings'))
 
 const TabFallback = () => <div className="sb-loading">Loading…</div>
 
@@ -232,13 +232,13 @@ const NAV_PRIMARY = [
   { key: 'accounting', label: 'Accounting' },
   { key: 'vendors',   label: 'Vendors' },
   { key: 'inventory', label: 'Inventory' },
-  { key: 'profit',    label: 'Profit' },
-  { key: 'reports',   label: 'Reports' },
+  // Profit moved INSIDE Accounting (Paul 2026-09-17); Reports moved to Tools.
 ]
 
 const NAV_SECONDARY = [
   { key: 'sales',     label: '+ New sale' },
   { key: 'catalog',   label: 'Catalog' },
+  { key: 'reports',   label: 'Reports' },
   { key: 'reconcile', label: 'Reconcile' },
   { key: 'fixlog',    label: 'Fix Log' },
   { key: 'settings',  label: 'Settings' },
@@ -782,10 +782,10 @@ export default function Stonebooks() {
 {tab === 'email'     && <EmailTab />}
 {tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={openJobSmart} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setOrderDetailReturn(null); setTab('orders') }} />}
-{tab === 'accounting' && <AccountingTab />}
+{tab === 'accounting' && <AccountingTab onOpenJob={openJobSmart} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
 {tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
-{tab === 'profit'    && <ProfitTab onOpenJob={openJobSmart} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
+{/* Profit lives inside Accounting now (2026-09-17). */}
           {tab === 'catalog'   && <CatalogLaunch />}
           {tab === 'reconcile' && <ReconciliationTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Reconcile', tab: 'reconcile' }); setTab('orders') }} />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}
@@ -840,6 +840,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
             { k: 'shop',         l: 'Shop info' },
             { k: 'staff',        l: 'Staff' },
             { k: 'storage',      l: 'Storage' },
+            { k: 'catalog-intake', l: 'Catalog intake' },
             { k: 'about',        l: 'About' },
           ].map(s => (
             <button
@@ -862,6 +863,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {section === 'shop'       && <ShopSettings />}
           {section === 'staff'      && <StaffSettings canEdit={isOwner(user)} />}
           {section === 'storage'    && <StorageSettings />}
+          {section === 'catalog-intake' && <CatalogIntakeSettings />}
           {section === 'about'      && <AboutSettings />}
         </div>
       </div>

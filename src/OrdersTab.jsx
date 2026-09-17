@@ -53,7 +53,9 @@ const ORDERS_BOARD_SELECT =
   'id, status, archived, order_number, created_at, updated_at, signed_at, pricing_locked_at, ' +
   'target_completion_date, primary_lastname, sales_rep, payments, deposit_amount, ' +
   'balance_amount, payment_status, permit_required, permit_status, customer_id, cemetery_id, ' +
-  'next_follow_up, waiting_on, lost_reason, lost_at, ' +
+  // manual_blocker was MISSING here since the HOLD pill shipped — the Sales
+  // row could never show "PUT ON PAUSE" for anyone (the Sandy bug, 2026-09-17).
+  'next_follow_up, waiting_on, lost_reason, lost_at, manual_blocker, ' +
   ORDER_PRICING_COLUMNS + ', ' +
   'customer:customers(id, first_name, last_name, email, phone_primary), cemetery:cemeteries(id, name)'
 const ORDERS_KEY = (archiveView) => `orders:board:${archiveView}`

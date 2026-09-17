@@ -10,8 +10,9 @@
 // Check jobs and nowhere else on this tab.
 // =============================================================================
 import { useState, useEffect, useMemo } from 'react'
-import { getInstallList, getFoundationList, listCheckJobTasks } from '../lib/stonebooksData'
+import { getInstallList, getFoundationList, listCheckJobTasks, countOpenHotListItems } from '../lib/stonebooksData'
 import { todayISO } from './fieldShared'
+import HotListScreen from './HotListScreen'
 import InstallListScreen from './InstallListScreen'
 import ProductionFloorScreen from './ProductionFloorScreen'
 import FoundationsScreen from './FoundationsScreen'
@@ -26,8 +27,8 @@ function dueChipLabel(iso) {
 }
 
 export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComplete }) {
-  const [sub, setSub] = useState('hub')   // 'hub' | 'installs' | 'foundations' | 'inscriptions' | 'bronze' | 'check' | 'production'
-  const [counts, setCounts] = useState({ installs: null, foundations: null, check: null })
+  const [sub, setSub] = useState('hub')   // 'hub' | 'hotlist' | 'installs' | 'foundations' | 'inscriptions' | 'bronze' | 'check' | 'production'
+  const [counts, setCounts] = useState({ installs: null, foundations: null, check: null, hot: null })
   const [checkTasks, setCheckTasks] = useState(null)
 
   // One fetch pass for the tile counts; each independent-failure-safe so one
@@ -35,16 +36,18 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [setList, fdnList, checks] = await Promise.all([
+      const [setList, fdnList, checks, hot] = await Promise.all([
         getInstallList().catch(() => null),
         getFoundationList().catch(() => null),
         listCheckJobTasks().catch(() => null),
+        countOpenHotListItems().catch(() => null),
       ])
       if (cancelled) return
       setCounts({
         installs: setList ? setList.length : null,
         foundations: fdnList ? fdnList.length : null,
         check: checks ? checks.filter(t => t.status !== 'done').length : null,
+        hot,
       })
       setCheckTasks(checks || [])
     })()
@@ -58,6 +61,15 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
       <span style={{ fontSize: 13.5, fontWeight: 700, color: '#6B6456' }}>&#8249; Work</span>
     </button>
   )
+
+  if (sub === 'hotlist') {
+    return (
+      <div>
+        {back}
+        <HotListScreen undo={undo} onOpenJob={(ids) => onOpenJob(ids, 'jobs')} />
+      </div>
+    )
+  }
 
   if (sub === 'installs') {
     return (
@@ -148,6 +160,14 @@ export default function WorkHubScreen({ who, undo, onOpenJob, onOpenTask, onComp
         <div className="fl-greet-sub">Your lists — built here, run here</div>
       </div>
       <div className="fl-tilegrid">
+        {/* HOT-LIST-2 field surface — first tile, wearing the hot color. */}
+        <button type="button" className="fl-tile" style={{ borderColor: '#B3261E' }} onClick={() => setSub('hotlist')}>
+          <div className="fl-tile-main">
+            <div className="fl-tile-name" style={{ color: '#B3261E' }}>Hot list</div>
+            <div className="fl-tile-sub">What's hot right now</div>
+          </div>
+          <div className="fl-tile-count" style={{ color: '#B3261E' }}>{counts.hot == null ? '…' : counts.hot}</div>
+        </button>
         <button type="button" className="fl-tile" onClick={() => setSub('installs')}>
           <div className="fl-tile-main">
             <div className="fl-tile-name">Installations</div>

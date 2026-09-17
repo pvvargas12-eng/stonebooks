@@ -23,7 +23,9 @@ function inferType(name = '', mime = '', url = '') {
   return 'other'
 }
 
-export default function AttachmentPreviewModal({ attachment, onClose }) {
+// `extraAction` ({ label, onClick }) renders beside Download — e.g. "Edit
+// contract" on a contract preview (Paul 2026-09-17).
+export default function AttachmentPreviewModal({ attachment, onClose, extraAction = null }) {
   useEffect(() => {
     if (!attachment) return
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
@@ -41,6 +43,9 @@ export default function AttachmentPreviewModal({ attachment, onClose }) {
         <div style={S.head}>
           <span style={S.title} title={name}>{name || 'Attachment'}</span>
           <div style={S.actions}>
+            {extraAction && (
+              <button type="button" style={S.download} onClick={extraAction.onClick}>{extraAction.label}</button>
+            )}
             <a style={S.download} href={url} download={name || undefined} rel="noreferrer">Download</a>
             <button type="button" style={S.close} onClick={onClose} aria-label="Close preview">×</button>
           </div>

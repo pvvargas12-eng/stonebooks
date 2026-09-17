@@ -12,7 +12,7 @@
 // counted once); write-offs assumed for obvious business spend, meals 50%,
 // gray areas wait in Your-call; the packet preps the filing, the CPA signs.
 // =============================================================================
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from 'react'
 import { supabase } from './lib/supabase'
 import { fetchAllPaged, fmtUSD, fmtDate, getCurrentStaffName, properName } from './lib/stonebooksData'
 import {
@@ -29,7 +29,11 @@ const SECTIONS = [
   { code: 'book',  label: 'Expense book' },
   { code: 'docs',  label: 'Statements & documents' },
   { code: 'tax',   label: 'Tax center' },
+  // Paul 2026-09-17: "profit I want that to be a tab in accounting" — the
+  // whole ProfitTab surface rides here now (its nav entry is gone).
+  { code: 'profit', label: 'Profit' },
 ]
+const ProfitTab = lazy(() => import('./ProfitTab'))
 
 const WRITEOFF_OPTS = [
   { code: 'yes',     label: 'Write off' },
@@ -44,7 +48,7 @@ const woChip = (e) => e.writeoff === 'yes'
 
 const monthOf = (e) => String(e.expense_date || '').slice(0, 7)
 
-export default function AccountingTab() {
+export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
   const [sec, setSec] = useState('inbox')
   const [expenses, setExpenses] = useState(null)
   const [docs, setDocs] = useState(null)
@@ -122,6 +126,12 @@ export default function AccountingTab() {
       </div>
 
       {err && <div className="sb-acct-err">{err}</div>}
+
+      {sec === 'profit' && (
+        <Suspense fallback={<div className="sb-acct-purpose">Loading profit…</div>}>
+          <ProfitTab onOpenJob={onOpenJob} onOpenCemeteryOrder={onOpenCemeteryOrder} embedded />
+        </Suspense>
+      )}
 
       {sec === 'inbox' && (
         <InboxSection loading={loading} rows={inbox} busyId={busyId}

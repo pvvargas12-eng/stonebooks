@@ -4044,7 +4044,12 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
         </div>
       )}
 
-      <AttachmentPreviewModal attachment={preview} onClose={closePreview} />
+      <AttachmentPreviewModal attachment={preview} onClose={closePreview}
+        /* Contract previews get "Edit contract" beside Download (Paul
+           2026-09-17) — jumps straight into the sales wizard for this order. */
+        extraAction={preview && /contract/i.test(preview.name || '') && onEditInSales
+          ? { label: 'Edit contract', onClick: () => { closePreview(); onEditInSales(orderId) } }
+          : null} />
     </div>
   )
 }
