@@ -14,6 +14,7 @@ import {
   loadReportsData, reportDateRange, getReportsLayout, saveReportsLayout, downloadReportCSV,
 } from './lib/reportsData'
 import { REPORTS, REPORTS_BY_ID, REPORT_GROUPS } from './lib/reportDefs'
+import OwnerStatsView from './components/OwnerStatsView'
 import ReportCard, { REPORT_CSS } from './components/ReportCard'
 
 const RANGES = [
@@ -53,7 +54,9 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
   const [rangeCode, setRangeCode] = useState('month')
   const [custom, setCustom] = useState({ start: '', end: '' })
   const [compare, setCompare] = useState(false)
-  const [mode, setMode] = useState('daily')
+  // Owner stats is the LANDING view (Paul 2026-09-17: "true data that i can
+  // use as an owner" — sales/completions by week/month/year, by type).
+  const [mode, setMode] = useState('stats')
   const [group, setGroup] = useState('money')
   const [layout, setLayout] = useState(null)
   const [drill, setDrill] = useState(null)
@@ -132,10 +135,11 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
       {/* Global controls */}
       <div className="rt-controls">
         <div className="rt-modes" role="tablist">
+          <button type="button" className={`rt-mode ${mode === 'stats' ? 'on' : ''}`} onClick={() => setMode('stats')}>Owner stats</button>
           <button type="button" className={`rt-mode ${mode === 'daily' ? 'on' : ''}`} onClick={() => setMode('daily')}>Daily Command</button>
           <button type="button" className={`rt-mode ${mode === 'library' ? 'on' : ''}`} onClick={() => setMode('library')}>Library</button>
         </div>
-        <div className="rt-ctrl-right">
+        {mode !== 'stats' && <div className="rt-ctrl-right">
           <div className="rt-ranges">
             {RANGES.map(r => (
               <button key={r.code} type="button" className={`rt-range ${rangeCode === r.code ? 'on' : ''}`} onClick={() => setRangeCode(r.code)}>{r.label}</button>
@@ -151,8 +155,14 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
           <label className="rt-compare">
             <input type="checkbox" checked={compare} onChange={e => setCompare(e.target.checked)} /> Compare to prev
           </label>
-        </div>
+        </div>}
       </div>
+
+      {/* Owner stats — its own period/type controls, no report cards. */}
+      {mode === 'stats' && (
+        !bundle ? <div className="sb-empty">Loading stats…</div>
+        : <OwnerStatsView bundle={bundle} now={now} />
+      )}
 
       {/* Library group sub-tabs */}
       {mode === 'library' && (
@@ -170,7 +180,7 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
 
       {err && <div className="sb-empty" style={{ color: '#b54040' }}>{err}</div>}
 
-      {!bundle || !layout ? (
+      {mode !== 'stats' && (!bundle || !layout ? (
         <div className="sb-empty">Loading reports…</div>
       ) : visibleIds.length === 0 ? (
         <div className="sb-empty">
@@ -198,7 +208,7 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
             )
           })}
         </div>
-      )}
+      ))}
 
       {groupHasHidden && <div className="rt-hidden-note">Dimmed cards are hidden — use the ⋯ menu to show them.</div>}
 

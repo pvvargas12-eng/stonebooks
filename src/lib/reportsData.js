@@ -20,7 +20,7 @@ import { ORDER_PRICING_COLUMNS } from './pricingCore'
 const REPORT_ORDER_SELECT =
   'id, order_number, status, created_at, signed_at, target_completion_date, ' +
   'payments, deposit_amount, deposit_received_at, balance_amount, balance_received_at, ' +
-  'primary_lastname, deceased, archived, ' +
+  'primary_lastname, deceased, archived, service_types, ' +
   ORDER_PRICING_COLUMNS + ', ' +
   'customer:customers(id, first_name, last_name, email), cemetery:cemeteries(id, name)'
 
