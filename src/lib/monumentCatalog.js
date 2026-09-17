@@ -184,7 +184,8 @@ export const SHAPES = [
 
 // ---- Top shapes (apply to slant/die/upright shapes) -----------------------
 export const TOP_SHAPES = [
-  { code: 'classic-serp', label: 'Classic Serpentine', blurb: 'Gentle S-curve top.' },
+  // Paul 2026-09-17: "instead of Classic Serpentine say Serp for top shape".
+  { code: 'classic-serp', label: 'Serp', blurb: 'Gentle S-curve top.' },
   { code: 'flat-top',     label: 'Flat Top',           blurb: 'Straight horizontal top.' },
   { code: 'roof-top',     label: 'Roof Top',           blurb: 'Peaked roof shape.' },
   { code: 'oval-top',     label: 'Oval Top',           blurb: 'Rounded half-oval top.' },

@@ -144,7 +144,8 @@ const SHAPE_LABELS = {
 }
 
 const TOP_SHAPE_LABELS = {
-  'classic-serp':    'Classic Serpentine',
+  // 'Serp', not 'Classic Serpentine' — the shop's word (Paul 2026-09-17).
+  'classic-serp':    'Serp',
   'flat-top':        'Flat Top',
   'roof-top':        'Roof Top',
   'oval-top':        'Oval Top',

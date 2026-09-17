@@ -1872,12 +1872,14 @@ export const OF_CSS = `
   .of-span-2 { grid-column: 1 / -1; }
   @media (max-width: 1040px) { .of-cards { grid-template-columns: 1fr; } .of-body { padding: 20px 20px 44px; } }
 
-  .of-typebar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
-  .of-typebar-label { font-size: 13px; color: #8a8a85; font-weight: 600; }
-  .of-typeseg { display: inline-flex; gap: 4px; background: #ece9e3; border-radius: 10px; padding: 4px; flex-wrap: wrap; }
-  .of-typebtn { font: inherit; font-size: 13px; font-weight: 500; padding: 7px 14px; border: none; border-radius: 7px; background: none; color: #555; cursor: pointer; }
+  /* Job type — BIG (Paul 2026-09-17: "i want job type and the options to be
+     bigger"): it's the first decision on the form, so it reads like one. */
+  .of-typebar { display: flex; align-items: center; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+  .of-typebar-label { font-size: 17px; color: #4a463f; font-weight: 800; letter-spacing: 0.01em; }
+  .of-typeseg { display: inline-flex; gap: 6px; background: #ece9e3; border-radius: 13px; padding: 6px; flex-wrap: wrap; }
+  .of-typebtn { font: inherit; font-size: 16px; font-weight: 600; padding: 12px 22px; border: none; border-radius: 9px; background: none; color: #555; cursor: pointer; }
   .of-typebtn:hover:not(:disabled) { color: #111; }
-  .of-typebtn.on { background: #fff; color: #9A7209; font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .of-typebtn.on { background: #fff; color: #9A7209; font-weight: 800; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
   .of-typebtn:disabled { cursor: default; opacity: 0.7; }
 
   .of-card { background: #fff; border: 0.5px solid #d8d6d1; border-radius: 14px; padding: 20px 22px; margin-bottom: 16px; }
