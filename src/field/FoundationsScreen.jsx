@@ -13,10 +13,16 @@ import {
   getFoundationList, addToFoundationList, removeFromFoundationList, getJobs,
   deriveFdnStatus, fdnStatusLabel, fdnStatusTone,
   setOrderFdnStatus, orderStatusWritePlan,
+  listFoundationForms, saveFoundationForm,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { buildBaseSizeOnly, composeGraveLocation } from '../lib/monumentCatalog'
 import { familyNameOf, directionsUrl, toneCls } from './fieldShared'
+import {
+  FDN_TEXT_FIELDS, FDN_PICK_FIELDS, FDN_REQUIRED_PICKS,
+  prefillFoundationForm, foundationFormComplete,
+  fdnGraveConfigLabel, fdnStoneTypeLabel,
+} from '../lib/foundationForm'
 
 const DAY_MS = 86400000
 const DEAD_ORDER = new Set(['closed', 'cancelled'])
@@ -73,12 +79,16 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
   const [busy, setBusy] = useState(false)
   // React 19 purity: never Date.now() in render — stamped at load time instead.
   const [todayMs, setTodayMs] = useState(0)
+  // FDN-EFORM: foundation_forms rows by job_id + the job whose form sheet is open.
+  const [forms, setForms] = useState(new Map())
+  const [formJob, setFormJob] = useState(null)
 
   const reload = useCallback(async () => {
     try {
       setTodayMs(Date.now())
-      const [l, j] = await Promise.all([getFoundationList(), getJobs({})])
+      const [l, j, ff] = await Promise.all([getFoundationList(), getJobs({}), listFoundationForms()])
       setList(l || []); setJobs(j || []); setErr(null)
+      setForms(new Map((ff || []).map(f => [f.job_id, f])))
     } catch (e) { setErr(e?.message || 'Could not load the dig list.') }
   }, [])
   useEffect(() => { reload() }, [reload])
@@ -151,6 +161,12 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
   // buttons. Failures still toast via showError.
   const setStatus = async (job, code) => {
     if (deriveFdnStatus(job) === code || busy) return
+    // FDN-EFORM: Paul — "I will not do a foundation if this is not done."
+    // Inform loudly, offer the form, allow the override.
+    if (['dug', 'poured', 'in'].includes(code) && !foundationFormComplete(forms.get(job.id)?.data)) {
+      const go = confirm('No Foundation E-Form on file — Paul requires one for every SHEVCO foundation. Advance anyway?')
+      if (!go) { setFormJob(job); return }
+    }
     setBusy(true)
     const r = await setOrderFdnStatus(job.id, code)
     setBusy(false)
@@ -181,7 +197,7 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
       {(groups || []).map(([cem, rows]) => (
         <div key={cem}>
           <div className="fl-daylabel"><b>{cem}</b> · {rows.length}</div>
-          {rows.map(j => <FdnRow key={j.id} job={j} onPeek={() => setPeekJob(j)} todayMs={todayMs} />)}
+          {rows.map(j => <FdnRow key={j.id} job={j} onPeek={() => setPeekJob(j)} todayMs={todayMs} hasForm={foundationFormComplete(forms.get(j.id)?.data)} />)}
         </div>
       ))}
 
@@ -218,9 +234,28 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
         </>
       )}
 
-      {peekJob && (
+      {peekJob && !formJob && (
         <FdnPeek job={peekJob} onClose={() => setPeekJob(null)}
-          onOpenJob={onOpenJob} onRemove={remove} onSetStatus={setStatus} busy={busy} />
+          onOpenJob={onOpenJob} onRemove={remove} onSetStatus={setStatus} busy={busy}
+          form={forms.get(peekJob.id) || null}
+          onOpenForm={() => setFormJob(peekJob)} />
+      )}
+
+      {formJob && (
+        <FdnFormSheet
+          job={formJob}
+          existing={forms.get(formJob.id) || null}
+          onClose={() => setFormJob(null)}
+          onSaved={(jobId, data) => {
+            setForms(m => {
+              const next = new Map(m)
+              const prev = next.get(jobId) || {}
+              next.set(jobId, { ...prev, job_id: jobId, data, completed_at: prev.completed_at || new Date().toISOString() })
+              return next
+            })
+            setFormJob(null)
+          }}
+        />
       )}
     </div>
   )
@@ -228,7 +263,7 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
 
 // Row: family, then Paul's two facts UNDER the name — base L×W and the grave
 // location (section first). Status chip + dig progress on the right.
-function FdnRow({ job, onPeek, todayMs }) {
+function FdnRow({ job, onPeek, todayMs, hasForm }) {
   const code = deriveFdnStatus(job)
   const idx = STAGE_IDX[code] ?? 0
   const { base, grave } = digFacts(job.order)
@@ -243,6 +278,7 @@ function FdnRow({ job, onPeek, todayMs }) {
       </div>
       <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
         <div className="fl-chips">
+          {!hasForm && <span className="fl-chip fl-c-bad">NO E-FORM</span>}
           <AgeDot n={ageDaysOf(job.order, todayMs)} />
           <span className={`fl-chip ${toneCls(fdnStatusTone(code))}`}>{fdnStatusLabel(code).toUpperCase()}</span>
         </div>
@@ -261,12 +297,14 @@ function FdnRow({ job, onPeek, todayMs }) {
 // the job. Status commits instantly, no undo capsule — the chips reverse
 // themselves. Milestones stay the truth, so the desktop Foundations board
 // and the install gates read the same tap.
-function FdnPeek({ job, onClose, onOpenJob, onRemove, onSetStatus, busy }) {
+function FdnPeek({ job, onClose, onOpenJob, onRemove, onSetStatus, busy, form, onOpenForm }) {
   const o = job.order
   const orderId = job.order_id || o?.id
   const { base, grave } = digFacts(o)
   const dir = directionsUrl(o?.cemetery)
   const code = deriveFdnStatus(job)
+  const formOk = foundationFormComplete(form?.data)
+  const fd = form?.data || {}
   return (
     <>
       <div className="fl-sheet-scrim" onClick={onClose} />
@@ -279,7 +317,21 @@ function FdnPeek({ job, onClose, onOpenJob, onRemove, onSetStatus, busy }) {
         <div style={{ margin: '2px 0 12px' }}>
           {base && <div className="fl-statusrow"><span>Base</span><b>{base}</b></div>}
           <div className="fl-statusrow"><span>Grave</span><b>{grave || 'No section on file'}</b></div>
+          {formOk && (
+            <>
+              {fd.foundation_size && <div className="fl-statusrow"><span>Foundation</span><b>{fd.foundation_size}</b></div>}
+              {fd.grave_config && <div className="fl-statusrow"><span>Grave type</span><b>{fdnGraveConfigLabel(fd.grave_config) || fd.grave_config}</b></div>}
+              {fd.remains && <div className="fl-statusrow"><span>Remains</span><b>{fd.remains === 'cremains' ? 'Cremains' : 'Full body'}</b></div>}
+              {fd.stone_type && <div className="fl-statusrow"><span>Stone</span><b>{fdnStoneTypeLabel(fd.stone_type) || fd.stone_type}</b></div>}
+              {fd.veteran_marker_temp && <div className="fl-statusrow"><span>Vet temp mrkr</span><b>{fd.veteran_marker_temp === 'Y' ? 'Yes' : 'No'}</b></div>}
+              {fd.must_have_map === 'Y' && <div className="fl-statusrow"><span>Map</span><b style={{ color: '#B3261E' }}>MUST HAVE MAP{fd.map_note ? ` — ${fd.map_note}` : ''}</b></div>}
+            </>
+          )}
         </div>
+        <button type="button" className="fl-btn" style={formOk ? {} : { background: '#B3261E', color: '#fff' }}
+          onClick={onOpenForm}>
+          {formOk ? 'Foundation E-Form — view / edit' : 'NO E-FORM — FILL IT NOW (required)'}
+        </button>
         <div className="fl-label">
           Foundation status — now <b style={{ color: '#16150F' }}>{fdnStatusLabel(code)}</b>
         </div>
@@ -304,6 +356,90 @@ function FdnPeek({ job, onClose, onOpenJob, onRemove, onSetStatus, busy }) {
         <button type="button" className="fl-btn fl-btn-ghost" disabled={busy}
           style={{ color: '#B3261E' }} onClick={() => onRemove(job.id)}>
           Remove from list
+        </button>
+      </div>
+    </>
+  )
+}
+
+// The Foundation E-Form as a phone sheet (FDN-EFORM, 2026-09-17) — Paul's
+// paper FOUNDATION sheet: prefilled text facts + the four required picks.
+// Same lib definition as the desktop modal, so the two can never drift.
+function FdnFormSheet({ job, existing, onClose, onSaved }) {
+  const o = job.order
+  const [data, setData] = useState(() => {
+    if (existing?.data && Object.keys(existing.data).length) return existing.data
+    try {
+      return prefillFoundationForm(rowToOrder(o, o?.customer, o?.cemetery))
+    } catch { return prefillFoundationForm(null) }
+  })
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const set = (k, v) => setData(d => ({ ...d, [k]: v }))
+  const complete = foundationFormComplete(data)
+
+  const save = async () => {
+    if (!complete || saving) return
+    setSaving(true); setErr(null)
+    const r = await saveFoundationForm(job.id, o?.id || job.order_id || null, data)
+    setSaving(false)
+    if (!r.ok) { setErr(r.error || 'Save failed'); return }
+    onSaved?.(job.id, data)
+  }
+
+  return (
+    <>
+      <div className="fl-sheet-scrim" onClick={onClose} />
+      <div className="fl-sheet" style={{ maxHeight: '88vh', overflowY: 'auto' }}>
+        <div className="fl-sheet-grab" />
+        <div className="fl-sheet-title">Foundation E-Form</div>
+        <div className="fl-spec" style={{ marginTop: -6, marginBottom: 10 }}>
+          {[familyNameOf(o), o?.order_number].filter(Boolean).join(' · ')} — required before we do this foundation
+        </div>
+        {err && <div className="fl-empty" style={{ color: '#B3261E' }}>{err}</div>}
+
+        {FDN_TEXT_FIELDS.map(f => (
+          <div key={f.key} style={{ marginBottom: 8 }}>
+            <div className="fl-label">{f.label}</div>
+            <input className="fl-input" type="text" value={data[f.key] || ''}
+              onChange={e => set(f.key, e.target.value)} />
+          </div>
+        ))}
+
+        {FDN_PICK_FIELDS.map(f => (
+          <div key={f.key} style={{ marginBottom: 10 }}>
+            <div className="fl-label">
+              {f.label}{FDN_REQUIRED_PICKS.includes(f.key) ? ' *' : ''}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+              {f.options.map(([code, label]) => (
+                <button key={code} type="button"
+                  className={`fl-chip-btn${data[f.key] === code ? ' on' : ''}`}
+                  onClick={() => set(f.key, data[f.key] === code ? '' : code)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {data.must_have_map === 'Y' && (
+          <div style={{ marginBottom: 10 }}>
+            <div className="fl-label">Map note</div>
+            <input className="fl-input" type="text" value={data.map_note || ''}
+              placeholder="Where the map is / what it must show"
+              onChange={e => set('map_note', e.target.value)} />
+          </div>
+        )}
+
+        <button type="button" className="fl-btn" disabled={saving || !complete}
+          style={complete ? {} : { opacity: 0.55 }}
+          onClick={save}>
+          {saving ? 'Saving…' : complete ? 'Save E-Form' : 'Make the * picks to save'}
+        </button>
+        <button type="button" className="fl-btn fl-btn-ghost" disabled={saving} onClick={onClose}>
+          Cancel
         </button>
       </div>
     </>

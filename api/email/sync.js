@@ -418,7 +418,68 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, anchor, more: true, partial: true, results })
   }
 
+  // Retention sweep rides every successful sync run (best-effort, DB-only).
+  let pruned = 0
+  try { pruned = await pruneOldEmailBodies(admin) } catch (e) { console.warn('[email/sync] prune failed:', e?.message) }
+
   // `more` true → not fully drained; hit the endpoint again (or wait for cron) to continue.
   const more = results.some(r => r && r.more)
-  return res.status(200).json({ ok: true, anchor, more, results })
+  return res.status(200).json({ ok: true, anchor, more, pruned, results })
+}
+
+// =============================================================================
+// 6-MONTH EMAIL RETENTION (STORAGE-1, Paul 2026-09-17)
+// =============================================================================
+// "I want every email after 6 months attachments to not be saved... the email
+// traffic can still save... because they are saved in the gmail."
+// Audit truth: attachment BYTES were never stored (messages.attachments is
+// filename/size metadata; files pull from Gmail on demand). The 7 GB was
+// body_html — inline-image HTML the app never renders (thread views read
+// body_text). So retention = null out body_html after 6 months and drop any
+// hydrated attachment-cache files in storage, stamping body_pruned_at.
+// Subject / snippet / body_text / order links keep forever; Gmail keeps the
+// original, and a click on an old attachment re-hydrates from Gmail as always.
+// ~PRUNE_BATCH rows per cron run → a fresh backlog drains in under a day.
+// =============================================================================
+const RETENTION_DAYS = 183
+const PRUNE_BATCH = 300
+const EMAIL_ATT_BUCKET = 'orders-attachments-public'
+
+async function pruneOldEmailBodies(admin) {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400000).toISOString()
+  const { data: victims, error } = await admin
+    .from('messages')
+    .select('id, attachments')
+    .lt('sent_at', cutoff)
+    .is('body_pruned_at', null)
+    .order('sent_at', { ascending: true })
+    .limit(PRUNE_BATCH)
+  if (error) throw new Error(error.message)
+  if (!victims || victims.length === 0) return 0
+
+  const stamp = new Date().toISOString()
+  const plain = []      // no hydrated cache — one bulk update
+  for (const v of victims) {
+    const atts = Array.isArray(v.attachments) ? v.attachments : []
+    const hydrated = atts.some(a => a && a.path)
+    if (!hydrated) { plain.push(v.id); continue }
+    // Hydrated cache: delete the storage files, strip path/url from the
+    // metadata (a later click re-hydrates from Gmail), then prune the row.
+    const paths = atts.filter(a => a && a.path).map(a => a.path)
+    try { await admin.storage.from(EMAIL_ATT_BUCKET).remove(paths) }
+    catch (e) { console.warn('[email/sync] prune: cache remove failed', v.id, e?.message) }
+    const cleaned = atts.map(({ path, url, ...rest }) => rest)
+    const { error: rowErr } = await admin.from('messages')
+      .update({ body_html: null, body_pruned_at: stamp, attachments: cleaned })
+      .eq('id', v.id)
+    if (rowErr) console.warn('[email/sync] prune: row update failed', v.id, rowErr.message)
+  }
+  if (plain.length) {
+    const { error: bulkErr } = await admin.from('messages')
+      .update({ body_html: null, body_pruned_at: stamp })
+      .in('id', plain)
+    if (bulkErr) throw new Error(bulkErr.message)
+  }
+  console.log(`[email/sync] retention: pruned ${victims.length} bodies older than ${RETENTION_DAYS}d`)
+  return victims.length
 }

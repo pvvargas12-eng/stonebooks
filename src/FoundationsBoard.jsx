@@ -18,10 +18,12 @@ import { supabase } from './lib/supabase'
 import {
   getJobs, getFoundationList, addToFoundationList, removeFromFoundationList,
   deriveFdnStatus, fdnStatusLabel, setOrderFdnStatus, orderStatusWritePlan,
-  customerName, getCurrentStaffName, todayISO,
+  customerName, getCurrentStaffName, todayISO, listFoundationForms,
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
 import { buildBaseSpec, composeGraveLocation } from './lib/monumentCatalog'
+import { foundationFormComplete } from './lib/foundationForm'
+import FoundationFormModal from './components/FoundationFormModal'
 
 // The 4 working stages, in dig order. need_map / drop_off jobs read as
 // stage 0 on the stepper but keep their true label as a side tag.
@@ -43,14 +45,18 @@ export default function FoundationsBoard({ onOpenJob }) {
   const [cemFilter, setCemFilter] = useState('all')
   const [busyId, setBusyId] = useState(null)
   const [pinFor, setPinFor] = useState(null)   // job id with the pin form open
+  // FDN-EFORM: foundation_forms rows by job_id + the job whose modal is open.
+  const [forms, setForms] = useState(new Map())
+  const [formJob, setFormJob] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     setErr(null)
     try {
-      const [js, fl] = await Promise.all([getJobs({ limit: 2000 }), getFoundationList()])
+      const [js, fl, ff] = await Promise.all([getJobs({ limit: 2000 }), getFoundationList(), listFoundationForms()])
       setJobs(js || [])
       setList(fl || [])
+      setForms(new Map((ff || []).map(f => [f.job_id, f])))
     } catch (e) {
       setErr(e?.message || 'Failed to load foundations')
     }
@@ -117,6 +123,13 @@ export default function FoundationsBoard({ onOpenJob }) {
   // One-tap status write + optimistic local milestone flip (no refetch).
   const setStage = async (job, code) => {
     if (busyId) return
+    // FDN-EFORM: Paul — "I will not do a foundation if this is not done."
+    // Gates inform, never wall: advancing dig work without a filed E-Form
+    // asks out loud instead of silently blocking.
+    if (['dug', 'poured', 'in'].includes(code) && !foundationFormComplete(forms.get(job.id)?.data)) {
+      const go = confirm('No Foundation E-Form on file for this job — Paul requires one for every SHEVCO foundation. Advance the status anyway?')
+      if (!go) { setFormJob(job); return }
+    }
     setBusyId(job.id)
     setErr(null)
     const res = await setOrderFdnStatus(job.id, code)
@@ -309,6 +322,14 @@ export default function FoundationsBoard({ onOpenJob }) {
                         ))}
                       </div>
                       <div className="fdncc-rowend">
+                        <button
+                          type="button"
+                          className={`fdncc-btn fdncc-btn-sm ${foundationFormComplete(forms.get(j.id)?.data) ? 'fdncc-eform-ok' : 'fdncc-eform-no'}`}
+                          onClick={() => setFormJob(j)}
+                          title={foundationFormComplete(forms.get(j.id)?.data) ? 'View / edit the Foundation E-Form' : 'REQUIRED — fill the Foundation E-Form'}
+                        >
+                          {foundationFormComplete(forms.get(j.id)?.data) ? 'E-Form' : 'NO E-FORM'}
+                        </button>
                         {hasPin && (
                           <a className="fdncc-pinlink" href={`https://maps.apple.com/?daddr=${loc.lat},${loc.lng}`} target="_blank" rel="noreferrer">
                             Open pin
@@ -334,6 +355,23 @@ export default function FoundationsBoard({ onOpenJob }) {
             </div>
           </div>
         ))
+      )}
+
+      {formJob && (
+        <FoundationFormModal
+          job={formJob}
+          existing={forms.get(formJob.id) || null}
+          onClose={() => setFormJob(null)}
+          onSaved={(jobId, data) => {
+            setForms(m => {
+              const next = new Map(m)
+              const prev = next.get(jobId) || {}
+              next.set(jobId, { ...prev, job_id: jobId, data, completed_at: prev.completed_at || new Date().toISOString() })
+              return next
+            })
+            setFormJob(null)
+          }}
+        />
       )}
     </div>
   )
@@ -468,6 +506,10 @@ const FDNCC_CSS = `
   .fdncc-step:disabled { cursor: default; }
 
   .fdncc-rowend { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .fdncc-eform-no { border-color: #7a2420; background: #2a1412; color: #f87171; font-weight: 800; letter-spacing: 0.04em; }
+  .fdncc-eform-no:hover { background: #3a1a17; border-color: #a33027; }
+  .fdncc-eform-ok { border-color: #1f4737; background: #14261f; color: #34d399; }
+  .fdncc-eform-ok:hover { background: #183028; border-color: #2b5f4a; }
   .fdncc-pinlink { font-size: 12px; font-weight: 600; color: #60a5fa; text-decoration: none; white-space: nowrap; }
   .fdncc-pinlink:hover { text-decoration: underline; }
   .fdncc-pinnote { font-size: 12px; color: #8b95a5; padding: 0 4px 10px; margin-top: -4px; }

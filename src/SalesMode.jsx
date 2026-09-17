@@ -272,7 +272,7 @@ const SERVICE_TIMELINES = {
   CIVIC_MEMORIAL: { standardTime: '3–6 months',     rushTime: null,         rushFee: 500, label: 'Civic memorial' },
   MAUSOLEUM:      { standardTime: '6–9 months (large) / 3–6 months', rushTime: null, rushFee: null, label: 'Mausoleum', custom: true },
   MAUSOLEUM_DOOR: { standardTime: '6–9 months (large) / 3–6 months', rushTime: null, rushFee: null, label: 'Mausoleum door', custom: true },
-  INSCRIPTION:    { standardTime: '4–6 weeks',      rushTime: 'within 2 weeks', rushFee: 300, label: 'Inscription' },
+  INSCRIPTION:    { standardTime: 'up to 3 months', rushTime: 'within 2 weeks', rushFee: 300, label: 'Inscription' },
   ACID_WASH:      { standardTime: '3 weeks',        rushTime: 'within 2 weeks', rushFee: 300, label: 'Acid wash' },
   REPAIR:         { standardTime: '4 weeks',        rushTime: 'within 2 weeks', rushFee: 300, label: 'Repair' },
   ADD_PHOTO:      { standardTime: '4–6 weeks',      rushTime: 'within 2 weeks', rushFee: 300, label: 'Add photo' },
@@ -7059,7 +7059,9 @@ function calculateDueDateRaw(order, anchorDate) {
       return { unit: 'months', value: fast ? 5 : 6 }
     }
     if (svc === 'BRONZE')      return { unit: 'months', value: 4 }
-    if (svc === 'INSCRIPTION') return { unit: 'weeks',  value: 8 }
+    // Paul 2026-09-17: inscription default due = 3 months from contract
+    // signing (was 8 weeks). Overridable on the Pricing step as always.
+    if (svc === 'INSCRIPTION') return { unit: 'months', value: 3 }
     if (svc === 'ACID_WASH')   return { unit: 'weeks',  value: 8 }
     if (svc === 'REPAIR')      return { unit: 'months', value: 3 }
     // CIVIC_MEMORIAL, ADD_PHOTO, OTHER — no defined timeline

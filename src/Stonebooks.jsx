@@ -15,7 +15,7 @@ import {
   onAuthStateChange, updatePassword,
 } from './lib/auth'
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
-import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount, getJobLinkIds } from './lib/stonebooksData'
+import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount, getJobLinkIds, countOpenHotListItems } from './lib/stonebooksData'
 import { loadSalesOptions } from './lib/salesOptions'
 import { loadEmployees } from './lib/employees'
 import { setSelectedHub } from './lib/workspaceState'
@@ -53,6 +53,8 @@ const FixLog = lazy(() => import('./FixLog'))
 const ReconciliationTab = lazy(() => import('./ReconciliationTab'))
 const OrderForm = lazy(() => import('./OrderForm'))
 const PricingSettings = lazy(() => import('./components/PricingSettings'))
+const HotListTab = lazy(() => import('./HotListTab'))
+const StorageSettings = lazy(() => import('./components/StorageSettings'))
 
 const TabFallback = () => <div className="sb-loading">Loading…</div>
 
@@ -213,6 +215,9 @@ function LoginScreen() {
 // =============================================================================
 
 const NAV_PRIMARY = [
+  // HOT-LIST-2 (2026-09-17): the Hot List sits ABOVE Today, in its own hot
+  // color (see .sb-nav-item-hot) — Paul: "so it stands out".
+  { key: 'hotlist',   label: 'Hot List' },
   { key: 'today',     label: 'Today' },
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Sales' },
@@ -284,6 +289,8 @@ export default function Stonebooks() {
   const [vendorAlertCount, setVendorAlertCount] = useState(0)
   // Lead work signal: open tasks due-today-or-overdue, badged on the Sales nav item.
   const [leadTaskCount, setLeadTaskCount] = useState(0)
+  // Hot List open-item count — the red badge on the Hot List nav item.
+  const [hotCount, setHotCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
   // /?tab=payments style deep links — the phone app's MORE screen opens
   // desktop sections this way. Unknown keys fall back to today.
@@ -461,6 +468,19 @@ export default function Stonebooks() {
     const todayISO = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
     const load = () => getDueOpenTaskCount(todayISO)
       .then(n => { if (!cancelled) setLeadTaskCount(n) })
+      .catch(() => {})
+    load()
+    const id = setInterval(load, 60000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [user?.id, portal, tab])
+
+  // Staff-only: Hot List open-item badge — same refresh cadence as the other
+  // nav badges; the tab itself also pushes live counts via onCountChange.
+  useEffect(() => {
+    if (!user?.id || portal !== null) return
+    let cancelled = false
+    const load = () => countOpenHotListItems()
+      .then(n => { if (!cancelled) setHotCount(n) })
       .catch(() => {})
     load()
     const id = setInterval(load, 60000)
@@ -694,10 +714,13 @@ export default function Stonebooks() {
               <button
                 key={item.key}
                 type="button"
-                className={`sb-nav-item ${tab === item.key ? 'on' : ''}`}
+                className={`sb-nav-item ${tab === item.key ? 'on' : ''} ${item.key === 'hotlist' ? 'sb-nav-item-hot' : ''}`}
                 onClick={() => handleNav(item.key)}
               >
                 <span>{item.label}</span>
+                {item.key === 'hotlist' && hotCount > 0 && (
+                  <span className="sb-nav-badge sb-nav-badge-hot" title={`${hotCount} item${hotCount === 1 ? '' : 's'} on the hot list`}>{hotCount}</span>
+                )}
                 {item.key === 'vendors' && vendorAlertCount > 0 && (
                   <span className="sb-nav-badge" title={`${vendorAlertCount} new partner request${vendorAlertCount === 1 ? '' : 's'} awaiting triage`}>{vendorAlertCount}</span>
                 )}
@@ -741,6 +764,7 @@ export default function Stonebooks() {
 
         <main className="sb-main">
           <Suspense fallback={<TabFallback />}>
+          {tab === 'hotlist'   && <HotListTab onCountChange={setHotCount} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Hot List', tab: 'hotlist' }); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} returnTo={orderDetailReturn} onReturn={() => { const r = orderDetailReturn; setOrderDetailReturn(null); setOrderDetailId(null); if (r?.tab) setTab(r.tab) }} />}
@@ -815,6 +839,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
             { k: 'account',      l: 'Account' },
             { k: 'shop',         l: 'Shop info' },
             { k: 'staff',        l: 'Staff' },
+            { k: 'storage',      l: 'Storage' },
             { k: 'about',        l: 'About' },
           ].map(s => (
             <button
@@ -836,6 +861,7 @@ function SettingsTab({ user, profile, theme, setTheme, onProfileChange }) {
           {section === 'account'    && <AccountSettings user={user} />}
           {section === 'shop'       && <ShopSettings />}
           {section === 'staff'      && <StaffSettings canEdit={isOwner(user)} />}
+          {section === 'storage'    && <StorageSettings />}
           {section === 'about'      && <AboutSettings />}
         </div>
       </div>
@@ -1275,6 +1301,20 @@ const shellStyles = `
     color: var(--sb-text-on-dark);
     font-weight: 700;
   }
+  /* HOT-LIST-2 — the Hot List nav item wears its own hot color so it can't be
+     missed (Paul: "a tab even above Today in a different color"). */
+  .sb-nav-item-hot {
+    color: #FF8A7A;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .sb-nav-item-hot:hover { background: rgba(179,38,30,0.22); color: #FFB4A8; }
+  .sb-nav-item-hot.on {
+    background: rgba(179,38,30,0.30);
+    color: #FFD9D2;
+    box-shadow: inset 3px 0 0 #FF5C4D;
+  }
+  .sb-nav-badge-hot { background: #B3261E; color: #fff; }
   .sb-sidebar-foot {
     border-top: 0.5px solid rgba(255,255,255,0.06);
     padding-top: 16px;

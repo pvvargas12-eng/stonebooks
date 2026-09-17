@@ -2546,6 +2546,110 @@ export async function removeFromFoundationList(jobId) {
   return { ok: true }
 }
 
+// ── FOUNDATION E-FORMS (2026-09-17, FDN-EFORM) ──────────────────────────────
+// Paul's paper FOUNDATION sheet, digitized: one form per dig-list job, required
+// before we do the foundation. Table: foundation_forms (job_id unique, data
+// jsonb). completed_at set on save — the NO E-FORM chips read its absence.
+
+export async function listFoundationForms() {
+  // Full rows — the payloads are tiny (one small jsonb per dig-list job) and
+  // the board hands `data` straight to the modal for editing.
+  const { data, error } = await supabase
+    .from('foundation_forms')
+    .select('*')
+  if (error) { console.error('listFoundationForms:', error); return [] }
+  return data || []
+}
+
+export async function getFoundationForm(jobId) {
+  const { data, error } = await supabase
+    .from('foundation_forms')
+    .select('*')
+    .eq('job_id', jobId)
+    .maybeSingle()
+  if (error) { console.error('getFoundationForm:', error); return null }
+  return data || null
+}
+
+export async function saveFoundationForm(jobId, orderId, formData) {
+  const by = await getCurrentStaffName()
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('foundation_forms')
+    .upsert({
+      job_id: jobId, order_id: orderId || null, data: formData || {},
+      completed_at: now, completed_by: by, updated_at: now,
+    }, { onConflict: 'job_id' })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// ── HOT LIST (2026-09-17, HOT-LIST-2) — the hand-curated priority board ─────
+// Unlike the membership lists, this is Paul's own "what's hot" board: add and
+// remove by hand, six lanes, items may link a job/order or be free text.
+// Done keeps the row as history; the board reads open rows only.
+
+export const HOT_CATEGORIES = [
+  { code: 'blast',       label: 'Stones to be blasted' },
+  { code: 'set',         label: 'To be set' },
+  { code: 'inscription', label: 'Inscriptions' },
+  { code: 'acid_wash',   label: 'Acid wash' },
+  { code: 'admin',       label: 'Admin' },
+  { code: 'other',       label: 'Other' },
+]
+
+export async function getHotListItems() {
+  const { data, error } = await supabase
+    .from('hot_list_items')
+    .select('*')
+    .is('done_at', null)
+    .order('created_at', { ascending: true })
+  if (error) { console.error('getHotListItems:', error); return [] }
+  return data || []
+}
+
+export async function addHotListItem({ category, title, note, jobId, orderId }) {
+  const added_by = await getCurrentStaffName()
+  const { error } = await supabase
+    .from('hot_list_items')
+    .insert({
+      category, title: title || '—', note: note || null,
+      job_id: jobId || null, order_id: orderId || null, added_by,
+    })
+  // Unique violation = that job is already hot in this lane; double-tap safe.
+  if (error && error.code !== '23505') return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function markHotListItemDone(id) {
+  const done_by = await getCurrentStaffName()
+  const { error } = await supabase
+    .from('hot_list_items')
+    .update({ done_at: new Date().toISOString(), done_by })
+    .eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+export async function removeHotListItem(id) {
+  const { error } = await supabase
+    .from('hot_list_items')
+    .delete()
+    .eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// Open-item count for the sidebar badge — head-only, cheap on every boot.
+export async function countOpenHotListItems() {
+  const { count, error } = await supabase
+    .from('hot_list_items')
+    .select('id', { count: 'exact', head: true })
+    .is('done_at', null)
+  if (error) { console.error('countOpenHotListItems:', error); return 0 }
+  return count || 0
+}
+
 // ── INSTALL WORK-LIST (2026-07-24) — the hand-picked set list ───────────────
 // Built from the field app (Paul: "i want to build my lists from the app").
 // Same doctrine as foundation_list: membership only, marking installed is the
