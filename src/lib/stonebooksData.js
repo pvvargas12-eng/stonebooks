@@ -347,6 +347,7 @@ export async function getMessages(folder = 'INBOX', { limit = 200 } = {}) {
     .from('messages')
     .select('id, gmail_message_id, thread_key, direction, from_email, to_emails, subject, snippet, body_text, body_html, customer_id, order_id, is_read, sent_at, received_at, created_at')
     .eq('direction', direction)
+    .is('hidden_at', null)   // visibility window (STORAGE-1 r2) — aged-out mail stays in the DB, never on screen
     .order('created_at', { ascending: false })
     .limit(limit)
   if (error) { console.warn('[messages] getMessages:', error.message); return { ok: false, error: error.message, messages: [] } }
@@ -361,6 +362,7 @@ export async function getInboxThreads(folder = 'INBOX', { limit = 500 } = {}) {
   const { data, error } = await supabase.from('messages')
     .select('id, direction, from_email, to_emails, subject, snippet, body_text, thread_key, customer_id, is_read, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email)')
     .eq('direction', direction)
+    .is('hidden_at', null)
     .order('created_at', { ascending: false })
     .limit(limit)
   if (error) { console.warn('[messages] getInboxThreads:', error.message); return { ok: false, error: error.message, threads: [] } }
@@ -393,6 +395,7 @@ export async function getInboxThreads(folder = 'INBOX', { limit = 500 } = {}) {
 // reply can set In-Reply-To / References.
 export async function getMessageThread({ customerId, orderId, threadKey } = {}) {
   let q = supabase.from('messages').select('id, gmail_message_id, thread_key, direction, from_email, to_emails, subject, body_text, body_html, has_attachments, attachments, sent_at, received_at, created_at, is_read')
+    .is('hidden_at', null)   // visibility window — hidden mail is off every surface, order threads included
   // Match by customer OR order (Paul, 2026-07-14 — sends that carried only an
   // order_id, e.g. approval links to a non-matching address, must still show
   // on the order's Email traffic).
@@ -544,6 +547,7 @@ export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
   const cols = 'id, direction, from_email, to_emails, subject, snippet, thread_key, customer_id, order_id, is_read, has_attachments, attachments, received_at, sent_at, created_at, customer:customers(id, first_name, last_name, email, phone_primary), order:orders(order_number, cemetery:cemeteries(name))'
   const fetchRows = (withJunk) => supabase.from('messages')
     .select(withJunk ? `${cols}, is_junk` : cols)
+    .is('hidden_at', null)   // visibility window (STORAGE-1 r2)
     .order('received_at', { ascending: false, nullsFirst: false })
     .order('sent_at', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })

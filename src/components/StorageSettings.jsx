@@ -113,23 +113,26 @@ export default function StorageSettings() {
         ))}
       </div>
 
-      <h3 className="sb-storage-sub">Email retention — the 6-month rule</h3>
+      <h3 className="sb-storage-sub">Email retention — the visibility window</h3>
       <div className="sb-storage-panel">
         <p>
           {Number(email.count || 0).toLocaleString()} emails synced, back to <b>{oldest}</b>.
-          Attachments were never stored here — they live in Gmail and pull on demand.
-          The weight is the raw HTML bodies, so emails older than <b>6 months</b> automatically
-          drop their heavy HTML (the app reads the plain text anyway). Sender, subject,
-          full text, and order links keep forever; the original stays in Gmail.
+          The rule: mail <b>not linked to an order disappears from Stonebooks at 6 months</b>;
+          <b> order-linked mail stays up to 2 years</b>. Hidden means hidden, not deleted —
+          the record stays in the database and the original stays in Gmail.
+          Separately, emails older than 6 months drop their heavy HTML weight
+          (the app reads the plain text anyway; attachments always pull from Gmail on demand).
         </p>
         <div className="sb-storage-stats">
-          <div><b>{Number(email.pruned || 0).toLocaleString()}</b><span>already slimmed</span></div>
-          <div><b>{Number(email.prunable || 0).toLocaleString()}</b><span>waiting for the sweep</span></div>
+          <div><b>{Number(email.hidden || 0).toLocaleString()}</b><span>hidden (aged out)</span></div>
+          <div><b>{Number(email.hideable || 0).toLocaleString()}</b><span>aging out next sweeps</span></div>
+          <div><b>{Number(email.pruned || 0).toLocaleString()}</b><span>slimmed</span></div>
+          <div><b>{Number(email.prunable || 0).toLocaleString()}</b><span>to slim</span></div>
         </div>
-        {Number(email.prunable || 0) > 0 && (
+        {(Number(email.prunable || 0) > 0 || Number(email.hideable || 0) > 0) && (
           <p className="sb-storage-muted">
-            The sweep runs with the email sync (every few minutes, ~300 emails per pass) —
-            the backlog clears on its own within a day or so.
+            Both sweeps run with the email sync (every few minutes) — a backlog clears
+            on its own within hours.
           </p>
         )}
       </div>

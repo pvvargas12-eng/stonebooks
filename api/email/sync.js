@@ -418,13 +418,14 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, anchor, more: true, partial: true, results })
   }
 
-  // Retention sweep rides every successful sync run (best-effort, DB-only).
-  let pruned = 0
+  // Retention sweeps ride every successful sync run (best-effort, DB-only).
+  let pruned = 0, hidden = 0
   try { pruned = await pruneOldEmailBodies(admin) } catch (e) { console.warn('[email/sync] prune failed:', e?.message) }
+  try { hidden = await hideOldEmails(admin) } catch (e) { console.warn('[email/sync] hide failed:', e?.message) }
 
   // `more` true → not fully drained; hit the endpoint again (or wait for cron) to continue.
   const more = results.some(r => r && r.more)
-  return res.status(200).json({ ok: true, anchor, more, pruned, results })
+  return res.status(200).json({ ok: true, anchor, more, pruned, hidden, results })
 }
 
 // =============================================================================
@@ -445,14 +446,21 @@ const RETENTION_DAYS = 183
 const PRUNE_BATCH = 300
 const EMAIL_ATT_BUCKET = 'orders-attachments-public'
 
+// Effective-age filter: 76% of rows (backfilled inbound) carry NULL sent_at
+// but a real received_at (audit 2026-09-17 — a sent_at-only filter silently
+// skips 40k rows and most of the 7 GB). PostgREST or-syntax for
+// coalesce(sent_at, received_at) < cutoff.
+const olderThan = (cutoffISO) =>
+  `sent_at.lt.${cutoffISO},and(sent_at.is.null,received_at.lt.${cutoffISO})`
+
 async function pruneOldEmailBodies(admin) {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400000).toISOString()
   const { data: victims, error } = await admin
     .from('messages')
     .select('id, attachments')
-    .lt('sent_at', cutoff)
     .is('body_pruned_at', null)
-    .order('sent_at', { ascending: true })
+    .or(olderThan(cutoff))
+    .order('created_at', { ascending: true })
     .limit(PRUNE_BATCH)
   if (error) throw new Error(error.message)
   if (!victims || victims.length === 0) return 0
@@ -482,4 +490,59 @@ async function pruneOldEmailBodies(admin) {
   }
   console.log(`[email/sync] retention: pruned ${victims.length} bodies older than ${RETENTION_DAYS}d`)
   return victims.length
+}
+
+// =============================================================================
+// EMAIL VISIBILITY WINDOW (STORAGE-1 round 2, Paul 2026-09-17)
+// =============================================================================
+// "i only want emails linked to an order existing over six months to 2 years.
+// if its not linked directly to an order and its older than 6 months remove it
+// from stonebooks (dont delete it just i dont want to see it)."
+// Soft-hide, NEVER a delete: stamp messages.hidden_at when
+//   • order_id IS NULL and effective age > 6 months, or
+//   • effective age > 2 years (even order-linked).
+// Every client reader filters hidden_at IS NULL; the row (and its Gmail
+// original) survives, so un-hiding is just clearing the stamp. Customer-linked
+// without an order counts as NOT linked (Paul: "linked directly to an order").
+// =============================================================================
+const HIDE_UNLINKED_DAYS = 183
+const HIDE_ALL_DAYS = 730
+const HIDE_BATCH = 2000
+
+async function hideOldEmails(admin) {
+  const stamp = new Date().toISOString()
+  const cut6 = new Date(Date.now() - HIDE_UNLINKED_DAYS * 86400000).toISOString()
+  const cut24 = new Date(Date.now() - HIDE_ALL_DAYS * 86400000).toISOString()
+  let total = 0
+
+  // Pass 1 — unlinked mail past 6 months.
+  const p1 = await admin.from('messages')
+    .select('id')
+    .is('hidden_at', null)
+    .is('order_id', null)
+    .or(olderThan(cut6))
+    .limit(HIDE_BATCH)
+  if (p1.error) throw new Error(p1.error.message)
+  // Pass 2 — anything past 2 years, order-linked or not.
+  const p2 = await admin.from('messages')
+    .select('id')
+    .is('hidden_at', null)
+    .not('order_id', 'is', null)
+    .or(olderThan(cut24))
+    .limit(HIDE_BATCH)
+  if (p2.error) throw new Error(p2.error.message)
+
+  const ids = [...new Set([...(p1.data || []), ...(p2.data || [])].map(r => r.id))]
+  if (ids.length === 0) return 0
+  // Chunked stamp — one fat .in() can blow the URL/statement limits.
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500)
+    const { error } = await admin.from('messages')
+      .update({ hidden_at: stamp })
+      .in('id', chunk)
+    if (error) throw new Error(error.message)
+    total += chunk.length
+  }
+  console.log(`[email/sync] visibility: hid ${total} (unlinked>${HIDE_UNLINKED_DAYS}d or all>${HIDE_ALL_DAYS}d)`)
+  return total
 }
