@@ -234,16 +234,20 @@ const CSS = `
     border: 1px solid var(--sb-border, #E2D8C6); background: var(--sb-surface, #fff); color: #6a6a66; cursor: pointer; }
   .ost-chip:hover { border-color: #C9A468; color: #16150F; }
   .ost-chip.on { background: #16150F; border-color: #16150F; color: #C9A468; font-weight: 700; }
-  .ost-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-bottom: 16px; }
-  .ost-card { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #E2D8C6); border-radius: 12px; padding: 12px 14px; text-align: left; font: inherit; }
+  /* Overflow doctrine (Paul 2026-09-17: "i hate seeing words outside of the
+     boxes"): cards clip, money never leaks — wide enough for $XXX,XXX.XX at
+     the value size, and the value ellipsizes rather than escapes. */
+  .ost-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .ost-card { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #E2D8C6); border-radius: 12px; padding: 12px 14px; text-align: left; font: inherit; min-width: 0; overflow: hidden; }
   .ost-card-big { border-left: 3px solid #9A7209; }
   .ost-card-type { cursor: pointer; }
   .ost-card-type:hover { border-color: #C9A468; }
   .ost-card-type.on { border-color: #9A7209; box-shadow: inset 0 0 0 1px #9A7209; }
   .ost-card-l { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a85; }
-  .ost-card-v { font-family: var(--sb-font-mono, 'JetBrains Mono'), monospace; font-size: 26px; font-weight: 700; color: #16150F; margin: 3px 0 2px; }
+  .ost-card-v { font-family: var(--sb-font-mono, 'JetBrains Mono'), monospace; font-size: 21px; font-weight: 700; color: #16150F; margin: 3px 0 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
   .ost-card-s { font-size: 11.5px; color: #8a8a85; }
-  .ost-panel { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #E2D8C6); border-radius: 14px; padding: 16px 18px; }
+  .ost-panel { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #E2D8C6); border-radius: 14px; padding: 16px 18px; overflow-x: auto; }
   .ost-panel-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
   .ost-panel-title { font-size: 14px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
   .ost-grans { display: flex; gap: 6px; margin-left: auto; }

@@ -197,7 +197,7 @@ const CSS = `
   .prack-scrim { position: fixed; inset: 0; background: rgba(15,20,25,0.5); z-index: 1300;
     display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; overflow-y: auto; }
   .prack { background: #fff; border: 0.5px solid #E2D8C6; border-radius: 14px; padding: 18px 20px;
-    width: 100%; max-width: 760px; box-shadow: 0 18px 50px rgba(15,20,25,0.25); }
+    width: 100%; max-width: 760px; box-shadow: 0 18px 50px rgba(15,20,25,0.25); overflow-x: auto; }
   .prack-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
   .prack-eyebrow { font-size: 10.5px; font-weight: 800; letter-spacing: 0.11em; color: #9A7209; }
   .prack-title { font-size: 17px; font-weight: 800; color: #0F1419; margin-top: 2px; font-family: var(--font-m, 'JetBrains Mono'), monospace; }

@@ -187,7 +187,7 @@ export default function PermitLogView({ onOpenOrderDetail }) {
 }
 
 const CSS = `
-  .plog { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #E2D8C6); border-radius: 14px; padding: 18px 20px; }
+  .plog { background: var(--sb-surface, #fff); border: 0.5px solid var(--sb-border, #E2D8C6); border-radius: 14px; padding: 18px 20px; overflow-x: auto; }
   .plog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
   .plog-sub { font-size: 12.5px; color: #8a8a85; margin: 3px 0 12px; max-width: 640px; }
   .plog-csv { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px;
