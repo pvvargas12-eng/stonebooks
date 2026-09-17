@@ -43,6 +43,22 @@ const isWorkingPiece = (c) => {
 // render is the React 19 violation. Current time is read once in load() (todayMs).
 const dateMs = (d) => (d ? new Date(`${String(d).slice(0, 10)}T00:00:00`).getTime() : null)
 
+// Service vocabulary for the list's filter chips — an order carries EVERY
+// service it sells (Paul 2026-09-17: "if theres jobs with 2 things say new
+// stone and acid wash... they must show up for both and on both lists").
+const SERVICE_LABELS = {
+  NEW_STONE: 'New stone', BRONZE: 'Bronze', INSCRIPTION: 'Inscription',
+  ACID_WASH: 'Acid wash', REPAIR: 'Repair', MAUSOLEUM: 'Mausoleum',
+  MAUSOLEUM_DOOR: 'Doors', CIVIC_MEMORIAL: 'Civic', ADD_PHOTO: 'Photo', OTHER: 'Other',
+}
+const servicesOf = (job) => {
+  const st = job?.order?.service_types
+  if (Array.isArray(st) && st.length) return st
+  // Jobless fallback: map the job's own type to a service code.
+  const jt = job?.job_type
+  return jt === 'bronze' ? ['BRONZE'] : jt === 'inscription' ? ['INSCRIPTION'] : jt === 'mausoleum_door' ? ['MAUSOLEUM_DOOR'] : ['NEW_STONE']
+}
+
 function toRow(job) {
   const o = job?.order || null
   const stage = currentStage(job)
@@ -55,10 +71,12 @@ function toRow(job) {
     stage: stage?.fineLabel || stage?.bucketLabel || 'Intake',
     blocker: pressure?.blocker || null,
     updateMs: job.last_update_at ? dateMs(job.last_update_at) : null,
+    services: servicesOf(job),
+    dueMs: dateMs(o?.target_completion_date),
   }
 }
 
-export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dashboard' }) {
+export default function JobsCommandCenter({ onOpenJob, onOpenBoard, onOpenScheduler, view = 'dashboard' }) {
   const isProductionView = view === 'production'
   const [jobs, setJobs] = useState(null)
   const [components, setComponents] = useState(null)   // floor pieces (dies only — the helper excludes bases)
@@ -72,6 +90,11 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
   const [seedBusy, setSeedBusy] = useState(false)
   const [seedResult, setSeedResult] = useState(null)   // B1 one-shot backfill result
   const [agingExpanded, setAgingExpanded] = useState(false)
+  // Job-list controls (Paul 2026-09-17: "sort by type of service, by cemetery
+  // and then by date" + multi-service membership on the filter).
+  const [listSort, setListSort] = useState('date')       // 'date' | 'cemetery' | 'service' | 'family'
+  const [serviceFilter, setServiceFilter] = useState('') // '' = all; else a SERVICE_LABELS code
+  const listRef = useRef(null)
   const reqRef = useRef(0)
 
   const load = useCallback(async () => {
@@ -181,8 +204,38 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
       blocked: pressure.amber, ready_set: metrics.readySet, in_production: metrics.inProd,
       on_track: metrics.onTrack, date_overdue: metrics.dateOverdue,
     }[activeKpi] || metrics.active
-    return pick.map(toRow)
+    let rows = pick.map(toRow)
+    // Multi-membership: a New stone + Acid wash order matches BOTH chips.
+    if (serviceFilter) rows = rows.filter(r => r.services.includes(serviceFilter))
+    const bySort = {
+      date:     (a, b) => (a.dueMs ?? Infinity) - (b.dueMs ?? Infinity),
+      cemetery: (a, b) => (a.cemetery || 'zzz').localeCompare(b.cemetery || 'zzz') || (a.dueMs ?? Infinity) - (b.dueMs ?? Infinity),
+      service:  (a, b) => (SERVICE_LABELS[a.services[0]] || 'zzz').localeCompare(SERVICE_LABELS[b.services[0]] || 'zzz') || (a.dueMs ?? Infinity) - (b.dueMs ?? Infinity),
+      family:   (a, b) => a.family.localeCompare(b.family),
+    }
+    return [...rows].sort(bySort[listSort] || bySort.date)
+  }, [activeKpi, metrics, pressure, serviceFilter, listSort])
+
+  // The service chips only offer what's actually in the current slice.
+  const serviceChips = useMemo(() => {
+    const present = new Set()
+    const pick = {
+      active: metrics.active, due_week: metrics.dueWeek, overdue: pressure.red,
+      blocked: pressure.amber, ready_set: metrics.readySet, in_production: metrics.inProd,
+      on_track: metrics.onTrack, date_overdue: metrics.dateOverdue,
+    }[activeKpi] || metrics.active
+    for (const j of pick) for (const s of servicesOf(j)) if (SERVICE_LABELS[s]) present.add(s)
+    return [...present].sort((a, b) => SERVICE_LABELS[a].localeCompare(SERVICE_LABELS[b]))
   }, [activeKpi, metrics, pressure])
+
+  // KPI/gauge click = filter AND bring the list into view — clicking a tile
+  // used to change an off-screen list, which read as "nothing happens"
+  // (Paul 2026-09-17: "when i click on these things nothing shows up").
+  const pickKpi = useCallback((key) => {
+    setActiveKpi(key)
+    setServiceFilter('')
+    requestAnimationFrame(() => listRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }, [])
 
   // Gauge-segment filters aren't KPI cards; give them their own labels.
   const FILTER_LABELS = { on_track: 'On track', date_overdue: 'Past target date' }
@@ -244,7 +297,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
         {kpis.map(k => (
           <button type="button" key={k.key}
             className={`jobcc-kpi jobcc-kpi-${k.tone} ${activeKpi === k.key ? 'jobcc-kpi-on' : ''}`}
-            onClick={() => setActiveKpi(k.key)}>
+            onClick={() => pickKpi(k.key)}>
             <div className="jobcc-kpi-label">{k.label}</div>
             <div className="jobcc-kpi-value">{loading ? '—' : k.value}</div>
             <div className="jobcc-kpi-sub">{k.sub}</div>
@@ -254,7 +307,7 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
 
       {/* ON-TIME GAUGE + AGING BOTTLENECKS */}
       <div className="jobcc-grid">
-        <OnTimeGauge gauge={gauge} loading={loading} active={activeKpi} onSelect={setActiveKpi} />
+        <OnTimeGauge gauge={gauge} loading={loading} active={activeKpi} onSelect={pickKpi} />
         <section className="jobcc-panel">
           <div className="jobcc-panel-head">
             <span className="jobcc-panel-title">Aging bottlenecks</span>
@@ -288,11 +341,33 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
       {/* PRODUCTION FLOOR — PART 2 placeholder (Dashboard mid-page) */}
       {!isProductionView && floorPanel}
 
-      {/* JOB LIST — reflects the selected KPI */}
-      <section className="jobcc-panel">
+      {/* JOB LIST — reflects the selected KPI; sortable + service-filtered */}
+      <section className="jobcc-panel" ref={listRef}>
         <div className="jobcc-panel-head">
           <span className="jobcc-panel-title">{activeLabel}</span>
           <span className="jobcc-panel-count">{loading ? '—' : listRows.length}</span>
+          {activeKpi === 'ready_set' && onOpenScheduler && (
+            <button type="button" className="jobcc-btn jobcc-sched-btn" onClick={onOpenScheduler}
+              title="Take this list into the Scheduler and build the trips">
+              Build trips in Scheduler →
+            </button>
+          )}
+        </div>
+        <div className="jobcc-listbar">
+          <div className="jobcc-chips">
+            <button type="button" className={`jobcc-chip${serviceFilter === '' ? ' on' : ''}`} onClick={() => setServiceFilter('')}>All</button>
+            {serviceChips.map(s => (
+              <button type="button" key={s} className={`jobcc-chip${serviceFilter === s ? ' on' : ''}`}
+                title="An order with several services shows under each one"
+                onClick={() => setServiceFilter(f => (f === s ? '' : s))}>{SERVICE_LABELS[s]}</button>
+            ))}
+          </div>
+          <div className="jobcc-sorts">
+            <span className="jobcc-sorts-l">Sort</span>
+            {[['date', 'Date'], ['cemetery', 'Cemetery'], ['service', 'Service'], ['family', 'Family']].map(([code, label]) => (
+              <button type="button" key={code} className={`jobcc-chip${listSort === code ? ' on' : ''}`} onClick={() => setListSort(code)}>{label}</button>
+            ))}
+          </div>
         </div>
         {loading ? <div className="jobcc-empty">Loading…</div>
           : listRows.length === 0 ? <div className="jobcc-empty jobcc-empty-ok">✓ Nothing here — all clear.</div>
@@ -300,12 +375,16 @@ export default function JobsCommandCenter({ onOpenJob, onOpenBoard, view = 'dash
             <div className="jobcc-rows">
               {listRows.map(r => (
                 <button type="button" key={r.jobId} className="jobcc-row" onClick={() => onOpenJob?.(r.jobId)}>
-                  <span className="jobcc-row-fam">{r.family}</span>
+                  <span className="jobcc-row-fam">{r.family}
+                    <span className="jobcc-row-svcs">{r.services.map(s => SERVICE_LABELS[s]).filter(Boolean).join(' + ')}</span>
+                  </span>
                   <span className="jobcc-row-stage">{r.stage}</span>
                   {r.blocker
                     ? <span className={`jobcc-tag jobcc-tag-${r.blocker.severity === 'red' ? 'red' : 'amber'}`}>{r.blocker.label}</span>
                     : <span className="jobcc-row-clear">on track</span>}
-                  <span className="jobcc-row-meta">{[r.orderNumber, r.cemetery].filter(Boolean).join(' · ')}</span>
+                  <span className="jobcc-row-meta">
+                    {[r.orderNumber, r.cemetery, r.dueMs ? `due ${new Date(r.dueMs).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' })}` : null].filter(Boolean).join(' · ')}
+                  </span>
                 </button>
               ))}
             </div>
@@ -422,6 +501,17 @@ const JOBCC_CSS = `
   .jobcc-floor-seed { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
   .jobcc-floor-seed-result { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #34d399; }
 
+  .jobcc-listbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .jobcc-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .jobcc-chip { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+    border: 1px solid #2a313c; background: #151a22; color: #8b95a5; cursor: pointer; }
+  .jobcc-chip:hover { color: #e6e9ef; border-color: #3a4452; }
+  .jobcc-chip.on { background: #1a2230; border-color: #3a4452; color: #f4f6fa; font-weight: 700; }
+  .jobcc-sorts { display: flex; align-items: center; gap: 6px; }
+  .jobcc-sorts-l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6f7a8a; margin-right: 2px; }
+  .jobcc-sched-btn { margin-left: auto; border-color: #6b5310; background: #2a2210; color: #e7c86a; }
+  .jobcc-sched-btn:hover { background: #362c14; border-color: #8a6c15; }
+  .jobcc-row-svcs { display: block; font-size: 10.5px; font-weight: 600; color: #8b95a5; margin-top: 1px; }
   .jobcc-rows { display: flex; flex-direction: column; }
   .jobcc-row { text-align: left; font: inherit; cursor: pointer; display: grid; grid-template-columns: 1.4fr 1fr auto 1.3fr; gap: 12px; align-items: center;
     background: transparent; border: none; border-top: 1px solid #1c222b; padding: 9px 4px; color: #e6e9ef; }

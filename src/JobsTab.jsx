@@ -195,7 +195,7 @@ export default function JobsTab({
   // own hub strip hidden — the tab row is the navigation now.
   let body
   if (tab === 'dashboard') {
-    body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} onOpenBoard={() => handleTabChange('production')} /></div>
+    body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} onOpenBoard={() => handleTabChange('production')} onOpenScheduler={() => onSwitchTab?.('scheduler')} /></div>
   } else if (tab === 'production') {
     body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} /></div>
   } else if (tab === 'cutlist') {

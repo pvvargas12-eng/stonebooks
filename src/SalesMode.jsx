@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus } from './lib/stonebooksData'
 import { designTags, rankDiversify } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -1595,11 +1595,12 @@ export async function saveOrder(order) {
     // Recompute order-content-derived milestones on save (idempotent; no-ops when
     // there's no job). Fire-and-forget so it never slows the save.
     if (order.signedAt) ensureDerivedMilestones(order.id).catch(() => {})
-    // Shevco foundation → the dig list, automatically (Paul 2026-07-28).
+    // Dig-list membership rule (Paul 2026-09-17: foundation FEE or Shevco
+    // foundation = on the list; orderNeedsDigList is the one chokepoint).
     // Fire-and-forget + 23505-tolerant, so an autosave loop costs one indexed
-    // lookup only while the foundation is ours; no job yet = no-op (the
+    // lookup only while the rule matches; no job yet = no-op (the
     // createJobFromOrder hook adds it at signing).
-    if (data.foundation_type === 'Our Foundation' || data.foundation_type === 'Strip') {
+    if (orderNeedsDigList(data)) {
       getJobByOrderId(order.id)
         .then(j => (j?.id ? addToFoundationList(j.id) : null))
         .catch(() => {})

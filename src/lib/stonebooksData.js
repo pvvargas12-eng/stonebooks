@@ -2546,6 +2546,22 @@ export async function getFoundationList() {
   return data || []
 }
 
+// The dig-list membership rule (Paul 2026-09-17: "orders that have a
+// foundation fee or are selected for shevco foundation need to be on the
+// foundations list"). Shevco/Strip foundation_type = explicit pick; a NEW
+// STONE order with the foundation calc ON (pricing.foundationCalc, default
+// true — it emits the 'foundation' line item) = we're CHARGING for the pour,
+// so we're pouring it. Cemetery Foundation always opts out.
+export function orderNeedsDigList(order) {
+  if (!order) return false
+  if (order.foundation_type === 'Cemetery Foundation') return false
+  if (order.foundation_type === 'Our Foundation' || order.foundation_type === 'Strip') return true
+  const services = order.service_types || order.serviceTypes || []
+  if (!services.includes('NEW_STONE')) return false
+  const pr = order.pricing || {}
+  return pr.foundationCalc !== false
+}
+
 export async function addToFoundationList(jobId) {
   const added_by = await getCurrentStaffName()
   const { error } = await supabase
@@ -6151,7 +6167,7 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // before a job exists — so the add has to happen HERE, the moment the job
   // is born, no matter which door signed it (desk, iPad, remote backfill).
   // OrderDetail's Foundation-by handler covers changes made after signing.
-  if (order.foundation_type === 'Our Foundation' || order.foundation_type === 'Strip') {
+  if (orderNeedsDigList(order)) {
     try { await addToFoundationList(job.id) } catch (e) { console.warn('[fdn] auto-add to dig list:', e?.message) }
   }
 
