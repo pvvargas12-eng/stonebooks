@@ -11,6 +11,7 @@ import StonePRBuilder from './StonePRBuilder'
 import StonePRPrint from './StonePRPrint'
 import StonePREditor from './StonePREditor'
 import StonePRWorkspace from './StonePRWorkspace'
+import PRAckModal from './PRAckModal'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -36,6 +37,8 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [showRecord, setShowRecord] = useState(false)
   const [printId, setPrintId] = useState(null)
   const [editId, setEditId] = useState(null)
+  // PR-ACK (Paul 2026-09-17): the vendor acknowledgement compare/confirm modal.
+  const [ackPr, setAckPr] = useState(null)
   const [banner, setBanner] = useState(null)
   const [busyId, setBusyId] = useState(null)
 
@@ -153,9 +156,20 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
                     <td>
                       <span className={`ipr-pill ipr-pill-${st}`}>{STATUS_LABEL[st]}</span>
                       {pr.recorded && <span className="ipr-pill ipr-pill-recorded" title="Recorded outside purchase — never writes to orders">REC</span>}
+                      {/* PR-ACK: a submitted/ordered PR isn't official until the
+                          vendor's acknowledgement is compared + confirmed. */}
+                      {!pr.recorded && (st === 'submitted' || st === 'ordered') && !pr.ack_confirmed_at && (
+                        <button type="button" className="ipr-pill ipr-pill-noack" title="Upload the vendor's order acknowledgement and confirm the data" onClick={() => setAckPr(pr)}>NO ACK</button>
+                      )}
+                      {!pr.recorded && pr.ack_confirmed_at && (
+                        <button type="button" className="ipr-pill ipr-pill-ack" title={`Acknowledgement confirmed by ${pr.ack_confirmed_by || 'staff'}`} onClick={() => setAckPr(pr)}>ACK ✓</button>
+                      )}
                     </td>
                     <td className="ipr-actions">
                       <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setPrintId(pr.id)}>Print</button>
+                      {!pr.recorded && st !== 'draft' && st !== 'cancelled' && (
+                        <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setAckPr(pr)}>Ack</button>
+                      )}
                       {st !== 'received' && st !== 'cancelled' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setEditId(pr.id)}>Edit</button>}
                       {!pr.recorded && (st === 'draft' || st === 'ordered') && <button type="button" className="ipr-link ipr-link-go" disabled={busyId === pr.id} onClick={() => doSubmit(pr)}>Submit</button>}
                       {st === 'draft' && <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => markOrdered(pr)}>Mark ordered</button>}
@@ -189,6 +203,11 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
           onSaved={() => { setShowRecord(false); setBanner({ kind: 'ok', text: 'Recorded — the PR is on the books as Ordered and receivable. No order was touched; check Reconcile for differences.' }); load() }} />
       )}
       {printId && <StonePRPrint bulkOrderId={printId} kind={kind} onClose={() => setPrintId(null)} />}
+      {ackPr && (
+        <PRAckModal pr={ackPr}
+          onClose={() => setAckPr(null)}
+          onSaved={() => { setAckPr(null); setBanner({ kind: 'ok', text: 'Acknowledgement confirmed — the PR is official.' }); load() }} />
+      )}
       {editId && (kind === 'stone' ? (
         <StonePRWorkspace mode="edit" bulkOrderId={editId}
           onClose={() => setEditId(null)}
@@ -222,6 +241,10 @@ const IPR_CSS = `
   .ipr-pill-received { background: #e7f3ea; color: #1f7a3d; }
   .ipr-pill-cancelled { background: #f3e6e5; color: #b3261e; }
   .ipr-pill-recorded { background: #ede8f7; color: #6d49b8; margin-left: 5px; }
+  .ipr-pill-noack { background: #fdeced; color: #b3261e; margin-left: 5px; border: none; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+  .ipr-pill-noack:hover { background: #b3261e; color: #fff; }
+  .ipr-pill-ack { background: #e7f3ea; color: #1f7a3d; margin-left: 5px; border: none; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .ipr-pill-ack:hover { background: #1f7a3d; color: #fff; }
   .ipr-head-btns { display: flex; gap: 10px; flex-wrap: wrap; }
   .ipr-actions { display: flex; gap: 12px; flex-wrap: wrap; }
   .ipr-link { background: none; border: none; font: inherit; font-size: 13px; font-weight: 600; color: #9A7209; cursor: pointer; padding: 0; }

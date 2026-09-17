@@ -11195,9 +11195,27 @@ export async function updatePRHeader(bulkOrderId, patch = {}) {
   if (patch.supplier_eta !== undefined) row.supplier_eta = patch.supplier_eta || null
   if (patch.notes !== undefined) row.notes = (patch.notes || '').trim() || null
   if (patch.status !== undefined) row.status = patch.status
+  // PR-ACK (2026-09-17): the vendor acknowledgement's file + confirm stamps.
+  for (const k of ['ack_file_url', 'ack_file_name', 'ack_uploaded_at', 'ack_uploaded_by', 'ack_note', 'ack_confirmed_at', 'ack_confirmed_by']) {
+    if (patch[k] !== undefined) row[k] = patch[k] || null
+  }
   if (Object.keys(row).length === 0) return { ok: true }
   const err = await _bulkOrderUpdate(bulkOrderId, row)
   return err ? { ok: false, error: err.message || String(err) } : { ok: true }
+}
+
+// PR-ACK: upload the vendor's order acknowledgement (PDF/image/email export)
+// for a PR. Same public bucket as order attachments, PR-scoped folder.
+export async function uploadPRAckFile(bulkOrderId, file) {
+  if (!bulkOrderId || !file) return { ok: false, error: 'Missing PR or file' }
+  const safe = String(file.name || 'acknowledgement').replace(/[^\w.-]+/g, '_')
+  const path = `attachments/pr/${bulkOrderId}/${crypto.randomUUID()}_${safe}`
+  const { error } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (error) return { ok: false, error: error.message }
+  const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  return { ok: true, url: data.publicUrl, path, name: safe }
 }
 
 // SUBMIT / CANCEL / DELETE for any PR kind. ONLY 'stone' has an order milestone
