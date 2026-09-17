@@ -1280,16 +1280,24 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       logOrderActivity(orderId, { type: 'change', field: 'Permit status', oldValue: permitStatusLabel(prev), newValue: permitStatusLabel(status), note: 'Permit status changed', actor: staff }).then(() => refreshActivity()).catch(() => {})
       if (job?.id) addJobEvent(job.id, { eventType: 'permit_status_changed', note: `Permit ${permitStatusLabel(prev)} → ${permitStatusLabel(status)}`, payload: { from: prev, to: status }, createdBy: staff }).catch(() => {})
     }
+    // ONE button does everything (Paul 2026-09-17: "Need to be 1 button not
+    // record permit and save, sometimes it doesnt happen — either record or
+    // cancel"): when fee fields carry an amount, Record also books the
+    // outgoing payment. Blank amount = status/dates-only save.
+    if (String(feeDraft.amount ?? '').trim() !== '' && Number(feeDraft.amount) !== 0) {
+      const fr = await recordPermitFee()
+      if (!fr?.ok) return { ok: false, error: fr?.error || 'The permit fee was not recorded — fix it and hit Record again.' }
+    }
     return { ok: true }
   }
   // Record the permit FEE as an OUTGOING expense (outgoing_payments). Deduped at the
-  // DB layer via source_permit_key. Explicit, deliberate money action — separate from
-  // the panel Save. Does NOT touch payments[] and does NOT change balance due.
+  // DB layer via source_permit_key. Runs as part of the quick-edit's single
+  // Record action. Does NOT touch payments[] and does NOT change balance due.
   const recordPermitFee = async () => {
-    if (feeBusy) return
+    if (feeBusy) return { ok: false, error: 'Already recording.' }
     const amt = Number(feeDraft.amount)
-    if (!Number.isFinite(amt) || amt <= 0) { setFeeMsg({ type: 'err', text: 'Enter an amount greater than zero.' }); return }
-    if (!feeDraft.date) { setFeeMsg({ type: 'err', text: 'Enter the paid date.' }); return }
+    if (!Number.isFinite(amt) || amt <= 0) { const t = 'Enter an amount greater than zero.'; setFeeMsg({ type: 'err', text: t }); return { ok: false, error: t } }
+    if (!feeDraft.date) { const t = 'Enter the paid date.'; setFeeMsg({ type: 'err', text: t }); return { ok: false, error: t } }
     setFeeBusy(true); setFeeMsg(null)
     const payee = (feeDraft.payee || '').trim() || cem.name || null
     const filing = {
@@ -1300,8 +1308,8 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     }
     const staff = await getCurrentStaffName()
     const exp = await createPermitOutgoingPayment(order, filing, { cemeteryName: payee, createdBy: staff })
-    if (exp.status === 'skipped') { setFeeBusy(false); setFeeMsg({ type: 'err', text: `Not recorded — ${exp.reason}` }); return }
-    if (exp.status === 'duplicate') { setFeeBusy(false); setFeeMsg({ type: 'err', text: 'This permit fee is already recorded.' }); await loadPermitExpenses(); return }
+    if (exp.status === 'skipped') { setFeeBusy(false); const t = `Not recorded — ${exp.reason}`; setFeeMsg({ type: 'err', text: t }); return { ok: false, error: t } }
+    if (exp.status === 'duplicate') { setFeeBusy(false); const t = 'This permit fee is already recorded.'; setFeeMsg({ type: 'err', text: t }); await loadPermitExpenses(); return { ok: false, error: t } }
     // Record the per-order filing too (Permit Hub "filed" bucket reads orders.permit[]).
     const nextArr = [...(Array.isArray(order.permit) ? order.permit : []), filing]
     await setOrderPermit(orderId, { permit: nextArr })
@@ -1315,6 +1323,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       actor: staff,
     }).then(() => refreshActivity()).catch(() => {})
     if (job?.id) addJobEvent(job.id, { eventType: 'permit_expense_recorded', note: `Permit fee ${fmtUSD(amt)}${filing.ck ? ` ck #${filing.ck}` : ''} → ${payee || 'cemetery'} (outgoing)`, payload: { amount: amt, check: filing.ck, payee }, createdBy: staff }).catch(() => {})
+    return { ok: true }
   }
 
   // Remove a recorded permit fee — deletes the outgoing_payments row (so it
@@ -3081,7 +3090,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
 
           {/* 4b — Permit */}
           <Section id="od-permit" title="Permit & Foundation" headerAction={
-            <CardQuickEdit title="Permit & Foundation" onOpen={seedPermitDraft} onSave={savePermit} width={360}>
+            <CardQuickEdit title="Permit & Foundation" onOpen={seedPermitDraft} onSave={savePermit} saveLabel="Record" width={360}>
               {permitDraft && (() => {
                 const permitOpts = PERMIT_SELECTABLE.has(permitDraft.permit_status)
                   ? PERMIT_STATUS_OPTIONS
@@ -3122,9 +3131,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                       <CqeSelect label="Method" value={feeDraft.method} options={PAY_METHODS} onChange={v => setFeeDraft(f => ({ ...f, method: v }))} />
                     </CqeRow>
                     {feeMsg && <div className="sb-cqe-err">{feeMsg.text}</div>}
-                    <button type="button" className="sb-cqe-btn sb-od-cqe-fee-btn" onClick={recordPermitFee} disabled={feeBusy}>
-                      {feeBusy ? 'Recording…' : 'Record permit payment (outgoing)'}
-                    </button>
+                    <CqeNote>One button does it all: <strong>Record</strong> saves the permit status and dates, and books the fee above when an amount is entered.</CqeNote>
                   </>
                 )
               })()}

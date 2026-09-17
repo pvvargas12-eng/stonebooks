@@ -73,6 +73,13 @@ const ORDER_TYPES = {
     label: 'Acid wash / cleaning', jobType: 'cleaning_repair', serviceKind: 'acid_wash', serviceTypes: ['ACID_WASH'], deceasedVariant: 'repair',
     sections: ['customer', 'cemetery', 'deceased', 'acidwash', 'attachments', 'finance'],
   },
+  // Paul 2026-09-17: "for job type add photo option sometimes people just want
+  // a photo." Rides the inscription job template (SERVICE_TYPE_TO_JOB_TYPE
+  // maps ADD_PHOTO → inscription); the photo itself prices via the add-on.
+  add_photo: {
+    label: 'Add photo', jobType: 'inscription', serviceTypes: ['ADD_PHOTO'], deceasedVariant: 'inscription',
+    sections: ['customer', 'cemetery', 'deceased', 'attachments', 'addons', 'finance'],
+  },
 }
 const TYPE_KEYS = Object.keys(ORDER_TYPES)
 
@@ -109,6 +116,7 @@ const ADDON_SETS = {
   new_monument:           ['etching', 'vase', 'photo', 'bling', 'shape-carved', 'other'],
   additional_inscription: ['title', 'verse', 'photo', 'panel', 'acid_wash', 'etching', 'custom_font', 'other'],
   repair:                 ['acid_wash'],
+  add_photo:              ['photo', 'other'],
 }
 
 // Multi-type combos (Paul, 2026-07-14 — e.g. Inscription + Acid wash on one
@@ -126,7 +134,7 @@ const comboSections = (keys) => {
 // Deceased-card flavor: the richest selected type wins.
 const comboDeceasedVariant = (keys) =>
   (keys.includes('new_monument') || keys.includes('bronze')) ? 'monument'
-    : keys.includes('additional_inscription') ? 'inscription' : 'repair'
+    : (keys.includes('additional_inscription') || keys.includes('add_photo')) ? 'inscription' : 'repair'
 const comboAddonKinds = (keys) => {
   const out = []
   for (const k of keys) for (const a of (ADDON_SETS[k] || [])) if (!out.includes(a)) out.push(a)
@@ -452,6 +460,22 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
             )}
             {sections.includes('repair_stone') && <RepairStoneCard order={order} update={update} updatePricing={updatePricing} />}
             {sections.includes('acidwash') && <AcidWashCard order={order} update={update} updatePricing={updatePricing} />}
+            {/* GET A RUB (Paul 2026-09-17) — for inscription / acid-wash /
+                photo work: saving with this ON mints the "Get a rub" check
+                job + the Need rub design status automatically. */}
+            {(sections.includes('inscription_type') || sections.includes('acidwash') || types.includes('add_photo')) && (
+              <div className="of-span-2 of-rubwrap">
+                <button type="button" className={`of-rub-btn${order.pricing?.needRub ? ' on' : ''}`}
+                  onClick={() => updatePricing({ needRub: !order.pricing?.needRub })}>
+                  {order.pricing?.needRub ? 'RUB REQUESTED — tap to undo' : 'GET A RUB'}
+                </button>
+                <span className="of-rub-hint">
+                  {order.pricing?.needRub
+                    ? 'On save: a "Get a rub" check job lands on the board and the design status reads Need rub.'
+                    : 'Need a rubbing from the existing stone before layout? One tap — the check job creates itself on save.'}
+                </span>
+              </div>
+            )}
 
             {sections.includes('attachments') && <AttachmentsCard order={order} updatePricing={updatePricing} />}
             {sections.includes('addons') && <div className="of-span-2"><AddOnsCard order={order} update={update} updatePricing={updatePricing} kinds={comboAddonKinds(types)} /></div>}
@@ -1882,6 +1906,13 @@ export const OF_CSS = `
   .of-typebtn.on { background: #fff; color: #9A7209; font-weight: 800; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
   .of-typebtn:disabled { cursor: default; opacity: 0.7; }
 
+  .of-rubwrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: #fff;
+    border: 0.5px solid #d8d6d1; border-radius: 14px; padding: 14px 18px; margin-bottom: 16px; }
+  .of-rub-btn { font: inherit; font-size: 16px; font-weight: 800; letter-spacing: 0.03em; padding: 13px 28px;
+    border-radius: 10px; cursor: pointer; background: #fdf3e2; border: 2px solid #b7791f; color: #8a5a12; }
+  .of-rub-btn:hover { background: #f8e8c8; }
+  .of-rub-btn.on { background: #1D9E75; border-color: #1D9E75; color: #fff; }
+  .of-rub-hint { font-size: 12.5px; color: #8a8a85; flex: 1; min-width: 220px; }
   .of-card { background: #fff; border: 0.5px solid #d8d6d1; border-radius: 14px; padding: 20px 22px; margin-bottom: 16px; }
   .of-card-head { margin-bottom: 16px; }
   .of-card-title { font-family: var(--font-d, 'Playfair Display'), Georgia, serif; font-size: 17px; font-weight: 600; color: #111; margin: 0; }

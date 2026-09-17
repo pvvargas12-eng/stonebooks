@@ -4007,6 +4007,39 @@ export async function ensurePermitBuildTask(orderId, formLabel, familyLabel) {
   })
 }
 
+// GET A RUB (Paul 2026-09-17): "add a button to get a rub... automatically
+// when the order is saved the add rub will go to the check job list for need
+// rub and need rub status." Flagging pricing.needRub on an inscription /
+// acid-wash order mints ONE check job (dedup on the open need_rub marker —
+// saveOrder AND createJobFromOrder both call this, double-saves can't
+// double-task). The design-status side (need_rub) is stamped by the callers
+// where a job exists.
+export async function ensureRubTask(orderId) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  const { data: o } = await supabase.from('orders')
+    .select('id, order_number, primary_lastname, status, archived, cemetery:cemeteries(id, name)')
+    .eq('id', orderId).maybeSingle()
+  if (!o || o.archived || ['closed', 'cancelled'].includes(o.status)) return { ok: true, skipped: true }
+  const { data: existing } = await supabase.from('shop_tasks')
+    .select('id, status, deleted_at, details').eq('order_id', orderId).eq('task_type', 'check_job').limit(20)
+  if ((existing || []).some(t => !t.deleted_at && t.status !== 'done' && t.details?.auto === 'need_rub')) {
+    return { ok: true, skipped: true }
+  }
+  const staff = await getCurrentStaffName().catch(() => null)
+  const family = properName(o.primary_lastname || '') || 'order'
+  return addShopTask({
+    title: `Get a rub — ${family}${o.order_number ? ` (${o.order_number})` : ''}`.slice(0, 300),
+    assignee: 'Production', assigneeKind: 'department',
+    orderId, dueDate: todayISO(), createdBy: staff, taskedBy: staff,
+    taskType: 'check_job',
+    details: {
+      cemeteryId: o.cemetery?.id || null, cemeteryName: o.cemetery?.name || null,
+      notes: 'Rub needed from the existing stone before the inscription layout.',
+      auto: 'need_rub',
+    },
+  })
+}
+
 // Auto-task on install completion (Paul 2026-07-24): one Admin task that carries
 // the whole closeout — send the completion email (photo attached), call the
 // family, close out the order. Dedup-checked like ensurePermitBuildTask so the
@@ -5489,6 +5522,10 @@ export const ORDER_CATEGORIES = [
   { code: 'new_stone',       label: 'New stone' },
   { code: 'bronze',          label: 'Bronze services' },
   { code: 'inscription',     label: 'Inscriptions' },
+  // Paul 2026-09-17: "make sure for filters you add photo" — photo work gets
+  // its own chip (multi-membership only; the canonical single category for
+  // the production classifier stays inscription, the job type it rides).
+  { code: 'photo',           label: 'Photo' },
   { code: 'cleaning_repair', label: 'Acid wash/repair' },
   { code: 'mausoleum',       label: 'Mausoleum' },
   { code: 'other',           label: 'Other' },
@@ -5503,7 +5540,7 @@ export const ORDER_CATEGORIES = [
 //   5. nothing resolves (bare draft) → 'other'
 const _SVC_TO_CATEGORY = {
   NEW_STONE: 'new_stone', CIVIC_MEMORIAL: 'new_stone',
-  BRONZE: 'bronze', BRONZE_MARKER: 'bronze', INSCRIPTION: 'inscription', ADD_PHOTO: 'inscription',
+  BRONZE: 'bronze', BRONZE_MARKER: 'bronze', INSCRIPTION: 'inscription', ADD_PHOTO: 'photo',
   ACID_WASH: 'cleaning_repair', REPAIR: 'cleaning_repair',
 }
 const _JT_TO_CATEGORY = {
@@ -5535,7 +5572,9 @@ export function orderCategory(order, job) {
   if (codes.includes('MAUSOLEUM') || codes.includes('MAUSOLEUM_DOOR')) return 'mausoleum'
   const jt = job?.job_type ?? job?.jobType ?? o._jobType ?? o.job_type ?? null
   if (jt && _JT_TO_CATEGORY[jt]) return _JT_TO_CATEGORY[jt]
-  for (const c of codes) { if (_SVC_TO_CATEGORY[c]) return _SVC_TO_CATEGORY[c] }
+  // Canonical single category never returns 'photo' — the production
+  // classifier tracks photo work as inscription (its job type).
+  for (const c of codes) { const cat = _SVC_TO_CATEGORY[c]; if (cat) return cat === 'photo' ? 'inscription' : cat }
   return 'other'
 }
 
@@ -6034,7 +6073,7 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // 2. Load the order.
   const { data: order, error: orderErr } = await supabase
     .from('orders')
-    .select('id, signed_at, service_types, sales_rep, tenant_id, staff_notes, foundation_type')
+    .select('id, signed_at, service_types, sales_rep, tenant_id, staff_notes, foundation_type, pricing')
     .eq('id', orderId)
     .single()
   if (orderErr || !order) return { ok: false, error: orderErr?.message || 'Order not found' }
@@ -6169,6 +6208,13 @@ export async function createJobFromOrder(orderId, { source, allowUnsigned = fals
   // OrderDetail's Foundation-by handler covers changes made after signing.
   if (orderNeedsDigList(order)) {
     try { await addToFoundationList(job.id) } catch (e) { console.warn('[fdn] auto-add to dig list:', e?.message) }
+  }
+
+  // GET A RUB: an order flagged needRub before it had a job gets its check
+  // job + Need rub design status the moment the job is born. Best-effort.
+  if (order.pricing?.needRub) {
+    try { await setOrderDesignStatus(job.id, 'need_rub') } catch (e) { console.warn('[rub] design status:', e?.message) }
+    try { await ensureRubTask(orderId) } catch (e) { console.warn('[rub] task:', e?.message) }
   }
 
   return { ok: true, job, alreadyExisted: false }

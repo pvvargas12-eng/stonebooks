@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, ensureRubTask, setOrderDesignStatus, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus } from './lib/stonebooksData'
 import { designTags, rankDiversify } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -1605,6 +1605,14 @@ export async function saveOrder(order) {
         .then(j => (j?.id ? addToFoundationList(j.id) : null))
         .catch(() => {})
     }
+    // GET A RUB (Paul 2026-09-17): the flagged order auto-mints its check job
+    // (deduped) and stamps Need rub on the job's design status. Fire-and-forget.
+    if (data.pricing?.needRub) {
+      ensureRubTask(order.id).catch(() => {})
+      getJobByOrderId(order.id)
+        .then(j => (j?.id ? setOrderDesignStatus(j.id, 'need_rub') : null))
+        .catch(() => {})
+    }
     return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes, jobTypeSync }
   }
 
@@ -1612,6 +1620,9 @@ export async function saveOrder(order) {
   const { data, error } = await writeOrder((row) => supabase.from('orders').insert(row).select().single())
   if (error) { console.error('insertOrder error:', error); return { ok: false, error } }
   await _ensureOrderCustomerLink(data, customerId)
+  // GET A RUB on a brand-new order — the check job can go out before signing
+  // (the crew fetches the rub while the paperwork cooks). Deduped inside.
+  if (data.pricing?.needRub) ensureRubTask(data.id).catch(() => {})
   return { ok: true, order: rowToOrder(data, order.customer, order.cemetery), customerId, cemeteryId, quotesDropped: dropped.quotes && hadAdditionalQuotes }
 }
 
@@ -4779,6 +4790,28 @@ export function InscriptionStep({ order, update }) {
               </button>
             </>
           )}
+        </Section>
+      )}
+
+      {/* GET A RUB (Paul 2026-09-17) — the loud toggle. Saving the order with
+          this ON mints a check job ("Get a rub") and stamps the design status
+          Need rub automatically (saveOrder + createJobFromOrder hooks). */}
+      {(isInscriptionOnly || order.serviceTypes.includes('ADD_PHOTO') || order.serviceTypes.includes('REPAIR') || order.serviceTypes.includes('ACID_WASH')) && (
+        <Section title="Rubbing" eyebrow="Need a rub from the existing stone?">
+          <button
+            type="button"
+            onClick={() => update({ pricing: { ...order.pricing, needRub: !order.pricing?.needRub } })}
+            style={order.pricing?.needRub
+              ? { font: 'inherit', fontSize: 16, fontWeight: 800, letterSpacing: '0.03em', padding: '14px 26px', borderRadius: 10, cursor: 'pointer', background: '#1D9E75', border: '2px solid #1D9E75', color: '#fff', width: '100%' }
+              : { font: 'inherit', fontSize: 16, fontWeight: 800, letterSpacing: '0.03em', padding: '14px 26px', borderRadius: 10, cursor: 'pointer', background: '#fdf3e2', border: '2px solid #b7791f', color: '#8a5a12', width: '100%' }}
+          >
+            {order.pricing?.needRub ? 'RUB REQUESTED — tap to undo' : 'GET A RUB'}
+          </button>
+          <p className="sm-helper">
+            {order.pricing?.needRub
+              ? 'On save: a "Get a rub" check job lands on the board and the design status reads Need rub.'
+              : 'One tap when the crew needs a rubbing from the stone before the layout can be drawn.'}
+          </p>
         </Section>
       )}
 
