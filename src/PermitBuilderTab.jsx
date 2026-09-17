@@ -29,6 +29,7 @@ import {
 } from './lib/permitBuilder'
 import PermitCanvas from './components/permit/PermitCanvas'
 import PermitSignModal from './components/permit/PermitSignModal'
+import PermitLogView from './components/PermitLogView'
 
 const _todayISO = () => {
   const d = new Date()
@@ -139,6 +140,17 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
   return (
     <div className="pbt-wrap">
       {flash && <div className={`pbt-flash ${flash.err ? 'err' : ''}`}>{flash.text}</div>}
+      {/* PERMIT-LOG (Paul 2026-09-17): "i need a tab for this permit builder
+          and then Permit Log... this is the spreadsheet they still use." */}
+      {(view.name === 'home' || view.name === 'log') && (
+        <div className="pbt-toptabs" role="tablist">
+          <button type="button" className={`pbt-toptab${view.name === 'home' ? ' on' : ''}`} onClick={() => setView({ name: 'home' })}>Permit Builder</button>
+          <button type="button" className={`pbt-toptab${view.name === 'log' ? ' on' : ''}`} onClick={() => setView({ name: 'log' })}>Permit Log</button>
+        </div>
+      )}
+      {view.name === 'log' && (
+        <PermitLogView onOpenOrderDetail={onOpenOrderDetail} />
+      )}
       {view.name === 'home' && (
         <HomeView
           templates={templates} docs={docs} orders={orders} cemeteries={cemeteries}
@@ -186,6 +198,7 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
 
 function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTemplate, onOpenDoc, onBuild, onUploadDoc, onCreateTemplate, onDeleteDoc, say }) {
   const [q, setQ] = useState('')
+  const [docQ, setDocQ] = useState('')
   const [newOpen, setNewOpen] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newCem, setNewCem] = useState('')
@@ -197,7 +210,10 @@ function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTempl
   const results = useMemo(() => {
     const norm = q.trim().toLowerCase()
     if (!norm) {
-      return activeOrders.filter(o => permitNeeded(o)).slice(0, 12)
+      // NEEDED work only (Paul 2026-09-17: "if permit is submitted and
+      // approved get rid of it") — filed permits leave the build list; the
+      // search still reaches every order for re-builds.
+      return activeOrders.filter(o => permitNeeded(o) && !['submitted', 'approved'].includes(o.permit_status)).slice(0, 12)
     }
     return activeOrders.filter(o => {
       const last = (o.primary_lastname || '').toLowerCase()
@@ -209,6 +225,17 @@ function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTempl
   }, [activeOrders, q])
 
   const templatesFor = (order) => templates.filter(t => templateMatchesCemetery(t, order.cemetery_id))
+
+  // Recent permits: searchable, capped at 18 rows (Paul 2026-09-17: "show like
+  // 15-20 then have search option... i dont want to waste data and load time").
+  const docsShown = useMemo(() => {
+    const norm = docQ.trim().toLowerCase()
+    const pool = norm
+      ? docs.filter(d => [d.order?.primary_lastname, customerName(d.order?.customer), d.title, d.template?.title]
+          .filter(Boolean).join(' ').toLowerCase().includes(norm))
+      : docs
+    return pool.slice(0, 18)
+  }, [docs, docQ])
 
   return (
     <div className="pbt-home">
@@ -268,9 +295,13 @@ function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTempl
           }} />
 
         <h2 className="pbt-h2" style={{ marginTop: 22 }}>Recent permits</h2>
+        <input
+          type="search" className="pbt-input" value={docQ} onChange={e => setDocQ(e.target.value)}
+          placeholder="Search recent permits — family, cemetery, form…" style={{ marginBottom: 8 }}
+        />
         <div className="pbt-doclist">
-          {docs.length === 0 && <div className="pbt-empty">Built permits show up here to resume or reprint.</div>}
-          {docs.map(d => (
+          {docsShown.length === 0 && <div className="pbt-empty">{docQ.trim() ? 'No recent permits match.' : 'Built permits show up here to resume or reprint.'}</div>}
+          {docsShown.map(d => (
             <div key={d.id} className="pbt-docrow">
               <button type="button" className="pbt-docrow-open" onClick={() => onOpenDoc(d.id)}>
                 <span className="pbt-orderrow-name">{properName(d.order?.primary_lastname || customerName(d.order?.customer)) || '—'}</span>
@@ -1571,7 +1602,14 @@ const localStyles = `
     border-radius: 9px; padding: 12px 13px;
   }
   .pbt-tplcard:hover { border-color: #9A7209; }
-  .pbt-tplcard-title { font-size: 13.5px; font-weight: 600; color: var(--sb-text, #2C2C2A); }
+  /* Long form names WRAP inside the card — never overflow it (Paul 2026-09-17:
+     "it goes outside the box, go to the next line, make it clean"). */
+  .pbt-tplcard-title { font-size: 13.5px; font-weight: 600; color: var(--sb-text, #2C2C2A);
+    overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
+  .pbt-toptabs { display: flex; gap: 4px; background: #ece9e3; border-radius: 12px; padding: 5px; width: fit-content; margin-bottom: 16px; }
+  .pbt-toptab { font: inherit; font-size: 14.5px; font-weight: 700; padding: 9px 22px; border: none; border-radius: 9px;
+    background: transparent; color: #6a6a66; cursor: pointer; }
+  .pbt-toptab.on { background: #fff; color: #9A7209; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
   .pbt-tplcard-sub { font-size: 12px; color: #9A7209; }
   .pbt-tplcard-meta { font-size: 11px; color: var(--sb-text-muted, #888780); }
 
