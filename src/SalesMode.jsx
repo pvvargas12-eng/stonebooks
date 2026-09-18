@@ -1548,6 +1548,22 @@ export async function saveOrder(order) {
   orderRow.customer_id = customerId || null
   orderRow.cemetery_id = cemeteryId || null
 
+  // SIGNED + PAID can never stay a lead status. Paul's standing definition:
+  // "active means deposit paid and contract signed" — but the New Order form
+  // (and older paths) could save signed_at + a deposit while leaving status
+  // 'draft', making the order INVISIBLE to every work surface that applies
+  // the drafts-never-on-work-lists doctrine (the Irizarry Arlequin bug,
+  // 2026-09-18: 13 signed+paid orders stuck at draft/scoping — none of them
+  // in the PR needs pool, dashboard Active, or hot-list suggestions).
+  // One write chokepoint = the leak can't reopen.
+  {
+    const paidTotal = (Array.isArray(orderRow.payments) ? orderRow.payments : [])
+      .reduce((s, p) => s + (Number(p?.amount) || 0), 0)
+    if (orderRow.signed_at && paidTotal > 0 && ['draft', 'scoping', 'quoted'].includes(orderRow.status)) {
+      orderRow.status = 'contracted'
+    }
+  }
+
   // Deploy-safety: orders.foundation_type (20260617) and orders.quotes (20260618)
   // may not be migrated yet. If a write fails because one of those columns is
   // missing, drop it and retry so order saving never breaks before the migration
