@@ -90,6 +90,20 @@ Top-level tab **"Team Meeting"**. Two render modes, one dataset:
    overdue orders count; active orders count. (OwnerStats + pressure data.)
 9. **Closing** — comments & questions, editable notes box, persisted.
 
+### Round-2 revisions (Paul on the mockup, 2026-10-06)
+- **A sheet and B sheet are SEPARATE slides**, both shown every week: the
+  focus week's sheet leads (badged "THIS IS THE FOCUS WEEK"); the other sheet
+  follows so the cutter works ahead and admin pre-clears blockers.
+- **Schedule review slide** — this week's calendar day by day (runs, digs,
+  inscription days from the Scheduler/work_batches) with blocker callouts,
+  plus the open tasks due this week (shop_tasks) with owner + due chips.
+- **Next week preview slide** — day-by-day shape of NEXT week: which day
+  does what, deliveries (vendor ETAs / PR supplier_eta) and inscriptions
+  placed on their days; an "unscheduled" strip so nothing hides.
+- **Inputs & needs slide** — free inputs typed live in the meeting ("order
+  stencil roll"), saved with the meeting (meeting_notes gains `inputs
+  jsonb[]`), each with one-tap TASK IT → addShopTask with an owner.
+
 Suggested extra Last-Week slides (Paul invited suggestions): money collected
 vs. same week last month; new leads that didn't sign yet (follow-up list);
 closeouts completed; hot-list items cleared.
