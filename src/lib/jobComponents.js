@@ -147,3 +147,13 @@ export function camelOrderForSpec(row) {
     thickness: row.thickness_inches, height: row.height_inches, baseConfig: row.base_config || {},
   }
 }
+
+// The LIVE die spec from an order row — the same math the contract's die line
+// item prints (Paul 2026-10-06: "THE STONE SIZE IN THE LINE ITEM IS THE
+// ACCURATE SIZE AND CUT"). job_components.size is only a seed-time snapshot
+// that goes stale when the order's size is edited later — floor surfaces must
+// prefer this.
+export function dieSpecForOrderRow(row) {
+  if (!row) return null
+  try { return buildDieSpec(camelOrderForSpec(row)) || null } catch { return null }
+}

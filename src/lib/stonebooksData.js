@@ -11,7 +11,7 @@ import { pokePushSender } from './pushPoke'
 import { recordTaskAssigned } from './taskStreak'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
-import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec,
+import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec, dieSpecForOrderRow,
   isValidPhase, nextPhase, prevPhase, phaseLabel, phaseIndex, QC_PHASE, INITIAL_PHASE } from './jobComponents'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
@@ -2225,7 +2225,7 @@ async function _syncInscriptionFloorCut(jobId) {
 }
 // Stone writes resolve the job's vocabulary first (bronze vs standard) —
 // same key-fetch-first pattern as setOrderDesignStatus.
-export async function setOrderStoneStatus(jobId, code) {
+export async function setOrderStoneStatus(jobId, code, { syncFloor = true } = {}) {
   if (!jobId) return { ok: false, error: 'Invalid status change' }
   const { data, error } = await supabase
     .from('job_milestones')
@@ -2245,7 +2245,43 @@ export async function setOrderStoneStatus(jobId, code) {
     if (!installedDone) { try { await addToInstallList(jobId) } catch (e) { console.warn('[bronze] install-queue:', e?.message) } }
     try { await _syncBronzeReceivedFloor(jobId) } catch (e) { console.warn('[bronze] floor sync:', e?.message) }
   }
+  // Paul 2026-10-06 ("the phase in sales doesnt update my production floor"):
+  // the production-stage picks drive the FLOOR BOARD too — the stone-side
+  // twin of the bronze/inscription floor syncs. Forward-only, dies only.
+  if (!isBronze && syncFloor && _STONE_CODE_TO_FLOOR[code]) {
+    try { await _syncNewStoneFloor(jobId, code) } catch (e) { console.warn('[stone] floor sync:', e?.message) }
+  }
   return res
+}
+// Sales Stone column → floor column, Paul's mapping: Needs stencil cut = the
+// stone is up on the line waiting for its stencil (Brought to Line — the
+// bring-up auto-adds it to the Cut list, and the cut list's STONE IS UP alarm
+// covers it); Needs blasting = stencil cut & stuck → the Blasting Queue
+// column (stencil_stuck); Blasted = through the ladder → ready_to_set, which
+// off-floors the piece and auto-joins install_list. Forward-only — a piece
+// already past the target never demotes. Writes carry source 'stone-status'
+// so the component→milestone rollup doesn't echo back (ping-pong guard).
+const _STONE_CODE_TO_FLOOR = { needs_stencil_cut: 'brought_to_line', needs_blasting: 'stencil_stuck', blasted: 'ready_to_set' }
+async function _syncNewStoneFloor(jobId, code) {
+  const phase = _STONE_CODE_TO_FLOOR[code]
+  if (!phase) return
+  const fetchDies = () => supabase.from('job_components')
+    .select('id, track, component_type, current_phase, on_floor')
+    .eq('job_id', jobId).eq('track', 'new_stone').neq('component_type', 'base')
+  let { data: comps } = await fetchDies()
+  // Re-typed orders can carry no new-stone pieces — seed, then retry once.
+  if (!comps || !comps.length) {
+    const { data: j } = await supabase.from('jobs').select('id, order_id, job_type').eq('id', jobId).maybeSingle()
+    if (!j || j.job_type !== 'new_stone' || !j.order_id) return
+    await seedComponentsForOrder(j.order_id, j)
+    ;({ data: comps } = await fetchDies())
+  }
+  const idx = phaseIndex('new_stone', phase)
+  for (const c of (comps || [])) {
+    if (phaseIndex('new_stone', c.current_phase) >= idx) continue
+    if (c.on_floor || phase === 'ready_to_set') await setComponentPhase(c.id, phase, { source: 'stone-status' })
+    else await setComponentOnFloor(c.id, true, { phase, source: 'stone-status' })
+  }
 }
 // The bronze component mirrors the milestone (forward-only — a mounted or
 // delivered piece never demotes back to Bronze Received). Received bronze
@@ -6357,7 +6393,10 @@ export async function getProductionComponents() {
   const { data, error } = await supabase.from('job_components')
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
-      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at, customer:customers(last_name), cemetery:cemeteries(name)),
+      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at,
+        shape, polish_level, granite_color, custom_granite_color, top_shape, sides, standard_size_code,
+        width_inches, depth_inches, thickness_inches, height_inches, base_config,
+        customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name),
       vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
     // THE DIE IS THE STONE (Paul 2026-07-27 "i dont want the bases showing
@@ -6367,8 +6406,17 @@ export async function getProductionComponents() {
     .neq('component_type', 'base')
     .order('track', { ascending: true }).order('sort_order', { ascending: true })
   if (error) { console.warn('[components] floor:', error.message); return [] }
-  // Drop components whose job is closed/cancelled (phantoms after reconciliation).
-  return (data || []).filter(c => !c.job || (c.job.overall_status !== 'closed' && c.job.overall_status !== 'cancelled'))
+  // Drop components whose job is closed/cancelled (phantoms after reconciliation),
+  // and OVERRIDE the seed-time size snapshot with the order's LIVE die spec —
+  // the line-item size is the accurate size and cut (Paul 2026-10-06); the
+  // stored comp.size goes stale the moment the order's dimensions are edited.
+  return (data || [])
+    .filter(c => !c.job || (c.job.overall_status !== 'closed' && c.job.overall_status !== 'cancelled'))
+    .map(c => {
+      if (c.track !== 'new_stone' || !c.order) return c
+      const live = dieSpecForOrderRow(c.order)
+      return live && live !== c.size ? { ...c, size: live } : c
+    })
 }
 
 async function _loadComponent(id) {
@@ -6413,7 +6461,11 @@ async function _rollupNewStoneStatus(jobId) {
     const code = _NEWSTONE_PHASE_TO_STONE[c.current_phase] || 'needs_stencil_cut'
     if (min === null || _STONE_RANK.indexOf(code) < _STONE_RANK.indexOf(min)) min = code
   }
-  if (min) { try { await setOrderStoneStatus(jobId, min) } catch (e) { console.warn('[rollup] stone-status:', e?.message) } }
+  // syncFloor OFF — this write STARTED on the floor; echoing status→floor
+  // would over-advance board pieces (stencil_cut maps to needs_blasting,
+  // whose inverse is stencil_stuck — a plain board move must never jump a
+  // piece into the Blasting Queue by itself).
+  if (min) { try { await setOrderStoneStatus(jobId, min, { syncFloor: false }) } catch (e) { console.warn('[rollup] stone-status:', e?.message) } }
 }
 
 // Blasted-and-approved stones flow straight onto the installation queue
@@ -6473,9 +6525,9 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   })
   if (!r.ok) return r
   await _componentEvent(c, eventType, { note: `${phaseLabel(c.current_phase)} → ${phaseLabel(newPhase)}`, payload: { previous_phase: c.current_phase, new_phase: newPhase }, actor, source })
-  if (c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
-  // Bronze mirrors back to the Stone/Bronze milestone — unless this write CAME
+  // Both mirrors back to the Stone/Bronze milestone — unless this write CAME
   // from the milestone side ('stone-status'), which would ping-pong.
+  if (c.track === 'new_stone' && c.job_id && source !== 'stone-status') await _rollupNewStoneStatus(c.job_id)
   if (c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   await _queueInstallOnReadyToSet(c, newPhase, { actor, source })
   await _closeoutOnInscriptionComplete(c, newPhase)
@@ -6506,7 +6558,7 @@ export async function setComponentOnFloor(id, on, { actor = null, phase = null, 
     note: on ? `Pulled onto the floor${phase ? ` at ${phaseLabel(phase)}` : ''}` : 'Returned to the queue',
     payload: { phase: phase || c.current_phase }, actor, source,
   })
-  if (on && phase && c.track === 'new_stone' && c.job_id) await _rollupNewStoneStatus(c.job_id)
+  if (on && phase && c.track === 'new_stone' && c.job_id && source !== 'stone-status') await _rollupNewStoneStatus(c.job_id)
   if (on && phase && c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   if (on && phase) await _queueInstallOnReadyToSet(c, phase, { actor, source })
   if (on && phase) await _closeoutOnInscriptionComplete(c, phase)

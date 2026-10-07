@@ -92,7 +92,9 @@ export default function InventoryReconcile({ onOpenOrder = null }) {
   const markOrdered = (row) =>
     run(`o:${row.item.id}`, () => reconcileMarkStoneStatus(row.order.id, 'ordered'), `${famOfRow(row.order)} marked stone ordered.`)
   const markReceived = (row) =>
-    run(`r:${row.item.id}`, () => reconcileMarkStoneStatus(row.order.id, 'needs_stencil_cut'), `${famOfRow(row.order)} marked stone received (needs stencil).`)
+    // 'arrived' IS received since the ARRIVED sprint — needs_stencil_cut
+    // claims a designed stencil and (2026-10-06) pulls the stone on-floor.
+    run(`r:${row.item.id}`, () => reconcileMarkStoneStatus(row.order.id, 'arrived'), `${famOfRow(row.order)} marked stone received.`)
   const linkItem = (item, order) =>
     run(`l:${item.id}`, () => updateBulkOrderItem(item.id, { order_id: order.id, family_name: item.family_name || famOfRow(order) }),
       `Line linked to ${famOfRow(order)} (${order.order_number}).`).then(() => { setLinkFor(null); setLinkQ('') })

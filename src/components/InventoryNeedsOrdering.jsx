@@ -238,7 +238,10 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
           <span className="ino-bulk-hint">— sets the stone status on each family's order, then they drop off this list</span>
           <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('ordered', 'ordered')}>Mark ordered</button>
           <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('in_stock', 'in stock')}>Mark in stock</button>
-          <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('needs_stencil_cut', 'received')}>Mark received</button>
+          {/* 'arrived' IS received since the ARRIVED sprint — the old
+              needs_stencil_cut alias claimed a designed stencil AND (since
+              2026-10-06) would pull the stone onto the floor board. */}
+          <button type="button" className="ino-bulk-act" disabled={bulkBusy} onClick={() => bulkStatus('arrived', 'received')}>Mark received</button>
           <button type="button" className="ino-bulk-clear" disabled={bulkBusy} onClick={() => setSel(new Set())}>Clear</button>
           {bulkBusy && <span className="ino-muted">Working…</span>}
         </div>
