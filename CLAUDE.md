@@ -1,5 +1,9 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## INCIDENT #6 (2026-10-07, ~30 min): Production floor rendered EMPTY — one bad column name in the widened embed
+
+FLOOR-SIZE-TRUTH widened getProductionComponents' order embed with `custom_granite_color` — **not a column on orders** (camelOrderForSpec reads `row.custom_granite_color`, but that was always an undefined property read off a `select('*')`, never a named column). PostgREST 400'd the ENTIRE floor query ("column orders_1.custom_granite_color does not exist") → the catch returned [] → board + queue log rendered empty for ~30 min and Paul thought his hand-built floor was wiped. **ZERO data was touched** (40 on-floor pieces, 771 components, all intact) — fixed by removing the column (2e50a1d), select runtime-verified both ways (fixed=200, old shape reproduces the 400). **RULE (the PERF-1 discipline, now mandatory): any edit to a PostgREST select/embed string is runtime-verified against prod (curl the encoded select with the anon key — 200 with [] proves the columns; 400 names the bad one) BEFORE pushing. A bundle-marker grep proves the code shipped, not that the query runs. And when a board reads empty with counts at 0, check the fetch's console.warn path before assuming data loss.**
+
 ## Fix FLOOR-CUT-RETIRED + NEEDS-FIXING + SET-PICKER-V2 (2026-10-07, round 2)
 
 Paul: "remove cut from production floor don't need that one, also i want to be able to add Needs Fixing Blocker... three dots in the corner... also for add to be set... I need to see status Ready to set in green, then blockers, anything in install list... difference between bronze service and newstone... this little menu is basically worthless... then from things on that list we will group by cemetery and do the daily planning of installs"
