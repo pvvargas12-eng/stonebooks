@@ -53,6 +53,7 @@ const ReconciliationTab = lazy(() => import('./ReconciliationTab'))
 const OrderForm = lazy(() => import('./OrderForm'))
 const PricingSettings = lazy(() => import('./components/PricingSettings'))
 const HotListTab = lazy(() => import('./HotListTab'))
+const TeamMeetingTab = lazy(() => import('./TeamMeetingTab'))
 const StorageSettings = lazy(() => import('./components/StorageSettings'))
 const CatalogIntakeSettings = lazy(() => import('./components/CatalogIntakeSettings'))
 
@@ -219,6 +220,8 @@ const NAV_PRIMARY = [
   // color (see .sb-nav-item-hot) — Paul: "so it stands out".
   { key: 'hotlist',   label: 'Hot List' },
   { key: 'today',     label: 'Today' },
+  // TEAM-MEETING-1 (2026-10-06): the Monday/Friday meeting + A/B week plans.
+  { key: 'teammeeting', label: 'Team Meeting' },
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Sales' },
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
@@ -765,6 +768,7 @@ export default function Stonebooks() {
         <main className="sb-main">
           <Suspense fallback={<TabFallback />}>
           {tab === 'hotlist'   && <HotListTab onCountChange={setHotCount} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Hot List', tab: 'hotlist' }); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
+          {tab === 'teammeeting' && <TeamMeetingTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Team Meeting', tab: 'teammeeting' }); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} returnTo={orderDetailReturn} onReturn={() => { const r = orderDetailReturn; setOrderDetailReturn(null); setOrderDetailId(null); if (r?.tab) setTab(r.tab) }} />}
