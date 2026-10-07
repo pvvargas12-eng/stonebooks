@@ -126,12 +126,15 @@ Top-level tab **"Team Meeting"**. Two render modes, one dataset:
   services / Inscriptions / Other, each with its owed $ (multi-membership,
   the OwnerStats math).
 
-### Productivity add-ons (proposed 2026-10-06, Paul to confirm)
-1. **Carryover strip** — any blocker or missed item from LAST meeting that is
-   still open auto-appears at the top of This Week in red: "still open since
-   Monday." Nothing dies in the minutes.
-2. **Promise-vs-delivery score** — one number per week (done ÷ planned) with
-   a 12-week sparkline on Last Week Review. The discipline metric.
+### Productivity add-ons — PAUL CONFIRMED 1 + 2 FOR BUILD ONE (2026-10-06); 3–7 parked
+1. **Carryover strip [IN SCOPE]** — any blocker or missed item from LAST
+   meeting that is still open auto-appears at the top of This Week in red:
+   "still open since Monday." Nothing dies in the minutes. (Derivation: last
+   meeting's week_plan_items with outcome missed/blocked + their blockers,
+   re-checked live — resolved ones drop off automatically.)
+2. **Promise-vs-delivery score [IN SCOPE]** — one number per week
+   (done ÷ planned from week_plan_items outcomes) with a 12-week sparkline
+   on Last Week Review. The discipline metric.
 3. **Money minute** — top 5 open balances with a call owner each, on the
    Sales slide. The meeting doubles as the collections engine.
 4. **Capacity line on each sheet** — crew-days available vs. job-days
