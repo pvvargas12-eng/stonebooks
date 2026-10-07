@@ -108,6 +108,21 @@ Top-level tab **"Team Meeting"**. Two render modes, one dataset:
   stencil roll"), saved with the meeting (meeting_notes gains `inputs
   jsonb[]`), each with one-tap TASK IT → addShopTask with an owner.
 
+### Round-4 revisions (Paul on the mockup, 2026-10-06)
+- **LIGHT MODE is the default** (cream/ink/gold house palette); dark stays a
+  toggle for the shop TV. Long sheets scroll — show every row, no "+N more".
+- **Dealer tag:** jobs originating from a vendor/dealer order (Hall Monuments,
+  the trade portal) wear a BRIGHT violet tag next to the order number on every
+  sheet row — pulled from the vendor-orders link.
+- **"Need design" tile drills in place:** tap → the names, each with stone
+  state (ARRIVED / ORDERED / IN STOCK / NOT ORDERED) + age-in-days chip, so
+  design triage is one look (arrived + old = design first).
+- **Adding to A/B sheets happens ON the sheets:** every lane header carries
+  "+ Add to this sheet" → picker over the same candidate pools as the Hot
+  List (search + suggested). Same add affordance will also live on the
+  Jobs lists (install list / dig list rows get "add to week plan").
+- Mockup artifact (v4): https://claude.ai/artifact/VEwkBzdKh6GLqfxQ8Khtg7
+
 Suggested extra Last-Week slides (Paul invited suggestions): money collected
 vs. same week last month; new leads that didn't sign yet (follow-up list);
 closeouts completed; hot-list items cleared.
