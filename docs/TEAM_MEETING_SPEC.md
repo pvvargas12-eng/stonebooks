@@ -121,7 +121,27 @@ Top-level tab **"Team Meeting"**. Two render modes, one dataset:
   "+ Add to this sheet" → picker over the same candidate pools as the Hot
   List (search + suggested). Same add affordance will also live on the
   Jobs lists (install list / dig list rows get "add to week plan").
-- Mockup artifact (v4): https://claude.ai/artifact/VEwkBzdKh6GLqfxQ8Khtg7
+- Mockup artifact (v5): https://claude.ai/artifact/VEwkBzdKh6GLqfxQ8Khtg7
+- **Admin slide: Active orders break down by type** — New stone / Bronze
+  services / Inscriptions / Other, each with its owed $ (multi-membership,
+  the OwnerStats math).
+
+### Productivity add-ons (proposed 2026-10-06, Paul to confirm)
+1. **Carryover strip** — any blocker or missed item from LAST meeting that is
+   still open auto-appears at the top of This Week in red: "still open since
+   Monday." Nothing dies in the minutes.
+2. **Promise-vs-delivery score** — one number per week (done ÷ planned) with
+   a 12-week sparkline on Last Week Review. The discipline metric.
+3. **Money minute** — top 5 open balances with a call owner each, on the
+   Sales slide. The meeting doubles as the collections engine.
+4. **Capacity line on each sheet** — crew-days available vs. job-days
+   planned, so overcommitment is visible BEFORE Friday locks the plan.
+5. **Meeting archive** — every meeting auto-saves a snapshot (PDF/PPTX) so
+   "what did we commit to on Sept 8" is one click.
+6. **Slide owners** — each slide carries a name (money = Denise, schedule =
+   Collin...) printed on the slide; owners present their own numbers.
+7. **Decision log** — one-liners recorded next to Inputs ("we will pour
+   Fairview Thursday regardless of map") — kills re-litigating.
 
 Suggested extra Last-Week slides (Paul invited suggestions): money collected
 vs. same week last month; new leads that didn't sign yet (follow-up list);
