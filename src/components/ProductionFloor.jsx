@@ -570,7 +570,11 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail 
           {comp.on_floor && <button type="button" onClick={() => run(a => setComponentOnFloor(comp.id, false, { actor: a }))}>↩ Return to queue</button>}
           {comp.blocker
             ? <button type="button" onClick={() => run(a => setComponentBlocker(comp.id, null, { actor: a }))}>Clear blocker</button>
-            : <button type="button" onClick={() => openMode('block')}>Mark blocked</button>}
+            : <>
+                {/* Paul 2026-10-07: one-click Needs-fixing category — no typing. */}
+                <button type="button" onClick={() => run(a => setComponentBlocker(comp.id, 'NEEDS FIXING', { actor: a }))}>Mark NEEDS FIXING</button>
+                <button type="button" onClick={() => openMode('block')}>Mark blocked…</button>
+              </>}
           <button type="button" onClick={() => openMode('note')}>Add / edit note</button>
           {comp.job_id && <button type="button" onClick={() => onOpenJob?.(comp.job_id)}>Open job</button>}
           {comp.order_id && <button type="button" onClick={() => onOpenOrderDetail?.(comp.order_id, 'production')}>Open order</button>}

@@ -57,6 +57,30 @@ function laneDone(job, lane) {
   return false
 }
 const LANE_TO_BATCH_KIND = { set: 'setting', foundation: 'foundation_trip', inscription: 'inscription', blast: 'blasting' }
+// The four install gates as chips — READY TO SET green when nothing reads
+// red (Paul 2026-10-07: the picker must show ready vs blockers, it's the
+// daily install-planning surface).
+function setGateChips(job) {
+  const o = job?.order
+  if (!o) return []
+  const g = installGates(o, job)
+  const out = []
+  if (g.blasted === false) out.push({ t: 'NOT BLASTED', tone: 'bad' })
+  if (g.fdn === false) out.push({ t: `FDN ${fdnStatusLabel(g.fdnCode || deriveFdnStatus(job)).toUpperCase()}`, tone: 'bad' })
+  if (g.permit === false) out.push({ t: 'PERMIT NOT APPROVED', tone: 'bad' })
+  const bal = rowBalanceDue(o)
+  if (g.paid === false && bal > 0) out.push({ t: `OWES ${fmtUSD(bal)}`, tone: 'bad' })
+  if (!out.length) out.push({ t: 'READY TO SET', tone: 'good' })
+  return out
+}
+// New stone vs bronze at a glance (Paul 2026-10-07: "i want to see
+// difference between bronze service and newstone").
+const TRACK_TAG = {
+  new_stone: { t: 'NEW STONE', cls: 'ns' }, bronze: { t: 'BRONZE SERVICES', cls: 'br' },
+  inscription: { t: 'INSCRIPTION', cls: 'other' }, mausoleum_door: { t: 'DOORS', cls: 'other' },
+  cleaning_repair: { t: 'REPAIR', cls: 'other' },
+}
+const trackTagOf = (job) => TRACK_TAG[job?.job_type] || null
 const SERVICE_LABELS = {
   NEW_STONE: 'New stone', BRONZE: 'Bronze services', INSCRIPTION: 'Inscriptions',
   ACID_WASH: 'Acid wash', REPAIR: 'Repair', MAUSOLEUM: 'Mausoleum',
@@ -226,15 +250,7 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
     const o = job?.order
     const out = []
     if (!job || !o) return out
-    if (it.lane === 'set') {
-      const g = installGates(o, job)
-      if (g.blasted === false) out.push({ t: 'NOT BLASTED', tone: 'bad' })
-      if (g.fdn === false) out.push({ t: `FDN ${fdnStatusLabel(g.fdnCode || deriveFdnStatus(job)).toUpperCase()}`, tone: 'bad' })
-      if (g.permit === false) out.push({ t: 'PERMIT NOT APPROVED', tone: 'bad' })
-      const bal = rowBalanceDue(o)
-      if (g.paid === false && bal > 0) out.push({ t: `OWES ${fmtUSD(bal)}`, tone: 'bad' })
-      if (!out.length) out.push({ t: 'READY TO SET', tone: 'good' })
-    }
+    if (it.lane === 'set') out.push(...setGateChips(job))
     if (it.lane === 'foundation') {
       const code = deriveFdnStatus(job)
       out.push({ t: fdnStatusLabel(code).toUpperCase(), tone: code === 'in' ? 'good' : code === 'dug' || code === 'poured' ? 'warn' : 'bad' })
@@ -445,6 +461,7 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
         <button type="button" className="sb-tm-row-open" onClick={() => openRow(it)} disabled={!o}>
           <span className="sb-tm-fam">{o ? familyOf(o) : (it.title || '—')}</span>
           {o?.order_number && <span className="sb-tm-num">{o.order_number}</span>}
+          {trackTagOf(job) && <span className={`sb-tm-tag ${trackTagOf(job).cls}`}>{trackTagOf(job).t}</span>}
           {it.vendor_label && <span className="sb-tm-chip vendor">{it.vendor_label.toUpperCase()}</span>}
           {(job?.cemetery?.name || o?.cemetery?.name) && <span className="sb-tm-cem">{job?.cemetery?.name || o?.cemetery?.name}</span>}
         </button>
@@ -470,6 +487,26 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
     const p = planFor(planKey)
     const items = (p?.items || []).filter(i => i.lane === lane)
     const meta = PLAN_LANES.find(l => l.code === lane)
+    // The set lane GROUPS BY CEMETERY (Paul 2026-10-07: "from things on that
+    // list we will group by cemetery and do the daily planning of installs")
+    // — one block = one trip's worth of work.
+    let body
+    if (lane === 'set' && items.length) {
+      const groups = new Map()
+      for (const it of items) {
+        const job = jobById.get(it.job_id)
+        const cem = job?.cemetery?.name || job?.order?.cemetery?.name || (it.vendor_label ? `Dealer — ${it.vendor_label}` : 'No cemetery on file')
+        const g = groups.get(cem) || []; g.push(it); groups.set(cem, g)
+      }
+      body = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([cem, rows]) => (
+        <div key={cem} className="sb-tm-cemgroup">
+          <div className="sb-tm-cemgroup-h">{cem} <span className="sb-tm-cem">· {rows.length}</span></div>
+          {rows.map(it => renderPlanRow(it))}
+        </div>
+      ))
+    } else {
+      body = items.map(it => renderPlanRow(it))
+    }
     return (
       <div key={lane} className="sb-tm-lane">
         <div className="sb-tm-lane-h">
@@ -478,7 +515,7 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           <button type="button" className="sb-tm-add" onClick={() => setPicker({ planKey, lane })}>+ Add to this sheet</button>
         </div>
         {items.length === 0 && <div className="sb-tm-empty">Nothing on this lane yet — hit + Add.</div>}
-        {items.map(it => renderPlanRow(it))}
+        {body}
       </div>
     )
   }
@@ -841,7 +878,16 @@ function AddPicker({ lane, jobs, installList, fdnList, cutList, vendorItems, tod
       pool = pool.filter(j => [j.order.primary_lastname, customerName(j.order.customer), j.order.order_number, j.cemetery?.name || j.order.cemetery?.name]
         .filter(Boolean).join(' ').toLowerCase().includes(needle))
     }
-    return pool.sort((a, b) => (ageDays(b.order, todayMs) ?? 0) - (ageDays(a.order, todayMs) ?? 0)).slice(0, 30)
+    // The set picker is the daily install-planning surface (Paul 2026-10-07):
+    // every row wears READY TO SET green or its red gate chips + the
+    // new-stone/bronze tag, ready rows first, then oldest first.
+    const rows = pool.map(j => {
+      const chips = lane === 'set' ? setGateChips(j) : []
+      return { j, chips, ready: chips.length === 1 && chips[0].tone === 'good' }
+    })
+    rows.sort((a, b) => (b.ready ? 1 : 0) - (a.ready ? 1 : 0)
+      || (ageDays(b.j.order, todayMs) ?? 0) - (ageDays(a.j.order, todayMs) ?? 0))
+    return rows.slice(0, lane === 'set' ? 60 : 30)
   }, [q, lane, jobs, installList, fdnList, cutList, excludeJobIds, todayMs])
   const dealers = useMemo(() => (vendorItems || [])
     .filter(v => !['completed', 'cancelled'].includes(v.status))
@@ -857,12 +903,14 @@ function AddPicker({ lane, jobs, installList, fdnList, cutList, vendorItems, tod
         <h3>Add to {PLAN_LANES.find(l => l.code === lane)?.label}</h3>
         <input className="sb-tm-input" autoFocus placeholder="Search family, order #, cemetery…" value={q} onChange={e => setQ(e.target.value)} />
         <div className="sb-tm-picklist">
-          {candidates.map(j => (
+          {candidates.map(({ j, chips }) => (
             <div key={j.id} className="sb-tm-row">
               <span className="sb-tm-fam">{familyOf(j.order)}</span>
               <span className="sb-tm-num">{j.order.order_number}</span>
+              {trackTagOf(j) && <span className={`sb-tm-tag ${trackTagOf(j).cls}`}>{trackTagOf(j).t}</span>}
               <span className="sb-tm-cem">{j.cemetery?.name || j.order.cemetery?.name || ''}</span>
               <span className="sb-tm-chips">
+                {chips.map((c, i) => <span key={i} className={`sb-tm-chip ${c.tone}`}>{c.t}</span>)}
                 <button type="button" className="sb-tm-minibtn gold" onClick={() => onAdd({ jobId: j.id, orderId: j.order.id, title: `${familyOf(j.order)} — ${j.order.order_number || ''}` })}>+ ADD</button>
               </span>
             </div>
@@ -965,6 +1013,12 @@ const CSS = `
   .sb-tm-chip.bad  { color: #B3261E; background: rgba(179,38,30,0.1); }
   .sb-tm-chip.quiet { color: #6a6a66; background: #F0EBDD; }
   .sb-tm-chip.vendor { color: #fff; background: #6D28D9; font-weight: 900; letter-spacing: 0.07em; }
+  .sb-tm-tag { font: 800 9.5px var(--sb-font-sans, 'Lato'); letter-spacing: 0.07em; border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
+  .sb-tm-tag.ns { color: #1D6FA8; background: rgba(29,111,168,0.12); }
+  .sb-tm-tag.br { color: #8A5A12; background: rgba(183,121,31,0.15); }
+  .sb-tm-tag.other { color: #6a6a66; background: #F0EBDD; }
+  .sb-tm-cemgroup { margin-bottom: 10px; }
+  .sb-tm-cemgroup-h { font: 800 11px var(--sb-font-mono, 'JetBrains Mono'); letter-spacing: 0.09em; text-transform: uppercase; color: #16150F; border-bottom: 1px solid #E2DCC9; padding: 2px 2px 5px; margin-bottom: 6px; overflow-wrap: anywhere; }
   .sb-tm-cut { display: inline-flex; align-items: center; gap: 5px; font: 700 10.5px var(--sb-font-mono, 'JetBrains Mono'); color: #8A5A12; }
   .sb-tm-cut i { width: 14px; height: 14px; border-radius: 4px; border: 2px solid #B7791F; display: inline-block; }
   .sb-tm-cut.on { color: #15724A; } .sb-tm-cut.on i { border-color: #15724A; background: rgba(29,158,117,0.15); }

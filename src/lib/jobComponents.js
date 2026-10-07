@@ -19,7 +19,11 @@ export const TRACK_PHASES = {
   // 'quality_check' stay DB-legal (history; doors keep both) but the app
   // never writes them for new_stone again (prod rows moved forward by
   // 20260803_stone_qc_removed.sql).
-  new_stone:   ['ready_to_bring_up', 'brought_to_line', 'cut', 'stencil_cut', 'stencil_stuck', 'ready_to_set'],
+  // 'cut' retired too (Paul 2026-10-07: "remove cut from production floor
+  // don't need that one") — same treatment: DB-legal history, never written
+  // again; prod rows at 'cut' moved to brought_to_line by
+  // 20261007_floor_cut_retired.sql.
+  new_stone:   ['ready_to_bring_up', 'brought_to_line', 'stencil_cut', 'stencil_stuck', 'ready_to_set'],
   inscription: ['needs_rubbing', 'stencil_cut', 'inscription_complete'],
   door:        ['pickup_doors', 'cut_stencil', 'stick_stencil', 'blast', 'quality_check', 'drop_off_doors'],
   bronze:      ['bronze_on_order', 'bronze_received', 'mounted_on_base', 'delivered'],
@@ -54,8 +58,7 @@ export const TRACKS_WITH_QC = new Set(['door'])
 // the verb says so.
 const NEW_STONE_VERB = {
   ready_to_bring_up: 'Brought to Line',
-  brought_to_line: 'Cut',
-  cut: 'Stencil Cut',
+  brought_to_line: 'Stencil Cut',
   stencil_cut: 'Stencil Stuck',
   stencil_stuck: 'Blasted → Install list',
 }

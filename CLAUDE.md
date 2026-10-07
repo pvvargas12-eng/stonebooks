@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix FLOOR-CUT-RETIRED + NEEDS-FIXING + SET-PICKER-V2 (2026-10-07, round 2)
+
+Paul: "remove cut from production floor don't need that one, also i want to be able to add Needs Fixing Blocker... three dots in the corner... also for add to be set... I need to see status Ready to set in green, then blockers, anything in install list... difference between bronze service and newstone... this little menu is basically worthless... then from things on that list we will group by cemetery and do the daily planning of installs"
+
+- **'cut' column RETIRED from the new_stone floor ladder** (TRACK_PHASES drops it — the blast/quality_check treatment: DB-legal history, app never writes it again; NEW_STONE_VERB: brought_to_line advances straight to Stencil Cut). Migration `20261007_floor_cut_retired.sql` ✅ APPLIED + verified: 3 pieces at 'cut' → brought_to_line (same rollup status, no false stencil-cut claim), extras cleaned, log `_floor_cut_retire_log`. `_STONE_CODE_TO_FLOOR`/`getStoneUpByJob` keep their 'cut' references for legacy tolerance.
+- **One-click NEEDS FIXING blocker**: the floor card's ⋯ menu gained "Mark NEEDS FIXING" (setComponentBlocker 'NEEDS FIXING', no typing) above the free-text "Mark blocked…"; renders through the existing blocker chip, field app shows it read-only.
+- **Team Meeting "To be set" picker v2** (the daily install-planning surface): every row wears **READY TO SET green or its red gate chips** (module `setGateChips` = the four installGates, shared with the sheet rows' blockersFor) + the **NEW STONE / BRONZE SERVICES tag** (`trackTagOf` by job_type; tag also on sheet plan rows), ready rows sort FIRST then oldest, cap 60 for the set lane. Pool stays = the install list.
+- **The set lane on the sheet GROUPS BY CEMETERY** (one block = one trip; dealer rows group under their vendor label) — the meeting's daily-install planning view feeding the drag boards.
+
 ## Fix STONE-FLOOR-SYNC + FLOOR-SIZE-TRUTH (2026-10-07): Sales stone picks drive the floor board + floor sizes read the live order
 
 Paul: "the phase in sales doesnt updated my production floor in jobs ex i tried to add phase 'blasting que' and it did not auto add to blasting que samething with stencil cut also huge deal the stone sizes are not populating accurately in the production floor. LISTEN THE STONE SIZE IN THE LINE ITEM IS THE ACCURATE SIZE AND CUT"
