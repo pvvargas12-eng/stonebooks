@@ -94,12 +94,16 @@ Top-level tab **"Team Meeting"**. Two render modes, one dataset:
 - **A sheet and B sheet are SEPARATE slides**, both shown every week: the
   focus week's sheet leads (badged "THIS IS THE FOCUS WEEK"); the other sheet
   follows so the cutter works ahead and admin pre-clears blockers.
-- **Schedule review slide** — this week's calendar day by day (runs, digs,
-  inscription days from the Scheduler/work_batches) with blocker callouts,
-  plus the open tasks due this week (shop_tasks) with owner + due chips.
-- **Next week preview slide** — day-by-day shape of NEXT week: which day
-  does what, deliveries (vendor ETAs / PR supplier_eta) and inscriptions
-  placed on their days; an "unscheduled" strip so nothing hides.
+- **Schedule review slide = a 5-DAY WORK BOARD (round 3):** Mon–Fri columns,
+  event cards stacked in day order (install runs gold, digs amber,
+  inscriptions green, DELIVERIES blue, meetings grey), blocker chips on the
+  card. **DRAG A CARD TO ANOTHER DAY = the adjustment, made live in the
+  meeting, writes back to the Scheduler (work_batches scheduled date).**
+  An "unscheduled" tray below drags onto days. Open tasks due this week
+  listed under the board.
+- **Next week preview slide** — the SAME 5-day board for next week:
+  which day does what, deliveries (vendor ETAs / PR supplier_eta) and
+  inscriptions on their days, same drag-to-adjust.
 - **Inputs & needs slide** — free inputs typed live in the meeting ("order
   stencil roll"), saved with the meeting (meeting_notes gains `inputs
   jsonb[]`), each with one-tap TASK IT → addShopTask with an owner.
