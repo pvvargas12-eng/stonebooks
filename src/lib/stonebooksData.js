@@ -6394,7 +6394,7 @@ export async function getProductionComponents() {
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
       order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at,
-        shape, polish_level, granite_color, custom_granite_color, top_shape, sides, standard_size_code,
+        shape, polish_level, granite_color, top_shape, sides, standard_size_code,
         width_inches, depth_inches, thickness_inches, height_inches, base_config,
         customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name),
