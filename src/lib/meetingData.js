@@ -41,6 +41,55 @@ export function weekKindFor(weekStartISO) {
 }
 export const weekKindLabel = (kind) =>
   kind === 'install' ? 'A WEEK — INSTALL · FOUNDATIONS · INSCRIPTIONS' : 'B WEEK — STONE PRODUCTION'
+export const otherKind = (kind) => (kind === 'install' ? 'production' : 'install')
+
+// THE RHYTHM LIVES IN week_plans NOW (Paul 2026-10-08: "in Team Meeting I
+// need a way to switch weeks A and B because next week will be an
+// installation week"). A stored week's `kind` is the truth for that week;
+// weeks without a row alternate from the NEAREST stored week before them
+// (so one flip carries the rhythm forward), and only with no rows at all do
+// we fall back to the code anchor above.
+export function kindFromPlans(weekStartISO, plans = []) {
+  const exact = plans.find(p => p.week_start === weekStartISO)
+  if (exact) return exact.kind
+  const before = plans.filter(p => p.week_start < weekStartISO).sort((a, b) => b.week_start.localeCompare(a.week_start))[0]
+    || plans.filter(p => p.week_start > weekStartISO).sort((a, b) => a.week_start.localeCompare(b.week_start))[0]
+  if (!before) return weekKindFor(weekStartISO)
+  const a = new Date(before.week_start + 'T00:00:00')
+  const w = new Date(weekStartISO + 'T00:00:00')
+  const weeks = Math.round((w.getTime() - a.getTime()) / (7 * DAY_MS))
+  const even = ((weeks % 2) + 2) % 2 === 0
+  return even ? before.kind : otherKind(before.kind)
+}
+export async function listWeekPlans() {
+  const { data, error } = await supabase.from('week_plans').select('id, week_start, kind, locked_at').order('week_start', { ascending: true })
+  if (error) { console.warn('[meeting] listWeekPlans:', error.message); return [] }
+  return data || []
+}
+export async function defaultKindFor(weekStartISO) {
+  return kindFromPlans(weekStartISO, await listWeekPlans())
+}
+// Flip a week's kind (A ↔ B). Creates the row if needed. Later weeks with no
+// row follow automatically (kindFromPlans); later weeks that already have a
+// row keep what they say — flip those too if the rhythm should carry.
+export async function setWeekKind(weekStartISO, kind) {
+  if (!['install', 'production'].includes(kind)) return { ok: false, error: 'Bad kind' }
+  const r = await getOrCreateWeekPlan(weekStartISO)
+  if (!r.ok) return r
+  if (r.plan.kind === kind) return { ok: true, plan: r.plan }
+  const { data, error } = await supabase.from('week_plans').update({ kind }).eq('id', r.plan.id).select().single()
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, plan: data }
+}
+// The next Monday (from `fromISO`, inclusive) whose week is an install week.
+export async function nextInstallMonday(fromISO = isoOf(mondayOf())) {
+  const plans = await listWeekPlans()
+  for (let i = 0; i < 8; i++) {
+    const w = addDays(fromISO, 7 * i)
+    if (kindFromPlans(w, plans) === 'install') return w
+  }
+  return fromISO
+}
 
 export const PLAN_LANES = [
   { code: 'set',         label: 'To be set' },
@@ -61,9 +110,12 @@ export async function getOrCreateWeekPlan(weekStartISO) {
   if (error) return { ok: false, error: error.message }
   if (existing) return { ok: true, plan: existing, created: false }
   const created_by = await getCurrentStaffName().catch(() => null)
+  // Default kind alternates from the nearest STORED week, not the code anchor
+  // (a flipped week carries the rhythm forward).
+  const kind = await defaultKindFor(weekStartISO)
   const { data, error: insErr } = await supabase
     .from('week_plans')
-    .insert({ week_start: weekStartISO, kind: weekKindFor(weekStartISO), created_by })
+    .insert({ week_start: weekStartISO, kind, created_by })
     .select().single()
   // Race with another device: unique week_start — refetch on conflict.
   if (insErr) {

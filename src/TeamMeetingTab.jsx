@@ -57,6 +57,8 @@ function laneDone(job, lane) {
   return false
 }
 const LANE_TO_BATCH_KIND = { set: 'setting', foundation: 'foundation_trip', inscription: 'inscription', blast: 'blasting' }
+// A/B switch (Paul 2026-10-08): the stored week_plans.kind is the truth.
+import { setWeekKind, otherKind } from './lib/meetingData'
 // The four install gates as chips — READY TO SET green when nothing reads
 // red (Paul 2026-10-07: the picker must show ready vs blockers, it's the
 // daily install-planning surface).
@@ -115,8 +117,22 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
   const thisMonday = useMemo(() => isoOf(mondayOf()), [])
   const nextMonday = useMemo(() => addDays(thisMonday, 7), [thisMonday])
   const lastMonday = useMemo(() => addDays(thisMonday, -7), [thisMonday])
-  const thisKind = weekKindFor(thisMonday)
+  // The STORED kind wins (A/B switch); the parity anchor is only the fallback
+  // before the plan row loads.
+  const thisKind = planThis?.plan?.kind || weekKindFor(thisMonday)
+  const nextKind = planNext?.plan?.kind || otherKind(thisKind)
   const meetingDate = todayISO()
+  const [kindBusy, setKindBusy] = useState(false)
+  const flipWeek = async (weekStartISO, toKind) => {
+    if (kindBusy) return
+    const label = toKind === 'install' ? 'an A week (install · foundations · inscriptions)' : 'a B week (stone production)'
+    if (!window.confirm(`Make the week of ${weekStartISO} ${label}? Weeks after it alternate from there.`)) return
+    setKindBusy(true)
+    const r = await setWeekKind(weekStartISO, toKind)
+    setKindBusy(false)
+    if (!r.ok) { setErr(r.error); return }
+    reloadPlans()
+  }
 
   const reloadPlans = useCallback(async () => {
     const [pt, pn, pl] = await Promise.all([
@@ -609,13 +625,22 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
 
   // ── Slides ──────────────────────────────────────────────────────────────
   const focusSheetKind = thisKind
-  const otherSheetKind = thisKind === 'install' ? 'production' : 'install'
+  const otherSheetKind = nextKind
   const slides = [
     // 0 Verse
     <section key="verse" className="sb-tm-slide">
       <div className="sb-tm-eyebrow">{todayMs ? new Date(todayMs).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) : ''}</div>
       <h2>Shevchenko Monuments — Team Meeting</h2>
       <span className="sb-tm-weekpill">{weekKindLabel(thisKind)}</span>
+      <div className="sb-tm-abrow">
+        <button type="button" className="sb-tm-ab" disabled={kindBusy} onClick={() => flipWeek(thisMonday, otherKind(thisKind))}>
+          Switch this week to {thisKind === 'install' ? 'B (production)' : 'A (install)'}
+        </button>
+        <span className="sb-tm-abnext">Next week: <b>{nextKind === 'install' ? 'A — install' : 'B — production'}</b></span>
+        <button type="button" className="sb-tm-ab" disabled={kindBusy} onClick={() => flipWeek(nextMonday, otherKind(nextKind))}>
+          Switch next week to {nextKind === 'install' ? 'B (production)' : 'A (install)'}
+        </button>
+      </div>
       <input className="sb-tm-input sb-tm-verse" placeholder="Type the verse of the day…" defaultValue={notes?.verse || ''}
         onBlur={e => saveNotesPatch({ verse: e.target.value })} />
       <input className="sb-tm-input" style={{ maxWidth: 320 }} placeholder="Reference — e.g. Colossians 3:23" defaultValue={notes?.verse_ref || ''}
@@ -984,6 +1009,11 @@ const CSS = `
   .sb-tm-slide h2 { font-size: clamp(22px, 3vw, 30px); font-weight: 800; margin: 6px 0 10px; }
   .sb-tm-lede { color: #6B6456; font-size: 13.5px; margin: 0 0 14px; max-width: 64ch; }
   .sb-tm-weekpill { display: inline-block; font: 900 12px var(--sb-font-sans, 'Lato'); letter-spacing: 0.1em; color: #fff; background: #9A7209; border-radius: 999px; padding: 5px 16px; margin: 4px 0 12px; }
+  .sb-tm-abrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -4px 0 14px; }
+  .sb-tm-ab { font: 700 11.5px var(--sb-font-sans, 'Lato'); color: #9A7209; background: none; border: 1px dashed #C9A468; border-radius: 999px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
+  .sb-tm-ab:hover { background: #F4EBD4; border-style: solid; }
+  .sb-tm-ab:disabled { opacity: .5; cursor: default; }
+  .sb-tm-abnext { font-size: 12px; color: #6B6455; }
   .sb-tm-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
   .sb-tm-tile { background: #FBFAF7; border: 1px solid #E2DCC9; border-left: 3px solid #C9A468; border-radius: 12px; padding: 12px 14px; min-width: 0; overflow: hidden; }
   .sb-tm-tile b { display: block; font: 700 25px var(--sb-font-mono, 'JetBrains Mono'); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }

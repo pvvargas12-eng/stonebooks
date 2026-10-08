@@ -28,6 +28,7 @@ import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 import CompletionPhotoUploader from './CompletionPhotoUploader'
+import InstallPlanner from './InstallPlanner'
 
 // Track's STRICT terminal phase for "stone done" (decision-locked).
 const TERMINAL = { new_stone: 'ready_to_set', bronze: 'mounted_on_base', inscription: 'inscription_complete', door: 'drop_off_doors' }
@@ -72,6 +73,8 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   // hub reload.
   const [jobOverrides, setJobOverrides] = useState(() => new Map())
   const [gateBusy, setGateBusy] = useState(null)   // job id mid-write
+  // Install Planner (Paul 2026-10-08): build the week list, then Mon–Fri.
+  const [view, setView] = useState('board')        // 'board' | 'planner'
   const effJobs = useMemo(() => (jobs || []).map(j => jobOverrides.get(j.id) || j), [jobs, jobOverrides])
 
   const load = useCallback(async () => {
@@ -355,6 +358,15 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     onGate: activeKpi !== 'done' ? changeGate : null, gateBusy,
   }
 
+  if (view === 'planner') {
+    return (
+      <div className="jobcc ib">
+        <style>{JOBCC_BASE_CSS}{IB_CSS}</style>
+        <InstallPlanner jobs={effJobs} onBack={() => { setView('board'); load() }} onOpenOrderDetail={onOpenOrderDetail} />
+      </div>
+    )
+  }
+
   return (
     <div className="jobcc ib">
       <style>{JOBCC_BASE_CSS}{IB_CSS}</style>
@@ -363,7 +375,12 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
           <h1 className="jobcc-title">Installation</h1>
           <div className="jobcc-purpose">Your set list, four gates on every card — paid · foundation · permit · blasted. READY TO INSTALL means nothing would strand the truck. Every tile is a slice of the same list.</div>
         </div>
-        <div className="jobcc-cmd-right"><div className="jobcc-actions"><button type="button" className="jobcc-btn" onClick={load}>Refresh</button></div></div>
+        <div className="jobcc-cmd-right"><div className="jobcc-actions">
+          <button type="button" className="pf-lp-btn ib-plan-btn" onClick={() => setView('planner')} title="Build the install week, then put each stone on a day">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.6"/><path d="M1.5 6h13M5 1v3M11 1v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+            Install Planner
+          </button>
+        </div></div>
       </header>
 
       <div className="jobcc-kpis">
@@ -715,6 +732,8 @@ const IB_CSS = `
   .ib-card-ord { font: inherit; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6fb3f0; background: none; border: none; cursor: pointer; padding: 0; }
   .ib-card-cem { font-size: 11.5px; color: #8b95a5; }
   .ib-gates { display: flex; gap: 5px; margin-top: 9px; flex-wrap: wrap; }
+  .ib-plan-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 12.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 9px 16px; border-radius: 999px; border: 1px solid #C9A468; background: linear-gradient(135deg, #2a2210 0%, #1a212b 60%); color: #fbbf24; cursor: pointer; box-shadow: 0 0 0 1px rgba(201,164,104,0.15), 0 6px 18px rgba(201,164,104,0.12); transition: transform .12s ease, box-shadow .12s ease; }
+  .ib-plan-btn:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(201,164,104,0.3), 0 10px 24px rgba(201,164,104,0.2); color: #ffd36a; }
   .ib-flag-sel { position: relative; cursor: pointer; display: inline-flex; align-items: center; }
   .ib-flag-sel select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; }
   .ib-flag-sel select:disabled { cursor: default; }
