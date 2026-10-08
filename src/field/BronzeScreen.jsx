@@ -72,7 +72,7 @@ export default function BronzeScreen({ onOpenJob, undo = null }) {
   const reload = useCallback(async () => {
     try {
       setTodayMs(Date.now())
-      const [j, list] = await Promise.all([getJobs({}), getInstallList().catch(() => [])])
+      const [j, list] = await Promise.all([getJobs({ limit: 2000 }), getInstallList().catch(() => [])])
       setJobs(j || [])
       setSetListIds(new Set((list || []).map(r => r.job_id)))
       setErr(null)

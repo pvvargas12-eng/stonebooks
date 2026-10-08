@@ -99,7 +99,7 @@ export default function SchedulerTab({ variant = 'scheduler', user, profile, onO
     setLoadErr(null)
     try {
       const [jobsData, batchesData, cems, ps, co] = await Promise.all([
-        getJobs({ includeClosed: false }),
+        getJobs({ includeClosed: false, limit: 2000 }),
         getBatches({}),
         _listCemeteries(),
         // includeResolved: the Week day-state engine paints settled promises

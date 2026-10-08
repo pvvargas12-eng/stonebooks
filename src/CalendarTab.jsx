@@ -920,7 +920,7 @@ function FocusListPanel({ day, focusKey, onClose, onOpenOrder }) {
   const reload = async () => {
     const [l, j] = await Promise.all([
       cfg.get ? cfg.get().catch(() => []) : Promise.resolve(null),
-      getJobs({}).catch(() => []),
+      getJobs({ limit: 2000 }).catch(() => []),
     ])
     setList(l)
     setJobs(j || [])

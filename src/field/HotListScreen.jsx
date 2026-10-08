@@ -29,7 +29,7 @@ export default function HotListScreen({ onOpenJob, undo = null }) {
 
   const reload = useCallback(async () => {
     try {
-      const [it, js] = await Promise.all([getHotListItems(), getJobs({})])
+      const [it, js] = await Promise.all([getHotListItems(), getJobs({ limit: 2000 })])
       setItems(it || []); setJobs(js || []); setErr(null)
     } catch (e) { setErr(e?.message || 'Could not load the hot list.') }
   }, [])

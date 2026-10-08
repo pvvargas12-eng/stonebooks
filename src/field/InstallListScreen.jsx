@@ -90,7 +90,10 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
   const reload = useCallback(async () => {
     try {
       setTodayMs(Date.now())
-      const [l, j] = await Promise.all([getInstallList(), getJobs({})])
+      // limit 2000, not the 500 default (Portuhondo bronze, 2026-10-08): the
+      // default cap is the 500 most-recently-updated jobs, and a set-list job
+      // nobody has touched since it arrived silently fell off the phone.
+      const [l, j] = await Promise.all([getInstallList(), getJobs({ limit: 2000 })])
       setList(l || []); setJobs(j || []); setErr(null)
     } catch (e) { setErr(e?.message || 'Could not load the set list.') }
   }, [])

@@ -86,7 +86,7 @@ export default function FoundationsScreen({ onOpenJob, undo = null }) {
   const reload = useCallback(async () => {
     try {
       setTodayMs(Date.now())
-      const [l, j, ff] = await Promise.all([getFoundationList(), getJobs({}), listFoundationForms()])
+      const [l, j, ff] = await Promise.all([getFoundationList(), getJobs({ limit: 2000 }), listFoundationForms()])
       setList(l || []); setJobs(j || []); setErr(null)
       setForms(new Map((ff || []).map(f => [f.job_id, f])))
     } catch (e) { setErr(e?.message || 'Could not load the dig list.') }

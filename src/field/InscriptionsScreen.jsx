@@ -32,7 +32,7 @@ export default function InscriptionsScreen({ onOpenJob }) {
   useEffect(() => {
     let cancelled = false
     setTodayMs(Date.now())
-    getJobs({})
+    getJobs({ limit: 2000 })
       .then(rows => { if (!cancelled) setJobs(rows || []) })
       .catch(e => { if (!cancelled) setErr(e?.message || 'Could not load inscriptions.') })
     return () => { cancelled = true }
