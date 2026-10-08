@@ -10809,9 +10809,20 @@ export const INVENTORY_STATUSES = [
 export const NEEDS_STONE_STATUSES = ['scoping', 'quoted', 'contracted', 'in_production', 'paid_in_full']
 export async function getActiveStoneOrders() {
   try {
-    const { data, error } = await supabase.from('orders').select('*').in('status', NEEDS_STONE_STATUSES)
+    // The customer rides along (select runtime-verified 200 — INCIDENT #6 rule)
+    // so an order whose deceased name was never entered (blank family —
+    // Augustus E-26-0880, Cruikshank E-26-0839, 2026-10-08) is still findable
+    // and still carries a name on the PR line: family falls back to the
+    // customer's last name. Display fallback only — primary_lastname is a
+    // generated column and never written back from here.
+    const { data, error } = await supabase.from('orders').select('*, customer:customers(first_name,last_name)').in('status', NEEDS_STONE_STATUSES)
     if (error) return { ok: false, rows: [], error: error.message }
-    return { ok: true, rows: data || [], error: null }
+    const rows = (data || []).map(r => {
+      const custName = [r.customer?.first_name, r.customer?.last_name].filter(Boolean).join(' ').trim()
+      const fam = (r.primary_lastname && String(r.primary_lastname).trim()) || (r.customer?.last_name || '').trim()
+      return { ...r, primary_lastname: fam, _customer_name: custName || null }
+    })
+    return { ok: true, rows, error: null }
   } catch (e) {
     return { ok: false, rows: [], error: String(e?.message || e) }
   }

@@ -22,7 +22,20 @@ import { BRONZE_BACKERS } from './orderRates'
 // THE CONTRACT'S DIE LINE (SIZE-TRUTH-2) — override / rename honored. Paul
 // 2026-10-08: "THE LINE ITEMS ON THE CONTRACT ARE THE OFFICIAL ONES THAT I
 // PULL, then in the PR I can edit the list."
-import { contractDieLabel } from './jobComponents'
+import { contractDieLabel, contractBaseLabel, tradeDimsFromLabel } from './jobComponents'
+
+// Strip the words the PR's other columns already carry (the color, a leading
+// Die/Base/Upright type word, a "(Single Upright)" parenthetical) so the specs
+// column reads like Paul's vendor sheet: "Serp Top · P2 · BRP", not the whole
+// contract line again. Everything else stays verbatim — he edits after.
+const specsFromRest = (rest, colorLabel) => {
+  let s = String(rest || '')
+  if (colorLabel) s = s.replace(new RegExp(colorLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ')
+  s = s.replace(/\([^)]*\)/g, ' ')
+    .replace(/^\s*(die|base|upright|slant|marker|single upright|double upright|double die|companion)\b\s*[·,-]?\s*/i, '')
+    .replace(/\s*[·,;]\s*/g, ' · ').replace(/\s+/g, ' ').replace(/^(\s*·\s*)+|(\s*·\s*)+$/g, '').trim()
+  return s
+}
 
 // Map a monument shape code → an inventory item_type.
 const SHAPE_TO_ITEM_TYPE = {
@@ -76,6 +89,13 @@ export function resolveStoneNeeds(orders) {
     // text override or a renamed die line, THAT text is the size we order.
     const contractLine = contractDieLabel(o) || dieSpec
     const override = contractLine !== dieSpec
+    // The SIZE column is the dims on the signed line (Lee: the columns said
+    // 28 × 28 × 28 while the contract line read 1-10 x 0-8 x 2-4 — the line
+    // wins, and it also becomes the matcher's axis). No dims in the line → the
+    // whole line verbatim. The rest of the line rides into SPECS.
+    const parsed = override ? tradeDimsFromLabel(contractLine) : null
+    const dieSizeOnLine = parsed?.dims || null
+    const computed = dieSize3(o, shape) || ''
 
     needs.push({
       key: `${o.id}:stone`,
@@ -85,26 +105,36 @@ export function resolveStoneNeeds(orders) {
       kind: 'stone',
       itemType: SHAPE_TO_ITEM_TYPE[o.shape] || 'custom',
       color: colorLabel,
-      size: override ? contractLine : (dieSize3(o, shape) || ''),
+      size: override ? (dieSizeOnLine || contractLine) : computed,
       top: dieTopLabel(o) || null,           // top SHAPE (context only)
       sides: o.sides || null,                // sides treatment (context only)
       spec: contractLine,
       contractLine,
       override,
-      computedSize: dieSize3(o, shape) || '',   // the matcher's dims axis, always
+      specsText: override ? specsFromRest(parsed ? parsed.rest : '', colorLabel) : null,
+      computedSize: dieSizeOnLine || computed,   // the matcher's dims axis
     })
 
     const bc = o.baseConfig || {}
     // Single-source base presence — a required-base die (or any populated base) must
     // produce a base NEED even when the include flag was never persisted, else its
-    // base stone is never pulled/ordered. (The w||d guard below still skips sizeless bases.)
+    // base stone is never pulled/ordered. The contract's base line is honored the
+    // same way as the die's (renamed line / override → dims from the text), so a
+    // base the office typed onto the contract (Samuelson: no base dims in the
+    // config at all) still becomes a need, and a renamed base (Lee: 2-0 x 1-0 on
+    // the contract, 2-8 x 1-0 in the config) orders the signed size.
     if (orderHasBase(bc, shape)) {
       const bs = BASE_SIZES.find(b => b.code === bc.sizeCode)
       const w = bs ? bs.w : bc.width
       const d = bs ? bs.d : bc.depth
       const t = (bc.heightCode != null) ? bc.heightCode : null   // height code IS inches (6/8/10/12)
-      const baseSize = dimsFromWDT({ w, d, t }) || ''
-      if (w || d) {
+      const baseComputed = dimsFromWDT({ w, d, t }) || ''
+      const baseSpec = buildBaseSpec(o) || ''
+      const baseLine = contractBaseLabel(o) || baseSpec
+      const baseOverride = !!baseLine && baseLine !== baseSpec
+      const baseParsed = baseOverride ? tradeDimsFromLabel(baseLine) : null
+      const baseSizeOnLine = baseParsed?.dims || null
+      if (w || d || baseOverride) {
         needs.push({
           key: `${o.id}:base`,
           orderId: o.id,
@@ -113,10 +143,14 @@ export function resolveStoneNeeds(orders) {
           kind: 'base',
           itemType: 'base',
           color: colorLabel,
-          size: baseSize,
+          size: baseOverride ? (baseSizeOnLine || baseLine) : baseComputed,
           top: null,
           sides: bc.finish || null,
-          spec: buildBaseSpec(o),
+          spec: baseLine,
+          contractLine: baseLine,
+          override: baseOverride,
+          specsText: baseOverride ? specsFromRest(baseParsed ? baseParsed.rest : '', colorLabel) : null,
+          computedSize: baseSizeOnLine || baseComputed,
           heightLabel: (bc.heightCode != null) ? (BASE_HEIGHTS.find(x => x.code === bc.heightCode)?.label || null) : null,
         })
       }

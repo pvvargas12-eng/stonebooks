@@ -185,3 +185,37 @@ export function contractDieLabel(row) {
     ? dieSpecForOrderRow(row)
     : (() => { try { return buildDieSpec(row) || null } catch { return null } })()
 }
+
+// THE CONTRACT'S BASE LINE — the twin of contractDieLabel (Paul 2026-10-08,
+// Lee E-26-0715: the contract's base line read "Base 2-0 x 1-0 x 0-8" while the
+// PR pulled 2-8 x 1-0 from the base config — the renamed BASE line was never
+// honored, only the die's). Priority mirrors the contract: the renamed base
+// line (pricing.lineItemLabels['base-block']) → baseConfig.baseTextOverride →
+// buildBaseSpec. Accepts a snake_case row OR a camelCase order.
+export function contractBaseLabel(row) {
+  if (!row) return null
+  const pricing = row.pricing || null
+  const rename = pricing?.lineItemLabels?.['base-block']
+  if (rename && String(rename).trim()) return String(rename).trim()
+  const bc = row.base_config || row.baseConfig || {}
+  const override = bc?.baseTextOverride
+  if (override && String(override).trim()) return String(override).trim()
+  try { return buildBaseSpec({ baseConfig: bc }) || null } catch { return null }
+}
+
+// Pull the trade-notation dims out of a contract line — "Upright 1-10 x 0-8 x
+// 2-4 · Barre Gray" → { dims: '1-10 x 0-8 x 2-4', rest: 'Upright · Barre Gray' }.
+// Tolerates every spacing/separator the office types: "2-2X1-0X0-8",
+// "1-8x 0-8x 2-6", "2-10 × 1-0  X 0-8". Two dims (a base W × D) count too.
+// Null when the line carries no trade dims (a pure note like "Flat top. All
+// Sawn") — the caller then uses the whole line as the size, verbatim.
+const TRADE_DIMS_RE = /(\d{1,2}-\d{1,2})\s*[x×X]\s*(\d{1,2}-\d{1,2})(?:\s*[x×X]\s*(\d{1,2}-\d{1,2}))?/
+export function tradeDimsFromLabel(label) {
+  const text = String(label || '')
+  const m = text.match(TRADE_DIMS_RE)
+  if (!m) return null
+  const dims = [m[1], m[2], m[3]].filter(Boolean).join(' x ')
+  const rest = (text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length))
+    .replace(/\s*[·,;]\s*/g, ' · ').replace(/\s+/g, ' ').replace(/^(\s*·\s*)+|(\s*·\s*)+$/g, '').trim()
+  return { dims, rest }
+}

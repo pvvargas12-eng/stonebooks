@@ -117,7 +117,10 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
     if (orders == null) return []
     const t = railQ.trim().toLowerCase()
     if (!t) return []
-    return orders.filter(o => `${o.primary_lastname || ''} ${o.order_number || ''}`.toLowerCase().includes(t)).slice(0, 12)
+    // Family OR customer OR order # — Augustus / Cruikshank (2026-10-08) had no
+    // deceased name entered, so the family was blank and nothing matched; the
+    // customer's name is the only handle on those orders.
+    return orders.filter(o => `${o.primary_lastname || ''} ${o._customer_name || ''} ${o.order_number || ''}`.toLowerCase().includes(t)).slice(0, 12)
   }, [orders, railQ])
 
   const railOrder = useMemo(() => {
@@ -145,7 +148,10 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const insertNeed = (n) => addRow({
     family_name: n.family || '', order_id: n.orderId || null, order_number: n.orderNumber || null,
     color: n.color || '', item_type: n.kind === 'base' ? 'Base' : (n.itemType ? n.itemType.charAt(0).toUpperCase() + n.itemType.slice(1) : 'Die'),
-    size: n.size || '', specs: n.override ? '' : [n.top, n.sides].filter(Boolean).join('; '),
+    // A renamed/overridden contract line: SIZE = its dims, SPECS = the rest of
+    // the line (minus the color/type the other columns carry). Otherwise the
+    // computed dims + top/sides as before.
+    size: n.size || '', specs: n.override ? (n.specsText || '') : [n.top, n.sides].filter(Boolean).join('; '),
   })
   const linkRowToRail = (r) => {
     if (!railSel) return
@@ -323,7 +329,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                 : railResults.map(o => (
                   <button key={o.id} type="button" className="prw-rail-row" onClick={() => { setRailSel(o); }}>
                     <span className="prw-rail-fam">{famOfRow(o)}</span>
-                    <span className="prw-rail-meta">{o.order_number}{o.status ? ` · ${o.status}` : ''}</span>
+                    <span className="prw-rail-meta">{o.order_number}{o.status ? ` · ${o.status}` : ''}{o._customer_name && o._customer_name !== famOfRow(o) ? ` · customer ${o._customer_name}` : ''}</span>
                   </button>
                 ))}
             </div>
