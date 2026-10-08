@@ -21,7 +21,7 @@
 // =============================================================================
 import { useState, useEffect, useCallback } from 'react'
 import {
-  getInstallList, getBatches, createBatch, addJobsToBatch, removeJobFromBatch,
+  getInstallList, getBatches, createBatch, addJobsToBatch, removeJobFromBatch, updateBatch,
   updateMilestoneWithOverride, installGates, rowBalanceDue, fmtUSD, logOrderActivity, getCurrentStaffName,
   setOrderFdnStatus, setOrderPermit, setOrderStoneStatus, getJob,
   deriveStoneStatus, stoneStatusOptions, FDN_STATUS, PERMIT_STATUS_OPTIONS, permitStatusLabel,
@@ -31,7 +31,7 @@ import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import {
   isoOf, mondayOf, addDays, listWeekPlans, kindFromPlans, nextInstallMonday,
-  getWeekPlanWithItems, addPlanItem, removePlanItem,
+  getWeekPlanWithItems, addPlanItem, removePlanItem, peekWeekPlan,
 } from '../lib/meetingData'
 import { listInstallReminders, remindersFor, addInstallReminder, doneInstallReminder } from '../lib/installReminders'
 
@@ -120,8 +120,16 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, i
   const [taskWho, setTaskWho] = useState('')
   const [taskNote, setTaskNote] = useState('')
   const [taskDone, setTaskDone] = useState(false)
+  // Carryover (Paul 2026-10-08: "stones that DO NOT GET MARKED AS INSTALLED
+  // MUST GET ROLLED BACK INTO THE QUEUE FOR THE NEXT WEEK"): once a week has
+  // ended, its not-installed set items roll into the next week's list on
+  // load. `rolled` = what this load rolled in, shown as a strip.
+  const [rolled, setRolled] = useState([])
+  const [pastBatches, setPastBatches] = useState([])   // older setting batches (for cleanup on place)
+  const [todayIso] = useState(() => todayISO())
 
   const jobById = new Map((jobs || []).map(j => [j.id, overrides.get(j.id) || j]))
+  const installedDone = (job) => installMilestone(job)?.status === 'done'
 
   // Default week = the next install week (this week if it is one).
   useEffect(() => {
@@ -132,21 +140,47 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, i
 
   const load = useCallback(async () => {
     if (!week) return
-    const [ps, p, bs, sl] = await Promise.all([
+    const [ps, p0, bs, old, sl] = await Promise.all([
       listWeekPlans(),
       getWeekPlanWithItems(week),
       getBatches({ from: week, to: addDays(week, 6), kind: 'setting' }).catch(() => []),
+      getBatches({ from: addDays(week, -28), to: addDays(week, -1), kind: 'setting' }).catch(() => []),
       getInstallList().catch(() => []),
     ])
+    let p = p0
+    // ── Auto-roll: finished weeks' not-installed stones → this week's list ──
+    // A week is finished once its Friday is behind today. Stones from those
+    // weeks whose job is still not installed, and not already on this week,
+    // are added to this week's plan (the old item stays for Friday scoring).
+    const rolledNow = []
+    const weekFinished = addDays(week, 4) < todayIso   // its Friday is behind us
+    if (p.ok && !weekFinished) {   // nothing rolls INTO a finished week
+      const already = new Set((p.items || []).filter(it => it.lane === 'set' && it.job_id).map(it => it.job_id))
+      const pastWeeks = (ps || []).filter(w => w.week_start < week && addDays(w.week_start, 4) < todayIso).slice(-4)
+      const jobsById = new Map((jobs || []).map(j => [j.id, j]))
+      for (const w of pastWeeks) {
+        const r = await peekWeekPlan(w.week_start).catch(() => null)
+        for (const it of (r?.items || [])) {
+          if (it.lane !== 'set' || !it.job_id || already.has(it.job_id) || it.outcome === 'dropped') continue
+          const job = jobsById.get(it.job_id)
+          if (!job || installMilestone(job)?.status === 'done') continue
+          const a = await addPlanItem({ planId: p.plan.id, lane: 'set', jobId: it.job_id, orderId: it.order_id || null, title: it.title || famOf(job) })
+          if (a.ok) { already.add(it.job_id); rolledNow.push({ jobId: it.job_id, from: w.week_start }) }
+        }
+      }
+      if (rolledNow.length) { const again = await getWeekPlanWithItems(week); if (again.ok) p = again }
+    }
+    setRolled(rolledNow)
     setPlans(ps)
     if (p.ok) { setPlan(p); setErr(null) } else setErr(p.error)
     setBatches(bs || [])
+    setPastBatches(old || [])
     setSetList(sl || [])
     // Reminders for every stone that can appear here + their cemeteries.
     const ids = new Set([...(sl || []).map(r => r.job_id), ...((p.items || []).map(it => it.job_id)), ...(bs || []).flatMap(b => (b.batch_jobs || []).map(l => l.job_id))])
     const cems = new Set([...ids].map(id => cemIdOf((jobs || []).find(j => j.id === id))).filter(Boolean))
     setRems(await listInstallReminders({ jobIds: [...ids], cemeteryIds: [...cems] }).catch(() => ({ byJob: new Map(), byCemetery: new Map() })))
-  }, [week, jobs])
+  }, [week, jobs, todayIso])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const run = async (fn) => {
@@ -189,12 +223,18 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, i
 
   // ── Days — one trip per cemetery per day; milestone stamped with the day ──
   const placeOnDay = (jobId, iso) => run(async () => {
+    if (iso < todayIso) return { ok: false, error: `${fmtDay(iso)} has already passed — pick today or later.` }
     const job = jobById.get(jobId)
     if (!job) return { ok: false, error: 'Job not loaded' }
     const cemId = cemIdOf(job)
     if (!cemId) return { ok: false, error: `${famOf(job)} has no cemetery linked — link one on the order first.` }
     const prev = batchOfJob.get(jobId)
     if (prev) { const r = await removeJobFromBatch(prev.id, jobId); if (!r.ok) return r }
+    // A rolled-over stone may still sit on an OLD week's trip (the Scheduler
+    // shows it as overdue) — placing it on a real day clears that too.
+    for (const b of pastBatches) {
+      if ((b.batch_jobs || []).some(l => l.job_id === jobId && !l.completed_at)) await removeJobFromBatch(b.id, jobId).catch(() => {})
+    }
     const existing = batches.find(b => b.scheduled_date === iso && b.destination_cemetery_id === cemId && b.id !== prev?.id)
     let r
     if (existing) r = await addJobsToBatch(existing.id, [{ job_id: jobId }])
@@ -212,6 +252,39 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, i
     const job = jobById.get(jobId)
     const ms = installMilestone(job)
     if (ms && ms.status === 'in_progress') await updateMilestoneWithOverride(jobId, ms.milestone_key, { status: 'not_started', dueDate: null }, 'Unscheduled from the Install Planner').catch(() => {})
+    return { ok: true }
+  })
+
+  // ── Move the whole week forward (Paul 2026-10-08: "this week I built is
+  // not for this week but for next week") — plan items go to next week's
+  // plan, every setting trip slides +7 days (same weekday), install dates
+  // follow. Then the planner lands on next week.
+  const moveWeekForward = () => run(async () => {
+    const next = addDays(week, 7)
+    const n = weekItems.length, t = batches.length
+    if (!n && !t) return { ok: false, error: 'Nothing on this week to move.' }
+    if (!window.confirm(`Move this week's ${n} stone${n === 1 ? '' : 's'} and ${t} trip${t === 1 ? '' : 's'} to the week of ${fmtDay(next)}? Days keep their weekday (Mon → Mon).`)) return { ok: true }
+    const np = await getWeekPlanWithItems(next)
+    if (!np.ok) return np
+    const onNext = new Set((np.items || []).filter(it => it.lane === 'set').map(it => it.job_id))
+    for (const it of weekItems) {
+      if (!onNext.has(it.job_id)) {
+        const a = await addPlanItem({ planId: np.plan.id, lane: 'set', jobId: it.job_id, orderId: it.order_id || null, title: it.title || null })
+        if (!a.ok) return a
+      }
+      await removePlanItem(it.id)
+    }
+    for (const b of batches) {
+      const to = addDays(b.scheduled_date, 7)
+      const u = await updateBatch(b.id, { scheduled_date: to })
+      if (!u.ok) return u
+      for (const l of (b.batch_jobs || [])) {
+        const job = jobById.get(l.job_id)
+        const ms = installMilestone(job)
+        if (ms && ms.status === 'in_progress') await updateMilestoneWithOverride(l.job_id, ms.milestone_key, { status: 'in_progress', dueDate: to }, 'Week moved forward in the Install Planner').catch(() => {})
+      }
+    }
+    setWeek(next)
     return { ok: true }
   })
 
@@ -299,10 +372,14 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, i
           <button type="button" className="ip-remadd" title="Add a reminder for this stone" onClick={() => { setRemFor({ jobId }); setRemText('') }}>+ reminder</button>
         )}
         <span className="ip-days">
-          {days.map(d => (
-            <button type="button" key={d.iso} className={`ip-day${day === d.iso ? ' on' : ''}`} disabled={busy} title={`${d.label} ${fmtDay(d.iso)}`}
-              onClick={() => (day === d.iso ? unplace(jobId) : placeOnDay(jobId, d.iso))}>{d.label[0]}</button>
-          ))}
+          {days.map(d => {
+            const past = d.iso < todayIso && day !== d.iso
+            return (
+              <button type="button" key={d.iso} className={`ip-day${day === d.iso ? ' on' : ''}${past ? ' past' : ''}`} disabled={busy || past}
+                title={past ? `${d.label} ${fmtDay(d.iso)} has passed` : `${d.label} ${fmtDay(d.iso)}`}
+                onClick={() => (day === d.iso ? unplace(jobId) : placeOnDay(jobId, d.iso))}>{d.label[0]}</button>
+            )
+          })}
         </span>
         {onWeekRow && <button type="button" className="ib-act ib-act-x" disabled={busy} title="Take off this week's list" onClick={() => removeFromWeek(onWeekRow)}>×</button>}
       </div>
@@ -502,9 +579,17 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, i
             <button type="button" className="jobcc-btn" disabled={!week} onClick={() => setWeek(addDays(week, -7))}>‹ week</button>
             <span className="ip-weekpill">{week ? `Week of ${fmtDay(week)}` : '…'}<b className={kind === 'install' ? 'a' : 'b'}>{kind === 'install' ? 'A · INSTALL' : 'B · PRODUCTION'}</b></span>
             <button type="button" className="jobcc-btn" disabled={!week} onClick={() => setWeek(addDays(week, 7))}>week ›</button>
+            {mode === 'build' && (weekItems.length > 0 || batches.length > 0) && (
+              <button type="button" className="jobcc-btn ip-movebtn" disabled={busy} title="Everything on this week — list, trips and install dates — slides to the same weekdays next week" onClick={moveWeekForward}>Move this week → next week</button>
+            )}
           </div>
         </div>
       </header>
+      {rolled.length > 0 && (
+        <div className="ip-rolled">
+          <b>Rolled over:</b> {rolled.length} stone{rolled.length === 1 ? '' : 's'} not installed last week moved onto this week's list — {rolled.map(r => famOf(jobById.get(r.jobId))).filter(Boolean).slice(0, 8).join(', ')}{rolled.length > 8 ? '…' : ''}. Give them a day.
+        </div>
+      )}
 
       {kind !== 'install' && week && <div className="ip-note">This is a B (production) week. You can still plan installs here — or flip the week to A in the Team Meeting.</div>}
       {err && <div className="jobcc-err">{err}</div>}
@@ -632,6 +717,9 @@ const IP_CSS = `
   .ip-day:hover:not(:disabled) { border-color: #C9A468; color: #fbbf24; }
   .ip-day.on { background: #1d7a55; border-color: #34d399; color: #eafff4; }
   .ip-day:disabled { opacity: .5; cursor: default; }
+  .ip-day.past { opacity: .22; text-decoration: line-through; }
+  .ip-movebtn { border-color: #C9A468; color: #fbbf24; }
+  .ip-rolled { font-size: 12px; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
   .ip-empty { font-size: 12px; color: #6f7a8a; padding: 6px 2px; }
   .ip-week { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
   @media (max-width: 1100px) { .ip-week { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
