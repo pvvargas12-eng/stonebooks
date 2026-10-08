@@ -9,6 +9,13 @@
 
 import { batchKindInfo, customerName } from '../../lib/stonebooksData'
 
+// Track tone per stop — the office reads bronze vs stone vs inscription at a
+// glance on the Scheduler itself (Paul 2026-10-08: "color coding bronze
+// services, new stone, inscription").
+const TRACK_OF = { new_stone: 'stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door', cleaning_repair: 'service' }
+const TRACK_COLOR = { stone: '#1D6FA8', bronze: '#7C5CBF', inscription: '#B8842A', door: '#1D6FA8', service: '#5F5E5A' }
+const MAX_STOP_LINES = 6
+
 export default function CalendarBatchCard({
   batch,
   hasPromise,
@@ -19,9 +26,22 @@ export default function CalendarBatchCard({
   onUnschedule,
   overdue = false,
   overdueDate = null,
+  jobById = null,
 }) {
   const kindInfo = batchKindInfo(batch.kind)
   const stops = batch.batch_jobs || []
+  // Stop lines: family + track dot, in stop order. The job comes embedded
+  // (day view) or from the jobs map (week view); unknown jobs are skipped.
+  const stopLines = stops
+    .slice().sort((a, b) => (a.stop_order || 0) - (b.stop_order || 0))
+    .map(s => {
+      const job = s.job || jobById?.get(s.job_id) || null
+      if (!job) return null
+      const fam = job.order?.primary_lastname || customerName(job.order?.customer) || customerName(job.customer) || null
+      if (!fam) return null
+      return { id: s.job_id, fam, tone: TRACK_OF[job.job_type] || 'service', done: !!s.completed_at }
+    })
+    .filter(Boolean)
   const status = batch.status
   const isLate = status === 'running_late'
   const isCompleted = status === 'completed'
@@ -66,6 +86,17 @@ export default function CalendarBatchCard({
         <div className="sb-cal-card-title">{title}</div>
         {batch.cemetery?.name && (
           <div className="sb-cal-card-cem">{batch.cemetery.name}</div>
+        )}
+        {stopLines.length > 0 && (
+          <ul className="sb-cal-card-stops">
+            {stopLines.slice(0, MAX_STOP_LINES).map(s => (
+              <li key={s.id} className={`sb-cal-card-stop${s.done ? ' done' : ''}`}>
+                <i className="sb-cal-card-dot" style={{ background: TRACK_COLOR[s.tone] }} aria-hidden="true" />
+                <span className="sb-cal-card-stop-fam">{s.fam}</span>
+              </li>
+            ))}
+            {stopLines.length > MAX_STOP_LINES && <li className="sb-cal-card-stop more">+{stopLines.length - MAX_STOP_LINES} more</li>}
+          </ul>
         )}
         {overdue && (
           <div className="sb-cal-card-overdue-line">
@@ -258,6 +289,38 @@ const localStyles = `
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* Stops by family, each with its track dot — bronze purple, new stone blue,
+     inscription amber. The card IS the day's list now. */
+  .sb-cal-card-stops {
+    list-style: none;
+    margin: 2px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .sb-cal-card-stop {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--sb-text);
+    min-width: 0;
+  }
+  .sb-cal-card-stop.done { opacity: 0.5; text-decoration: line-through; }
+  .sb-cal-card-stop.more { font-size: 11px; color: var(--sb-text-muted); }
+  .sb-cal-card-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .sb-cal-card-stop-fam {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .sb-cal-card-foot {
     display: flex;

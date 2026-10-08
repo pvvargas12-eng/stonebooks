@@ -1,30 +1,39 @@
 // =============================================================================
-// InstallPlanner — build the installation week, then sort it Mon–Fri
+// InstallPlanner — build the installation week, sort it Mon–Fri, work the
+// blockers (INSTALL-PLANNER-1/2, 2026-10-08)
 // =============================================================================
-// Paul 2026-10-08: "like the line planner i need a pretty official and good
-// way to build my installation schedule — add them all to an install list and
-// then plan out which day: first add to my week list, then M-F sort it."
+// Paul: "like the line planner i need a pretty official and good way to build
+// my installation schedule — add them all to an install list and then plan
+// out which day." Round 2: "the 5-day week at the top; a Scheduled Installs
+// view for my admin team to see what's happening AND ACTION THE BLOCKERS,
+// ESPECIALLY BALANCES; click the cemetery name to hide the list, the number
+// green when all scheduled; custom reminders (Need Base Insc, all St Gertrude
+// bases need an insc) that don't block; a scheduled stone fades."
 //
-// No new tables. The WEEK LIST is the Team Meeting's committed plan for that
-// week (week_plan_items, lane 'set' — the same rows the Monday sheet, the
-// carryover strip and Friday scoring read). The DAYS are the Scheduler's
-// 'setting' batches (work_batches + work_batch_jobs — what the Scheduler,
-// Calendar, field Today and the meeting's 5-day board already show), one
+// No new tables except install_reminders. The WEEK LIST is the Team Meeting's
+// committed plan for that week (week_plan_items, lane 'set'). The DAYS are
+// the Scheduler's 'setting' batches (work_batches + work_batch_jobs — what the
+// Scheduler, Calendar, field Today and the meeting's 5-day board show), one
 // batch per cemetery per day (a trip). Putting a stone on a day also stamps
 // its install milestone in_progress with that date — exactly what the set
-// list's "Schedule install" button does — so the card reads Scheduled and the
-// SCHEDULED tile counts it. Dark .jobcc / .ib-* aesthetic.
+// list's "Schedule install" button does. Gate edits write the same functions
+// the Sales row writes. Dark .jobcc / .ib-* aesthetic.
 // =============================================================================
 import { useState, useEffect, useCallback } from 'react'
 import {
   getInstallList, getBatches, createBatch, addJobsToBatch, removeJobFromBatch,
   updateMilestoneWithOverride, installGates, rowBalanceDue, fmtUSD, logOrderActivity, getCurrentStaffName,
+  setOrderFdnStatus, setOrderPermit, setOrderStoneStatus, getJob,
+  deriveStoneStatus, stoneStatusOptions, FDN_STATUS, PERMIT_STATUS_OPTIONS, permitStatusLabel,
+  addOrderTask, STAFF_NAMES, getActiveStaffUser, todayISO, manualBlockerChipText,
 } from '../lib/stonebooksData'
+import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import {
-  isoOf, mondayOf, addDays, listWeekPlans, kindFromPlans, nextInstallMonday, weekKindLabel,
+  isoOf, mondayOf, addDays, listWeekPlans, kindFromPlans, nextInstallMonday,
   getWeekPlanWithItems, addPlanItem, removePlanItem,
 } from '../lib/meetingData'
+import { listInstallReminders, remindersFor, addInstallReminder, doneInstallReminder } from '../lib/installReminders'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 const installMilestone = (job) => {
@@ -37,25 +46,51 @@ const cemOf = (job) => job?.order?.cemetery?.name || job?.cemetery?.name || ''
 const cemIdOf = (job) => job?.cemetery?.id || job?.order?.cemetery?.id || job?.order?.cemetery_id || null
 const fmtDay = (iso) => { const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }
 const readyNow = (g) => g && g.paid !== false && g.fdn !== false && g.permit !== false && g.blasted !== false
-// Track tag per job (Paul 2026-10-08: "for bronze services in install planner
-// I want it to have the purple box") — same tones as the Installation cards.
+// Track tag per job — same tones as the Installation cards.
 const TRACK_OF = { new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }
 const TRACK_TAG = { new_stone: ['NEW STONE', 'blue'], bronze: ['BRONZE SERVICES', 'purple'], inscription: ['INSCRIPTION', 'amber'], door: ['MAUSOLEUM DOOR', 'blue'] }
 const trackOf = (job) => TRACK_OF[job?.job_type] || null
-const trackTag = (job) => { const t = TRACK_TAG[trackOf(job)]; return t ? <span className={`ip-track ip-track-${t[1]}`}>{t[0]}</span> : null }
+const trackTag = (job, sm = false) => { const t = TRACK_TAG[trackOf(job)]; return t ? <span className={`ip-track ip-track-${t[1]}${sm ? ' ip-track-sm' : ''}`}>{sm ? t[0].split(' ')[0] : t[0]}</span> : null }
+// A bronze is never blasted — it ARRIVES.
+const blastWord = (job, ok) => (trackOf(job) === 'bronze' ? (ok ? 'ARRIVED' : 'NOT ARRIVED') : (ok ? 'BLASTED' : 'NOT BLASTED'))
 
 function gateChips(job) {
   const g = installGates(job?.order || {}, job)
   const bal = rowBalanceDue(job?.order || {})
-  // A bronze is never blasted — it ARRIVES (Paul: "for bronze services it
-  // should say arrived"). Same gate, honest word.
-  const bronze = trackOf(job) === 'bronze'
   return (
     <span className="ip-gates">
       <span className={`ip-g ${g.paid ? 'ok' : 'red'}`}>{g.paid ? 'PAID' : bal > 0 ? `BAL ${fmtUSD(bal)}` : 'NOT PAID'}</span>
       {g.fdn === null ? <span className="ip-g na">NO FDN</span> : <span className={`ip-g ${g.fdn ? 'ok' : 'red'}`}>{g.fdnCode === 'drop_off' ? 'DROP OFF' : g.fdn ? 'FDN IN' : 'FDN NOT IN'}</span>}
       {g.permit === null ? <span className="ip-g na">NO PERMIT</span> : <span className={`ip-g ${g.permit ? 'ok' : 'red'}`}>{g.permit ? 'PERMIT OK' : 'PERMIT'}</span>}
-      <span className={`ip-g ${g.blasted ? 'ok' : 'red'}`}>{bronze ? (g.blasted ? 'ARRIVED' : 'NOT ARRIVED') : (g.blasted ? 'BLASTED' : 'NOT BLASTED')}</span>
+      <span className={`ip-g ${g.blasted ? 'ok' : 'red'}`}>{blastWord(job, g.blasted)}</span>
+    </span>
+  )
+}
+
+// A gate pill that IS a dropdown (the Installation card pattern).
+function GateSelect({ tone, label, value, options, onChange, disabled, title }) {
+  return (
+    <label className={`ip-g ip-gsel ${tone}`} title={title || 'Change the status'}>
+      <span>{label} <span className="ip-caret" aria-hidden="true">▾</span></span>
+      <select value={value || ''} disabled={disabled} onChange={e => onChange(e.target.value)} aria-label={title || label}>
+        {!options.some(o => o.code === value) && <option value="">—</option>}
+        {options.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+      </select>
+    </label>
+  )
+}
+
+// Reminder chips (amber, never gating) with a tick to close them.
+function ReminderChips({ list, busy, onDone }) {
+  if (!list.length) return null
+  return (
+    <span className="ip-rems">
+      {list.map(r => (
+        <span key={r.id} className={`ip-rem${r.cemetery_id ? ' ip-rem-cem' : ''}`} title={r.cemetery_id ? 'Cemetery reminder — every stone set there' : `Reminder · ${r.created_by || ''}`}>
+          {r.text}
+          <button type="button" disabled={busy} title="Done — clear this reminder" onClick={() => onDone(r)}>✓</button>
+        </span>
+      ))}
     </span>
   )
 }
@@ -66,12 +101,22 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
   const [plan, setPlan] = useState(null)        // { plan, items }
   const [batches, setBatches] = useState([])
   const [setList, setSetList] = useState(null)
+  const [rems, setRems] = useState({ byJob: new Map(), byCemetery: new Map() })
+  const [overrides, setOverrides] = useState(() => new Map())   // job id → re-read job after a gate pick
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const [mode, setMode] = useState('build')      // 'build' | 'scheduled'
   const [addOpen, setAddOpen] = useState(false)
   const [addQ, setAddQ] = useState('')
+  const [collapsed, setCollapsed] = useState(() => new Set())   // cemetery names folded
+  const [remFor, setRemFor] = useState(null)    // { jobId } | { cemeteryId, name } — the inline reminder input
+  const [remText, setRemText] = useState('')
+  const [taskFor, setTaskFor] = useState(null)  // job id with the task-a-call strip open
+  const [taskWho, setTaskWho] = useState('')
+  const [taskNote, setTaskNote] = useState('')
+  const [taskDone, setTaskDone] = useState(false)
 
-  const jobById = new Map((jobs || []).map(j => [j.id, j]))
+  const jobById = new Map((jobs || []).map(j => [j.id, overrides.get(j.id) || j]))
 
   // Default week = the next install week (this week if it is one).
   useEffect(() => {
@@ -92,7 +137,11 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
     if (p.ok) { setPlan(p); setErr(null) } else setErr(p.error)
     setBatches(bs || [])
     setSetList(sl || [])
-  }, [week])
+    // Reminders for every stone that can appear here + their cemeteries.
+    const ids = new Set([...(sl || []).map(r => r.job_id), ...((p.items || []).map(it => it.job_id)), ...(bs || []).flatMap(b => (b.batch_jobs || []).map(l => l.job_id))])
+    const cems = new Set([...ids].map(id => cemIdOf((jobs || []).find(j => j.id === id))).filter(Boolean))
+    setRems(await listInstallReminders({ jobIds: [...ids], cemeteryIds: [...cems] }).catch(() => ({ byJob: new Map(), byCemetery: new Map() })))
+  }, [week, jobs])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const run = async (fn) => {
@@ -107,7 +156,6 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
   const kind = week ? kindFromPlans(week, plans) : 'install'
   const weekItems = (plan?.items || []).filter(it => it.lane === 'set' && it.job_id)
   const onWeek = new Set(weekItems.map(it => it.job_id))
-  // Which day each job sits on (via the setting batches this week).
   const dayOfJob = new Map()
   const batchOfJob = new Map()
   for (const b of batches) for (const l of (b.batch_jobs || [])) { dayOfJob.set(l.job_id, b.scheduled_date); batchOfJob.set(l.job_id, b) }
@@ -117,6 +165,7 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
     return { label, iso, batches: dayBatches, count: dayBatches.reduce((s, b) => s + (b.batch_jobs || []).length, 0) }
   })
   const unplaced = weekItems.filter(it => !dayOfJob.has(it.job_id))
+  const remsOf = (job) => remindersFor(job, rems)
 
   // ── Week list ───────────────────────────────────────────────────────────
   const addToWeek = (job) => run(() => addPlanItem({ planId: plan.plan.id, lane: 'set', jobId: job.id, orderId: job.order?.id || null, title: famOf(job) }))
@@ -133,9 +182,7 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
     return removePlanItem(it.id)
   })
 
-  // ── Days ────────────────────────────────────────────────────────────────
-  // One trip per cemetery per day: join the day's batch for that cemetery
-  // or create it. Then stamp the install milestone with the day.
+  // ── Days — one trip per cemetery per day; milestone stamped with the day ──
   const placeOnDay = (jobId, iso) => run(async () => {
     const job = jobById.get(jobId)
     if (!job) return { ok: false, error: 'Job not loaded' }
@@ -163,7 +210,51 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
     return { ok: true }
   })
 
-  // ── Add picker: the set list, ready first, grouped by cemetery ──────────
+  // ── Blockers — the same writes as the Sales row, then re-read the job ────
+  const changeGate = (job, dim, code) => run(async () => {
+    if (!code) return { ok: true }
+    let r = { ok: true }
+    if (dim === 'fdn') r = await setOrderFdnStatus(job.id, code)
+    else if (dim === 'stone') r = await setOrderStoneStatus(job.id, code)
+    else if (dim === 'permit' && job.order?.id) {
+      const today = todayISO()
+      const patch = { permit_status: code }
+      if (code === 'submitted') patch.permit_filed_at = today
+      if (code === 'approved') patch.permit_approved_at = today
+      r = await setOrderPermit(job.order.id, patch)
+      if (r?.ok) logOrderActivity(job.order.id, { type: 'change', field: 'Permit status', oldValue: permitStatusLabel(job.order.permit_status || 'unknown'), newValue: permitStatusLabel(code), note: 'Permit status changed from the Install Planner', actor: await getCurrentStaffName().catch(() => null) }).catch(() => {})
+    }
+    if (r?.ok === false) return r
+    const fresh = await getJob(job.id).catch(() => null)
+    if (fresh) setOverrides(m => new Map(m).set(job.id, fresh))
+    return { ok: true }
+  })
+  const openTasker = (job) => {
+    const bal = rowBalanceDue(job.order || {})
+    setTaskWho(getActiveStaffUser() || 'Admin')
+    setTaskNote(`Call ${famOf(job)} — ${bal > 0 ? `balance ${fmtUSD(bal)}` : 'installation'}${job.order?.order_number ? ` (${job.order.order_number})` : ''}`)
+    setTaskDone(false); setTaskFor(job.id)
+  }
+  const sendTask = (job) => run(async () => {
+    if (!job.order?.id || !taskNote.trim()) return { ok: false, error: 'Type the task.' }
+    const actor = await getCurrentStaffName().catch(() => null)
+    const r = await addOrderTask(job.order.id, { note: taskNote.trim(), assignee: taskWho, assigneeKind: DEPARTMENTS.includes(taskWho) ? 'department' : 'person', dueDate: todayISO(), actor })
+    if (r?.ok === false) return r
+    setTaskDone(true)
+    setTimeout(() => { setTaskFor(null); setTaskDone(false) }, 1800)
+    return { ok: true }
+  })
+
+  // ── Reminders ───────────────────────────────────────────────────────────
+  const saveReminder = () => run(async () => {
+    if (!remFor) return { ok: true }
+    const r = await addInstallReminder({ jobId: remFor.jobId || null, cemeteryId: remFor.cemeteryId || null, text: remText })
+    if (r.ok) { setRemFor(null); setRemText('') }
+    return r
+  })
+  const remDone = (r) => run(() => doneInstallReminder(r.id, true))
+
+  // ── Add picker: the set list, ready first ───────────────────────────────
   const addCandidates = (setList || [])
     .map(m => jobById.get(m.job_id)).filter(Boolean)
     .filter(j => !onWeek.has(j.id) && installMilestone(j)?.status !== 'done')
@@ -173,30 +264,154 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
 
   const groupByCem = (items) => {
     const m = new Map()
-    for (const it of items) { const k = cemOf(jobById.get(it.job_id)) || '—'; if (!m.has(k)) m.set(k, []); m.get(k).push(it) }
+    for (const it of items) { const job = jobById.get(it.job_id); const k = cemOf(job) || '—'; if (!m.has(k)) m.set(k, { id: cemIdOf(job), items: [] }); m.get(k).items.push(it) }
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   }
+  const toggleCem = (name) => setCollapsed(s => { const n = new Set(s); if (n.has(name)) n.delete(name); else n.add(name); return n })
 
-  const renderJobRow = (jobId, { onWeekRow = null, showDays = true } = {}) => {
+  const reminderInput = (target) => (
+    <span className="ip-reminput">
+      <input autoFocus placeholder={target.cemeteryId ? `Reminder for every stone at ${target.name}` : 'Reminder — e.g. Need base insc'} value={remText}
+        onChange={e => setRemText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveReminder(); if (e.key === 'Escape') setRemFor(null) }} />
+      <button type="button" className="ib-act ib-act-go" disabled={busy || !remText.trim()} onClick={saveReminder}>Save</button>
+      <button type="button" className="ib-act" onClick={() => { setRemFor(null); setRemText('') }}>×</button>
+    </span>
+  )
+
+  const renderJobRow = (jobId, { onWeekRow = null } = {}) => {
     const job = jobById.get(jobId)
     if (!job) return <div key={jobId} className="ip-row"><span className="ip-fam">(job not loaded)</span></div>
     const day = dayOfJob.get(jobId)
+    const list = remsOf(job)
     return (
-      <div key={jobId} className={`ip-row${readyNow(installGates(job.order || {}, job)) ? ' ip-row-ready' : ''}`}>
+      <div key={jobId} className={`ip-row${readyNow(installGates(job.order || {}, job)) ? ' ip-row-ready' : ''}${day ? ' ip-row-sched' : ''}`}>
         <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')}>{famOf(job)}</button>
         {trackTag(job)}
         <span className="ip-meta">{[job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
         {gateChips(job)}
-        {showDays && (
-          <span className="ip-days">
-            {days.map(d => (
-              <button type="button" key={d.iso} className={`ip-day${day === d.iso ? ' on' : ''}`} disabled={busy} title={`${d.label} ${fmtDay(d.iso)}`}
-                onClick={() => (day === d.iso ? unplace(jobId) : placeOnDay(jobId, d.iso))}>{d.label[0]}</button>
-            ))}
-          </span>
+        <ReminderChips list={list} busy={busy} onDone={remDone} />
+        {remFor?.jobId === jobId ? reminderInput(remFor) : (
+          <button type="button" className="ip-remadd" title="Add a reminder for this stone" onClick={() => { setRemFor({ jobId }); setRemText('') }}>+ reminder</button>
         )}
+        <span className="ip-days">
+          {days.map(d => (
+            <button type="button" key={d.iso} className={`ip-day${day === d.iso ? ' on' : ''}`} disabled={busy} title={`${d.label} ${fmtDay(d.iso)}`}
+              onClick={() => (day === d.iso ? unplace(jobId) : placeOnDay(jobId, d.iso))}>{d.label[0]}</button>
+          ))}
+        </span>
         {onWeekRow && <button type="button" className="ib-act ib-act-x" disabled={busy} title="Take off this week's list" onClick={() => removeFromWeek(onWeekRow)}>×</button>}
       </div>
+    )
+  }
+
+  // The 5-day week — at the TOP (Paul round 2).
+  const renderWeek = () => (
+    <section className="ip-week">
+      {days.map(d => (
+        <div key={d.iso} className={`ip-daycol${d.count ? ' has' : ''}`}>
+          <div className="ip-daycol-h"><span>{d.label}</span><span className="ip-daycol-date">{fmtDay(d.iso)}</span><span className="ip-n">{d.count}</span></div>
+          {d.batches.length === 0 && <div className="ip-daycol-empty">—</div>}
+          {d.batches.map(b => (
+            <div key={b.id} className="ip-trip">
+              <div className="ip-trip-h">{b.cemetery?.name || b.title || 'Trip'}{b.am_pm ? ` · ${b.am_pm}` : ''}</div>
+              {(b.batch_jobs || []).slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0)).map(l => {
+                const job = jobById.get(l.job_id)
+                const ready = job && readyNow(installGates(job.order || {}, job))
+                return (
+                  <div key={l.job_id} className="ip-stop">
+                    <span className="ip-stop-n">{l.stop_order || ''}</span>
+                    <button type="button" className="ip-fam ip-fam-btn" onClick={() => job?.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')}>{job ? famOf(job) : '(job)'}</button>
+                    {trackTag(job, true)}
+                    {job && <span className={`ip-g ${ready ? 'ok' : 'red'}`}>{ready ? 'READY' : 'GATE'}</span>}
+                    {job && remsOf(job).length > 0 && <span className="ip-g rem" title={remsOf(job).map(r => r.text).join(' · ')}>{remsOf(job).length} REM</span>}
+                    <button type="button" className="ip-x" disabled={busy} title="Take off this day" onClick={() => unplace(l.job_id)}>×</button>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
+  )
+
+  // SCHEDULED INSTALLS — the admin view: every stone on a day this week, its
+  // blockers, and the actions that clear them (balance first).
+  const renderScheduled = () => {
+    const rows = days.flatMap(d => d.batches.flatMap(b => (b.batch_jobs || []).slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0)).map(l => ({ day: d, batch: b, job: jobById.get(l.job_id), stop: l }))))
+    const owed = rows.reduce((s, r) => s + (r.job ? Math.max(0, rowBalanceDue(r.job.order || {})) : 0), 0)
+    const blocked = rows.filter(r => r.job && !readyNow(installGates(r.job.order || {}, r.job))).length
+    return (
+      <section className="ip-panel ip-panel-admin">
+        <div className="ip-panel-head">
+          <span className="ip-panel-title">Scheduled installs · week of {week ? fmtDay(week) : ''}</span>
+          <span className="ip-n">{rows.length}</span>
+          <span className="ip-hint"><b className={blocked ? 't-red' : 't-ok'}>{blocked} with a blocker</b> · <b className={owed ? 't-red' : 't-ok'}>{fmtUSD(owed)} still owed</b> on this week's stones</span>
+        </div>
+        {rows.length === 0 && <div className="ip-empty">Nothing on a day yet — build the week first.</div>}
+        {days.map(d => {
+          const dayRows = rows.filter(r => r.day.iso === d.iso)
+          if (!dayRows.length) return null
+          return (
+            <div key={d.iso} className="ip-adm-day">
+              <div className="ip-cem-h">{d.label} {fmtDay(d.iso)} <span className="ip-n">{dayRows.length}</span></div>
+              {dayRows.map(({ batch, job, stop }) => {
+                if (!job) return <div key={stop.job_id} className="ip-row"><span className="ip-fam">(job not loaded)</span></div>
+                const g = installGates(job.order || {}, job)
+                const bal = rowBalanceDue(job.order || {})
+                const mb = job.order?.manual_blocker
+                const list = remsOf(job)
+                return (
+                  <div key={stop.job_id} className={`ip-adm${readyNow(g) ? ' ip-row-ready' : ' ip-adm-blocked'}`}>
+                    <div className="ip-adm-top">
+                      <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')}>{famOf(job)}</button>
+                      {trackTag(job)}
+                      <span className="ip-meta">{[batch.cemetery?.name || cemOf(job), job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
+                      {readyNow(g) ? <span className="ip-g ok">READY TO INSTALL</span> : <span className="ip-g red">BLOCKED</span>}
+                      {mb?.kind && <span className={`ip-g ${mb.kind === 'hold' ? 'red' : 'rem'}`} title={mb.reason || ''}>{String(manualBlockerChipText(mb)).toUpperCase()}</span>}
+                    </div>
+                    <div className="ip-adm-gates">
+                      {/* BALANCE FIRST (Paul: "ESPECIALLY BALANCES") */}
+                      <span className={`ip-g ${g.paid ? 'ok' : 'red'} ip-g-big`}>{g.paid ? 'PAID IN FULL' : bal > 0 ? `OWES ${fmtUSD(bal)}` : 'NOT PAID'}</span>
+                      {!g.paid && (
+                        <>
+                          <button type="button" className="ib-act ib-act-go" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')} title="Open the order — record the payment there">Record payment</button>
+                          <button type="button" className="ib-act" onClick={() => (taskFor === job.id ? setTaskFor(null) : openTasker(job))}>Task call</button>
+                        </>
+                      )}
+                      <GateSelect tone={g.fdn === null ? 'na' : g.fdn ? 'ok' : 'red'} label={g.fdn === null ? 'NO FDN' : g.fdnCode === 'drop_off' ? 'DROP OFF' : g.fdn ? 'FDN IN' : 'FDN NOT IN'}
+                        value={g.fdnCode} options={FDN_STATUS} disabled={busy} title="Foundation status" onChange={(c) => changeGate(job, 'fdn', c)} />
+                      <GateSelect tone={g.permit === null ? 'na' : g.permit ? 'ok' : 'red'} label={g.permit === null ? 'NO PERMIT' : g.permit ? 'PERMIT OK' : 'PERMIT NOT APPROVED'}
+                        value={job.order?.permit_status || 'unknown'} options={PERMIT_STATUS_OPTIONS} disabled={busy || !job.order?.id} title="Permit status" onChange={(c) => changeGate(job, 'permit', c)} />
+                      <GateSelect tone={g.blasted ? 'ok' : 'red'} label={blastWord(job, g.blasted)}
+                        value={deriveStoneStatus(job)} options={stoneStatusOptions(job)} disabled={busy} title="Stone / bronze status" onChange={(c) => changeGate(job, 'stone', c)} />
+                      <ReminderChips list={list} busy={busy} onDone={remDone} />
+                      {remFor?.jobId === job.id ? reminderInput(remFor) : (
+                        <button type="button" className="ip-remadd" onClick={() => { setRemFor({ jobId: job.id }); setRemText('') }}>+ reminder</button>
+                      )}
+                    </div>
+                    {taskFor === job.id && (
+                      <div className="ip-tasker">
+                        {taskDone ? <span className="t-ok">Task created — {taskWho} has it.</span> : (
+                          <>
+                            <select value={taskWho} onChange={e => setTaskWho(e.target.value)} aria-label="Who">
+                              <optgroup label="People">{STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+                              <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+                            </select>
+                            <input value={taskNote} onChange={e => setTaskNote(e.target.value)} placeholder="What needs doing…" />
+                            <button type="button" className="ib-act ib-act-go" disabled={busy || !taskNote.trim()} onClick={() => sendTask(job)}>Task it</button>
+                            <button type="button" className="ib-act" onClick={() => setTaskFor(null)}>×</button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
+      </section>
     )
   }
 
@@ -208,8 +423,14 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
           <div className="ip-titlerow">
             <button type="button" className="jobcc-btn" onClick={onBack}>← Installation</button>
             <h1 className="jobcc-title">Install Planner</h1>
+            <div className="ip-modes">
+              <button type="button" className={`ip-mode${mode === 'build' ? ' on' : ''}`} onClick={() => setMode('build')}>Build the week</button>
+              <button type="button" className={`ip-mode${mode === 'scheduled' ? ' on' : ''}`} onClick={() => setMode('scheduled')}>Scheduled installs</button>
+            </div>
           </div>
-          <div className="jobcc-purpose">Build the week's list from the set list, then put each stone on a day. Days become Scheduler trips (one per cemetery per day) and the Team Meeting's set lane reads the same list.</div>
+          <div className="jobcc-purpose">{mode === 'build'
+            ? 'Build the week\'s list from the set list, then put each stone on a day. Days become Scheduler trips (one per cemetery per day) and the Team Meeting\'s set lane reads the same list.'
+            : 'Everything on a day this week with its blockers — clear them here: record the balance, task a call, flip foundation / permit / arrival, tick reminders.'}</div>
         </div>
         <div className="jobcc-cmd-right">
           <div className="jobcc-actions">
@@ -223,9 +444,10 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
       {kind !== 'install' && week && <div className="ip-note">This is a B (production) week. You can still plan installs here — or flip the week to A in the Team Meeting.</div>}
       {err && <div className="jobcc-err">{err}</div>}
 
-      {!plan || setList == null ? <div className="jobcc-empty">Loading…</div> : (
+      {!plan || setList == null ? <div className="jobcc-empty">Loading…</div> : mode === 'scheduled' ? renderScheduled() : (
         <>
-          {/* THE WEEK LIST */}
+          {renderWeek()}
+
           <section className="ip-panel">
             <div className="ip-panel-head">
               <span className="ip-panel-title">Week list</span>
@@ -247,6 +469,7 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
                       {trackTag(j)}
                       <span className="ip-meta">{[cemOf(j), j.order?.order_number].filter(Boolean).join(' · ')}</span>
                       {gateChips(j)}
+                      <ReminderChips list={remsOf(j)} busy={busy} onDone={remDone} />
                       <button type="button" className="ib-act ib-act-go" disabled={busy} onClick={() => addToWeek(j)}>Add →</button>
                     </div>
                   ))}
@@ -254,40 +477,28 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
                 </div>
               </div>
             )}
-            {weekItems.length === 0 && !addOpen && <div className="ip-empty">Add stones from the set list — ready ones first — then give each a day below.</div>}
-            {groupByCem(weekItems).map(([cem, items]) => (
-              <div key={cem} className="ip-cem">
-                <div className="ip-cem-h">{cem} <span className="ip-n">{items.length}</span></div>
-                {items.map(it => renderJobRow(it.job_id, { onWeekRow: it }))}
-              </div>
-            ))}
-          </section>
-
-          {/* MON–FRI */}
-          <section className="ip-week">
-            {days.map(d => (
-              <div key={d.iso} className={`ip-daycol${d.count ? ' has' : ''}`}>
-                <div className="ip-daycol-h"><span>{d.label}</span><span className="ip-daycol-date">{fmtDay(d.iso)}</span><span className="ip-n">{d.count}</span></div>
-                {d.batches.length === 0 && <div className="ip-daycol-empty">—</div>}
-                {d.batches.map(b => (
-                  <div key={b.id} className="ip-trip">
-                    <div className="ip-trip-h">{b.cemetery?.name || b.title || 'Trip'}{b.am_pm ? ` · ${b.am_pm}` : ''}</div>
-                    {(b.batch_jobs || []).slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0)).map(l => {
-                      const job = jobById.get(l.job_id)
-                      return (
-                        <div key={l.job_id} className="ip-stop">
-                          <span className="ip-stop-n">{l.stop_order || ''}</span>
-                          <button type="button" className="ip-fam ip-fam-btn" onClick={() => job?.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')}>{job ? famOf(job) : '(job)'}</button>
-                          {trackOf(job) === 'bronze' && <span className="ip-track ip-track-purple ip-track-sm">BRONZE</span>}
-                          {job && readyNow(installGates(job.order || {}, job)) ? <span className="ip-g ok">READY</span> : job ? <span className="ip-g red">GATE</span> : null}
-                          <button type="button" className="ip-x" disabled={busy} title="Take off this day" onClick={() => unplace(l.job_id)}>×</button>
-                        </div>
-                      )
-                    })}
+            {weekItems.length === 0 && !addOpen && <div className="ip-empty">Add stones from the set list — ready ones first — then give each a day above.</div>}
+            {groupByCem(weekItems).map(([cem, { id: cemId, items }]) => {
+              const allSet = items.length > 0 && items.every(it => dayOfJob.has(it.job_id))
+              const nSet = items.filter(it => dayOfJob.has(it.job_id)).length
+              const folded = collapsed.has(cem)
+              const cemRems = cemId ? (rems.byCemetery.get(cemId) || []) : []
+              return (
+                <div key={cem} className="ip-cem">
+                  <div className="ip-cem-h">
+                    <button type="button" className="ip-cem-btn" onClick={() => toggleCem(cem)} title={folded ? 'Show the stones' : 'Hide the stones'}>
+                      <span className="ip-caret">{folded ? '▸' : '▾'}</span> {cem}
+                    </button>
+                    <span className={`ip-n${allSet ? ' ip-n-ok' : nSet ? ' ip-n-part' : ''}`} title={allSet ? 'Every stone here has a day' : `${nSet} of ${items.length} have a day`}>{allSet ? `${items.length} ✓` : nSet ? `${nSet}/${items.length}` : items.length}</span>
+                    {cemRems.length > 0 && <ReminderChips list={cemRems} busy={busy} onDone={remDone} />}
+                    {cemId && (remFor?.cemeteryId === cemId ? reminderInput(remFor) : (
+                      <button type="button" className="ip-remadd" title={`A reminder for every stone set at ${cem}`} onClick={() => { setRemFor({ cemeteryId: cemId, name: cem }); setRemText('') }}>+ cemetery reminder</button>
+                    ))}
                   </div>
-                ))}
-              </div>
-            ))}
+                  {!folded && items.map(it => renderJobRow(it.job_id, { onWeekRow: it }))}
+                </div>
+              )
+            })}
           </section>
           <div className="ip-foot">Days are Scheduler trips — reorder stops, assign a crew or set AM/PM in the Scheduler. The Team Meeting's set lane and Friday score read this week list.</div>
         </>
@@ -298,23 +509,35 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
 
 const IP_CSS = `
   .ip-titlerow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .ip-modes { display: inline-flex; background: #0e1116; border: 1px solid #2a313c; border-radius: 999px; padding: 3px; gap: 2px; }
+  .ip-mode { font: inherit; font-size: 12px; font-weight: 700; color: #8b95a5; background: none; border: none; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+  .ip-mode.on { background: #1a2230; color: #fbbf24; }
   .ip-weekpill { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 800; color: #f4f6fa; padding: 7px 12px; border: 1px solid #2a313c; border-radius: 8px; background: #11151c; white-space: nowrap; }
   .ip-weekpill b { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; letter-spacing: .08em; border-radius: 999px; padding: 2px 8px; }
   .ip-weekpill b.a { color: #C9A468; border: 1px solid #C9A468; } .ip-weekpill b.b { color: #8b95a5; border: 1px solid #3a4452; }
   .ip-note { font-size: 12px; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
-  .ip-panel { background: #11151c; border: 1px solid #C9A468; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .ip-panel { background: #11151c; border: 1px solid #C9A468; border-radius: 10px; padding: 12px 14px; margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .ip-panel-admin { border-color: #2d5a44; margin-top: 0; }
   .ip-panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ip-panel-title { font-size: 14px; font-weight: 800; color: #f4f6fa; }
-  .ip-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6f7a8a; background: #1a212b; border-radius: 999px; padding: 1px 8px; }
+  .ip-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6f7a8a; background: #1a212b; border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .ip-n-ok { color: #eafff4; background: #1d7a55; } .ip-n-part { color: #fbbf24; background: #2a2210; }
   .ip-hint { font-size: 11.5px; color: #8b95a5; }
+  .t-ok { color: #34d399; } .t-red { color: #f87171; }
   .ip-add { background: #0e1116; border: 1px dashed #3a4452; border-radius: 9px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .ip-add-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .ip-search { font: inherit; font-size: 12px; flex: 1 1 200px; max-width: 320px; background: #0E1116; border: 1px solid #2a313c; border-radius: 6px; color: #e6e9ef; padding: 6px 8px; }
   .ip-add-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
   .ip-cem { display: flex; flex-direction: column; gap: 4px; }
-  .ip-cem-h { font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: #c7cedb; margin: 4px 0 2px; display: flex; align-items: center; gap: 8px; }
+  .ip-cem-h { font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: #c7cedb; margin: 4px 0 2px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ip-cem-btn { font: inherit; font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: #c7cedb; background: none; border: none; padding: 0; cursor: pointer; }
+  .ip-cem-btn:hover { color: #fbbf24; }
+  .ip-caret { font-size: 10px; opacity: .8; }
   .ip-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #151a22; border: 1px solid #232a35; border-radius: 8px; padding: 6px 10px; min-width: 0; }
   .ip-row-ready { border-color: #1f3a2a; }
+  /* A stone with a day fades — it's on the calendar (Paul round 2). */
+  .ip-row-sched { opacity: .55; background: #12201a; border-color: #1f3a2a; }
+  .ip-row-sched:hover { opacity: 1; }
   .ip-fam { font-size: 13px; font-weight: 700; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
   .ip-fam-btn { font: inherit; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .ip-fam-btn:hover { color: #fbbf24; }
@@ -324,7 +547,21 @@ const IP_CSS = `
   .ip-meta { font-size: 11px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 140px; }
   .ip-gates { display: inline-flex; gap: 4px; flex-wrap: wrap; }
   .ip-g { font-size: 8.5px; font-weight: 800; letter-spacing: .05em; border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
-  .ip-g.ok { color: #34d399; background: rgba(52,211,153,.12); } .ip-g.red { color: #f87171; background: rgba(248,113,113,.14); } .ip-g.na { color: #6f7a8a; background: #1a212b; }
+  .ip-g.ok { color: #34d399; background: rgba(52,211,153,.12); } .ip-g.red { color: #f87171; background: rgba(248,113,113,.14); } .ip-g.na { color: #6f7a8a; background: #1a212b; } .ip-g.rem { color: #fbbf24; background: rgba(251,191,36,.12); }
+  .ip-g-big { font-size: 10.5px; padding: 4px 10px; }
+  .ip-gsel { position: relative; cursor: pointer; display: inline-flex; align-items: center; font-size: 9.5px; padding: 3px 8px; }
+  .ip-gsel select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; }
+  .ip-gsel:hover { filter: brightness(1.25); }
+  .ip-gsel .ip-caret { font-size: 8px; }
+  .ip-rems { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .ip-rem { display: inline-flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 700; color: #fbbf24; background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.35); border-radius: 999px; padding: 2px 4px 2px 8px; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+  .ip-rem-cem { border-style: dashed; }
+  .ip-rem button { font: inherit; font-size: 10px; line-height: 1; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 999px; width: 16px; height: 16px; cursor: pointer; padding: 0; }
+  .ip-rem button:hover { background: #1d7a55; color: #eafff4; border-color: #34d399; }
+  .ip-remadd { font: inherit; font-size: 10px; font-weight: 700; color: #8b95a5; background: none; border: 1px dashed #3a4452; border-radius: 999px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+  .ip-remadd:hover { color: #fbbf24; border-color: #5a4a1e; }
+  .ip-reminput { display: inline-flex; align-items: center; gap: 5px; flex: 1 1 260px; min-width: 0; }
+  .ip-reminput input { font: inherit; font-size: 12px; flex: 1; min-width: 120px; background: #0E1116; border: 1px solid #5a4a1e; border-radius: 6px; color: #e6e9ef; padding: 4px 8px; }
   .ip-days { display: inline-flex; gap: 3px; margin-left: auto; }
   .ip-day { width: 30px; height: 28px; font: 800 11px/1 inherit; border-radius: 6px; border: 1px solid #2a313c; background: #1a212b; color: #c7cedb; cursor: pointer; }
   .ip-day:hover:not(:disabled) { border-color: #C9A468; color: #fbbf24; }
@@ -340,10 +577,19 @@ const IP_CSS = `
   .ip-daycol-empty { font-size: 11px; color: #3a4452; text-align: center; padding: 10px 0; }
   .ip-trip { background: #151a22; border: 1px solid #232a35; border-left: 3px solid #1D9E75; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .ip-trip-h { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ip-stop { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ip-stop { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   .ip-stop .ip-fam { font-size: 12px; flex: 1; }
   .ip-stop-n { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; color: #6f7a8a; width: 14px; }
   .ip-x { font: inherit; font-size: 13px; background: none; border: 1px solid #2a313c; border-radius: 5px; color: #8b95a5; cursor: pointer; padding: 0 6px; line-height: 20px; }
   .ip-x:hover { color: #f87171; border-color: #5c2a2a; }
   .ip-foot { font-size: 11.5px; color: #6f7a8a; margin-top: 12px; }
+  .ip-adm-day { display: flex; flex-direction: column; gap: 6px; }
+  .ip-adm { background: #151a22; border: 1px solid #232a35; border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .ip-adm-blocked { border-left: 3px solid #f87171; }
+  .ip-adm.ip-row-ready { border-left: 3px solid #34d399; }
+  .ip-adm-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  .ip-adm-gates { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .ip-tasker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: #0e1116; border: 1px solid #2a313c; border-radius: 7px; padding: 6px 8px; }
+  .ip-tasker select, .ip-tasker input { font: inherit; font-size: 12px; background: #11151c; border: 1px solid #2a313c; border-radius: 6px; color: #e6e9ef; padding: 5px 7px; }
+  .ip-tasker input { flex: 1 1 200px; min-width: 0; }
 `

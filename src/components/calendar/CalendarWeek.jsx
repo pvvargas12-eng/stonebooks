@@ -51,6 +51,10 @@ export default function CalendarWeek({
   batches,
   promises,
   promisesByJob,
+  // The jobs behind the stops — cards list every stop by family with its
+  // track color (Paul 2026-10-08: "a master list of installations,
+  // inscriptions, foundations on those days, color coded"). Optional.
+  jobs = null,
   onBatchClick,
   onScheduleBatch,
   onScheduleReadyJob,
@@ -62,6 +66,7 @@ export default function CalendarWeek({
     () => getDayRange({ start: startDate, spanDays, batches, promises }),
     [startDate, spanDays, batches, promises],
   )
+  const jobById = useMemo(() => new Map((jobs || []).map(j => [j.id, j])), [jobs])
 
   const todayISO = todayLocalISO()
 
@@ -247,6 +252,7 @@ export default function CalendarWeek({
             <CalendarBatchCard
               key={b.id}
               batch={b}
+              jobById={jobById}
               hasPromise={_batchHasPromise(b, promisesByJob)}
               onClick={() => onBatchClick?.(b)}
               draggable
