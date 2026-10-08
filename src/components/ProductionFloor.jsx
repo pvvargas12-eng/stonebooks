@@ -23,6 +23,7 @@ import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVer
 import { JOBCC_BASE_CSS } from './jobccBase'
 import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY } from '../lib/floorLines'
 import LinePlanner from './LinePlanner'
+import InstallPlanner from './InstallPlanner'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
 // Tab labels per Paul (2026-07-08) — plural, his words.
@@ -364,6 +365,26 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       </div>
     )
   }
+  // The Inscription Scheduler (Paul 2026-10-08: "we don't need line planner
+  // [for inscriptions], we need an inscription scheduler just like the
+  // install scheduler — blockers not paid, permit not approved, not cut;
+  // hot list in red"). The Install Planner machinery on the inscription
+  // track; it loads its own jobs.
+  if (view === 'inscriptions') {
+    return (
+      <div className="jobcc">
+        <style>{JOBCC_BASE_CSS}{PF_CSS}</style>
+        <InstallPlanner track="inscription" onBack={() => { setView('floor'); load() }} onOpenOrderDetail={onOpenOrderDetail} />
+      </div>
+    )
+  }
+
+  const PURPOSE = {
+    new_stone: <>Ready to Bring Up shows the <b>running line</b>. Lines are built ahead in the Line Planner from stones that are design approved, here or in stock, and contracted — in due-date order.</>,
+    inscription: <>Rubbings, stencils and finished inscriptions. Plan the week's cemetery trips in the <b>Inscription Scheduler</b> — blockers (balance, permit, stencil not cut) and the hot list show there.</>,
+    bronze: <>Bronze on order, received, mounted and delivered. A received bronze joins the installation list by itself.</>,
+    door: <>Mausoleum doors through pickup, inscription and return.</>,
+  }
 
   return (
     <div className="jobcc">
@@ -371,17 +392,26 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       <header className="jobcc-cmd">
         <div className="jobcc-cmd-left">
           <h1 className="jobcc-title">Production floor</h1>
-          <div className="jobcc-purpose">Ready to Bring Up shows the <b>running line</b>. Lines are built ahead in the Line Planner from stones that are design approved, here or in stock, and contracted — in due-date order. Red number = ready stones not on any line yet.</div>
+          <div className="jobcc-purpose">{PURPOSE[track] || PURPOSE.new_stone}</div>
         </div>
         <div className="jobcc-cmd-right">
           <div className="jobcc-actions">
-            {/* Paul 2026-10-08: "Line Planner... a cooler looking button...
-                remove queue log and refresh". The planner replaces the queue
-                log; the board reloads itself after every action. */}
-            <button type="button" className="pf-lp-btn" onClick={() => setView('planner')} title="Build and order the assembly lines">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1" y="2" width="14" height="3" rx="1" fill="currentColor"/><rect x="1" y="6.5" width="10" height="3" rx="1" fill="currentColor" opacity=".7"/><rect x="1" y="11" width="6" height="3" rx="1" fill="currentColor" opacity=".45"/></svg>
-              Line Planner
-            </button>
+            {/* Lines are a NEW STONE concept — the Line Planner (and the cap
+                notice below) only live on that track (Paul 2026-10-08: "bronze
+                i don't need line planner, remove that"). Inscriptions get the
+                scheduler instead. */}
+            {track === 'new_stone' && (
+              <button type="button" className="pf-lp-btn" onClick={() => setView('planner')} title="Build and order the assembly lines">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1" y="2" width="14" height="3" rx="1" fill="currentColor"/><rect x="1" y="6.5" width="10" height="3" rx="1" fill="currentColor" opacity=".7"/><rect x="1" y="11" width="6" height="3" rx="1" fill="currentColor" opacity=".45"/></svg>
+                Line Planner
+              </button>
+            )}
+            {track === 'inscription' && (
+              <button type="button" className="pf-lp-btn" onClick={() => setView('inscriptions')} title="Build the inscription week — Mon to Fri trips, blockers, hot list">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5"/><rect x="1.5" y="2.5" width="13" height="3" fill="currentColor"/><rect x="4" y="8" width="2" height="2" fill="currentColor"/><rect x="7" y="8" width="2" height="2" fill="currentColor" opacity=".7"/><rect x="10" y="8" width="2" height="2" fill="currentColor" opacity=".45"/></svg>
+                Inscription Scheduler
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -415,7 +445,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
           )}
         </section>
       )}
-      {capLine && (
+      {track === 'new_stone' && capLine && (
         <div className="pf-capnote">
           <span><b>{lineLabel(capLine)}</b> has {capLine.counts.total} stones — over the soft limit of {capLine.capacity || DEFAULT_LINE_CAPACITY}. Recommend starting another line.</span>
           <button type="button" className="pf-btn pf-btn-gold" disabled={lineBusy} onClick={startNewLine}>Start a new line →</button>

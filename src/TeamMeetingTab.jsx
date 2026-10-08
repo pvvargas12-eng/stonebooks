@@ -52,7 +52,10 @@ function laneDone(job, lane) {
   if (!job) return false
   if (lane === 'set') return msDone(job, INSTALL_KEYS)
   if (lane === 'foundation') return deriveFdnStatus(job) === 'in'
-  if (lane === 'inscription') return msDone(job, ['inscription_complete', 'work_completed'])
+  // The inscription template's key is `inscription_completed` (the floor PHASE
+  // is `inscription_complete` — different vocabulary); both read, so the lane
+  // can actually score done (2026-10-08 fix — it never did before).
+  if (lane === 'inscription') return msDone(job, ['inscription_completed', 'inscription_complete', 'work_completed'])
   if (lane === 'blast') return msDone(job, ['production_completed'])
   return false
 }
@@ -893,7 +896,7 @@ function AddPicker({ lane, jobs, installList, fdnList, cutList, vendorItems, tod
       pool = jobs.filter(j => ids.has(j.id) && deriveFdnStatus(j) !== 'in')
     } else if (lane === 'inscription') {
       pool = jobs.filter(j => (j.job_type === 'inscription' || (j.order.service_types || []).includes('INSCRIPTION'))
-        && !msDone(j, ['inscription_complete', 'work_completed']))
+        && !msDone(j, ['inscription_completed', 'inscription_complete', 'work_completed']))
     } else {
       const ids = new Set(cutList.map(r => r.job_id))
       pool = jobs.filter(j => (ids.has(j.id) || j.job_type === 'new_stone') && !msDone(j, ['production_completed']))
