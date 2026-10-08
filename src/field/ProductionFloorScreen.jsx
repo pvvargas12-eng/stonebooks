@@ -23,6 +23,20 @@ import {
   setComponentConfirmedSize, permitStatusLabel,
 } from '../lib/stonebooksData'
 import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb } from '../lib/jobComponents'
+// Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
+// stonebooks field to view the lines — active then other ones"). Read-only
+// on the phone: the strip + the L1 #07 tags; building lives on the desktop.
+import { listFloorLines, lineLabel, itemTone } from '../lib/floorLines'
+
+const LINE_TONE = {
+  ready: { bg: 'transparent', bd: '#2d7a4f', fg: '#1d7a55' },
+  up:    { bg: '#1e3350', bd: '#2f5586', fg: '#bcd4f5' },
+  cut:   { bg: '#4a3a12', bd: '#7a5d12', fg: '#fbe3a0' },
+  blast: { bg: '#1d7a55', bd: '#34d399', fg: '#eafff4' },
+  out:   { bg: '#e9e5da', bd: '#d9d2c0', fg: '#9a948a' },
+  deck:  { bg: 'transparent', bd: '#9fb4d6', fg: '#6b7a90' },
+}
+const LINE_STATUS = { active: 'ACTIVE', on_deck: 'ON DECK', planning: 'PLANNING', complete: 'DONE' }
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
 const TRACK_CHIP = { new_stone: 'NEW STONE', inscription: 'INSCRIPTION', bronze: 'BRONZE', door: 'DOORS' }
@@ -104,16 +118,23 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const [sizeW, setSizeW] = useState('')
 
   const [todayMs, setTodayMs] = useState(0)
+  const [lines, setLines] = useState([])
+  const [lineOpen, setLineOpen] = useState(null)   // line id expanded in the lines strip
   const load = useCallback(async () => {
     try {
-      const [d, rec] = await Promise.all([
+      const [d, rec, ls] = await Promise.all([
         getProductionComponents(),
         getBringUpReady().catch(() => ({ count: 0, readyByTrack: {}, byJob: new Map() })),
+        listFloorLines().catch(() => []),
       ])
-      setComps(d || []); setRecs(rec); setErr(null)
+      setComps(d || []); setRecs(rec); setLines(ls || []); setErr(null)
       const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
     } catch (e) { setErr(e?.message || 'Could not load the floor.') }
   }, [])
+  const compById = new Map((comps || []).map(c => [c.id, c]))
+  const lineTagById = new Map()
+  for (const l of lines) l.items.forEach((it, i) => lineTagById.set(it.component_id, `L${l.number} #${String(i + 1).padStart(2, '0')}`))
+  const liveLines = lines.filter(l => l.status !== 'complete')
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const loading = comps == null
@@ -288,6 +309,52 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
           </div>
 
           {loading && <div className="fl-empty">Loading the floor…</div>}
+
+          {/* THE LINES — active first, then on deck / planning. Tap a line
+              to see every stone on it with where it physically is. */}
+          {!loading && track === 'new_stone' && liveLines.length > 0 && (
+            <div style={{ margin: '0 2px 14px' }}>
+              <div className="fl-label" style={{ marginBottom: 6 }}>Lines</div>
+              {liveLines.map(l => {
+                const open = lineOpen === l.id || (lineOpen === null && l.status === 'active')
+                const c = l.counts
+                const accent = l.status === 'active' ? '#9A7209' : l.status === 'on_deck' ? '#2f5586' : '#9a948a'
+                return (
+                  <div key={l.id} className="fl-row" style={{ cursor: 'pointer', borderColor: accent, borderWidth: l.status === 'active' ? 2 : 1 }}
+                    onClick={() => setLineOpen(open ? (l.status === 'active' ? 'none' : null) : l.id)}>
+                    <div className="fl-rowtop">
+                      <span className="fl-fam">{lineLabel(l).toUpperCase()} <span className="fl-chip" style={{ background: accent, color: '#fff', marginLeft: 6 }}>{LINE_STATUS[l.status]}</span></span>
+                      <span className="fl-chip fl-c-neutral">{c.total} stones</span>
+                    </div>
+                    <div className="fl-spec" style={{ fontFamily: 'inherit' }}>
+                      {l.status === 'active'
+                        ? `${c.waiting} to bring up · ${c.up - c.cut - c.blastQ} on the line · ${c.cut} cut · ${c.blastQ} blasting · ${c.blasted} out`
+                        : l.status === 'on_deck' ? 'Slides in when the running line is blasted out' : `${c.total} / ${l.capacity || 18} built`}
+                    </div>
+                    {open && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, marginTop: 10 }}>
+                        {l.items.map((it, i) => {
+                          const tone = l.status === 'active' ? itemTone(it) : 'deck'
+                          const t = LINE_TONE[tone] || LINE_TONE.deck
+                          const full = compById.get(it.component_id)
+                          return (
+                            <div key={it.id} style={{ background: t.bg, border: `1.5px solid ${t.bd}`, color: t.fg, borderRadius: 7, padding: '6px 7px', minWidth: 0, minHeight: 44 }}
+                              onClick={e => { e.stopPropagation(); if (full) openPiece(full) }}>
+                              <div style={{ fontSize: 10, fontWeight: 800, opacity: .7, fontFamily: 'var(--font-m, monospace)' }}>#{i + 1}</div>
+                              <div style={{ fontSize: 12.5, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{full ? famOf(full) : '—'}</div>
+                              {full?.size && <div style={{ fontSize: 9.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-m, monospace)' }}>{full.size}</div>}
+                            </div>
+                          )
+                        })}
+                        {l.items.length === 0 && <div className="fl-spec" style={{ gridColumn: '1 / -1' }}>Empty — build it in the Line Planner on the desktop.</div>}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           {!loading && (
             <div className="fl-tilegrid">
               {phases.map((p, i) => {
@@ -382,7 +449,9 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
             return (
               <div key={c.id} className="fl-row" style={{ cursor: 'default' }}>
                 <div className="fl-rowtop">
-                  <span className="fl-fam">{famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} /></span>
+                  <span className="fl-fam">{famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} />
+                    {lineTagById.get(c.id) && <span className="fl-chip" style={{ marginLeft: 6, color: '#9A7209', border: '1px solid #C9A468', background: 'transparent' }}>{lineTagById.get(c.id)}</span>}
+                  </span>
                   {held ? <span className="fl-chip fl-c-bad">HELD</span>
                     : c.blocker ? <span className="fl-chip fl-c-warn">BLOCKED</span> : null}
                 </div>

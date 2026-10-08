@@ -1,5 +1,13 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix LINES-2 + INQUIRIES-2 + FIELD-LINES (2026-10-08, round 4): big active line, no on-deck zone, lines on the phone, inquiries start fresh
+
+Paul (board + Inquiries screenshots): "remove the 32 ready number — we do this in line planner. don't have the on deck one, i just want the active line visual larger, this is so small. I need this in stonebooks field — view the active line then the other ones. did we fix the size discrepancies — the contract line item is the actual stone size, everywhere. I don't want 58, start today from scratch. a different number maybe in blue so it stands out."
+
+- **ProductionFloor strip = the ACTIVE line only**, full width, big tiles (`.pf-tiles` minmax 136px, 72px tall: position number, family, live die size). On deck + future lines are the Line Planner's job (a link in the strip's footer). The red ready count is GONE from the New Stone chip and from the Ready to Bring Up column (`track !== 'new_stone'` guards — inscription/bronze/door keep their nag, they have no planner).
+- **Field › Production floor (`src/field/ProductionFloorScreen.jsx`)**: a read-only **Lines** block above the columns — active line first (expanded by default: 3-up tiles with #, family, size, toned like the desktop), then on deck / planning rows (tap to expand); bucket cards wear the `L1 #07` tag. Building stays on the desktop.
+- **Inquiries fresh start:** migration `20261008_inquiries_fresh_start.sql` ✅ APPLIED — every inquiry before 2026-10-08 (NJ midnight) marked done (actioned_by 'fresh-start 2026-10-08', UNDO line in the file). 113 done / 1 new at apply. The tab root is `sb-page sb-page-wide` (it rendered edge-to-edge before), the filter pills got a real height, rail money never ellipsizes (`money()` compacts past six figures). **Nav badge is BLUE now** (`.sb-nav-badge-inq`, bigger with a halo) so it reads apart from the Hot List red.
+
 ## Fix INSTALL-GATES-3 + JOBS-STRIP (2026-10-08, same day): gate chips are dropdowns, Permits + Workflow off the Jobs strip
 
 Paul (Installation screenshot): "waiting on foundation — i want to be able to click on foundation not in or permit not approved and change the status here same way i would in the order dropdown. remove permits from here, remove workflow."

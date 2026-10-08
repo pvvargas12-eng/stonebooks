@@ -21,7 +21,7 @@ import {
 } from '../lib/stonebooksData'
 import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
-import { reconcileFloorLines, activeLines, onDeckLine, lineLabel, itemTone, startFloorLine, createFloorLine, DEFAULT_LINE_CAPACITY } from '../lib/floorLines'
+import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY } from '../lib/floorLines'
 import LinePlanner from './LinePlanner'
 
 const TRACK_ORDER = ['new_stone', 'inscription', 'bronze', 'door']
@@ -97,43 +97,46 @@ const PF_MEM = { track: 'new_stone', addCol: null, addQ: '', view: 'floor' }
 // 2: "ready to bring up empty box green, brought to line blue, blasting queue
 // green filled — it's just a visual of what's below"). Module-level so it
 // never remounts the board (react-hooks/static-components).
+// Round 4 (Paul 2026-10-08): ACTIVE line only — no on-deck zone ("i just
+// want the active line visual larger, this is so small"); on deck / future
+// lines live in the Line Planner.
 const TONE_TITLE = { ready: 'Ready to bring up', up: 'Brought to line', cut: 'Stencil cut', blast: 'Blasting queue', out: 'Blasted — on the install list' }
-function LineZone({ line, kind, compById, onStart, busy }) {
+function LineZone({ line, compById, onPlanner }) {
   const c = line.counts
   const pct = (n) => c.total ? `${Math.round((n / c.total) * 100)}%` : '0%'
   return (
-    <div className={`pf-line pf-line-${kind}`}>
+    <div className="pf-line pf-line-active">
       <div className="pf-line-head">
-        <span className={`pf-line-st pf-line-st-${kind}`}>{kind === 'active' ? 'Active' : 'On deck'}</span>
+        <span className="pf-line-st pf-line-st-active">Active</span>
         <span className="pf-line-name">{lineLabel(line)}{line.week_start ? ` · week of ${new Date(line.week_start + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}</span>
         <span className="pf-line-cnt">
-          {kind === 'active'
-            ? <><b className="t-ready">{c.waiting} to bring up</b> · <b className="t-up">{c.up - c.cut - c.blastQ} on the line</b> · <b className="t-cut">{c.cut} cut</b> · <b className="t-blast">{c.blastQ} blasting</b> · <b className="t-out">{c.blasted} out</b></>
-            : <>{c.total} / {line.capacity || DEFAULT_LINE_CAPACITY}{line.overCap ? ' · over the soft limit' : ''}</>}
+          <b className="t-ready">{c.waiting} to bring up</b> · <b className="t-up">{c.up - c.cut - c.blastQ} on the line</b> · <b className="t-cut">{c.cut} cut</b> · <b className="t-blast">{c.blastQ} blasting</b> · <b className="t-out">{c.blasted} out</b>
         </span>
       </div>
-      {kind === 'active' && (
-        <div className="pf-line-bar">
-          <i style={{ width: pct(c.blasted), background: '#0e1116' }} />
-          <i style={{ width: pct(c.blastQ), background: '#1d7a55' }} />
-          <i style={{ width: pct(c.cut), background: '#7a5d12' }} />
-          <i style={{ width: pct(c.up - c.cut - c.blastQ), background: '#2f5586' }} />
-        </div>
-      )}
+      <div className="pf-line-bar">
+        <i style={{ width: pct(c.blasted), background: '#0e1116' }} />
+        <i style={{ width: pct(c.blastQ), background: '#1d7a55' }} />
+        <i style={{ width: pct(c.cut), background: '#7a5d12' }} />
+        <i style={{ width: pct(c.up - c.cut - c.blastQ), background: '#2f5586' }} />
+      </div>
       <div className="pf-tiles">
-        {line.items.map(it => {
-          const tone = kind === 'active' ? itemTone(it) : 'deck'
+        {line.items.map((it, i) => {
+          const tone = itemTone(it)
           const full = compById.get(it.component_id)
           const name = full ? famOf(full) : '—'
-          return <span key={it.id} className={`pf-tl pf-tl-${tone}`} title={`${name}${full && orderNoOf(full) ? ` · ${orderNoOf(full)}` : ''} · ${TONE_TITLE[tone] || 'Planned'}`}>{name}</span>
+          return (
+            <span key={it.id} className={`pf-tl pf-tl-${tone}`} title={`#${i + 1} ${name}${full && orderNoOf(full) ? ` · ${orderNoOf(full)}` : ''} · ${TONE_TITLE[tone] || 'Planned'}`}>
+              <span className="pf-tl-n">{i + 1}</span>
+              <span className="pf-tl-name">{name}</span>
+              {full?.size && <span className="pf-tl-size">{full.size}</span>}
+            </span>
+          )
         })}
         {line.items.length === 0 && <span className="pf-line-empty">No stones on this line yet — build it in the Line Planner.</span>}
       </div>
       <div className="pf-line-foot">
-        {kind === 'active'
-          ? <span>Completes when every stone is blasted.{c.waiting === 0 && c.blasted < c.total ? ' All up — the next line can start early.' : ''}</span>
-          : <><span>Slides in when the running line is blasted out.</span>
-              <button type="button" className="pf-btn pf-btn-deck" disabled={busy} onClick={onStart} title="Run this line now, alongside the one still blasting out">Start now →</button></>}
+        <span>Completes when every stone is blasted.{c.waiting === 0 && c.blasted < c.total ? ' All up — the next line can start early from the Line Planner.' : ''}</span>
+        <button type="button" className="pf-funnel-link" onClick={onPlanner}>On deck + future lines →</button>
       </div>
     </div>
   )
@@ -250,21 +253,12 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
 
   const compById = new Map((components || []).map(c => [c.id, c]))
   const running = lines ? activeLines(lines) : []
-  const deck = lines ? onDeckLine(lines) : null
   // Position tag per die — "L14 #07" on the board cards.
   const lineTagById = new Map()
   for (const l of (lines || [])) l.items.forEach((it, i) => lineTagById.set(it.component_id, `L${l.number} #${String(i + 1).padStart(2, '0')}`))
   // Soft cap (Paul round 2): over 18 = a brief message recommending another
   // line, never a wall.
   const capLine = running.find(l => l.overCap && capDismissed !== `${l.id}:${l.counts.total}`) || null
-  const startDeck = async () => {
-    if (!deck) return
-    setLineBusy(true)
-    const r = await startFloorLine(deck.id)
-    setLineBusy(false)
-    if (r && r.ok === false) { setErr(r.error); return }
-    load()
-  }
   const startNewLine = async () => {
     setLineBusy(true)
     const r = await createFloorLine()
@@ -401,7 +395,10 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
             <button key={t} type="button" className={`pf-tab${track === t ? ' on' : ''}`}
               onClick={() => { setTrack(t); setAddCol(null) }}>
               {TAB_LABEL[t]} <span className="pf-tab-n">{loading ? '' : n}</span>
-              {need > 0 && <span className="pf-tab-alert" title={`${need} queued piece${need === 1 ? '' : 's'} meet the bring-up conditions`}>{need}</span>}
+              {/* New stone's ready count lives in the Line Planner now (Paul
+                  2026-10-08: "remove the number ready — we do this in line
+                  planner"); the other tracks keep their nag. */}
+              {need > 0 && t !== 'new_stone' && <span className="pf-tab-alert" title={`${need} queued piece${need === 1 ? '' : 's'} meet the bring-up conditions`}>{need}</span>}
             </button>
           )
         })}
@@ -412,10 +409,9 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       {/* The line strip — active line(s) + on deck (LINES-1). New stone only. */}
       {track === 'new_stone' && lines && (
         <section className="pf-lines">
-          {running.map(l => <LineZone key={l.id} line={l} kind="active" compById={compById} />)}
-          {deck && <LineZone line={deck} kind="deck" compById={compById} onStart={startDeck} busy={lineBusy} />}
-          {!running.length && !deck && (
-            <div className="pf-line pf-line-none">No lines yet — open the <button type="button" className="pf-funnel-link" onClick={() => setView('planner')}>Line Planner</button> to build the first one.</div>
+          {running.map(l => <LineZone key={l.id} line={l} compById={compById} onPlanner={() => setView('planner')} />)}
+          {!running.length && (
+            <div className="pf-line pf-line-none">No line running — open the <button type="button" className="pf-funnel-link" onClick={() => setView('planner')}>Line Planner</button> to build and start one.</div>
           )}
         </section>
       )}
@@ -447,7 +443,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
                     <span className="pf-col-l">{phaseLabel(p)}{i === 0 && track === 'new_stone' && running.length > 0 ? ` · ${running.map(lineLabel).join(' + ')}` : ''}</span>
                     <span className="pf-col-headr">
                       <span className="pf-col-n">{cards.length + alsoCards.length}</span>
-                      {i === 0 && readyQueue.length > 0 && (
+                      {i === 0 && readyQueue.length > 0 && track !== 'new_stone' && (
                         <button type="button" className="pf-col-need"
                           title={`${readyQueue.length} queued piece${readyQueue.length === 1 ? ' meets' : 's meet'} the bring-up conditions (design approved · stone here or in stock · contracted) — click to add`}
                           onClick={() => { setAddCol(p); setAddQ('') }}>
@@ -904,9 +900,8 @@ const PF_CSS = `
   /* ── LINES-1: the Line Planner button + the line strip ── */
   .pf-lp-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 12.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 9px 16px; border-radius: 999px; border: 1px solid #C9A468; background: linear-gradient(135deg, #2a2210 0%, #1a212b 60%); color: #fbbf24; cursor: pointer; box-shadow: 0 0 0 1px rgba(201,164,104,0.15), 0 6px 18px rgba(201,164,104,0.12); transition: transform .12s ease, box-shadow .12s ease; }
   .pf-lp-btn:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(201,164,104,0.3), 0 10px 24px rgba(201,164,104,0.2); color: #ffd36a; }
-  .pf-lines { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 10px; margin-bottom: 14px; }
-  @media (max-width: 1100px) { .pf-lines { grid-template-columns: 1fr; } }
-  .pf-line { background: #11151c; border: 1px solid #20262f; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .pf-lines { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 14px; }
+  .pf-line { background: #11151c; border: 1px solid #20262f; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .pf-line-active { border-color: #C9A468; }
   .pf-line-deck { border-color: #2f5586; }
   .pf-line-none { grid-column: 1 / -1; font-size: 12px; color: #8b95a5; flex-direction: row; align-items: center; gap: 4px; }
@@ -914,14 +909,19 @@ const PF_CSS = `
   .pf-line-st { font-size: 9px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; border-radius: 999px; padding: 3px 7px; white-space: nowrap; }
   .pf-line-st-active { color: #C9A468; border: 1px solid #C9A468; }
   .pf-line-st-deck { color: #bcd4f5; border: 1px solid #2f5586; background: #1e3350; }
-  .pf-line-name { font-size: 13px; font-weight: 800; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pf-line-cnt { margin-left: auto; font-size: 11px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pf-line-name { font-size: 18px; font-weight: 800; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pf-line-cnt { margin-left: auto; font-size: 12.5px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pf-line-cnt b { font-weight: 700; }
   .pf-line-cnt .t-ready { color: #34d399; } .pf-line-cnt .t-up { color: #bcd4f5; } .pf-line-cnt .t-cut { color: #fbe3a0; } .pf-line-cnt .t-blast { color: #34d399; } .pf-line-cnt .t-out { color: #6f7a8a; }
-  .pf-line-bar { height: 7px; border-radius: 4px; background: #0E1116; overflow: hidden; display: flex; }
+  .pf-line-bar { height: 9px; border-radius: 5px; background: #0E1116; overflow: hidden; display: flex; }
   .pf-line-bar i { display: block; height: 100%; }
-  .pf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 5px; }
-  .pf-tl { height: 38px; border-radius: 5px 5px 2px 2px; border: 1px solid #2a313c; display: flex; align-items: flex-end; justify-content: center; padding: 0 3px 3px; font-size: 8.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  /* BIG tiles (Paul round 4: "this is so small") — position, family, the
+     live die size; one stone per tile, a full row of 9 on a desktop. */
+  .pf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: 8px; }
+  .pf-tl { position: relative; height: 72px; border-radius: 8px 8px 3px 3px; border: 1px solid #2a313c; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding: 4px 6px 6px; min-width: 0; overflow: hidden; }
+  .pf-tl-n { position: absolute; top: 4px; left: 6px; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 9px; font-weight: 800; opacity: .65; }
+  .pf-tl-name { font-size: 13px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .pf-tl-size { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 9px; opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .pf-tl-ready { background: none; border: 1.5px solid #2d7a4f; color: #34d399; }
   .pf-tl-up { background: #1e3350; border-color: #2f5586; color: #bcd4f5; }
   .pf-tl-cut { background: #4a3a12; border-color: #7a5d12; color: #fbe3a0; }
@@ -929,8 +929,8 @@ const PF_CSS = `
   .pf-tl-out { background: #0e1116; border-color: #232a35; color: #3a4452; }
   .pf-tl-deck { background: none; border: 1px dashed #2f5586; color: #6f7a8a; }
   .pf-line-empty { grid-column: 1 / -1; font-size: 11px; color: #6f7a8a; }
-  .pf-line-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: #6f7a8a; }
-  .pf-line-foot .pf-btn-deck { margin-left: auto; border-color: #2f5586; color: #bcd4f5; }
+  .pf-line-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: #6f7a8a; }
+  .pf-line-foot .pf-funnel-link { margin-left: auto; color: #C9A468; }
   .pf-capnote { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 9px; padding: 8px 12px; margin-bottom: 12px; font-size: 12px; color: #fbbf24; }
   .pf-capnote span { flex: 1 1 320px; min-width: 0; }
   .pf-btn-gold { border-color: #5a4a1e; background: #2a2210; color: #fbbf24; }

@@ -26,6 +26,14 @@ import CatalogPhotoPicker from './components/CatalogPhotoPicker'
 
 const SHOP_PHONE = '732-442-1286'
 const DAY_MS = 86400000
+// Rail money reads whole ("$23,116") — never an ellipsis on a dollar figure
+// (the first screenshot showed "$23,116…"); past six figures it compacts.
+const money = (n) => {
+  const v = Math.round(Number(n) || 0)
+  if (v >= 1000000) return `$${(v / 1000000).toFixed(1)}M`
+  if (v >= 100000) return `$${Math.round(v / 1000)}k`
+  return fmtUSD(v)
+}
 const SERVICE_LABELS = { NEW_STONE: 'stone', INSCRIPTION: 'inscr', BRONZE: 'bronze', ACID_WASH: 'acid wash', REPAIR: 'repair', MAUSOLEUM: 'mausoleum' }
 
 const ago = (iso, nowMs) => {
@@ -210,7 +218,7 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
   const closeRate = funnel && funnel.inquiries ? Math.round((funnel.signed / funnel.inquiries) * 1000) / 10 : 0
 
   return (
-    <div className="sb-inq">
+    <div className="sb-page sb-page-wide sb-inq">
       <style>{CSS}</style>
       <div className="sb-inq-head">
         <h1 className="sb-inq-h1">Website Inquiries</h1>
@@ -302,8 +310,8 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                   <div className="sb-inq-stat"><b>{funnel.inquiries}</b><span>inquiries</span></div>
                   <div className="sb-inq-stat"><b>{funnel.signed}</b><span>signed</span></div>
                   <div className="sb-inq-stat"><b>{closeRate}%</b><span>close rate</span></div>
-                  <div className="sb-inq-stat"><b>{fmtUSD(funnel.contractUsd)}</b><span>contract value</span></div>
-                  <div className="sb-inq-stat"><b>{fmtUSD(funnel.collectedUsd)}</b><span>collected</span></div>
+                  <div className="sb-inq-stat"><b>{money(funnel.contractUsd)}</b><span>contract value</span></div>
+                  <div className="sb-inq-stat"><b>{money(funnel.collectedUsd)}</b><span>collected</span></div>
                   <div className="sb-inq-stat"><b>{funnel.medianTouchDays == null ? '—' : `${Math.round(funnel.medianTouchDays * 10) / 10}d`}</b><span>median to first email</span></div>
                 </div>
                 <div className="sb-inq-bars">
@@ -333,12 +341,12 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
 }
 
 const CSS = `
-  .sb-inq { padding: 4px 0 24px; font-family: inherit; color: #16150F; }
-  .sb-inq-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+  .sb-inq { padding: 18px 0 24px; font-family: inherit; color: #16150F; }
+  .sb-inq-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
   .sb-inq-h1 { margin: 0; font-size: 20px; font-weight: 800; }
   .sb-inq-sub { font-size: 12.5px; color: #8a8472; }
-  .sb-inq-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-  .sb-inq-pill { font: 700 11.5px/1 inherit; font-family: inherit; color: #6B6455; background: #fff; border: 1px solid #D9D2C0; border-radius: 999px; padding: 6px 11px; cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
+  .sb-inq-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; min-height: 34px; }
+  .sb-inq-pill { font-family: inherit; font-size: 12px; font-weight: 700; line-height: 1.2; color: #6B6455; background: #fff; border: 1px solid #D9D2C0; border-radius: 999px; padding: 7px 12px; min-height: 32px; cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; flex: 0 0 auto; }
   .sb-inq-pill b { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; color: #9a9486; }
   .sb-inq-pill.on { background: #16150F; color: #fff; border-color: #16150F; }
   .sb-inq-pill.on b { color: #C9A468; }
@@ -383,7 +391,7 @@ const CSS = `
   .sb-inq-stats { background: #fff; border: 1px solid #ece6d8; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
   .sb-inq-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .sb-inq-stat { display: flex; flex-direction: column; min-width: 0; }
-  .sb-inq-stat b { font-size: 20px; font-weight: 700; color: #1a1a1a; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-inq-stat b { font-size: 19px; font-weight: 700; color: #1a1a1a; line-height: 1.1; white-space: nowrap; letter-spacing: -0.01em; }
   .sb-inq-stat span { font-size: 11px; color: #8a8472; }
   .sb-inq-bars { display: flex; flex-direction: column; gap: 6px; }
   .sb-inq-barrow { display: flex; justify-content: space-between; font-size: 12px; gap: 8px; }

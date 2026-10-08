@@ -752,7 +752,7 @@ export default function Stonebooks() {
                   <span className="sb-nav-badge" title={`${leadTaskCount} lead task${leadTaskCount === 1 ? '' : 's'} due today or overdue`}>{leadTaskCount}</span>
                 )}
                 {item.key === 'inquiries' && inquiryCount > 0 && (
-                  <span className="sb-nav-badge sb-nav-badge-hot" title={`${inquiryCount} website inquir${inquiryCount === 1 ? 'y' : 'ies'} not answered yet`}>{inquiryCount}</span>
+                  <span className="sb-nav-badge sb-nav-badge-inq" title={`${inquiryCount} website inquir${inquiryCount === 1 ? 'y' : 'ies'} not answered yet`}>{inquiryCount}</span>
                 )}
               </button>
             ))}
@@ -1346,6 +1346,14 @@ const shellStyles = `
     box-shadow: inset 3px 0 0 #FF5C4D;
   }
   .sb-nav-badge-hot { background: #B3261E; color: #fff; }
+  /* INQUIRIES-1 round 2 (Paul: "a different number, maybe in blue — i just
+     want this to stand out more"): bigger, blue, with a soft halo. */
+  .sb-nav-badge-inq {
+    background: #1D6FA8; color: #fff;
+    min-width: 24px; height: 24px; line-height: 24px; padding: 0 8px;
+    font-size: 12.5px; font-weight: 800;
+    box-shadow: 0 0 0 3px rgba(29,111,168,0.28);
+  }
   .sb-sidebar-foot {
     border-top: 0.5px solid rgba(255,255,255,0.06);
     padding-top: 16px;
