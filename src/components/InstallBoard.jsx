@@ -358,11 +358,11 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     onGate: activeKpi !== 'done' ? changeGate : null, gateBusy,
   }
 
-  if (view === 'planner') {
+  if (view === 'planner' || view === 'scheduled') {
     return (
       <div className="jobcc ib">
         <style>{JOBCC_BASE_CSS}{IB_CSS}</style>
-        <InstallPlanner jobs={effJobs} onBack={() => { setView('board'); load() }} onOpenOrderDetail={onOpenOrderDetail} />
+        <InstallPlanner key={view} jobs={effJobs} initialMode={view === 'scheduled' ? 'scheduled' : 'build'} onBack={() => { setView('board'); load() }} onOpenOrderDetail={onOpenOrderDetail} />
       </div>
     )
   }
@@ -375,10 +375,16 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
           <h1 className="jobcc-title">Installation</h1>
           <div className="jobcc-purpose">Your set list, four gates on every card — paid · foundation · permit · blasted. READY TO INSTALL means nothing would strand the truck. Every tile is a slice of the same list.</div>
         </div>
-        <div className="jobcc-cmd-right"><div className="jobcc-actions">
+        <div className="jobcc-cmd-right"><div className="jobcc-actions ib-plan-stack">
           <button type="button" className="pf-lp-btn ib-plan-btn" onClick={() => setView('planner')} title="Build the install week, then put each stone on a day">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.6"/><path d="M1.5 6h13M5 1v3M11 1v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
             Install Planner
+          </button>
+          {/* Paul 2026-10-08: "Scheduled Installs on the installation page
+              below Install Planner" — the office's blocker list, one click. */}
+          <button type="button" className="pf-lp-btn ib-plan-btn ib-plan-btn-green" onClick={() => setView('scheduled')} title="This week's scheduled stones with their blockers — balances first">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7.5-8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            Scheduled Installs
           </button>
         </div></div>
       </header>
@@ -734,6 +740,9 @@ const IB_CSS = `
   .ib-gates { display: flex; gap: 5px; margin-top: 9px; flex-wrap: wrap; }
   .ib-plan-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 12.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 9px 16px; border-radius: 999px; border: 1px solid #C9A468; background: linear-gradient(135deg, #2a2210 0%, #1a212b 60%); color: #fbbf24; cursor: pointer; box-shadow: 0 0 0 1px rgba(201,164,104,0.15), 0 6px 18px rgba(201,164,104,0.12); transition: transform .12s ease, box-shadow .12s ease; }
   .ib-plan-btn:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(201,164,104,0.3), 0 10px 24px rgba(201,164,104,0.2); color: #ffd36a; }
+  .ib-plan-stack { flex-direction: column; align-items: flex-end; gap: 8px; }
+  .ib-plan-btn-green { border-color: #34d399; background: linear-gradient(135deg, #0f2a1d 0%, #1a212b 60%); color: #34d399; box-shadow: 0 0 0 1px rgba(52,211,153,0.15), 0 6px 18px rgba(52,211,153,0.12); }
+  .ib-plan-btn-green:hover { color: #6ee7b7; box-shadow: 0 0 0 1px rgba(52,211,153,0.3), 0 10px 24px rgba(52,211,153,0.2); }
   .ib-flag-sel { position: relative; cursor: pointer; display: inline-flex; align-items: center; }
   .ib-flag-sel select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; }
   .ib-flag-sel select:disabled { cursor: default; }

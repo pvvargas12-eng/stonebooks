@@ -25,7 +25,7 @@ import {
   updateMilestoneWithOverride, installGates, rowBalanceDue, fmtUSD, logOrderActivity, getCurrentStaffName,
   setOrderFdnStatus, setOrderPermit, setOrderStoneStatus, getJob,
   deriveStoneStatus, stoneStatusOptions, FDN_STATUS, PERMIT_STATUS_OPTIONS, permitStatusLabel,
-  addOrderTask, STAFF_NAMES, getActiveStaffUser, todayISO, manualBlockerChipText,
+  addOrderTask, STAFF_NAMES, getActiveStaffUser, todayISO, manualBlockerChipText, listShopTasksForOrder,
 } from '../lib/stonebooksData'
 import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
@@ -95,7 +95,7 @@ function ReminderChips({ list, busy, onDone }) {
   )
 }
 
-export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail }) {
+export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail, initialMode = 'build' }) {
   const [week, setWeek] = useState(null)        // Monday ISO
   const [plans, setPlans] = useState([])
   const [plan, setPlan] = useState(null)        // { plan, items }
@@ -105,7 +105,12 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
   const [overrides, setOverrides] = useState(() => new Map())   // job id → re-read job after a gate pick
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
-  const [mode, setMode] = useState('build')      // 'build' | 'scheduled'
+  const [mode, setMode] = useState(initialMode)  // 'build' | 'scheduled'
+  // Scheduled-installs blocker tabs (Paul: "a tab that says balance required
+  // then I can task and have my office personnel get those balances").
+  const [blockerTab, setBlockerTab] = useState('all')   // all | balance | fdn | permit | arrival | reminders | ready
+  const [bulkWho, setBulkWho] = useState('')
+  const [bulkMsg, setBulkMsg] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [addQ, setAddQ] = useState('')
   const [collapsed, setCollapsed] = useState(() => new Set())   // cemetery names folded
@@ -340,7 +345,50 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
   const renderScheduled = () => {
     const rows = days.flatMap(d => d.batches.flatMap(b => (b.batch_jobs || []).slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0)).map(l => ({ day: d, batch: b, job: jobById.get(l.job_id), stop: l }))))
     const owed = rows.reduce((s, r) => s + (r.job ? Math.max(0, rowBalanceDue(r.job.order || {})) : 0), 0)
-    const blocked = rows.filter(r => r.job && !readyNow(installGates(r.job.order || {}, r.job))).length
+    // Per-stone blocker flags — the tabs slice on these.
+    const flagged = rows.map(r => {
+      if (!r.job) return { ...r, flags: {} }
+      const g = installGates(r.job.order || {}, r.job)
+      const bal = rowBalanceDue(r.job.order || {})
+      return { ...r, flags: {
+        balance: g.paid === false && bal > 0, fdn: g.fdn === false, permit: g.permit === false, arrival: g.blasted === false,
+        reminders: remsOf(r.job).length > 0, ready: readyNow(g),
+      } }
+    })
+    const blocked = flagged.filter(r => r.job && !r.flags.ready).length
+    const TABS = [
+      ['all', 'All', flagged.length],
+      ['balance', 'Balance required', flagged.filter(r => r.flags.balance).length],
+      ['fdn', 'Foundation', flagged.filter(r => r.flags.fdn).length],
+      ['permit', 'Permit', flagged.filter(r => r.flags.permit).length],
+      ['arrival', 'Not arrived / blasted', flagged.filter(r => r.flags.arrival).length],
+      ['reminders', 'Reminders', flagged.filter(r => r.flags.reminders).length],
+      ['ready', 'Ready', flagged.filter(r => r.flags.ready).length],
+    ]
+    const shownRows = blockerTab === 'all' ? flagged : flagged.filter(r => r.flags[blockerTab])
+    const balanceTargets = flagged.filter(r => r.flags.balance && r.job?.order?.id)
+    // One click: a call task per unpaid stone to the chosen person. Stones
+    // that already carry an open "Call …" task are skipped, so a second click
+    // can't double-task the office.
+    const taskAllBalances = () => run(async () => {
+      const who = bulkWho || getActiveStaffUser() || 'Admin'
+      if (!balanceTargets.length) return { ok: true }
+      if (!window.confirm(`Task ${who} to call ${balanceTargets.length} famil${balanceTargets.length === 1 ? 'y' : 'ies'} about this week's balances? Stones that already have an open call task are skipped.`)) return { ok: true }
+      const actor = await getCurrentStaffName().catch(() => null)
+      let made = 0, skipped = 0
+      for (const r of balanceTargets) {
+        const existing = await listShopTasksForOrder(r.job.order.id).catch(() => [])
+        if (existing.some(t => ['open', 'pending'].includes(t.status) && /^call\b/i.test(t.title || ''))) { skipped++; continue }
+        const bal = rowBalanceDue(r.job.order)
+        const res = await addOrderTask(r.job.order.id, {
+          note: `Call ${famOf(r.job)} — balance ${fmtUSD(bal)} due before the install ${r.day.label} ${fmtDay(r.day.iso)}${r.job.order.order_number ? ` (${r.job.order.order_number})` : ''}`,
+          assignee: who, assigneeKind: DEPARTMENTS.includes(who) ? 'department' : 'person', dueDate: todayISO(), actor,
+        })
+        if (res?.ok !== false) made++
+      }
+      setBulkMsg(`${made} call task${made === 1 ? '' : 's'} created for ${who}${skipped ? ` · ${skipped} already had one` : ''}.`)
+      return { ok: true }
+    })
     return (
       <section className="ip-panel ip-panel-admin">
         <div className="ip-panel-head">
@@ -348,9 +396,26 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
           <span className="ip-n">{rows.length}</span>
           <span className="ip-hint"><b className={blocked ? 't-red' : 't-ok'}>{blocked} with a blocker</b> · <b className={owed ? 't-red' : 't-ok'}>{fmtUSD(owed)} still owed</b> on this week's stones</span>
         </div>
+        <div className="ip-btabs">
+          {TABS.map(([code, label, n]) => (
+            <button type="button" key={code} className={`ip-btab${blockerTab === code ? ' on' : ''}${code === 'balance' && n ? ' hot' : ''}`} onClick={() => setBlockerTab(code)}>{label} <b>{n}</b></button>
+          ))}
+          {blockerTab === 'balance' && balanceTargets.length > 0 && (
+            <span className="ip-bulk">
+              <span className="ip-hint">Task the calls to</span>
+              <select value={bulkWho || getActiveStaffUser() || 'Admin'} onChange={e => setBulkWho(e.target.value)} aria-label="Who gets the balance calls">
+                <optgroup label="People">{STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}</optgroup>
+                <optgroup label="Departments">{DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}</optgroup>
+              </select>
+              <button type="button" className="ib-act ib-act-go" disabled={busy} onClick={taskAllBalances}>Task all {balanceTargets.length} balance call{balanceTargets.length === 1 ? '' : 's'}</button>
+            </span>
+          )}
+        </div>
+        {bulkMsg && <div className="ip-bulkmsg">{bulkMsg} <button type="button" className="ip-remadd" onClick={() => setBulkMsg(null)}>ok</button></div>}
         {rows.length === 0 && <div className="ip-empty">Nothing on a day yet — build the week first.</div>}
+        {rows.length > 0 && shownRows.length === 0 && <div className="ip-empty">Nothing under that tab this week.</div>}
         {days.map(d => {
-          const dayRows = rows.filter(r => r.day.iso === d.iso)
+          const dayRows = shownRows.filter(r => r.day.iso === d.iso)
           if (!dayRows.length) return null
           return (
             <div key={d.iso} className="ip-adm-day">
@@ -583,6 +648,14 @@ const IP_CSS = `
   .ip-x { font: inherit; font-size: 13px; background: none; border: 1px solid #2a313c; border-radius: 5px; color: #8b95a5; cursor: pointer; padding: 0 6px; line-height: 20px; }
   .ip-x:hover { color: #f87171; border-color: #5c2a2a; }
   .ip-foot { font-size: 11.5px; color: #6f7a8a; margin-top: 12px; }
+  .ip-btabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .ip-btab { font: inherit; font-size: 12px; font-weight: 700; color: #8b95a5; background: #0e1116; border: 1px solid #2a313c; border-radius: 999px; padding: 6px 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .ip-btab b { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; color: #6f7a8a; }
+  .ip-btab.hot { border-color: #5c2a2a; color: #f87171; } .ip-btab.hot b { color: #f87171; }
+  .ip-btab.on { background: #1a2230; border-color: #C9A468; color: #fbbf24; } .ip-btab.on b { color: #C9A468; }
+  .ip-bulk { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .ip-bulk select { font: inherit; font-size: 12px; background: #11151c; border: 1px solid #2a313c; border-radius: 6px; color: #e6e9ef; padding: 5px 7px; }
+  .ip-bulkmsg { font-size: 12px; color: #34d399; background: #0f2a1d; border: 1px solid #2d5a44; border-radius: 7px; padding: 6px 10px; display: flex; gap: 10px; align-items: center; }
   .ip-adm-day { display: flex; flex-direction: column; gap: 6px; }
   .ip-adm { background: #151a22; border: 1px solid #232a35; border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
   .ip-adm-blocked { border-left: 3px solid #f87171; }
