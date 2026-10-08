@@ -16,13 +16,13 @@
 // Notes never touch inscription.
 // =============================================================================
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, Fragment } from 'react'
 import {
   rowGrandTotal, rowTotalPaid, fmtUSD, fmtDate, fmtPhone, statusInfo,
   getOpenTasksList, getCompletedTasksList, getRecentFollowupsForOrders,
   addOrderTask, setOrderTaskStatus, updateOrderLeadFields, getCurrentStaffName,
   bulkArchiveOrders, hardDeleteOrder, TASK_KINDS, STAFF_NAMES, getWebsiteLeadStats,
-  getActiveStaffUser, getPendingContractSentByOrder,
+  getActiveStaffUser, getPendingContractSentByOrder, updateShopTask,
 } from '../lib/stonebooksData'
 import { isOrderRow, followUpUrgency, CONTRACTED_STATUSES, WAITING_ON_OPTIONS, leadLeftOff } from '../lib/leads'
 
@@ -69,6 +69,33 @@ const SORT_OPTIONS = [
   { code: 'value',    label: 'Highest $ first' },
 ]
 const urgRank = (u) => (u === 'overdue' ? 0 : u === 'today' ? 1 : u === 'future' ? 2 : 3)
+// The reminder text without its "Follow up:" prefix — the list IS follow-ups
+// (Paul 2026-10-08 cleanup). Keeps everything after the colon.
+const cleanNote = (s) => String(s || '').replace(/^\s*follow[\s-]*up\s*[:\-–—]\s*/i, '').trim() || String(s || '')
+// Kind chips: Calls = plain general/lead reminders; Layout; Check job.
+const KIND_CHIPS = [
+  { code: 'all',       label: 'All' },
+  { code: 'calls',     label: 'Calls' },
+  { code: 'layout',    label: 'Layout' },
+  { code: 'check_job', label: 'Check job' },
+]
+const kindOf = (t) => (t.kind === 'layout' ? 'layout' : t.kind === 'check_job' ? 'check_job' : 'calls')
+// Due groups (Paul's cleanup): Overdue · Today · This week · Later.
+const GROUPS = [
+  { code: 'overdue', label: 'Overdue', cls: 'red' },
+  { code: 'today',   label: 'Today', cls: 'amb' },
+  { code: 'week',    label: 'This week', cls: '' },
+  { code: 'later',   label: 'Later', cls: '' },
+]
+const groupOf = (due, todayISO, weekISO) => {
+  if (!due) return 'later'
+  const d = String(due).slice(0, 10)
+  if (d < todayISO) return 'overdue'
+  if (d === todayISO) return 'today'
+  if (d <= weekISO) return 'week'
+  return 'later'
+}
+const initials = (name) => String(name || '').trim().slice(0, 2).toUpperCase()
 
 // Leads-table columns (sortable). The ⋯ action column is appended separately.
 const LEAD_COLS = [
@@ -120,8 +147,18 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
   const [reminderFor, setReminderFor] = useState(null)
   const [reminderDue, setReminderDue] = useState('')
   const [busyId, setBusyId] = useState(null)
+  // Cleanup filters (Paul 2026-10-08): who / kind / search, Later folded.
+  const [who, setWho] = useState('')          // '' = everyone | a person | 'Sales dept'
+  const [kindF, setKindF] = useState('all')
+  const [q, setQ] = useState('')
+  const [laterOpen, setLaterOpen] = useState(false)
+  const [weekISO, setWeekISO] = useState('')
 
-  useEffect(() => { setTodayISO(todayStr()) }, [])
+  useEffect(() => {
+    setTodayISO(todayStr())
+    const d = new Date(); d.setDate(d.getDate() + 7)
+    setWeekISO(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+  }, [])
 
   // A lead is anything that is NOT a real order (Paul's rule: signed + deposit
   // paid = order) — so contracted-but-no-deposit rows stay visible here.
@@ -190,6 +227,36 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     .sort((a, b) => (b.task.created_at || '').localeCompare(a.task.created_at || '')),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [completedTasks, leadById, todayISO])
+
+  // Person chips with counts (open tab only) — people first, the Sales
+  // department bucket last; unassigned rows ride under Everyone.
+  const whoCounts = useMemo(() => {
+    const m = new Map()
+    for (const r of taskRows) {
+      const k = r.task.assignee_kind === 'department' ? `${r.task.assignee || 'Sales'} dept` : (r.task.assignee || '')
+      if (!k) continue
+      m.set(k, (m.get(k) || 0) + 1)
+    }
+    const people = [...m.entries()].filter(([k]) => !k.endsWith(' dept')).sort((a, b) => b[1] - a[1])
+    const depts = [...m.entries()].filter(([k]) => k.endsWith(' dept')).sort((a, b) => b[1] - a[1])
+    return [...people, ...depts]
+  }, [taskRows])
+  const whoOf = (t) => (t.assignee_kind === 'department' ? `${t.assignee || 'Sales'} dept` : (t.assignee || ''))
+  const rowMatches = (r) => {
+    if (who && whoOf(r.task) !== who) return false
+    if (kindF !== 'all' && kindOf(r.task) !== kindF) return false
+    const t = q.trim().toLowerCase()
+    if (t && ![r.task.note, leadName(r.lead), r.lead.customer?.phone_primary, r.lead.order_number].filter(Boolean).join(' ').toLowerCase().includes(t)) return false
+    return true
+  }
+  const snooze = async (task, days) => {
+    setBusyId(task.id)
+    const d = new Date(); d.setDate(d.getDate() + days)
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    const res = await updateShopTask(task.id, { dueDate: iso })
+    if (res?.ok !== false) { setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, due_date: iso } : t))); refresh() }
+    setBusyId(null)
+  }
 
   // ── Leads-table rows (full roster) ─────────────────────────────────────────
   const leadRows = useMemo(() => {
@@ -355,7 +422,63 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
     return items
   }
 
-  const activeRows = taskTab === 'open' ? taskRows : completedRows
+  const activeRows = (taskTab === 'open' ? taskRows : completedRows).filter(rowMatches)
+  // Grouped only on the default due sort; other sorts render flat.
+  const grouped = taskTab === 'open' && sortKey === 'due'
+  const groupRows = GROUPS.map(g => ({ ...g, rows: activeRows.filter(r => groupOf(r.task.due_date, todayISO, weekISO) === g.code) }))
+
+  // One task row (a render function, not a component — static-components rule).
+  const renderRow = ({ task, lead, urgency }) => {
+    const completed = taskTab === 'completed'
+    const key = `t:${task.id}`
+    const w = whoOf(task)
+    return (
+      <tr key={task.id} className={`sb-lt-row${completed ? ' sb-lt-row-done' : ''}`}>
+        <td className="sb-lt-c-check">
+          <input type="checkbox" checked={completed} disabled={busyId === task.id}
+            onChange={() => (completed ? reopenTask(task) : markDone(task))}
+            title={completed ? 'Re-open' : 'Mark done'} />
+        </td>
+        <td className="sb-lt-c-rem">
+          {task.kind === 'layout' && <span className="sb-lt-kindchip">Layout</span>}
+          {task.kind === 'check_job' && <span className="sb-lt-kindchip sb-lt-checkchip">Check job</span>}
+          {/* Auto-created from a site form submission (WEB-LEAD-1). */}
+          {(task.created_by === 'Website' || task.tasked_by === 'Website') && (
+            <span className="sb-lt-kindchip sb-lt-webchip">Website</span>
+          )}
+          <button type="button" className="sb-lt-link sb-lt-rem" title={task.note} onClick={() => onOpenDetail?.(lead.id)}>{cleanNote(task.note)}</button>
+          {completed && <span className="sb-lt-donetag">Completed ✓</span>}
+        </td>
+        <td className="sb-lt-c-who">
+          {w ? <span className="sb-lt-who"><span className="sb-lt-av">{initials(w.replace(' dept', ''))}</span>{w}</span> : <span className="sb-lt-dash">—</span>}
+        </td>
+        <td className="sb-lt-c-lead">
+          <button type="button" className="sb-lt-link sb-lt-leadname" onClick={() => onOpenDetail?.(lead.id)}>{leadName(lead)}</button>
+        </td>
+        <td className="sb-lt-c-due">
+          {task.due_date
+            ? <span className={`sb-lt-due${completed ? '' : ` sb-lt-due-${urgency}`}`}>{urgency === 'today' && !completed ? 'Today' : fmtDate(task.due_date)}</span>
+            : <span className="sb-lt-due-none">—</span>}
+        </td>
+        {/* Click-to-call (Paul: "i need to be able to go and call the people"). */}
+        <td className="sb-lt-c-contact">{lead.customer?.phone_primary
+          ? <a className="sb-lt-calllink" href={`tel:${String(lead.customer.phone_primary).replace(/\D/g, '')}`}>{fmtPhone(lead.customer.phone_primary)}</a>
+          : <span className="sb-lt-nocontact">no phone</span>}</td>
+        <td className="sb-lt-c-act">
+          <span className="sb-lt-hover">
+            {!completed && (
+              <>
+                <button type="button" className="sb-lt-ab sb-lt-ab-go" disabled={busyId === task.id} onClick={() => markDone(task)}>Done</button>
+                <button type="button" className="sb-lt-ab" disabled={busyId === task.id} title="Push 3 days" onClick={() => snooze(task, 3)}>+3d</button>
+                <button type="button" className="sb-lt-ab" disabled={busyId === task.id} title="Push a week" onClick={() => snooze(task, 7)}>+7d</button>
+              </>
+            )}
+            <RowMenu open={menuKey === key} onToggle={() => setMenuKey(menuKey === key ? null : key)} items={menuItems(lead, task, completed)} />
+          </span>
+        </td>
+      </tr>
+    )
+  }
 
   return (
     <div className="sb-leads">
@@ -441,14 +564,30 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
           <button type="button" className={`sb-lt-tab${taskTab === 'open' ? ' on' : ''}`} onClick={() => setTaskTab('open')}>Open ({taskRows.length})</button>
           <button type="button" className={`sb-lt-tab${taskTab === 'completed' ? ' on' : ''}`} onClick={() => setTaskTab('completed')}>Completed</button>
         </div>
-        {taskTab === 'open' && (
-          <div className="sb-leads-sortbar">
-            <span className="sb-leads-sortlab">Sort</span>
-            <select className="sb-leads-sortsel" value={sortKey} onChange={e => setSortKey(e.target.value)}>
-              {SORT_OPTIONS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
-            </select>
-          </div>
-        )}
+        {/* Who + kind chips (Paul 2026-10-08 cleanup). */}
+        <div className="sb-lt-chips">
+          <button type="button" className={`sb-lt-chip${who === '' ? ' on' : ''}`} onClick={() => setWho('')}>Everyone <b>{taskRows.length}</b></button>
+          {whoCounts.map(([name, n]) => (
+            <button type="button" key={name} className={`sb-lt-chip${who === name ? ' on' : ''}`} onClick={() => setWho(w => (w === name ? '' : name))}>
+              {!name.endsWith(' dept') && <span className="sb-lt-av">{initials(name)}</span>}{name} <b>{n}</b>
+            </button>
+          ))}
+          <span className="sb-lt-vr" />
+          {KIND_CHIPS.map(k => (
+            <button type="button" key={k.code} className={`sb-lt-chip${kindF === k.code ? ' on' : ''}`} onClick={() => setKindF(k.code)}>{k.label}</button>
+          ))}
+        </div>
+        <div className="sb-leads-sortbar">
+          <input className="sb-lt-search" type="search" placeholder="Search name, phone, task" value={q} onChange={e => setQ(e.target.value)} />
+          {taskTab === 'open' && (
+            <>
+              <span className="sb-leads-sortlab">Sort</span>
+              <select className="sb-leads-sortsel" value={sortKey} onChange={e => setSortKey(e.target.value)}>
+                {SORT_OPTIONS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+              </select>
+            </>
+          )}
+        </div>
       </div>
 
       {reminderFor && (
@@ -460,14 +599,17 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
       {/* Tasks table (primary surface) */}
       {activeRows.length === 0 ? (
         <div className="sb-lt-empty">{taskTab === 'open'
-          ? 'No open reminders. Add one from a lead below, or in “+ New Lead”.'
+          ? (who || kindF !== 'all' || q ? 'Nothing matches those filters.' : 'No open reminders. Add one from a lead below, or in “+ New Lead”.')
           : 'No completed tasks yet.'}</div>
       ) : (
-        <table className="sb-lt">
+        <div className="sb-lt-scroll">
+        <table className="sb-lt sb-lt-tasks">
+          <colgroup><col style={{ width: 34 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 190 }} /><col style={{ width: 104 }} /><col style={{ width: 136 }} /><col style={{ width: 230 }} /></colgroup>
           <thead>
             <tr>
               <th className="sb-lt-c-check" />
               <th>Reminder / task</th>
+              <th>Who</th>
               <th>Lead</th>
               <th>Due</th>
               <th>Contact</th>
@@ -475,47 +617,22 @@ export default function LeadsView({ orders = [], onOpenDetail, onConvert, onChan
             </tr>
           </thead>
           <tbody>
-            {activeRows.map(({ task, lead, urgency }) => {
-              const completed = taskTab === 'completed'
-              const key = `t:${task.id}`
-              return (
-                <tr key={task.id} className={`sb-lt-row${completed ? ' sb-lt-row-done' : ''}`}>
-                  <td className="sb-lt-c-check">
-                    <input type="checkbox" checked={completed} disabled={busyId === task.id}
-                      onChange={() => (completed ? reopenTask(task) : markDone(task))}
-                      title={completed ? 'Re-open' : 'Mark done'} />
-                  </td>
-                  <td className="sb-lt-c-rem">
-                    {task.kind === 'layout' && <span className="sb-lt-kindchip">Layout</span>}
-                    {task.kind === 'check_job' && <span className="sb-lt-kindchip sb-lt-checkchip">Check job</span>}
-                    {/* Auto-created from a site form submission (WEB-LEAD-1). */}
-                    {(task.created_by === 'Website' || task.tasked_by === 'Website' || lead.sales_rep === 'Website') && (
-                      <span className="sb-lt-kindchip sb-lt-webchip">Website</span>
+            {grouped ? groupRows.map(g => (g.rows.length === 0 ? null : (
+              <Fragment key={g.code}>
+                <tr className={`sb-lt-grp ${g.cls}`}>
+                  <td colSpan={7}>
+                    {g.label} · {g.rows.length}
+                    {g.code === 'later' && (
+                      <button type="button" className="sb-lt-showbtn" onClick={() => setLaterOpen(v => !v)}>{laterOpen ? 'Hide' : 'Show'}</button>
                     )}
-                    <button type="button" className="sb-lt-link sb-lt-rem" onClick={() => onOpenDetail?.(lead.id)}>{task.note}</button>
-                    {task.assignee && <span className="sb-lt-assignee"> · {task.assignee}</span>}
-                    {completed && <span className="sb-lt-donetag">Completed ✓</span>}
-                  </td>
-                  <td className="sb-lt-c-lead">
-                    <button type="button" className="sb-lt-link sb-lt-leadname" onClick={() => onOpenDetail?.(lead.id)}>{leadName(lead)}</button>
-                  </td>
-                  <td className="sb-lt-c-due">
-                    {task.due_date
-                      ? <span className={`sb-lt-due${completed ? '' : ` sb-lt-due-${urgency}`}`}>{fmtDate(task.due_date)}</span>
-                      : <span className="sb-lt-due-none">—</span>}
-                  </td>
-                  {/* Click-to-call (Paul: "i need to be able to go and call the people"). */}
-                  <td className="sb-lt-c-contact">{lead.customer?.phone_primary
-                    ? <a className="sb-lt-calllink" href={`tel:${String(lead.customer.phone_primary).replace(/\D/g, '')}`}>{fmtPhone(lead.customer.phone_primary)}</a>
-                    : '—'}</td>
-                  <td className="sb-lt-c-act">
-                    <RowMenu open={menuKey === key} onToggle={() => setMenuKey(menuKey === key ? null : key)} items={menuItems(lead, task, completed)} />
                   </td>
                 </tr>
-              )
-            })}
+                {(g.code !== 'later' || laterOpen) && g.rows.map(renderRow)}
+              </Fragment>
+            ))) : activeRows.map(renderRow)}
           </tbody>
         </table>
+        </div>
       )}
 
       {/* Leads roster — the real columned table */}
@@ -680,6 +797,32 @@ const CSS = `
 .sb-leads-sortlab { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #8a8472; }
 .sb-leads-sortsel { font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid #d8d2c4; border-radius: 8px; background: #fff; color: #1a1a1a; cursor: pointer; }
 .sb-leads-sortsel:focus { outline: none; border-color: #9A7209; }
+
+/* Cleanup (2026-10-08): who/kind chips, search, due groups, hover actions */
+.sb-lt-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sb-lt-chip { display: inline-flex; align-items: center; gap: 6px; font: 700 12px/1 inherit; font-family: inherit; color: #6B6455; background: #fff; border: 1px solid #D9D2C0; border-radius: 999px; padding: 6px 11px; cursor: pointer; white-space: nowrap; }
+.sb-lt-chip b { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; font-weight: 700; color: #9a9486; }
+.sb-lt-chip.on { background: #16150F; color: #fff; border-color: #16150F; }
+.sb-lt-chip.on b { color: #C9A468; }
+.sb-lt-vr { width: 1px; height: 22px; background: #ddd6c6; }
+.sb-lt-av { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #F4EBD4; color: #7a5d12; font: 800 9.5px/1 inherit; letter-spacing: .03em; flex: 0 0 auto; }
+.sb-lt-search { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid #d8d2c4; border-radius: 8px; background: #fff; width: 200px; }
+.sb-lt-search:focus { outline: none; border-color: #9A7209; }
+.sb-lt-tasks { table-layout: fixed; min-width: 980px; }
+.sb-lt-tasks td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-lt-c-rem .sb-lt-rem { display: inline; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.sb-lt-who { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: #6B6455; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.sb-lt-grp td { background: #f4f1e8 !important; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #6B6455; padding: 5px 12px; }
+.sb-lt-grp.red td { color: #b3261e; background: #fbeaea !important; }
+.sb-lt-grp.amb td { color: #7a4a12; background: #fdf2e9 !important; }
+.sb-lt-showbtn { margin-left: 10px; font: 700 10.5px/1 inherit; font-family: inherit; color: #9A7209; background: none; border: 1px dashed #C9A468; border-radius: 999px; padding: 3px 9px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.sb-lt-tasks .sb-lt-c-act { text-align: right; overflow: visible; }
+.sb-lt-hover { display: inline-flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.sb-lt-hover .sb-lt-ab { visibility: hidden; }
+.sb-lt-row:hover .sb-lt-hover .sb-lt-ab { visibility: visible; }
+.sb-lt-ab { font: 700 11px/1 inherit; font-family: inherit; color: #16150F; background: #fff; border: 1px solid #D9D2C0; border-radius: 6px; padding: 4px 8px; cursor: pointer; white-space: nowrap; }
+.sb-lt-ab:disabled { opacity: .5; cursor: default; }
+.sb-lt-ab-go { background: #2d7a4f; color: #fff; border-color: #2d7a4f; }
 
 /* Reminder editor */
 .sb-lt-remedit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fdf8ec; border: 1px solid #e8d9a8; border-radius: 9px; padding: 9px 12px; margin-bottom: 10px; }

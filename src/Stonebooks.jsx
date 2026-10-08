@@ -53,6 +53,8 @@ const ReconciliationTab = lazy(() => import('./ReconciliationTab'))
 const OrderForm = lazy(() => import('./OrderForm'))
 const PricingSettings = lazy(() => import('./components/PricingSettings'))
 const HotListTab = lazy(() => import('./HotListTab'))
+// INQUIRIES-1 (2026-10-08): website form submissions get their own tab.
+const InquiriesTab = lazy(() => import('./InquiriesTab'))
 const TeamMeetingTab = lazy(() => import('./TeamMeetingTab'))
 const StorageSettings = lazy(() => import('./components/StorageSettings'))
 const CatalogIntakeSettings = lazy(() => import('./components/CatalogIntakeSettings'))
@@ -224,6 +226,9 @@ const NAV_PRIMARY = [
   { key: 'teammeeting', label: 'Team Meeting' },
   { key: 'customers', label: 'Customers' },
   { key: 'orders',    label: 'Sales' },
+  // INQUIRIES-1 (2026-10-08): website form submissions, answered here —
+  // out of the Sales reminders list (Paul: "they are critical... be quick").
+  { key: 'inquiries', label: 'Inquiries' },
   { key: 'cemetery-orders', label: 'Cemetery Orders' },
   { key: 'jobs',      label: 'Jobs' },
   { key: 'permitbuilder', label: 'Permit Builder' },
@@ -294,6 +299,8 @@ export default function Stonebooks() {
   const [leadTaskCount, setLeadTaskCount] = useState(0)
   // Hot List open-item count — the red badge on the Hot List nav item.
   const [hotCount, setHotCount] = useState(0)
+  // Untouched website inquiries — the red badge on the Inquiries nav item.
+  const [inquiryCount, setInquiryCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
   // /?tab=payments style deep links — the phone app's MORE screen opens
   // desktop sections this way. Unknown keys fall back to today.
@@ -469,8 +476,22 @@ export default function Stonebooks() {
     let cancelled = false
     const d = new Date(); const p = (n) => String(n).padStart(2, '0')
     const todayISO = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-    const load = () => getDueOpenTaskCount(todayISO)
+    // Lead tasks only (Paul 2026-10-08) — the badge used to count every task
+    // in the shop (158) while the Sales list showed 73.
+    const load = () => getDueOpenTaskCount(todayISO, { leadOnly: true })
       .then(n => { if (!cancelled) setLeadTaskCount(n) })
+      .catch(() => {})
+    load()
+    const id = setInterval(load, 60000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [user?.id, portal, tab])
+
+  // Staff-only: untouched website inquiries badge — same cadence.
+  useEffect(() => {
+    if (!user?.id || portal !== null) return
+    let cancelled = false
+    const load = () => import('./lib/inquiries').then(m => m.getNewInquiryCount())
+      .then(n => { if (!cancelled) setInquiryCount(n) })
       .catch(() => {})
     load()
     const id = setInterval(load, 60000)
@@ -730,6 +751,9 @@ export default function Stonebooks() {
                 {item.key === 'orders' && leadTaskCount > 0 && (
                   <span className="sb-nav-badge" title={`${leadTaskCount} lead task${leadTaskCount === 1 ? '' : 's'} due today or overdue`}>{leadTaskCount}</span>
                 )}
+                {item.key === 'inquiries' && inquiryCount > 0 && (
+                  <span className="sb-nav-badge sb-nav-badge-hot" title={`${inquiryCount} website inquir${inquiryCount === 1 ? 'y' : 'ies'} not answered yet`}>{inquiryCount}</span>
+                )}
               </button>
             ))}
 
@@ -768,6 +792,7 @@ export default function Stonebooks() {
         <main className="sb-main">
           <Suspense fallback={<TabFallback />}>
           {tab === 'hotlist'   && <HotListTab onCountChange={setHotCount} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Hot List', tab: 'hotlist' }); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
+          {tab === 'inquiries' && <InquiriesTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Inquiries', tab: 'inquiries' }); setTab('orders') }} />}
           {tab === 'teammeeting' && <TeamMeetingTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Team Meeting', tab: 'teammeeting' }); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} />}
           {tab === 'today'     && <TodayTab user={user} profile={profile} onOpenSales={() => openSales()} onOpenOrder={openSales} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} />}
 {tab === 'customers' && <CustomersTab selectedId={selectedCustomerId} setSelectedId={setSelectedCustomerId} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}

@@ -1,5 +1,5 @@
 // =============================================================================
-// websiteLeads.js — website form submissions → draft leads + follow-up tasks
+// websiteLeads.js — website form submissions → INQUIRIES (→ leads on Done)
 // =============================================================================
 // The site (Duda, managed by Visual Media) emails every form submission to
 // the synced inbox as no-reply@multiscreensite.com with subject
@@ -8,17 +8,19 @@
 //   1. finds recent unprocessed form messages,
 //   2. CLAIMS each in website_leads (unique message_id — claim-before-create,
 //      so several open desks never double-create; the push-sender pattern),
-//   3. mints a DRAFT LEAD through the EXACT desktop path (makeBlankOrder +
-//      saveOrder — the IntakeScreen precedent; salesRep 'Website' so the
-//      Created-by filter finds them),
-//   4. cuts a Sales-department follow-up task due today + an order note with
-//      what they wrote.
-// IMPORT DYNAMICALLY from the shell — this drags the SalesMode chunk and must
-// never ride in the entry bundle (PERF-1 discipline).
+//   3. parses the fields and parks the row as an INQUIRY (inquiry_status
+//      'new' — the Inquiries tab + its red nav badge).
+// INQUIRIES-1 (Paul 2026-10-08): the sweep NO LONGER mints a draft lead or a
+// Sales task on arrival — that flooded the reminders list (57 of 113 open
+// lead tasks were website follow-ups). The lead is created when the inquiry
+// is actioned: ensureLeadForInquiry below, through the EXACT desktop path
+// (makeBlankOrder + saveOrder; salesRep 'Website').
+// IMPORT DYNAMICALLY from the shell / Inquiries tab — this drags the
+// SalesMode chunk and must never ride in the entry bundle (PERF-1).
 // =============================================================================
 import { supabase } from './supabase'
 import { makeBlankOrder, saveOrder } from '../SalesMode'
-import { addShopTask, addOrderNote, phoneDigits, todayISO } from './stonebooksData'
+import { addOrderNote, phoneDigits } from './stonebooksData'
 
 const FORM_FROM = 'no-reply@multiscreensite.com'
 const SWEEP_WINDOW_DAYS = 14
@@ -42,6 +44,12 @@ function splitName(name) {
   if (parts.length === 1) return { first: parts[0], last: parts[0] }
   return { first: parts.slice(0, -1).join(' '), last: parts[parts.length - 1] }
 }
+const fieldsOf = (fields) => ({
+  name: fields['name'] || fields['full name'] || '',
+  email: fields['email'] || fields['email address'] || '',
+  phone: fields['phone number'] || fields['phone'] || '',
+  message: fields['message'] || fields['comments'] || fields['how can we help'] || fields['how can we help you'] || '',
+})
 
 export async function sweepWebsiteLeadForms() {
   const since = new Date(Date.now() - SWEEP_WINDOW_DAYS * 86400000).toISOString()
@@ -67,50 +75,18 @@ export async function sweepWebsiteLeadForms() {
     const formName = (String(msg.subject || '').match(/^New form submission - (.+)$/) || [])[1] || 'Website form'
     try {
       const fields = parseFormBody(msg.body_text || msg.snippet)
-      const name = fields['name'] || fields['full name'] || ''
-      const email = fields['email'] || fields['email address'] || ''
-      const phone = fields['phone number'] || fields['phone'] || ''
-      const message = fields['message'] || fields['comments'] || fields['how can we help'] || fields['how can we help you'] || ''
+      const { name, email, phone } = fieldsOf(fields)
       if (!name.trim() && !email.trim() && !phone.trim()) {
         await supabase.from('website_leads')
-          .update({ status: 'skipped_empty', form_name: formName, parsed: fields }).eq('id', claim.id)
+          .update({ status: 'skipped_empty', inquiry_status: 'junk', actioned_at: new Date().toISOString(), actioned_by: 'sweep', form_name: formName, parsed: fields })
+          .eq('id', claim.id)
         continue
       }
-      const { first, last } = splitName(name)
-      const blank = makeBlankOrder()
-      const res = await saveOrder({
-        ...blank,
-        status: 'draft',
-        salesRep: 'Website',
-        customer: {
-          ...blank.customer,
-          firstName: first,
-          lastName: last,
-          phonePrimary: phoneDigits(phone),
-          email: email.trim(),
-        },
-      })
-      if (!res?.ok) throw new Error(res?.error?.message || res?.reason || 'saveOrder failed')
-      const orderId = res.order?.id || null
-      let taskId = null
-      if (orderId) {
-        await addOrderNote({
-          orderId,
-          body: `Website lead — auto-created from the ${formName} submission (${String(msg.received_at).slice(0, 10)}).${message ? `\nTheir message: ${message}` : ''}`,
-          author: 'Website',
-        }).catch(() => {})
-        const t = await addShopTask({
-          title: `Follow up website lead — ${name.trim() || email.trim() || phone} (${formName})`,
-          assignee: 'Sales', assigneeKind: 'department',
-          orderId, dueDate: todayISO(),
-          createdBy: 'Website', taskedBy: 'Website', taskType: 'lead',
-        }).catch(() => null)
-        taskId = t?.task?.id || null
-      }
+      // Parked as an inquiry — the submission's own timestamp is what the
+      // tab ages against, not the sweep's.
       await supabase.from('website_leads').update({
-        status: 'created', order_id: orderId,
-        customer_id: res.order?.customer_id || null,
-        task_id: taskId, form_name: formName, parsed: fields,
+        status: 'inquiry', inquiry_status: 'new', form_name: formName, parsed: fields,
+        created_at: msg.received_at || new Date().toISOString(),
       }).eq('id', claim.id)
       created++
     } catch (e) {
@@ -120,4 +96,42 @@ export async function sweepWebsiteLeadForms() {
     }
   }
   return { created }
+}
+
+// Done → Leads: the inquiry becomes a DRAFT LEAD (salesRep 'Website'), with
+// their message as the first order note. Idempotent — an inquiry that already
+// has an order (the pre-INQUIRIES-1 rows) just returns it. Does NOT touch
+// inquiry_status; the caller stamps done.
+export async function ensureLeadForInquiry(inquiry) {
+  if (!inquiry?.id) return { ok: false, error: 'Missing inquiry' }
+  if (inquiry.order_id) return { ok: true, orderId: inquiry.order_id, existed: true }
+  const fields = inquiry.parsed || {}
+  const { name, email, phone, message } = fieldsOf(fields)
+  const { first, last } = splitName(name)
+  const blank = makeBlankOrder()
+  const res = await saveOrder({
+    ...blank,
+    status: 'draft',
+    salesRep: 'Website',
+    customer: {
+      ...blank.customer,
+      firstName: first,
+      lastName: last,
+      phonePrimary: phoneDigits(phone),
+      email: email.trim(),
+    },
+  })
+  if (!res?.ok) return { ok: false, error: res?.error?.message || res?.reason || 'saveOrder failed' }
+  const orderId = res.order?.id || null
+  if (!orderId) return { ok: false, error: 'No order id returned' }
+  const formName = inquiry.form_name || 'Website form'
+  await addOrderNote({
+    orderId,
+    body: `Website lead — from the ${formName} submission (${String(inquiry.created_at || '').slice(0, 10)}).${message ? `\nTheir message: ${message}` : ''}${inquiry.interest ? `\nLooking for: ${inquiry.interest.replace('_', ' ')}` : ''}`,
+    author: 'Website',
+  }).catch(() => {})
+  await supabase.from('website_leads').update({
+    status: 'created', order_id: orderId, customer_id: res.order?.customer_id || null,
+  }).eq('id', inquiry.id)
+  return { ok: true, orderId, customerId: res.order?.customer_id || null }
 }

@@ -1570,14 +1570,19 @@ export async function getCompletedTasksList(orderIds) {
 
 // Count of OPEN tasks due today-or-overdue — powers the "work to do" nav badge.
 // Counts every live task in the shop (order-linked or not); head-only count.
-export async function getDueOpenTaskCount(todayISO) {
+// { leadOnly: true } = only lead-type tasks — the SALES badge (Paul 2026-10-08:
+// the badge said 158 while the Sales list showed 73 because it counted every
+// task in the shop).
+export async function getDueOpenTaskCount(todayISO, { leadOnly = false } = {}) {
   if (!todayISO) return 0
-  const { count, error } = await supabase
+  let q = supabase
     .from('shop_tasks')
     .select('id', { count: 'exact', head: true })
     .is('deleted_at', null)
     .in('status', ['open', 'pending'])
     .lte('due_date', todayISO)
+  if (leadOnly) q = q.eq('task_type', 'lead')
+  const { count, error } = await q
   if (error) { console.warn('[leads] getDueOpenTaskCount:', error.message); return 0 }
   return count || 0
 }
@@ -6393,7 +6398,7 @@ export async function getProductionComponents() {
   const { data, error } = await supabase.from('job_components')
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
-      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at,
+      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at, target_completion_date,
         shape, polish_level, granite_color, top_shape, sides, standard_size_code,
         width_inches, depth_inches, thickness_inches, height_inches, base_config,
         customer:customers(last_name), cemetery:cemeteries(name)),
@@ -11536,9 +11541,11 @@ export async function listUpcomingAppointments({ days = 14, daysBack = 0 } = {})
 export async function getWebsiteLeadStats() {
   const now = Date.now()
   const countSince = async (sinceMs) => {
+    // 'inquiry' = parked by the INQUIRIES-1 sweep (lead not minted yet);
+    // 'created' = the lead exists. Both are real submissions.
     const { count } = await supabase.from('website_leads')
       .select('id', { count: 'exact', head: true })
-      .eq('status', 'created')
+      .in('status', ['created', 'inquiry'])
       .gte('created_at', new Date(sinceMs).toISOString())
     return count || 0
   }

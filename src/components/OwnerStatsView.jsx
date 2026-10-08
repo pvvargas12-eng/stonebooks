@@ -16,9 +16,10 @@
 //     by that milestone's own status_date, same buckets.
 // The type chips re-slice everything on the page. CSV export per table.
 // =============================================================================
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { rowGrandTotal, rowTotalPaid, rowBalanceDue, fmtUSD } from '../lib/stonebooksData'
 import { downloadReportCSV } from '../lib/reportsData'
+import { getLineStats } from '../lib/floorLines'
 
 const INSTALL_KEYS = ['installed', 'door_installed', 'work_completed']
 const LEAD_STATUSES = new Set(['draft', 'scoping', 'quoted'])
@@ -145,6 +146,27 @@ export default function OwnerStatsView({ bundle, now }) {
 
   const maxSalesUsd = Math.max(1, ...table.map(r => r.salesUsd))
 
+  // ── PRODUCTION LINES (LINES-1, Paul 2026-10-08: "how many lines a week we
+  // are doing, time to complete lines, how many a year") ──────────────────────
+  const [lineStats, setLineStats] = useState(null)
+  useEffect(() => {
+    let alive = true
+    getLineStats().then(s => { if (alive) setLineStats(s) }).catch(() => { if (alive) setLineStats({ completed: [], running: [], planned: 0, avgDays: null, avgStones: null }) })
+    return () => { alive = false }
+  }, [])
+  const lineTable = useMemo(() => {
+    if (!lineStats) return []
+    const keys = lastPeriods(now, gran, gran === 'year' ? 6 : 12)
+    const rows = new Map(keys.map(k => [k, { key: k, lines: 0, stones: 0, days: [] }]))
+    for (const l of lineStats.completed) {
+      const k = periodKey(l.completed_at, gran)
+      const r = k && rows.get(k)
+      if (r) { r.lines++; r.stones += l.stones; r.days.push(l.days) }
+    }
+    return keys.map(k => rows.get(k))
+  }, [lineStats, gran, now])
+  const lineTotals = useMemo(() => lineTable.reduce((a, r) => ({ lines: a.lines + r.lines, stones: a.stones + r.stones }), { lines: 0, stones: 0 }), [lineTable])
+
   return (
     <div className="ost">
       <style>{CSS}</style>
@@ -223,6 +245,70 @@ export default function OwnerStatsView({ bundle, now }) {
             </tr>
           </tfoot>
         </table>
+      </div>
+
+      {/* PRODUCTION LINES */}
+      <div className="ost-panel">
+        <div className="ost-panel-head">
+          <span className="ost-panel-title">Production lines</span>
+          <span className="ost-hint" style={{ margin: 0 }}>Assembly lines on the floor — a line completes when every stone on it is blasted.</span>
+        </div>
+        {!lineStats ? <div className="ost-hint">Loading…</div> : (
+          <>
+            <div className="ost-cards">
+              <div className="ost-card">
+                <div className="ost-card-l">Lines completed</div>
+                <div className="ost-card-v">{lineStats.completed.length}</div>
+                <div className="ost-card-s">all time</div>
+              </div>
+              <div className="ost-card">
+                <div className="ost-card-l">Days per line</div>
+                <div className="ost-card-v">{lineStats.avgDays == null ? '—' : Math.round(lineStats.avgDays * 10) / 10}</div>
+                <div className="ost-card-s">started → blasted out, average</div>
+              </div>
+              <div className="ost-card">
+                <div className="ost-card-l">Stones per line</div>
+                <div className="ost-card-v">{lineStats.avgStones == null ? '—' : Math.round(lineStats.avgStones * 10) / 10}</div>
+                <div className="ost-card-s">average on completed lines</div>
+              </div>
+              {lineStats.running.map(l => (
+                <div key={l.id} className="ost-card">
+                  <div className="ost-card-l">{l.label} · running</div>
+                  <div className="ost-card-v">{l.counts.blasted} / {l.counts.total}</div>
+                  <div className="ost-card-s">blasted · started {l.started_at ? new Date(l.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</div>
+                </div>
+              ))}
+              <div className="ost-card">
+                <div className="ost-card-l">Planned ahead</div>
+                <div className="ost-card-v">{lineStats.planned}</div>
+                <div className="ost-card-s">lines on deck or in planning</div>
+              </div>
+            </div>
+            <table className="ost-table">
+              <thead>
+                <tr><th>Period</th><th className="n">Lines done</th><th className="n">Stones blasted</th><th className="n">Avg days / line</th></tr>
+              </thead>
+              <tbody>
+                {lineTable.map(r => (
+                  <tr key={r.key}>
+                    <td className="p">{periodLabel(r.key, gran)}</td>
+                    <td className="n">{r.lines || '—'}</td>
+                    <td className="n">{r.stones || '—'}</td>
+                    <td className="n">{r.days.length ? Math.round((r.days.reduce((s, x) => s + x, 0) / r.days.length) * 10) / 10 : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td className="p">Total</td>
+                  <td className="n">{lineTotals.lines}</td>
+                  <td className="n">{lineTotals.stones}</td>
+                  <td className="n"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </>
+        )}
       </div>
     </div>
   )
