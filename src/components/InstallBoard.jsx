@@ -18,7 +18,11 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
   updateMilestoneWithOverride, ensureCloseoutTask, logOrderActivity, getCurrentStaffName, todayISO,
   getInstallList, addToInstallList, removeFromInstallList, fmtUSD, installGates,
-  addOrderTask, STAFF_NAMES, getActiveStaffUser } from '../lib/stonebooksData'
+  addOrderTask, STAFF_NAMES, getActiveStaffUser,
+  // Gate dropdowns (Paul 2026-10-08): the same writes as the Sales row.
+  setOrderFdnStatus, setOrderPermit, setOrderStoneStatus, getJob,
+  deriveStoneStatus, stoneStatusOptions, FDN_STATUS, PERMIT_STATUS_OPTIONS, permitStatusLabel,
+} from '../lib/stonebooksData'
 import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
@@ -61,6 +65,14 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const [busy, setBusy] = useState(false)
   const [installRow, setInstallRow] = useState(null)
   const [installStep, setInstallStep] = useState(null)   // 'confirm' | 'photo'
+  // Jobs re-read after a gate pick on a card (Paul 2026-10-08: "click on
+  // foundation not in or permit not approved and change the status here,
+  // same way as the order dropdown") — the parent's `jobs` prop is a
+  // snapshot; one getJob() per edit keeps the card honest without a full
+  // hub reload.
+  const [jobOverrides, setJobOverrides] = useState(() => new Map())
+  const [gateBusy, setGateBusy] = useState(null)   // job id mid-write
+  const effJobs = useMemo(() => (jobs || []).map(j => jobOverrides.get(j.id) || j), [jobs, jobOverrides])
 
   const load = useCallback(async () => {
     const [d, l] = await Promise.all([
@@ -93,7 +105,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const buckets = useMemo(() => {
     const out = { ready: [], scheduled: [], blocked: [], foundationNeeded: [], doneThisMonth: [] }
     if (components == null) return out
-    for (const job of (jobs || [])) {
+    for (const job of effJobs) {
       const ci = byJob.get(job.id)
       if (!ci) continue
       const track = ci.track
@@ -131,7 +143,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       else out.blocked.push(row)
     }
     return out
-  }, [components, jobs, byJob, monthKey])
+  }, [components, effJobs, byJob, monthKey])
 
   // ── The hand-picked SET LIST ───────────────────────────────────────────────
   // Membership only (install_list). NO readiness gate — adding a stone IS Paul
@@ -152,7 +164,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
 
   const setListRows = useMemo(() => {
     if (!setList || !jobs) return []
-    const byId = new Map((jobs || []).map(j => [j.id, j]))
+    const byId = new Map(effJobs.map(j => [j.id, j]))
     const out = []
     for (const m of setList) {
       const job = byId.get(m.job_id)
@@ -163,6 +175,10 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       out.push(makeRow(job, ci, job.order || {}, {
         blockers: blockersFor(job),
         gates4: installGates(job.order || {}, job),
+        // Current codes behind the gate dropdowns — the Sales row's truth.
+        permitCode: job.order?.permit_status || 'unknown',
+        stoneCode: deriveStoneStatus(job),
+        stoneOptions: stoneStatusOptions(job),
         installKey: ms?.milestone_key || null,
         scheduled: ms?.status === 'in_progress',
         scheduledDate: ms?.status === 'in_progress' ? (ms?.due_date || null) : null,
@@ -170,14 +186,14 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       }))
     }
     return out
-  }, [setList, jobs, byJob, blockersFor])
+  }, [setList, jobs, effJobs, byJob, blockersFor])
 
   // Add picker: EVERY open job — contracted, lead, draft, stone not ordered.
   // Paul overrides; the picker only reports what's missing.
   const addCandidates = useMemo(() => {
     if (!jobs) return []
     const t = addQ.trim().toLowerCase()
-    const pool = jobs.filter(j => {
+    const pool = effJobs.filter(j => {
       if (memberIds.has(j.id)) return false
       const ms = installMilestone(j)
       if (ms?.status === 'done') return false
@@ -194,7 +210,33 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
         .filter(Boolean).join(' ').toLowerCase().includes(t))
       : pool
     return hit.slice(0, t ? 40 : 25)
-  }, [jobs, memberIds, addQ])
+  }, [jobs, effJobs, memberIds, addQ])
+
+  // A gate pick on a card — foundation / permit / stone (blasted) — writes
+  // exactly what the Sales row's dropdowns write, then re-reads the one job
+  // so the chip, the READY TO INSTALL label, and the sort all follow.
+  const changeGate = async (row, dim, code) => {
+    if (!code || gateBusy) return
+    setGateBusy(row.jobId)
+    let r = { ok: true }
+    if (dim === 'fdn') r = await setOrderFdnStatus(row.jobId, code)
+    else if (dim === 'stone') r = await setOrderStoneStatus(row.jobId, code)
+    else if (dim === 'permit' && row.orderId) {
+      const today = todayISO()
+      const patch = { permit_status: code }
+      const prev = row.permitCode || 'unknown'
+      if (code === 'submitted') patch.permit_filed_at = today
+      if (code === 'approved') patch.permit_approved_at = today
+      r = await setOrderPermit(row.orderId, patch)
+      if (r?.ok) logOrderActivity(row.orderId, { type: 'change', field: 'Permit status', oldValue: permitStatusLabel(prev), newValue: permitStatusLabel(code), note: 'Permit status changed from the set list', actor: await getCurrentStaffName().catch(() => null) }).catch(() => {})
+    }
+    if (r?.ok === false) { window.alert(r.error || 'Could not change the status.'); setGateBusy(null); return }
+    const fresh = await getJob(row.jobId).catch(() => null)
+    if (fresh) setJobOverrides(m => new Map(m).set(row.jobId, fresh))
+    setGateBusy(null)
+    // Blasted may have moved floor pieces / the install list — re-read those.
+    if (dim === 'stone') load()
+  }
 
   const addToList = async (jobId) => {
     if (listBusy) return
@@ -310,6 +352,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const cardProps = {
     onOpenJob, onOpenOrderDetail, canAct, onSchedule: openSchedule, onMarkInstalled: openInstall,
     onRemove: activeKpi !== 'done' ? removeFromList : null, listBusy, todayMs,
+    onGate: activeKpi !== 'done' ? changeGate : null, gateBusy,
   }
 
   return (
@@ -477,7 +520,22 @@ function groupByCemetery(rows) {
   return [...m.entries()].sort((a, b) => (a[0] || '~').localeCompare(b[0] || '~'))
 }
 
-function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0 }) {
+// A gate chip that IS a dropdown: the red/green pill Paul reads, with the
+// native select laid invisibly over it so a click opens the same options
+// the Sales row offers (Paul 2026-10-08). Module-level: static-components.
+function GateSelect({ tone, label, value, options, onChange, disabled, title }) {
+  return (
+    <label className={`ib-flag ib-flag-sel ib-flag-${tone}`} title={title || 'Change the status'}>
+      <span>{label} <span className="ib-flag-caret" aria-hidden="true">▾</span></span>
+      <select value={value || ''} disabled={disabled} onChange={e => onChange(e.target.value)} aria-label={title || label}>
+        {!options.some(o => o.code === value) && <option value="">—</option>}
+        {options.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
+      </select>
+    </label>
+  )
+}
+
+function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0, onGate = null, gateBusy = null }) {
   // Component track when one exists, else the job type — a bronze job whose
   // components predate BRONZE-WIRE still wears its BRONZE SERVICES tag.
   const cardTrack = row.track || ({ new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }[row.jobType] || null)
@@ -551,15 +609,24 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
                 onClick={() => row.orderId && onOpenOrderDetail?.(row.orderId)}>
                 {row.gates4.paid ? 'PAID' : (b.balance > 0 ? `BALANCE ${fmtUSD(b.balance)}` : 'NOT PAID')}
               </button>
-              {row.gates4.fdn === null
-                ? <span className="ib-flag ib-flag-na">NO FOUNDATION NEEDED</span>
-                : row.gates4.fdnCode === 'drop_off'
-                  ? <span className="ib-flag ib-flag-ok">DROP OFF</span>
-                  : <span className={`ib-flag ${row.gates4.fdn ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.fdn ? 'FOUNDATION IN' : 'FOUNDATION NOT IN'}</span>}
-              {row.gates4.permit === null
-                ? <span className="ib-flag ib-flag-na">NO PERMIT NEEDED</span>
-                : <span className={`ib-flag ${row.gates4.permit ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
-              <span className={`ib-flag ${row.gates4.blasted ? 'ib-flag-ok' : 'ib-flag-red'}`}>{row.gates4.blasted ? 'BLASTED' : 'NOT BLASTED'}</span>
+              {/* Foundation / Permit / Blasted are DROPDOWNS now (Paul
+                  2026-10-08) — the same options as the order row; the
+                  chip's color still reads the gate. */}
+              <GateSelect
+                tone={row.gates4.fdn === null ? 'na' : row.gates4.fdn ? 'ok' : 'red'}
+                label={row.gates4.fdn === null ? 'NO FOUNDATION NEEDED' : row.gates4.fdnCode === 'drop_off' ? 'DROP OFF' : row.gates4.fdn ? 'FOUNDATION IN' : 'FOUNDATION NOT IN'}
+                value={row.gates4.fdnCode} options={FDN_STATUS} disabled={!onGate || gateBusy === row.jobId}
+                title="Foundation status — same choices as the order row" onChange={(c) => onGate?.(row, 'fdn', c)} />
+              <GateSelect
+                tone={row.gates4.permit === null ? 'na' : row.gates4.permit ? 'ok' : 'red'}
+                label={row.gates4.permit === null ? 'NO PERMIT NEEDED' : row.gates4.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}
+                value={row.permitCode} options={PERMIT_STATUS_OPTIONS} disabled={!onGate || !row.orderId || gateBusy === row.jobId}
+                title="Permit status — same choices as the order row" onChange={(c) => onGate?.(row, 'permit', c)} />
+              <GateSelect
+                tone={row.gates4.blasted ? 'ok' : 'red'}
+                label={row.gates4.blasted ? 'BLASTED' : 'NOT BLASTED'}
+                value={row.stoneCode} options={row.stoneOptions || []} disabled={!onGate || gateBusy === row.jobId}
+                title="Stone / bronze status — same choices as the order row" onChange={(c) => onGate?.(row, 'stone', c)} />
             </>
           )}
         </div>
@@ -648,6 +715,11 @@ const IB_CSS = `
   .ib-card-ord { font: inherit; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #6fb3f0; background: none; border: none; cursor: pointer; padding: 0; }
   .ib-card-cem { font-size: 11.5px; color: #8b95a5; }
   .ib-gates { display: flex; gap: 5px; margin-top: 9px; flex-wrap: wrap; }
+  .ib-flag-sel { position: relative; cursor: pointer; display: inline-flex; align-items: center; }
+  .ib-flag-sel select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; }
+  .ib-flag-sel select:disabled { cursor: default; }
+  .ib-flag-sel:hover { filter: brightness(1.25); }
+  .ib-flag-caret { font-size: 9px; opacity: .8; margin-left: 2px; }
   .ib-gate { font-size: 10px; font-weight: 600; color: #8b95a5; display: inline-flex; align-items: center; gap: 3px; background: #11151c; border: 1px solid #20262f; border-radius: 6px; padding: 2px 7px; }
   .ib-gate-m { font-weight: 800; }
   .ib-gate-ok { color: #34d399; border-color: #1f3a2a; } .ib-gate-ok .ib-gate-m { color: #34d399; }

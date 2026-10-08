@@ -117,7 +117,7 @@ export default function JobsTab({
   // tab now) — fall back to Dashboard instead of an unknown hub.
   const [tab, setTab] = useState(() => {
     const v = getJobsView(userId)
-    return v === 'hotlist' ? 'dashboard' : v
+    return RETIRED_JOBS_TABS.has(v) ? 'dashboard' : v
   })
   const handleTabChange = (next) => {
     setTab(next)
@@ -248,10 +248,12 @@ const JOBS_TABS = [
   { code: 'installation', label: 'Installation' },
   { code: 'foundations',  label: 'Foundations' },
   { code: 'checkjobs',    label: 'Check jobs' },
-  { code: 'permits',      label: 'Permits' },
-  { code: 'workflow',     label: 'Workflow' },
+  // Permits + Workflow retired from the strip (Paul 2026-10-08: "remove
+  // permits from here, remove workflow") — permits live in Permit Builder;
+  // the hub bodies still exist in JobsDepartmentView for deep links.
   { code: 'all',          label: 'Jobs — All' },
 ]
+const RETIRED_JOBS_TABS = new Set(['hotlist', 'permits', 'workflow'])
 function JobsTabRow({ tab, onChange, badges = {} }) {
   return (
     <div className="sb-jobs-tabrow" role="tablist" aria-label="Jobs">
