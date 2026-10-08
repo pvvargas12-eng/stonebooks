@@ -142,12 +142,15 @@ export function componentsForCemeteryOrder(co) {
 }
 
 // camelCase adapter for buildDieSpec/buildBaseSpec from a snake_case order row.
+// `pricing` rides along so a custom granite color prints its typed NAME (the
+// contract does) instead of "Custom color".
 export function camelOrderForSpec(row) {
   return {
     shape: row.shape, polishLevel: row.polish_level, graniteColor: row.granite_color,
     customGraniteColor: row.custom_granite_color, topShape: row.top_shape, sides: row.sides,
     standardSizeCode: row.standard_size_code, width: row.width_inches, depth: row.depth_inches,
     thickness: row.thickness_inches, height: row.height_inches, baseConfig: row.base_config || {},
+    pricing: row.pricing || null,
   }
 }
 
@@ -159,4 +162,26 @@ export function camelOrderForSpec(row) {
 export function dieSpecForOrderRow(row) {
   if (!row) return null
   try { return buildDieSpec(camelOrderForSpec(row)) || null } catch { return null }
+}
+
+// THE CONTRACT'S DIE LINE, as one string (SIZE-TRUTH-2, Paul 2026-10-08:
+// "custom override for die size or the line item on the contract is the
+// actual stone size — when I'm in production floor or anywhere else that's
+// the size I see, we deliver the size they sign for"). The contract prints,
+// in this priority: the renamed die line (pricing.lineItemLabels['base-stone'])
+// → the die text override (baseConfig.dieTextOverride) → buildDieSpec. The
+// floor used to stop at the last one, so an order with an override showed the
+// computed spec, not the signed one. Accepts a snake_case row OR a camelCase
+// order. Every production surface reads THIS.
+export function contractDieLabel(row) {
+  if (!row) return null
+  const pricing = row.pricing || null
+  const rename = pricing?.lineItemLabels?.['base-stone']
+  if (rename && String(rename).trim()) return String(rename).trim()
+  const bc = row.base_config || row.baseConfig || {}
+  const override = bc?.dieTextOverride
+  if (override && String(override).trim()) return String(override).trim()
+  return row.standard_size_code !== undefined || row.width_inches !== undefined
+    ? dieSpecForOrderRow(row)
+    : (() => { try { return buildDieSpec(row) || null } catch { return null } })()
 }

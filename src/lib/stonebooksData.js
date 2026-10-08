@@ -11,7 +11,7 @@ import { pokePushSender } from './pushPoke'
 import { recordTaskAssigned } from './taskStreak'
 import { deriveMilestones, isDerivedKey } from './orderPipeline'
 import { engineRowGrandTotal, ORDER_PRICING_COLUMNS } from './pricingCore'
-import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec, dieSpecForOrderRow,
+import { componentsForOrder, componentsForCemeteryOrder, camelOrderForSpec, contractDieLabel,
   isValidPhase, nextPhase, prevPhase, phaseLabel, phaseIndex, QC_PHASE, INITIAL_PHASE } from './jobComponents'
 
 // ── CONSTANTS — mirror SalesMode for consistency ────────────────────────────
@@ -6400,7 +6400,7 @@ export async function getProductionComponents() {
       job:jobs(id, overall_status, last_update_at),
       order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at, target_completion_date,
         shape, polish_level, granite_color, top_shape, sides, standard_size_code,
-        width_inches, depth_inches, thickness_inches, height_inches, base_config,
+        width_inches, depth_inches, thickness_inches, height_inches, base_config, pricing,
         customer:customers(last_name), cemetery:cemeteries(name)),
       cemetery_order:cemetery_orders(id, order_number, cemetery_name),
       vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
@@ -6412,14 +6412,17 @@ export async function getProductionComponents() {
     .order('track', { ascending: true }).order('sort_order', { ascending: true })
   if (error) { console.warn('[components] floor:', error.message); return [] }
   // Drop components whose job is closed/cancelled (phantoms after reconciliation),
-  // and OVERRIDE the seed-time size snapshot with the order's LIVE die spec —
-  // the line-item size is the accurate size and cut (Paul 2026-10-06); the
-  // stored comp.size goes stale the moment the order's dimensions are edited.
+  // and OVERRIDE the seed-time size snapshot with the CONTRACT'S die line —
+  // the line-item size is the accurate size and cut (Paul 2026-10-06), and
+  // that line honors the die text override / rename (SIZE-TRUTH-2,
+  // 2026-10-08: contractDieLabel, which needs `pricing` + `base_config` in the
+  // embed above). The stored comp.size goes stale the moment the order is
+  // edited and never knew about overrides.
   return (data || [])
     .filter(c => !c.job || (c.job.overall_status !== 'closed' && c.job.overall_status !== 'cancelled'))
     .map(c => {
       if (c.track !== 'new_stone' || !c.order) return c
-      const live = dieSpecForOrderRow(c.order)
+      const live = contractDieLabel(c.order)
       return live && live !== c.size ? { ...c, size: live } : c
     })
 }

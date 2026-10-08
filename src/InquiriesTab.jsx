@@ -24,7 +24,6 @@ import { sendShopEmail, getCurrentStaffName, addShopTask, bulkArchiveOrders, fmt
 import ConfirmSend from './components/ConfirmSend'
 import CatalogPhotoPicker from './components/CatalogPhotoPicker'
 
-const SHOP_PHONE = '732-442-1286'
 const DAY_MS = 86400000
 // Rail money reads whole ("$23,116") — never an ellipsis on a dollar figure
 // (the first screenshot showed "$23,116…"); past six figures it compacts.
@@ -47,27 +46,28 @@ const ago = (iso, nowMs) => {
 const isoPlusDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return todayISO(d) }
 const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
 
-// The canned "what are you looking for" email, per interest. Plain words —
-// Paul's staff retype anything in the gate anyway.
-function draftFor(inq, me) {
+// The "what are you looking for" email — Paul's words, verbatim (2026-10-08:
+// "i hate the message, say this instead"). One message for every interest;
+// only the opener changes for a Contact-page submission (they never opened
+// the catalog). Staff retype anything in the gate anyway.
+function draftFor(inq) {
   const first = (inqName(inq).split(/\s+/)[0] || '').trim()
   const hi = first ? `Hi ${first},` : 'Hello,'
-  const who = me || 'The Shevchenko Monuments team'
   const catalog = inqFormKind(inq) === 'catalog'
   const opener = catalog
-    ? 'Thank you for looking through our catalog.'
-    : 'Thank you for reaching out to Shevchenko Monuments.'
-  const by = {
-    new_stone: `${opener} We would be glad to help with a new headstone or monument. To point you to the right examples, could you tell us the cemetery and whether this is for one person or two? If you have a style or color in mind, say so and we will send photos of work we have done like it.`,
-    bronze: `${opener} We handle bronze markers, plaques, and emblems, including matched granite backers. Could you tell us the cemetery and the size they allow? We will send examples and a price range right back.`,
-    inscription: `${opener} Adding an inscription to an existing stone is quick for us. Could you tell us the cemetery and the name and dates to be added? If you can snap a photo of the stone, that helps us quote it exactly.`,
-    unsure: `${opener} So we can point you to the right examples, what are you looking for?\n\n- A new headstone or monument\n- A bronze marker or plaque\n- Adding an inscription to an existing stone\n\nIf you have a cemetery in mind, let us know and we will send photos of work we have done there.`,
-  }
-  const body = by[inq.interest || 'unsure'] || by.unsure
-  return {
-    subject: 'Thanks for reaching out to Shevchenko Monuments',
-    text: `${hi}\n\n${body}\n\nYou can also call us at ${SHOP_PHONE}.\n\n${who}\nShevchenko Monuments`,
-  }
+    ? "Thank you for visiting our website and taking the time to explore our catalog! We'd be happy to help you find the perfect memorial for your loved one."
+    : "Thank you for visiting our website and reaching out! We'd be happy to help you find the perfect memorial for your loved one."
+  const text = [
+    hi,
+    opener,
+    "To help us better understand what you're looking for, could you let us know which of the following services you're interested in?",
+    '* A new headstone or monument\n* A bronze marker or memorial plaque\n* Adding an inscription to an existing monument\n* Something custom or another memorial service',
+    "If you already know which cemetery the memorial will be located in, please feel free to share the cemetery name and plot or section number. This information allows us to review the cemetery's specific regulations, determine what types and sizes of memorials are permitted, and recommend options that will work for your location.",
+    "We would also be happy to share photographs of monuments we've previously completed at that cemetery to help you explore different styles and designs.",
+    'We look forward to hearing from you and helping you create a meaningful and lasting tribute.',
+    'Warm regards,\nThe Shevchenko Monuments Team',
+  ].join('\n\n')
+  return { subject: 'Thanks for reaching out to Shevchenko Monuments', text }
 }
 
 function photosHtml(photos) {
@@ -86,7 +86,7 @@ function photosHtml(photos) {
 
 // ── The composer (module-level: react-hooks/static-components) ──────────────
 function InquiryEmailModal({ inquiry, me, onClose, onSent }) {
-  const d0 = draftFor(inquiry, me)
+  const d0 = draftFor(inquiry)
   const [to, setTo] = useState(inqEmail(inquiry))
   const [subject, setSubject] = useState(d0.subject)
   const [text, setText] = useState(d0.text)
@@ -345,7 +345,10 @@ const CSS = `
   .sb-inq-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
   .sb-inq-h1 { margin: 0; font-size: 20px; font-weight: 800; }
   .sb-inq-sub { font-size: 12.5px; color: #8a8472; }
-  .sb-inq-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; min-height: 34px; }
+  /* The filter bar sits ABOVE the list in the stacking order and can never
+     collapse (Paul's first screenshot showed it clipped under the cards). */
+  .sb-inq-bar { position: relative; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; min-height: 36px; }
+  .sb-inq-body { position: relative; z-index: 1; }
   .sb-inq-pill { font-family: inherit; font-size: 12px; font-weight: 700; line-height: 1.2; color: #6B6455; background: #fff; border: 1px solid #D9D2C0; border-radius: 999px; padding: 7px 12px; min-height: 32px; cursor: pointer; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; flex: 0 0 auto; }
   .sb-inq-pill b { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; color: #9a9486; }
   .sb-inq-pill.on { background: #16150F; color: #fff; border-color: #16150F; }

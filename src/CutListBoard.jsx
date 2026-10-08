@@ -24,6 +24,7 @@ import {
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
 import { buildDieSpec, displayGraniteColor } from './lib/monumentCatalog'
+import { contractDieLabel } from './lib/jobComponents'
 
 const msFind = (job, key) => (job.milestones || []).find(m => m.milestone_key === key) || null
 const msDone = (job, key) => msFind(job, key)?.status === 'done'
@@ -119,7 +120,8 @@ export default function CutListBoard({ onOpenJob }) {
       if (!j.order || m.has(j.id)) continue
       try {
         const mapped = rowToOrder(j.order, j.customer, j.cemetery)
-        m.set(j.id, { die: buildDieSpec(mapped) || null, color: displayGraniteColor(mapped) || null })
+        // The CONTRACT's die line (override / rename honored) — SIZE-TRUTH-2.
+        m.set(j.id, { die: contractDieLabel(j.order) || buildDieSpec(mapped) || null, color: displayGraniteColor(mapped) || null })
       } catch { m.set(j.id, {}) }
     }
     return m

@@ -17,6 +17,7 @@ import {
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
 import { buildDieSpec, buildBaseSpec, displayGraniteColor, composeGraveLocation } from '../lib/monumentCatalog'
+import { contractDieLabel } from '../lib/jobComponents'
 import { isLeadRaw, directionsUrl } from './fieldShared'
 
 import OwnerOrderPanel from './OwnerOrderPanel'
@@ -80,7 +81,8 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
   const mapped = rowToOrder(order, order.customer, order.cemetery)
   const fam = (order.primary_lastname || customerName(order.customer) || '—').toUpperCase()
   const grave = composeGraveLocation(order)
-  const dieSpec = buildDieSpec(mapped)
+  // The CONTRACT's die line — override / rename honored (SIZE-TRUTH-2).
+  const dieSpec = contractDieLabel(order) || buildDieSpec(mapped)
   const baseSpec = buildBaseSpec(mapped)
   const dir = directionsUrl(order.cemetery)
   const lead = isLeadRaw(order)
