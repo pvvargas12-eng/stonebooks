@@ -22,7 +22,6 @@ import {
   INTERESTS, inqName, inqEmail, inqPhone, inqMessage, inqFormKind, inqDisplayName,
 } from './lib/inquiries'
 import { sendShopEmail, getCurrentStaffName, addShopTask, bulkArchiveOrders, fmtUSD, fmtPhone, fmtDate, todayISO, getOrderById } from './lib/stonebooksData'
-import { supabase } from './lib/supabase'
 import ConfirmSend from './components/ConfirmSend'
 import CatalogPhotoPicker from './components/CatalogPhotoPicker'
 // The full sales bundle (estimate PDF, layout, permit, files, catalog photos)
@@ -98,54 +97,38 @@ function photosHtml(photos) {
 }
 
 // ── The composer (module-level: react-hooks/static-components) ──────────────
-function InquiryEmailModal({ inquiry, me, onClose, onSent }) {
+// A typed reply starts from just the greeting and the sign-off (Paul
+// 2026-10-08: "the button can just say reply and then you type a reply").
+const replySkeleton = (inq) => {
+  const first = (inqName(inq).split(/\s+/)[0] || '').trim()
+  return `${first ? `Hi ${first},` : 'Hello,'}\n\n\n\nWarm regards,\nThe Shevchenko Monuments Team`
+}
+const reSubject = (s) => `Re: ${String(s || '').replace(/^\s*(re|fw|fwd)\s*:\s*/i, '').trim() || 'Your inquiry'}`
+
+function InquiryEmailModal({ inquiry, me, onClose, onSent, mode = 'intro' }) {
   const d0 = draftFor(inquiry)
   const [to, setTo] = useState(inqEmail(inquiry))
   const [subject, setSubject] = useState(d0.subject)
-  const [text, setText] = useState(d0.text)
+  const [subjectTouched, setSubjectTouched] = useState(false)
+  const [text, setText] = useState(mode === 'reply' ? replySkeleton(inquiry) : d0.text)
   const [photos, setPhotos] = useState([])
   const [pickerOpen, setPickerOpen] = useState(false)
   const [gate, setGate] = useState(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const toValid = /\S+@\S+\.\S+/.test(to.trim())
-  // The chain so far feeds the AI draft (a follow-up reads differently from
-  // a first note). Best-effort; the modal works without it.
+  // The chain so far — a reply picks up the last subject ("Re: …").
   const [thread, setThread] = useState([])
-  const [aiBusy, setAiBusy] = useState(false)
   useEffect(() => {
     let alive = true
     listInquiryEmails(inquiry).then(l => { if (alive) setThread(l) }).catch(() => {})
     return () => { alive = false }
   }, [inquiry])
-  // "Write it with AI" (Paul 2026-10-08): /api/ai/inquiry-reply drafts in
-  // the shop's voice from the inquiry + the chain; it lands in the box and
-  // still goes through the confirm gate like every send.
-  const draftWithAI = async () => {
-    setAiBusy(true); setErr(null)
-    try {
-      let token = null
-      try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
-      const res = await fetch('/api/ai/inquiry-reply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({
-          inquiry: { name: inqName(inquiry), form: inquiry.form_name, message: inqMessage(inquiry), interest: interestLabel(inquiry.interest) || null, submittedAt: inquiry.created_at },
-          thread: thread.map(m => ({ direction: m.direction, subject: m.subject, text: m.body_text || m.snippet || '', at: msgAt(m) })),
-          staff: me,
-        }),
-      })
-      const j = await res.json().catch(() => ({}))
-      if (!res.ok || !j.ok) {
-        setErr(j.error === 'ai_not_configured'
-          ? 'AI drafting is not set up yet — add ANTHROPIC_API_KEY in Vercel and redeploy.'
-          : (j.detail || j.error || 'AI draft failed.'))
-        return
-      }
-      setText(j.text)
-    } catch (e) { setErr(e?.message || 'AI draft failed.') }
-    finally { setAiBusy(false) }
-  }
+  useEffect(() => {
+    if (mode !== 'reply' || subjectTouched || !thread.length) return
+    const last = [...thread].reverse().find(m => m.subject)
+    if (last) setSubject(reSubject(last.subject))
+  }, [thread, mode, subjectTouched])
 
   const openGate = () => {
     const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
@@ -170,12 +153,14 @@ function InquiryEmailModal({ inquiry, me, onClose, onSent }) {
   return (
     <div className="sb-inq-scrim" onClick={onClose}>
       <div className="sb-inq-modal" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
-        <div className="sb-inq-modal-t">Email {inqDisplayName(inquiry)}</div>
-        <div className="sb-inq-modal-s">Ask what they are looking for. Retype anything; the preview is what goes out.</div>
+        <div className="sb-inq-modal-t">{mode === 'reply' ? 'Reply to' : 'Email'} {inqDisplayName(inquiry)}</div>
+        <div className="sb-inq-modal-s">{mode === 'reply' ? 'Type your reply. The preview is what goes out.' : 'Ask what they are looking for. Retype anything; the preview is what goes out.'}</div>
         <label className="sb-inq-l">To<input className="sb-inq-in" value={to} onChange={e => setTo(e.target.value)} placeholder="their@email.com" /></label>
-        <label className="sb-inq-l">Subject<input className="sb-inq-in" value={subject} onChange={e => setSubject(e.target.value)} /></label>
+        <label className="sb-inq-l">Subject<input className="sb-inq-in" value={subject} onChange={e => { setSubject(e.target.value); setSubjectTouched(true) }} /></label>
         <div className="sb-inq-l" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>Message
-          <button type="button" className="sb-inq-btn sb-inq-btn-ai" disabled={aiBusy} onClick={draftWithAI} title="Draft a reply from the inquiry and the email chain so far">{aiBusy ? 'Writing…' : 'Write it with AI'}</button>
+          {text === d0.text
+            ? <button type="button" className="sb-inq-btn sb-inq-btn-ai" onClick={() => setText(replySkeleton(inquiry))} title="Clear to a greeting and sign-off and type your own">Reply</button>
+            : <button type="button" className="sb-inq-btn" onClick={() => setText(d0.text)} title="Put the standard intro text back">Use the intro text</button>}
           {thread.length > 0 && <span className="sb-inq-soft">{thread.length} email{thread.length === 1 ? '' : 's'} in the chain</span>}
         </div>
         <textarea className="sb-inq-in sb-inq-body" rows={11} value={text} onChange={e => setText(e.target.value)} />
@@ -416,9 +401,14 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                     </>
                   ) : (
                     <>
-                      <button type="button" className="sb-inq-btn sb-inq-btn-mail" disabled={busy || !email} title={email ? '' : 'No email address on the form'} onClick={() => setEmailFor(r)}>
-                        {r.first_touch_at ? 'Email again' : r.interest && r.interest !== 'unsure' ? `Email: ${INTERESTS.find(i => i.code === r.interest)?.label} intro + photos` : 'Email: what are you looking for?'}
-                      </button>
+                      {r.first_touch_at ? (
+                        <button type="button" className="sb-inq-btn sb-inq-btn-mail" disabled={busy || !email} title={email ? 'Type a reply' : 'No email address on the form'} onClick={() => setEmailFor({ row: r, mode: 'reply' })}>Reply</button>
+                      ) : (
+                        <>
+                          <button type="button" className="sb-inq-btn sb-inq-btn-mail" disabled={busy || !email} title={email ? '' : 'No email address on the form'} onClick={() => setEmailFor({ row: r, mode: 'intro' })}>Email: what are you looking for?</button>
+                          <button type="button" className="sb-inq-btn" disabled={busy || !email} title={email ? 'Type your own reply' : 'No email address on the form'} onClick={() => setEmailFor({ row: r, mode: 'reply' })}>Reply</button>
+                        </>
+                      )}
                       <button type="button" className="sb-inq-btn" disabled={busy} title="The full sales bundle — draft estimate, catalog photos, layout, files; creates the lead first if there isn't one" onClick={() => openSales(r)}>{busy ? '…' : 'Sales email'}</button>
                       {phone && <a className="sb-inq-btn" href={`tel:${phone}`}>Call</a>}
                       {remindFor === r.id ? (
@@ -476,7 +466,7 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
         </aside>
       </div>
 
-      {emailFor && <InquiryEmailModal inquiry={emailFor} me={me} onClose={() => setEmailFor(null)} onSent={(m) => { setToast(m); load(); getInquiryFunnel().then(setFunnel).catch(() => {}) }} />}
+      {emailFor && <InquiryEmailModal inquiry={emailFor.row} mode={emailFor.mode} me={me} onClose={() => setEmailFor(null)} onSent={(m) => { setToast(m); load(); getInquiryFunnel().then(setFunnel).catch(() => {}) }} />}
       {salesFor && (
         <Suspense fallback={null}>
           <SalesEmailModal order={salesFor.order} mode="sales"
