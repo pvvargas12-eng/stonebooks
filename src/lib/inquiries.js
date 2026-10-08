@@ -38,11 +38,14 @@ export const inqFormKind = (r) => /catalog/i.test(r.form_name || '') ? 'catalog'
 export const inqDisplayName = (r) => inqName(r) || inqEmail(r) || (inqPhone(r) ? `(${inqPhone(r).slice(0, 3)}) ${inqPhone(r).slice(3, 6)}-${inqPhone(r).slice(6)}` : 'Unknown')
 
 export async function listInquiries({ status = 'new', limit = 200 } = {}) {
-  let q = supabase.from('website_leads').select(INQ_SELECT).order('created_at', { ascending: false }).limit(limit)
+  let q = supabase.from('website_leads').select(INQ_SELECT).order('created_at', { ascending: false }).limit(status === 'all' ? 1000 : limit)
   if (status === 'new') q = q.eq('inquiry_status', 'new')
   else if (status === 'emailed') q = q.eq('inquiry_status', 'emailed')
   else if (status === 'done') q = q.eq('inquiry_status', 'done').gte('actioned_at', new Date(Date.now() - 30 * 86400000).toISOString())
   else if (status === 'junk') q = q.eq('inquiry_status', 'junk')
+  // 'all' = every submission ever (Paul 2026-10-08: "a list of all in
+  // catalog and in contact page so we can keep track even if they don't
+  // move to an order").
   const { data, error } = await q
   if (error) { console.warn('[inquiries] list:', error.message); return [] }
   // Claimed-but-unparsed rows (status 'claimed'/'error') carry no fields —
@@ -85,6 +88,31 @@ export async function markInquiryEmailed(id, by = null) {
   if (data?.inquiry_status === 'new') patch.inquiry_status = 'emailed'
   return updateInquiry(id, patch)
 }
+
+// ── The email chain with this person ────────────────────────────────────────
+// Everything the shop and the inquirer have exchanged: outbound mail TO their
+// address (to_emails is an array), inbound FROM it, plus anything already
+// linked to the lead's customer/order. Merged by id, oldest first. The Duda
+// form notification itself is not from them, so it stays out.
+const MSG_COLS = 'id, direction, from_email, to_emails, subject, body_text, snippet, sent_at, received_at, created_at, customer_id, order_id'
+export async function listInquiryEmails(inq) {
+  const email = inqEmail(inq).toLowerCase()
+  const qs = []
+  if (email) {
+    qs.push(supabase.from('messages').select(MSG_COLS).ilike('from_email', email).limit(60))
+    qs.push(supabase.from('messages').select(MSG_COLS).contains('to_emails', [email]).limit(60))
+    if (email !== inqEmail(inq)) qs.push(supabase.from('messages').select(MSG_COLS).contains('to_emails', [inqEmail(inq)]).limit(60))
+  }
+  if (inq.customer_id) qs.push(supabase.from('messages').select(MSG_COLS).eq('customer_id', inq.customer_id).limit(60))
+  if (inq.order_id) qs.push(supabase.from('messages').select(MSG_COLS).eq('order_id', inq.order_id).limit(60))
+  if (!qs.length) return []
+  const results = await Promise.all(qs.map(q => q.then(r => r.data || []).catch(() => [])))
+  const byId = new Map()
+  for (const list of results) for (const m of list) byId.set(m.id, m)
+  const at = (m) => m.sent_at || m.received_at || m.created_at || ''
+  return [...byId.values()].sort((a, b) => String(at(a)).localeCompare(String(at(b))))
+}
+export const msgAt = (m) => m.sent_at || m.received_at || m.created_at || null
 
 // ── The numbers: website → sales ────────────────────────────────────────────
 // Every inquiry that became a lead, joined to its order: signed? $? Lead →

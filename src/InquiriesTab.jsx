@@ -15,14 +15,27 @@
 // becomes one). Right rail = website → sales, from the inquiries' own order
 // links. Cream Sales-tab aesthetic (.sb-inq-*).
 // =============================================================================
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import {
   listInquiries, getInquiryCounts, getInquiryFunnel, updateInquiry, markInquiryEmailed,
+  listInquiryEmails, msgAt, interestLabel,
   INTERESTS, inqName, inqEmail, inqPhone, inqMessage, inqFormKind, inqDisplayName,
 } from './lib/inquiries'
-import { sendShopEmail, getCurrentStaffName, addShopTask, bulkArchiveOrders, fmtUSD, fmtPhone, todayISO } from './lib/stonebooksData'
+import { sendShopEmail, getCurrentStaffName, addShopTask, bulkArchiveOrders, fmtUSD, fmtPhone, fmtDate, todayISO, getOrderById } from './lib/stonebooksData'
+import { supabase } from './lib/supabase'
 import ConfirmSend from './components/ConfirmSend'
 import CatalogPhotoPicker from './components/CatalogPhotoPicker'
+// The full sales bundle (estimate PDF, layout, permit, files, catalog photos)
+// — lazy: it drags the SalesMode chunk, which this tab must not pay for
+// until someone actually clicks Sales email (PERF-1 discipline).
+const SalesEmailModal = lazy(() => import('./components/SalesEmailModal'))
+
+const fmtWhen = (iso) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+const STATUS_LABEL = { new: 'New', emailed: 'Emailed, waiting', done: 'Done', junk: 'Not a lead' }
 
 const DAY_MS = 86400000
 // Rail money reads whole ("$23,116") — never an ellipsis on a dollar figure
@@ -96,6 +109,43 @@ function InquiryEmailModal({ inquiry, me, onClose, onSent }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const toValid = /\S+@\S+\.\S+/.test(to.trim())
+  // The chain so far feeds the AI draft (a follow-up reads differently from
+  // a first note). Best-effort; the modal works without it.
+  const [thread, setThread] = useState([])
+  const [aiBusy, setAiBusy] = useState(false)
+  useEffect(() => {
+    let alive = true
+    listInquiryEmails(inquiry).then(l => { if (alive) setThread(l) }).catch(() => {})
+    return () => { alive = false }
+  }, [inquiry])
+  // "Write it with AI" (Paul 2026-10-08): /api/ai/inquiry-reply drafts in
+  // the shop's voice from the inquiry + the chain; it lands in the box and
+  // still goes through the confirm gate like every send.
+  const draftWithAI = async () => {
+    setAiBusy(true); setErr(null)
+    try {
+      let token = null
+      try { const { data } = await supabase.auth.getSession(); token = data?.session?.access_token || null } catch { /* ignore */ }
+      const res = await fetch('/api/ai/inquiry-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          inquiry: { name: inqName(inquiry), form: inquiry.form_name, message: inqMessage(inquiry), interest: interestLabel(inquiry.interest) || null, submittedAt: inquiry.created_at },
+          thread: thread.map(m => ({ direction: m.direction, subject: m.subject, text: m.body_text || m.snippet || '', at: msgAt(m) })),
+          staff: me,
+        }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok || !j.ok) {
+        setErr(j.error === 'ai_not_configured'
+          ? 'AI drafting is not set up yet — add ANTHROPIC_API_KEY in Vercel and redeploy.'
+          : (j.detail || j.error || 'AI draft failed.'))
+        return
+      }
+      setText(j.text)
+    } catch (e) { setErr(e?.message || 'AI draft failed.') }
+    finally { setAiBusy(false) }
+  }
 
   const openGate = () => {
     const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#17202a;line-height:1.6">` +
@@ -124,7 +174,11 @@ function InquiryEmailModal({ inquiry, me, onClose, onSent }) {
         <div className="sb-inq-modal-s">Ask what they are looking for. Retype anything; the preview is what goes out.</div>
         <label className="sb-inq-l">To<input className="sb-inq-in" value={to} onChange={e => setTo(e.target.value)} placeholder="their@email.com" /></label>
         <label className="sb-inq-l">Subject<input className="sb-inq-in" value={subject} onChange={e => setSubject(e.target.value)} /></label>
-        <label className="sb-inq-l">Message<textarea className="sb-inq-in sb-inq-body" rows={11} value={text} onChange={e => setText(e.target.value)} /></label>
+        <div className="sb-inq-l" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>Message
+          <button type="button" className="sb-inq-btn sb-inq-btn-ai" disabled={aiBusy} onClick={draftWithAI} title="Draft a reply from the inquiry and the email chain so far">{aiBusy ? 'Writing…' : 'Write it with AI'}</button>
+          {thread.length > 0 && <span className="sb-inq-soft">{thread.length} email{thread.length === 1 ? '' : 's'} in the chain</span>}
+        </div>
+        <textarea className="sb-inq-in sb-inq-body" rows={11} value={text} onChange={e => setText(e.target.value)} />
         <div className="sb-inq-l" style={{ display: 'block' }}>Catalog photos <span className="sb-inq-soft">— examples in the email body, up to 10</span>
           <div className="sb-inq-photos">
             {photos.map(p => (
@@ -158,11 +212,44 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
   const [remindFor, setRemindFor] = useState(null)
   const [toast, setToast] = useState(null)
   const [err, setErr] = useState(null)
+  // Email chains per inquiry (Paul 2026-10-08: "in emailed waiting i want to
+  // keep seeing the email chains"). Loaded for every card on the Emailed
+  // view, on demand elsewhere.
+  const [threads, setThreads] = useState(() => new Map())
+  const [expanded, setExpanded] = useState(() => new Set())   // message ids showing the full body
+  const [salesFor, setSalesFor] = useState(null)             // { inquiry, order } → SalesEmailModal
 
   const load = useCallback(async () => {
     const [list, c] = await Promise.all([listInquiries({ status }), getInquiryCounts()])
     setRows(list); setCounts(c); setNowMs(Date.now())
+    if (status === 'emailed' && list.length) {
+      const pairs = await Promise.all(list.slice(0, 60).map(r => listInquiryEmails(r).then(ms => [r.id, ms]).catch(() => [r.id, []])))
+      setThreads(new Map(pairs))
+    }
   }, [status])
+  const loadThread = async (r) => {
+    const ms = await listInquiryEmails(r).catch(() => [])
+    setThreads(m => new Map(m).set(r.id, ms))
+  }
+  const toggleMsg = (id) => setExpanded(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  // The full sales bundle from an inquiry — the lead is minted first if it
+  // doesn't exist (same path as Done), so estimate/photos/files all have an
+  // order to hang on.
+  const openSales = async (r) => {
+    setBusyId(r.id); setErr(null)
+    try {
+      let orderId = r.order_id
+      if (!orderId) {
+        const m = await import('./lib/websiteLeads')
+        const lead = await m.ensureLeadForInquiry(r)
+        if (!lead.ok) { setErr(lead.error || 'Could not create the lead.'); return }
+        orderId = lead.orderId
+      }
+      const order = await getOrderById(orderId)
+      if (!order) { setErr('Could not open the lead for this inquiry.'); return }
+      setSalesFor({ inquiry: { ...r, order_id: orderId }, order })
+    } finally { setBusyId(null) }
+  }
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
   useEffect(() => {
     let alive = true
@@ -230,6 +317,7 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
         <button type="button" className={`sb-inq-pill${status === 'emailed' ? ' on' : ''}`} onClick={() => setStatus('emailed')}>Emailed, waiting <b>{counts.emailed}</b></button>
         <button type="button" className={`sb-inq-pill${status === 'done' ? ' on' : ''}`} onClick={() => setStatus('done')}>Done this month <b>{counts.done}</b></button>
         <button type="button" className={`sb-inq-pill${status === 'junk' ? ' on' : ''}`} onClick={() => setStatus('junk')}>Not leads</button>
+        <button type="button" className={`sb-inq-pill${status === 'all' ? ' on' : ''}`} onClick={() => setStatus('all')} title="Every submission ever, both forms — even the ones that never became an order">All inquiries</button>
         <span className="sb-inq-vr" />
         <button type="button" className={`sb-inq-pill${formF === '' ? ' on' : ''}`} onClick={() => setFormF('')}>All forms</button>
         <button type="button" className={`sb-inq-pill${formF === 'catalog' ? ' on' : ''}`} onClick={() => setFormF('catalog')}>Catalog popup</button>
@@ -246,7 +334,29 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
           {rows != null && shown.length === 0 && (
             <div className="sb-inq-empty">{status === 'new' ? 'Nothing waiting. Every inquiry has been answered.' : 'Nothing here.'}</div>
           )}
-          {shown.map(r => {
+          {/* ALL — the ledger of every submission, both forms, whatever became of it. */}
+          {status === 'all' && shown.length > 0 && (
+            <div className="sb-inq-tablewrap">
+              <table className="sb-inq-table">
+                <thead><tr><th>Submitted</th><th>Name</th><th>Form</th><th>Looking for</th><th>Status</th><th>First email</th><th>Lead</th><th>Message</th></tr></thead>
+                <tbody>
+                  {shown.map(r => (
+                    <tr key={r.id} className={r.order_id ? 'click' : ''} onClick={() => r.order_id && onOpenOrderDetail?.(r.order_id)}>
+                      <td className="mono">{fmtDate(r.created_at)}</td>
+                      <td className="b">{inqDisplayName(r)}</td>
+                      <td><span className={`sb-inq-form sb-inq-form-${inqFormKind(r)}`}>{inqFormKind(r) === 'catalog' ? 'Catalog' : 'Contact'}</span></td>
+                      <td>{interestLabel(r.interest) || '—'}</td>
+                      <td><span className={`sb-inq-st sb-inq-st-${r.inquiry_status}`}>{STATUS_LABEL[r.inquiry_status] || r.inquiry_status}</span></td>
+                      <td className="mono">{r.first_touch_at ? fmtDate(r.first_touch_at) : '—'}</td>
+                      <td>{r.order_id ? <span className="sb-inq-leadlink">Open →</span> : '—'}</td>
+                      <td className="msg">{inqMessage(r) || <span className="sb-inq-none-soft">—</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {status !== 'all' && shown.map(r => {
             const phone = inqPhone(r), email = inqEmail(r), msg = inqMessage(r)
             const kind = inqFormKind(r)
             const fresh = status === 'new' && (nowMs - new Date(r.created_at).getTime()) < 2 * DAY_MS
@@ -265,6 +375,33 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                   {email ? <a className="sb-inq-mail" href={`mailto:${email}`}>{email}</a> : <span className="sb-inq-none">no email</span>}
                 </div>
                 <div className={`sb-inq-msg${msg ? '' : ' none'}`}>{msg || (kind === 'catalog' ? 'No message left — just the catalog form.' : 'No message left.')}</div>
+                {/* The email chain — every message to or from this address. */}
+                {threads.has(r.id) ? (
+                  (threads.get(r.id) || []).length === 0
+                    ? <div className="sb-inq-soft">No emails to or from {email || 'this address'} yet.</div>
+                    : (
+                      <div className="sb-inq-thread">
+                        <div className="sb-inq-lab">Email chain · {threads.get(r.id).length}</div>
+                        {threads.get(r.id).map(m => {
+                          const open = expanded.has(m.id)
+                          const body = (m.body_text || m.snippet || '').trim()
+                          return (
+                            <div key={m.id} className={`sb-inq-mail ${m.direction}`}>
+                              <div className="sb-inq-mail-top">
+                                <span className={`sb-inq-dir ${m.direction}`}>{m.direction === 'outbound' ? 'Shop' : 'Them'}</span>
+                                <span className="sb-inq-mail-subj">{m.subject || '(no subject)'}</span>
+                                <span className="sb-inq-mail-when">{fmtWhen(msgAt(m))}</span>
+                              </div>
+                              <div className={`sb-inq-mail-body${open ? ' open' : ''}`}>{open ? body : (m.snippet || body.slice(0, 180))}</div>
+                              {body.length > 180 && <button type="button" className="sb-inq-link" onClick={() => toggleMsg(m.id)}>{open ? 'Less' : 'Read the whole email'}</button>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )
+                ) : (
+                  <button type="button" className="sb-inq-link" onClick={() => loadThread(r)}>Show email chain</button>
+                )}
                 <div className="sb-inq-row">
                   <span className="sb-inq-lab">Looking for</span>
                   {INTERESTS.map(i => (
@@ -273,12 +410,16 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                 </div>
                 <div className="sb-inq-row sb-inq-acts">
                   {r.inquiry_status === 'junk' || r.inquiry_status === 'done' ? (
-                    <button type="button" className="sb-inq-btn" disabled={busy} onClick={() => reopen(r)}>Back to new</button>
+                    <>
+                      <button type="button" className="sb-inq-btn" disabled={busy} onClick={() => reopen(r)}>Back to new</button>
+                      {r.inquiry_status === 'done' && <button type="button" className="sb-inq-btn" disabled={busy} title="The full sales bundle — estimate, photos, files" onClick={() => openSales(r)}>Sales email</button>}
+                    </>
                   ) : (
                     <>
                       <button type="button" className="sb-inq-btn sb-inq-btn-mail" disabled={busy || !email} title={email ? '' : 'No email address on the form'} onClick={() => setEmailFor(r)}>
                         {r.first_touch_at ? 'Email again' : r.interest && r.interest !== 'unsure' ? `Email: ${INTERESTS.find(i => i.code === r.interest)?.label} intro + photos` : 'Email: what are you looking for?'}
                       </button>
+                      <button type="button" className="sb-inq-btn" disabled={busy} title="The full sales bundle — draft estimate, catalog photos, layout, files; creates the lead first if there isn't one" onClick={() => openSales(r)}>{busy ? '…' : 'Sales email'}</button>
                       {phone && <a className="sb-inq-btn" href={`tel:${phone}`}>Call</a>}
                       {remindFor === r.id ? (
                         <span className="sb-inq-remind">
@@ -336,6 +477,17 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
       </div>
 
       {emailFor && <InquiryEmailModal inquiry={emailFor} me={me} onClose={() => setEmailFor(null)} onSent={(m) => { setToast(m); load(); getInquiryFunnel().then(setFunnel).catch(() => {}) }} />}
+      {salesFor && (
+        <Suspense fallback={null}>
+          <SalesEmailModal order={salesFor.order} mode="sales"
+            onClose={() => setSalesFor(null)}
+            onSaved={(m) => setToast(m)}
+            onSent={async (m) => {
+              await markInquiryEmailed(salesFor.inquiry.id, me).catch(() => {})
+              setToast(m); load(); getInquiryFunnel().then(setFunnel).catch(() => {})
+            }} />
+        </Suspense>
+      )}
     </div>
   )
 }
@@ -419,4 +571,31 @@ const CSS = `
   .sb-inq-photo button { background: none; border: none; font-size: 14px; cursor: pointer; color: #8a8472; padding: 0; }
   .sb-inq-pick { background: none; border: 1px dashed #C9A468; color: #9A7209; border-radius: 8px; padding: 5px 10px; font: 700 12.5px/1 inherit; font-family: inherit; cursor: pointer; }
   .sb-inq-modal-acts { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+  .sb-inq-btn-ai { background: #16150F; color: #C9A468; border-color: #16150F; padding: 5px 10px; }
+  .sb-inq-link { font: 700 11.5px/1 inherit; font-family: inherit; color: #9A7209; background: none; border: none; padding: 0; cursor: pointer; align-self: flex-start; }
+  .sb-inq-link:hover { text-decoration: underline; }
+  .sb-inq-soft { font-size: 12px; color: #8a8472; }
+  .sb-inq-thread { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed #e4dcc8; padding-top: 8px; }
+  .sb-inq-mail { border: 1px solid #ece6d8; border-radius: 8px; padding: 7px 10px; background: #fff; min-width: 0; }
+  .sb-inq-mail.outbound { background: #faf8f3; }
+  .sb-inq-mail.inbound { border-left: 3px solid #1D6FA8; }
+  .sb-inq-mail-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .sb-inq-dir { font: 800 9.5px/1 inherit; font-family: inherit; letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; padding: 3px 7px; white-space: nowrap; }
+  .sb-inq-dir.outbound { color: #6B6455; background: #F5F1E6; border: 1px solid #E4DCC8; }
+  .sb-inq-dir.inbound { color: #fff; background: #1D6FA8; }
+  .sb-inq-mail-subj { font-size: 12.5px; font-weight: 700; color: #16150F; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-inq-mail-when { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; color: #8a8472; white-space: nowrap; }
+  .sb-inq-mail-body { font-size: 12.5px; color: #2a2a2a; margin-top: 4px; white-space: pre-line; overflow-wrap: anywhere; max-height: 3.2em; overflow: hidden; }
+  .sb-inq-mail-body.open { max-height: none; }
+  .sb-inq-tablewrap { overflow-x: auto; background: #fff; border: 1px solid #ece6d8; border-radius: 10px; }
+  .sb-inq-table { width: 100%; border-collapse: collapse; min-width: 980px; table-layout: fixed; }
+  .sb-inq-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #9a9486; font-weight: 700; padding: 7px 10px; background: #faf8f3; border-bottom: 1px solid #ece6d8; white-space: nowrap; }
+  .sb-inq-table td { padding: 7px 10px; border-bottom: 1px solid #f3f0e8; font-size: 12.5px; color: #2a2a2a; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-inq-table tr.click { cursor: pointer; } .sb-inq-table tr.click:hover td { background: #faf8f3; }
+  .sb-inq-table td.b { font-weight: 700; } .sb-inq-table td.mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11.5px; color: #555; }
+  .sb-inq-table td.msg { color: #555; max-width: 320px; }
+  .sb-inq-table col, .sb-inq-table th:nth-child(1) { width: 96px; } .sb-inq-table th:nth-child(3) { width: 80px; } .sb-inq-table th:nth-child(5) { width: 120px; } .sb-inq-table th:nth-child(6) { width: 96px; } .sb-inq-table th:nth-child(7) { width: 70px; }
+  .sb-inq-st { font: 700 10px/1 inherit; font-family: inherit; letter-spacing: .04em; text-transform: uppercase; border-radius: 5px; padding: 3px 7px; white-space: nowrap; }
+  .sb-inq-st-new { color: #b3261e; background: #fbeaea; } .sb-inq-st-emailed { color: #185F8F; background: rgba(29,111,168,.12); } .sb-inq-st-done { color: #1d7a55; background: #e7f4ec; } .sb-inq-st-junk { color: #8a8472; background: #f1ede3; }
+  .sb-inq-none-soft { color: #c2bdb2; }
 `
