@@ -10803,7 +10803,10 @@ export const INVENTORY_STATUSES = [
 // Active orders that still physically NEED a stone (pre-install pipeline). Excludes
 // draft (too early) and installed/paid/closed/cancelled/archived (done/dead). Used by
 // Smart Matches to surface stone we may already have in the yard.
-export const NEEDS_STONE_STATUSES = ['scoping', 'quoted', 'contracted', 'in_production']
+// paid_in_full joined 2026-10-08 (Paul: "I must be able to order the stone")
+// — families routinely pay in full before the stone is ordered or set; paid
+// is not done. installed / closed / cancelled stay out.
+export const NEEDS_STONE_STATUSES = ['scoping', 'quoted', 'contracted', 'in_production', 'paid_in_full']
 export async function getActiveStoneOrders() {
   try {
     const { data, error } = await supabase.from('orders').select('*').in('status', NEEDS_STONE_STATUSES)

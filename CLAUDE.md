@@ -1,5 +1,13 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix SIGNED-PAID-TRIGGER + PR-SIZE-TRUTH (2026-10-08, round 8): the Lee bug — signed + paid orders stuck at draft, AGAIN
+
+Paul (E-26-0715 Lee, signed 9/22, $1,867.50 in, status draft, invisible to the PR builder): "why can't I order this stone, why is it in draft. FIX THIS NOW and other orders. THE LINE ITEMS ON THE CONTRACT ARE THE OFFICIAL ONES THAT I PULL."
+
+- **Root cause:** the 2026-09-18 fix plugged ONE write path (saveOrder's auto-advance) and healed that day's rows. Signing through the e-sign link (signing-submit Edge Function writes `signed_at`) and `recordOrderPayment` are OTHER paths — four orders signed after 9/18 (Lee, Flores E-26-0770, Diaz R. E-26-0822, Vintilescu E-26-0739) sat signed + paid at draft. **Migration `20261008_signed_paid_contracted_trigger.sql` ✅ APPLIED:** `orders_paid_total(orders)` (mirrors rowTotalPaid: non-voided payments[] else deposit+balance) + BEFORE INSERT/UPDATE trigger `orders_auto_contracted_trg` — unarchived + signed + money down + draft/scoping/quoted → `contracted`, no matter who writes. Healed the four (logged in `_signed_paid_status_heal_log`); verify 0 stuck. **LESSON: a doctrine that must hold across every write path (Edge Functions included) belongs in a trigger, not in one JS chokepoint.**
+- **`NEEDS_STONE_STATUSES` gained `paid_in_full`** — families pay in full before the stone is ordered; paid is not done. The PR builder's Orders rail (`getActiveStoneOrders`), Needs Ordering and Smart Matches now see them.
+- **PR lines pull the CONTRACT die line:** `resolveStoneNeeds` → `spec`/`contractLine` = `contractDieLabel(o)` (override / renamed line honored, custom color named); when an override exists the need's `size` IS that text and `insertNeed` leaves specs blank for the operator; otherwise dims + top/sides as before. `computedSize` keeps the matcher's dims axis.
+
 ## Sprint INSTALL-PLANNER-2 (2026-10-08, round 7): week on top, Scheduled Installs for the office, reminders, fold-by-cemetery, Scheduler stop colors
 
 Paul: "the 5 day week at the top; that list also populates my scheduler — master list of installations, inscriptions, foundations on those days with color coding (bronze / new stone / inscription); under Install Planner a Scheduled Installs button for my admin team to see what's happening AND ACTION THE BLOCKERS, ESPECIALLY BALANCES; click the cemetery name to hide the list, the number green when scheduled; custom blockers like Need Base Insc / all St Gertrude bases need an insc — not a blocker, a reminder; a scheduled stone fades. EXPERT BUILD THESE NOW."

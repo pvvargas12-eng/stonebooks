@@ -138,10 +138,14 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
     return () => { alive = false }
   }, [railSel])
 
+  // A pulled need fills the line with the CONTRACT's die line (SIZE-TRUTH-2):
+  // an override / renamed die line goes in verbatim as the size, specs left
+  // for the operator; otherwise the dims + top/sides as before. Editable
+  // after — "then in the PR I can edit the list" (Paul).
   const insertNeed = (n) => addRow({
     family_name: n.family || '', order_id: n.orderId || null, order_number: n.orderNumber || null,
     color: n.color || '', item_type: n.kind === 'base' ? 'Base' : (n.itemType ? n.itemType.charAt(0).toUpperCase() + n.itemType.slice(1) : 'Die'),
-    size: n.size || '', specs: [n.top, n.sides].filter(Boolean).join('; '),
+    size: n.size || '', specs: n.override ? '' : [n.top, n.sides].filter(Boolean).join('; '),
   })
   const linkRowToRail = (r) => {
     if (!railSel) return

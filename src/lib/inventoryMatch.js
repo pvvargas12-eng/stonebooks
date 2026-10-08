@@ -19,6 +19,10 @@ import {
   buildDieSpec, buildBaseSpec, dieSize3, dieTopLabel, dimsFromWDT, orderHasBase, displayGraniteColor,
 } from './monumentCatalog'
 import { BRONZE_BACKERS } from './orderRates'
+// THE CONTRACT'S DIE LINE (SIZE-TRUTH-2) — override / rename honored. Paul
+// 2026-10-08: "THE LINE ITEMS ON THE CONTRACT ARE THE OFFICIAL ONES THAT I
+// PULL, then in the PR I can edit the list."
+import { contractDieLabel } from './jobComponents'
 
 // Map a monument shape code → an inventory item_type.
 const SHAPE_TO_ITEM_TYPE = {
@@ -68,6 +72,10 @@ export function resolveStoneNeeds(orders) {
     if (!dieSpec) continue
     const family = o.family || o.orderNumber || 'Order'
     const colorLabel = displayGraniteColor(o)   // custom → entered name, never "Custom"/blank
+    // The signed line beats the computed spec: when the order carries a die
+    // text override or a renamed die line, THAT text is the size we order.
+    const contractLine = contractDieLabel(o) || dieSpec
+    const override = contractLine !== dieSpec
 
     needs.push({
       key: `${o.id}:stone`,
@@ -77,10 +85,13 @@ export function resolveStoneNeeds(orders) {
       kind: 'stone',
       itemType: SHAPE_TO_ITEM_TYPE[o.shape] || 'custom',
       color: colorLabel,
-      size: dieSize3(o, shape) || '',
+      size: override ? contractLine : (dieSize3(o, shape) || ''),
       top: dieTopLabel(o) || null,           // top SHAPE (context only)
       sides: o.sides || null,                // sides treatment (context only)
-      spec: dieSpec,
+      spec: contractLine,
+      contractLine,
+      override,
+      computedSize: dieSize3(o, shape) || '',   // the matcher's dims axis, always
     })
 
     const bc = o.baseConfig || {}
@@ -173,7 +184,7 @@ export function matchNeedsToStock(needs, stock) {
     // family + same type + comparable size. Fulfilled needs are NOT "needs ordering".
     const fulfilledBy = allocated.find(s =>
       (s.allocated_order_id && need.orderId && s.allocated_order_id === need.orderId) ||
-      (sameName(s.assigned_to, need.family) && normType(s.item_type) === normType(need.itemType) && compareSize(need.size, s.size).strength !== 'far')
+      (sameName(s.assigned_to, need.family) && normType(s.item_type) === normType(need.itemType) && compareSize(need.computedSize || need.size, s.size).strength !== 'far')
     )
     if (fulfilledBy) return { need, best: { stock: fulfilledBy, strength: 'fulfilled', why: [] }, candidateCount: 1, fulfilled: true }
 
@@ -182,7 +193,9 @@ export function matchNeedsToStock(needs, stock) {
     for (const s of available) {
       if (normType(s.item_type) !== normType(need.itemType)) continue
       if (!colorMatch(need.color, s.color)) continue
-      const sz = compareSize(need.size, s.size)
+      // Match on the dims axis even when the need's display size is the
+      // contract's override text (SIZE-TRUTH-2).
+      const sz = compareSize(need.computedSize || need.size, s.size)
       if (sz.strength === 'far') continue
       candidateCount++
       const strength = sz.strength
