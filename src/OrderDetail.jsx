@@ -2066,14 +2066,18 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   if (order.signed_at && balance > 0) waitingOn.push({ key: 'payment', label: `FINAL PAYMENT ${fmtUSD(balance)}`, short: 'final payment', task: `Call about the final payment — ${fmtUSD(balance)} due — ${ordTag}` })
   if (ovGates?.fdn === false) waitingOn.push({ key: 'fdn', label: 'FDN NOT IN', short: 'the foundation', task: `Do the foundation — ${ordTag}${order.cemetery?.name ? ` at ${order.cemetery.name}` : ''}` })
   if (ovGates?.permit === false) waitingOn.push({ key: 'permit', label: 'PERMIT NOT APPROVED', short: 'the permit', task: `Get the permit approved — ${ordTag}` })
-  if (ovGates && !ovGates.blasted && !ovInstalledDone) waitingOn.push({ key: 'blast', label: 'NOT BLASTED', short: 'blasting', task: `Blast the stone — ${ordTag}` })
+  // A bronze is never blasted — it arrives (Paul 2026-10-08): the gate is the
+  // same (bronze_received), the words follow the job.
+  if (ovGates && !ovGates.blasted && !ovInstalledDone) waitingOn.push(job?.job_type === 'bronze'
+    ? { key: 'blast', label: 'NOT ARRIVED', short: 'the bronze', task: `Receive the bronze — ${ordTag}` }
+    : { key: 'blast', label: 'NOT BLASTED', short: 'blasting', task: `Blast the stone — ${ordTag}` })
   if (job && !installScheduledDate && !ovInstalledDone && ovGates?.blasted) waitingOn.push({ key: 'sched', label: 'INSTALL NOT SCHEDULED', short: 'the install date', task: `Schedule the install — ${ordTag}` })
   const alreadyGood = []
   if (paid > 0) alreadyGood.push(order.signed_at && balance <= 0 ? 'PAID IN FULL' : 'DEPOSIT COLLECTED')
   if (job && ['layout_approved', 'cut'].includes(deriveDesignStatus(job))) alreadyGood.push('LAYOUT APPROVED')
   if (ovGates?.permit === true) alreadyGood.push('PERMIT APPROVED')
   if (ovGates?.fdn === true) alreadyGood.push('FDN IN')
-  if (ovGates?.blasted) alreadyGood.push('BLASTED')
+  if (ovGates?.blasted) alreadyGood.push(job?.job_type === 'bronze' ? 'ARRIVED' : 'BLASTED')
   // The plain-words headline.
   const _joinAnd = (a) => a.length <= 1 ? (a[0] || '') : `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`
   const ovHeadline = ovInstalledDone

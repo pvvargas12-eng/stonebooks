@@ -37,16 +37,25 @@ const cemOf = (job) => job?.order?.cemetery?.name || job?.cemetery?.name || ''
 const cemIdOf = (job) => job?.cemetery?.id || job?.order?.cemetery?.id || job?.order?.cemetery_id || null
 const fmtDay = (iso) => { const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }
 const readyNow = (g) => g && g.paid !== false && g.fdn !== false && g.permit !== false && g.blasted !== false
+// Track tag per job (Paul 2026-10-08: "for bronze services in install planner
+// I want it to have the purple box") — same tones as the Installation cards.
+const TRACK_OF = { new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }
+const TRACK_TAG = { new_stone: ['NEW STONE', 'blue'], bronze: ['BRONZE SERVICES', 'purple'], inscription: ['INSCRIPTION', 'amber'], door: ['MAUSOLEUM DOOR', 'blue'] }
+const trackOf = (job) => TRACK_OF[job?.job_type] || null
+const trackTag = (job) => { const t = TRACK_TAG[trackOf(job)]; return t ? <span className={`ip-track ip-track-${t[1]}`}>{t[0]}</span> : null }
 
 function gateChips(job) {
   const g = installGates(job?.order || {}, job)
   const bal = rowBalanceDue(job?.order || {})
+  // A bronze is never blasted — it ARRIVES (Paul: "for bronze services it
+  // should say arrived"). Same gate, honest word.
+  const bronze = trackOf(job) === 'bronze'
   return (
     <span className="ip-gates">
       <span className={`ip-g ${g.paid ? 'ok' : 'red'}`}>{g.paid ? 'PAID' : bal > 0 ? `BAL ${fmtUSD(bal)}` : 'NOT PAID'}</span>
       {g.fdn === null ? <span className="ip-g na">NO FDN</span> : <span className={`ip-g ${g.fdn ? 'ok' : 'red'}`}>{g.fdnCode === 'drop_off' ? 'DROP OFF' : g.fdn ? 'FDN IN' : 'FDN NOT IN'}</span>}
       {g.permit === null ? <span className="ip-g na">NO PERMIT</span> : <span className={`ip-g ${g.permit ? 'ok' : 'red'}`}>{g.permit ? 'PERMIT OK' : 'PERMIT'}</span>}
-      <span className={`ip-g ${g.blasted ? 'ok' : 'red'}`}>{g.blasted ? 'BLASTED' : 'NOT BLASTED'}</span>
+      <span className={`ip-g ${g.blasted ? 'ok' : 'red'}`}>{bronze ? (g.blasted ? 'ARRIVED' : 'NOT ARRIVED') : (g.blasted ? 'BLASTED' : 'NOT BLASTED')}</span>
     </span>
   )
 }
@@ -175,6 +184,7 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
     return (
       <div key={jobId} className={`ip-row${readyNow(installGates(job.order || {}, job)) ? ' ip-row-ready' : ''}`}>
         <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')}>{famOf(job)}</button>
+        {trackTag(job)}
         <span className="ip-meta">{[job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
         {gateChips(job)}
         {showDays && (
@@ -234,6 +244,7 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
                   {addCandidates.slice(0, 80).map(j => (
                     <div key={j.id} className={`ip-row${readyNow(installGates(j.order || {}, j)) ? ' ip-row-ready' : ''}`}>
                       <span className="ip-fam">{famOf(j)}</span>
+                      {trackTag(j)}
                       <span className="ip-meta">{[cemOf(j), j.order?.order_number].filter(Boolean).join(' · ')}</span>
                       {gateChips(j)}
                       <button type="button" className="ib-act ib-act-go" disabled={busy} onClick={() => addToWeek(j)}>Add →</button>
@@ -267,6 +278,7 @@ export default function InstallPlanner({ jobs = [], onBack, onOpenOrderDetail })
                         <div key={l.job_id} className="ip-stop">
                           <span className="ip-stop-n">{l.stop_order || ''}</span>
                           <button type="button" className="ip-fam ip-fam-btn" onClick={() => job?.order?.id && onOpenOrderDetail?.(job.order.id, 'installation')}>{job ? famOf(job) : '(job)'}</button>
+                          {trackOf(job) === 'bronze' && <span className="ip-track ip-track-purple ip-track-sm">BRONZE</span>}
                           {job && readyNow(installGates(job.order || {}, job)) ? <span className="ip-g ok">READY</span> : job ? <span className="ip-g red">GATE</span> : null}
                           <button type="button" className="ip-x" disabled={busy} title="Take off this day" onClick={() => unplace(l.job_id)}>×</button>
                         </div>
@@ -306,6 +318,9 @@ const IP_CSS = `
   .ip-fam { font-size: 13px; font-weight: 700; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
   .ip-fam-btn { font: inherit; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .ip-fam-btn:hover { color: #fbbf24; }
+  .ip-track { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+  .ip-track-sm { padding: 1px 6px; font-size: 8px; }
+  .ip-track-purple { background: #261f3a; color: #a78bfa; } .ip-track-blue { background: #16263a; color: #6fb3f0; } .ip-track-amber { background: #322712; color: #fbbf24; }
   .ip-meta { font-size: 11px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 140px; }
   .ip-gates { display: inline-flex; gap: 4px; flex-wrap: wrap; }
   .ip-g { font-size: 8.5px; font-weight: 800; letter-spacing: .05em; border-radius: 999px; padding: 2px 7px; white-space: nowrap; }

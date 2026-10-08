@@ -467,7 +467,8 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
         if (!installedDone && g) {
           if (g.fdn === false) waiting.push({ key: 'fdn', label: 'FDN NOT IN' })
           if (g.permit === false) waiting.push({ key: 'permit', label: 'PERMIT NOT APPROVED' })
-          if (!g.blasted) waiting.push({ key: 'blast', label: 'NOT BLASTED' })
+          // A bronze is never blasted — it arrives (Paul 2026-10-08).
+          if (!g.blasted) waiting.push({ key: 'blast', label: job?.job_type === 'bronze' ? 'NOT ARRIVED' : 'NOT BLASTED' })
           if (g.blasted && !installScheduled) waiting.push({ key: 'sched', label: 'INSTALL NOT SCHEDULED' })
         }
       }

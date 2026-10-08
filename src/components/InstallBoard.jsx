@@ -641,7 +641,7 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
                 title="Permit status — same choices as the order row" onChange={(c) => onGate?.(row, 'permit', c)} />
               <GateSelect
                 tone={row.gates4.blasted ? 'ok' : 'red'}
-                label={row.gates4.blasted ? 'BLASTED' : 'NOT BLASTED'}
+                label={cardTrack === 'bronze' ? (row.gates4.blasted ? 'ARRIVED' : 'NOT ARRIVED') : (row.gates4.blasted ? 'BLASTED' : 'NOT BLASTED')}
                 value={row.stoneCode} options={row.stoneOptions || []} disabled={!onGate || gateBusy === row.jobId}
                 title="Stone / bronze status — same choices as the order row" onChange={(c) => onGate?.(row, 'stone', c)} />
             </>

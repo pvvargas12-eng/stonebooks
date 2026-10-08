@@ -58,7 +58,8 @@ function GateChips({ order, job }) {
       {g.permit === null
         ? <span className="fl-chip fl-c-neutral">NO PERMIT NEEDED</span>
         : <span className={`fl-chip ${g.permit ? 'fl-c-good' : 'fl-c-bad'}`}>{g.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
-      <span className={`fl-chip ${g.blasted ? 'fl-c-good' : 'fl-c-bad'}`}>{g.blasted ? 'BLASTED' : 'NOT BLASTED'}</span>
+      {/* A bronze is never blasted — it ARRIVES (Paul 2026-10-08). */}
+      <span className={`fl-chip ${g.blasted ? 'fl-c-good' : 'fl-c-bad'}`}>{job?.job_type === 'bronze' ? (g.blasted ? 'ARRIVED' : 'NOT ARRIVED') : (g.blasted ? 'BLASTED' : 'NOT BLASTED')}</span>
     </>
   )
 }

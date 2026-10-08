@@ -67,7 +67,7 @@ function setGateChips(job) {
   if (!o) return []
   const g = installGates(o, job)
   const out = []
-  if (g.blasted === false) out.push({ t: 'NOT BLASTED', tone: 'bad' })
+  if (g.blasted === false) out.push({ t: job?.job_type === 'bronze' ? 'NOT ARRIVED' : 'NOT BLASTED', tone: 'bad' })
   if (g.fdn === false) out.push({ t: `FDN ${fdnStatusLabel(g.fdnCode || deriveFdnStatus(job)).toUpperCase()}`, tone: 'bad' })
   if (g.permit === false) out.push({ t: 'PERMIT NOT APPROVED', tone: 'bad' })
   const bal = rowBalanceDue(o)
