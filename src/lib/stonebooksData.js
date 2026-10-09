@@ -1536,6 +1536,30 @@ export async function getOpenTasksForOrders(orderIds) {
   return map
 }
 
+// Open MEETING-BLOCKER tasks per order (details.auto = 'meeting_blocker' —
+// what the Team Meeting's TASK IT writes). Returns orderId → [{id, title,
+// assignee, assignee_kind, due_date}] so a plan row can wear TASKED → who
+// until the task is done. Chunked .in(); never throws.
+export async function getOpenMeetingBlockerTasks(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  const map = {}
+  if (!ids.length) return map
+  for (let i = 0; i < ids.length; i += 150) {
+    const chunk = ids.slice(i, i + 150)
+    const { data, error } = await supabase
+      .from('shop_tasks')
+      .select('id, order_id, title, assignee, assignee_kind, due_date, status, created_at')
+      .in('order_id', chunk)
+      .is('deleted_at', null)
+      .in('status', ['open', 'pending'])
+      .eq('details->>auto', 'meeting_blocker')
+      .order('created_at', { ascending: true })
+    if (error) { console.warn('[meeting] getOpenMeetingBlockerTasks:', error.message); continue }
+    for (const row of (data || [])) { (map[row.order_id] ||= []).push(row) }
+  }
+  return map
+}
+
 // All OPEN tasks across a set of orders — one row per task (a lead may carry
 // several). Powers the Leads task table. Returns a flat array; the caller joins
 // each task to its lead by order_id. pending (né in_progress) is still OPEN work.

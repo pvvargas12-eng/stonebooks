@@ -534,16 +534,20 @@ const CSS = `
   .sb-inq-remind { display: inline-flex; align-items: center; gap: 5px; }
   .sb-inq-remind input[type="date"] { font: 600 11px/1 inherit; font-family: inherit; border: 1px solid #D9D2C0; border-radius: 6px; padding: 5px 6px; background: #fff; }
   .sb-inq-stats { background: #fff; border: 1px solid #ece6d8; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-  .sb-inq-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-  .sb-inq-stat { display: flex; flex-direction: column; min-width: 0; }
-  .sb-inq-stat b { font-size: 19px; font-weight: 700; color: #1a1a1a; line-height: 1.1; white-space: nowrap; letter-spacing: -0.01em; }
-  .sb-inq-stat span { font-size: 11px; color: #8a8472; }
+  /* Overflow doctrine: money like $28,065.00 needs ~110px at this size — the
+     grid drops to 2-up when the rail is narrow instead of letting numbers
+     run into each other (Paul 2026-10-09: "look how bad the overlap is"). */
+  .sb-inq-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 12px 14px; }
+  .sb-inq-stat { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  .sb-inq-stat b { font-size: 18px; font-weight: 700; color: #1a1a1a; line-height: 1.15; letter-spacing: -0.01em; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .sb-inq-stat span { font-size: 11px; color: #8a8472; overflow-wrap: anywhere; }
   .sb-inq-bars { display: flex; flex-direction: column; gap: 6px; }
   .sb-inq-barrow { display: flex; justify-content: space-between; font-size: 12px; gap: 8px; }
   .sb-inq-bar { height: 8px; border-radius: 4px; background: #efece3; overflow: hidden; margin-top: 3px; }
   .sb-inq-bar i { display: block; height: 100%; background: #9A7209; }
-  .sb-inq-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
-  .sb-inq .mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; color: #555; text-align: right; }
+  .sb-inq-kv { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
+  .sb-inq-kv > span:first-child { flex: 0 1 auto; }
+  .sb-inq .mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; color: #555; text-align: right; min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
   .sb-inq-empty { padding: 22px; text-align: center; color: #8a8472; background: #fff; border: 1px solid #ece6d8; border-radius: 10px; font-size: 13px; }
   .sb-inq-warn { background: rgba(179,38,30,0.08); color: #B3261E; font-size: 12.5px; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
   .sb-inq-toast { background: #e7f4ec; color: #1d7a55; font-size: 12.5px; font-weight: 700; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }

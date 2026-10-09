@@ -20,6 +20,7 @@ import {
   getCalendarBatches, expandBatchOccurrences, updateBatch, createBatch, BATCH_KINDS,
   addShopTask, todayISO,
   getActiveStoneOrders, getInventoryStock, listOpenPRCoverage, getStoneProgressByOrder,
+  getOpenMeetingBlockerTasks, getActiveStaffUser, getCurrentStaffName, STAFF_NAMES, DEPARTMENTS,
 } from './lib/stonebooksData'
 import { resolveStoneNeeds, matchNeedsToStock } from './lib/inventoryMatch'
 import { rowToOrder } from './SalesMode'
@@ -218,22 +219,58 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
   // ── Sales last week ─────────────────────────────────────────────────────
   const sales = useMemo(() => {
     const signed = uniqueOrders.filter(o => inLastWeek(o.signed_at))
+    // Payment records are stamped `receivedAt` (YYYY-MM-DD) by every write
+    // path (SalesMode newPayment + addPaymentToOrder) — the first cut read
+    // `date`/`paid_date`, which no record carries, so Collected sat at $0.00
+    // forever (Paul 2026-10-09: "that cant be true"). Voided records are out;
+    // a draft (locked:false) record is not money in the bank yet.
     let collected = 0
+    const paid = []
     for (const o of uniqueOrders) {
       for (const p of (Array.isArray(o.payments) ? o.payments : [])) {
-        if (inLastWeek(p?.date || p?.paid_date || p?.paidDate)) collected += Number(p.amount) || 0
+        if (!p || p.voided || p.locked === false) continue
+        const when = p.receivedAt || p.date || p.paid_date || p.paidDate || (p.createdAt ? String(p.createdAt).slice(0, 10) : null)
+        if (!inLastWeek(when)) continue
+        const amt = Number(p.amount) || 0
+        collected += amt
+        paid.push({ o, p, when: String(when).slice(0, 10), amt })
       }
     }
+    paid.sort((a, b) => b.when.localeCompare(a.when))
     const totalSale = signed.reduce((s, o) => s + (rowGrandTotal(o) || 0), 0)
     const byType = new Map()
     for (const o of signed) for (const c of (o.service_types || [])) {
       if (!SERVICE_LABELS[c]) continue
-      const e = byType.get(c) || { n: 0, usd: 0 }
-      e.n++; e.usd += rowGrandTotal(o) || 0
+      const e = byType.get(c) || { n: 0, usd: 0, orders: [] }
+      e.n++; e.usd += rowGrandTotal(o) || 0; e.orders.push(o)
       byType.set(c, e)
     }
-    return { signed, collected, totalSale, byType: [...byType.entries()].sort((a, b) => b[1].n - a[1].n) }
+    return { signed, collected, paid, totalSale, byType: [...byType.entries()].sort((a, b) => b[1].n - a[1].n) }
   }, [uniqueOrders, inLastWeek])
+  // Which Sales tile is open as a list below the tiles (Paul 2026-10-09: "i
+  // want to be able to click on new stone and i see all the orders").
+  const [salesDrill, setSalesDrill] = useState(null)   // 'signed' | 'collected' | service code
+
+  // ── Blocker tasking (Paul 2026-10-09: "seeing the blockers for the
+  // installations — must be able to task that to my employees from here") ──
+  // Open meeting-blocker tasks per order, so a row shows TASKED → who after
+  // the room assigns it (and on the next meeting, until it's done).
+  const [taskSheet, setTaskSheet] = useState(null)       // { item, job, blockers }
+  const [blockerTasks, setBlockerTasks] = useState({})   // orderId → [{id, title, assignee, due_date}]
+  const planOrderKey = useMemo(() => {
+    const ids = new Set()
+    for (const p of [planThis, planNext]) for (const it of (p?.items || [])) {
+      const oid = jobById.get(it.job_id)?.order?.id || it.order_id
+      if (oid) ids.add(oid)
+    }
+    return [...ids].sort().join(',')
+  }, [planThis, planNext, jobById])
+  const reloadBlockerTasks = useCallback(async () => {
+    const ids = planOrderKey ? planOrderKey.split(',') : []
+    const m = ids.length ? await getOpenMeetingBlockerTasks(ids).catch(() => ({})) : {}
+    setBlockerTasks(m || {})
+  }, [planOrderKey])
+  useEffect(() => { reloadBlockerTasks() }, [reloadBlockerTasks])  // eslint-disable-line react-hooks/set-state-in-effect
 
   // ── Last week review + score ────────────────────────────────────────────
   const lastItems = planLast?.items || []
@@ -475,8 +512,10 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
     const o = job?.order
     const chips = blockersFor(it)
     const oc = it.outcome || null
+    const bad = chips.filter(c => c.tone === 'bad' && !c.cutbox)
+    const tasked = o?.id ? (blockerTasks[o.id] || []) : []
     return (
-      <div key={it.id} className={`sb-tm-row${chips.some(c => c.tone === 'bad') ? ' bad' : ''}`}>
+      <div key={it.id} className={`sb-tm-row${bad.length ? ' bad' : ''}`}>
         <button type="button" className="sb-tm-row-open" onClick={() => openRow(it)} disabled={!o}>
           <span className="sb-tm-fam">{o ? familyOf(o) : (it.title || '—')}</span>
           {o?.order_number && <span className="sb-tm-num">{o.order_number}</span>}
@@ -488,6 +527,12 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           {chips.map((c, i) => c.cutbox
             ? <span key={i} className={`sb-tm-cut ${c.t === 'CUT' ? 'on' : ''}`}><i></i>{c.t}</span>
             : <span key={i} className={`sb-tm-chip ${c.tone}`}>{c.t}</span>)}
+          {tasked.map(t => (
+            <span key={t.id} className="sb-tm-chip tasked" title={t.title}>TASKED → {t.assignee}{t.due_date ? ` · ${String(t.due_date).slice(5).replace('-', '/')}` : ''}</span>
+          ))}
+          {bad.length > 0 && o && !scoreable && (
+            <button type="button" className="sb-tm-minibtn gold" onClick={() => setTaskSheet({ item: it, job, blockers: bad })}>TASK IT</button>
+          )}
           {scoreable && (
             oc
               ? <span className={`sb-tm-chip ${oc === 'done' ? 'good' : oc === 'missed' ? 'bad' : 'warn'}`}>{oc.toUpperCase()}{it.outcome_note ? ` — ${it.outcome_note}` : ''}</span>
@@ -498,6 +543,69 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           )}
           {showRemove && !scoreable && <button type="button" className="sb-tm-x" title="Remove from the plan" onClick={() => dropItem(it.id)}>×</button>}
         </span>
+      </div>
+    )
+  }
+
+  // Sales tiles are buttons: click = the list of orders (or payments) behind
+  // the number, right under the tiles, every row opening its order.
+  const renderSalesTile = (key, tone, label, value, sub) => (
+    <button type="button" key={key}
+      className={`sb-tm-tile click${tone ? ` ${tone}` : ''}${salesDrill === key ? ' on' : ''}`}
+      onClick={() => setSalesDrill(d => d === key ? null : key)}
+      aria-pressed={salesDrill === key}>
+      <span>{label}</span><b>{value}</b>{sub && <span className="sub">{sub}</span>}
+    </button>
+  )
+  const renderSalesOrderRow = (o, extra) => {
+    const job = jobs.find(j => j.order?.id === o.id)
+    const svcs = (o.service_types || []).filter(c => SERVICE_LABELS[c])
+    return (
+      <div key={o.id + (extra?.key || '')} className="sb-tm-row">
+        <button type="button" className="sb-tm-row-open" onClick={() => onOpenOrderDetail?.(o.id)}>
+          <span className="sb-tm-fam">{familyOf(o)}</span>
+          {o.order_number && <span className="sb-tm-num">{o.order_number}</span>}
+          {svcs.map(c => <span key={c} className={`sb-tm-tag ${c === 'NEW_STONE' ? 'ns' : c === 'BRONZE' ? 'br' : 'other'}`}>{SERVICE_LABELS[c].toUpperCase()}</span>)}
+          {(job?.cemetery?.name || o?.cemetery?.name) && <span className="sb-tm-cem">{job?.cemetery?.name || o?.cemetery?.name}</span>}
+        </button>
+        <span className="sb-tm-chips">
+          {extra?.chips}
+        </span>
+      </div>
+    )
+  }
+  const renderSalesDrill = () => {
+    if (!salesDrill) return null
+    let title, rows
+    if (salesDrill === 'collected') {
+      title = `MONEY IN LAST WEEK — ${sales.paid.length} PAYMENT${sales.paid.length === 1 ? '' : 'S'} · ${fmtUSD(sales.collected)}`
+      rows = sales.paid.map(({ o, p, when, amt }) => renderSalesOrderRow(o, {
+        key: p.id || when,
+        chips: <>
+          <span className="sb-tm-chip good">{fmtUSD(amt)}</span>
+          <span className="sb-tm-chip quiet">{String(p.method || '').toUpperCase() || 'PAYMENT'}{p.ref ? ` #${p.ref}` : ''} · {when.slice(5).replace('-', '/')}</span>
+          {rowBalanceDue(o) > 0 && <span className="sb-tm-chip warn">STILL OWES {fmtUSD(rowBalanceDue(o))}</span>}
+        </>,
+      }))
+    } else {
+      const list = salesDrill === 'signed' ? sales.signed : (sales.byType.find(([c]) => c === salesDrill)?.[1]?.orders || [])
+      const label = salesDrill === 'signed' ? 'NEW ORDERS' : (SERVICE_LABELS[salesDrill] || '').toUpperCase()
+      title = `${label} SIGNED LAST WEEK — ${list.length}`
+      rows = [...list].sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at))).map(o => renderSalesOrderRow(o, {
+        chips: <>
+          <span className="sb-tm-chip quiet">{fmtUSD(rowGrandTotal(o) || 0)}</span>
+          <span className="sb-tm-chip good">PAID {fmtUSD(rowTotalPaid(o))}</span>
+          {rowBalanceDue(o) > 0 && <span className="sb-tm-chip warn">OWES {fmtUSD(rowBalanceDue(o))}</span>}
+          {o.signed_at && <span className="sb-tm-chip quiet">signed {String(o.signed_at).slice(5, 10).replace('-', '/')}</span>}
+        </>,
+      }))
+    }
+    return (
+      <div className="sb-tm-lane">
+        <div className="sb-tm-lane-h"><strong>{title}</strong><span className="sb-tm-cem">click a name to open the order</span>
+          <button type="button" className="sb-tm-x" title="Close the list" onClick={() => setSalesDrill(null)} style={{ marginLeft: 'auto' }}>×</button></div>
+        {rows.length === 0 && <div className="sb-tm-empty">Nothing here last week.</div>}
+        {rows}
       </div>
     )
   }
@@ -676,18 +784,17 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
       <div className="sb-tm-eyebrow">Last week — sales</div>
       <h2>New business on the books</h2>
       <div className="sb-tm-tiles">
-        <div className="sb-tm-tile"><span>New orders</span><b>{sales.signed.length}</b><span className="sub">contracts signed</span></div>
-        <div className="sb-tm-tile good"><span>Collected</span><b>{fmtUSD(sales.collected)}</b><span className="sub">money in, all payments</span></div>
+        {renderSalesTile('signed', null, 'New orders', sales.signed.length, 'contracts signed — click for the list')}
+        {renderSalesTile('collected', 'good', 'Collected', fmtUSD(sales.collected), `${sales.paid.length} payment${sales.paid.length === 1 ? '' : 's'} in — click for the list`)}
         <div className="sb-tm-tile"><span>Total sale</span><b>{fmtUSD(sales.totalSale)}</b><span className="sub">contract value signed</span></div>
         <div className="sb-tm-tile"><span>Avg sale</span><b>{sales.signed.length ? fmtUSD(Math.round(sales.totalSale / sales.signed.length)) : '—'}</b></div>
       </div>
       {sales.byType.length > 0 && (
         <div className="sb-tm-tiles" style={{ marginTop: 10 }}>
-          {sales.byType.map(([c, e]) => (
-            <div key={c} className="sb-tm-tile"><span>{SERVICE_LABELS[c]}</span><b>{e.n}</b><span className="sub">{fmtUSD(e.usd)}</span></div>
-          ))}
+          {sales.byType.map(([c, e]) => renderSalesTile(c, null, SERVICE_LABELS[c], e.n, fmtUSD(e.usd)))}
         </div>
       )}
+      {renderSalesDrill()}
     </section>,
     // 3 Focus sheet
     <section key="sheetA" className="sb-tm-slide">
@@ -878,6 +985,121 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           onClose={() => setPicker(null)}
         />
       )}
+      {taskSheet && (
+        <BlockerTaskSheet
+          item={taskSheet.item} job={taskSheet.job} blockers={taskSheet.blockers}
+          meetingDate={meetingDate}
+          onClose={() => setTaskSheet(null)}
+          onTasked={async () => { setTaskSheet(null); await reloadBlockerTasks() }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Which department usually clears a given blocker — the sheet's default pick,
+// changeable in one click. Money + permits are the office; stone state is the
+// floor; the foundation is the install crew.
+function defaultAssigneeFor(blockerText) {
+  const t = String(blockerText || '').toUpperCase()
+  if (t.startsWith('OWES') || t.includes('PAID')) return 'dept:Admin'
+  if (t.includes('PERMIT')) return 'dept:Admin'
+  if (t.includes('FDN') || t.includes('FOUNDATION')) return 'dept:Installation'
+  if (t.includes('BLASTED') || t.includes('STONE') || t.includes('CUT')) return 'dept:Production'
+  if (t.includes('ARRIVED')) return 'dept:Admin'
+  if (t.includes('DESIGN') || t.includes('LAYOUT') || t.includes('RUB')) return 'dept:Design'
+  return 'dept:Admin'
+}
+
+// Module-level (static-components rule). One sheet per TASK IT click: the
+// row's red blockers as checkboxes, a title that writes itself from the
+// checked ones (editable), who (people + departments), due date. Writes a
+// shop_tasks row linked to the order with details.auto = 'meeting_blocker' so
+// the row can wear TASKED → who until it's done.
+function BlockerTaskSheet({ item, job, blockers, meetingDate, onClose, onTasked }) {
+  const o = job?.order
+  const fam = familyOf(o)
+  const laneLabel = PLAN_LANES.find(l => l.code === item.lane)?.label || item.lane
+  const [picked, setPicked] = useState(() => new Set(blockers.map((_, i) => i)))
+  const autoTitle = (set) => {
+    const parts = blockers.filter((_, i) => set.has(i)).map(b => b.t)
+    const what = parts.length ? parts.join(', ') : 'clear the blockers'
+    return `${fam} ${o?.order_number || ''} — clear for ${String(laneLabel).toLowerCase()}: ${what}`.replace(/\s+—/, ' —').slice(0, 300)
+  }
+  const [title, setTitle] = useState(() => autoTitle(new Set(blockers.map((_, i) => i))))
+  const [touched, setTouched] = useState(false)
+  const [assignee, setAssignee] = useState(() => defaultAssigneeFor(blockers[0]?.t))
+  const [due, setDue] = useState(todayISO())
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const toggle = (i) => {
+    setPicked(prev => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i); else next.add(i)
+      if (!touched) setTitle(autoTitle(next))
+      const first = blockers.find((_, j) => next.has(j))
+      if (first && !touched) setAssignee(defaultAssigneeFor(first.t))
+      return next
+    })
+  }
+  const save = async () => {
+    const t = title.trim()
+    if (!t) { setErr('Type the task.'); return }
+    if (!assignee) { setErr('Pick who it goes to.'); return }
+    if (!o?.id) { setErr('This row has no order to link.'); return }
+    setBusy(true); setErr(null)
+    const actor = getActiveStaffUser() || await getCurrentStaffName().catch(() => null)
+    const isDept = assignee.startsWith('dept:')
+    const r = await addShopTask({
+      title: t,
+      assignee: isDept ? assignee.slice(5) : assignee,
+      assigneeKind: isDept ? 'department' : 'person',
+      orderId: o.id,
+      dueDate: due || null,
+      createdBy: actor, taskedBy: actor,
+      taskType: 'order',
+      details: {
+        auto: 'meeting_blocker', meeting: meetingDate, lane: item.lane, plan_item_id: item.id,
+        blockers: blockers.filter((_, i) => picked.has(i)).map(b => b.t),
+      },
+    })
+    setBusy(false)
+    if (!r?.ok) { setErr(r?.error || 'Could not create the task.'); return }
+    onTasked?.()
+  }
+  return (
+    <div className="sb-tm-scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="sb-tm-picker sb-tm-tasksheet" role="dialog" aria-label="Task a blocker">
+        <h3>Task it — {fam} <span className="sb-tm-num">{o?.order_number || ''}</span></h3>
+        <div className="sb-tm-cem" style={{ marginBottom: 10 }}>{laneLabel} · {job?.cemetery?.name || o?.cemetery?.name || 'no cemetery on file'}</div>
+        <div className="sb-tm-ts-blockers">
+          {blockers.map((b, i) => (
+            <label key={i} className={`sb-tm-ts-blk${picked.has(i) ? ' on' : ''}`}>
+              <input type="checkbox" checked={picked.has(i)} onChange={() => toggle(i)} disabled={busy} />
+              <span className="sb-tm-chip bad">{b.t}</span>
+            </label>
+          ))}
+        </div>
+        {err && <div className="sb-tm-err">{err}</div>}
+        <textarea className="sb-tm-input" rows={3} value={title} disabled={busy} maxLength={300}
+          onChange={e => { setTitle(e.target.value); setTouched(true) }} aria-label="Task" />
+        <div className="sb-tm-ts-row">
+          <select className="sb-tm-input" value={assignee} disabled={busy} onChange={e => { setAssignee(e.target.value); setTouched(true) }} aria-label="Who">
+            <option value="">Assign to…</option>
+            <optgroup label="Departments">
+              {DEPARTMENTS.map(d => <option key={d.code} value={`dept:${d.label}`}>{d.label}</option>)}
+            </optgroup>
+            <optgroup label="People">
+              {STAFF_NAMES.map(n => <option key={n} value={n}>{n}</option>)}
+            </optgroup>
+          </select>
+          <input className="sb-tm-input" type="date" value={due} disabled={busy} onChange={e => setDue(e.target.value)} aria-label="Due" />
+        </div>
+        <div className="sb-tm-ts-actions">
+          <button type="button" className="sb-tm-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="sb-tm-btn gold" onClick={save} disabled={busy || !title.trim() || !assignee}>{busy ? 'Saving…' : 'Create task'}</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1085,4 +1307,17 @@ const CSS = `
   .sb-tm-picker { background: #fff; border: 1px solid #E2DCC9; border-radius: 16px; padding: 18px 20px; width: 100%; max-width: 560px; }
   .sb-tm-picker h3 { margin: 0 0 10px; }
   .sb-tm-picklist { max-height: 46vh; overflow-y: auto; margin-top: 10px; }
+  .sb-tm-tile.click { cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%; transition: border-color .12s, box-shadow .12s; }
+  .sb-tm-tile.click:hover { border-color: #9A7209; box-shadow: 0 1px 6px rgba(154,114,9,0.18); }
+  .sb-tm-tile.click.on { background: #fff; box-shadow: inset 0 0 0 2px #9A7209; }
+  .sb-tm-tile.click .sub { text-decoration: underline dotted #C9A468; text-underline-offset: 3px; }
+  .sb-tm-chip.tasked { color: #fff; background: #15724A; font-weight: 900; letter-spacing: 0.06em; }
+  .sb-tm-tasksheet { max-width: 620px; }
+  .sb-tm-ts-blockers { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .sb-tm-ts-blk { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #E2DCC9; border-radius: 9px; background: #FBFAF7; cursor: pointer; min-width: 0; }
+  .sb-tm-ts-blk.on { border-color: #B3261E; background: rgba(179,38,30,0.06); }
+  .sb-tm-ts-blk input { margin: 0; }
+  .sb-tm-ts-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .sb-tm-ts-row .sb-tm-input { flex: 1 1 200px; width: auto; }
+  .sb-tm-ts-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 `
