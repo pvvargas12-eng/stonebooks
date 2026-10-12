@@ -10,6 +10,9 @@ export const TAB_REGISTRY = [
   { key: 'today',      label: 'TODAY', locked: 'first' },
   { key: 'tasks',      label: 'TASKS' },
   { key: 'production', label: 'FLOOR' },
+  // FIELD-SCHEDULE (2026-10-12): the week's runs, every kind, tap → the job;
+  // owners + Admin build the install / inscription week from it too.
+  { key: 'schedule',   label: 'SCHEDULE' },
   { key: 'jobs',       label: 'JOBS' },
   { key: 'sales',      label: 'SALES', ownerOnly: true },
   { key: 'find',       label: 'FIND' },
@@ -21,11 +24,11 @@ const KEYS = new Set(TAB_REGISTRY.map(t => t.key))
 const ORDER = Object.fromEntries(TAB_REGISTRY.map((t, i) => [t.key, i]))
 
 export function defaultTabsFor(who) {
-  if (who?.isOwner) return ['today', 'tasks', 'jobs', 'sales', 'find', 'more']
+  if (who?.isOwner) return ['today', 'tasks', 'schedule', 'jobs', 'sales', 'more']
   if (who?.department === 'Production' || who?.department === 'Installation') {
-    return ['today', 'tasks', 'production', 'jobs', 'more']
+    return ['today', 'tasks', 'production', 'schedule', 'jobs', 'more']
   }
-  return ['today', 'tasks', 'jobs', 'find', 'more']
+  return ['today', 'tasks', 'schedule', 'jobs', 'find', 'more']
 }
 
 // Stored prefs -> a safe, ordered bar: known keys only, role-gated, deduped,

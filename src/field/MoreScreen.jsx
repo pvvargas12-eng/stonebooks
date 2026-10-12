@@ -26,6 +26,7 @@ import ReceiptScreen from './ReceiptScreen'
 import IntakeScreen from './IntakeScreen'
 import FieldSettingsScreen from './FieldSettingsScreen'
 import ProductionFloorScreen from './ProductionFloorScreen'
+import WeekScheduleScreen from './WeekScheduleScreen'
 import FindScreen from './FindScreen'
 import SalesScreen from './SalesScreen'
 import TasksScreen from './TasksScreen'
@@ -40,6 +41,7 @@ const I = (paths) => (
 const TAB_TILE_META = {
   tasks:      { ds: 'Your task list',                ic: '<path d="M4 6 l2 2 l3.5-3.5"/><path d="M4 15 l2 2 l3.5-3.5"/><line x1="13" y1="7" x2="20" y2="7"/><line x1="13" y1="16" x2="20" y2="16"/>' },
   production: { ds: 'The production floor',          ic: '<path d="M8 4 h8 l1.5 6 H6.5 z"/><rect x="4.5" y="10" width="15" height="5" rx="1"/><rect x="2.5" y="15" width="19" height="5" rx="1"/>' },
+  schedule:   { ds: 'The week, run by run',         ic: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><line x1="3.5" y1="10" x2="20.5" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/>' },
   jobs:       { ds: 'Installs, digs, check jobs',    ic: '<path d="M13.5 4.5 l6 6 -2.5 2.5 -6-6z"/><path d="M12.5 9.5 L4 18 l2 2 8.5-8.5"/><path d="M15 3 l6 6"/>' },
   sales:      { ds: 'Orders, leads, everything',     ic: '<path d="M6 3 h8 l4 4 v14 h-12 z"/><path d="M14 3 v4 h4"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="15" y2="16"/>' },
   find:       { ds: 'Search + yard inventory',       ic: '<circle cx="10.5" cy="10.5" r="6.5"/><line x1="15.5" y1="15.5" x2="21" y2="21"/>' },
@@ -102,6 +104,9 @@ export default function MoreScreen({ who, undo, onOpenJob, onOpenTask, onAskPush
   // Overflow core tabs — full screens with a back row home to More.
   if (sub === 'tab:production') {
     return <ProductionFloorScreen who={who} undo={undo} onOpenJob={(ids) => onOpenJob(ids, 'more')} onBack={back} />
+  }
+  if (sub === 'tab:schedule') {
+    return <WeekScheduleScreen who={who} onOpenJob={(ids) => onOpenJob(ids, 'more')} onBack={back} />
   }
   if (sub === 'tab:find') {
     return (

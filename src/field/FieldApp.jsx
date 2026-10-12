@@ -34,6 +34,7 @@ import NotificationsScreen from './NotificationsScreen'
 import PermissionSheet from './PermissionSheet'
 import NotifPrefsSheet from './NotifPrefsSheet'
 import ProductionFloorScreen from './ProductionFloorScreen'
+import WeekScheduleScreen from './WeekScheduleScreen'
 import { resolveTabs, TAB_REGISTRY } from './fieldTabs'
 import JobDetailScreen from './JobDetailScreen'
 import CompleteScreen from './CompleteScreen'
@@ -186,6 +187,7 @@ const GLYPH = {
   cam: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 8 h3 l2-2.5 h6 L17 8 h3 v11 H4 z" /><circle cx="12" cy="13" r="3.5" /></svg>,
   bell: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 10 a6 6 0 0 1 12 0 c0 5 2 6 2 6 H4 c0 0 2-1 2-6" /><path d="M10 19.5 a2.2 2.2 0 0 0 4 0" /></svg>,
   production: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4 h8 l1.5 6 H6.5 z" /><rect x="4.5" y="10" width="15" height="5" rx="1" /><rect x="2.5" y="15" width="19" height="5" rx="1" /></svg>,
+  schedule: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="2" /><line x1="3.5" y1="10" x2="20.5" y2="10" /><line x1="8" y1="3" x2="8" y2="7" /><line x1="16" y1="3" x2="16" y2="7" /><line x1="7.5" y1="14" x2="10.5" y2="14" /><line x1="13.5" y1="14" x2="16.5" y2="14" /></svg>,
 }
 
 export default function FieldApp() {
@@ -406,6 +408,9 @@ export default function FieldApp() {
           )}
           {tab === 'production' && (
             <ProductionFloorScreen who={who} undo={undo} onOpenJob={openJob} />
+          )}
+          {tab === 'schedule' && (
+            <WeekScheduleScreen who={who} onOpenJob={openJob} />
           )}
           {tab === 'sales' && isOwner && (
             <SalesScreen onOpenJob={openJob} who={who} undo={undo} />
