@@ -35,6 +35,7 @@ import {
   fmtDate, customerName, fmtPhone, listUpcomingAppointments,
   createBatch, updateBatch, searchOrdersLight, listOpenLeadsLight, updateOrderLeadFields,
   logOrderActivity,
+  getOrderBalancesByIds, fmtUSD,
 } from './lib/stonebooksData'
 import { DEPARTMENTS, loadEmployees, getActiveEmployees } from './lib/employees'
 import { WAITING_ON_OPTIONS, leadLeftOff } from './lib/leads'
@@ -111,6 +112,14 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
   const [orders, setOrders] = useState([])
   const [tasks, setTasks] = useState([])
   const [replies, setReplies] = useState([])
+  // Money position of the orders behind closeout tasks (Paul 2026-10-12: a
+  // closeout row must show the missing balance so nobody closes an order
+  // that still owes). orderId → { total, paid, owed, status }.
+  const [balances, setBalances] = useState({})
+  const loadBalances = useCallback(async (ts) => {
+    const ids = (ts || []).filter(t => t.status !== 'done' && (t.task_type === 'closeout' || t.details?.auto === 'install_completed')).map(t => t.order_id || t.order?.id).filter(Boolean)
+    setBalances(ids.length ? await getOrderBalancesByIds(ids).catch(() => ({})) : {})
+  }, [])
   const [busyId, setBusyId] = useState(null)
 
   const [view, setView] = useState('list')          // list | board | people | dash
@@ -226,7 +235,8 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
     const ts = await listShopTasks({ doneWithinDays: 30 })
     setTasks(ts)
     setReplies(await listTaskReplies(ts.map(t => t.id)))
-  }, [])
+    loadBalances(ts)
+  }, [loadBalances])
 
   const loadAll = useCallback(async () => {
     setLoading(true); setErr(null)
@@ -244,11 +254,12 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
       setOrders(os || [])
       setTasks(ts || [])
       setReplies(await listTaskReplies((ts || []).map(t => t.id)))
+      loadBalances(ts || [])
       const emp = await loadEmployees()
       if (emp) setStaff(getActiveEmployees().map(e => e.name))
     } catch (e) { setErr(e?.message || 'Failed to load the command center') }
     setLoading(false)
-  }, [])
+  }, [loadBalances])
   useEffect(() => { loadAll() }, [loadAll])
 
   // ── Task partitions ─────────────────────────────────────────────────────────
@@ -718,6 +729,7 @@ export default function TodayTab({ user, profile, onOpenSales, onOpenOrder, onOp
             {listTasks.length === 0 && <div className="sb-tcc-empty">Nothing here — task somebody.</div>}
             {listTasks.map(t => (
               <TaskRow key={t.id} t={t} me={me} staff={staff} todayISO={todayISO}
+                balance={balances[t.order_id || t.order?.id]}
                 busy={busyId === t.id}
                 replies={repliesByTask.get(t.id) || []}
                 expanded={openTaskId === t.id}
@@ -995,8 +1007,16 @@ function NewTaskForm({ me, staff, orders, todayISO, onCreated }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // One task row (list view) + expandable panel: thread, attachments, edit.
 // ═══════════════════════════════════════════════════════════════════════════
-function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpand, onStatus, onSnooze, onDelete, onOpenOrder, onChanged, isOverdue }) {
+function TaskRow({ t, me, staff, todayISO, balance, busy, replies, expanded, onToggleExpand, onStatus, onSnooze, onDelete, onOpenOrder, onChanged, isOverdue }) {
   const over = isOverdue(t)
+  // Closeout rows wear the order's money position — OWES $ in red when a
+  // balance is open, PAID in green when it's clear (Paul 2026-10-12).
+  const isCloseoutRow = t.task_type === 'closeout' || t.details?.auto === 'install_completed'
+  const owesChip = isCloseoutRow && balance && t.status !== 'done'
+    ? (balance.owed > 0
+        ? <span className="tbadge owes" title={`Contract ${fmtUSD(balance.total)} · paid ${fmtUSD(balance.paid)} — do not close out until the balance is in`}>OWES {fmtUSD(balance.owed)}</span>
+        : <span className="tbadge paid" title="Paid in full">PAID</span>)
+    : null
   const dueText = t.status === 'done'
     ? `done${t.done_at ? ' ' + fmtDate(t.done_at) : ''}${t.done_by ? ' · ' + t.done_by : ''}`
     : !t.due_date ? 'no date'
@@ -1027,6 +1047,7 @@ function TaskRow({ t, me, staff, todayISO, busy, replies, expanded, onToggleExpa
             {t.order.order_number || famOf(t.order)}
           </button>
         )}
+        {owesChip}
         {/* Labeled, not an arrow (Paul 2026-08-03: "its confusing sometimes
             who it was tasked by and who is tasked — label it"). */}
         <span className="chain">
@@ -1610,6 +1631,8 @@ const CSS = `
   .sb-tcc .tbadge.prod{color:#9C4A1D;background:#FAEDE4}
   .sb-tcc .tbadge.check{color:#1D7A55;background:#E7F4EC}
   .sb-tcc .tbadge.gen{color:#79735F;background:#F6F3EC}
+  .sb-tcc .tbadge.owes{color:#fff;background:#B3261E;font-family:"JetBrains Mono",Consolas,monospace;letter-spacing:.03em}
+  .sb-tcc .tbadge.paid{color:#1D7A55;background:#E7F4EC}
   .sb-tcc-trow .oc{font:600 11px var(--sb-font-mono,monospace);color:#1D6FA8;background:#EAF2FA;border:none;border-radius:6px;padding:3px 8px;white-space:nowrap;cursor:pointer}
   .sb-tcc-trow .chain{font-size:12px;color:#79735F;white-space:nowrap}
   .sb-tcc-trow .chain em{font-style:normal}

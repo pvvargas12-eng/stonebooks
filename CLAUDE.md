@@ -1,5 +1,15 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint MONEY-GATES (2026-10-12): OWES on closeout tasks + a close-anyway tick, and the money each production line brings in
+
+Paul: "must show missing payment to orders here in closeout so we don't closeout orders with missing balances" + "on line planner in red font I want to see the money these lines are owed so we can see how much money we will bring in by doing these lines."
+
+- **`getOrderBalancesByIds(ids)`** (stonebooksData): select('*') chunked (can't 400 on a column), → `{ total, paid, owed, status }` per order via rowGrandTotal / rowTotalPaid.
+- **Task Command Center (TodayTab):** closeout rows (task_type 'closeout' or details.auto 'install_completed', not done) wear a solid red **OWES $X** chip (mono) or green **PAID**, right after the order number; `loadBalances` runs on every task load/reload for just those orders' ids. `.tbadge.owes` / `.tbadge.paid`.
+- **CompletionEmailModal (the send-AND-close):** when the order still owes, a red box states OWES / contract / paid and that sending closes the order; the go button is disabled (label says "(owes $X)") until **"Close it anyway with $X still owed"** is ticked. Informs loudly, never walls (write-offs, checks in the mail). Already-closed orders skip the gate.
+- **Lines — `attachLineMoney(lines)`** (floorLines.js, called after `reconcileFloorLines` in BOTH the floor strip and the Line Planner): one balance read for every order on every line, each order counted once per line → `line.owed` + `line.contract`. Header pill **"$X OWED"** in red on the active line (floor strip) and on every line in the Line Planner (active / on deck / planning / complete); **PAID IN FULL** green when the line's orders are clear; contract value on hover.
+- Build + lint green (214 warnings, unchanged). Both surfaces sit behind sign-in — Paul's first look.
+
 ## Sprint FIELD-SCHEDULE (2026-10-12): the SCHEDULE bottom tab — the week on the phone + build the install / inscription week from it
 
 Paul: "in stonebooks field add calendar or schedule to the bottom tabs — a 5 day layout for installation / inscriptions / other stuff — and the inscription scheduler and installation scheduler buildable in the app." After the mockup (artifact TmeyseYw4PcZ3HHdjXy9gn): "looks good as long as when I click on Minsal I can open the order and upload the photo for completion, same truth as desktop as always; don't change the look or shape of the tabs; build it go."

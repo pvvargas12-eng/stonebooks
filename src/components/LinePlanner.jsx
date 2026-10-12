@@ -12,12 +12,13 @@
 // Dark .jobcc / .pf-* aesthetic (mounted inside ProductionBoard's shell).
 // =============================================================================
 import { useState, useEffect, useCallback } from 'react'
-import { getProductionComponents, getBringUpReady, fmtDate } from '../lib/stonebooksData'
+import { getProductionComponents, getBringUpReady, fmtDate, fmtUSD } from '../lib/stonebooksData'
 import { boardPhases, phaseLabel } from '../lib/jobComponents'
 import {
   reconcileFloorLines, createFloorLine, updateFloorLine, deleteFloorLine, addStonesToLine,
   removeLineItem, moveLineItem, startFloorLine, completeFloorLine, itemTone, lineLabel,
   DEFAULT_LINE_CAPACITY,
+  attachLineMoney,
 } from '../lib/floorLines'
 
 const DAY_MS = 86400000
@@ -61,7 +62,8 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
       ])
       setComps(d || []); setRecs(rec)
       const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
-      setLines(await reconcileFloorLines({ floorComps: d || [] }))
+      const ls = await reconcileFloorLines({ floorComps: d || [] })
+      setLines(await attachLineMoney(ls).catch(() => ls))
       setErr(null)
     } catch (e) { setErr(e?.message || 'Failed to load'); setLines([]) }
   }, [])
@@ -152,6 +154,11 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
                 ? <>{c.total} stones · {l.started_at && l.completed_at ? `${Math.max(1, Math.round((new Date(l.completed_at) - new Date(l.started_at)) / DAY_MS))} days` : ''}</>
                 : <span className={over ? 't-over' : ''}>{c.total} / {cap}{over ? ' · over the soft limit' : ''}</span>}
           </span>
+          {/* The money this line brings in (Paul 2026-10-12): open balances
+              across the line's orders, in red; contract value on hover. */}
+          {l.owed > 0
+            ? <span className="lp-line-owed" title={`Contract value on this line ${fmtUSD(l.contract || 0)} — ${fmtUSD(l.owed)} still owed across its orders`}>{fmtUSD(l.owed)} OWED</span>
+            : l.contract > 0 ? <span className="lp-line-owed paid" title={`Contract value ${fmtUSD(l.contract)} — nothing owed`}>PAID IN FULL</span> : null}
         </div>
         {l.status === 'active' && (
           <div className="lp-bar">
@@ -320,6 +327,8 @@ const LP_CSS = `
   .lp-line-name { font-size: 13px; font-weight: 800; color: #f4f6fa; white-space: nowrap; }
   .lp-week input { font: inherit; font-size: 11px; background: #0E1116; border: 1px solid #2a313c; border-radius: 6px; color: #c7cedb; padding: 2px 6px; }
   .lp-line-cnt { margin-left: auto; font-size: 11px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lp-line-owed { font: 800 12px "JetBrains Mono", Consolas, monospace; letter-spacing: 0.04em; color: #ff5d55; background: rgba(255,93,85,0.10); border: 1px solid rgba(255,93,85,0.45); border-radius: 8px; padding: 2px 9px; white-space: nowrap; }
+  .lp-line-owed.paid { color: #4fd1a1; background: rgba(79,209,161,0.10); border-color: rgba(79,209,161,0.4); }
   .lp-line-cnt .t-blast { color: #34d399; } .lp-line-cnt .t-over { color: #fbbf24; }
   .lp-bar { height: 6px; border-radius: 3px; background: #0E1116; overflow: hidden; display: flex; }
   .lp-bar i { display: block; height: 100%; }

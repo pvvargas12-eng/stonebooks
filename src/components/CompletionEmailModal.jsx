@@ -12,13 +12,20 @@ import { useState, useEffect } from 'react'
 import {
   getOrderById, listCompletionPhotos, buildCompletionEmailDraft, completionEmailHtml,
   sendShopEmail, addTaskReply, logOrderActivity, updateShopTask, getCurrentStaffName,
-  closeOrder, setShopTaskStatus,
+  closeOrder, setShopTaskStatus, rowBalanceDue, rowGrandTotal, rowTotalPaid, fmtUSD,
 } from '../lib/stonebooksData'
 import ConfirmSend from './ConfirmSend'
 
 export default function CompletionEmailModal({ task, onClose, onChanged }) {
   const orderId = task?.order_id || task?.order?.id || null
   const [order, setOrder] = useState(undefined)   // undefined=loading, null=missing
+  // Money gate (Paul 2026-10-12: "so we don't close out orders with missing
+  // balances") — an open balance is said out loud, and closing anyway takes
+  // an explicit tick. Informs loudly, never walls (the office may have a
+  // reason: a write-off, a check in the mail).
+  const [ackOwed, setAckOwed] = useState(false)
+  const owed = order ? rowBalanceDue(order) : 0
+  const owedBlocks = owed > 0 && order?.status !== 'closed' && !ackOwed
   const [photos, setPhotos] = useState([])
   const [picked, setPicked] = useState(() => new Set())
   const [to, setTo] = useState('')
@@ -152,11 +159,21 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
               )}
             </div>
 
+            {owed > 0 && order?.status !== 'closed' && (
+              <div className="sb-cem-owes">
+                <b>OWES {fmtUSD(owed)}</b> — contract {fmtUSD(rowGrandTotal(order) || 0)}, paid {fmtUSD(rowTotalPaid(order) || 0)}. Sending this email closes the order. Collect the balance first, or record the payment on the order.
+                <label className="sb-cem-ack">
+                  <input type="checkbox" checked={ackOwed} onChange={e => setAckOwed(e.target.checked)} />
+                  Close it anyway with {fmtUSD(owed)} still owed
+                </label>
+              </div>
+            )}
             {err && <div className="sb-cem-warn">{err}</div>}
             <div className="sb-cem-actions">
               <button type="button" className="sb-cem-cancel" onClick={onClose} disabled={busy}>Close</button>
-              <button type="button" className="sb-cem-go" disabled={busy || !to.trim() || !body.trim()} onClick={openGate}>
-                {busy ? 'Preparing…' : (order?.status === 'closed' ? 'Preview + send' : 'Preview + send + close order')}
+              <button type="button" className="sb-cem-go" disabled={busy || !to.trim() || !body.trim() || owedBlocks} onClick={openGate}
+                title={owedBlocks ? `This order still owes ${fmtUSD(owed)} — tick the box above to close it anyway` : undefined}>
+                {busy ? 'Preparing…' : (order?.status === 'closed' ? 'Preview + send' : owed > 0 ? `Preview + send + close order (owes ${fmtUSD(owed)})` : 'Preview + send + close order')}
               </button>
             </div>
           </>
@@ -183,6 +200,10 @@ const CSS = `
   .sb-cem-ph.on { border-color: #1f7a3d; opacity: 1; }
   .sb-cem-ph img { width: 74px; height: 74px; object-fit: cover; border-radius: 8px; display: block; }
   .sb-cem-warn { background: rgba(179,38,30,0.08); color: #B3261E; font-size: 12.5px; border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
+  .sb-cem-owes { background: rgba(179,38,30,0.08); border: 1.5px solid #B3261E; color: #7a1a14; font-size: 13px; line-height: 1.45; border-radius: 10px; padding: 10px 12px; margin-top: 12px; overflow-wrap: anywhere; }
+  .sb-cem-owes b { color: #B3261E; font-family: "JetBrains Mono", Consolas, monospace; font-size: 14px; }
+  .sb-cem-ack { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-weight: 700; color: #B3261E; cursor: pointer; }
+  .sb-cem-ack input { width: 16px; height: 16px; }
   .sb-cem-sent { background: rgba(31,122,61,0.10); color: #1f7a3d; font-size: 12.5px; font-weight: 700; border-radius: 8px; padding: 8px 10px; margin-bottom: 4px; }
   .sb-cem-note { font-size: 12.5px; color: #6B6456; margin-top: 6px; }
   .sb-cem-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }

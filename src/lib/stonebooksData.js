@@ -1560,6 +1560,26 @@ export async function getOpenMeetingBlockerTasks(orderIds) {
   return map
 }
 
+// Money position per order for a set of ids — { total, paid, owed, status }.
+// Reads the whole row (select '*' can't 400 on a column) so rowGrandTotal /
+// rowTotalPaid see every pricing column + payments[]. Chunked; never throws.
+// Powers the OWES chip on closeout tasks (Paul 2026-10-12: "must show missing
+// payment in closeout so we don't close out orders with missing balances").
+export async function getOrderBalancesByIds(orderIds) {
+  const ids = [...new Set((orderIds || []).filter(Boolean))]
+  const out = {}
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabase.from('orders').select('*').in('id', ids.slice(i, i + 100))
+    if (error) { console.warn('[balances] getOrderBalancesByIds:', error.message); continue }
+    for (const o of (data || [])) {
+      const total = rowGrandTotal(o) || 0
+      const paid = rowTotalPaid(o) || 0
+      out[o.id] = { total, paid, owed: Math.max(0, total - paid), status: o.status }
+    }
+  }
+  return out
+}
+
 // All OPEN tasks across a set of orders — one row per task (a lead may carry
 // several). Powers the Leads task table. Returns a flat array; the caller joins
 // each task to its lead by order_id. pending (né in_progress) is still OPEN work.

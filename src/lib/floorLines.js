@@ -23,7 +23,7 @@
 // the Sales status sync brought up) to the active line.
 // =============================================================================
 import { supabase } from './supabase'
-import { setComponentOnFloor, getCurrentStaffName } from './stonebooksData'
+import { setComponentOnFloor, getCurrentStaffName, getOrderBalancesByIds } from './stonebooksData'
 import { phaseIndex } from './jobComponents'
 
 export const DEFAULT_LINE_CAPACITY = 18
@@ -86,6 +86,33 @@ export async function listFloorLines({ track = 'new_stone' } = {}) {
 export const activeLines = (lines) => lines.filter(l => l.status === 'active')
 export const onDeckLine = (lines) => lines.find(l => l.status === 'on_deck') || null
 export const lineLabel = (l) => l?.label || (l ? `Line ${l.number}` : '')
+
+// The money behind each line (Paul 2026-10-12: "in red the money these lines
+// are owed so we can see how much we bring in by doing these lines"). One
+// balance read for every order on every line; each ORDER counts once per line
+// (a line holds dies — one per order — but guard anyway). Sets
+// `line.owed` (open balances) and `line.contract` (contract value); never
+// throws — a failed read leaves both at 0.
+export async function attachLineMoney(lines) {
+  const list = lines || []
+  const orderOf = (it) => it.order_id || it.component?.order_id || null
+  const ids = [...new Set(list.flatMap(l => (l.items || []).map(orderOf)).filter(Boolean))]
+  const bal = ids.length ? await getOrderBalancesByIds(ids).catch(() => ({})) : {}
+  for (const l of list) {
+    const seen = new Set()
+    let owed = 0, contract = 0
+    for (const it of (l.items || [])) {
+      const oid = orderOf(it)
+      if (!oid || seen.has(oid) || !bal[oid]) continue
+      seen.add(oid)
+      owed += bal[oid].owed || 0
+      contract += bal[oid].total || 0
+    }
+    l.owed = owed
+    l.contract = contract
+  }
+  return list
+}
 
 export async function createFloorLine({ label = null, weekStart = null, capacity = DEFAULT_LINE_CAPACITY, track = 'new_stone' } = {}) {
   const { data: last } = await supabase.from('floor_lines').select('number').eq('track', track).order('number', { ascending: false }).limit(1)

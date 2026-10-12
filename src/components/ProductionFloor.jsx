@@ -18,10 +18,11 @@ import {
   setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
   getBringUpReady,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
+  fmtUSD,
 } from '../lib/stonebooksData'
 import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
-import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY } from '../lib/floorLines'
+import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney } from '../lib/floorLines'
 import LinePlanner from './LinePlanner'
 import InstallPlanner from './InstallPlanner'
 
@@ -113,6 +114,10 @@ function LineZone({ line, compById, onPlanner }) {
         <span className="pf-line-cnt">
           <b className="t-ready">{c.waiting} to bring up</b> · <b className="t-up">{c.up - c.cut - c.blastQ} on the line</b> · <b className="t-cut">{c.cut} cut</b> · <b className="t-blast">{c.blastQ} blasting</b> · <b className="t-out">{c.blasted} out</b>
         </span>
+        {/* The money this line brings in when it's done (Paul 2026-10-12). */}
+        {line.owed > 0
+          ? <span className="pf-line-owed" title={`Contract value on this line ${fmtUSD(line.contract || 0)} — ${fmtUSD(line.owed)} still owed across its orders`}>{fmtUSD(line.owed)} OWED</span>
+          : line.contract > 0 ? <span className="pf-line-owed paid">PAID IN FULL</span> : null}
       </div>
       <div className="pf-line-bar">
         <i style={{ width: pct(c.blasted), background: '#0e1116' }} />
@@ -247,7 +252,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       setComponents(d || []); setRecs(rec); setErr(null)
       const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
       const ls = await reconcileFloorLines({ floorComps: d || [] }).catch(e => { console.warn('[lines] reconcile:', e?.message); return [] })
-      setLines(ls)
+      setLines(await attachLineMoney(ls).catch(() => ls))
     } catch (e) { setErr(e?.message || 'Failed to load'); setComponents([]) }
   }, [])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
@@ -941,6 +946,8 @@ const PF_CSS = `
   .pf-line-st-deck { color: #bcd4f5; border: 1px solid #2f5586; background: #1e3350; }
   .pf-line-name { font-size: 18px; font-weight: 800; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pf-line-cnt { margin-left: auto; font-size: 12.5px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pf-line-owed { font: 800 13px "JetBrains Mono", Consolas, monospace; letter-spacing: 0.04em; color: #ff5d55; background: rgba(255,93,85,0.10); border: 1px solid rgba(255,93,85,0.45); border-radius: 8px; padding: 3px 10px; white-space: nowrap; }
+  .pf-line-owed.paid { color: #4fd1a1; background: rgba(79,209,161,0.10); border-color: rgba(79,209,161,0.4); }
   .pf-line-cnt b { font-weight: 700; }
   .pf-line-cnt .t-ready { color: #34d399; } .pf-line-cnt .t-up { color: #bcd4f5; } .pf-line-cnt .t-cut { color: #fbe3a0; } .pf-line-cnt .t-blast { color: #34d399; } .pf-line-cnt .t-out { color: #6f7a8a; }
   .pf-line-bar { height: 9px; border-radius: 5px; background: #0E1116; overflow: hidden; display: flex; }
