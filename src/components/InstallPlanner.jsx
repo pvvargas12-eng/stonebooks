@@ -31,6 +31,7 @@ import {
   setOrderFdnStatus, setOrderPermit, setOrderStoneStatus, setOrderDesignStatus, getJob, getHotListItems,
   deriveStoneStatus, stoneStatusOptions, FDN_STATUS, PERMIT_STATUS_OPTIONS, permitStatusLabel,
   addOrderTask, STAFF_NAMES, getActiveStaffUser, todayISO, manualBlockerChipText, listShopTasksForOrder,
+  markBatchJobComplete,
 } from '../lib/stonebooksData'
 import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
@@ -177,11 +178,18 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   const [rolled, setRolled] = useState([])
   const [pastBatches, setPastBatches] = useState([])   // older batches of this kind (for cleanup on place)
   const [todayIso] = useState(() => todayISO())
+  // Stops whose job the parent's getJobs no longer carries (a CLOSED job —
+  // the closeout after an install drops it) are fetched one by one so the
+  // row can be recognised as done instead of reading "(job not loaded)".
+  const [extraJobs, setExtraJobs] = useState({})
 
   const jobs = jobsProp || ownJobs || EMPTY_JOBS   // stable while loading — `load` depends on it
-  const jobById = new Map(jobs.map(j => [j.id, overrides.get(j.id) || j]))
+  const jobById = new Map([...Object.values(extraJobs), ...jobs].map(j => [j.id, overrides.get(j.id) || j]))
   const isHot = (job) => !!job && (hot.has(job.id) || (job.order?.id ? hot.has(job.order.id) : false))
-  const isDone = (job) => cfg.milestone(job)?.status === 'done'
+  // Done = the track's completion milestone is done, or the job itself was
+  // closed (Paul 2026-10-12: "when stones on the install planner are set
+  // remove them off the list automatically").
+  const isDone = (job) => !!job && (cfg.milestone(job)?.status === 'done' || ['closed', 'cancelled'].includes(job.overall_status))
 
   // Default week = the next install week (this week if it is one).
   useEffect(() => {
@@ -235,6 +243,20 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
     if (p.ok) { setPlan(p); setErr(null) } else setErr(p.error)
     setBatches(bs || [])
     setPastBatches(old || [])
+    // Stops whose job isn't in the loaded set (closed after the install) —
+    // fetch them so they read as done and drop off the list.
+    const loadedIds = new Set(jobs.map(j => j.id))
+    const missing = [...new Set((bs || []).flatMap(b => (b.batch_jobs || []).map(l => l.job_id)).filter(id => id && !loadedIds.has(id)))].slice(0, 40)
+    const fetched = missing.length ? await Promise.all(missing.map(id => getJob(id).catch(() => null))) : []
+    const extra = Object.fromEntries(fetched.filter(Boolean).map(j => [j.id, j]))
+    setExtraJobs(extra)
+    // A stop whose stone is installed gets its Scheduler stop ticked complete
+    // too (best-effort), so the Scheduler and the planner agree.
+    for (const b of (bs || [])) for (const l of (b.batch_jobs || [])) {
+      const j = jobs.find(x => x.id === l.job_id) || extra[l.job_id]
+      const done = !!j && (cfg.milestone(j)?.status === 'done' || ['closed', 'cancelled'].includes(j.overall_status))
+      if (done && l.id && !l.completed_at) markBatchJobComplete(l.id, { actorName: cfg.title }).catch(() => {})
+    }
     setSetList(sl || [])
     setHot(new Set((hotRows || []).flatMap(h => [h.job_id, h.order_id]).filter(Boolean)))
     // Reminders for every job that can appear here + their cemeteries.
@@ -255,7 +277,13 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   }
 
   const kind = week ? kindFromPlans(week, plans) : 'install'
-  const weekItems = (plan?.items || []).filter(it => it.lane === cfg.lane && it.job_id)
+  // Done stones leave the list and the days by themselves. The plan item and
+  // the Scheduler stop stay in the data (the Team Meeting's Friday score reads
+  // the item; the stop is ticked complete above) — they just stop rendering.
+  const doneIds = new Set()
+  for (const it of (plan?.items || [])) if (it.lane === cfg.lane && it.job_id && isDone(jobById.get(it.job_id))) doneIds.add(it.job_id)
+  for (const b of batches) for (const l of (b.batch_jobs || [])) if (isDone(jobById.get(l.job_id))) doneIds.add(l.job_id)
+  const weekItems = (plan?.items || []).filter(it => it.lane === cfg.lane && it.job_id && !doneIds.has(it.job_id))
   const onWeek = new Set(weekItems.map(it => it.job_id))
   const dayOfJob = new Map()
   const batchOfJob = new Map()
@@ -263,8 +291,11 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   const days = DAYS.map((label, i) => {
     const iso = addDays(week || isoOf(mondayOf()), i)
     const dayBatches = batches.filter(b => b.scheduled_date === iso)
-    return { label, iso, batches: dayBatches, count: dayBatches.reduce((s, b) => s + (b.batch_jobs || []).length, 0) }
+      .map(b => ({ ...b, batch_jobs: (b.batch_jobs || []).filter(l => !doneIds.has(l.job_id)) }))
+      .filter(b => b.batch_jobs.length > 0)
+    return { label, iso, batches: dayBatches, count: dayBatches.reduce((s, b) => s + b.batch_jobs.length, 0) }
   })
+  const doneNames = [...doneIds].map(id => famOf(jobById.get(id))).filter(n => n && n !== '—').sort()
   const unplaced = weekItems.filter(it => !dayOfJob.has(it.job_id))
   const remsOf = (job) => remindersFor(job, rems)
   const gatesOf = (job) => cfg.gates(job)
@@ -680,7 +711,19 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
       {kind !== 'install' && week && <div className="ip-note">This is a B (production) week. You can still plan here — or flip the week to A in the Team Meeting.</div>}
       {err && <div className="jobcc-err">{err}</div>}
 
-      {!plan || setList == null || loadingJobs ? <div className="jobcc-empty">Loading…</div> : mode === 'scheduled' ? renderScheduled() : (
+      {doneNames.length > 0 && (
+        <div className="ip-done">
+          <b>{cfg.verb === 'install' ? 'Installed' : 'Completed'} — off the list:</b> {doneNames.slice(0, 12).join(', ')}{doneNames.length > 12 ? ` +${doneNames.length - 12} more` : ''}.
+        </div>
+      )}
+
+      {!plan || setList == null || loadingJobs ? <div className="jobcc-empty">Loading…</div> : mode === 'scheduled' ? (
+        <>
+          {/* The 5-day overview on top of the admin view too (Paul 2026-10-12). */}
+          {renderWeek()}
+          {renderScheduled()}
+        </>
+      ) : (
         <>
           {renderWeek()}
 
@@ -810,6 +853,7 @@ const IP_CSS = `
   .ip-day.past { opacity: .22; text-decoration: line-through; }
   .ip-movebtn { border-color: #C9A468; color: #fbbf24; }
   .ip-rolled { font-size: 12px; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+  .ip-done { font-size: 12px; color: #6ee7b7; background: #0f2a1f; border: 1px solid #1f5a40; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
   .ip-empty { font-size: 12px; color: #6f7a8a; padding: 6px 2px; }
   .ip-week { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
   @media (max-width: 1100px) { .ip-week { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

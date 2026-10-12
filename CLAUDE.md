@@ -1,5 +1,13 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint INSTALL-PLANNER-4 (2026-10-12): installed stones drop off by themselves, 5-day strip on Scheduled installs, print sheet DEMO
+
+Paul: "when stones on the install planner are set remove them off the list automatically — on friday i did klein wermuth chmielnik and kravitz so they shouldn't be on here anymore. I want this 5 day overview at the top of scheduled installs. I want to print the 5 day planner — a button on scheduled installs 'print install schedule' — CLEAN, same basic info, no color except blockers in RED, bold and clear; two copies, office + shop, updated by hand as blockers clear. SHOW ME A DEMO before building it."
+
+- **Done = gone (InstallPlanner):** `isDone` = the track's completion milestone done OR the job closed/cancelled. Done jobs are filtered out of the week list, the day columns and the Scheduled view (`doneIds`); the plan item and the Scheduler stop stay in the data (Friday score reads the item) — the stop is ticked complete best-effort (`markBatchJobComplete`) so the Scheduler agrees. Stops whose job the parent's `getJobs` no longer carries (CLOSED after closeout) are fetched by `getJob` (≤40) into `extraJobs` so they read as done instead of "(job not loaded)". Green strip names what dropped off ("Installed — off the list: Klein, Wermuth…").
+- **Scheduled installs** now renders the 5-day trip strip (`renderWeek`) above the blocker list.
+- **Print sheet — DEMO ONLY, not built:** mockup artifact https://claude.ai/artifact/52ag6qswq2Wfinxyk9HGVk — letter landscape, 5 day columns, trips grouped by cemetery, family + NS/BR tag + order # + grave location, blockers bold RED with a tick box, reminders italic with a box, READY in grey, header counts (stones / blocked / owed), footer key. Build on Paul's go: a "Print install schedule" button on Scheduled installs opening a print window with that markup (window.print on a real tab — artifacts can't print, the app can).
+
 ## Sprint MEETING-FIX-1 (2026-10-09): Collected was $0, Sales tiles drill to the orders, TASK IT on blocked installs, Inquiries rail overlap
 
 Paul (Team Meeting + Inquiries screenshots): "why does it say money collected this week is zero that cant be true. also i want to be able to click on new stone and i see all the orders... for all them bronze insc rep. whats critical here is seeing the blockers for the installations must be able to go through and task that to my employees from here we identify it during the meeting. fix the inquiry page look how bad the overlap is."
