@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix LINES-3 (2026-10-12): blasted stones leave the line by themselves, Mark complete gone
+
+Paul (Line Planner open list): "if they are blasted automatically remove them from the line, also remove the mark complete because we individually mark off each stone when blasted."
+
+- **`decorateLines` adds `line.open`** = items not yet blasted + `counts.open`; **`overCap` now reads open stones** (a line with 24 rows of which 6 are blasted is "18 on the line", not over). The `floor_line_items` row STAYS when a stone blasts (stats: lines a year / stones blasted / avg days; completion: a line completes when every row is blasted — unchanged) — the boards just stop showing it.
+- **Line Planner:** tiles, the open list, "Open list (N)", "Keep N", Fill-the-rest room, Move-last and the empty text all read `open`; empty text says "Every stone on this line is blasted — N out the door". **Mark complete button REMOVED** (`completeFloorLine` stays exported in floorLines for a future override; nothing calls it).
+- **Floor strip (`LineZone`):** tiles + empty text read `open`; the soft-cap notice counts open stones. The counts line keeps "N out" so the week's progress is still visible.
+- Recommended pool still excludes everything on `items` (blasted stones never get recommended again).
+
 ## Sprint MONEY-GATES (2026-10-12): OWES on closeout tasks + a close-anyway tick, and the money each production line brings in
 
 Paul: "must show missing payment to orders here in closeout so we don't closeout orders with missing balances" + "on line planner in red font I want to see the money these lines are owed so we can see how much money we will bring in by doing these lines."

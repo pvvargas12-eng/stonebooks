@@ -126,7 +126,8 @@ function LineZone({ line, compById, onPlanner }) {
         <i style={{ width: pct(c.up - c.cut - c.blastQ), background: '#2f5586' }} />
       </div>
       <div className="pf-tiles">
-        {line.items.map((it, i) => {
+        {/* Blasted stones leave the strip by themselves (`line.open`). */}
+        {line.open.map((it, i) => {
           const tone = itemTone(it)
           const full = compById.get(it.component_id)
           const name = full ? famOf(full) : '—'
@@ -138,7 +139,7 @@ function LineZone({ line, compById, onPlanner }) {
             </span>
           )
         })}
-        {line.items.length === 0 && <span className="pf-line-empty">No stones on this line yet — build it in the Line Planner.</span>}
+        {line.open.length === 0 && <span className="pf-line-empty">{c.blasted > 0 ? `Every stone on this line is blasted — ${c.blasted} out the door.` : "No stones on this line yet — build it in the Line Planner."}</span>}
       </div>
       <div className="pf-line-foot">
         <span>Completes when every stone is blasted.{c.waiting === 0 && c.blasted < c.total ? ' All up — the next line can start early from the Line Planner.' : ''}</span>
@@ -264,13 +265,13 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   for (const l of (lines || [])) l.items.forEach((it, i) => lineTagById.set(it.component_id, `L${l.number} #${String(i + 1).padStart(2, '0')}`))
   // Soft cap (Paul round 2): over 18 = a brief message recommending another
   // line, never a wall.
-  const capLine = running.find(l => l.overCap && capDismissed !== `${l.id}:${l.counts.total}`) || null
+  const capLine = running.find(l => l.overCap && capDismissed !== `${l.id}:${l.counts.open}`) || null
   const startNewLine = async () => {
     setLineBusy(true)
     const r = await createFloorLine()
     setLineBusy(false)
     if (r && r.ok === false) { setErr(r.error); return }
-    setCapDismissed(capLine ? `${capLine.id}:${capLine.counts.total}` : '')
+    setCapDismissed(capLine ? `${capLine.id}:${capLine.counts.open}` : '')
     setView('planner')
   }
 
@@ -452,9 +453,9 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       )}
       {track === 'new_stone' && capLine && (
         <div className="pf-capnote">
-          <span><b>{lineLabel(capLine)}</b> has {capLine.counts.total} stones — over the soft limit of {capLine.capacity || DEFAULT_LINE_CAPACITY}. Recommend starting another line.</span>
+          <span><b>{lineLabel(capLine)}</b> has {capLine.counts.open} stones — over the soft limit of {capLine.capacity || DEFAULT_LINE_CAPACITY}. Recommend starting another line.</span>
           <button type="button" className="pf-btn pf-btn-gold" disabled={lineBusy} onClick={startNewLine}>Start a new line →</button>
-          <button type="button" className="pf-btn" onClick={() => setCapDismissed(`${capLine.id}:${capLine.counts.total}`)}>Keep going</button>
+          <button type="button" className="pf-btn" onClick={() => setCapDismissed(`${capLine.id}:${capLine.counts.open}`)}>Keep going</button>
         </div>
       )}
 

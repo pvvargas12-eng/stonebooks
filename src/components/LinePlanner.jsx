@@ -16,7 +16,7 @@ import { getProductionComponents, getBringUpReady, fmtDate, fmtUSD } from '../li
 import { boardPhases, phaseLabel } from '../lib/jobComponents'
 import {
   reconcileFloorLines, createFloorLine, updateFloorLine, deleteFloorLine, addStonesToLine,
-  removeLineItem, moveLineItem, startFloorLine, completeFloorLine, itemTone, lineLabel,
+  removeLineItem, moveLineItem, startFloorLine, itemTone, lineLabel,
   DEFAULT_LINE_CAPACITY,
   attachLineMoney,
 } from '../lib/floorLines'
@@ -115,12 +115,12 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
     return r
   })
   const fillByDue = (line) => {
-    const room = Math.max(0, (line.capacity || DEFAULT_LINE_CAPACITY) - line.counts.total)
+    const room = Math.max(0, (line.capacity || DEFAULT_LINE_CAPACITY) - line.counts.open)
     if (!room) { setCapWarn({ lineId: line.id }); return }
     addTo(line, pool.slice(0, room))
   }
   const moveLast = (line) => run(async () => {
-    const last = line.items[line.items.length - 1]
+    const last = line.open[line.open.length - 1]
     if (!last) return { ok: true }
     let to = nextAfter(line)
     if (!to) { const r = await createFloorLine(); if (!r.ok) return r; to = r.line }
@@ -168,24 +168,26 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
             <i style={{ width: `${c.total ? ((c.up - c.cut - c.blastQ) / c.total) * 100 : 0}%`, background: '#2f5586' }} />
           </div>
         )}
+        {/* Blasted stones have left the line (`l.open`) — the tiles, the list
+            and the cap all read what's still on it. */}
         <div className="lp-tiles">
-          {l.items.map((it, i) => {
+          {l.open.map((it, i) => {
             const tone = l.status === 'active' || l.status === 'complete' ? itemTone(it) : (i >= cap ? 'over' : 'deck')
             const full = compById.get(it.component_id)
             return <span key={it.id} className={`lp-tl lp-tl-${tone}`} title={`#${i + 1} ${full ? famOf(full) : '—'} · ${TONE_TITLE[tone] || 'Over the soft limit'}`}>{full ? famOf(full) : '—'}</span>
           })}
-          {Array.from({ length: Math.max(0, cap - l.items.length) }, (_, i) => <span key={`e${i}`} className="lp-tl lp-tl-empty" />)}
+          {Array.from({ length: Math.max(0, cap - l.open.length) }, (_, i) => <span key={`e${i}`} className="lp-tl lp-tl-empty" />)}
         </div>
         {(over || capWarn?.lineId === l.id) && l.status !== 'complete' && (
           <div className="lp-capnote">
             <span>{lineLabel(l)} is over {cap}. Recommend starting {nextAfter(l) ? lineLabel(nextAfter(l)) : 'a new line'} with the rest.</span>
-            <button type="button" className="pf-btn" onClick={() => setCapWarn(null)}>Keep {c.total}</button>
+            <button type="button" className="pf-btn" onClick={() => setCapWarn(null)}>Keep {c.open}</button>
             <button type="button" className="pf-btn pf-btn-gold" disabled={busy} onClick={() => moveLast(l)}>Move last → {nextAfter(l) ? lineLabel(nextAfter(l)) : 'new line'}</button>
           </div>
         )}
         <div className="lp-line-acts">
-          <button type="button" className="pf-btn" onClick={() => toggleOpen(l.id)}>{isOpen ? 'Hide list' : `Open list (${c.total})`}</button>
-          {(l.status === 'on_deck' || l.status === 'planning') && c.total < cap && pool.length > 0 && (
+          <button type="button" className="pf-btn" onClick={() => toggleOpen(l.id)}>{isOpen ? 'Hide list' : `Open list (${c.open})`}</button>
+          {(l.status === 'on_deck' || l.status === 'planning') && c.open < cap && pool.length > 0 && (
             <button type="button" className="pf-btn pf-btn-gold" disabled={busy} onClick={() => fillByDue(l)}>Fill the rest by due date</button>
           )}
           {(l.status === 'on_deck' || l.status === 'planning') && c.total > 0 && (
@@ -193,10 +195,9 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
               {l.status === 'on_deck' ? 'Start now →' : 'Start this line →'}
             </button>
           )}
-          {l.status === 'active' && c.blasted < c.total && (
-            <button type="button" className="pf-btn" disabled={busy} title="Close this line out by hand (stragglers stay on the board)"
-              onClick={() => { if (window.confirm(`Mark ${lineLabel(l)} complete with ${c.total - c.blasted} stone(s) not blasted?`)) run(() => completeFloorLine(l.id)) }}>Mark complete</button>
-          )}
+          {/* No "Mark complete" (Paul 2026-10-12: "we individually mark off
+              each stone when blasted") — a line completes by itself when its
+              last stone is blasted. */}
           {l.status !== 'active' && l.status !== 'complete' && c.total === 0 && (
             <button type="button" className="pf-btn pf-btn-deny" disabled={busy} onClick={() => run(() => deleteFloorLine(l.id))}>Delete</button>
           )}
@@ -206,7 +207,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
         </div>
         {isOpen && (
           <div className="lp-list">
-            {l.items.map((it, i) => {
+            {l.open.map((it, i) => {
               const full = compById.get(it.component_id)
               const tone = itemTone(it)
               return (
@@ -227,7 +228,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
                 </div>
               )
             })}
-            {l.items.length === 0 && <div className="lp-empty">Empty — add from the recommended list.</div>}
+            {l.open.length === 0 && <div className="lp-empty">{c.blasted > 0 ? `Every stone on this line is blasted — ${c.blasted} out the door.` : 'Empty — add from the recommended list.'}</div>}
           </div>
         )}
       </div>

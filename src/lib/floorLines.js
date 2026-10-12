@@ -73,7 +73,13 @@ export function decorateLines(rows) {
     const cut = l.items.filter(it => itemTone(it) === 'cut').length
     const blastQ = l.items.filter(it => itemTone(it) === 'blast').length
     const waiting = total - blasted - up
-    return { ...l, status, counts: { total, blasted, up, cut, blastQ, waiting }, overCap: total > (l.capacity || DEFAULT_LINE_CAPACITY) }
+    // `open` = the stones still ON the line. A blasted stone leaves the line
+    // by itself (Paul 2026-10-12: "if they are blasted automatically remove
+    // them from the line") — its row stays for the stats and for completion
+    // (a line completes when every row is blasted), the boards just stop
+    // showing it. The soft cap counts what's still on the line.
+    const open = l.items.filter(it => !itemIsBlasted(it))
+    return { ...l, status, open, counts: { total, blasted, up, cut, blastQ, waiting, open: open.length }, overCap: open.length > (l.capacity || DEFAULT_LINE_CAPACITY) }
   })
 }
 
