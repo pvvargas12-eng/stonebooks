@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint INSTALL-PLANNER-5 / PRINT-WEEK (2026-10-12): the printed week — Install Planner + Scheduler
+
+Paul (after the demo): "thats perfect build it.. I want the same thing built in scheduler and then I would be able to see all the production, install, insc getting done in a week. do it now."
+
+- **`src/lib/weekPrintSheet.js`** — one builder, two callers. `stopFacts(job, kind, reminders)` = family, NS/BR/INSC tag, order #, grave location, notes (drop off), BLOCKERS (red: OWES $, FDN NOT IN, PERMIT NOT APPROVED, NOT BLASTED / NOT ARRIVED, STENCIL NOT CUT, HOLD — reason; which ones apply depends on the run kind: setting/delivery = the four install gates, inscription = paid + permit + cut, blasting = cut, others = money + permit), reminders (italic, non-blocking), READY. `buildWeekPrintHtml({title, subtitle, days:[{iso, trips:[{name, kindTag, ampm, stops}]}]})` = the approved sheet (letter landscape, black ink, red only on blockers, tick boxes, header counts stops/blocked/owed/ready, footer key; auto-calls window.print on load + a Print button for re-prints). `openPrintSheet(html)` opens a tab via window.open (click-driven; false when blocked → inline error/toast).
+- **Install Planner › Scheduled installs** (and the Inscription Scheduler): gold **Print install schedule** / **Print inscription schedule** button in the header → that week's days as the strip shows them (done stones already filtered out).
+- **Scheduler**: **Print the week** button beside + Add event → every run Mon–Fri of the anchor's week (Saturday only when it has one), every kind, trips tagged SETTING / INSCRIPTIONS / BLASTING / FOUNDATION TRIP…, AM/PM when set, cancelled batches and closed jobs skipped, closed jobs fetched by `getJob` so stops never vanish, reminders via listInstallReminders.
+- Verified: builder smoke test with stubbed data (7 stops / 8 red chips) rendered in the dev server and eyeballed; build + lint green (warning count unchanged). The live print is Paul's first click (auth wall).
+
 ## Sprint INSTALL-PLANNER-4 (2026-10-12): installed stones drop off by themselves, 5-day strip on Scheduled installs, print sheet DEMO
 
 Paul: "when stones on the install planner are set remove them off the list automatically — on friday i did klein wermuth chmielnik and kravitz so they shouldn't be on here anymore. I want this 5 day overview at the top of scheduled installs. I want to print the 5 day planner — a button on scheduled installs 'print install schedule' — CLEAN, same basic info, no color except blockers in RED, bold and clear; two copies, office + shop, updated by hand as blockers clear. SHOW ME A DEMO before building it."

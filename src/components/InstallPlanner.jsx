@@ -40,6 +40,7 @@ import {
   getWeekPlanWithItems, addPlanItem, removePlanItem, peekWeekPlan,
 } from '../lib/meetingData'
 import { listInstallReminders, remindersFor, addInstallReminder, doneInstallReminder } from '../lib/installReminders'
+import { buildWeekPrintHtml, openPrintSheet, stopFacts, fmtDayLong } from '../lib/weekPrintSheet'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 const EMPTY_JOBS = []
@@ -78,6 +79,7 @@ const TRACKS = {
     addBtn: '+ Add from set list', poolHint: 'on the set list not on this week', emptyAdd: 'Add stones from the set list — ready ones first — then give each a day above.', emptyPool: 'Everything on the set list is already on this week.',
     foot: 'Days are Scheduler trips — reorder stops, assign a crew or set AM/PM in the Scheduler. The Team Meeting\'s set lane and Friday score read this week list.',
     milestone: installMilestone, scheduledKey: null,
+    printLabel: 'Print install schedule', printTitle: 'INSTALL SCHEDULE',
     gates: (job) => installGates(job?.order || {}, job),
     ready: readyNow,
     tripClass: '',
@@ -92,6 +94,7 @@ const TRACKS = {
     addBtn: '+ Add an inscription', poolHint: 'open inscriptions not on this week', emptyAdd: 'Add inscriptions — ready ones first, hot ones in red — then give each a day above.', emptyPool: 'Every open inscription is already on this week.',
     foot: 'Days are Scheduler inscription trips — reorder stops, assign a crew or set AM/PM in the Scheduler. The Team Meeting\'s inscription lane and Friday score read this week list.',
     milestone: inscriptionMilestone, scheduledKey: 'field_work_scheduled',
+    printLabel: 'Print inscription schedule', printTitle: 'INSCRIPTION SCHEDULE',
     gates: (job) => { const g = installGates(job?.order || {}, job); return { paid: g.paid, permit: g.permit, cut: stencilCutDone(job) } },
     ready: readyInsc,
     tripClass: ' ip-trip-insc',
@@ -675,6 +678,28 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
     )
   }
 
+  // PRINT — the one-page week (Paul 2026-10-12, demo approved): black ink,
+  // blockers in red with a tick box, same stops as the strip above.
+  const printWeek = () => {
+    const sheetDays = days.map(d => ({
+      iso: d.iso,
+      trips: d.batches.map(b => ({
+        name: b.cemetery?.name || b.title || 'Trip',
+        ampm: b.am_pm || null,
+        stops: b.batch_jobs.slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0))
+          .map(l => jobById.get(l.job_id))
+          .filter(Boolean)
+          .map(job => stopFacts(job, cfg.batchKind, remsOf(job))),
+      })),
+    }))
+    const html = buildWeekPrintHtml({
+      title: `${cfg.printTitle} — WEEK OF ${fmtDayLong(week).toUpperCase()}, ${week.slice(0, 4)}`,
+      subtitle: kind === 'install' ? 'A · INSTALL WEEK' : 'B · PRODUCTION WEEK',
+      days: sheetDays,
+    })
+    if (!openPrintSheet(html)) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
+  }
+
   const loadingJobs = !jobsProp && ownJobs == null
   return (
     <div className="ip">
@@ -698,6 +723,9 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
             <button type="button" className="jobcc-btn" disabled={!week} onClick={() => setWeek(addDays(week, 7))}>week ›</button>
             {mode === 'build' && (weekItems.length > 0 || batches.length > 0) && (
               <button type="button" className="jobcc-btn ip-movebtn" disabled={busy} title="Everything on this week — list, trips and dates — slides to the same weekdays next week" onClick={moveWeekForward}>Move this week → next week</button>
+            )}
+            {mode === 'scheduled' && (
+              <button type="button" className="jobcc-btn ip-printbtn" disabled={!week} title="One clean page — black ink, blockers in red with a box to tick when cleared" onClick={printWeek}>{cfg.printLabel}</button>
             )}
           </div>
         </div>
@@ -853,6 +881,8 @@ const IP_CSS = `
   .ip-day.past { opacity: .22; text-decoration: line-through; }
   .ip-movebtn { border-color: #C9A468; color: #fbbf24; }
   .ip-rolled { font-size: 12px; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+  .ip-printbtn { border-color: #C9A468 !important; color: #C9A468 !important; font-weight: 700; }
+  .ip-printbtn:hover { background: #C9A468 !important; color: #0F1419 !important; }
   .ip-done { font-size: 12px; color: #6ee7b7; background: #0f2a1f; border: 1px solid #1f5a40; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
   .ip-empty { font-size: 12px; color: #6f7a8a; padding: 6px 2px; }
   .ip-week { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }

@@ -36,7 +36,10 @@ import {
   customerName,
   todayLocalISO,
   fmtDate,
+  getJob,
 } from './lib/stonebooksData'
+import { buildWeekPrintHtml, openPrintSheet, stopFacts, kindLabel, fmtDayLong } from './lib/weekPrintSheet'
+import { listInstallReminders, remindersFor } from './lib/installReminders'
 import { supabase } from './lib/supabase'
 import MonthLandscape from './components/scheduler/MonthLandscape'
 import TwoWeekView from './components/scheduler/TwoWeekView'
@@ -155,6 +158,44 @@ export default function SchedulerTab({ variant = 'scheduler', user, profile, onO
     return d
   }, [anchor])
   const monthYear = useMemo(() => ({ year: anchor.getFullYear(), month: anchor.getMonth() }), [anchor])
+
+  // PRINT THE WEEK (Paul 2026-10-12: "the same thing in the scheduler so I
+  // see all the production, install, inscriptions getting done in a week").
+  // Every run Mon–Fri of the anchor's week (Saturday too when it has one),
+  // one column per day, trips tagged by kind, blockers in red.
+  const printWeek = async () => {
+    const isoOfDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const dayIsos = [0, 1, 2, 3, 4, 5].map(i => { const d = new Date(mondayOf); d.setDate(d.getDate() + i); return isoOfDate(d) })
+    const weekBatches = (batches || []).filter(b => b.scheduled_date && dayIsos.includes(b.scheduled_date) && b.status !== 'cancelled')
+    const jobById = new Map((jobs || []).map(j => [j.id, j]))
+    const stopJobIds = [...new Set(weekBatches.flatMap(b => (b.batch_jobs || []).map(l => l.job_id)).filter(Boolean))]
+    const missing = stopJobIds.filter(id => !jobById.has(id)).slice(0, 40)
+    for (const j of await Promise.all(missing.map(id => getJob(id).catch(() => null)))) if (j) jobById.set(j.id, j)
+    const cemIds = [...new Set(stopJobIds.map(id => { const j = jobById.get(id); return j?.cemetery?.id || j?.order?.cemetery?.id || j?.order?.cemetery_id }).filter(Boolean))]
+    const rems = await listInstallReminders({ jobIds: stopJobIds, cemeteryIds: cemIds }).catch(() => ({ byJob: new Map(), byCemetery: new Map() }))
+    const days = dayIsos
+      .map(iso => ({
+        iso,
+        trips: weekBatches.filter(b => b.scheduled_date === iso)
+          .sort((a, b) => (a.am_pm || '').localeCompare(b.am_pm || '') || (a.kind || '').localeCompare(b.kind || ''))
+          .map(b => {
+            const stops = (b.batch_jobs || []).slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0))
+              .map(l => jobById.get(l.job_id)).filter(Boolean)
+              .filter(j => !['closed', 'cancelled'].includes(j.overall_status))
+              .map(j => stopFacts(j, b.kind, remindersFor(j, rems)))
+            const name = b.cemetery?.name || b.title || kindLabel(b.kind)
+            return { name, kindTag: kindLabel(b.kind).toUpperCase(), ampm: b.am_pm || null, stops }
+          }),
+      }))
+    // Saturday prints only when something is on it.
+    const printDays = days[5].trips.length ? days : days.slice(0, 5)
+    const html = buildWeekPrintHtml({
+      title: `WEEK SCHEDULE — WEEK OF ${fmtDayLong(dayIsos[0]).toUpperCase()}, ${dayIsos[0].slice(0, 4)}`,
+      subtitle: 'Every run: setting · inscription · blasting · foundations · pickups',
+      days: printDays,
+    })
+    if (!openPrintSheet(html)) showToast({ text: 'The browser blocked the print window — allow pop-ups for Stonebooks and try again.', error: true })
+  }
 
   const goPrev = () => {
     if (zoom === 'month')        setAnchor(p => new Date(p.getFullYear(), p.getMonth() - 1, 1))
@@ -347,6 +388,14 @@ export default function SchedulerTab({ variant = 'scheduler', user, profile, onO
             onClick={() => setAddEventOpen(true)}
           >
             + Add event
+          </button>
+          <button
+            type="button"
+            className="sb-scheduler-add-event sb-scheduler-print"
+            title="One clean page of every run that week — black ink, blockers in red with a box to tick when cleared"
+            onClick={printWeek}
+          >
+            Print the week
           </button>
         </div>
       </div>
