@@ -270,8 +270,10 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   // line, never a wall.
   const capLine = running.find(l => l.overCap && capDismissed !== `${l.id}:${l.counts.open}`) || null
 
-  // PRINT (Paul 2026-10-14): the board as it sits — one column per phase,
-  // the cards with the contract die size and blockers in red.
+  // PRINT (Paul 2026-10-14): the floor as a portrait LIST — the first column
+  // (ready to bring up) in line order with an UP tick box, then the second
+  // column (brought to line) greyed for awareness. Stencil cut / blasting
+  // queue stay off the sheet. The builder reads columns[0] and columns[1].
   const printFloor = () => {
     const columns = phases.map(p => ({
       label: phaseLabel(p),
@@ -280,7 +282,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
     const html = buildFloorPrintHtml({
       trackLabel: TAB_LABEL[track] || track,
       columns,
-      lineLine: track === 'new_stone' && running.length ? `Running: ${running.map(lineLabel).join(' + ')}` : null,
+      lineLine: track === 'new_stone' && running.length ? running.map(lineLabel).join(' + ') : null,
     })
     if (!openPrintSheet(html)) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
   }
@@ -424,7 +426,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
         </div>
         <div className="jobcc-cmd-right">
           <div className="jobcc-actions">
-            <button type="button" className="jobcc-btn pf-printbtn" title="One page, landscape — every column as it sits, contract die sizes, blockers in red" onClick={printFloor}>Print the floor</button>
+            <button type="button" className="jobcc-btn pf-printbtn" title="Portrait list — ready to bring up in line order with an UP box, then brought to line for awareness; contract die sizes, blockers in red" onClick={printFloor}>Print the floor</button>
             {/* Lines are a NEW STONE concept — the Line Planner (and the cap
                 notice below) only live on that track (Paul 2026-10-08: "bronze
                 i don't need line planner, remove that"). Inscriptions get the

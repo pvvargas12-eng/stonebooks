@@ -59,6 +59,25 @@ const CSS = (orientation) => `
   .ft .key { display: flex; gap: 14px; flex-wrap: wrap; }
   .ft .key span { display: inline-flex; align-items: center; gap: 4px; }
   .ft .sq { width: 9px; height: 9px; display: inline-block; border: 1.5px solid #C8102E; }
+  .ft .sq2 { width: 9px; height: 9px; display: inline-block; border: 1.5px solid #111; }
+  /* the floor list (portrait): two sections, line order */
+  .sec { break-inside: auto; }
+  .sec-h { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0 3px; margin-top: 4px; font-weight: 700; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; border-bottom: 2px solid #111; }
+  .sec-h small { font-weight: 400; font-size: 9.5px; letter-spacing: .02em; text-transform: none; color: #555; margin-left: 6px; }
+  .sec-h .n { font-family: Consolas, "Courier New", monospace; font-weight: 600; }
+  .sec td.o, .sec td.c { font-family: Consolas, "Courier New", monospace; font-size: 10px; color: #444; }
+  .sec td.o, .sec td.n { white-space: nowrap; }
+  .sec td.s { font-size: 10.5px; white-space: nowrap; }
+  .sec td.f { white-space: nowrap; }
+  .sec td.bl { min-width: 0; }
+  .sec td.bl .b { color: #C8102E; font-weight: 700; font-size: 10px; letter-spacing: .02em; display: flex; align-items: center; gap: 4px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .sec td.bl .b::before { content: ""; width: 9px; height: 9px; border: 1.5px solid #C8102E; display: inline-block; flex: none; }
+  .sec td.bl .note { display: block; }
+  .sec td.empty { padding: 10px 6px; color: #666; font-style: italic; border-bottom: 0; }
+  .sec.aware .sec-h { border-bottom-color: #777; color: #444; }
+  .sec.aware td { color: #555; border-bottom-color: #e4e4e4; }
+  .sec.aware td.f { color: #333; }
+  .sec.aware td.bl .b { color: #C8102E; }
 `
 
 const wrap = (title, orientation, body) => `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${CSS(orientation)}</style></head><body>
@@ -93,30 +112,48 @@ export function pieceFacts(c, { lineTag = null } = {}) {
   }
 }
 
-// THE FLOOR — one column per board phase, the cards as they sit.
-// columns: [{ label, cards: [pieceFacts…] }]
+// THE FLOOR — Paul's draft (2026-10-14, artifact 8KwZw5BpgJPTMqL1KW4yZT):
+// ONE PORTRAIT LIST. The first board column (Ready to Bring Up) as line
+// items in line order with an UP tick box, then the second column (Brought
+// to Line) below it, greyed, for awareness. Stencil cut / blasting queue stay
+// off the sheet ("if it's already up it's in the blasting queue"). Runs onto
+// a second page when the line is long — rows are never cut.
+// columns: [{ label, cards: [pieceFacts…] }] in board-phase order.
+const posOf = (x) => { const m = /#(\d+)/.exec(x.lineTag || ''); return m ? Number(m[1]) : 9999 }
 export function buildFloorPrintHtml({ trackLabel, columns, lineLine = null }) {
-  const total = columns.reduce((s, c) => s + c.cards.length, 0)
-  const blocked = columns.reduce((s, c) => s + c.cards.filter(x => x.blockers.length).length, 0)
+  const ready = columns[0] || { label: 'Ready to bring up', cards: [] }
+  const up = columns[1] || null
+  const sortLine = (cards) => cards.slice().sort((a, b) => posOf(a) - posOf(b) || String(a.family).localeCompare(String(b.family)))
+  const readyRows = sortLine(ready.cards)
+  const upRows = up ? sortLine(up.cards) : []
+  const notPaid = [...readyRows, ...upRows].filter(x => x.blockers.some(b => b.startsWith('NOT PAID'))).length
+  const blocked = [...readyRows, ...upRows].filter(x => x.blockers.length).length
+  const row = (x, tick) => `<tr>
+    <td class="n">${x.lineTag ? esc(String(x.lineTag).replace(/^L\d+\s*#/, '')) : ''}</td>
+    <td class="f">${esc(x.family)}</td>
+    <td class="s">${esc(x.size || '—')}</td>
+    <td class="o">${esc(x.orderNo || '')}</td>
+    <td class="c">${esc(x.cemetery || '')}</td>
+    <td class="bl">${x.blockers.map(b => `<span class="b">${esc(b)}</span>`).join('')}${x.notes.map(n => `<span class="note">${esc(n)}</span>`).join('')}</td>
+    <td class="chk">${tick ? '<i></i>' : ''}</td>
+  </tr>`
+  const section = (label, hint, rows, tick, tickHead) => `<div class="sec${tick ? '' : ' aware'}">
+    <div class="sec-h"><span>${esc(label)}${hint ? ` <small>${esc(hint)}</small>` : ''}</span><span class="n">${rows.length}</span></div>
+    <table>
+      <thead><tr><th>#</th><th>Family</th><th>Die size (contract)</th><th>Order</th><th>Cemetery</th><th>Blockers</th><th>${tickHead}</th></tr></thead>
+      <tbody>${rows.length ? rows.map(x => row(x, tick)).join('') : '<tr><td colspan="7" class="empty">Nothing here</td></tr>'}</tbody>
+    </table>
+  </div>`
   const body = `<div class="sheet">
   <div class="hd">
-    <div><h1>PRODUCTION FLOOR — ${esc(String(trackLabel).toUpperCase())}</h1><div class="sub">${esc(lineLine || '')}${lineLine ? ' &nbsp;·&nbsp; ' : ''}Shevchenko Monuments &nbsp;·&nbsp; printed ${esc(when())}</div></div>
-    <div class="counts"><b>${total} on the floor</b><br>${blocked ? `<span class="r">${blocked} with a blocker</span>` : '<b>0 blocked</b>'}</div>
+    <div><h1>PRODUCTION FLOOR${lineLine ? ` — ${esc(String(lineLine).toUpperCase())}` : ''}</h1><div class="sub">${esc(String(trackLabel).toUpperCase())} &nbsp;·&nbsp; Shevchenko Monuments &nbsp;·&nbsp; printed ${esc(when())}</div></div>
+    <div class="counts"><b>${readyRows.length} to bring up</b>${up ? ` · ${upRows.length} on the line` : ''}<br>${notPaid ? `<span class="r">${notPaid} not paid in full</span>` : (blocked ? `<span class="r">${blocked} with a blocker</span>` : '<b>nothing blocked</b>')}</div>
   </div>
-  <div class="grid" style="grid-template-columns: repeat(${columns.length}, minmax(0, 1fr))">
-    ${columns.map(col => `<div class="col"><div class="col-h"><span>${esc(col.label)}</span><span class="n">${col.cards.length}</span></div>
-      ${col.cards.length === 0 ? '<div class="empty">Nothing here</div>' : col.cards.map(x => `<div class="card">
-        <div class="fam">${esc(x.family)}${x.lineTag ? `<span class="tag">${esc(x.lineTag)}</span>` : ''}</div>
-        ${x.size ? `<div class="size">${esc(x.size)}</div>` : ''}
-        ${(x.orderNo || x.cemetery) ? `<div class="meta">${esc([x.orderNo, x.cemetery].filter(Boolean).join(' · '))}</div>` : ''}
-        ${x.blockers.length ? `<div class="blk">${x.blockers.map(b => `<span class="b">${esc(b)}</span>`).join('')}</div>` : ''}
-        ${x.notes.map(n => `<div class="note">${esc(n)}</div>`).join('')}
-      </div>`).join('')}
-    </div>`).join('')}
-  </div>
-  ${footer('Stonebooks · Production floor')}
+  ${section(ready.label, 'in line order', readyRows, true, 'Up')}
+  ${up ? section(up.label, 'already up, for awareness', upRows, false, '') : ''}
+  <div class="ft"><div class="key"><span><i class="sq"></i><span class="r">RED</span> = blocker</span><span><i class="sq2"></i> tick UP when the stone is brought to the line</span><span>Die size = the contract's die line</span></div><div>Stonebooks · Production floor</div></div>
 </div>`
-  return wrap(`Production floor — ${trackLabel}`, 'landscape', body)
+  return wrap(`Production floor — ${trackLabel}`, 'portrait', body)
 }
 
 // A decorated floor line (floorLines.decorateLines + attachLineMoney) → the
