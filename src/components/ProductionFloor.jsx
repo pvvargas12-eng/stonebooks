@@ -18,12 +18,12 @@ import {
   setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
   getBringUpReady,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
-  fmtUSD,
+  fmtUSD, getOrderBalancesByIds,
 } from '../lib/stonebooksData'
 import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney } from '../lib/floorLines'
-import { openPrintSheet } from '../lib/weekPrintSheet'
+import { openPrintSheet, openPrintSheetAsync } from '../lib/weekPrintSheet'
 import { buildFloorPrintHtml, buildLineSheetsHtml, pieceFacts, lineSheetFrom } from '../lib/floorPrintSheet'
 import LinePlanner from './LinePlanner'
 import InstallPlanner from './InstallPlanner'
@@ -275,16 +275,21 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   // column (brought to line) greyed for awareness. Stencil cut / blasting
   // queue stay off the sheet. The builder reads columns[0] and columns[1].
   const printFloor = () => {
-    const columns = phases.map(p => ({
-      label: phaseLabel(p),
-      cards: floor.filter(c => c.current_phase === p).map(c => pieceFacts(c, { lineTag: lineTagById.get(c.id) || null })),
-    }))
-    const html = buildFloorPrintHtml({
-      trackLabel: TAB_LABEL[track] || track,
-      columns,
-      lineLine: track === 'new_stone' && running.length ? running.map(lineLabel).join(' + ') : null,
+    const ok = openPrintSheetAsync(async () => {
+      const printed = floor.filter(c => c.current_phase === phases[0] || c.current_phase === phases[1])
+      const ids = [...new Set(printed.map(c => c.order_id || c.order?.id).filter(Boolean))]
+      const bal = ids.length ? await getOrderBalancesByIds(ids).catch(() => ({})) : {}
+      const columns = phases.map(p => ({
+        label: phaseLabel(p),
+        cards: floor.filter(c => c.current_phase === p).map(c => pieceFacts(c, { lineTag: lineTagById.get(c.id) || null, balance: bal[c.order_id || c.order?.id] || null })),
+      }))
+      return buildFloorPrintHtml({
+        trackLabel: TAB_LABEL[track] || track,
+        columns,
+        lineLine: track === 'new_stone' && running.length ? running.map(lineLabel).join(' + ') : null,
+      })
     })
-    if (!openPrintSheet(html)) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
+    if (!ok) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
   }
   const printLine = (line) => {
     const html = buildLineSheetsHtml({ lines: [lineSheetFrom(line, compById, { phaseLabel })] })

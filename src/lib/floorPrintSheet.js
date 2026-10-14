@@ -67,12 +67,16 @@ const CSS = (orientation) => `
   .sec-h .n { font-family: Consolas, "Courier New", monospace; font-weight: 600; }
   .sec td.o, .sec td.c { font-family: Consolas, "Courier New", monospace; font-size: 10px; color: #444; }
   .sec td.o, .sec td.n { white-space: nowrap; }
-  .sec td.s { font-size: 10.5px; white-space: nowrap; }
+  .sec td.s { font-size: 10.5px; }
   .sec td.f { white-space: nowrap; }
   .sec td.bl { min-width: 0; }
   .sec td.bl .b { color: #C8102E; font-weight: 700; font-size: 10px; letter-spacing: .02em; display: flex; align-items: center; gap: 4px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .sec td.bl .b::before { content: ""; width: 9px; height: 9px; border: 1.5px solid #C8102E; display: inline-block; flex: none; }
-  .sec td.bl .note { display: block; }
+  .sec td.bl .b { white-space: nowrap; flex-wrap: wrap; row-gap: 1px; }
+  .sec td.bl .b em { font-style: normal; font-family: Consolas, "Courier New", monospace; font-weight: 600; font-size: 10.5px; color: #111; flex-basis: 100%; padding-left: 13px; }
+  .nosize { display: block; font-family: "Segoe UI", Arial, sans-serif; font-size: 9px; font-style: italic; color: #777; }
+  table.list { table-layout: fixed; }
+  .sec td.s { white-space: normal; }
   .sec td.empty { padding: 10px 6px; color: #666; font-style: italic; border-bottom: 0; }
   .sec.aware .sec-h { border-bottom-color: #777; color: #444; }
   .sec.aware td { color: #555; border-bottom-color: #e4e4e4; }
@@ -89,7 +93,7 @@ ${body}
 const footer = (right) => `<div class="ft"><div class="key"><span><i class="sq"></i><span class="r">RED</span> = blocker, tick when cleared</span><span>Die size = the contract's die line</span></div><div>${esc(right)}</div></div>`
 
 // A piece as it prints — the same facts the floor card shows.
-export function pieceFacts(c, { lineTag = null } = {}) {
+export function pieceFacts(c, { lineTag = null, balance = null } = {}) {
   const o = c?.order || {}
   const blockers = []
   if (c?.qc_issue) blockers.push(`HELD — ${c.qc_issue}`)
@@ -108,6 +112,8 @@ export function pieceFacts(c, { lineTag = null } = {}) {
     orderNo: o.order_number || c?.cemetery_order?.order_number || '',
     cemetery: o.cemetery?.name || c?.cemetery_order?.cemetery_name || '',
     due: o.target_completion_date || null,
+    orderId: o.id || null,
+    owed: balance && Number.isFinite(Number(balance.owed)) ? Number(balance.owed) : null,
     lineTag, blockers, notes,
   }
 }
@@ -126,32 +132,40 @@ export function buildFloorPrintHtml({ trackLabel, columns, lineLine = null }) {
   const sortLine = (cards) => cards.slice().sort((a, b) => posOf(a) - posOf(b) || String(a.family).localeCompare(String(b.family)))
   const readyRows = sortLine(ready.cards)
   const upRows = up ? sortLine(up.cards) : []
-  const notPaid = [...readyRows, ...upRows].filter(x => x.blockers.some(b => b.startsWith('NOT PAID'))).length
-  const blocked = [...readyRows, ...upRows].filter(x => x.blockers.length).length
+  // Paul (2026-10-14, round 2): the ONLY blocker on this sheet is NOT PAID IN
+  // FULL, with the money next to it; the line total owed sits in the header.
+  const all = [...readyRows, ...upRows]
+  const unpaid = (x) => x.blockers.some(b => b.startsWith('NOT PAID'))
+  const notPaid = all.filter(unpaid).length
+  const seen = new Set()
+  let owedTotal = 0, owedKnown = false
+  for (const x of all) { if (!unpaid(x) || x.owed == null) continue; const k = x.orderId || x.orderNo; if (seen.has(k)) continue; seen.add(k); owedTotal += x.owed; owedKnown = true }
+  const hasDims = (t) => /\d+\s*-\s*\d+|\d+\s*["″]|\d+\s*[xX×]\s*\d+/.test(t || '')
   const row = (x, tick) => `<tr>
     <td class="n">${x.lineTag ? esc(String(x.lineTag).replace(/^L\d+\s*#/, '')) : ''}</td>
     <td class="f">${esc(x.family)}</td>
-    <td class="s">${esc(x.size || '—')}</td>
+    <td class="s">${esc(x.size || '—')}${hasDims(x.size) ? '' : '<span class="nosize">no size on the contract</span>'}</td>
     <td class="o">${esc(x.orderNo || '')}</td>
     <td class="c">${esc(x.cemetery || '')}</td>
-    <td class="bl">${x.blockers.map(b => `<span class="b">${esc(b)}</span>`).join('')}${x.notes.map(n => `<span class="note">${esc(n)}</span>`).join('')}</td>
+    <td class="bl">${unpaid(x) ? `<span class="b">NOT PAID IN FULL${x.owed != null ? ` <em>${esc(fmtUSD(x.owed))}</em>` : ''}</span>` : ''}</td>
     <td class="chk">${tick ? '<i></i>' : ''}</td>
   </tr>`
   const section = (label, hint, rows, tick, tickHead) => `<div class="sec${tick ? '' : ' aware'}">
     <div class="sec-h"><span>${esc(label)}${hint ? ` <small>${esc(hint)}</small>` : ''}</span><span class="n">${rows.length}</span></div>
-    <table>
-      <thead><tr><th>#</th><th>Family</th><th>Die size (contract)</th><th>Order</th><th>Cemetery</th><th>Blockers</th><th>${tickHead}</th></tr></thead>
+    <table class="list">
+      <colgroup><col style="width:28px"><col style="width:17%"><col><col style="width:66px"><col style="width:17%"><col style="width:132px"><col style="width:28px"></colgroup>
+      <thead><tr><th>#</th><th>Family</th><th>Die size (contract)</th><th>Order</th><th>Cemetery</th><th>Paid</th><th>${tickHead}</th></tr></thead>
       <tbody>${rows.length ? rows.map(x => row(x, tick)).join('') : '<tr><td colspan="7" class="empty">Nothing here</td></tr>'}</tbody>
     </table>
   </div>`
   const body = `<div class="sheet">
   <div class="hd">
     <div><h1>PRODUCTION FLOOR${lineLine ? ` — ${esc(String(lineLine).toUpperCase())}` : ''}</h1><div class="sub">${esc(String(trackLabel).toUpperCase())} &nbsp;·&nbsp; Shevchenko Monuments &nbsp;·&nbsp; printed ${esc(when())}</div></div>
-    <div class="counts"><b>${readyRows.length} to bring up</b>${up ? ` · ${upRows.length} on the line` : ''}<br>${notPaid ? `<span class="r">${notPaid} not paid in full</span>` : (blocked ? `<span class="r">${blocked} with a blocker</span>` : '<b>nothing blocked</b>')}</div>
+    <div class="counts"><b>${readyRows.length} to bring up</b>${up ? ` · ${upRows.length} on the line` : ''}<br>${notPaid ? `<span class="r">${owedKnown ? `${esc(fmtUSD(owedTotal))} OWED` : ''} · ${notPaid} not paid in full</span>` : '<b>PAID IN FULL</b>'}</div>
   </div>
   ${section(ready.label, 'in line order', readyRows, true, 'Up')}
   ${up ? section(up.label, 'already up, for awareness', upRows, false, '') : ''}
-  <div class="ft"><div class="key"><span><i class="sq"></i><span class="r">RED</span> = blocker</span><span><i class="sq2"></i> tick UP when the stone is brought to the line</span><span>Die size = the contract's die line</span></div><div>Stonebooks · Production floor</div></div>
+  <div class="ft"><div class="key"><span><i class="sq"></i><span class="r">NOT PAID IN FULL</span> = balance still owed</span><span><i class="sq2"></i> tick UP when the stone is brought to the line</span><span>Die size = the contract's die line</span></div><div>Stonebooks · Production floor</div></div>
 </div>`
   return wrap(`Production floor — ${trackLabel}`, 'portrait', body)
 }

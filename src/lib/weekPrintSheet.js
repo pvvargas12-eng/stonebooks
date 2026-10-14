@@ -154,6 +154,25 @@ export function buildWeekPrintHtml({ title, subtitle, days, printedAt = new Date
 
 // Open the sheet in its own tab and hand it to the printer. Must be called
 // from a click (popup blockers). Returns false when the window was blocked.
+// Same, but the sheet needs a fetch first (balances…). The tab is opened
+// synchronously inside the click so pop-up blockers stay quiet, shows a
+// placeholder, then the real sheet replaces it. Returns false only when
+// the browser refused the window.
+export function openPrintSheetAsync(build) {
+  const w = window.open('', '_blank')
+  if (!w) return false
+  w.document.open()
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Preparing the sheet</title></head><body style="font:14px Segoe UI,Arial,sans-serif;padding:24px;color:#444">Preparing the sheet…</body></html>')
+  w.document.close()
+  Promise.resolve().then(build).then((html) => {
+    w.document.open(); w.document.write(html); w.document.close()
+    try { w.focus() } catch { /* ignore */ }
+  }).catch((e) => {
+    w.document.open(); w.document.write('<!doctype html><html><body style="font:14px Segoe UI,Arial,sans-serif;padding:24px;color:#B00020">Could not build the sheet: ' + String(e?.message || e).replace(/[<>&]/g, '') + '</body></html>'); w.document.close()
+  })
+  return true
+}
+
 export function openPrintSheet(html) {
   const w = window.open('', '_blank')
   if (!w) return false
