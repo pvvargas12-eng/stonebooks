@@ -20,6 +20,8 @@ import {
   DEFAULT_LINE_CAPACITY,
   attachLineMoney,
 } from '../lib/floorLines'
+import { openPrintSheet } from '../lib/weekPrintSheet'
+import { buildLineSheetsHtml, lineSheetFrom } from '../lib/floorPrintSheet'
 
 const DAY_MS = 86400000
 const niceCase = (s) => {
@@ -109,6 +111,15 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
   const target = unstarted.find(l => l.counts.total < (l.capacity || DEFAULT_LINE_CAPACITY)) || unstarted[unstarted.length - 1] || null
   const nextAfter = (line) => all.find(l => l.number > line.number && l.status !== 'complete') || null
 
+  // PRINT (Paul 2026-10-14: "print each line with the die size") — one page
+  // per line, a table: # · family · contract die size · order · cemetery ·
+  // due · where · blockers (red) · OUT tick box.
+  const printLines = (list) => {
+    const sheets = list.map(l => lineSheetFrom(l, compById, { phaseLabel }))
+    if (!sheets.length) return
+    if (!openPrintSheet(buildLineSheetsHtml({ lines: sheets }))) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
+  }
+
   const addTo = (line, list) => run(async () => {
     const r = await addStonesToLine(line.id, list)
     if (r.ok && line.counts.total + r.added > (line.capacity || DEFAULT_LINE_CAPACITY)) setCapWarn({ lineId: line.id })
@@ -187,6 +198,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
         )}
         <div className="lp-line-acts">
           <button type="button" className="pf-btn" onClick={() => toggleOpen(l.id)}>{isOpen ? 'Hide list' : `Open list (${c.open})`}</button>
+          <button type="button" className="pf-btn" title="Print this line — every stone with its contract die size" onClick={() => printLines([l])}>Print</button>
           {(l.status === 'on_deck' || l.status === 'planning') && c.open < cap && pool.length > 0 && (
             <button type="button" className="pf-btn pf-btn-gold" disabled={busy} onClick={() => fillByDue(l)}>Fill the rest by due date</button>
           )}
@@ -248,6 +260,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
         </div>
         <div className="jobcc-cmd-right">
           <div className="jobcc-actions">
+            <button type="button" className="jobcc-btn lp-printbtn" title="Every open line, one page each — contract die sizes, blockers in red" onClick={() => printLines(live)}>Print all lines</button>
             <button type="button" className="pf-lp-btn" disabled={busy} onClick={() => run(() => createFloorLine())}>+ New line</button>
           </div>
         </div>
@@ -346,6 +359,8 @@ const LP_CSS = `
   .lp-capnote { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 7px; padding: 6px 9px; font-size: 11px; color: #fbbf24; }
   .lp-capnote span { flex: 1 1 240px; min-width: 0; }
   .lp-line-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .lp-printbtn { border-color: #C9A468 !important; color: #C9A468 !important; font-weight: 700; }
+  .lp-printbtn:hover { background: #C9A468 !important; color: #0F1419 !important; }
   .lp-cap { margin-left: auto; font-size: 10.5px; color: #6f7a8a; display: inline-flex; align-items: center; gap: 4px; }
   .lp-cap input { width: 48px; font: inherit; font-size: 11px; background: #0E1116; border: 1px solid #2a313c; border-radius: 6px; color: #c7cedb; padding: 2px 5px; }
   .lp-list { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid #232a35; padding-top: 7px; }

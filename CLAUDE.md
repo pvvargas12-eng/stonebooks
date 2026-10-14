@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint PRINT-FLOOR (2026-10-14): print the production floor + print each line with the contract die size
+
+Paul (floor screenshot): "I must be able to print this, also I want to be able to print each line with the Die Size — again did we ever fix the issue with the line item die size being the accurate one?" Answer: yes since SIZE-TRUTH-2 (2026-10-08) — components carry `contractDieLabel` read-time, so the floor, the lines, the cut list and these prints all show the contract's die line (rename → override → spec).
+
+- **`src/lib/floorPrintSheet.js`** — `pieceFacts(comp, {lineTag})` = family, contract die size, order #, cemetery, due, blockers in red (HELD — qc issue, the component blocker e.g. NEEDS FIXING, NOT PAID IN FULL, PERMIT NOT APPROVED for denied/other; submitted/pending permits print as a plain note), notes. `buildFloorPrintHtml({trackLabel, columns, lineLine})` = letter LANDSCAPE, one column per board phase, cards with the L1 #n tag; header counts on-floor / with a blocker. `lineSheetFrom(line, compById, {phaseLabel})` + `buildLineSheetsHtml({lines})` = letter PORTRAIT, one page per line (page-break), a table: # · Family · Die size (contract) · Order · Cemetery · Due · Where · Blockers (red, tick boxes) · OUT tick box; header = line + week, status, N on the line + N blasted out, **$X OWED in red** + contract value. Same ink doctrine as the week sheet; `openPrintSheet` from weekPrintSheet.
+- **Production floor:** gold **Print the floor** button (every track) in the header; the active line strip's footer gained **Print Line N** (`LineZone onPrint`). Prints the board's `floor` pieces by phase (ALSO extras not duplicated — primary cards only).
+- **Line Planner:** **Print all lines** (every non-complete line, one page each) in the header + a per-line **Print** button in the action row. Rows = `line.open` (blasted stones already gone).
+- Verified: stub smoke test (floor 7 red chips / lines 7 rows) rendered in the dev server and eyeballed; build + lint green (214 warnings, unchanged).
+
 ## Fix LINES-3 (2026-10-12): blasted stones leave the line by themselves, Mark complete gone
 
 Paul (Line Planner open list): "if they are blasted automatically remove them from the line, also remove the mark complete because we individually mark off each stone when blasted."

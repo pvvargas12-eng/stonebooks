@@ -23,6 +23,8 @@ import {
 import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney } from '../lib/floorLines'
+import { openPrintSheet } from '../lib/weekPrintSheet'
+import { buildFloorPrintHtml, buildLineSheetsHtml, pieceFacts, lineSheetFrom } from '../lib/floorPrintSheet'
 import LinePlanner from './LinePlanner'
 import InstallPlanner from './InstallPlanner'
 
@@ -103,7 +105,7 @@ const PF_MEM = { track: 'new_stone', addCol: null, addQ: '', view: 'floor' }
 // want the active line visual larger, this is so small"); on deck / future
 // lines live in the Line Planner.
 const TONE_TITLE = { ready: 'Ready to bring up', up: 'Brought to line', cut: 'Stencil cut', blast: 'Blasting queue', out: 'Blasted — on the install list' }
-function LineZone({ line, compById, onPlanner }) {
+function LineZone({ line, compById, onPlanner, onPrint }) {
   const c = line.counts
   const pct = (n) => c.total ? `${Math.round((n / c.total) * 100)}%` : '0%'
   return (
@@ -143,6 +145,7 @@ function LineZone({ line, compById, onPlanner }) {
       </div>
       <div className="pf-line-foot">
         <span>Completes when every stone is blasted.{c.waiting === 0 && c.blasted < c.total ? ' All up — the next line can start early from the Line Planner.' : ''}</span>
+        {onPrint && <button type="button" className="pf-funnel-link" title="Print this line — every stone with its contract die size" onClick={() => onPrint(line)}>Print {lineLabel(line)}</button>}
         <button type="button" className="pf-funnel-link" onClick={onPlanner}>On deck + future lines →</button>
       </div>
     </div>
@@ -266,6 +269,25 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
   // Soft cap (Paul round 2): over 18 = a brief message recommending another
   // line, never a wall.
   const capLine = running.find(l => l.overCap && capDismissed !== `${l.id}:${l.counts.open}`) || null
+
+  // PRINT (Paul 2026-10-14): the board as it sits — one column per phase,
+  // the cards with the contract die size and blockers in red.
+  const printFloor = () => {
+    const columns = phases.map(p => ({
+      label: phaseLabel(p),
+      cards: floor.filter(c => c.current_phase === p).map(c => pieceFacts(c, { lineTag: lineTagById.get(c.id) || null })),
+    }))
+    const html = buildFloorPrintHtml({
+      trackLabel: TAB_LABEL[track] || track,
+      columns,
+      lineLine: track === 'new_stone' && running.length ? `Running: ${running.map(lineLabel).join(' + ')}` : null,
+    })
+    if (!openPrintSheet(html)) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
+  }
+  const printLine = (line) => {
+    const html = buildLineSheetsHtml({ lines: [lineSheetFrom(line, compById, { phaseLabel })] })
+    if (!openPrintSheet(html)) setErr('The browser blocked the print window — allow pop-ups for Stonebooks and try again.')
+  }
   const startNewLine = async () => {
     setLineBusy(true)
     const r = await createFloorLine()
@@ -402,6 +424,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
         </div>
         <div className="jobcc-cmd-right">
           <div className="jobcc-actions">
+            <button type="button" className="jobcc-btn pf-printbtn" title="One page, landscape — every column as it sits, contract die sizes, blockers in red" onClick={printFloor}>Print the floor</button>
             {/* Lines are a NEW STONE concept — the Line Planner (and the cap
                 notice below) only live on that track (Paul 2026-10-08: "bronze
                 i don't need line planner, remove that"). Inscriptions get the
@@ -445,7 +468,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail }) {
       {/* The line strip — active line(s) + on deck (LINES-1). New stone only. */}
       {track === 'new_stone' && lines && (
         <section className="pf-lines">
-          {running.map(l => <LineZone key={l.id} line={l} compById={compById} onPlanner={() => setView('planner')} />)}
+          {running.map(l => <LineZone key={l.id} line={l} compById={compById} onPlanner={() => setView('planner')} onPrint={printLine} />)}
           {!running.length && (
             <div className="pf-line pf-line-none">No line running — open the <button type="button" className="pf-funnel-link" onClick={() => setView('planner')}>Line Planner</button> to build and start one.</div>
           )}
@@ -934,6 +957,8 @@ const PF_CSS = `
   .pf-menu button:hover { background: #1a212b; color: #f4f6fa; }
 
   /* ── LINES-1: the Line Planner button + the line strip ── */
+  .pf-printbtn { border-color: #C9A468 !important; color: #C9A468 !important; font-weight: 700; }
+  .pf-printbtn:hover { background: #C9A468 !important; color: #0F1419 !important; }
   .pf-lp-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 12.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 9px 16px; border-radius: 999px; border: 1px solid #C9A468; background: linear-gradient(135deg, #2a2210 0%, #1a212b 60%); color: #fbbf24; cursor: pointer; box-shadow: 0 0 0 1px rgba(201,164,104,0.15), 0 6px 18px rgba(201,164,104,0.12); transition: transform .12s ease, box-shadow .12s ease; }
   .pf-lp-btn:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(201,164,104,0.3), 0 10px 24px rgba(201,164,104,0.2); color: #ffd36a; }
   .pf-lines { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 14px; }
