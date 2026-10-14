@@ -10781,7 +10781,7 @@ function buildSteps(order) {
   return keys.map(k => ({ key: k, ...STEP_DEFS[k] }))
 }
 
-export default function SalesMode({ onClose, initialOrderId = null, seedDesign = null }) {
+export default function SalesMode({ onClose, initialOrderId = null, seedDesign = null, initialStep = null }) {
   // Resume / load. A catalog `seedDesign` (no initialOrderId) opens straight into
   // a fresh wizard with that monument pre-selected as the PRIMARY design — the
   // only field that maps cleanly. Seeded at init (not via an effect) so there's
@@ -10821,7 +10821,10 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
       if (loaded) {
         setOrder(loaded)
         lastSavedJsonRef.current = JSON.stringify(loaded)
-        setStepIdx(0)
+        // The shell can land us on a named step (the order form's "Save and
+        // re-sign" opens straight onto Sign); unknown keys fall back to 0.
+        const want = initialStep ? buildSteps(loaded).findIndex(s => s.key === initialStep) : -1
+        setStepIdx(want >= 0 ? want : 0)
       }
       setPhase('wizard')
     })

@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Fix UNLOCK-IN-FORM (2026-10-14): unlock a signed contract from Edit order, then Save and re-sign
+
+Paul: "when I go to unsign and edit a signed contract it's locked unless I go in the sales portal and hit unlock and edit — I want the unlock and edit in edit order BELOW THE LINE ITEMS so it's easy to see, and then after have a button to sign and save and re-sign it."
+
+- **OrderForm (Edit order):** the locked line-items banner now says where the unlock is, and a red **Unlock & edit this signed contract** button sits right under the line items (`LineItemsBox onUnlock`, edit mode only — ContractEditor / QuotesManager mounts are untouched). `unlockContract` = the wizard's `handleUnlock` verbatim (signatures + urls/paths + signedAt + pricingLockedAt → null, status → draft, the `[CONTRACT UNLOCKED by … : prior signature voided.]` note) after a window.confirm; it also clears `markSigned` so Save can't re-stamp the old date. Local until Save. Once unlocked, a dark **Save and re-sign** strip appears under the line items and the same button joins the footer next to Save order; `submit({ resign: true })` → `onSaved(savedId, jobId, { resign })` + an order_activity row "Contract UNLOCKED from the order form".
+- **Stonebooks shell:** `openSales(orderId, step)` carries a `salesStep`; the form's re-sign hands off `openSales(savedId, 'sign')`. **SalesMode gained `initialStep`** — the resume effect lands on that step key (`buildSteps(loaded)`), unknown keys fall back to step 0. Nothing else about the wizard changed; the Sign step shows the signature surfaces because the order is now unsigned.
+- Doctrine notes: the deposit-means-contracted trigger flips the saved status back to `contracted` on save (expected — money is down); the lock reads `signedAt`/`pricingLockedAt`, not status. Storage copies of the signed PDF stay (audit), exactly like the wizard + kiosk unsign.
+- Verified: build + lint green. Behind the auth wall — Paul's first click.
+
 ## Sprint PRINT-FLOOR-2 (2026-10-14): the floor prints as ONE PORTRAIT LIST — ready to bring up in line order, then brought to line for awareness
 
 Paul rejected the landscape column print: "I want to see basically line items all on one page — all vertical on a portrait page; the first 11 would be ready to bring up, then for awareness brought to line. I don't need stencil cut or blasting queue for the printout — if it's already up it's in the blasting queue." Draft approved (artifact 8KwZw5BpgJPTMqL1KW4yZT): "ok perfect build it."

@@ -26,7 +26,7 @@ import {
   getOrderById, getJobByOrderId, createJobFromOrder,
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
   autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone, applyDepositMilestones,
-  missingCheckRef,
+  missingCheckRef, logOrderActivity,
 } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
@@ -233,6 +233,10 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   // Contract-signed toggle — drives signed_at (due-date math + "since signed").
   const [markSigned, setMarkSigned] = useState(false)
   const [signedDate, setSignedDate] = useState(() => todayISODate())
+  // Signed contract unlocked on THIS form (Paul 2026-10-14: "the unlock and
+  // edit in edit order below the line items, then a button to sign and save").
+  // The unlock is local until Save; mirrors the wizard's handleUnlock exactly.
+  const [unlocked, setUnlocked] = useState(false)
 
   // Deposit captured at entry — becomes the first payment in payments[].
   const [deposit, setDeposit] = useState({ amount: '', method: 'check', date: todayISODate(), ref: '' })
@@ -259,6 +263,21 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     return { ...o, pricing: next }
   })
   const updateInsc = (patch) => setOrder(o => ({ ...o, inscription: { ...o.inscription, ...patch } }))
+
+  const unlockContract = () => {
+    if (!window.confirm('Unlock this signed contract?\n\nThe signature is voided and the pricing opens up for editing. The contract must be signed again afterward (Save and re-sign). Storage copies of the signed PDF are kept.')) return
+    setOrder(o => ({
+      ...o,
+      customerSignature: null, repSignature: null,
+      customerSignatureUrl: null, customerSignaturePath: null,
+      repSignatureUrl: null, repSignaturePath: null,
+      signedAt: null, pricingLockedAt: null,
+      status: 'draft',
+      notes: (o.notes || '') + (o.notes ? '\n\n' : '') + `[CONTRACT UNLOCKED by ${o.salesRep || 'staff'} on ${new Date().toLocaleString()}: prior signature voided.]`,
+    }))
+    setMarkSigned(false)
+    setUnlocked(true)
+  }
 
   const changeType = (k) => {
     const on = types.includes(k)
@@ -312,8 +331,9 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const displayedTotal = priced.displayed
   const manualTotal = order.pricing?.manualTotal
 
-  const submit = async () => {
+  const submit = async (opts = {}) => {
     if (busy) return
+    const resign = !!opts.resign
     // Guard the silent-$0 order: a zero total with nothing parked on the
     // owner's quote list usually means a price/tier/type was missed.
     const nothingPending = !lineItems.some(it => it.quotePending)
@@ -397,8 +417,10 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
     // ticks the deposit milestone. Deposit-gated + idempotent; non-fatal.
     if (savedId) { try { await applyDepositMilestones(savedId) } catch (e) { console.warn('applyDepositMilestones:', e?.message) } }
 
+    if (unlocked && savedId) { try { await logOrderActivity(savedId, { type: 'contract', note: 'Contract UNLOCKED from the order form — signature voided' + (resign ? ' (re-signing)' : '') }) } catch { /* non-fatal */ } }
+
     setBusy(false)
-    onSaved?.(savedId, jid)
+    onSaved?.(savedId, jid, { resign })
   }
 
   if (loading) {
@@ -483,7 +505,8 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
               <div className="of-span-2"><FinanceCard order={order} lineItems={lineItems} totals={totals} displayedTotal={displayedTotal}
                 update={update} updatePricing={updatePricing} manualTotal={manualTotal} isEdit={isEdit}
                 deposit={deposit} setDeposit={setDeposit}
-                markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate} /></div>
+                markSigned={markSigned} setMarkSigned={setMarkSigned} signedDate={signedDate} setSignedDate={setSignedDate}
+                onUnlock={unlockContract} unlocked={unlocked} onResign={() => submit({ resign: true })} busy={busy} /></div>
             )}
 
             {sections.includes('finance') && <div className="of-span-2"><QuotesManager order={order} update={update} /></div>}
@@ -499,7 +522,12 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
           {err && <div className="of-err">{err}</div>}
           <div className="of-footer-actions">
             <button type="button" className="of-btn" onClick={onClose} disabled={busy}>Cancel</button>
-            <button type="button" className="of-btn of-btn-primary" onClick={submit} disabled={busy}>
+            {unlocked && (
+              <button type="button" className="of-btn of-btn-resign" onClick={() => submit({ resign: true })} disabled={busy}>
+                {busy ? 'Saving…' : 'Save and re-sign'}
+              </button>
+            )}
+            <button type="button" className="of-btn of-btn-primary" onClick={() => submit()} disabled={busy}>
               {busy ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save order' : 'Create order')}
             </button>
           </div>
@@ -1530,7 +1558,7 @@ function AcidWashCard({ order, update, updatePricing }) {
 // Extracted from FinanceCard so the SAME box renders inside each multi-quote
 // panel (QuotesManager) — one implementation, mount-agnostic.
 // =============================================================================
-export function LineItemsBox({ order, lineItems, update = null, updatePricing, isLocked = false }) {
+export function LineItemsBox({ order, lineItems, update = null, updatePricing, isLocked = false, onUnlock = null }) {
   const p = order.pricing || {}
   const overrides = p.lineItemOverrides || {}
   const customItems = p.customLineItems || []
@@ -1602,7 +1630,7 @@ export function LineItemsBox({ order, lineItems, update = null, updatePricing, i
     <div className="of-li">
       {isLocked && (
         <div className="of-li-locked" style={{ marginBottom: 10, padding: '8px 11px', background: '#fbf6ec', border: '1px solid #e7d9bd', borderRadius: 7, fontSize: 13, color: '#7a6a45' }}>
-          <strong>This order is signed — pricing is locked.</strong> Re-open the order to edit line items.
+          <strong>This order is signed — pricing is locked.</strong> {onUnlock ? 'Unlock it below the line items to edit, then save and re-sign.' : 'Re-open the order to edit line items.'}
         </div>
       )}
       {overriddenCount > 0 && (
@@ -1718,6 +1746,12 @@ export function LineItemsBox({ order, lineItems, update = null, updatePricing, i
         </div>
       )}
       {!isLocked && <button type="button" className="of-link of-li-add" onClick={addCustom}>+ Add line item</button>}
+      {isLocked && onUnlock && (
+        <div className="of-li-unlock">
+          <button type="button" className="of-btn of-btn-unlock" onClick={onUnlock}>Unlock &amp; edit this signed contract</button>
+          <span className="of-li-unlock-hint">Voids the signature so the line items open up. The contract has to be signed again — the form gets a Save and re-sign button once it is unlocked.</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -1725,7 +1759,7 @@ export function LineItemsBox({ order, lineItems, update = null, updatePricing, i
 // =============================================================================
 // FINANCIAL + signed date
 // =============================================================================
-function FinanceCard({ order, lineItems, totals, displayedTotal, update, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate }) {
+function FinanceCard({ order, lineItems, totals, displayedTotal, update, updatePricing, manualTotal, isEdit, deposit, setDeposit, markSigned, setMarkSigned, signedDate, setSignedDate, onUnlock = null, unlocked = false, onResign = null, busy = false }) {
   const p = order.pricing || {}
   const hasManual = manualTotal != null && manualTotal !== ''
   const ownerQuoteItems = lineItems.filter(it => it.quotePending)
@@ -1748,7 +1782,16 @@ function FinanceCard({ order, lineItems, totals, displayedTotal, update, updateP
 
   return (
     <Card title="Financial" sub="Line items, taxes, and the total. Everything here is hand-adjustable.">
-      <LineItemsBox order={order} lineItems={lineItems} update={update} updatePricing={updatePricing} isLocked={pricingLocked} />
+      <LineItemsBox order={order} lineItems={lineItems} update={update} updatePricing={updatePricing} isLocked={pricingLocked} onUnlock={isEdit ? onUnlock : null} />
+      {unlocked && !pricingLocked && (
+        <div className="of-li-resign">
+          <div>
+            <strong>Contract unlocked — the signature is voided.</strong>
+            <span> Edit what you need, then save and sign it again. The wizard opens on the Sign step.</span>
+          </div>
+          <button type="button" className="of-btn of-btn-resign" onClick={onResign} disabled={busy}>{busy ? 'Saving…' : 'Save and re-sign'}</button>
+        </div>
+      )}
 
       <div className="of-toggles">
         <CheckRow checked={p.applyTax !== false} onChange={v => updatePricing({ applyTax: v })} label="Apply NJ sales tax (6.625%)" />
@@ -2019,6 +2062,14 @@ export const OF_CSS = `
   .of-btn { font: inherit; font-size: 14px; font-weight: 600; padding: 10px 20px; border-radius: 9px; border: 0.5px solid #d8d6d1; background: #fff; color: #222; cursor: pointer; }
   .of-btn:disabled { opacity: 0.5; cursor: default; }
   .of-btn-primary { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .of-btn-unlock { background: #fff; border: 1.5px solid #B00020; color: #B00020; font-weight: 700; }
+  .of-btn-unlock:hover { background: #B00020; color: #fff; }
+  .of-btn-resign { background: #16150F; border-color: #16150F; color: #E9C46A; font-weight: 700; }
+  .of-btn-resign:hover { background: #2a2820; }
+  .of-li-unlock { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 12px; padding: 10px 12px; border: 1px dashed #B00020; border-radius: 8px; background: #fff7f7; }
+  .of-li-unlock-hint { flex: 1 1 260px; min-width: 0; font-size: 12.5px; color: #7a2b2b; overflow-wrap: anywhere; }
+  .of-li-resign { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; margin-top: 12px; padding: 10px 12px; border: 1px solid #16150F; border-radius: 8px; background: #fbf6ec; font-size: 13px; color: #3a3a3a; }
+  .of-li-resign > div { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
   .of-btn-primary:hover:not(:disabled) { background: #876307; }
   .of-btn-ghost { background: #fff; }
   .of-btn-ghost:hover { border-color: #9A7209; color: #9A7209; }

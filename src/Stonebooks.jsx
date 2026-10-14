@@ -331,6 +331,7 @@ export default function Stonebooks() {
   const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
   const [salesCemeteryEdit, setSalesCemeteryEdit] = useState(false)  // true → wizard opens in edit mode (submitted order)
   const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
+  const [salesStep, setSalesStep] = useState(null)         // optional wizard step key to open on (e.g. 'sign' after an unlock)
   // New Order form (single-screen, type-aware). orderFormId null = new, set = edit.
   const [orderFormOpen, setOrderFormOpen] = useState(false)
   const [orderFormId, setOrderFormId] = useState(null)
@@ -380,8 +381,9 @@ export default function Stonebooks() {
   const [orderDetailAction, setOrderDetailAction] = useState(null) // optional auto-action on open (e.g. 'email')
 
   // Open Sales Mode — either fresh (no id) or with a specific order
-  const openSales = (orderId = null) => {
+  const openSales = (orderId = null, step = null) => {
     setSalesOrderId(orderId)
+    setSalesStep(orderId ? step : null)
     // Resuming an existing order goes straight into the family wizard; a fresh
     // "+ New sale" leaves salesKind null so the order-type chooser shows first.
     setSalesKind(orderId ? 'family' : null)
@@ -413,6 +415,7 @@ export default function Stonebooks() {
   const closeSales = () => {
     setSalesOpen(false)
     setSalesOrderId(null)
+    setSalesStep(null)
     setSalesCemeteryId(null)
     setSalesCemeteryEdit(false)
     setSalesKind(null)
@@ -675,7 +678,7 @@ export default function Stonebooks() {
   // order-type chooser; resuming an order (salesKind preset to 'family') skips it.
   if (salesOpen) {
     if (salesKind === 'family') {
-      return <Suspense fallback={<TabFallback />}><SalesMode onClose={closeSales} initialOrderId={salesOrderId} /></Suspense>
+      return <Suspense fallback={<TabFallback />}><SalesMode onClose={closeSales} initialOrderId={salesOrderId} initialStep={salesStep} /></Suspense>
     }
     if (salesKind === 'cemetery') {
       return <Suspense fallback={<TabFallback />}><CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} /></Suspense>
@@ -698,7 +701,13 @@ export default function Stonebooks() {
         <OrderForm
           orderId={orderFormId}
           onClose={closeOrderForm}
-          onSaved={(savedId) => { closeOrderForm(); if (savedId) setOrderDetailId(savedId); setTab('orders') }}
+          onSaved={(savedId, _jobId, opts) => {
+            closeOrderForm()
+            // Unlocked + "Save and re-sign" → straight into the wizard's Sign step.
+            if (opts?.resign && savedId) { openSales(savedId, 'sign'); return }
+            if (savedId) setOrderDetailId(savedId)
+            setTab('orders')
+          }}
         />
       </Suspense>
     )
