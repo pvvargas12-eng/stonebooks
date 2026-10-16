@@ -39,12 +39,13 @@ export {
 }
 
 // ── NEW / CORRECTED rates introduced by this build ──────────────────────────
-export const CUSTOM_DIE_RATE_PER_SQIN     = 4.55   // custom die: face (L × H) × this
+export const CUSTOM_DIE_RATE_PER_SQIN     = 4.75   // custom die: face (L × H) × this — July 2026 sheet
 export const CUSTOM_DIE_DEFAULT_THICKNESS = 8      // middle dim default (inches)
-export const POLISH_SIDE_PER_FOOT         = { 8: 100, 10: 115, 12: 125 }  // by die thickness
+export const POLISH_SIDE_PER_FOOT         = { 8: 105, 10: 115, 12: 125 }  // by die thickness — July 2026 sheet ($105 at 8″)
+export const STEEL_SIDE_PER_FOOT          = 75     // steel (shot) die sides — (L + H) ÷ 12 × this — July 2026 sheet
 export const SAW_BASE_PER_FOOT            = 45     // (base length″ ÷ 12) × this, when finish = SB
 export const ALL_POLISH_BASE_PER_FOOT     = 0      // (base length″ ÷ 12) × this, when finish = AP (All Polish). ← SET the per-foot charge here (0 = no charge, like BRP/RB).
-export const BASE_POLISH_MARGIN_PER_FOOT  = 70     // 2″ polished margin — PER FOOT (corrects old flat $70)
+export const BASE_POLISH_MARGIN_PER_FOOT  = 55     // 2″ polished margin — PER FOOT — July 2026 sheet
 
 // Additional-inscription base-price tiers (sets the inscription job's base).
 // inscription.tier stores the chosen code; computeFormLineItems adds the base.
@@ -87,6 +88,7 @@ export const liveRates = {
   sawBasePerFoot: SAW_BASE_PER_FOOT,
   allPolishBasePerFoot: ALL_POLISH_BASE_PER_FOOT,
   basePolishMarginPerFoot: BASE_POLISH_MARGIN_PER_FOOT,
+  steelSidePerFoot: STEEL_SIDE_PER_FOOT,
   customFontAddon: CUSTOM_FONT_ADDON,
   njTax: NJ_TAX_RATE,
   ccSurcharge: CC_SURCHARGE,
@@ -98,6 +100,9 @@ export const BASE_FINISHES = [
   { code: 'RB',  label: 'RB (rock pitch)' },
   { code: 'BRP', label: 'BRP (balance rock pitch)' },
   { code: 'AP',  label: 'All Polish' },
+  // Paul 2026-10-16: the base options are saw back, BRP, all sawn. AS = every
+  // side sawn — priced like SB over the base PERIMETER instead of the length.
+  { code: 'AS',  label: 'AS (all sawn)' },
 ]
 
 // Monument "Type" → shape filter for the type dropdown (form-facing labels).
@@ -288,15 +293,15 @@ export const BRONZE_WORK_TYPES = [
 export const bronzeWorkTypeLabel = (code) =>
   (BRONZE_WORK_TYPES.find(w => w.code === code) || BRONZE_WORK_TYPES[0]).label
 export const BRONZE_SIZES = [
-  { code: '24x12', label: '24″ × 12″', price: 2873 },
-  { code: '24x14', label: '24″ × 14″', price: 3089 },
+  { code: '24x12', label: '24″ × 12″', price: 2935 },   // July 2026 sheet
+  { code: '24x14', label: '24″ × 14″', price: 3169 },
   // 28×16 (single) + 36×13 (companion) — from Paul's backer-match sheet
   // (2026-07-28). No sheet price → price: null = operator types the plate price.
   { code: '28x16', label: '28″ × 16″', price: null },
   { code: '36x13', label: '36″ × 13″ — Companion', price: null },
-  { code: '44x14', label: '44″ × 14″ — Companion', price: 4965 },
+  { code: '44x14', label: '44″ × 14″ — Companion', price: 5065 },
   // Lawn Crypt (Paul 2026-07-28): a 16″ × 24″ plate on a 20″ × 28″ backer.
-  { code: '16x24-lawncrypt', label: '16″ × 24″ — Lawn Crypt', price: null },
+  { code: '16x24-lawncrypt', label: '16″ × 24″ — Lawn Crypt', price: 3375 },   // July 2026 sheet: Alpine Lawn Crypt
 ]
 // Legacy flat unitized-backer price — orders saved BEFORE the per-size backer
 // system (backer:true with no backerSize) keep pricing at this figure so their
@@ -482,7 +487,23 @@ export function computeFormLineItems(order) {
   // (2) Polish die sides — per foot of die height, rate by die thickness.
   // The flag persists on pricing.polishDieSides (no dedicated column; pricing
   // round-trips whole as JSONB). order.polishSides is accepted as a fallback.
-  const wantPolishSides = order.pricing?.polishDieSides || order.polishSides
+  // (2a) PAUL'S JULY 2026 POLISH RULE (opt-in per order via pricing.polishRule
+  // = 'v2' — set by the Quote Generator and by the polish pickers from now on,
+  // so an already-signed order never moves underneath its contract):
+  //   P2 = standard, no charge · P3 = polished top: L ÷ 12 × rate
+  //   P5 = top + ends: (L + H) ÷ 12 × rate  (length once, height once — Paul)
+  //   steel sides = (L + H) ÷ 12 × $75  (pricing.steelSides)
+  // The rate is by die thickness (8″ $105 / 10″ $115 / 12″ $125).
+  const polishV2 = shape && pr.polishRule === 'v2'
+  if (polishV2) {
+    const thickness = Number(order.depth) || liveRates.customDieDefaultThickness
+    const rate = liveRates.polishSidePerFoot[thickness] ?? liveRates.polishSidePerFoot[8]
+    const L = Number(order.width) || 0, H = Number(order.height) || 0
+    if (order.polishLevel === 'P3' && L > 0) items.push({ code: 'polish-top', label: 'P3 — polished top', amount: Math.round((L / 12) * rate), editable: true })
+    if (order.polishLevel === 'P5' && (L + H) > 0) items.push({ code: 'polish-sides', label: 'P5 — polished top and ends', amount: Math.round(((L + H) / 12) * rate), editable: true })
+    if (pr.steelSides && (L + H) > 0) items.push({ code: 'steel-sides', label: 'Steel die sides', amount: Math.round(((L + H) / 12) * liveRates.steelSidePerFoot), editable: true })
+  }
+  const wantPolishSides = !polishV2 && (order.pricing?.polishDieSides || order.polishSides)
   if (shape && wantPolishSides) {
     const thickness = Number(order.depth) || liveRates.customDieDefaultThickness
     const heightIn = Number(order.height) || 0
@@ -512,6 +533,11 @@ export function computeFormLineItems(order) {
   // (4b) All Polish base — (base length ÷ 12) × the configurable per-foot rate
   // when finish = AP. Same mechanism as saw-base; emits a line only when the rate
   // is set ( > 0 ), so AP is cosmetic-only until allPolishBasePerFoot is set.
+  // (4a) All sawn base — every side sawn: (perimeter ÷ 12) × the saw-base rate.
+  if (bc.include && bc.finish === 'AS' && baseW > 0 && baseD > 0) {
+    const rate = liveRates.sawBasePerFoot
+    items.push({ code: 'saw-base', label: 'All sawn base', amount: Math.round(((2 * (baseW + baseD)) / 12) * rate), editable: true })
+  }
   if (bc.include && bc.finish === 'AP' && baseW > 0) {
     const rate = liveRates.allPolishBasePerFoot
     if (rate > 0) items.push({ code: 'all-polish-base', label: 'All polish base', amount: Math.round((baseW / 12) * rate), editable: true })
@@ -725,6 +751,7 @@ function snapshotPricingConfig() {
       polishSidePerFoot: { ...liveRates.polishSidePerFoot },
       sawBasePerFoot: liveRates.sawBasePerFoot,
       basePolishMarginPerFoot: liveRates.basePolishMarginPerFoot,
+      steelSidePerFoot: liveRates.steelSidePerFoot,
     },
     taxes: { njTax: liveRates.njTax, ccSurcharge: liveRates.ccSurcharge },
     fees: { customFontAddon: liveRates.customFontAddon },
@@ -786,6 +813,7 @@ function applyConfigValues(config, skipNull) {
     if (ok(u.sawBasePerFoot)) liveRates.sawBasePerFoot = num(u.sawBasePerFoot)
     if (ok(u.allPolishBasePerFoot)) liveRates.allPolishBasePerFoot = num(u.allPolishBasePerFoot)
     if (ok(u.basePolishMarginPerFoot)) liveRates.basePolishMarginPerFoot = num(u.basePolishMarginPerFoot)
+    if (ok(u.steelSidePerFoot)) liveRates.steelSidePerFoot = num(u.steelSidePerFoot)
     if (u.polishSidePerFoot) for (const k of Object.keys(liveRates.polishSidePerFoot)) {
       if (ok(u.polishSidePerFoot[k])) liveRates.polishSidePerFoot[k] = num(u.polishSidePerFoot[k])
     }

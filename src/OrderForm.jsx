@@ -951,7 +951,7 @@ export function MonumentCard({ order, update, updatePricing }) {
           <SelectField label="Shape" value={order.shape} onChange={onShape}
             options={typeObj.shapeCodes.map(sc => ({ value: sc, label: SHAPES.find(s => s.code === sc)?.label || sc }))} />
         )}
-        <SelectField label="Finish / polish" value={order.polishLevel} onChange={v => update({ polishLevel: v })}
+        <SelectField label="Finish / polish" value={order.polishLevel} onChange={v => { update({ polishLevel: v }); updatePricing({ polishRule: 'v2' }) }}
           options={POLISH_LEVELS.map(p => ({ value: p.code, label: p.label }))} placeholder="Select polish…"
           hint="Spec only — no price effect." />
         <Field label="Granite color" hint={colorHint}>

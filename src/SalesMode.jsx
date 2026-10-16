@@ -953,10 +953,12 @@ const ADD_ONS_CATALOG = [
   { code: 'lett-year',      label: 'Lettering: Year Only',       category: 'Lettering', price: 495 },
   { code: 'lett-mdy',       label: 'Lettering: Month/Day/Year',  category: 'Lettering', price: 550 },
   { code: 'lett-full',      label: 'Lettering: Full Inscription',category: 'Lettering', price: 695 },
+  // July 2026 sheet: Panel $195 (a sunk / flush panel on the stone).
+  { code: 'panel',          label: 'Panel',                      category: 'Lettering', price: 195 },
 
   // Veteran setups
   { code: 'granite-vet-fdn',label: 'Granite VET + FDN + Set',    category: 'Veteran',  price: 995  },
-  { code: 'granite-vet',    label: 'Granite VET + Set (no FDN)', category: 'Veteran',  price: 550  },
+  { code: 'granite-vet',    label: 'Granite VET + Set (no FDN)', category: 'Veteran',  price: 650  },   // July 2026 sheet
   { code: 'bronze-vet-fdn', label: 'Bronze VET Base + FDN + Set',category: 'Veteran',  price: 1895 },
   { code: 'bronze-vet',     label: 'Bronze VET Base (no FDN)',   category: 'Veteran',  price: 1125 },
 
@@ -3464,6 +3466,9 @@ export function ShapeStep({ order, update }) {
                   if (v && POLISH_TO_SIDES_DEFAULT[v]) {
                     updates.sides = POLISH_TO_SIDES_DEFAULT[v]
                   }
+                  // Picking a level from now on prices it by Paul's July 2026 rule
+                  // (P3 top / P5 top + ends) — see computeFormLineItems (2a).
+                  updates.pricing = { ...(order.pricing || {}), polishRule: 'v2' }
                   update(updates)
                 }}
                 placeholder="— pick a level —"

@@ -38,8 +38,8 @@ export const SHAPES = [
       // trade-notation labels read as a glitch next to the inch ones).
       { code: '16x8x4',     w: 16, d: 8,  t: 4, label: '16″ × 8″ × 4″',         price: 799 },
       { code: '20x10x4',    w: 20, d: 10, t: 4, label: '20″ × 10″ × 4″',        price: 899 },
-      { code: '24x12x4',    w: 24, d: 12, t: 4, label: '24″ × 12″ × 4″',        price: 1100 },
-      { code: '24x14x4',    w: 24, d: 14, t: 4, label: '24″ × 14″ × 4″',        price: 1250 },
+      { code: '24x12x4',    w: 24, d: 12, t: 4, label: '24″ × 12″ × 4″',        price: 1195 },   // July 2026 sheet
+      { code: '24x14x4',    w: 24, d: 14, t: 4, label: '24″ × 14″ × 4″',        price: 1295 },
     ],
     canHaveBase: false,
   },
@@ -50,7 +50,7 @@ export const SHAPES = [
     icon: '',
     standardSizes: [
       { code: 'hickey-2-0x1-0x0-6',  w: 24, d: 12, t: 6,  label: '2-0 × 1-0 × 0-6 w/2″ bevel',  price: 1395 },
-      { code: 'hickey-2-0x1-0x0-8',  w: 24, d: 12, t: 8,  label: '2-0 × 1-0 × 0-8 w/2″ bevel',  price: 1695 },
+      { code: 'hickey-2-0x1-0x0-8',  w: 24, d: 12, t: 8,  label: '2-0 × 1-0 × 0-8 w/2″ bevel',  price: 1595 },   // July 2026 sheet
       { code: 'hickey-2-0x1-0x1-0',  w: 24, d: 12, t: 12, label: '2-0 × 1-0 × 1-0 w/2″ bevel',  price: 1995 },
     ],
     canHaveBase: false,
@@ -62,7 +62,7 @@ export const SHAPES = [
     icon: '',
     standardSizes: [
       { code: 'slant-2-0',  w: 24, d: 12, t: 18, label: '2-0 × 1-0 × 1-6', price: 2495 },
-      { code: 'slant-2-6',  w: 30, d: 12, t: 18, label: '2-6 × 1-0 × 1-6', price: 2995 },
+      { code: 'slant-2-6',  w: 30, d: 12, t: 18, label: '2-6 × 1-0 × 1-6', price: 2795 },   // July 2026 sheet
       { code: 'slant-3-0',  w: 36, d: 12, t: 18, label: '3-0 × 1-0 × 1-6', price: 3695 },
       { code: 'slant-3-6',  w: 42, d: 12, t: 18, label: '3-6 × 1-0 × 1-6', price: 4295 },
     ],
@@ -87,13 +87,14 @@ export const SHAPES = [
     blurb: 'Standing die — base required.',
     icon: '',
     standardSizes: [
+      // July 2026 sheet — the seven printed die sizes.
       { code: 'die-1-8',    w: 20, d: 8, t: 28, label: '1-8 × 2-4',  price: 2495 },
-      { code: 'die-1-10',   w: 22, d: 8, t: 28, label: '1-10 × 2-4', price: 2795 },
-      { code: 'die-2-0',    w: 24, d: 8, t: 28, label: '2-0 × 2-4',  price: 2995 },
-      { code: 'die-2-4',    w: 28, d: 8, t: 28, label: '2-4 × 2-4',  price: 3495 },
-      { code: 'die-2-8',    w: 32, d: 8, t: 28, label: '2-8 × 2-4',  price: 3995 },
-      { code: 'die-3-0',    w: 36, d: 8, t: 28, label: '3-0 × 2-4',  price: 4575 },
-      { code: 'die-3-6',    w: 42, d: 8, t: 28, label: '3-6 × 2-4',  price: 5150 },
+      { code: 'die-1-10',   w: 22, d: 8, t: 28, label: '1-10 × 2-4', price: 2895 },
+      { code: 'die-2-0',    w: 24, d: 8, t: 28, label: '2-0 × 2-4',  price: 3195 },
+      { code: 'die-2-4',    w: 28, d: 8, t: 28, label: '2-4 × 2-4',  price: 3795 },
+      { code: 'die-2-8',    w: 32, d: 8, t: 28, label: '2-8 × 2-4',  price: 4575 },
+      { code: 'die-3-0',    w: 36, d: 8, t: 28, label: '3-0 × 2-4',  price: 4975 },
+      { code: 'die-3-6',    w: 42, d: 8, t: 28, label: '3-6 × 2-4',  price: 5595 },
     ],
     canHaveBase: true,
     requiresBase: true,
@@ -104,11 +105,12 @@ export const SHAPES = [
     blurb: 'Companion standing die — wider base required.',
     icon: '',
     standardSizes: [
-      { code: 'ddie-3-6',   w: 42, d: 8, t: 28, label: '3-6 × 2-4', price: 5150 },
-      { code: 'ddie-4-0',   w: 48, d: 8, t: 28, label: '4-0 × 2-4', price: 5750 },
-      { code: 'ddie-4-6',   w: 54, d: 8, t: 28, label: '4-6 × 2-4', price: 6450 },
-      { code: 'ddie-5-0',   w: 60, d: 8, t: 28, label: '5-0 × 2-4', price: 7150 },
-      { code: 'ddie-6-0',   w: 72, d: 8, t: 28, label: '6-0 × 2-4', price: 8500 },
+      // Paul 2026-10-16: double dies follow the same $4.75 / sq in rule (L × 28).
+      { code: 'ddie-3-6',   w: 42, d: 8, t: 28, label: '3-6 × 2-4', price: 5595 },
+      { code: 'ddie-4-0',   w: 48, d: 8, t: 28, label: '4-0 × 2-4', price: 6384 },
+      { code: 'ddie-4-6',   w: 54, d: 8, t: 28, label: '4-6 × 2-4', price: 7182 },
+      { code: 'ddie-5-0',   w: 60, d: 8, t: 28, label: '5-0 × 2-4', price: 7980 },
+      { code: 'ddie-6-0',   w: 72, d: 8, t: 28, label: '6-0 × 2-4', price: 9576 },
     ],
     canHaveBase: true,
     requiresBase: true,
@@ -232,24 +234,26 @@ export const POLISH_LEVELS = [
 
 // ---- Base sizes (used when adding a base to slant/die/etc.) --------------
 export const BASE_SIZES = [
-  { code: 'base-2-6x1-2', w: 30, d: 14, label: '2-6 × 1-2 × 0-6', price: 772 },
-  { code: 'base-3-0x1-2', w: 36, d: 14, label: '3-0 × 1-2 × 0-6', price: 927 },
-  { code: 'base-3-6x1-2', w: 42, d: 14, label: '3-6 × 1-2 × 0-6', price: 1150 },
-  { code: 'base-4-0x1-2', w: 48, d: 14, label: '4-0 × 1-2 × 0-6', price: 1272 },
-  { code: 'base-2-0x1-0', w: 24, d: 12, label: '2-0 × 1-0 × 0-8 polished top', price: 300 },
-  { code: 'base-2-4x1-0', w: 28, d: 12, label: '2-4 × 1-0 × 0-8 polished top', price: 350 },
-  { code: 'base-2-6x1-0', w: 30, d: 12, label: '2-6 × 1-0 × 0-8 polished top', price: 375 },
-  { code: 'base-2-8x1-0', w: 32, d: 12, label: '2-8 × 1-0 × 0-8 polished top', price: 400 },
-  { code: 'base-3-6x1-0', w: 42, d: 12, label: '3-6 × 1-0 × 0-8 polished top', price: 525 },
-  { code: 'base-4-0x1-0', w: 48, d: 12, label: '4-0 × 1-0 × 0-8 polished top', price: 600 },
+  // July 2026 sheet — 6″ slant bases and the polished-top die bases.
+  { code: 'base-2-6x1-2', w: 30, d: 14, label: '2-6 × 1-2 × 0-6', price: 895 },
+  { code: 'base-3-0x1-2', w: 36, d: 14, label: '3-0 × 1-2 × 0-6', price: 1295 },
+  { code: 'base-3-6x1-2', w: 42, d: 14, label: '3-6 × 1-2 × 0-6', price: 1595 },
+  { code: 'base-4-0x1-2', w: 48, d: 14, label: '4-0 × 1-2 × 0-6', price: 1995 },
+  { code: 'base-2-0x1-0', w: 24, d: 12, label: '2-0 × 1-0 × 0-8 polished top', price: 340 },
+  { code: 'base-2-4x1-0', w: 28, d: 12, label: '2-4 × 1-0 × 0-8 polished top', price: 395 },
+  { code: 'base-2-6x1-0', w: 30, d: 12, label: '2-6 × 1-0 × 0-8 polished top', price: 425 },
+  { code: 'base-2-8x1-0', w: 32, d: 12, label: '2-8 × 1-0 × 0-8 polished top', price: 450 },
+  { code: 'base-3-6x1-0', w: 42, d: 12, label: '3-6 × 1-0 × 0-8 polished top', price: 612 },
+  { code: 'base-4-0x1-0', w: 48, d: 12, label: '4-0 × 1-0 × 0-8 polished top', price: 680 },
 ]
 
 // Base height options (per pricing sheet "DIE + BASE" line)
 export const BASE_HEIGHTS = [
-  { code: 6,  label: '6″',  upcharge: 125 },
-  { code: 8,  label: '8″',  upcharge: 150 },
-  { code: 10, label: '10″', upcharge: 175 },
-  { code: 12, label: '12″', upcharge: 200 },
+  // July 2026 sheet: DIE + BASE 6″ $145 / 8″ $170 / 10″ $195 / 12″ $225
+  { code: 6,  label: '6″',  upcharge: 145 },
+  { code: 8,  label: '8″',  upcharge: 170 },
+  { code: 10, label: '10″', upcharge: 195 },
+  { code: 12, label: '12″', upcharge: 225 },
 ]
 
 // Nearest STANDARD base that fully fits a die footprint — the SAME hard rule as
