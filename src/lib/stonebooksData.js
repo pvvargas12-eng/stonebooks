@@ -3307,6 +3307,17 @@ export async function listOrderingVendors() {
   if (error) { console.warn('[vendors] listOrderingVendors:', error.message); return [] }
   return data || []
 }
+// Quote Generator (2026-10-16): stamp which supplier the stone was priced from
+// so the PR builder knows where the order goes (Paul: "have the vendor name
+// with the order so I know it goes to Kani not Peerless"). Same column the
+// order page's Vendor field edits.
+export async function setOrderStoneVendor(orderId, vendorName) {
+  if (!orderId) return { ok: false, error: 'No order.' }
+  const { error } = await supabase.from('orders').update({ stone_vendor: vendorName || null }).eq('id', orderId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function addOrderingVendor(name) {
   const n = String(name || '').trim()
   if (!n) return { ok: false, error: 'Enter a vendor name.' }

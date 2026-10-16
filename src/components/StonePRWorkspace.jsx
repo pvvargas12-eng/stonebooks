@@ -32,6 +32,8 @@ const famOfRow = (r) => (r.primary_lastname && String(r.primary_lastname).trim()
 
 const BLANK = { family_name: '', color: '', item_type: '', size: '', specs: '', quantity: 1, is_stock: false, order_id: null, order_number: null, spec_text: '', notes: '' }
 
+const VENDOR_CHIP = { display: 'inline-block', marginTop: 3, padding: '1px 7px', borderRadius: 999, background: '#16150F', color: '#E9C46A', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }
+
 export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onClose, onSaved }) {
   const isEdit = mode === 'edit'
   const isRecord = mode === 'record'
@@ -60,6 +62,17 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const [orders, setOrders] = useState(null)     // active-order roster (raw rows)
   const [railQ, setRailQ] = useState('')
   const [railSel, setRailSel] = useState(null)   // selected raw order row
+  // QUOTE-GEN (2026-10-16): the order carries the vendor it was priced from
+  // (orders.stone_vendor, e.g. KANI INTERNATIONAL) — picking it on the rail
+  // preselects that supplier when none is picked yet, so a Kani-priced stone
+  // never lands on a Peerless PR by habit.
+  const preselectVendor = (o) => {
+    if (supplierId || !o?.stone_vendor) return
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z]/g, '')
+    const want = norm(o.stone_vendor)
+    const hit = suppliers.find(s => s.active !== false && (norm(s.name) === want || norm(s.name).startsWith(want.slice(0, 5))))
+    if (hit) setSupplierId(hit.id)
+  }
   const [railFiles, setRailFiles] = useState(null)
 
   useEffect(() => {
@@ -327,9 +340,10 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
               {orders == null ? <div className="prw-rail-muted">Loading orders…</div>
                 : railResults.length === 0 ? <div className="prw-rail-muted">No open orders match.</div>
                 : railResults.map(o => (
-                  <button key={o.id} type="button" className="prw-rail-row" onClick={() => { setRailSel(o); }}>
+                  <button key={o.id} type="button" className="prw-rail-row" onClick={() => { setRailSel(o); preselectVendor(o) }}>
                     <span className="prw-rail-fam">{famOfRow(o)}</span>
                     <span className="prw-rail-meta">{o.order_number}{o.status ? ` · ${o.status}` : ''}{o._customer_name && o._customer_name !== famOfRow(o) ? ` · customer ${o._customer_name}` : ''}</span>
+                    {o.stone_vendor && <span style={VENDOR_CHIP}>ORDER FROM {o.stone_vendor}</span>}
                   </button>
                 ))}
             </div>
@@ -340,6 +354,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                 <div>
                   <div className="prw-rail-fam" style={{ fontSize: 15 }}>{famOfRow(railSel)}</div>
                   <div className="prw-rail-meta">{railSel.order_number} · {railSel.status}{railSel.signed_at ? ` · signed ${String(railSel.signed_at).slice(0, 10)}` : ''}</div>
+                  {railSel.stone_vendor && <div style={{ marginTop: 4 }}><span style={VENDOR_CHIP}>ORDER FROM {railSel.stone_vendor}</span></div>}
                 </div>
                 <button type="button" className="prw-mini" onClick={() => { setRailSel(null); setRailQ('') }}>× Close</button>
               </div>

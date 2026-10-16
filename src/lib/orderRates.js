@@ -182,7 +182,7 @@ export function addonPrice(kind, opts = {}) {
 // a base override totals byte-identically to the pre-fold engine. Callers compute
 // the grand total from THIS folded list (priceOrderTotals does), so the rows a
 // surface shows always sum to the total it shows.
-const BASE_FOLD_CODES = new Set(['base-height', 'base-margin', 'saw-base', 'all-polish-base', 'base-color-premium'])
+const BASE_FOLD_CODES = new Set(['base-height', 'base-margin', 'saw-base', 'all-polish-base', 'base-color-premium', 'base-color-premium-custom'])
 export function foldBaseRows(items, order) {
   const list = items || []
   const baseIdx = list.findIndex(it => String(it.code) === 'base-block')
@@ -481,6 +481,17 @@ export function computeFormLineItems(order) {
     if (base > 0) {
       const pct = Number(pr.customColorPct)
       items.push({ code: 'color-premium-custom', label: `${pr.customColorName || 'Custom color'} premium (+${pct}%)`, amount: Math.round(base * pct / 100), editable: true })
+    }
+    // Paul 2026-10-16: the color % hits the BASE stone too — opt-in via
+    // pricing.colorOnBase (the Quote Generator sets it) so older orders keep
+    // their totals. Folds into the one base line like base-color-premium.
+    if (pr.colorOnBase) {
+      const baseBlock = items.find(it => it.code === 'base-block')
+      const bb = baseBlock ? Number(baseBlock.amount) || 0 : 0
+      if (bb > 0) {
+        const pct = Number(pr.customColorPct)
+        items.push({ code: 'base-color-premium-custom', label: `Base ${pr.customColorName || 'Custom color'} premium (+${pct}%)`, amount: Math.round(bb * pct / 100), editable: true })
+      }
     }
   }
 

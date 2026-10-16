@@ -56,6 +56,8 @@ const HotListTab = lazy(() => import('./HotListTab'))
 // INQUIRIES-1 (2026-10-08): website form submissions get their own tab.
 const InquiriesTab = lazy(() => import('./InquiriesTab'))
 const TeamMeetingTab = lazy(() => import('./TeamMeetingTab'))
+// QUOTE-GEN (2026-10-16): Tools → Quote Generator (sheet math + the supplier books).
+const QuoteGeneratorTab = lazy(() => import('./QuoteGeneratorTab'))
 const StorageSettings = lazy(() => import('./components/StorageSettings'))
 const CatalogIntakeSettings = lazy(() => import('./components/CatalogIntakeSettings'))
 
@@ -245,6 +247,7 @@ const NAV_PRIMARY = [
 
 const NAV_SECONDARY = [
   { key: 'sales',     label: '+ New sale' },
+  { key: 'quote',     label: 'Quote Generator' },
   { key: 'catalog',   label: 'Catalog' },
   { key: 'reports',   label: 'Reports' },
   { key: 'reconcile', label: 'Reconcile' },
@@ -824,6 +827,7 @@ export default function Stonebooks() {
 {tab === 'vendors'   && <VendorsTab />}
 {tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {/* Profit lives inside Accounting now (2026-09-17). */}
+          {tab === 'quote'     && <QuoteGeneratorTab onOpenSales={(id) => openSales(id)} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Quote Generator', tab: 'quote' }); setTab('orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}
           {tab === 'reconcile' && <ReconciliationTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Reconcile', tab: 'reconcile' }); setTab('orders') }} />}
           {tab === 'fixlog'    && <FixLog user={user} profile={profile} isOwner={isOwner(user)} />}
