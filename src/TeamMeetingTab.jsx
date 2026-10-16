@@ -27,7 +27,7 @@ import { rowToOrder } from './SalesMode'
 import { listVendorItems } from './lib/vendorsData'
 import {
   isoOf, mondayOf, addDays, weekKindFor, weekKindLabel, SHEET_LANES, PLAN_LANES,
-  getWeekPlanWithItems, peekWeekPlan, addPlanItem, removePlanItem, scorePlanItem,
+  getWeekPlanWithItems, peekWeekPlan, addPlanItem, removePlanItem, scorePlanItem, setPlanItemNote,
   lockWeekPlan, getScoreHistory, getMeetingNotes, saveMeetingNotes,
 } from './lib/meetingData'
 
@@ -286,7 +286,8 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
   const lastScore = useMemo(() => {
     const scorable = lastItems.filter(it => effectiveOutcome(it) !== 'dropped')
     const done = scorable.filter(it => effectiveOutcome(it) === 'done').length
-    return { planned: scorable.length, done, pct: scorable.length ? Math.round((done / scorable.length) * 100) : null }
+    const dropped = lastItems.length - scorable.length
+    return { planned: scorable.length, done, remaining: scorable.length - done, dropped, pct: scorable.length ? Math.round((done / scorable.length) * 100) : null }
   }, [lastItems, effectiveOutcome])
 
   // CARRYOVER — last week's not-done, still-not-done items (self-cleaning:
@@ -340,9 +341,16 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
     await reloadPlans()
   }
   const dropItem = async (id) => { await removePlanItem(id); await reloadPlans() }
+  // Done / Missed keep whatever the comment box already holds — the why lives
+  // in the box under the row, not in a prompt (Paul 2026-10-16).
   const score = async (it, outcome) => {
-    const note = outcome === 'missed' ? (window.prompt('Why not? (one line — this shows on the review)') || '') : ''
-    await scorePlanItem(it.id, outcome, note)
+    await scorePlanItem(it.id, outcome, it.outcome_note || '')
+    await reloadPlans()
+  }
+  const saveNote = async (it, note) => {
+    if ((note || '').trim() === (it.outcome_note || '').trim()) return
+    const r = await setPlanItemNote(it.id, note)
+    if (!r.ok) { setErr(r.error); return }
     await reloadPlans()
   }
 
@@ -535,7 +543,7 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           )}
           {scoreable && (
             oc
-              ? <span className={`sb-tm-chip ${oc === 'done' ? 'good' : oc === 'missed' ? 'bad' : 'warn'}`}>{oc.toUpperCase()}{it.outcome_note ? ` — ${it.outcome_note}` : ''}</span>
+              ? <span className={`sb-tm-chip ${oc === 'done' ? 'good' : oc === 'missed' ? 'bad' : 'warn'}`}>{oc.toUpperCase()}</span>
               : <>
                   <button type="button" className="sb-tm-minibtn good" onClick={() => score(it, 'done')}>Done</button>
                   <button type="button" className="sb-tm-minibtn bad" onClick={() => score(it, 'missed')}>Missed</button>
@@ -543,6 +551,14 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           )}
           {showRemove && !scoreable && <button type="button" className="sb-tm-x" title="Remove from the plan" onClick={() => dropItem(it.id)}>×</button>}
         </span>
+        {scoreable && (
+          <div className="sb-tm-why">
+            <input className="sb-tm-input sb-tm-why-in" defaultValue={it.outcome_note || ''}
+              placeholder={effectiveOutcome(it) === 'done' ? 'Notes (optional) — anything worth remembering about this one' : 'Why did it not get done? Type it here — saves when you click away'}
+              onBlur={e => saveNote(it, e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }} />
+          </div>
+        )}
       </div>
     )
   }
@@ -762,7 +778,7 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
       <div className="sb-tm-eyebrow">Last week — {planLast?.plan ? weekKindLabel(planLast.plan.kind) : 'no plan was locked'}</div>
       <h2>What we said vs. what we did</h2>
       <div className="sb-tm-tiles">
-        <div className="sb-tm-tile good"><span>Score</span><b>{lastScore.pct == null ? '—' : `${lastScore.pct}%`}</b><span className="sub">{lastScore.done} done of {lastScore.planned} planned</span></div>
+        <div className="sb-tm-tile good"><span>Delivered</span><b>{lastScore.planned ? `${lastScore.done} of ${lastScore.planned}` : '—'}</b><span className="sub">{lastScore.planned ? `${lastScore.remaining} remaining${lastScore.pct != null ? ` · ${lastScore.pct}%` : ''}${lastScore.dropped ? ` · ${lastScore.dropped} dropped` : ''}` : 'nothing was planned'}</span></div>
         <div className="sb-tm-tile"><span>Promise vs delivery</span>{renderSpark()}<span className="sub">last {history.length || 0} scored weeks</span></div>
       </div>
       {!planLast?.plan && <div className="sb-tm-empty">No plan existed for last week — this Friday locks the first one, and this slide starts keeping score.</div>}
@@ -773,11 +789,32 @@ export default function TeamMeetingTab({ onOpenOrderDetail, onOpenJob }) {
           <div key={l.code} className="sb-tm-lane">
             <div className="sb-tm-lane-h"><strong>{l.label.toUpperCase()}</strong>
               <span className="sb-tm-lane-n">{items.filter(i => effectiveOutcome(i) === 'done').length}/{items.length}</span>
-              <span className="sb-tm-cem">Done auto-detects from the milestones — score the rest</span></div>
+              <span className="sb-tm-lane-rem">{items.filter(i => !['done', 'dropped'].includes(effectiveOutcome(i))).length} remaining</span>
+              <span className="sb-tm-cem">Done auto-detects from the milestones — score the rest, write the why under each row</span></div>
             {items.map(it => renderPlanRow(it, { scoreable: true, showRemove: false }))}
           </div>
         )
       })}
+      {(() => {
+        const short = lastItems.filter(it => !['done', 'dropped'].includes(effectiveOutcome(it)))
+        if (!short.length) return null
+        return (
+          <div className="sb-tm-short">
+            <div className="sb-tm-lane-h"><strong>WHERE WE FELL SHORT</strong><span className="sb-tm-lane-n">{short.length}</span><span className="sb-tm-cem">the record we learn from — every one needs a reason</span></div>
+            {short.map(it => {
+              const job = jobById.get(it.job_id); const o = job?.order
+              const lane = PLAN_LANES.find(l => l.code === it.lane)?.label || it.lane
+              return (
+                <div key={it.id} className={`sb-tm-short-row${it.outcome_note ? '' : ' noreason'}`}>
+                  <span className="sb-tm-fam">{o ? familyOf(o) : (it.title || '—')}</span>
+                  <span className="sb-tm-cem">{lane}</span>
+                  <span className="sb-tm-short-why">{it.outcome_note || 'no reason written yet'}</span>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
     </section>,
     // 2 Sales
     <section key="sales" className="sb-tm-slide">
@@ -1284,6 +1321,15 @@ const CSS = `
   .sb-tm-x { font: 700 15px var(--sb-font-sans, 'Lato'); background: none; border: none; color: #8a8a85; cursor: pointer; padding: 0 4px; }
   .sb-tm-x:hover { color: #B3261E; }
   .sb-tm-empty { font-size: 12.5px; color: #8a8a85; background: #FBFAF7; border: 1px dashed #E2DCC9; border-radius: 10px; padding: 10px 13px; }
+  .sb-tm-lane-rem { font: 700 11px var(--sb-font-mono, 'JetBrains Mono'); color: #9A7209; }
+  .sb-tm-why { flex-basis: 100%; min-width: 0; margin-top: 2px; }
+  .sb-tm-why-in { font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: #fff; }
+  .sb-tm-why-in::placeholder { color: #a39b86; font-style: italic; }
+  .sb-tm-short { margin-top: 18px; padding: 10px 13px; border: 1px solid #E6B3B3; border-left: 3px solid #B00020; border-radius: 11px; background: #FFF8F8; }
+  .sb-tm-short-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid #F1DADA; min-width: 0; }
+  .sb-tm-short-row:first-of-type { border-top: 0; }
+  .sb-tm-short-why { flex: 1 1 240px; min-width: 0; font-size: 12.5px; color: #3a3a3a; overflow-wrap: anywhere; }
+  .sb-tm-short-row.noreason .sb-tm-short-why { color: #B00020; font-weight: 700; font-style: italic; }
   .sb-tm-err { font-size: 12.5px; color: #B3261E; background: rgba(179,38,30,0.08); border-radius: 9px; padding: 8px 11px; margin-top: 10px; }
   .sb-tm-input { width: 100%; background: #FBFAF7; border: 1px solid #E2DCC9; border-radius: 10px; color: #16150F; font: 400 14px var(--sb-font-sans, 'Lato'); padding: 10px 13px; box-sizing: border-box; resize: vertical; }
   .sb-tm-verse { font-size: 20px; margin: 16px 0 8px; }

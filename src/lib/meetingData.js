@@ -173,6 +173,17 @@ export async function scorePlanItem(itemId, outcome, note = null) {
   return { ok: true }
 }
 
+// The per-item comment (Paul 2026-10-16: "a comment section for each that I
+// can type in why they didn't get done so we can track our shortcomings").
+// Writes outcome_note only — the outcome itself stays whatever it is.
+export async function setPlanItemNote(itemId, note) {
+  const { error } = await supabase.from('week_plan_items')
+    .update({ outcome_note: (note || '').trim() || null })
+    .eq('id', itemId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function lockWeekPlan(planId) {
   const locked_by = await getCurrentStaffName().catch(() => null)
   const { error } = await supabase.from('week_plans')
