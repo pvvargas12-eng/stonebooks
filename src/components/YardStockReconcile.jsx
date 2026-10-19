@@ -14,7 +14,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getInventoryStock, listOpenOrdersLight, linkYardStockToOrder,
-  updateInventoryItem, restoreYardStockStatus, properName, customerName, fmtDate,
+  updateInventoryItem, restoreYardStockStatus, properName, customerName, fmtDate, fmtYardTag,
 } from '../lib/stonebooksData'
 
 // Loose token match: "CRUZ ISABEL" ↔ primary_lastname "Cruz", "Amalia Kaufman"
@@ -54,7 +54,8 @@ export default function YardStockReconcile({ onOpenOrder }) {
   const buckets = useMemo(() => {
     if (!stock || !orders) return null
     const allocated = stock.filter(r => r.status === 'allocated')
-    const missing = stock.filter(r => r.status === 'missing')
+    // RESET-TAG-1: 'problem' (red tape on the walk) lands here beside MISSING.
+    const missing = stock.filter(r => r.status === 'missing' || r.status === 'problem')
     const linked = allocated.filter(r => r.allocated_order_id)
     const unlinked = allocated.filter(r => !r.allocated_order_id).map(r => {
       const candidates = orders.filter(o => nameMatches(r.assigned_to, o))
@@ -105,7 +106,7 @@ export default function YardStockReconcile({ onOpenOrder }) {
     load()
   }
 
-  const pieceOf = (r) => [r.item_type, r.size, r.color].filter(Boolean).join(' · ')
+  const pieceOf = (r) => [r.yard_tag != null ? `#${fmtYardTag(r.yard_tag)}` : null, r.item_type, r.size, r.color].filter(Boolean).join(' · ')
   const ordLabel = (o) => `${properName(o.primary_lastname || customerName(o.customer) || '—')}${o.order_number ? ` · ${o.order_number}` : ''}`
 
   if (!buckets) return <section className="ysr"><style>{CSS}</style><div className="ysr-empty">Loading yard stock…</div></section>
@@ -136,11 +137,11 @@ export default function YardStockReconcile({ onOpenOrder }) {
 
       {buckets.missing.length > 0 && (
         <div className="ysr-block ysr-block-red">
-          <div className="ysr-block-h">Flagged MISSING on the yard count — your call</div>
+          <div className="ysr-block-h">Flagged MISSING on the yard count or PROBLEM on the walk — your call</div>
           {buckets.missing.map(r => (
             <div key={r.id} className="ysr-row">
               <span className="ysr-piece">{pieceOf(r)}</span>
-              <span className="ysr-name">{r.assigned_to ? `was for ${properName(r.assigned_to)}` : 'unassigned'}</span>
+              <span className="ysr-name">{r.status === 'problem' ? 'PROBLEM' : 'MISSING'}{r.assigned_to ? ` · was for ${properName(r.assigned_to)}` : ' · unassigned'}{r.status === 'problem' && r.notes ? ` — ${r.notes}` : ''}</span>
               {r.verified_by && <span className="ysr-meta">flagged by {r.verified_by}{r.verified_at ? ` · ${fmtDate(r.verified_at)}` : ''}</span>}
               <span className="ysr-rowactions">
                 <button type="button" className="ysr-btn" disabled={busyId === r.id} onClick={() => restoreMissing(r)}>Found it — restore</button>

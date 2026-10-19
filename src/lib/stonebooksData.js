@@ -6,6 +6,8 @@
 // =============================================================================
 
 import { supabase } from './supabase'
+import { orderHasBase, SHAPES } from './monumentCatalog'
+
 import { isOrderRow } from './leads'
 import { pokePushSender } from './pushPoke'
 import { recordTaskAssigned } from './taskStreak'
@@ -10848,12 +10850,17 @@ export function getSalesSummary(orders, { now = new Date(), recentlyWonDays = 7,
 // ("1.2 A", "IN FRONT S2", "Next Big Truck") are never parsed or normalized.
 // Standalone table; touches nothing in orders/jobs/pricing.
 export const INVENTORY_ITEM_TYPES = [
-  'die', 'base', 'slant', 'grass', 'marker', 'hickey', 'bevel', 'bench', 'vase', 'ledger', 'bronze', 'backer', 'custom',
+  'die', 'base', 'slant', 'grass', 'marker', 'hickey', 'bevel', 'bench', 'vase', 'ledger', 'bronze', 'backer', 'custom', 'other',
 ]
 export const INVENTORY_STATUSES = [
   { code: 'available', label: 'Available' },
   { code: 'allocated', label: 'Allocated' },
 ]
+// Statuses a stone can carry that the pickers don't offer (set by the walk):
+// 'missing' (NOT HERE on the count) and 'problem' (red tape on the walk).
+export const INVENTORY_STATUS_LABEL = {
+  available: 'Available', allocated: 'Allocated', missing: 'Missing', problem: 'Problem', hold: 'Hold', removed: 'Removed',
+}
 
 // Active orders that still physically NEED a stone (pre-install pipeline). Excludes
 // draft (too early) and installed/paid/closed/cancelled/archived (done/dead). Used by
@@ -10883,13 +10890,20 @@ export async function getActiveStoneOrders() {
   }
 }
 
-// Read all yard stock. Returns { ok, rows, error } and NEVER throws, so the tab
+// Read all LIVE yard stock. Returns { ok, rows, error } and NEVER throws, so the tab
 // opens cleanly even before the migration is applied (error → empty list + note).
-export async function getInventoryStock() {
+// RESET-TAG-1 (2026-10-19): archived (pre-reset) rows are EXCLUDED here, which is
+// the one chokepoint every yard reader goes through — desktop list, Needs
+// Ordering coverage, Smart Matches, Stone Position, Reconcile buckets, the
+// field count, the Team Meeting inventory slide, the PR builder. The old list
+// is read on purpose via getArchivedInventoryStock. Numbered stones list first
+// (tag ascending), untagged legacy rows after.
+export async function getInventoryStock({ includeArchived = false } = {}) {
   try {
-    const { data, error } = await supabase
-      .from('inventory_stock')
-      .select('*')
+    let q = supabase.from('inventory_stock').select('*')
+    if (!includeArchived) q = q.is('archived_at', null)
+    const { data, error } = await q
+      .order('yard_tag', { ascending: true, nullsFirst: false })
       .order('location', { ascending: true })
       .order('created_at', { ascending: false })
     if (error) return { ok: false, rows: [], error: error.message }
@@ -10915,6 +10929,10 @@ export async function addInventoryItem(item) {
     notes:       item.notes?.trim() || null,
     photo_url:   item.photo_url || null,
   }
+  // RESET-TAG-1 columns ride along when given (the desktop fast-add stays as is).
+  if (item.zone !== undefined) payload.zone = item.zone?.trim() || null
+  if (item.crate !== undefined) payload.crate = item.crate?.trim() || null
+  if (item.specs !== undefined) payload.specs = item.specs?.trim() || null
   try {
     const { data, error } = await supabase.from('inventory_stock').insert(payload).select().single()
     if (error) return { ok: false, error: error.message }
@@ -10944,6 +10962,13 @@ export async function updateInventoryItem(id, patch = {}) {
   if (patch.quantity !== undefined) row.quantity = Math.max(1, Number(patch.quantity) || 1)
   if (patch.notes !== undefined) row.notes = txt(patch.notes)
   if (patch.assigned_to !== undefined) row.assigned_to = txt(patch.assigned_to)
+  if (patch.zone !== undefined) row.zone = txt(patch.zone)
+  if (patch.crate !== undefined) row.crate = txt(patch.crate)
+  if (patch.specs !== undefined) row.specs = txt(patch.specs)
+  if (patch.yard_tag !== undefined) {
+    const n = Number(patch.yard_tag)
+    row.yard_tag = Number.isInteger(n) && n > 0 ? n : null
+  }
   if (patch.status !== undefined) {
     row.status = patch.status || 'available'
     if (row.status !== 'allocated') { row.assigned_to = null; row.allocated_order_id = null }
@@ -10990,6 +11015,263 @@ export function restoreYardStockStatus(id, status) {
 // orderId null = unlink. Linking marks the row allocated.
 export function linkYardStockToOrder(id, orderId) {
   return _yardPatch(id, { allocated_order_id: orderId || null, ...(orderId ? { status: 'allocated' } : {}) })
+}
+
+// ── RESET-TAG-1 (2026-10-19): the yard reset + numbered stones ──────────────
+// Paul re-founds the inventory: every stone gets a painted running number
+// (yard_tag), a zone + crate, tape by status (blue free / green sold with the
+// family + order number / red problem). The old list is SOFT-archived — never
+// deleted — and stays readable under "Old list (pre-reset)".
+//
+// NUMBERS ARE NEVER REUSED: getNextYardTag reads max(yard_tag) over live AND
+// archived rows. A number painted on a stone belongs to that stone forever,
+// even after its row is retired — reusing one would put two stones in the
+// yard's history under the same paint. The partial unique index on
+// (tenant_id, yard_tag) makes a race between two phones fail loudly on the
+// second insert; tagYardStone re-mints and retries.
+export const YARD_TYPES = [
+  { code: 'die', label: 'Die' }, { code: 'base', label: 'Base' }, { code: 'slant', label: 'Slant' },
+  { code: 'hickey', label: 'Hickey' }, { code: 'grass', label: 'Grass' }, { code: 'backer', label: 'Backer' },
+  { code: 'other', label: 'Other' },
+]
+export function fmtYardTag(n) {
+  if (n == null || n === '') return ''
+  const v = Number(n)
+  if (!Number.isFinite(v)) return String(n)
+  return String(Math.trunc(v)).padStart(3, '0')
+}
+export const yardTypeLabel = (code) => YARD_TYPES.find(t => t.code === String(code || '').toLowerCase())?.label
+  || (code ? String(code).replace(/\b\w/g, c => c.toUpperCase()) : '')
+
+// The old list — archived rows only, newest archive first then by name.
+export async function getArchivedInventoryStock() {
+  try {
+    const { data, error } = await supabase.from('inventory_stock').select('*')
+      .not('archived_at', 'is', null)
+      .order('assigned_to', { ascending: true, nullsFirst: false })
+      .order('location', { ascending: true })
+    if (error) return { ok: false, rows: [], error: error.message }
+    return { ok: true, rows: data || [], error: null }
+  } catch (e) { return { ok: false, rows: [], error: String(e?.message || e) } }
+}
+
+// THE RESET. Stamps archived_at/archived_reason on every live row. No deletes,
+// no status changes — the rows keep their family names, links and verification
+// stamps so the Old list still says whose stone each one was. Returns how many
+// rows moved. Owner's click only (typed-confirmation dialog on the desktop).
+export async function archiveYardForReset(reason, { by = null } = {}) {
+  const why = [String(reason || '').trim() || 'Yard reset', by ? `by ${by}` : null].filter(Boolean).join(' ')
+  try {
+    const { data, error } = await supabase.from('inventory_stock')
+      .update({ archived_at: new Date().toISOString(), archived_reason: why, updated_at: new Date().toISOString() })
+      .is('archived_at', null)
+      .eq('tenant_id', TENANT_ID)
+      .select('id')
+    if (error) return { ok: false, error: error.message, count: 0 }
+    return { ok: true, count: data?.length || 0 }
+  } catch (e) { return { ok: false, error: String(e?.message || e), count: 0 } }
+}
+
+// Next painted number = max over EVERY row (live + archived) + 1. Never reused.
+export async function getNextYardTag() {
+  try {
+    const { data, error } = await supabase.from('inventory_stock').select('yard_tag')
+      .not('yard_tag', 'is', null)
+      .order('yard_tag', { ascending: false })
+      .limit(1)
+    if (error) return { ok: false, next: 1, error: error.message }
+    const max = Number(data?.[0]?.yard_tag) || 0
+    return { ok: true, next: max + 1 }
+  } catch (e) { return { ok: false, next: 1, error: String(e?.message || e) } }
+}
+// Is this number already painted on a stone (live or archived)?
+export async function isYardTagTaken(tag) {
+  const n = Number(tag)
+  if (!Number.isInteger(n) || n <= 0) return { ok: true, taken: false }
+  try {
+    const { data, error } = await supabase.from('inventory_stock').select('id, item_type, status, assigned_to, archived_at')
+      .eq('yard_tag', n).limit(1)
+    if (error) return { ok: false, taken: false, error: error.message }
+    return { ok: true, taken: !!(data && data.length), row: data?.[0] || null }
+  } catch (e) { return { ok: false, taken: false, error: String(e?.message || e) } }
+}
+
+const _isTagClash = (msg) => /uq_inventory_stock_yard_tag|duplicate key|23505/i.test(String(msg || ''))
+
+// Create one numbered stone. `item` = the fields of the row (item_type, color,
+// size, specs, zone, crate, status, assigned_to, allocated_order_id, photo_url,
+// notes). The number is `tag` when given (the phone's editable number box),
+// else the next free one — and on a clash with a concurrent mint the next
+// number is tried again (up to 5 times). verified_at/by are stamped: tagging a
+// stone means a human stood in front of it.
+export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
+  const txt = (v) => (v == null ? null : (String(v).trim() || null))
+  const base = {
+    item_type: txt(item.item_type) ? String(item.item_type).trim().toLowerCase() : null,
+    color: txt(item.color), size: txt(item.size), specs: txt(item.specs),
+    top: txt(item.top), sides: txt(item.sides), back: txt(item.back),
+    zone: txt(item.zone), crate: txt(item.crate), location: txt(item.location),
+    quantity: 1,
+    status: item.status || 'available',
+    assigned_to: txt(item.assigned_to),
+    allocated_order_id: item.allocated_order_id || null,
+    notes: txt(item.notes), photo_url: item.photo_url || null,
+    verified_at: new Date().toISOString(), verified_by: by || null,
+  }
+  if (!base.item_type) return { ok: false, error: 'Pick the type of stone.' }
+  const explicit = Number(tag)
+  const hasExplicit = Number.isInteger(explicit) && explicit > 0
+  let n = hasExplicit ? explicit : null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (n == null) {
+      const nx = await getNextYardTag()
+      if (!nx.ok) return { ok: false, error: nx.error }
+      n = nx.next
+    }
+    try {
+      const { data, error } = await supabase.from('inventory_stock').insert({ ...base, yard_tag: n }).select().single()
+      if (!error) return { ok: true, row: data, tag: n }
+      if (_isTagClash(error.message)) {
+        if (hasExplicit) return { ok: false, taken: true, error: `${fmtYardTag(n)} is already painted on another stone.` }
+        n = null
+        continue
+      }
+      return { ok: false, error: error.message }
+    } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  }
+  return { ok: false, error: 'Could not find a free number — try again.' }
+}
+
+// The order's spec columns for the is-here prefill (contractDieLabel /
+// contractBaseLabel / displayGraniteColor read these).
+export async function getOrderSpecRow(orderId) {
+  if (!orderId) return null
+  const { data, error } = await supabase.from('orders')
+    .select('id, order_number, primary_lastname, status, die_stone_status, base_stone_status, ' +
+      'shape, polish_level, granite_color, top_shape, sides, standard_size_code, ' +
+      'width_inches, depth_inches, thickness_inches, height_inches, base_config, pricing, ' +
+      'customer:customers(first_name, last_name)')
+    .eq('id', orderId).single()
+  if (error) { console.warn('[yard] getOrderSpecRow:', error.message); return null }
+  return data
+}
+
+// "Die is here" / "Base is here": the order's piece status → in_stock, written
+// the way OrderDetail's monument quick-edit writes it — the per-piece column on
+// the order, then the combined job-level stone status = the LEAST-ready piece
+// via the milestone-backed setter (the Orders table + schedule read that).
+const _STONE_SIMPLE_RANK = { not_ordered: 0, ordered: 1, in_stock: 2 }
+const _stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : (s === 'in_stock' || s === 'received' || s === 'arrived') ? 'in_stock' : 'ordered'
+export async function setOrderPieceInStock(orderId, piece) {
+  if (!orderId) return { ok: false, error: 'Missing order.' }
+  const col = piece === 'base' ? 'base_stone_status' : 'die_stone_status'
+  const { data: o, error: readErr } = await supabase.from('orders')
+    .select('id, die_stone_status, base_stone_status, base_config, shape, pricing').eq('id', orderId).single()
+  if (readErr || !o) return { ok: false, error: readErr?.message || 'Order not found.' }
+  const r = await bulkUpdateOrders([orderId], { [col]: 'in_stock' })
+  if (!r.ok) return r
+  try {
+    const job = await getJobByOrderId(orderId)
+    if (job?.id) {
+      const cur = _stoneToSimple(deriveStoneStatus(job))
+      // Same gate the quick-edit uses (draftHasBase): a die-only order has no
+      // base piece to wait on. A renamed base line on the contract counts too.
+      const hasBase = piece === 'base' || orderHasBase(o.base_config, SHAPES.find(sh => sh.code === o.shape))
+        || !!o.pricing?.lineItemLabels?.['base-block']
+      const die = piece === 'die' ? 'in_stock' : (o.die_stone_status || cur)
+      // The other piece keeps its own status; a legacy order with no per-piece
+      // base status reads the combined status (exactly what the quick-edit seeds).
+      const base = piece === 'base' ? 'in_stock' : (hasBase ? (o.base_stone_status || cur) : null)
+      const combined = [die, base].filter(Boolean).reduce((a, b) => (_STONE_SIMPLE_RANK[b] < _STONE_SIMPLE_RANK[a] ? b : a))
+      if (combined !== cur) await setOrderStoneStatus(job.id, combined)
+    }
+  } catch (e) { console.warn('[yard] combined stone status:', e?.message) }
+  return { ok: true }
+}
+
+// The whole "Die is here" tap in one call: mint the numbered row, link it to
+// the order, flip the order's piece status, leave an activity note.
+export async function markPieceHere({ orderId, orderNumber = null, family = null, piece = 'die', color = null, size = null, specs = null, zone = null, crate = null, by = null }) {
+  if (!orderId) return { ok: false, error: 'Missing order.' }
+  const r = await tagYardStone({
+    item_type: piece === 'base' ? 'base' : 'die', color, size, specs, zone, crate,
+    status: 'allocated', assigned_to: family || null, allocated_order_id: orderId,
+  }, { by })
+  if (!r.ok) return r
+  const s = await setOrderPieceInStock(orderId, piece)
+  logOrderActivity(orderId, {
+    type: 'change', field: piece === 'base' ? 'Base status' : 'Die status', newValue: 'In stock',
+    note: `${piece === 'base' ? 'Base' : 'Die'} found in the yard — painted ${fmtYardTag(r.tag)}${zone ? ` · zone ${zone}` : ''}${crate ? ` · crate ${crate}` : ''}${orderNumber ? ` (${orderNumber})` : ''}`,
+    actor: by || null,
+  }).catch(() => {})
+  return { ok: true, row: r.row, tag: r.tag, statusOk: s.ok, statusError: s.ok ? null : s.error }
+}
+
+// Walk verbs on a stone (direct writes, same reasoning as the YARD COUNT block
+// above — never through updateInventoryItem's status branch).
+export function moveYardStone(id, { zone, crate } = {}) {
+  const patch = {}
+  if (zone !== undefined) patch.zone = (zone == null ? null : (String(zone).trim() || null))
+  if (crate !== undefined) patch.crate = (crate == null ? null : (String(crate).trim() || null))
+  return _yardPatch(id, patch)
+}
+// Red tape: the stone is here but something is wrong (cracked, wrong size,
+// unknown owner). Keeps the assignment; lands in Reconcile beside MISSING.
+export function flagYardStoneProblem(id, { by = null, note = null } = {}) {
+  const patch = { status: 'problem', verified_at: new Date().toISOString(), verified_by: by || null }
+  if (note) patch.notes = String(note).trim() || null
+  return _yardPatch(id, patch)
+}
+// Green tape: link a free stone to an order (status allocated, family label).
+export function linkYardStoneToOrder(id, { orderId, family = null } = {}) {
+  if (!orderId) return Promise.resolve({ ok: false, error: 'Pick the order.' })
+  return _yardPatch(id, { allocated_order_id: orderId, assigned_to: family || null, status: 'allocated' })
+}
+// Blue tape again: back to free stock.
+export function unlinkYardStone(id) {
+  return _yardPatch(id, { allocated_order_id: null, assigned_to: null, status: 'available' })
+}
+export function setYardStonePhoto(id, url) {
+  return _yardPatch(id, { photo_url: url || null })
+}
+// The stone's photo rides the same public bucket the field completion photos
+// use, under yard/<stone id>/.
+export async function uploadYardStonePhoto(stoneId, file) {
+  if (!stoneId || !file) return { ok: false, error: 'Missing stone or file' }
+  const safe = String(file.name || 'photo').replace(/[^\w.-]+/g, '_')
+  const path = `yard/${stoneId}/${crypto.randomUUID()}_${safe}`
+  const { error } = await supabase.storage
+    .from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (error) return { ok: false, error: error.message }
+  const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  const p = await setYardStonePhoto(stoneId, data.publicUrl)
+  if (!p.ok) return p
+  return { ok: true, url: data.publicUrl, path }
+}
+
+// A light trade-format tidy for the size box: "1-10x0-8x2-0", "1-10 X 0-8 X
+// 2-0", "22x8x24" → "1-10 x 0-8 x 2-0". Plain inch numbers become ft-in; any
+// token it cannot read is kept as typed. Never throws, never invents.
+export function formatTradeSize(raw) {
+  const s = String(raw ?? '').trim()
+  if (!s) return ''
+  const parts = s.split(/\s*[x×X*]\s*/).filter(Boolean)
+  if (parts.length < 2) return s
+  const tok = (t) => {
+    const v = t.trim().replace(/[″"']/g, '')
+    if (/^\d{1,2}-\d{1,2}(\.\d+)?$/.test(v)) return v
+    if (/^\d+(\.\d+)?$/.test(v)) {
+      const n = Number(v)
+      if (n >= 12) {
+        const ft = Math.floor(n / 12); const inch = Math.round((n - ft * 12) * 10) / 10
+        return `${ft}-${inch}`
+      }
+      return `0-${n}`
+    }
+    return t.trim()
+  }
+  return parts.map(tok).join(' x ')
 }
 
 // Bulk-insert many stock items (the importer's confirm action). Chunked so a big

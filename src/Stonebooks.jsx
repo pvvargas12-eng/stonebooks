@@ -825,7 +825,7 @@ export default function Stonebooks() {
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'accounting' && <AccountingTab onOpenJob={openJobSmart} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
-{tab === 'inventory' && <InventoryTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
+{tab === 'inventory' && <InventoryTab canReset={isOwner(user)} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {/* Profit lives inside Accounting now (2026-09-17). */}
           {tab === 'quote'     && <QuoteGeneratorTab onOpenSales={(id) => openSales(id)} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Quote Generator', tab: 'quote' }); setTab('orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}
