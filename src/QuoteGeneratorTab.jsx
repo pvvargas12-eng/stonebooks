@@ -14,7 +14,7 @@ export default function QuoteGeneratorTab({ onOpenSales, onOpenOrder }) {
       `}</style>
       <div className="sb-qg-head">
         <h1 className="sb-qg-h1">Quote Generator</h1>
-        <span className="sb-qg-sub">Type the size, pick the shape, polish and color. The quote is the contract’s own math. The books show what the stone costs and what it sells for at your markup.</span>
+        <span className="sb-qg-sub">Pick the job type, then what it needs — size, polish, color, extras. The quote is the contract’s own math, before tax. On a new stone the books show what it costs and what it sells for at your markup.</span>
       </div>
       <QuoteBuilder onOpenSales={onOpenSales} onOpenOrder={onOpenOrder} />
     </div>

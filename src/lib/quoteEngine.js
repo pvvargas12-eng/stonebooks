@@ -14,7 +14,12 @@
 // so the yearly refresh is one number per color per thickness, PDF or not.
 // =============================================================================
 import books from '../data/priceBooks.json'
-import { SHAPES, BASE_SIZES, GRANITE_COLORS, POLISH_LEVELS } from './orderRates'
+import {
+  SHAPES, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, POLISH_LEVELS, ADD_ONS_CATALOG, PHOTO_SIZES, VASE_SIZES,
+  SHAPE_CARVED_DESIGNS, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE, BRONZE_WORK_TYPES, BRONZE_SIZES, BRONZE_BACKERS,
+  BRONZE_BACKER_MATCH, addonPrice,
+} from './orderRates'
+import { snapHeightToTier } from './monumentCatalog'
 
 export const BOOKS = books.suppliers
 export const BOOK_KEYS = Object.keys(BOOKS)          // ['peerless', 'kani']
@@ -62,17 +67,104 @@ export const BASE_FINISH_OPTIONS = [
 ]
 export const POLISH_OPTIONS = POLISH_LEVELS.filter(p => ['P2', 'P3', 'P5'].includes(p.code))
 export const FOUNDATION_OPTIONS = ['Our Foundation', 'Strip', 'Cemetery Foundation']
-// The add-ons the quote offers straight from the sheet (codes = ADD_ONS_CATALOG).
-export const QUOTE_ADDONS = [
-  { code: 'lett-year', label: 'Lettering: year only' },
-  { code: 'lett-mdy',  label: 'Lettering: month/day/year' },
-  { code: 'lett-full', label: 'Lettering: full inscription' },
-  { code: 'panel',     label: 'Panel' },
-  { code: 'granite-vet-fdn', label: 'Granite VET + FDN + set' },
-  { code: 'granite-vet',     label: 'Granite VET + set (no FDN)' },
-  { code: 'bronze-vet-fdn',  label: 'Bronze VET base + FDN + set' },
-  { code: 'bronze-vet',      label: 'Bronze VET base (no FDN)' },
+
+// ── job types (Paul 2026-10-19: "quote by service — job type first") ────────
+export const QUOTE_JOBS = [
+  { code: 'new_stone',   label: 'New stone',        blurb: 'Die, slant or marker — the stone, its base and the foundation.' },
+  { code: 'inscription', label: 'Inscription',      blurb: 'Lettering on a stone that is already set.' },
+  { code: 'bronze',      label: 'Bronze services',  blurb: 'A bronze plate, scroll or emblem with its granite backer.' },
 ]
+export const VET_CODES = ['granite-vet-fdn', 'granite-vet', 'bronze-vet-fdn', 'bronze-vet']
+// The extras each job type offers. Photo / carved / vase ride the order's
+// addOns exactly the way the sales wizard writes them (code + label + price +
+// qty), so the contract's own math prices them. Acid wash is a SERVICE flag.
+export const EXTRA_KINDS = [
+  { code: 'photo',  label: 'Photo',                jobs: ['new_stone', 'inscription'] },
+  { code: 'carved', label: 'Shape carved design',  jobs: ['new_stone', 'inscription'] },
+  { code: 'vase',   label: 'Vase',                 jobs: ['new_stone', 'inscription'] },
+  { code: 'vet',    label: 'Veteran marker setup', jobs: ['new_stone'] },
+  { code: 'panel',  label: 'Panel',                jobs: ['inscription'] },
+  { code: 'acid',   label: 'Acid wash',            jobs: ['inscription'] },
+]
+export const extraKindsFor = (job) => EXTRA_KINDS.filter(k => k.jobs.includes(job))
+export const PHOTO_TYPE_OPTIONS = [{ code: 'porcelain', label: 'Porcelain' }, { code: 'stainless', label: 'Stainless' }]
+export const carvedDesignOptions = () => SHAPE_CARVED_DESIGNS.filter(d => !d.custom)
+export const vetOptions = () => ADD_ONS_CATALOG.filter(a => VET_CODES.includes(a.code))
+// The price an extra would carry right now (live catalogs — Settings edits win).
+// pick = { photoType, photoSize, design, vaseSize, vet, acidType }; colorCode =
+// the quote's stone color (vases price with the stone's premium).
+export function extraPrice(kind, pick, colorCode) {
+  switch (kind) {
+    case 'photo':  return addonPrice('photo', { size: pick.photoSize, photoType: pick.photoType })
+    case 'carved': return addonPrice('shape-carved', { design: pick.design })
+    case 'vase':   return addonPrice('vase', { size: pick.vaseSize, color: GRANITE_COLORS.some(c => c.code === colorCode) ? colorCode : null })
+    case 'vet':    return ADD_ONS_CATALOG.find(a => a.code === pick.vet)?.price || 0
+    case 'panel':  return ADD_ONS_CATALOG.find(a => a.code === 'panel')?.price || 0
+    case 'acid':   return ACID_WASH_BY_TYPE.find(t => t.code === pick.acidType)?.price || 0
+    default: return 0
+  }
+}
+// One extra on the quote: { id, kind, code, label, price, qty, ...fields the
+// wizard keeps on the add-on }. Null when the pick is incomplete.
+export function makeExtra(kind, pick, colorCode, id) {
+  const price = extraPrice(kind, pick, colorCode)
+  switch (kind) {
+    case 'photo': {
+      const s = PHOTO_SIZES.find(x => x.code === pick.photoSize); if (!s) return null
+      const t = pick.photoType === 'stainless' ? 'Stainless' : 'Porcelain'
+      return { id, kind, code: `photo-${pick.photoType || 'porcelain'}-${s.code}`, label: `${t} Photo — ${s.label} (${s.dim})`, price, qty: 1 }
+    }
+    case 'carved': {
+      const d = SHAPE_CARVED_DESIGNS.find(x => x.code === pick.design); if (!d) return null
+      return { id, kind, code: d.code, label: d.label, price, qty: 1 }
+    }
+    case 'vase': {
+      const s = VASE_SIZES.find(x => x.code === pick.vaseSize); if (!s) return null
+      const col = GRANITE_COLORS.some(c => c.code === colorCode) ? colorCode : null
+      return { id, kind, code: `vase-${s.code}-tbd`, label: `Vase · ${s.label} (${col ? 'match stone' : 'color to pick'})`, price, qty: 1, vaseSize: s.code, vaseShape: null, vaseMatchStone: !!col, vaseColor: col }
+    }
+    case 'vet': {
+      const a = ADD_ONS_CATALOG.find(x => x.code === pick.vet); if (!a) return null
+      return { id, kind, code: a.code, label: a.label, price, qty: 1 }
+    }
+    case 'panel': {
+      const a = ADD_ONS_CATALOG.find(x => x.code === 'panel'); if (!a) return null
+      return { id, kind, code: a.code, label: a.label, price, qty: 1 }
+    }
+    case 'acid': {
+      const t = ACID_WASH_BY_TYPE.find(x => x.code === pick.acidType); if (!t) return null
+      return { id, kind, code: 'acid-wash', label: `Acid wash — ${t.label}`, price, qty: 1, acidType: t.code }
+    }
+    default: return null
+  }
+}
+// Extras → the order's addOns (+ the acid-wash service). Vase codes get a
+// running index like the wizard's (`vase-<size>-<shape>-<n>`).
+function applyExtras(o, extras) {
+  const list = extras || []
+  const addOns = []
+  let vaseN = 0
+  for (const e of list) {
+    if (!e || e.kind === 'acid') continue
+    const { id, kind, ...rest } = e
+    void id; void kind
+    const code = e.kind === 'vase' ? `vase-${e.vaseSize}-tbd-${++vaseN}` : e.code
+    addOns.push({ ...rest, code, qty: Number(e.qty) || 1, price: Number(e.price) || 0, notes: '' })
+  }
+  o.addOns = addOns
+  const acid = list.find(e => e && e.kind === 'acid')
+  o.serviceTypes = (o.serviceTypes || []).filter(s => s !== 'ACID_WASH')
+  if (acid) {
+    o.serviceTypes = [...o.serviceTypes, 'ACID_WASH']
+    o.pricing.acidWashType = acid.acidType
+    o.pricing.acidWashPrice = null
+    o.pricing.acidWashQuote = false
+  }
+}
+export const INSCRIPTION_TIER_OPTIONS = () => INSCRIPTION_TIERS
+export const BRONZE_OPTIONS = { workTypes: BRONZE_WORK_TYPES, sizes: BRONZE_SIZES, backers: BRONZE_BACKERS, match: BRONZE_BACKER_MATCH }
+// The sheet's DIE + BASE rate per sq ft of base footprint, by height tier.
+export const baseRateFor = (hIn) => BASE_HEIGHTS.find(h => h.code === (snapHeightToTier(hIn) || 8)) || BASE_HEIGHTS[1]
 
 // The sheet's printed sizes use the printed price: find the catalog size that
 // matches the typed dims (dies: w = L, d = thickness, t = height; markers:
@@ -229,7 +321,14 @@ export const pageImageUrl = (supplierKey, page) => page ? `/${BOOKS[supplierKey]
 //          bookPick: { supplier, die: row|null, base: row|null, useForDie,
 //          useForBase, dieColor, baseColor, extrasBase } | null }
 // bookPick.die / .base rows carry .cost (the picked column's price).
+// spec.job picks the path: 'new_stone' (default) / 'inscription' / 'bronze';
+// spec.extras = [makeExtra()…]; spec.inscription = { tier }; spec.bronze =
+// { workType, size, customSizeText, customPrice, backer, backerSize,
+//   backerColor, backerCustomText, backerCustomPrice, descOverride }.
 export function applyQuoteSpec(order, spec) {
+  const job = spec.job || 'new_stone'
+  if (job === 'inscription') return applyInscriptionSpec(order, spec)
+  if (job === 'bronze') return applyBronzeSpec(order, spec)
   const o = { ...order, pricing: { ...(order.pricing || {}) }, baseConfig: { ...(order.baseConfig || {}) } }
   const shape = QUOTE_SHAPES.find(s => s.code === spec.shape) || QUOTE_SHAPES[0]
   o.shape = shape.code
@@ -282,16 +381,22 @@ export function applyQuoteSpec(order, spec) {
   const bL = parseDim(b.L), bW = parseDim(b.W), bH = parseDim(b.H)
   if (b.include && bL && bW) {
     const code = baseSizeCodeFor(bL, bW, bH)
-    const hIn = bH || 8
-    const hc = [6, 8, 10, 12].reduce((best, h) => Math.abs(h - hIn) < Math.abs(best - hIn) ? h : best, 8)
+    // Height tier snaps DOWN like the wizard's BaseSection (snapHeightToTier);
+    // under 6″ or blank → the 8″ rate.
+    const hc = snapHeightToTier(bH || 8) || 8
     o.baseConfig = { ...o.baseConfig, include: true, sizeCode: code || 'custom', width: bL, depth: bW, heightInches: bH || null, heightCode: hc, finish: b.finish || 'BRP', topFinish: b.topFinish || 'pol', polishMargin2in: !!b.polishMargin }
   } else {
     o.baseConfig = { ...o.baseConfig, include: false, sizeCode: null, width: null, depth: null }
   }
+  // Base rule v2: a custom base prices on its own footprint (sq ft × the
+  // DIE + BASE rate for its height) — see buildLineItems. Stamped per order
+  // like polishRule, so no signed contract moves.
+  o.pricing.baseRule = 'v2'
   o.foundationType = spec.foundationType || null
   o.pricing.foundationCalc = !!spec.foundationType && spec.foundationType !== 'Cemetery Foundation'
   o.pricing.foundationOverride = null
-  o.addOns = (spec.addOns || []).map(code => ({ code, qty: 1 }))
+  o.inscription = { ...(o.inscription || {}), tier: null }
+  applyExtras(o, spec.extras)
 
   // Book pricing in place of the sheet: the picked rows become line overrides.
   // base-block's override is the WHOLE folded base (Option B), so the saw /
@@ -308,6 +413,75 @@ export function applyQuoteSpec(order, spec) {
     base: useBase ? { rowId: bp.base.id, label: bp.base.label, cost: bp.base.cost, color: bp.baseColor || null, page: bp.base.bookPage, tier: bp.base.tier } : null,
   } : null
   return o
+}
+// Shared by the inscription + bronze paths: the quote is for work on a stone
+// that is already set, so the order carries no die / base / foundation and no
+// book pricing. (Putting one of these on a lead that had a stone spec clears
+// it — the quote IS the contract.)
+function clearStone(o) {
+  o.shape = null; o.standardSizeCode = null; o.width = null; o.depth = null; o.height = null; o.thickness = null
+  o.polishLevel = null; o.topShape = null
+  o.baseConfig = { ...(o.baseConfig || {}), include: false, sizeCode: null, width: null, depth: null }
+  o.foundationType = null
+  o.pricing.foundationCalc = false
+  o.pricing.foundationOverride = null
+  o.pricing.steelSides = false
+  o.pricing.lineItemOverrides = { ...(o.pricing.lineItemOverrides || {}) }
+  delete o.pricing.lineItemOverrides['base-stone']
+  delete o.pricing.lineItemOverrides['base-block']
+  o.pricing.quoteBook = null
+}
+function applyInscriptionSpec(order, spec) {
+  const o = { ...order, pricing: { ...(order.pricing || {}) }, baseConfig: { ...(order.baseConfig || {}) }, inscription: { ...(order.inscription || {}) } }
+  clearStone(o)
+  o.serviceTypes = ['INSCRIPTION']
+  const tier = INSCRIPTION_TIERS.find(t => t.code === spec.inscription?.tier)
+  o.inscription.tier = tier ? tier.code : null
+  o.inscription.type = null            // the tier line supersedes the type-driven lettering line
+  o.pricing.bronze = null
+  applyExtras(o, spec.extras)
+  return o
+}
+function applyBronzeSpec(order, spec) {
+  const o = { ...order, pricing: { ...(order.pricing || {}) }, baseConfig: { ...(order.baseConfig || {}) } }
+  clearStone(o)
+  o.serviceTypes = ['BRONZE']
+  const b = spec.bronze || {}
+  const workType = BRONZE_WORK_TYPES.some(w => w.code === b.workType) ? b.workType : 'marker'
+  const nonMarker = workType !== 'marker'
+  // A backer needs a size code ('custom' included) — bronzeBaseItems prices a
+  // size-less backer at the legacy flat $489, which no new quote should hit.
+  const backerOn = !!(b.backer && b.backerSize)
+  o.pricing.bronze = {
+    workType,
+    size: nonMarker ? null : (b.size || null),
+    customSizeText: String(b.customSizeText || '').trim() || null,
+    customPrice: b.customPrice === '' || b.customPrice == null ? null : Number(b.customPrice),
+    backer: backerOn,
+    backerSize: backerOn ? (b.backerSize || null) : null,
+    backerColor: backerOn ? (b.backerColor || 'Grey') : null,
+    backerCustomText: backerOn && b.backerSize === 'custom' ? (String(b.backerCustomText || '').trim() || null) : null,
+    backerCustomPrice: backerOn && b.backerSize === 'custom' && b.backerCustomPrice !== '' && b.backerCustomPrice != null ? Number(b.backerCustomPrice) : null,
+    descOverride: String(b.descOverride || '').trim() || null,
+  }
+  o.addOns = []                        // the bronze path prices no add-ons
+  o.inscription = { ...(o.inscription || {}), tier: null }
+  return o
+}
+// Is the spec complete enough to price? Returns the reason it is not, or ''.
+export function specNotReady(spec) {
+  const job = spec.job || 'new_stone'
+  if (job === 'new_stone') return parseDim(spec.L) ? '' : 'Type the stone’s size to price it.'
+  if (job === 'inscription') return INSCRIPTION_TIERS.some(t => t.code === spec.inscription?.tier) ? '' : 'Pick what gets lettered.'
+  const b = spec.bronze || {}
+  const workType = b.workType || 'marker'
+  if (workType === 'marker') {
+    if (!b.size) return 'Pick the bronze size.'
+    const row = BRONZE_SIZES.find(s => s.code === b.size)
+    if ((b.size === 'custom' || (row && row.price == null)) && !(Number(b.customPrice) > 0)) return 'Type the plate price — the sheet has none for this size.'
+    return ''
+  }
+  return Number(b.customPrice) > 0 ? '' : 'Type the price for this bronze work.'
 }
 // The vendor name the PR builder + the order's Vendor field should carry
 // (orders.stone_vendor; the names match the ordering_vendors rows in prod).

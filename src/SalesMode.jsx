@@ -9377,7 +9377,22 @@ export function buildLineItems(order) {
       // their own catalog entry. No fitting size → $0 + "set price" (BaseSection
       // shows the no-fit warning so an unpriced base can't ship silently).
       let baseSize = null, baseBasePrice = 0, baseLabel = 'Base block (custom — set price)'
-      if (isCustomBase) {
+      // Base rule v2 (Quote Generator, Paul 2026-10-19 "the bases are priced
+      // wrong"): a custom base is priced on ITS OWN footprint — sq ft × the
+      // sheet's DIE + BASE rate for its height (6″ $145 / 8″ $170 / 10″ $195 /
+      // 12″ $225 per sq ft; the printed 1-0 deep polished-top bases are exactly
+      // that: 2-0 × 1-0 × 0-8 = 2 sq ft × $170 = $340). Opt-in per order via
+      // pricing.baseRule so no saved contract moves; the height is folded into
+      // the rate, so the separate base-height tier line is skipped under v2.
+      const baseRuleV2 = isCustomBase && order.pricing?.baseRule === 'v2'
+      if (baseRuleV2) {
+        const bw = Number(bc.width) || 0, bd = Number(bc.depth) || 0
+        const tier = BASE_HEIGHTS.find(h => h.code === bc.heightCode) || BASE_HEIGHTS.find(h => h.code === 8)
+        if (bw > 0 && bd > 0 && tier) {
+          baseBasePrice = Math.round((bw / 12) * (bd / 12) * tier.upcharge)
+          baseLabel = `Base — ${ftIn(bw)} × ${ftIn(bd)}${bc.heightInches ? ` × ${ftIn(bc.heightInches)}` : ` × ${tier.label}`}`
+        }
+      } else if (isCustomBase) {
         const dieW = stdSize?.w ?? order.width ?? 0
         const dieD = stdSize?.d ?? order.depth ?? 0
         const fit = nearestFittingBaseSize(dieW, dieD)
@@ -9416,7 +9431,7 @@ export function buildLineItems(order) {
       // include the base's physical height (labels carry 0-6/0-8), so a separate
       // tier on a standard size double-charges. Custom adds the snapped tier
       // (heightCode set by BaseSection from the typed inches via snapHeightToTier).
-      if (isCustomBase) {
+      if (isCustomBase && !baseRuleV2) {
         const heightOpt = BASE_HEIGHTS.find(h => h.code === order.baseConfig.heightCode)
         if (heightOpt && heightOpt.upcharge > 0) {
           items.push({
