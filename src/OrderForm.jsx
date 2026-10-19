@@ -1026,7 +1026,7 @@ export function MonumentCard({ order, update, updatePricing }) {
 
       {/* Base + die line — shared <BaseSection> (the wizard uses the same one). */}
       <div className="of-sub">
-        <BaseSection order={order} onChange={setBase} dieLineText={buildDieSpec(order)} />
+        <BaseSection order={order} onChange={setBase} onPricing={updatePricing} dieLineText={buildDieSpec(order)} />
       </div>
 
       {/* Live FOUNDATION-line preview (the actual computeFormLineItems foundation

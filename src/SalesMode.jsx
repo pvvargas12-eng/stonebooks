@@ -3504,7 +3504,8 @@ export function ShapeStep({ order, update }) {
       {/* ---- 6. BASE (slants/dies/double-die/bronze) ------------------------- */}
       {shape && shape.canHaveBase && (
         <Section title="Base" eyebrow={shape.requiresBase ? 'Required for this shape' : 'Optional add-on'}>
-          <BaseSection order={order} onChange={updateBase} dieLineText={buildDieSpec(order)} />
+          <BaseSection order={order} onChange={updateBase} dieLineText={buildDieSpec(order)}
+            onPricing={patch => update({ pricing: { ...(order.pricing || {}), ...patch } })} />
         </Section>
       )}
     </div>

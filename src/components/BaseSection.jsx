@@ -12,9 +12,15 @@
 //    display on the line. Custom price = the nearest STANDARD base that FITS the
 //    die footprint (nearestFittingBaseSize) — reuses the catalog price, no new
 //    rate. No fitting size → a visible warning + price left unset.
+//  • QUOTE-GEN-2b (2026-10-19): picking or editing a CUSTOM base stamps
+//    pricing.baseRule = 'v2' through onPricing (the same opt-in the polish
+//    pickers use for polishRule) — the base then prices on ITS OWN footprint
+//    (sq ft × the BASE_HEIGHTS rate for its height, no separate tier line).
+//    Nothing stamps on load/save, so signed and older contracts keep the old
+//    fit-the-die math until someone touches the base.
 //
-// This component ONLY edits baseConfig (via onChange(patch)); all pricing lives
-// in the shared buildLineItems. It imports only data-layer modules (no SalesMode
+// This component ONLY edits baseConfig (via onChange(patch)) and stamps the
+// base rule (via onPricing(patch)); all pricing lives in the shared buildLineItems. It imports only data-layer modules (no SalesMode
 // import) to avoid an import cycle.
 // =============================================================================
 import {
@@ -34,7 +40,7 @@ const FINISH_OPTS = [
 const TOP_OPTS = [{ code: 'pol', label: 'POL TOP' }, { code: 'frost', label: 'FROST TOP' }]
 const fmt$ = n => '$' + (Number(n) || 0).toLocaleString()
 
-export default function BaseSection({ order, onChange, dieLineText = '' }) {
+export default function BaseSection({ order, onChange, onPricing = null, dieLineText = '' }) {
   const shape = SHAPES.find(s => s.code === order?.shape)
   const canHave = shape?.canHaveBase
   const requires = shape?.requiresBase
@@ -42,6 +48,10 @@ export default function BaseSection({ order, onChange, dieLineText = '' }) {
 
   const bc = order.baseConfig || {}
   const set = (patch) => onChange?.(patch)
+  // A custom-base pick/edit opts the order into base rule v2 (own-footprint
+  // pricing). Only a user action reaches here — never load or save.
+  const setCustom = (patch) => { set(patch); onPricing?.({ baseRule: 'v2' }) }
+  const baseRuleV2 = order.pricing?.baseRule === 'v2'
 
   // Die footprint — standard size first, then custom dims.
   const stdSize = order.standardSizeCode ? shape.standardSizes?.find(s => s.code === order.standardSizeCode) : null
@@ -65,14 +75,19 @@ export default function BaseSection({ order, onChange, dieLineText = '' }) {
   const tier = hasTypedH ? snapHeightToTier(bc.heightInches) : null
   const lowHeight = hasTypedH && tier == null
   const tierUp = tier ? BASE_HEIGHTS.find(h => h.code === tier)?.upcharge : 0
+  // v2 preview — mirrors buildLineItems: sq ft × the rate for the (snapped) height,
+  // 8″ when no height is typed yet.
+  const v2Tier = BASE_HEIGHTS.find(h => h.code === (tier ?? 8))
+  const v2W = Number(bc.width) || 0, v2D = Number(bc.depth) || 0
+  const v2Price = (baseRuleV2 && v2W > 0 && v2D > 0 && v2Tier) ? Math.round((v2W / 12) * (v2D / 12) * v2Tier.upcharge) : null
 
   const setMode = (m) => {
-    if (m === 'custom') set({ sizeCode: 'custom' })
+    if (m === 'custom') setCustom({ sizeCode: 'custom' })
     else set({ sizeCode: null, heightCode: null, heightInches: null })   // standard = no separate height upcharge
   }
   const setHeight = (v) => {
     const inches = v === '' ? null : Number(v)
-    set({ heightInches: inches, heightCode: snapHeightToTier(inches) })
+    setCustom({ heightInches: inches, heightCode: snapHeightToTier(inches) })
   }
 
   const effDie = (bc.dieTextOverride || '').trim() || dieLineText
@@ -118,20 +133,26 @@ export default function BaseSection({ order, onChange, dieLineText = '' }) {
             <>
               <div className="bsx-grid3">
                 <label className="bsx-field"><span>Base width (in)</span>
-                  <input type="number" value={bc.width ?? ''} onChange={e => set({ width: e.target.value === '' ? null : Number(e.target.value) })} /></label>
+                  <input type="number" value={bc.width ?? ''} onChange={e => setCustom({ width: e.target.value === '' ? null : Number(e.target.value) })} /></label>
                 <label className="bsx-field"><span>Base depth (in)</span>
-                  <input type="number" value={bc.depth ?? ''} onChange={e => set({ depth: e.target.value === '' ? null : Number(e.target.value) })} /></label>
+                  <input type="number" value={bc.depth ?? ''} onChange={e => setCustom({ depth: e.target.value === '' ? null : Number(e.target.value) })} /></label>
                 <label className="bsx-field"><span>Base height (in)</span>
                   <input type="number" value={bc.heightInches ?? ''} onChange={e => setHeight(e.target.value)} /></label>
               </div>
-              {customFit && (
+              {baseRuleV2 ? (
+                v2Price != null && (
+                  <div className="bsx-note">
+                    Priced on its own footprint — {v2W}″ × {v2D}″ = {((v2W / 12) * (v2D / 12)).toFixed(2)} sq ft × {fmt$(v2Tier.upcharge)}/sq ft ({v2Tier.label} rate) = <strong>{fmt$(v2Price)}</strong>.
+                  </div>
+                )
+              ) : customFit && (
                 <div className="bsx-note">
                   Priced as nearest fitting standard base <strong>{customFit.label}</strong> — {fmt$(customFit.price)}
                   {tier ? ` · height ${bc.heightInches}″ → ${tier}″ tier (+${fmt$(tierUp)})` : ''}.
                 </div>
               )}
               {lowHeight && <div className="bsx-warn">Height under 6″ — no priced tier applied. Enter 6″ or more.</div>}
-              {noFit && <div className="bsx-warn">⚠ No standard base fits this die footprint — needs a larger/custom base. Base price left unset; enter it on the line item.</div>}
+              {!baseRuleV2 && noFit && <div className="bsx-warn">⚠ No standard base fits this die footprint — needs a larger/custom base. Base price left unset; enter it on the line item.</div>}
             </>
           )}
 
