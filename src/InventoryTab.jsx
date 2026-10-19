@@ -27,6 +27,7 @@ import InventoryPhotoEtching from './components/InventoryPhotoEtching'
 import InventoryNeedsOrdering from './components/InventoryNeedsOrdering'
 import StonePositionList from './components/StonePositionList'
 import InventorySuppliers from './components/InventorySuppliers'
+import { yardStoneSpecLine, conditionLabel } from './lib/yardStone'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -45,6 +46,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
   const [q, setQ] = useState('')
   const [fType, setFType] = useState('')
   const [fStatus, setFStatus] = useState('')
+  const [fCond, setFCond] = useState('')     // '' all · 'good' · 'look' (anything but good)
   const [fZone, setFZone] = useState('')
   const [sort, setSort] = useState({ key: 'tag', dir: 'asc' })
 
@@ -71,7 +73,8 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
   const startEdit = (r) => {
     setEditErr(null)
     setEditDraft({
-      yard_tag: r.yard_tag ?? '', zone: r.zone || '', crate: r.crate || '', specs: r.specs || '',
+      yard_tag: r.yard_tag ?? '', zone: r.zone || '', crate: r.crate || '', spot: r.spot || '', specs: r.specs || '',
+      condition: r.condition || 'good', condition_note: r.condition_note || '',
       item_type: r.item_type || '', color: r.color || '', size: r.size || '', top: r.top || '',
       sides: r.sides || '', back: r.back || '', location: r.location || '',
       quantity: r.quantity ?? 1, status: r.status || 'available', assigned_to: r.assigned_to || '', notes: r.notes || '',
@@ -149,10 +152,12 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
       if (fType && r.item_type !== fType) return false
       if (fStatus && (r.status || 'available') !== fStatus) return false
       if (fZone && String(r.zone || '').trim() !== fZone) return false
+      if (fCond === 'good' && (r.condition || 'good') !== 'good') return false
+      if (fCond === 'look' && (r.condition || 'good') === 'good') return false
       if (needle) {
         if (needleNum != null && Number(r.yard_tag) === needleNum) return true
         if (tagOnly) return false
-        const hay = [fmtYardTag(r.yard_tag), r.item_type, r.color, r.size, r.specs, r.top, r.sides, r.back, r.zone, r.crate, r.location, r.assigned_to, r.notes]
+        const hay = [fmtYardTag(r.yard_tag), r.item_type, r.color, r.size, r.specs, yardStoneSpecLine(r), r.top, r.sides, r.back, r.zone, r.crate, r.spot, r.location, r.assigned_to, r.notes, r.condition_note]
           .filter(Boolean).join(' ').toLowerCase()
         if (!hay.includes(needle)) return false
       }
@@ -176,7 +181,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
       status: (a, b) => cmpText(a.status, b.status) * dir,
     }
     return [...l].sort(by[sort.key] || by.tag)
-  }, [rows, q, fType, fStatus, fZone, sort])
+  }, [rows, q, fType, fStatus, fZone, fCond, sort])
 
   const totalQty = useMemo(() => filtered.reduce((s, r) => s + (Number(r.quantity) || 0), 0), [filtered])
   const toggleSort = (key) => setSort(s => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -351,6 +356,11 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
           <option value="problem">Problem</option>
           <option value="missing">Missing</option>
         </select>
+        <select className="sb-input inv-filter" value={fCond} onChange={e => setFCond(e.target.value)}>
+          <option value="">Any condition</option>
+          <option value="good">Good</option>
+          <option value="look">Needs a look</option>
+        </select>
         <span className="inv-count">{filtered.length} row{filtered.length === 1 ? '' : 's'} · {totalQty} stone{totalQty === 1 ? '' : 's'}</span>
       </div>
 
@@ -371,7 +381,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
           <table className="inv-table">
             <thead>
               <tr>
-                {renderTh('tag', 'Tag', 'inv-tagcol')}{renderTh('zone', 'Zone')}<th>Crate</th>
+                {renderTh('tag', 'Tag', 'inv-tagcol')}{renderTh('zone', 'Zone')}<th>Crate · spot</th>
                 {renderTh('type', 'Type')}{renderTh('color', 'Color')}{renderTh('size', 'Size')}<th>Specs</th>
                 {renderTh('location', 'Location')}<th className="inv-num">Qty</th>{renderTh('status', 'Status')}<th>Assigned to</th><th />
               </tr>
@@ -384,15 +394,18 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
                 <tr key={r.id}>
                   <td className="inv-tag">{r.yard_tag != null ? fmtYardTag(r.yard_tag) : <span className="inv-muted">—</span>}</td>
                   <td className="inv-loc">{r.zone || '—'}</td>
-                  <td className="inv-mono">{r.crate || '—'}</td>
+                  <td className="inv-mono inv-wrap">{[r.crate, r.spot].filter(Boolean).join(' · ') || '—'}</td>
                   <td>{r.item_type ? titleCase(r.item_type) : '—'}</td>
                   <td className="inv-wrap">{r.color || '—'}</td>
                   <td className="inv-mono">{r.size || '—'}</td>
-                  <td className="inv-wrap inv-specs">{r.specs || [r.top, r.sides].filter(Boolean).join(' / ') || '—'}</td>
+                  <td className="inv-wrap inv-specs">{yardStoneSpecLine(r, { withSize: false, withColor: false }) || '—'}</td>
                   <td className="inv-wrap">{r.location || '—'}</td>
                   <td className="inv-num">{r.quantity ?? 1}</td>
                   <td>
                     <span className={`inv-pill inv-pill-${(r.status || 'available')}`}>{statusLabel(r.status)}</span>
+                    {r.condition && r.condition !== 'good' && (
+                      <span className="inv-pill inv-pill-cond" title={r.condition_note || ''}>{conditionLabel(r.condition)}</span>
+                    )}
                   </td>
                   <td className="inv-wrap">
                     {r.status === 'allocated' ? (
@@ -532,6 +545,9 @@ function EditRows({ draft, setE, onKey, onSave, onCancel, busy, err }) {
             <label className="inv-ei-f"><span>Top</span><input className="sb-input inv-ei" value={draft.top} onChange={e => setE({ top: e.target.value })} onKeyDown={onKey} placeholder="Top finish" /></label>
             <label className="inv-ei-f"><span>Sides</span><input className="sb-input inv-ei" value={draft.sides} onChange={e => setE({ sides: e.target.value })} onKeyDown={onKey} placeholder="Sides" /></label>
             <label className="inv-ei-f"><span>Back</span><input className="sb-input inv-ei" value={draft.back} onChange={e => setE({ back: e.target.value })} onKeyDown={onKey} placeholder="Back finish" /></label>
+            <label className="inv-ei-f"><span>Spot</span><input className="sb-input inv-ei" value={draft.spot} onChange={e => setE({ spot: e.target.value })} onKeyDown={onKey} placeholder="stack 3, row 2" /></label>
+            <label className="inv-ei-f"><span>Condition</span><select className="sb-input inv-ei" value={draft.condition} onChange={e => setE({ condition: e.target.value })}>{['good', 'chip', 'crack', 'scratch', 'wrong_size', 'other'].map(c => <option key={c} value={c}>{conditionLabel(c)}</option>)}</select></label>
+            <label className="inv-ei-f inv-ei-f-grow"><span>Condition note</span><input className="sb-input inv-ei" value={draft.condition_note} onChange={e => setE({ condition_note: e.target.value })} onKeyDown={onKey} placeholder="small chip back lower left" /></label>
             <label className="inv-ei-f inv-ei-f-grow"><span>Notes</span><input className="sb-input inv-ei" value={draft.notes} onChange={e => setE({ notes: e.target.value })} onKeyDown={onKey} placeholder="Notes" /></label>
             {err && <span className="inv-edit-err">Couldn’t save: {err}</span>}
           </div>
@@ -606,6 +622,7 @@ const INV_CSS = `
   .inv-pill-missing { background: rgba(179,38,30,0.12); color: #B3261E; }
   .inv-pill-hold { background: rgba(184,132,42,0.16); color: #8A5A12; }
   .inv-pill-removed { background: #EEEAE0; color: #6B6456; }
+  .inv-pill-cond { background: rgba(184,132,42,0.16); color: #8A5A12; margin-left: 6px; }
   .inv-muted { color: var(--sb-text-muted, #8a7f6c); font-size: 13px; }
 
   .inv-old { margin-top: 22px; }

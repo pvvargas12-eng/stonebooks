@@ -1,40 +1,69 @@
 // =============================================================================
-// InventoryScreen — the yard from the phone: FIND, IS-HERE, TAG A STONE, the walk
+// InventoryScreen — the yard from the phone: ADD STONE (one card), the walk
 // =============================================================================
 // RESET-TAG-1 (2026-10-19). Paul re-founds the inventory zone by zone: every
-// stone gets a painted running number (001, 002, ...) on a sawn face, tape by
+// stone gets a painted running number (001, 002, …) on a sawn face, tape by
 // status — BLUE free / GREEN sold (family name + order number) / RED problem —
-// and a row here. Two entry paths:
-//   • a SOLD stone found in the yard: search the family, tap "Die is here" /
-//     "Base is here" on the order — the app mints the number, links the row to
-//     the order, flips the order's die/base status to In stock, asks zone +
-//     crate + photo, then tells him what to paint and tape.
-//   • FREE stock: "Tag a stone" — number (pre-filled, editable), type chips,
-//     color, size, specs, zone, crate, photo. Save stamps verified and advances
-//     the number keeping type / color / size / zone so a stack of identical
-//     flats goes fast.
-// On any stone: Move (zone/crate), Link to order / Unlink (says the tape
-// change), Problem (red tape → Reconcile), Not here (the count's missing flow).
+// and a row here. Stonebooks Field is the main input surface.
 //
-// Rides the SAME inventory_stock table + helpers as the desktop Inventory tab;
-// the DIE / BASE verdict chips on order results come from lib/stonePosition —
-// the exact logic the desktop Stone Position list uses. Archived (pre-reset)
-// rows never show here (getInventoryStock excludes them).
-//
+// ONE "Add stone" card with one search box ("Search order (family) or type
+// the stone") that branches:
+//   • a FAMILY name → the open stone orders (listOpenOrdersLight + allocated
+//     rows). An order shows its DIE and BASE as two rows with the dimensions
+//     and color FROM THE ORDER PROFILE (the contract line — standard size or
+//     custom W x D x T in trade format, the base config). Paul taps the piece
+//     he is holding → VERIFY: "Die 2-0 x 0-8 x 2-4 Barre Grey. Matches?" with
+//     Yes / Fix (size, color, the per-type spec chips). IMPORTANT (Paul): the
+//     family names on crates are NOT reliable — the shop sometimes fulfils an
+//     order with a different stone than the one that arrived for that family,
+//     so the ORDER'S dimensions are the truth, not the crate name. A material
+//     size change on Fix (different dim count, or any dim off by > 1 inch)
+//     shows a soft warning: "This does not match the Jesse order. Save as
+//     stock instead?" — Save as stock (no link) / Link anyway. Never blocks.
+//     Yes/Link anyway → mint the next yard_tag, create the row (type die/base,
+//     status allocated, allocated_order_id + assigned_to = family, verified),
+//     flip the order's die_stone_status / base_stone_status the way
+//     OrderDetail's quick-edit does → CONDITION step → STORAGE step (zone +
+//     crate + spot + photo) → "Paint 041 · Green tape: JESSE E-26-0412 · Zone
+//     B crate C-7 stack 3".
+//   • DIMENSIONS or a TYPE word ("die", "2-0 x 0-8 x 2-4") → straight to the
+//     free-stock form, pre-filled. "No order, it's stock" is always visible.
+//   • no order found → the free-stock form.
+// The free-stock form: type chips Die / Base / Slant / Hickey / Grass /
+// Backer / Other, per-type spec chips that REUSE the catalog constants the
+// wizard / OrderForm use (TOP_SHAPES, POLISH_LEVELS, BASE_FINISHES, POL/FROST
+// top, the 2" polished margin — lib/yardStone.js), color datalist, size in
+// trade format, specs, photo; Save mints, then the same CONDITION + STORAGE
+// steps, "Paint 042 · Blue tape · Zone A crate C-1", and keeps type / color /
+// zone / crate for the next stone.
+// CONDITION on every save: Good (default, no tap) / Chip / Crack / Scratch /
+// Wrong size / Other + a note + an optional damage photo. A condition other
+// than Good is a pill on the row, NOT a problem; "Unusable, red tape" is the
+// explicit flip to status problem (→ Reconcile). Notes editable later from
+// the row (Add note).
+// On any stone: Move (zone / crate / spot), Link to order / Unlink (says the
+// tape change), Problem, Not here (the count's missing flow), Add note.
 // COUNT THE YARD (2026-08-03) survives: FOUND / NOT HERE / Fix per stone.
+// The DIE / BASE verdict chips come from lib/stonePosition — the exact logic
+// the desktop Stone Position list uses. Archived (pre-reset) rows never show.
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   getInventoryStock, updateInventoryItem,
   verifyYardStock, restoreYardVerification, flagYardStockMissing, restoreYardStockStatus,
   getActiveStaffUser, properName, customerName,
-  YARD_TYPES, fmtYardTag, yardTypeLabel, getNextYardTag, tagYardStone, markPieceHere,
+  fmtYardTag, getNextYardTag, tagYardStone, markPieceHere,
   moveYardStone, flagYardStoneProblem, linkYardStoneToOrder, unlinkYardStone, uploadYardStonePhoto,
-  getOrderSpecRow, formatTradeSize, INVENTORY_STATUS_LABEL,
+  setYardStoneCondition, getOrderSpecRow, formatTradeSize, INVENTORY_STATUS_LABEL,
 } from '../lib/stonebooksData'
 import { loadStonePositionData, stoneVerdict, verdictChipText, isStoneOrder } from '../lib/stonePosition'
 import { contractDieLabel, contractBaseLabel, tradeDimsFromLabel } from '../lib/jobComponents'
-import { displayGraniteColor, displayColorLabel, GRANITE_COLORS } from '../lib/monumentCatalog'
+import { displayColorLabel, GRANITE_COLORS, orderHasBase, SHAPES } from '../lib/monumentCatalog'
+import {
+  YARD_TYPES, yardTypeLabel, isBaseType, hasTopShape, isDieFamily,
+  TOP_SHAPE_CHIPS, POLISH_CHIPS, BASE_FINISH_CHIPS, BASE_TOP_CHIPS, CONDITIONS, conditionLabel,
+  yardStoneSpecLine, yardStoneWhere, specFromOrder, sizeMateriallyDifferent, looksLikeStone, stoneFromSearch,
+} from '../lib/yardStone'
 
 const DAY_MS = 86400000
 // A verification older than 90 days counts as unconfirmed on the walk.
@@ -43,7 +72,7 @@ const FRESH_MS = 90 * DAY_MS
 const familyOf = (o) => String(o?.primary_lastname || o?.customer?.last_name || o?.customer?.first_name || '').trim().toUpperCase()
 const orderLabel = (o) => [familyOf(o) || '—', o?.order_number].filter(Boolean).join(' ')
 const stoneTitle = (it) => [yardTypeLabel(it.item_type) || 'Stone', it.color].filter(Boolean).join(' · ')
-const whereOf = (it) => [it.zone && `Zone ${it.zone}`, it.crate && `crate ${it.crate}`, !it.zone && !it.crate && it.location && `@ ${it.location}`].filter(Boolean).join(' ')
+const me = () => getActiveStaffUser() || null
 
 // The tape a stone should wear, from its row.
 function tapeFor(it, orderById) {
@@ -68,21 +97,33 @@ const activeColorNames = () => {
   return out
 }
 
+// The order's two pieces as the contract reads them (pre-fill for VERIFY).
+function piecesFromSpec(spec) {
+  if (!spec) return null
+  const dieLabel = contractDieLabel(spec)
+  const die = specFromOrder(spec, 'die', tradeDimsFromLabel(dieLabel))
+  const hasBase = orderHasBase(spec.base_config, SHAPES.find(sh => sh.code === spec.shape)) || !!spec.pricing?.lineItemLabels?.['base-block']
+  const baseLabel = hasBase ? contractBaseLabel(spec) : null
+  const base = hasBase ? specFromOrder(spec, 'base', tradeDimsFromLabel(baseLabel)) : null
+  return { die, base, dieLabel, baseLabel }
+}
+
 export default function InventoryScreen({ undo }) {
   const [data, setData] = useState(null)      // loadStonePositionData result
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
-  const [tagging, setTagging] = useState(false)
+  const [stockOpen, setStockOpen] = useState(false)   // "No order, it's stock"
+  const [stockPrefill, setStockPrefill] = useState(null)
   const [counting, setCounting] = useState(false)
   const [countBusy, setCountBusy] = useState(null)
   const [nowMs, setNowMs] = useState(0)
   const [receiving, setReceiving] = useState(null)
-  const [hereFlow, setHereFlow] = useState(null)   // { order, piece, row, tag }
-  const [hereBusy, setHereBusy] = useState(null)   // `${orderId}:${piece}`
+  const [specById, setSpecById] = useState({})     // orderId → spec row (null = loading)
+  const [verify, setVerify] = useState(null)       // { order, piece, spec, pieces }
+  const [afterMint, setAfterMint] = useState(null) // { row, tag, tape }
   const [action, setAction] = useState(null)       // { kind, stone }
   const [confirmLine, setConfirmLine] = useState(null)
-
-  const me = () => getActiveStaffUser() || null
+  const [lastWhere, setLastWhere] = useState({ zone: '', crate: '', spot: '' })
 
   const loadAll = useCallback(() => {
     loadStonePositionData()
@@ -116,10 +157,10 @@ export default function InventoryScreen({ undo }) {
 
   const needle = q.trim().toLowerCase()
   // A short all-digit search is a PAINTED NUMBER: "41" finds 041 and nothing
-  // else (no size / order-number substring noise). Four digits can also be an
-  // order number, so those fall through to the text match.
+  // else. Dims / a type word read as a STONE → the free-stock form.
   const needleNum = /^\d{1,4}$/.test(needle) ? Number(needle) : null
   const tagOnly = needleNum != null && needle.length < 4
+  const stoneTyped = !tagOnly && looksLikeStone(needle)
 
   const stoneHits = useMemo(() => {
     if (!items) return []
@@ -129,8 +170,8 @@ export default function InventoryScreen({ undo }) {
         if (needleNum != null && Number(it.yard_tag) === needleNum) return true
         if (tagOnly) return false
         const o = it.allocated_order_id ? orderById.get(it.allocated_order_id) : null
-        return [fmtYardTag(it.yard_tag), it.item_type, yardTypeLabel(it.item_type), it.color, it.size, it.specs, it.zone, it.crate,
-          it.location, it.notes, it.status, it.assigned_to, o?.order_number, o && familyOf(o)]
+        return [fmtYardTag(it.yard_tag), it.item_type, yardTypeLabel(it.item_type), it.color, it.size, it.specs, it.zone, it.crate, it.spot,
+          it.location, it.notes, it.status, it.assigned_to, it.condition_note, o?.order_number, o && familyOf(o)]
           .filter(Boolean).join(' ').toLowerCase().includes(needle)
       })
     }
@@ -151,12 +192,35 @@ export default function InventoryScreen({ undo }) {
   }, [items, needle, needleNum, tagOnly, counting, isFresh, orderById])
 
   const orderHits = useMemo(() => {
-    if (!needle || !data || tagOnly) return []
+    if (!needle || !data || tagOnly || stoneTyped) return []
     const l = stoneOrders.filter(o => [familyOf(o), customerName(o.customer), o.order_number, o.cemetery?.name]
       .filter(Boolean).join(' ').toLowerCase().includes(needle))
     l.sort((a, b) => familyOf(a).localeCompare(familyOf(b)))
-    return l.slice(0, 20).map(o => ({ order: o, die: stoneVerdict(o, 'die', data), base: stoneVerdict(o, 'base', data) }))
-  }, [needle, data, stoneOrders, tagOnly])
+    return l.slice(0, 12).map(o => ({ order: o, die: stoneVerdict(o, 'die', data), base: stoneVerdict(o, 'base', data) }))
+  }, [needle, data, stoneOrders, tagOnly, stoneTyped])
+
+  // The order profile (spec columns) for each visible hit — fetched once each
+  // (in-flight ids tracked in a ref so the effect never sets state itself).
+  const specInFlight = useRef(new Set())
+  useEffect(() => {
+    for (const h of orderHits) {
+      const id = h.order.id
+      if (id in specById || specInFlight.current.has(id)) continue
+      specInFlight.current.add(id)
+      getOrderSpecRow(id)
+        .then(spec => setSpecById(m => ({ ...m, [id]: spec || false })))
+        .catch(() => setSpecById(m => ({ ...m, [id]: false })))
+        .finally(() => specInFlight.current.delete(id))
+    }
+  }, [orderHits, specById])
+
+  // When does the free-stock form show?
+  const showStock = !counting && (stockOpen || stoneTyped || (!!needle && !tagOnly && orderHits.length === 0 && data))
+  const stockSeed = useMemo(() => {
+    if (stockPrefill) return stockPrefill
+    if (stoneTyped) { const s = stoneFromSearch(q); return { item_type: s.item_type || 'die', size: s.size ? formatTradeSize(s.size) : '' } }
+    return null
+  }, [stockPrefill, stoneTyped, q])
 
   // ── the walk (unchanged semantics) ──────────────────────────────────────
   const markFound = async (it) => {
@@ -186,28 +250,28 @@ export default function InventoryScreen({ undo }) {
     })
   }
 
-  // ── IS HERE: mint the row + link + flip the order, then ask where ────────
-  const pieceHere = async (o, piece) => {
-    const key = `${o.id}:${piece}`
-    if (hereBusy) return
-    setHereBusy(key)
-    const spec = await getOrderSpecRow(o.id)
-    let color = null, size = null, specs = null
-    if (spec) {
-      const label = piece === 'base' ? contractBaseLabel(spec) : contractDieLabel(spec)
-      const dims = tradeDimsFromLabel(label)
-      size = dims?.dims || null
-      specs = dims ? (dims.rest || null) : (label || null)
-      color = displayGraniteColor(spec) || null
-    }
-    const r = await markPieceHere({
-      orderId: o.id, orderNumber: o.order_number || null, family: familyOf(o) || null, piece, color, size, specs, by: me(),
-    })
-    setHereBusy(null)
-    if (!r.ok) { undo.showError(r.error || 'Could not record the stone.'); return }
+  // ── the order path: tap a piece → VERIFY ─────────────────────────────────
+  const openVerify = (o, piece) => {
+    const spec = specById[o.id]
+    const pieces = piecesFromSpec(spec || null)
+    setVerify({ order: o, piece, spec, pieces })
+  }
+  // VERIFY said yes / link anyway → mint + link + flip, then condition + storage.
+  const linkPiece = async (o, piece, fields) => {
+    const r = await markPieceHere({ orderId: o.id, orderNumber: o.order_number || null, family: familyOf(o) || null, piece, spec: fields, by: me() })
+    if (!r.ok) { undo.showError(r.error || 'Could not record the stone.'); return false }
     if (!r.statusOk) undo.showError(`Stone ${fmtYardTag(r.tag)} saved, but the order status did not flip: ${r.statusError}`)
     await refreshStock()
-    setHereFlow({ order: o, piece, row: r.row, tag: r.tag })
+    setVerify(null)
+    setAfterMint({ row: r.row, tag: r.tag, tape: `Green tape: ${orderLabel(o)}` })
+    return true
+  }
+  // VERIFY said "save as stock" → the free-stock form, pre-filled, no link.
+  const toStock = (fields) => {
+    setVerify(null)
+    setStockPrefill({ ...fields })
+    setStockOpen(true)
+    setQ('')
   }
 
   if (err) return <div className="fl-empty">{err}</div>
@@ -219,8 +283,6 @@ export default function InventoryScreen({ undo }) {
   return (
     <div className="fl-yd">
       <style>{YD_CSS}</style>
-      <input className="fl-search" type="search" inputMode="search" placeholder="Find a number, family, type, color, size, zone, crate"
-        value={q} onChange={e => setQ(e.target.value)} />
 
       {confirmLine && (
         <div className="fl-yd-confirm">
@@ -229,89 +291,87 @@ export default function InventoryScreen({ undo }) {
         </div>
       )}
 
-      {!needle && (
-        <div className="fl-yd-cards">
-          <button type="button" className={`fl-btn${tagging ? ' fl-btn-ghost' : ' fl-btn-gold'}`}
-            onClick={() => { setTagging(v => !v); setCounting(false) }}>
-            {tagging ? 'Close Tag a stone' : 'Tag a stone (free stock)'}
-          </button>
-          <button type="button" className={counting ? 'fl-btn fl-btn-green' : 'fl-btn fl-btn-ghost'}
-            onClick={() => { setCounting(v => !v); setNowMs(Date.now()); setTagging(false) }}>
-            {counting ? `Counting — ${confirmed}/${countable.length} confirmed · tap to stop` : 'Count the yard'}
-          </button>
-        </div>
-      )}
-      {!needle && counting && (
-        <div className="fl-spec" style={{ margin: '-4px 2px 10px', fontFamily: 'inherit' }}>
-          Walk the zones. FOUND stamps your name on the stone; NOT HERE sends it to Reconcile.
-          Unconfirmed stones list first. A stone with no number yet — tag it.
-        </div>
-      )}
-      {!needle && tagging && (
-        <TagStoneForm undo={undo} zones={zones} takenTags={takenTags}
-          onSaved={async (row) => {
-            await refreshStock()
-            setConfirmLine(`Paint ${fmtYardTag(row.yard_tag)} · Blue tape`)
-          }} />
-      )}
-
-      {needle && (
-        <div className="fl-yd-hint">
-          Sold stone? Tap the order below and say which piece is here. Free stone? Clear the search and Tag a stone.
-        </div>
-      )}
-
-      {/* ORDER RESULTS — family search → die/base verdict → is-here */}
-      {orderHits.length > 0 && <div className="fl-daylabel">Orders</div>}
-      {orderHits.map(({ order: o, die, base }) => (
-        <div key={o.id} className="fl-row" style={{ cursor: 'default' }}>
-          <div className="fl-fam fl-yd-ellip">{properName(familyOf(o) || customerName(o.customer) || '—')}</div>
-          <div className="fl-spec fl-yd-ellip">{[o.order_number || 'DRAFT', o.cemetery?.name].filter(Boolean).join(' · ')}</div>
-          <div className="fl-chips">
-            <VerdictChip label="DIE" v={die} />
-            <VerdictChip label="BASE" v={base} />
+      {/* ADD STONE — one card, one search, branches below. */}
+      {!counting && (
+        <div className="fl-card fl-yd-add">
+          <div className="fl-eyebrow">Add stone</div>
+          <input className="fl-search" style={{ marginBottom: 8 }} type="search" inputMode="search"
+            placeholder="Search order (family) or type the stone"
+            value={q} onChange={e => { setQ(e.target.value); if (stockPrefill) setStockPrefill(null); if (stockOpen && e.target.value.trim()) setStockOpen(false) }} />
+          <div className="fl-yd-addrow">
+            <button type="button" className={`fl-chip-btn${showStock ? ' on' : ''}`}
+              onClick={() => { setStockOpen(v => !v); if (!stockOpen) { setQ(''); setStockPrefill(null) } }}>
+              No order, it&apos;s stock
+            </button>
+            <span className="fl-yd-hint">{needle ? (stoneTyped ? 'Reads as a stone — the form is below.' : orderHits.length ? 'Tap the piece you are holding.' : 'No open order with that name — tag it as stock, or check the spelling.') : 'A family name finds the order. Dimensions or a type go straight to stock.'}</span>
           </div>
-          {(die.code !== 'yard' || base.code !== 'yard') && (
-            <div className="fl-yd-btnrow">
-              {die.code !== 'yard' && (
-                <button type="button" className="fl-yd-here" disabled={!!hereBusy} onClick={() => pieceHere(o, 'die')}>
-                  {hereBusy === `${o.id}:die` ? 'Saving…' : 'Die is here'}
-                </button>
-              )}
-              {base.code !== 'yard' && (
-                <button type="button" className="fl-yd-here" disabled={!!hereBusy} onClick={() => pieceHere(o, 'base')}>
-                  {hereBusy === `${o.id}:base` ? 'Saving…' : 'Base is here'}
-                </button>
-              )}
-            </div>
-          )}
         </div>
-      ))}
+      )}
+
+      {/* ORDER RESULTS — family search → die / base rows from the order profile */}
+      {orderHits.map(({ order: o, die, base }) => {
+        const spec = specById[o.id]
+        const pieces = spec ? piecesFromSpec(spec) : null
+        return (
+          <div key={o.id} className="fl-row" style={{ cursor: 'default' }}>
+            <div className="fl-fam fl-yd-ellip">{properName(familyOf(o) || customerName(o.customer) || '—')}</div>
+            <div className="fl-spec fl-yd-ellip">{[o.order_number || 'DRAFT', o.cemetery?.name].filter(Boolean).join(' · ')}</div>
+            {spec === null && <div className="fl-spec" style={{ fontFamily: 'inherit', marginTop: 6 }}>Reading the order profile…</div>}
+            <PieceRow label="Die" v={die} fields={pieces?.die} line={pieces?.dieLabel} onPick={die.code !== 'yard' ? () => openVerify(o, 'die') : null} />
+            {(pieces ? pieces.base : spec === false) && (
+              <PieceRow label="Base" v={base} fields={pieces?.base} line={pieces?.baseLabel} onPick={base.code !== 'yard' ? () => openVerify(o, 'base') : null} />
+            )}
+            {spec === false && !pieces && <div className="fl-yd-note">Could not read the order profile — the pieces can still be verified by hand.</div>}
+          </div>
+        )
+      })}
+
+      {/* FREE STOCK — the form (also the landing for "save as stock") */}
+      {showStock && (
+        <TagStoneForm key={stockSeed ? JSON.stringify(stockSeed) : 'blank'} undo={undo} takenTags={takenTags} seed={stockSeed}
+          onClose={() => { setStockOpen(false); setStockPrefill(null); if (stoneTyped) setQ('') }}
+          onMinted={async (row) => { await refreshStock(); setAfterMint({ row, tag: row.yard_tag, tape: 'Blue tape' }) }} />
+      )}
+
+      {/* COUNT THE YARD */}
+      {!needle && !showStock && (
+        <button type="button" className={counting ? 'fl-btn fl-btn-green' : 'fl-btn fl-btn-ghost'}
+          onClick={() => { setCounting(v => !v); setNowMs(Date.now()) }}>
+          {counting ? `Counting — ${confirmed}/${countable.length} confirmed · tap to stop` : 'Count the yard'}
+        </button>
+      )}
+      {counting && (
+        <div className="fl-spec" style={{ margin: '-4px 2px 10px', fontFamily: 'inherit' }}>
+          Walk the zones. FOUND stamps your name on the stone; NOT HERE sends it to Reconcile. Unconfirmed stones list first.
+        </div>
+      )}
 
       {/* STONES */}
       {(needle || orderHits.length > 0) && stoneHits.length > 0 && <div className="fl-daylabel">Stones</div>}
-      {!needle && !tagging && !counting && <div className="fl-daylabel"><b>{items.length}</b> stones in the yard</div>}
-      {stoneHits.length === 0 && items.length > 0 && needle && orderHits.length === 0 && <div className="fl-empty">Nothing in the yard or the open orders matches.</div>}
-      {items.length === 0 && !tagging && <div className="fl-empty">The yard list is empty — tag the first stone.</div>}
+      {!needle && !showStock && !counting && <div className="fl-daylabel"><b>{items.length}</b> stones in the yard</div>}
+      {items.length === 0 && !showStock && <div className="fl-empty">The yard list is empty — tag the first stone.</div>}
       {stoneHits.map(it => {
         const fresh = isFresh(it)
         const tape = tapeFor(it, orderById)
+        const cond = it.condition && it.condition !== 'good'
         return (
           <div key={it.id} className="fl-row" style={{ cursor: 'default', ...(counting && fresh ? { opacity: 0.62 } : null) }}>
             <div className="fl-row-flex">
               <div className={`fl-yd-tag${it.yard_tag == null ? ' fl-yd-tag-none' : ''}`}>{fmtYardTag(it.yard_tag) || '—'}</div>
               <div className="fl-row-main">
-                <div className="fl-fam fl-yd-ellip" style={{ fontSize: 15 }}>{stoneTitle(it)}</div>
-                <div className="fl-spec fl-yd-wrap">{[it.size, whereOf(it)].filter(Boolean).join(' · ') || 'no size · no zone'}</div>
-                {it.specs && <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit' }}>{it.specs}</div>}
+                <div className="fl-fam fl-yd-ellip" style={{ fontSize: 15 }}>{yardTypeLabel(it.item_type) || 'Stone'}</div>
+                <div className="fl-spec fl-yd-wrap">{yardStoneSpecLine(it) || 'no spec'}</div>
+                <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit' }}>{yardStoneWhere(it) || 'no zone'}</div>
                 {it.assigned_to && (
                   <div className="fl-spec fl-yd-ellip" style={{ fontFamily: 'inherit', fontWeight: 700 }}>for {properName(it.assigned_to)}</div>
                 )}
+                {cond && it.condition_note && <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit', color: '#8A5A12' }}>{it.condition_note}</div>}
               </div>
               {Number(it.quantity) > 1 && <div className="fl-inv-qty"><small>QTY</small>{Number(it.quantity)}</div>}
             </div>
             <div className="fl-chips">
               <span className={`fl-chip ${tape.cls} fl-yd-chipwrap`}>{tape.text}</span>
+              {cond && <span className="fl-chip fl-c-warn fl-yd-chipwrap">{conditionLabel(it.condition).toUpperCase()}</span>}
               {it.status !== 'available' && it.status !== 'allocated' && it.status !== 'problem' && it.status !== 'missing' && (
                 <span className="fl-chip fl-c-neutral">{(INVENTORY_STATUS_LABEL[it.status] || it.status || '').toUpperCase()}</span>
               )}
@@ -340,6 +400,7 @@ export default function InventoryScreen({ undo }) {
                   {it.status === 'allocated'
                     ? <button type="button" className="fl-event-undo" onClick={() => setAction({ kind: 'unlink', stone: it })}>Unlink</button>
                     : <button type="button" className="fl-event-undo" onClick={() => setAction({ kind: 'link', stone: it })}>Link to order</button>}
+                  <button type="button" className="fl-event-undo" onClick={() => setAction({ kind: 'note', stone: it })}>{cond || it.condition_note ? 'Condition' : 'Add note'}</button>
                   {it.status !== 'problem' && <button type="button" className="fl-event-undo" style={{ color: '#B3261E' }} onClick={() => setAction({ kind: 'problem', stone: it })}>Problem</button>}
                   {it.status !== 'missing' && <button type="button" className="fl-event-undo" disabled={countBusy === it.id} onClick={() => markMissing(it)}>Not here</button>}
                 </>
@@ -354,10 +415,14 @@ export default function InventoryScreen({ undo }) {
         )
       })}
 
-      {hereFlow && (
-        <HereSheet flow={hereFlow} zones={zones} undo={undo}
-          onClose={() => setHereFlow(null)}
-          onDone={async (line) => { setHereFlow(null); await refreshStock(); setConfirmLine(line) }} />
+      {verify && (
+        <VerifySheet v={verify} onClose={() => setVerify(null)}
+          onLink={(fields) => linkPiece(verify.order, verify.piece, fields)}
+          onStock={(fields) => toStock(fields)} />
+      )}
+      {afterMint && (
+        <AfterMintSheet mint={afterMint} zones={zones} undo={undo} lastWhere={lastWhere}
+          onDone={async (line, where) => { setAfterMint(null); if (where) setLastWhere(where); await refreshStock(); setConfirmLine(line) }} />
       )}
       {action && (
         <StoneActionSheet action={action} zones={zones} orders={stoneOrders} undo={undo}
@@ -368,9 +433,93 @@ export default function InventoryScreen({ undo }) {
   )
 }
 
+// One piece of an order: the contract's line + the verdict chip + the tap.
+function PieceRow({ label, v, fields, line, onPick }) {
+  const preview = fields ? yardStoneSpecLine({ ...fields, item_type: fields.item_type }) : (line || '')
+  const inner = (
+    <>
+      <div className="fl-yd-piece-main">
+        <div className="fl-yd-piece-label">{label}</div>
+        <div className="fl-spec fl-yd-wrap">{preview || 'no size on the contract'}</div>
+        <VerdictChip label={label.toUpperCase()} v={v} />
+      </div>
+      {onPick && <span className="fl-yd-piece-go">This is it</span>}
+    </>
+  )
+  return onPick
+    ? <button type="button" className="fl-yd-piece fl-yd-piece-btn" onClick={onPick}>{inner}</button>
+    : <div className="fl-yd-piece">{inner}</div>
+}
+
 function VerdictChip({ label, v }) {
   const cls = v.code === 'yard' ? 'fl-c-good' : v.code === 'received' ? 'fl-c-good' : v.code === 'ordered' ? 'fl-c-info' : 'fl-c-lead'
-  return <span className={`fl-chip ${cls} fl-yd-chipwrap`}>{label}: {verdictChipText(v)}{v.sub ? ` · ${v.sub}` : ''}</span>
+  return <span className={`fl-chip ${cls} fl-yd-chipwrap`} style={{ marginTop: 6, display: 'inline-block' }}>{label}: {verdictChipText(v)}{v.sub ? ` · ${v.sub}` : ''}</span>
+}
+
+// Chip row helper.
+function Chips({ options, value, onChange, allowNone = true }) {
+  return (
+    <div className="fl-yd-chiprow">
+      {options.map(c => (
+        <button key={c.code} type="button" className={`fl-chip-btn${value === c.code ? ' on' : ''}`}
+          onClick={() => onChange(value === c.code && allowNone ? null : c.code)}>{c.label}</button>
+      ))}
+    </div>
+  )
+}
+
+// The per-type spec chips — the catalog's own words (lib/yardStone.js).
+function SpecChips({ type, fields, onChange }) {
+  const set = (k) => (v) => onChange({ ...fields, [k]: v })
+  if (isBaseType(type)) {
+    return (
+      <>
+        <div className="fl-lab">Finish</div>
+        <Chips options={BASE_FINISH_CHIPS} value={fields.finish || null} onChange={set('finish')} />
+        <div className="fl-lab">Top</div>
+        <div className="fl-yd-chiprow">
+          {BASE_TOP_CHIPS.map(c => (
+            <button key={c.code} type="button" className={`fl-chip-btn${fields.top_finish === c.code ? ' on' : ''}`}
+              onClick={() => onChange({ ...fields, top_finish: fields.top_finish === c.code ? null : c.code })}>{c.label}</button>
+          ))}
+          <button type="button" className={`fl-chip-btn${fields.polish_margin ? ' on' : ''}`}
+            onClick={() => onChange({ ...fields, polish_margin: !fields.polish_margin })}>2&quot; polished margin</button>
+        </div>
+      </>
+    )
+  }
+  if (isDieFamily(type)) {
+    return (
+      <>
+        {hasTopShape(type) && (<>
+          <div className="fl-lab">Top shape</div>
+          <Chips options={TOP_SHAPE_CHIPS} value={fields.top || null} onChange={set('top')} />
+        </>)}
+        <div className="fl-lab">Polish</div>
+        <Chips options={POLISH_CHIPS} value={fields.polish_level || null} onChange={set('polish_level')} />
+      </>
+    )
+  }
+  return null
+}
+
+// Size + color + the per-type chips + specs — shared by VERIFY (Fix) and the
+// free-stock form.
+function SpecFields({ type, fields, onChange, colors }) {
+  const set = (k) => (e) => onChange({ ...fields, [k]: e.target.value })
+  return (
+    <>
+      <div className="fl-lab">Size (trade format)</div>
+      <input className="fl-input" placeholder="1-10 x 0-8 x 2-0" value={fields.size || ''} onChange={set('size')}
+        onBlur={() => onChange({ ...fields, size: formatTradeSize(fields.size) })} />
+      <div className="fl-lab">Color</div>
+      <input className="fl-input" list="fl-yd-colors" placeholder="e.g. Barre Gray" value={fields.color || ''} onChange={set('color')} />
+      <datalist id="fl-yd-colors">{colors.map(c => <option key={c} value={c} />)}</datalist>
+      <SpecChips type={type} fields={fields} onChange={onChange} />
+      <div className="fl-lab">Specs</div>
+      <input className="fl-input" placeholder="Anything else about the cut" value={fields.specs || ''} onChange={set('specs')} />
+    </>
+  )
 }
 
 // Zone chips + "new zone" box, shared by every sheet.
@@ -394,7 +543,7 @@ function ZonePicker({ zones, value, onChange }) {
   )
 }
 
-function PhotoPick({ file, onFile }) {
+function PhotoPick({ file, onFile, label = 'Take a photo' }) {
   const ref = useRef(null)
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file])
   useEffect(() => () => { if (url) URL.revokeObjectURL(url) }, [url])
@@ -404,70 +553,172 @@ function PhotoPick({ file, onFile }) {
         onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = '' }} />
       {url && <img className="fl-yd-thumb" src={url} alt="stone" />}
       <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0, flex: 1 }} onClick={() => ref.current?.click()}>
-        {file ? 'Retake photo' : 'Take a photo'}
+        {file ? 'Retake' : label}
       </button>
       {file && <button type="button" className="fl-event-undo" onClick={() => onFile(null)}>Remove</button>}
     </div>
   )
 }
 
-// After "Die is here": the number is minted and the order flipped — now where
-// does it sit, and a photo. Done writes zone/crate (+ photo) and hands back
-// the confirmation line.
-function HereSheet({ flow, zones, undo, onClose, onDone }) {
-  const [zone, setZone] = useState(flow.row?.zone || '')
-  const [crate, setCrate] = useState(flow.row?.crate || '')
-  const [photo, setPhoto] = useState(null)
+// CONDITION — on every save and from "Add note". Good is the default and
+// costs no tap. "Unusable, red tape" is the explicit problem flip.
+function ConditionStep({ value, onChange, showUnusable = true }) {
+  return (
+    <>
+      <div className="fl-lab">Condition</div>
+      <Chips options={CONDITIONS} value={value.condition || 'good'} onChange={(c) => onChange({ ...value, condition: c || 'good' })} allowNone={false} />
+      <input className="fl-input" style={{ marginTop: 8 }} placeholder="Note, e.g. small chip back lower left"
+        value={value.note || ''} onChange={e => onChange({ ...value, note: e.target.value })} />
+      {(value.condition && value.condition !== 'good') && (
+        <div style={{ marginTop: 8 }}><PhotoPick file={value.damage || null} onFile={(f) => onChange({ ...value, damage: f })} label="Photo of the damage" /></div>
+      )}
+      {showUnusable && (
+        <button type="button" className={`fl-chip-btn${value.unusable ? ' on' : ''}`} style={{ marginTop: 10, ...(value.unusable ? { background: '#B3261E', borderColor: '#B3261E' } : { color: '#B3261E', borderColor: '#B3261E' }) }}
+          onClick={() => onChange({ ...value, unusable: !value.unusable })}>
+          {value.unusable ? 'Unusable — RED TAPE (tap to undo)' : 'Unusable, red tape'}
+        </button>
+      )}
+    </>
+  )
+}
+
+// VERIFY — the order's piece as the contract reads it. "Matches?" Yes / Fix.
+// A material size change on Fix → the soft warning (Save as stock / Link anyway).
+function VerifySheet({ v, onClose, onLink, onStock }) {
+  const { order, piece, pieces } = v
+  const contract = pieces ? (piece === 'base' ? pieces.base : pieces.die) : null
+  const [fields, setFields] = useState(() => ({ ...(contract || { item_type: piece === 'base' ? 'base' : 'die' }) }))
+  const [fixing, setFixing] = useState(!contract?.size)
+  const [warn, setWarn] = useState(false)
   const [busy, setBusy] = useState(false)
-  const tape = `Green tape: ${orderLabel(flow.order)}`
-  const finish = async () => {
+  const colors = useMemo(() => activeColorNames(), [])
+  const family = properName(familyOf(order) || '—')
+  const line = yardStoneSpecLine({ ...fields, item_type: piece === 'base' ? 'base' : 'die' })
+
+  const go = async (force) => {
     if (busy) return
+    if (!force && contract?.size && sizeMateriallyDifferent(contract.size, fields.size)) { setWarn(true); return }
     setBusy(true)
-    const r = await moveYardStone(flow.row.id, { zone: zone.trim() || null, crate: crate.trim() || null })
-    if (!r.ok) { setBusy(false); undo.showError(r.error || 'Could not save where it sits.'); return }
-    if (photo) {
-      const p = await uploadYardStonePhoto(flow.row.id, photo)
-      if (!p.ok) undo.showError(`Saved, but the photo did not upload: ${p.error}`)
-    }
-    setBusy(false)
-    const where = [zone.trim() && `Zone ${zone.trim()}`, crate.trim() && `crate ${crate.trim()}`].filter(Boolean).join(' ')
-    onDone([`Paint ${fmtYardTag(flow.tag)}`, tape, where || null].filter(Boolean).join(' · '))
+    const ok = await onLink(fields)
+    if (!ok) setBusy(false)
   }
+
   return (
     <>
       <div className="fl-sheet-scrim" onClick={onClose} />
       <div className="fl-sheet">
         <div className="fl-sheet-grab" />
-        <div className="fl-yd-paint">Paint {fmtYardTag(flow.tag)}</div>
-        <div className="fl-yd-tapeline">{tape}</div>
-        <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit', marginBottom: 6 }}>
-          {flow.piece === 'base' ? 'Base' : 'Die'}{flow.row?.size ? ` · ${flow.row.size}` : ''}{flow.row?.color ? ` · ${flow.row.color}` : ''} — linked to the order, status flipped to In stock.
-        </div>
-        <div className="fl-label">Zone</div>
-        <ZonePicker zones={zones} value={zone} onChange={setZone} />
-        <div className="fl-label">Crate</div>
-        <input className="fl-input" placeholder="e.g. C-7" value={crate} onChange={e => setCrate(e.target.value)} />
-        <div className="fl-label">Photo</div>
-        <PhotoPick file={photo} onFile={setPhoto} />
-        <button type="button" className="fl-btn fl-btn-green" style={{ marginTop: 16 }} disabled={busy} onClick={finish}>
-          {busy ? 'Saving…' : 'Done — tell me what to paint'}
-        </button>
-        <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0 }} disabled={busy} onClick={onClose}>Skip for now</button>
+        <div className="fl-sheet-title fl-yd-ellip">{family} · {order.order_number || 'DRAFT'}</div>
+        <div className="fl-yd-paint" style={{ fontSize: 22 }}>{piece === 'base' ? 'Base' : 'Die'} {line || '— no size on the contract'}</div>
+        {!fixing ? (
+          <>
+            <div className="fl-yd-ask">Matches the stone in front of you?</div>
+            <div className="fl-yd-btnrow">
+              <button type="button" className="fl-yd-here" disabled={busy} onClick={() => go(false)}>{busy ? 'Saving…' : 'Yes, matches'}</button>
+              <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0, flex: 1 }} disabled={busy} onClick={() => setFixing(true)}>Fix</button>
+            </div>
+            <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit', marginTop: 10 }}>
+              The order profile is the truth — crate names are not always right. Yes mints the number, links the stone to this order and marks the {piece} In stock.
+            </div>
+          </>
+        ) : (
+          <>
+            <SpecFields type={piece === 'base' ? 'base' : 'die'} fields={fields} onChange={(f) => { setFields(f); setWarn(false) }} colors={colors} />
+            {warn && (
+              <div className="fl-yd-warnbox">
+                <div className="fl-yd-warn" style={{ margin: 0 }}>This does not match the {family} order{contract?.size ? ` (${contract.size})` : ''}. Save as stock instead?</div>
+                <div className="fl-yd-btnrow" style={{ marginTop: 8 }}>
+                  <button type="button" className="fl-btn" style={{ marginBottom: 0, flex: 1 }} disabled={busy} onClick={() => onStock(fields)}>Save as stock</button>
+                  <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0, flex: 1 }} disabled={busy} onClick={() => go(true)}>{busy ? 'Saving…' : 'Link anyway'}</button>
+                </div>
+              </div>
+            )}
+            {!warn && (
+              <button type="button" className="fl-btn fl-btn-green" style={{ marginTop: 14 }} disabled={busy} onClick={() => go(false)}>
+                {busy ? 'Saving…' : `Save and link to ${family}`}
+              </button>
+            )}
+          </>
+        )}
+        <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0, marginTop: 10 }} disabled={busy} onClick={onClose}>Cancel</button>
       </div>
     </>
   )
 }
 
-// Move / Link to order / Unlink / Problem on one stone.
+// After the mint (both paths): CONDITION → STORAGE → the label line.
+function AfterMintSheet({ mint, zones, undo, lastWhere, onDone }) {
+  const [step, setStep] = useState('condition')
+  const [cond, setCond] = useState({ condition: 'good', note: '', damage: null, unusable: false })
+  const [zone, setZone] = useState(mint.row?.zone || lastWhere.zone || '')
+  const [crate, setCrate] = useState(mint.row?.crate || lastWhere.crate || '')
+  const [spot, setSpot] = useState('')
+  const [photo, setPhoto] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const paint = `Paint ${fmtYardTag(mint.tag)}`
+  const tape = cond.unusable ? 'Red tape' : mint.tape
+
+  const finish = async () => {
+    if (busy) return
+    setBusy(true)
+    const c = await setYardStoneCondition(mint.row.id, { condition: cond.condition, note: cond.note, unusable: cond.unusable, by: me() })
+    if (!c.ok) { setBusy(false); undo.showError(c.error || 'Could not save the condition.'); return }
+    if (cond.damage) { const d = await uploadYardStonePhoto(mint.row.id, cond.damage, { kind: 'damage' }); if (!d.ok) undo.showError(`Saved, but the damage photo did not upload: ${d.error}`) }
+    const m = await moveYardStone(mint.row.id, { zone: zone.trim() || null, crate: crate.trim() || null, spot: spot.trim() || null })
+    if (!m.ok) { setBusy(false); undo.showError(m.error || 'Could not save where it sits.'); return }
+    if (photo) { const p = await uploadYardStonePhoto(mint.row.id, photo); if (!p.ok) undo.showError(`Saved, but the photo did not upload: ${p.error}`) }
+    setBusy(false)
+    const where = [zone.trim() && `Zone ${zone.trim()}`, crate.trim() && `crate ${crate.trim()}`, spot.trim() || null].filter(Boolean).join(' ')
+    onDone([paint, tape, where || null].filter(Boolean).join(' · '), { zone: zone.trim(), crate: crate.trim(), spot: '' })
+  }
+
+  return (
+    <>
+      <div className="fl-sheet-scrim" />
+      <div className="fl-sheet">
+        <div className="fl-sheet-grab" />
+        <div className="fl-yd-paint">{paint}</div>
+        <div className={`fl-yd-tapeline${cond.unusable ? ' fl-yd-tapeline-red' : ''}`}>{tape}</div>
+        <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit', marginBottom: 4 }}>{yardStoneSpecLine(mint.row)}</div>
+        {step === 'condition' ? (
+          <>
+            <ConditionStep value={cond} onChange={setCond} />
+            <button type="button" className="fl-btn" style={{ marginTop: 16, marginBottom: 0 }} onClick={() => setStep('storage')}>
+              {cond.condition === 'good' && !cond.unusable ? 'Good — where does it sit?' : 'Next — where does it sit?'}
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="fl-label">Zone</div>
+            <ZonePicker zones={zones} value={zone} onChange={setZone} />
+            <div className="fl-label">Crate</div>
+            <input className="fl-input" placeholder="e.g. C-7" value={crate} onChange={e => setCrate(e.target.value)} />
+            <div className="fl-label">Spot</div>
+            <input className="fl-input" placeholder="stack 3, row 2, by the gate" value={spot} onChange={e => setSpot(e.target.value)} />
+            <div className="fl-label">Photo</div>
+            <PhotoPick file={photo} onFile={setPhoto} />
+            <button type="button" className="fl-btn fl-btn-green" style={{ marginTop: 16 }} disabled={busy} onClick={finish}>
+              {busy ? 'Saving…' : 'Done — tell me what to paint'}
+            </button>
+            <button type="button" className="fl-btn fl-btn-ghost" style={{ marginBottom: 0 }} disabled={busy} onClick={() => setStep('condition')}>Back</button>
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
+// Move / Link to order / Unlink / Problem / Add note on one stone.
 function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
   const { kind, stone } = action
   const [zone, setZone] = useState(stone.zone || '')
   const [crate, setCrate] = useState(stone.crate || '')
+  const [spot, setSpot] = useState(stone.spot || '')
   const [note, setNote] = useState('')
+  const [cond, setCond] = useState({ condition: stone.condition || 'good', note: stone.condition_note || '', damage: null, unusable: false })
   const [oq, setOq] = useState('')
   const [busy, setBusy] = useState(false)
   const tagText = fmtYardTag(stone.yard_tag) || stoneTitle(stone)
-  const by = getActiveStaffUser() || null
 
   const hits = useMemo(() => {
     const n = oq.trim().toLowerCase()
@@ -497,13 +748,31 @@ function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
           <ZonePicker zones={zones} value={zone} onChange={setZone} />
           <div className="fl-label">Crate</div>
           <input className="fl-input" placeholder="e.g. C-7" value={crate} onChange={e => setCrate(e.target.value)} />
+          <div className="fl-label">Spot</div>
+          <input className="fl-input" placeholder="stack 3, row 2, by the gate" value={spot} onChange={e => setSpot(e.target.value)} />
           <button type="button" className="fl-btn" style={{ marginTop: 16 }} disabled={busy}
             onClick={() => run(
-              () => moveYardStone(stone.id, { zone: zone.trim() || null, crate: crate.trim() || null }),
+              () => moveYardStone(stone.id, { zone: zone.trim() || null, crate: crate.trim() || null, spot: spot.trim() || null }),
               null,
-              () => moveYardStone(stone.id, { zone: stone.zone || null, crate: stone.crate || null }),
+              () => moveYardStone(stone.id, { zone: stone.zone || null, crate: stone.crate || null, spot: stone.spot || null }),
               `${tagText} moved`)}>
             {busy ? 'Saving…' : 'Save the move'}
+          </button>
+        </>)}
+
+        {kind === 'note' && (<>
+          <ConditionStep value={cond} onChange={setCond} showUnusable={stone.status !== 'problem'} />
+          <button type="button" className="fl-btn" style={{ marginTop: 16 }} disabled={busy}
+            onClick={() => run(
+              async () => {
+                const r = await setYardStoneCondition(stone.id, { condition: cond.condition, note: cond.note, unusable: cond.unusable, by: me() })
+                if (r.ok && cond.damage) { const d = await uploadYardStonePhoto(stone.id, cond.damage, { kind: 'damage' }); if (!d.ok) undo.showError(`Saved, but the damage photo did not upload: ${d.error}`) }
+                return r
+              },
+              cond.unusable ? `${tagText} · Red tape` : null,
+              () => setYardStoneCondition(stone.id, { condition: stone.condition || 'good', note: stone.condition_note || null }).then(() => (cond.unusable ? restoreYardStockStatus(stone.id, stone.status || 'available') : null)),
+              `${tagText} condition saved`)}>
+            {busy ? 'Saving…' : 'Save the condition'}
           </button>
         </>)}
 
@@ -547,7 +816,7 @@ function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
           <input className="fl-input" placeholder="What is wrong (optional)" value={note} onChange={e => setNote(e.target.value)} />
           <button type="button" className="fl-btn" style={{ marginTop: 12, background: '#B3261E' }} disabled={busy}
             onClick={() => run(
-              () => flagYardStoneProblem(stone.id, { by, note: note.trim() || null }),
+              () => flagYardStoneProblem(stone.id, { by: me(), note: note.trim() || null }),
               `${tagText} · Red tape`,
               () => restoreYardStockStatus(stone.id, stone.status || 'available'),
               `${tagText} flagged problem`)}>
@@ -561,19 +830,19 @@ function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
   )
 }
 
-// TAG A STONE — free stock. Number pre-filled with the next free one
-// (editable; warns when taken), type chips, color datalist, size with the
-// trade-format tidy, specs, zone chips, crate, photo. Save stamps verified and
-// advances the number keeping type / color / size / zone / crate.
-function TagStoneForm({ undo, zones, takenTags, onSaved }) {
+// FREE STOCK — type chips, the per-type spec chips, size / color / specs, photo.
+// Save mints the next number (editable, warns when taken) and hands the row to
+// the CONDITION + STORAGE steps; the form stays open with the number advanced
+// and type / color / chips kept so a stack of identical flats goes fast.
+function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
   const [tag, setTag] = useState('')
   const [nextHint, setNextHint] = useState(null)
-  const [form, setForm] = useState({ item_type: 'die', color: '', size: '', specs: '', zone: '', crate: '' })
+  const [type, setType] = useState(seed?.item_type || 'die')
+  const [fields, setFields] = useState({ size: seed?.size || '', color: seed?.color || '', specs: seed?.specs || '', top: seed?.top || null, polish_level: seed?.polish_level || null, finish: seed?.finish || null, top_finish: seed?.top_finish || null, polish_margin: !!seed?.polish_margin })
   const [photo, setPhoto] = useState(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
   const colors = useMemo(() => activeColorNames(), [])
-  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 
   useEffect(() => {
     let on = true
@@ -588,55 +857,35 @@ function TagStoneForm({ undo, zones, takenTags, onSaved }) {
   const save = async () => {
     if (busy || !tagOk || taken) return
     setBusy(true); setMsg(null)
-    const r = await tagYardStone({ ...form, status: 'available' }, { tag: tagNum, by: getActiveStaffUser() || null })
+    const r = await tagYardStone({ ...fields, item_type: type, status: 'available' }, { tag: tagNum, by: me() })
     if (!r.ok) { setBusy(false); setMsg(r.error || 'Could not save the stone.'); return }
-    if (photo) {
-      const p = await uploadYardStonePhoto(r.row.id, photo)
-      if (!p.ok) undo.showError(`Saved, but the photo did not upload: ${p.error}`)
-    }
+    if (photo) { const p = await uploadYardStonePhoto(r.row.id, photo); if (!p.ok) undo.showError(`Saved, but the photo did not upload: ${p.error}`) }
     setBusy(false)
     setPhoto(null)
-    setForm(f => ({ ...f, specs: '' }))
+    setFields(f => ({ ...f, specs: '' }))
     // Advance: the painted number + 1, and re-check the server's next in case
     // another phone minted in between.
     setTag(String(tagNum + 1)); setNextHint(tagNum + 1)
     getNextYardTag().then(n => { if (n.ok && n.next > tagNum + 1) { setTag(String(n.next)); setNextHint(n.next) } })
-    onSaved(r.row)
+    onMinted(r.row)
   }
 
   return (
     <div className="fl-card">
-      <div className="fl-eyebrow">Tag a stone — free stock, blue tape</div>
-      <div className="fl-lab">Number to paint</div>
+      <div className="fl-rowtop">
+        <div className="fl-eyebrow" style={{ marginBottom: 0 }}>Free stock — blue tape</div>
+        <button type="button" className="fl-event-undo" onClick={onClose}>Close</button>
+      </div>
+      <div className="fl-lab" style={{ marginTop: 10 }}>Number to paint</div>
       <input className="fl-input fl-yd-bignum" type="text" inputMode="numeric" pattern="[0-9]*" value={tag}
         onChange={e => setTag(e.target.value.replace(/\D/g, ''))} />
       {taken && <div className="fl-yd-warn">{fmtYardTag(tagNum)} is already painted on another stone. Next free is {fmtYardTag(nextHint)}.</div>}
       {!taken && tagOk && nextHint != null && tagNum !== nextHint && <div className="fl-yd-note">Next free number is {fmtYardTag(nextHint)} — you typed {fmtYardTag(tagNum)}.</div>}
 
       <div className="fl-lab">Type</div>
-      <div className="fl-yd-chiprow">
-        {YARD_TYPES.map(t => (
-          <button key={t.code} type="button" className={`fl-chip-btn${form.item_type === t.code ? ' on' : ''}`}
-            onClick={() => setForm(f => ({ ...f, item_type: t.code }))}>{t.label}</button>
-        ))}
-      </div>
+      <Chips options={YARD_TYPES} value={type} onChange={(t) => { if (t) setType(t) }} allowNone={false} />
 
-      <div className="fl-lab">Color</div>
-      <input className="fl-input" list="fl-yd-colors" placeholder="e.g. Barre Gray" value={form.color} onChange={set('color')} />
-      <datalist id="fl-yd-colors">{colors.map(c => <option key={c} value={c} />)}</datalist>
-
-      <div className="fl-lab">Size (trade format)</div>
-      <input className="fl-input" placeholder="1-10 x 0-8 x 2-0" value={form.size} onChange={set('size')}
-        onBlur={() => setForm(f => ({ ...f, size: formatTradeSize(f.size) }))} />
-
-      <div className="fl-lab">Specs</div>
-      <input className="fl-input" placeholder="Polish, finish, anything about the cut" value={form.specs} onChange={set('specs')} />
-
-      <div className="fl-lab">Zone</div>
-      <ZonePicker zones={zones} value={form.zone} onChange={(z) => setForm(f => ({ ...f, zone: z }))} />
-
-      <div className="fl-lab" style={{ marginTop: 10 }}>Crate</div>
-      <input className="fl-input" placeholder="e.g. C-7" value={form.crate} onChange={set('crate')} />
+      <SpecFields type={type} fields={fields} onChange={setFields} colors={colors} />
 
       <div className="fl-lab">Photo</div>
       <PhotoPick file={photo} onFile={setPhoto} />
@@ -692,8 +941,9 @@ function ReceiveForm({ item, undo, onDone, onCancel }) {
 // Overflow doctrine: every text child wraps or ellipsizes inside its box.
 const YD_CSS = `
   .fl-yd { min-width: 0; }
-  .fl-yd-cards { display: flex; flex-direction: column; gap: 0; }
-  .fl-yd-hint { font-size: 12px; color: #7C7562; margin: -4px 2px 10px; line-height: 1.4; }
+  .fl-yd-add { padding-bottom: 10px; }
+  .fl-yd-addrow { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+  .fl-yd-hint { flex: 1 1 160px; min-width: 0; font-size: 12px; color: #7C7562; line-height: 1.35; overflow-wrap: anywhere; }
   .fl-yd-confirm { background: #0F1419; color: #E8E2D4; border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; min-width: 0; }
   .fl-yd-confirm-text { flex: 1; min-width: 0; font-size: 17px; font-weight: 800; line-height: 1.3; color: #F0C96A; overflow-wrap: anywhere; word-break: break-word; }
   .fl-yd-confirm-ok { flex-shrink: 0; background: #9A7209; color: #fff; border: none; border-radius: 10px; font: inherit; font-size: 13px; font-weight: 800; padding: 10px 16px; cursor: pointer; }
@@ -706,15 +956,23 @@ const YD_CSS = `
   .fl-yd-tape-green { background: rgba(29,158,117,0.16); color: #14775A; }
   .fl-yd-tape-red { background: #B3261E; color: #fff; }
   .fl-yd-verbs { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
-  .fl-yd-btnrow { display: flex; gap: 8px; margin-top: 10px; }
+  .fl-yd-btnrow { display: flex; gap: 8px; margin-top: 10px; min-width: 0; }
   .fl-yd-here { flex: 1; min-width: 0; min-height: 46px; background: #1D9E75; color: #fff; border: none; border-radius: 12px; font-family: inherit; font-size: 14px; font-weight: 800; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 10px; }
   .fl-yd-here:disabled { opacity: 0.5; }
+  .fl-yd-piece { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; text-align: left; font-family: inherit; background: #FBFAF6; border: 1px solid #E2DCCE; border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+  .fl-yd-piece-btn { cursor: pointer; border-color: #9A7209; }
+  .fl-yd-piece-main { flex: 1; min-width: 0; }
+  .fl-yd-piece-label { font-size: 13px; font-weight: 800; color: #16150F; }
+  .fl-yd-piece-go { flex-shrink: 0; font-size: 12px; font-weight: 800; color: #fff; background: #1D9E75; border-radius: 999px; padding: 8px 12px; white-space: nowrap; }
+  .fl-yd-ask { font-size: 15px; font-weight: 700; color: #16150F; margin: 10px 0 2px; }
   .fl-yd-chiprow { display: flex; gap: 6px; flex-wrap: wrap; }
   .fl-yd-bignum { font-family: "JetBrains Mono", Consolas, monospace; font-size: 34px; font-weight: 800; text-align: center; letter-spacing: 0.06em; padding: 10px 14px; }
   .fl-yd-warn { font-size: 12.5px; color: #B3261E; font-weight: 700; margin: 6px 2px 0; overflow-wrap: anywhere; }
+  .fl-yd-warnbox { margin-top: 12px; border: 1px solid rgba(179,38,30,0.4); background: rgba(179,38,30,0.06); border-radius: 12px; padding: 10px 12px; min-width: 0; }
   .fl-yd-note { font-size: 12px; color: #8A5A12; margin: 6px 2px 0; overflow-wrap: anywhere; }
   .fl-yd-photo { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .fl-yd-thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 10px; border: 1px solid #E2DCCE; flex-shrink: 0; }
   .fl-yd-paint { font-size: 30px; font-weight: 800; color: #16150F; margin-top: 8px; overflow-wrap: anywhere; }
   .fl-yd-tapeline { font-size: 15px; font-weight: 800; color: #14775A; margin: 2px 0 8px; overflow-wrap: anywhere; }
+  .fl-yd-tapeline-red { color: #B3261E; }
 `

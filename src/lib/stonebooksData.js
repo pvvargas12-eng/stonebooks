@@ -10933,6 +10933,7 @@ export async function addInventoryItem(item) {
   if (item.zone !== undefined) payload.zone = item.zone?.trim() || null
   if (item.crate !== undefined) payload.crate = item.crate?.trim() || null
   if (item.specs !== undefined) payload.specs = item.specs?.trim() || null
+  if (item.spot !== undefined) payload.spot = item.spot?.trim() || null
   try {
     const { data, error } = await supabase.from('inventory_stock').insert(payload).select().single()
     if (error) return { ok: false, error: error.message }
@@ -10965,6 +10966,13 @@ export async function updateInventoryItem(id, patch = {}) {
   if (patch.zone !== undefined) row.zone = txt(patch.zone)
   if (patch.crate !== undefined) row.crate = txt(patch.crate)
   if (patch.specs !== undefined) row.specs = txt(patch.specs)
+  if (patch.spot !== undefined) row.spot = txt(patch.spot)
+  if (patch.polish_level !== undefined) row.polish_level = txt(patch.polish_level)
+  if (patch.finish !== undefined) row.finish = txt(patch.finish)
+  if (patch.top_finish !== undefined) row.top_finish = txt(patch.top_finish)
+  if (patch.polish_margin !== undefined) row.polish_margin = !!patch.polish_margin
+  if (patch.condition !== undefined) row.condition = txt(patch.condition) || 'good'
+  if (patch.condition_note !== undefined) row.condition_note = txt(patch.condition_note)
   if (patch.yard_tag !== undefined) {
     const n = Number(patch.yard_tag)
     row.yard_tag = Number.isInteger(n) && n > 0 ? n : null
@@ -11029,19 +11037,15 @@ export function linkYardStockToOrder(id, orderId) {
 // yard's history under the same paint. The partial unique index on
 // (tenant_id, yard_tag) makes a race between two phones fail loudly on the
 // second insert; tagYardStone re-mints and retries.
-export const YARD_TYPES = [
-  { code: 'die', label: 'Die' }, { code: 'base', label: 'Base' }, { code: 'slant', label: 'Slant' },
-  { code: 'hickey', label: 'Hickey' }, { code: 'grass', label: 'Grass' }, { code: 'backer', label: 'Backer' },
-  { code: 'other', label: 'Other' },
-]
+// The stone vocabulary (type chips, per-type spec chips, condition, the one-line
+// spec) lives in lib/yardStone.js — re-exported here for the older callers.
+export { YARD_TYPES, yardTypeLabel } from './yardStone'
 export function fmtYardTag(n) {
   if (n == null || n === '') return ''
   const v = Number(n)
   if (!Number.isFinite(v)) return String(n)
   return String(Math.trunc(v)).padStart(3, '0')
 }
-export const yardTypeLabel = (code) => YARD_TYPES.find(t => t.code === String(code || '').toLowerCase())?.label
-  || (code ? String(code).replace(/\b\w/g, c => c.toUpperCase()) : '')
 
 // The old list — archived rows only, newest archive first then by name.
 export async function getArchivedInventoryStock() {
@@ -11109,15 +11113,23 @@ export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
   const base = {
     item_type: txt(item.item_type) ? String(item.item_type).trim().toLowerCase() : null,
     color: txt(item.color), size: txt(item.size), specs: txt(item.specs),
-    top: txt(item.top), sides: txt(item.sides), back: txt(item.back),
+    sides: txt(item.sides), back: txt(item.back),
     zone: txt(item.zone), crate: txt(item.crate), location: txt(item.location),
     quantity: 1,
     status: item.status || 'available',
     assigned_to: txt(item.assigned_to),
     allocated_order_id: item.allocated_order_id || null,
     notes: txt(item.notes), photo_url: item.photo_url || null,
+    // RESET-TAG-1b: per-type spec codes (mapping in 20261019_inventory_stone_specs.sql)
+    top: txt(item.top), polish_level: txt(item.polish_level),
+    finish: txt(item.finish), top_finish: txt(item.top_finish), polish_margin: !!item.polish_margin,
+    condition: txt(item.condition) || 'good', condition_note: txt(item.condition_note),
+    damage_photo_url: item.damage_photo_url || null, spot: txt(item.spot),
     verified_at: new Date().toISOString(), verified_by: by || null,
   }
+  // A base carries no die chips and a die no base chips — never cross-store.
+  if (base.item_type === 'base') { base.top = null; base.polish_level = null }
+  else { base.finish = null; base.top_finish = null; base.polish_margin = false }
   if (!base.item_type) return { ok: false, error: 'Pick the type of stone.' }
   const explicit = Number(tag)
   const hasExplicit = Number.isInteger(explicit) && explicit > 0
@@ -11191,10 +11203,12 @@ export async function setOrderPieceInStock(orderId, piece) {
 
 // The whole "Die is here" tap in one call: mint the numbered row, link it to
 // the order, flip the order's piece status, leave an activity note.
-export async function markPieceHere({ orderId, orderNumber = null, family = null, piece = 'die', color = null, size = null, specs = null, zone = null, crate = null, by = null }) {
+// `spec` = the verified fields from the phone (size, color, top, polish_level,
+// finish, top_finish, polish_margin, specs, condition, condition_note).
+export async function markPieceHere({ orderId, orderNumber = null, family = null, piece = 'die', spec = {}, zone = null, crate = null, spot = null, by = null }) {
   if (!orderId) return { ok: false, error: 'Missing order.' }
   const r = await tagYardStone({
-    item_type: piece === 'base' ? 'base' : 'die', color, size, specs, zone, crate,
+    ...spec, item_type: piece === 'base' ? 'base' : 'die', zone, crate, spot,
     status: 'allocated', assigned_to: family || null, allocated_order_id: orderId,
   }, { by })
   if (!r.ok) return r
@@ -11209,10 +11223,20 @@ export async function markPieceHere({ orderId, orderNumber = null, family = null
 
 // Walk verbs on a stone (direct writes, same reasoning as the YARD COUNT block
 // above — never through updateInventoryItem's status branch).
-export function moveYardStone(id, { zone, crate } = {}) {
+export function moveYardStone(id, { zone, crate, spot } = {}) {
   const patch = {}
-  if (zone !== undefined) patch.zone = (zone == null ? null : (String(zone).trim() || null))
-  if (crate !== undefined) patch.crate = (crate == null ? null : (String(crate).trim() || null))
+  const t = (v) => (v == null ? null : (String(v).trim() || null))
+  if (zone !== undefined) patch.zone = t(zone)
+  if (crate !== undefined) patch.crate = t(crate)
+  if (spot !== undefined) patch.spot = t(spot)
+  return _yardPatch(id, patch)
+}
+// The condition step (every save) + "Add note" later. A condition other than
+// good is a pill, not a problem; `unusable` is the explicit red-tape flip.
+export function setYardStoneCondition(id, { condition = 'good', note = null, damagePhotoUrl, unusable = false, by = null } = {}) {
+  const patch = { condition: condition || 'good', condition_note: note ? (String(note).trim() || null) : null }
+  if (damagePhotoUrl !== undefined) patch.damage_photo_url = damagePhotoUrl || null
+  if (unusable) { patch.status = 'problem'; patch.verified_at = new Date().toISOString(); patch.verified_by = by || null }
   return _yardPatch(id, patch)
 }
 // Red tape: the stone is here but something is wrong (cracked, wrong size,
@@ -11236,16 +11260,16 @@ export function setYardStonePhoto(id, url) {
 }
 // The stone's photo rides the same public bucket the field completion photos
 // use, under yard/<stone id>/.
-export async function uploadYardStonePhoto(stoneId, file) {
+export async function uploadYardStonePhoto(stoneId, file, { kind = 'photo' } = {}) {
   if (!stoneId || !file) return { ok: false, error: 'Missing stone or file' }
   const safe = String(file.name || 'photo').replace(/[^\w.-]+/g, '_')
-  const path = `yard/${stoneId}/${crypto.randomUUID()}_${safe}`
+  const path = `yard/${stoneId}/${kind === 'damage' ? 'damage_' : ''}${crypto.randomUUID()}_${safe}`
   const { error } = await supabase.storage
     .from('orders-attachments-public')
     .upload(path, file, { upsert: false, contentType: file.type || undefined })
   if (error) return { ok: false, error: error.message }
   const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
-  const p = await setYardStonePhoto(stoneId, data.publicUrl)
+  const p = kind === 'damage' ? await _yardPatch(stoneId, { damage_photo_url: data.publicUrl }) : await setYardStonePhoto(stoneId, data.publicUrl)
   if (!p.ok) return p
   return { ok: true, url: data.publicUrl, path }
 }
