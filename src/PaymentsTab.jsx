@@ -28,6 +28,8 @@ import {
 } from './lib/stonebooksData'
 import { ReceiptActions, rowToOrder, generateReceiptPDF, SALES_REPS } from './SalesMode'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
+import CollectBalancesView from './components/CollectBalancesView'
+import { getCollectionQueues } from './lib/collections'
 import ConfirmSend from './components/ConfirmSend'
 import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
 import {
@@ -68,6 +70,9 @@ const VIEWS = [
   { code: 'outgoing',  label: 'Outgoing' },
   { code: 'estimates', label: 'Estimates' },
   { code: 'zelle',     label: 'Zelle reconcile' },
+  // COLLECT-1 (Paul 2026-10-20): the money sitting on finished / nearly
+  // finished work — install list, the lines, the blasting queue, arrived bronze.
+  { code: 'collect',   label: 'Collect balances' },
 ]
 
 // Order display name: stone/family name first, customer record second.
@@ -134,6 +139,8 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
   const [zelleRows, setZelleRows] = useState(null)   // zelle_alerts ledger
   const [zelleAttach, setZelleAttach] = useState(null)   // alert row → attach modal
   const [zelleReceipt, setZelleReceipt] = useState(null) // matched alert row → receipt email modal
+  const [collectQueues, setCollectQueues] = useState(null) // Map(order_id → queue entry) — Collect balances
+  const loadCollect = useCallback(async () => { setCollectQueues(await getCollectionQueues().catch(() => new Map())) }, [])
 
   // ── Edit / remove money records (Paul 2026-08-04: "edit payments both
   // incoming and outgoing, remove or delete, change the date, the amount…
@@ -244,6 +251,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
     fetchAllPaged(ordersQuery).then(r => { if (!cancelled) setOrders(r || []) }).catch(() => { if (!cancelled) setOrders([]) })
     listOutgoingPayments().then(r => { if (!cancelled) setOutgoing(r || []) })
     listRecurringBills().then(r => { if (!cancelled) setBills(r || []) })
+    getCollectionQueues().then(m => { if (!cancelled) setCollectQueues(m) }).catch(() => { if (!cancelled) setCollectQueues(new Map()) })
     ;(async () => {
       try { await sweepZelleAlerts() } catch { /* best-effort */ }
       const rows = await listZelleAlerts()
@@ -318,6 +326,13 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
     [outgoing, monthPrefix])
 
   const loading = orders === null
+  // Collect balances badge = orders in a queue that still owe money.
+  const collectCount = useMemo(() => {
+    if (!orders || !collectQueues) return 0
+    let n = 0
+    for (const o of orders) if (collectQueues.has(o.id) && !['closed', 'cancelled'].includes(o.status) && rowBalanceDue(o) > 0) n++
+    return n
+  }, [orders, collectQueues])
 
   return (
     <div className="sb-page sb-page-wide">
@@ -345,10 +360,11 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       <div className="sb-pay-views" role="tablist" aria-label="Payments view">
         {VIEWS.map(v => {
           const zelleNew = v.code === 'zelle' ? (zelleRows || []).filter(z => z.status === 'new' || z.status === 'claimed').length : 0
+          const collectN = v.code === 'collect' ? collectCount : 0
           return (
             <button key={v.code} type="button" role="tab" aria-selected={view === v.code}
               className={`sb-pay-view ${view === v.code ? 'on' : ''}`} onClick={() => setView(v.code)}>
-              {v.label}{zelleNew > 0 && <span className="sb-pay-viewbadge">{zelleNew}</span>}
+              {v.label}{zelleNew > 0 && <span className="sb-pay-viewbadge">{zelleNew}</span>}{collectN > 0 && <span className="sb-pay-viewbadge sb-pay-viewbadge-amber">{collectN}</span>}
             </button>
           )
         })}
@@ -374,6 +390,9 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       )}
       {view === 'estimates' && (
         <EstimatesView loading={loading} rows={estimates} onOpenOrder={onOpenOrder} onContact={onContactOrder} />
+      )}
+      {view === 'collect' && (
+        <CollectBalancesView orders={orders} queues={collectQueues} loading={loading} onOpenOrder={onOpenOrder} onRefreshQueues={() => { loadCollect(); loadOrders() }} />
       )}
       {view === 'zelle' && (
         <ZelleReconcileView
@@ -1604,6 +1623,7 @@ const PAY_CSS = `
   .sb-pay-subhead { font-size: 13px; font-weight: 700; color: #1e2d3d; margin: 22px 0 8px; }
 
   .sb-pay-viewbadge { display: inline-block; min-width: 17px; text-align: center; font-size: 10px; font-weight: 800; background: #b54040; color: #fff; border-radius: 999px; padding: 1px 5px; margin-left: 7px; }
+  .sb-pay-viewbadge-amber { background: #9A7209; }
   .sb-pay-methodrow { display: flex; gap: 6px; flex-wrap: wrap; margin: -4px 0 10px; }
   .sb-pay-mchip { font: inherit; font-size: 12px; font-weight: 600; color: #6b6b66; background: #fff; border: 0.5px solid #e6e3dd; border-radius: 999px; padding: 5px 12px; cursor: pointer; }
   .sb-pay-mchip.on { background: #1e2d3d; border-color: #1e2d3d; color: #fff; }
