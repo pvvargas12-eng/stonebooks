@@ -353,6 +353,49 @@ const deceasedName = (d) => {
 }
 
 // ── Field + Section primitives ───────────────────────────────────────────────
+// The header post-it: newest note big, the rest behind History (scrolls),
+// one input that saves on Enter. Rows are order_notes — nothing new to sync.
+function StickyNote({ notes, onAdd, busy }) {
+  const [text, setText] = useState('')
+  const [hist, setHist] = useState(false)
+  const list = Array.isArray(notes) ? notes : []
+  const latest = list[0] || null
+  const submit = async () => { if (await onAdd(text)) setText('') }
+  return (
+    <div className="sb-od-sticky" aria-label="Quick note">
+      <div className="sb-od-sticky-top">
+        <span className="sb-od-sticky-eyebrow">Note</span>
+        {list.length > 1 && (
+          <button type="button" className="sb-od-sticky-hist" onClick={() => setHist(h => !h)}>
+            {hist ? 'Latest only' : `History ${list.length}`}
+          </button>
+        )}
+      </div>
+      {latest ? (
+        <div className="sb-od-sticky-body">
+          <div className="sb-od-sticky-text">{latest.body}</div>
+          <div className="sb-od-sticky-meta">{latest.author || 'Staff'} · {fmtDate(latest.created_at)}</div>
+        </div>
+      ) : <div className="sb-od-sticky-empty">Nothing noted yet — type the state of this order.</div>}
+      {hist && list.length > 1 && (
+        <div className="sb-od-sticky-list">
+          {list.slice(1).map(n => (
+            <div key={n.id} className="sb-od-sticky-item">
+              <div className="sb-od-sticky-text">{n.body}</div>
+              <div className="sb-od-sticky-meta">{n.author || 'Staff'} · {fmtDate(n.created_at)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="sb-od-sticky-add">
+        <input className="sb-od-sticky-input" value={text} placeholder="Add a note or state…" disabled={busy}
+          onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submit() }} />
+        <button type="button" className="sb-od-sticky-btn" disabled={busy || !text.trim()} onClick={submit}>{busy ? '…' : 'Add'}</button>
+      </div>
+    </div>
+  )
+}
+
 function Field({ label, value, hint }) {
   const empty = value == null || value === '' || (Array.isArray(value) && value.length === 0)
   return (
@@ -407,6 +450,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // Notes
   const [notes, setNotes] = useState([])
   const [noteBody, setNoteBody] = useState('')
+  const [stickyBusy, setStickyBusy] = useState(false)   // POST-IT quick note (header)
   const [noteBusy, setNoteBusy] = useState(false)
   const noteRef = useRef(null)
   // Attachments
@@ -1564,6 +1608,19 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     refreshNotes()
   }
   const focusNote = () => { setActionNote(null); noteRef.current?.focus() }
+  // POST-IT (Paul 2026-10-20): the header's bright note writes the SAME
+  // order_notes rows the Notes section lists — newest on top, history scrolls.
+  const addStickyNote = async (text) => {
+    const body = (text || '').trim()
+    if (!body || stickyBusy) return false
+    setStickyBusy(true)
+    const author = await getCurrentStaffName()
+    const res = await addOrderNote({ orderId, body, author })
+    setStickyBusy(false)
+    if (!res.ok) { setActionNote(`Could not add note — ${res.error}.`); return false }
+    refreshNotes()
+    return true
+  }
 
   const onPickAttachment = async (e) => {
     const file = e.target.files?.[0]
@@ -2286,6 +2343,10 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
               {primaryDeceased ? <>In memory of {primaryDeceased}{deceased.length > 1 ? ` +${deceased.length - 1}` : ''}</> : <span className="sb-od-missing">No deceased recorded</span>}
             </div>
           </div>
+          {/* POST-IT (Paul 2026-10-20): "a bright note, top right, left of
+              balance due — quickly type something, add multiple, the most
+              recent stays on top, scroll the history." Same rows as Notes. */}
+          <StickyNote notes={notes} onAdd={addStickyNote} busy={stickyBusy} />
           <div className="sb-od-header-balance">
             <div className="sb-od-balance-label">Balance due</div>
             <div className={`sb-od-balance-value${balance > 0 ? '' : ' sb-od-balance-clear'}`}>{fmtUSD(balance)}</div>
@@ -4109,6 +4170,23 @@ const OD_CSS = `
   .sb-od-balance-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #8a8a85; }
   .sb-od-balance-value { font-size: 26px; font-weight: 600; color: #B54040; margin-top: 2px; }
   .sb-od-balance-value.sb-od-balance-clear { color: #1D9E75; }
+  .sb-od-header-main { flex: 1 1 auto; min-width: 0; }
+  /* POST-IT */
+  .sb-od-sticky { flex: 0 1 330px; min-width: 240px; max-width: 360px; background: #FFE97A; border: 1px solid #E9C842; border-radius: 6px; padding: 10px 12px; box-shadow: 0 6px 16px rgba(120,90,0,.18); display: flex; flex-direction: column; gap: 6px; transform: rotate(-0.6deg); }
+  .sb-od-sticky-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .sb-od-sticky-eyebrow { font-size: 10.5px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: #7A5A00; }
+  .sb-od-sticky-hist { font: inherit; font-size: 11.5px; font-weight: 700; color: #7A5A00; background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; white-space: nowrap; }
+  .sb-od-sticky-text { font-size: 14px; line-height: 1.35; color: #2a2300; overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .sb-od-sticky-meta { font-size: 11px; color: #8a6d00; margin-top: 2px; }
+  .sb-od-sticky-empty { font-size: 13px; font-style: italic; color: #8a6d00; }
+  .sb-od-sticky-list { max-height: 200px; overflow-y: auto; border-top: 1px dashed #d9b43a; padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+  .sb-od-sticky-item .sb-od-sticky-text { -webkit-line-clamp: 6; font-size: 13px; }
+  .sb-od-sticky-add { display: flex; gap: 6px; margin-top: 2px; }
+  .sb-od-sticky-input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 6px 9px; border: 1px solid #d9b43a; border-radius: 6px; background: #fff9d6; }
+  .sb-od-sticky-input:focus-visible { outline: 2px solid #9A7209; outline-offset: 1px; }
+  .sb-od-sticky-btn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 6px 11px; border-radius: 6px; border: none; background: #7A5A00; color: #fff; cursor: pointer; }
+  .sb-od-sticky-btn:disabled { opacity: .5; cursor: default; }
+  @media (max-width: 900px) { .sb-od-header { flex-wrap: wrap; } .sb-od-sticky { transform: none; flex-basis: 100%; max-width: none; } }
 
   /* LEAD (no deposit) — deliberately the loudest thing on the page. */
   .sb-od-lead-pill {

@@ -197,7 +197,7 @@ export default function JobsTab({
   if (tab === 'dashboard') {
     body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} onOpenBoard={() => handleTabChange('production')} onOpenScheduler={() => onSwitchTab?.('scheduler')} /></div>
   } else if (tab === 'production') {
-    body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} /></div>
+    body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} onOpenSales={onOpenOrder} /></div>
   } else if (tab === 'cutlist') {
     body = <div className="sb-crm-container"><CutListBoard onOpenJob={handleOpenJob} /></div>
   } else if (tab === 'foundations') {
