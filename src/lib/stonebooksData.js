@@ -2728,7 +2728,52 @@ export async function getHotListItems() {
     .is('done_at', null)
     .order('created_at', { ascending: true })
   if (error) { console.error('getHotListItems:', error); return [] }
-  return data || []
+  return _sweepHotListDone(data || [])
+}
+
+// AUTO-DONE (Paul 2026-10-20: "Panken was set — it should automatically come
+// off this list, even if it isn't closed out"). A job-linked item leaves the
+// board the moment the work it stands for is DONE on the job: set = the
+// install milestone, blast = production_completed (the stone is blasted),
+// inscription = inscription_completed, acid wash = work_completed — and any
+// lane once the job is closed or cancelled. Admin / Other items are hand-only.
+// Runs on every read (desktop tab, phone screen, the planners' HOT pill), so
+// the row disappears on the next open; the done row stays as history with
+// done_by 'auto — work completed'.
+const HOT_DONE_KEYS = {
+  set: ['installed', 'door_installed', 'work_completed'],
+  blast: ['production_completed'],
+  inscription: ['inscription_completed'],
+  acid_wash: ['work_completed'],
+}
+async function _sweepHotListDone(items) {
+  const linked = items.filter(it => it.job_id && HOT_DONE_KEYS[it.category])
+  if (!linked.length) return items
+  const ids = [...new Set(linked.map(it => it.job_id))]
+  const jobs = new Map()
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await supabase.from('jobs')
+      .select('id, overall_status, milestones:job_milestones(milestone_key, status)')
+      .in('id', ids.slice(i, i + 150))
+    if (error) { console.warn('[hot-list] auto-done read:', error.message); return items }
+    for (const j of (data || [])) jobs.set(j.id, j)
+  }
+  const doneIds = []
+  for (const it of linked) {
+    const j = jobs.get(it.job_id)
+    if (!j) continue
+    const closed = ['closed', 'cancelled'].includes(j.overall_status)
+    const keys = HOT_DONE_KEYS[it.category]
+    const hit = (j.milestones || []).some(m => keys.includes(m.milestone_key) && m.status === 'done')
+    if (closed || hit) doneIds.push(it.id)
+  }
+  if (!doneIds.length) return items
+  const { error } = await supabase.from('hot_list_items')
+    .update({ done_at: new Date().toISOString(), done_by: 'auto — work completed' })
+    .in('id', doneIds)
+  if (error) { console.warn('[hot-list] auto-done write:', error.message); return items }
+  const gone = new Set(doneIds)
+  return items.filter(it => !gone.has(it.id))
 }
 
 export async function addHotListItem({ category, title, note, jobId, orderId }) {

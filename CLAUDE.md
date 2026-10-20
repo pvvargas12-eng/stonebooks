@@ -11,6 +11,14 @@ Paul: "another tab inside payments next to zelle reconcile for collecting balanc
 - Verified on the dev server through a temporary `/smoke-collect` route (removed before commit) over nine stubbed orders across every stage: tiles summed per stage with IN REACH counting each order once; Priority put the install list first with the scheduled stone on top; Balance owed re-sorted; the Blasting queue tile filtered; Notes opened inline; the composer prefilled To/subject/message and the gate rendered the recipient + formatted letter; Cancel paths clean; long cemetery names and the 24px total ellipsize instead of leaking (the IN REACH tile spans two columns). Lint + build green. The live writes (log rows, the actual send) sit behind the auth wall — Paul's first click.
 - **Gotcha for next time:** `engineRowGrandTotal` returns 0 until `lib/orderRates` has loaded (it registers the engine) — PaymentsTab gets it through SalesMode; a standalone mount of anything that prices rows must import orderRates itself.
 
+## Fix HOT-AUTO-DONE (2026-10-20): a set stone leaves the Hot List by itself
+
+Paul (To-be-set lane, Panken E-26-0368 still listed after the install): "Panken was set — it should automatically come off this list, even if it isn't closed out."
+
+- **`getHotListItems()` now sweeps before it returns** (`_sweepHotListDone` in stonebooksData): every open job-linked item is checked against its job's milestones — `set` = installed / door_installed / work_completed done, `blast` = production_completed done, `inscription` = inscription_completed done, `acid_wash` = work_completed done — and any lane when the job is closed or cancelled. Hits are stamped `done_at` + `done_by 'auto — work completed'` (history row, same as a hand DONE) and dropped from the returned list. Admin / Other and free-text items are never touched. Reads chunked `.in()` on jobs with the milestones embed (runtime-verified 200 against prod).
+- Every hot-list surface goes through this one read (desktop Hot List tab, the phone Hot List screen, the Install / Inscription planners' HOT pill), so the row vanishes on the next open; the sidebar badge count catches up on its 60-second refresh after that read runs. Panken clears the first time the tab loads after deploy.
+- Lint 0 errors (two pre-existing warnings elsewhere in the file), build green.
+
 ## Round COLLECT-3 (2026-10-20): two queues, multi-select tiles, fewer sorts, a direction toggle
 
 Paul: "for sorting can select multiple — install list, blasting queue (for blasting queue that's anything from bring up to blasting queue, I don't want the stages of the assembly line). Remove priority, balance owed, family name, oldest contract. I want to sort low to high / high to low. Bronze arrived should be in the delivery queue so that's redundant. I do like seeing how many are in each. Delivery queue and install list should be the same, and blasting queue should also be the same."
