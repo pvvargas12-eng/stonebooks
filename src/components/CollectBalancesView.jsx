@@ -27,6 +27,7 @@ import {
   lastContactOf, lastNoteOf, activePromiseOf, promiseMissed, daysAgo,
 } from '../lib/collections'
 import ConfirmSend from './ConfirmSend'
+import { phaseLabel } from '../lib/jobComponents'
 
 const SHOP = {
   name: 'Shevchenko Monuments',
@@ -37,15 +38,14 @@ const SHOP = {
 }
 const TOUCH_DAYS = 14   // "needs a touch" = never contacted or older than this
 
+// Round 3 (Paul): no Priority / Balance owed / Family / Oldest chips — the
+// list is ordered by balance unless one of these is picked, and the direction
+// toggle (high to low / low to high) flips whichever ordering is active.
 const SORTS = [
-  { code: 'priority',  label: 'Priority' },
-  { code: 'balance',   label: 'Balance owed' },
-  { code: 'contact',   label: 'Longest since contact' },
+  { code: 'contact',   label: 'Since last contact' },
   { code: 'scheduled', label: 'Install date' },
   { code: 'promise',   label: 'Promise date' },
   { code: 'cemetery',  label: 'By cemetery' },
-  { code: 'family',    label: 'Family name' },
-  { code: 'oldest',    label: 'Oldest contract' },
 ]
 
 const addDaysISO = (iso, n) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + n); return todayISO(d) }
@@ -64,13 +64,12 @@ const serviceTag = (o) => {
 }
 const stageSentence = (row) => {
   const cem = row.cemetery ? ` at ${row.cemetery}` : ''
-  switch (row.stage) {
-    case 'install': return `is finished and ready to be installed${cem}`
-    case 'ready':   return `has been blasted and is ready to be set${cem}`
-    case 'blast':   return 'is on our production line and is next up to be blasted'
-    case 'bronze':  return 'has arrived at our shop'
-    default:        return 'is on our production line'
+  if (row.stage === 'delivery') {
+    if (row.bronze) return 'has arrived at our shop'
+    if (row.detail === 'blasted') return `has been blasted and is ready to be set${cem}`
+    return `is finished and ready to be installed${cem}`
   }
+  return 'is on our production line and headed to blasting'
 }
 
 // ── The email text, Paul's message polished ─────────────────────────────────
@@ -81,7 +80,7 @@ function buildBalanceRequest(row, { sender = null } = {}) {
   const lines = [
     `Dear ${first || 'Family'},`,
     '',
-    `Good news: the memorial for ${fam} ${stageSentence(row)}. We would like to schedule its delivery and installation${row.cemetery && !['install', 'ready'].includes(row.stage) ? ` at ${row.cemetery}` : ''}.`,
+    `Good news: the memorial for ${fam} ${stageSentence(row)}. We would like to schedule its delivery and installation${row.cemetery && row.stage !== 'delivery' ? ` at ${row.cemetery}` : ''}.`,
     '',
     'Before we can deliver, the remaining balance must be paid in full. Once we receive it, we will call you right away to set the installation date.',
     '',
@@ -130,8 +129,9 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [today, setToday] = useState(() => todayISO())
   const [promiseDraft, setPromiseDraft] = useState({})   // order id → { date, note }
-  const [sort, setSort] = useState('priority')
-  const [stageF, setStageF] = useState('all')
+  const [sort, setSort] = useState(null)              // null = by balance
+  const [dir, setDir] = useState('desc')              // 'desc' high to low · 'asc' low to high
+  const [stageF, setStageF] = useState(() => new Set())   // queue tiles — multi-select, empty = all
   const [q, setQ] = useState('')
   const [touchOnly, setTouchOnly] = useState(false)
   const [open, setOpen] = useState(() => new Set())   // rows with the notes panel open
@@ -159,7 +159,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
         id: o.id, order: o, name: familyOf(o),
         cemetery: o.cemetery?.name ? properName(o.cemetery.name) : '',
         service: serviceTag(o),
-        stage: e.stage, stages: e.stages, line: e.line, scheduledDate: e.scheduledDate,
+        stage: e.stage, stages: e.stages, line: e.line, phase: e.phase, detail: e.detail, bronze: !!e.bronze, scheduledDate: e.scheduledDate,
         balance, total: rowGrandTotal(o), paid: rowTotalPaid(o),
         email: (o.customer?.email || '').trim(), phone: o.customer?.phone_primary || '',
         log: entries, lastContact: lc, lastNote: lastNoteOf(entries),
@@ -189,15 +189,13 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
       owed += r.balance
       for (const s of r.stages) if (by[s]) { by[s].owed += r.balance; by[s].n += 1 }
     }
-    const delivery = { owed: 0, n: 0 }
-    for (const r of rows) if (r.stages.has('install') || r.stages.has('ready')) { delivery.owed += r.balance; delivery.n += 1 }
-    return { by, owed, n: rows.length, delivery }
+    return { by, owed, n: rows.length }
   }, [rows])
 
   const shown = useMemo(() => {
     const norm = q.trim().toLowerCase()
     let list = rows.filter(r => {
-      if (stageF !== 'all' && !r.stages.has(stageF)) return false
+      if (stageF.size > 0 && ![...stageF].some(s => r.stages.has(s))) return false
       if (touchOnly && !r.promiseMissed && r.days != null && r.days < TOUCH_DAYS) return false
       if (norm) {
         const hay = `${r.name} ${r.order.order_number || ''} ${r.cemetery} ${customerName(r.order.customer) || ''}`.toLowerCase()
@@ -205,23 +203,30 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
       }
       return true
     })
-    const rank = (r) => stageDef(r.stage)?.rank ?? 9
-    const sched = (r) => r.scheduledDate ? new Date(r.scheduledDate + 'T00:00:00').getTime() : Infinity
-    const contactKey = (r) => r.lastContact ? new Date(r.lastContact.created_at).getTime() : -Infinity
-    const promiseKey = (r) => r.promise ? new Date(r.promise.promised_for + 'T00:00:00').getTime() : Infinity
+    // Rows with no value for the picked key always sit last; the direction
+    // toggle flips the rest. "High to low" on a date = latest first; on
+    // contact = longest ago first (never-contacted counts as longest).
+    const flip = dir === 'asc' ? -1 : 1
+    const sched = (r) => r.scheduledDate ? new Date(r.scheduledDate + 'T00:00:00').getTime() : null
+    const contactKey = (r) => r.lastContact ? (nowMs - new Date(r.lastContact.created_at).getTime()) : Number.MAX_SAFE_INTEGER
+    const promiseKey = (r) => r.promise ? new Date(r.promise.promised_for + 'T00:00:00').getTime() : null
+    const byBalance = (a, b) => flip * (b.balance - a.balance)
+    const numeric = (key, { nullsLast = true } = {}) => (a, b) => {
+      const ka = key(a), kb = key(b)
+      if (ka == null && kb == null) return byBalance(a, b)
+      if (ka == null) return nullsLast ? 1 : -1
+      if (kb == null) return nullsLast ? -1 : 1
+      return flip * (kb - ka) || byBalance(a, b)
+    }
     const cmp = {
-      promise:   (a, b) => promiseKey(a) - promiseKey(b) || b.balance - a.balance,
-      priority:  (a, b) => rank(a) - rank(b) || sched(a) - sched(b) || b.balance - a.balance,
-      balance:   (a, b) => b.balance - a.balance,
-      contact:   (a, b) => contactKey(a) - contactKey(b) || b.balance - a.balance,
-      scheduled: (a, b) => sched(a) - sched(b) || rank(a) - rank(b) || b.balance - a.balance,
-      cemetery:  (a, b) => (a.cemetery || 'zzz').localeCompare(b.cemetery || 'zzz') || a.name.localeCompare(b.name),
-      family:    (a, b) => a.name.localeCompare(b.name),
-      oldest:    (a, b) => a.signedMs - b.signedMs,
-    }[sort] || (() => 0)
+      contact:   numeric(contactKey),
+      scheduled: numeric(sched),
+      promise:   numeric(promiseKey),
+      cemetery:  (a, b) => flip * (a.cemetery || 'zzz').localeCompare(b.cemetery || 'zzz') || a.name.localeCompare(b.name),
+    }[sort] || byBalance
     list = [...list].sort(cmp)
     return list
-  }, [rows, q, stageF, touchOnly, sort])
+  }, [rows, q, stageF, touchOnly, sort, dir, nowMs])
 
   const touchCount = useMemo(() => rows.filter(r => r.promiseMissed || r.days == null || r.days >= TOUCH_DAYS).length, [rows])
 
@@ -286,23 +291,21 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
 
       {/* The money to target */}
       <div className="sb-col-tiles">
-        <button type="button" className={`sb-col-tile sb-col-tile-total${stageF === 'all' ? ' on' : ''}`} onClick={() => setStageF('all')}>
+        <button type="button" className={`sb-col-tile sb-col-tile-total${stageF.size === 0 ? ' on' : ''}`} onClick={() => setStageF(new Set())} title="Show both queues">
           <span className="sb-col-tile-label">In reach</span>
           <span className="sb-col-tile-amt">{fmtUSD(totals.owed)}</span>
           <span className="sb-col-tile-sub">{totals.n} order{totals.n === 1 ? '' : 's'} with work done or nearly done</span>
         </button>
-        <div className="sb-col-tile sb-col-tile-delivery">
-          <span className="sb-col-tile-label">Delivery queue</span>
-          <span className="sb-col-tile-amt">{fmtUSD(totals.delivery.owed)}</span>
-          <span className="sb-col-tile-sub">{totals.delivery.n} on the install list or blasted</span>
-        </div>
         {STAGES.map(s => {
           const t = totals.by[s.code]
+          const on = stageF.has(s.code)
           return (
-            <button key={s.code} type="button" className={`sb-col-tile sb-col-tile-${s.tone}${stageF === s.code ? ' on' : ''}`} onClick={() => setStageF(stageF === s.code ? 'all' : s.code)}>
+            <button key={s.code} type="button" className={`sb-col-tile sb-col-tile-${s.tone}${on ? ' on' : ''}`}
+              title={on ? 'Click to drop this queue from the list' : 'Click to show this queue — pick both to see both'}
+              onClick={() => setStageF(f => { const n = new Set(f); if (n.has(s.code)) n.delete(s.code); else n.add(s.code); return n })}>
               <span className="sb-col-tile-label">{s.label}</span>
               <span className="sb-col-tile-amt">{fmtUSD(t.owed)}</span>
-              <span className="sb-col-tile-sub">{t.n} order{t.n === 1 ? '' : 's'}</span>
+              <span className="sb-col-tile-sub">{t.n} order{t.n === 1 ? '' : 's'} · {s.sub}</span>
             </button>
           )
         })}
@@ -312,9 +315,14 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
       <div className="sb-col-controls">
         <div className="sb-col-sorts" role="tablist" aria-label="Sort">
           <span className="sb-col-sortlab">Sort</span>
+          <button type="button" className={`sb-col-chip${sort === null ? ' on' : ''}`} onClick={() => setSort(null)} title="Order by the balance owed">Balance</button>
           {SORTS.map(s => (
-            <button key={s.code} type="button" className={`sb-col-chip${sort === s.code ? ' on' : ''}`} onClick={() => setSort(s.code)}>{s.label}</button>
+            <button key={s.code} type="button" className={`sb-col-chip${sort === s.code ? ' on' : ''}`} onClick={() => setSort(sort === s.code ? null : s.code)}>{s.label}</button>
           ))}
+          <button type="button" className="sb-col-chip sb-col-dir" onClick={() => setDir(d => (d === 'desc' ? 'asc' : 'desc'))}
+            title="Flip the order">
+            {dir === 'desc' ? 'High to low' : 'Low to high'}
+          </button>
         </div>
         <div className="sb-col-filters">
           <button type="button" className={`sb-col-chip sb-col-chip-touch${touchOnly ? ' on' : ''}`} onClick={() => setTouchOnly(v => !v)}
@@ -364,7 +372,8 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                     return <span key={code} className={`sb-col-pill sb-col-pill-${d?.tone || 'grey'}${code === r.stage ? ' main' : ''}`}>{d?.short || code}</span>
                   })}
                   {r.scheduledDate && <span className="sb-col-sched">Install {fmtDate(r.scheduledDate)}</span>}
-                  {r.line && !r.stages.has('install') && !r.stages.has('ready') && <span className="sb-col-line">{r.line}</span>}
+                  {r.stages.has('delivery') && r.detail && r.detail !== 'install list' && <span className="sb-col-line">{r.detail}</span>}
+                  {r.stages.has('blast') && r.line && <span className="sb-col-line">{r.line}{r.phase ? ` · ${phaseLabel(r.phase)}` : ''}</span>}
                 </div>
                 <div className="sb-col-money">
                   <span className="sb-col-bal">{fmtUSD(r.balance)}</span>
@@ -622,8 +631,9 @@ const COLLECT_CSS = `
   .sb-col-tile-total .sb-col-tile-amt { color: #fff; font-size: 24px; }
   .sb-col-tile-total .sb-col-tile-sub { color: #c7cdd4; }
   .sb-col-tile-total.on { box-shadow: 0 0 0 2px rgba(201,178,122,.5); }
-  .sb-col-tile-delivery { cursor: default; background: #fbf3e4; border-color: #e9c46a; }
-  .sb-col-tile-delivery .sb-col-tile-label { color: #7A5A00; }
+  .sb-col-tile-green.on { background: #f1f9f4; }
+  .sb-col-tile-amber.on { background: #fbf3e4; }
+  .sb-col-dir { border-color: #1e2d3d; color: #1e2d3d; font-weight: 700; }
   .sb-col-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; margin-bottom: 10px; }
   .sb-col-sorts, .sb-col-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
   .sb-col-sortlab { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #8a8a85; margin-right: 2px; }

@@ -12,12 +12,15 @@
 // component's phase, and the bronze_received milestone. The only new truth is
 // balance_collection_log (calls / emails / notes per order).
 //
-// Stage codes, in PRIORITY order (installation first — Paul):
-//   install  — on the hand-picked install list (set list)
-//   ready    — blasted (ready_to_set) but not on the set list yet
-//   blast    — in the Blasting Queue (stencil_stuck) on a line
-//   bronze   — bronze arrived at the shop (bronze_received done, not installed)
-//   line     — on an assembly line, earlier than the blasting queue
+// TWO queues (Paul 2026-10-20, round 3: "delivery queue and install list
+// should be the same, and blasting queue should also be the same — anything
+// from bring up to blasting queue, I don't want the stages of the assembly
+// line; bronze arrived should be in the delivery queue"):
+//   delivery — on the install list, OR blasted (ready_to_set), OR a bronze
+//              that arrived (bronze_received done) — not installed yet
+//   blast    — on an assembly line, not blasted yet (ready_to_bring_up …
+//              stencil_stuck); `detail` keeps the floor phase for the row
+// Delivery first — that is the money closest to the door.
 // =============================================================================
 import { supabase } from './supabase'
 import {
@@ -28,11 +31,8 @@ import { listFloorLines, lineLabel } from './floorLines'
 import { phaseIndex } from './jobComponents'
 
 export const STAGES = [
-  { code: 'install', label: 'Install list',    short: 'INSTALL LIST',   rank: 0, tone: 'green' },
-  { code: 'ready',   label: 'Blasted · ready', short: 'BLASTED',        rank: 1, tone: 'green' },
-  { code: 'blast',   label: 'Blasting queue',  short: 'BLASTING QUEUE', rank: 2, tone: 'amber' },
-  { code: 'bronze',  label: 'Bronze arrived',  short: 'BRONZE ARRIVED', rank: 3, tone: 'blue' },
-  { code: 'line',    label: 'On the line',     short: 'ON THE LINE',    rank: 4, tone: 'grey' },
+  { code: 'delivery', label: 'Delivery queue', short: 'DELIVERY QUEUE', rank: 0, tone: 'green', sub: 'install list · blasted · bronze arrived' },
+  { code: 'blast',    label: 'Blasting queue', short: 'BLASTING QUEUE', rank: 1, tone: 'amber', sub: 'on a line, bring up through blasting' },
 ]
 export const stageDef = (code) => STAGES.find(s => s.code === code) || null
 
@@ -41,12 +41,13 @@ const installMs = (ms) => (ms || []).find(m => INSTALL_KEYS.includes(m.milestone
 
 // ── The queues ──────────────────────────────────────────────────────────────
 // Returns Map(order_id → { stages: Set, stage (the top-priority one), line,
-// phase, scheduledDate, jobId }). Orders already installed never appear.
+// phase, detail (why it is in the delivery queue / the floor phase), bronze,
+// scheduledDate, jobId }). Orders already installed never appear.
 export async function getCollectionQueues() {
   const out = new Map()
   const touch = (orderId) => {
     if (!orderId) return null
-    if (!out.has(orderId)) out.set(orderId, { stages: new Set(), stage: null, line: null, phase: null, scheduledDate: null, jobId: null })
+    if (!out.has(orderId)) out.set(orderId, { stages: new Set(), stage: null, line: null, phase: null, detail: null, bronze: false, scheduledDate: null, jobId: null })
     return out.get(orderId)
   }
 
@@ -80,22 +81,23 @@ export async function getCollectionQueues() {
     const j = jobs.get(r.job_id)
     if (!j || !j.order_id || installed(j)) continue
     const e = touch(j.order_id)
-    e.stages.add('install'); e.jobId = j.id
+    e.stages.add('delivery'); e.jobId = j.id
+    e.detail = e.detail || 'install list'
     const ms = installMs(j.milestones)
     if (ms?.status === 'in_progress' && ms.due_date) e.scheduledDate = ms.due_date
   }
 
-  // 2. Bronze arrived — delivered to the shop, not set yet.
+  // 2. Bronze arrived — delivered to the shop, not set yet → delivery queue.
   for (const r of (bronzeMs || [])) {
     const j = jobs.get(r.job_id)
     if (!j || !j.order_id || installed(j)) continue
     const e = touch(j.order_id)
-    e.stages.add('bronze'); if (!e.jobId) e.jobId = j.id
+    e.stages.add('delivery'); e.bronze = true; if (!e.jobId) e.jobId = j.id
+    e.detail = e.detail || 'bronze arrived'
   }
 
-  // 3. Assembly lines — blasting queue vs. earlier on the line vs. blasted.
+  // 3. Assembly lines — blasted = delivery queue; anything earlier = blasting queue.
   const blastedIdx = phaseIndex('new_stone', 'ready_to_set')
-  const queueIdx = phaseIndex('new_stone', 'stencil_stuck')
   for (const l of (lines || [])) {
     if (l.status === 'complete') continue
     for (const it of (l.items || [])) {
@@ -106,9 +108,8 @@ export async function getCollectionQueues() {
       const e = touch(oid)
       e.line = e.line || lineLabel(l)
       e.phase = e.phase || comp.current_phase
-      if (idx >= blastedIdx) { if (!e.stages.has('install')) e.stages.add('ready') }
-      else if (idx >= queueIdx) e.stages.add('blast')
-      else e.stages.add('line')
+      if (idx >= blastedIdx) { e.stages.add('delivery'); e.detail = e.detail || 'blasted' }
+      else e.stages.add('blast')
     }
   }
 
