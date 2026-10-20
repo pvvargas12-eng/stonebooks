@@ -1056,6 +1056,22 @@ export async function addOrderNote({ orderId, body, author }) {
   if (error) return { ok: false, error: error.message }
   return { ok: true, data }
 }
+// Edit / delete a note (Paul 2026-10-20: "must be able to edit and delete
+// notes"). Edits keep the author; the row's updated_at is not a column on
+// order_notes, so the edit is in place with no stamp.
+export async function updateOrderNote({ id, body }) {
+  const text = (body || '').trim()
+  if (!id || !text) return { ok: false, error: 'Missing note or text' }
+  const { error } = await supabase.from('order_notes').update({ body: text }).eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function deleteOrderNote(id) {
+  if (!id) return { ok: false, error: 'Missing note' }
+  const { error } = await supabase.from('order_notes').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
 
 // ── Order attachments — general uploads in the existing public bucket ──────
 // No new bucket: general attachments live in orders-attachments-public under

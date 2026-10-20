@@ -11,6 +11,14 @@ Paul: "another tab inside payments next to zelle reconcile for collecting balanc
 - Verified on the dev server through a temporary `/smoke-collect` route (removed before commit) over nine stubbed orders across every stage: tiles summed per stage with IN REACH counting each order once; Priority put the install list first with the scheduled stone on top; Balance owed re-sorted; the Blasting queue tile filtered; Notes opened inline; the composer prefilled To/subject/message and the gate rendered the recipient + formatted letter; Cancel paths clean; long cemetery names and the 24px total ellipsize instead of leaking (the IN REACH tile spans two columns). Lint + build green. The live writes (log rows, the actual send) sit behind the auth wall — Paul's first click.
 - **Gotcha for next time:** `engineRowGrandTotal` returns 0 until `lib/orderRates` has loaded (it registers the engine) — PaymentsTab gets it through SalesMode; a standalone mount of anything that prices rows must import orderRates itself.
 
+## Fix OD-NOTES + NO-RELATED-JOB (2026-10-20): notes edit and delete, Related job card gone
+
+Paul: "remove related job" + "must be able to edit and delete notes."
+
+- **Related job card removed** from OrderDetail (section + rail entry + the `jobStage` derive it alone used). The Status Overview already carries stage / next action, and the Design hub button opens the job; `onOpenJob` stays wired for those.
+- **Notes edit / delete:** `updateOrderNote({id, body})` + `deleteOrderNote(id)` in stonebooksData (plain update/delete on `order_notes` — the table has no updated_at, so an edit keeps the author and date). The Notes section rows carry **Edit** (inline textarea, Save / Cancel, Escape cancels) and **Delete** (window.confirm, red). The header **post-it** shows `edit` / `delete` on the latest note and on every History row — edit scrolls to the Notes section with that note already open for editing; delete asks the same confirm. Both surfaces read the same rows, so they stay in step.
+- Lint 0 errors, build green. Behind the auth wall — Paul's first click.
+
 ## Fix HOT-AUTO-DONE (2026-10-20): a set stone leaves the Hot List by itself
 
 Paul (To-be-set lane, Panken E-26-0368 still listed after the install): "Panken was set — it should automatically come off this list, even if it isn't closed out."

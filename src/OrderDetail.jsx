@@ -16,9 +16,9 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder, designStatusOptions, statusDimApplies,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
-  fmtUSD, fmtDate, fmtPhone, statusInfo, jobStatusInfo, customerName, properName,
+  fmtUSD, fmtDate, fmtPhone, statusInfo, customerName, properName,
   computeOrderPressure, getNextRequiredAction,
-  getOrderNotes, addOrderNote, getCurrentStaffName,
+  getOrderNotes, addOrderNote, updateOrderNote, deleteOrderNote, getCurrentStaffName,
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   listShopTasksForOrder, deleteShopTask, getChangeRequestThread, updateShopTask, uploadTaskAttachment, addShopTask,
   updateOrderLeadFields, TASK_KINDS,
@@ -355,7 +355,7 @@ const deceasedName = (d) => {
 // ── Field + Section primitives ───────────────────────────────────────────────
 // The header post-it: newest note big, the rest behind History (scrolls),
 // one input that saves on Enter. Rows are order_notes — nothing new to sync.
-function StickyNote({ notes, onAdd, busy }) {
+function StickyNote({ notes, onAdd, busy, onEdit, onDelete }) {
   const [text, setText] = useState('')
   const [hist, setHist] = useState(false)
   const list = Array.isArray(notes) ? notes : []
@@ -374,7 +374,12 @@ function StickyNote({ notes, onAdd, busy }) {
       {latest ? (
         <div className="sb-od-sticky-body">
           <div className="sb-od-sticky-text">{latest.body}</div>
-          <div className="sb-od-sticky-meta">{latest.author || 'Staff'} · {fmtDate(latest.created_at)}</div>
+          <div className="sb-od-sticky-meta">{latest.author || 'Staff'} · {fmtDate(latest.created_at)}
+            <span className="sb-od-sticky-links">
+              <button type="button" className="sb-od-sticky-link" onClick={() => onEdit?.(latest)}>edit</button>
+              <button type="button" className="sb-od-sticky-link" onClick={() => onDelete?.(latest)}>delete</button>
+            </span>
+          </div>
         </div>
       ) : <div className="sb-od-sticky-empty">Nothing noted yet — type the state of this order.</div>}
       {hist && list.length > 1 && (
@@ -382,7 +387,12 @@ function StickyNote({ notes, onAdd, busy }) {
           {list.slice(1).map(n => (
             <div key={n.id} className="sb-od-sticky-item">
               <div className="sb-od-sticky-text">{n.body}</div>
-              <div className="sb-od-sticky-meta">{n.author || 'Staff'} · {fmtDate(n.created_at)}</div>
+              <div className="sb-od-sticky-meta">{n.author || 'Staff'} · {fmtDate(n.created_at)}
+                <span className="sb-od-sticky-links">
+                  <button type="button" className="sb-od-sticky-link" onClick={() => onEdit?.(n)}>edit</button>
+                  <button type="button" className="sb-od-sticky-link" onClick={() => onDelete?.(n)}>delete</button>
+                </span>
+              </div>
             </div>
           ))}
         </div>
@@ -451,6 +461,8 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const [notes, setNotes] = useState([])
   const [noteBody, setNoteBody] = useState('')
   const [stickyBusy, setStickyBusy] = useState(false)   // POST-IT quick note (header)
+  const [noteEdit, setNoteEdit] = useState(null)         // { id, body } — the note being edited
+  const [noteRowBusy, setNoteRowBusy] = useState(null)   // note id mid-write
   const [noteBusy, setNoteBusy] = useState(false)
   const noteRef = useRef(null)
   // Attachments
@@ -1608,6 +1620,34 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     refreshNotes()
   }
   const focusNote = () => { setActionNote(null); noteRef.current?.focus() }
+  // Edit / delete a note (Paul 2026-10-20). The post-it and the Notes section
+  // read the same rows, so both update together.
+  const startNoteEdit = (n) => {
+    setNoteEdit({ id: n.id, body: n.body || '' })
+    const el = typeof document !== 'undefined' && document.getElementById('od-notes')
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  const saveNoteEdit = async () => {
+    if (!noteEdit || noteRowBusy) return
+    const body = (noteEdit.body || '').trim()
+    if (!body) return
+    setNoteRowBusy(noteEdit.id)
+    const res = await updateOrderNote({ id: noteEdit.id, body })
+    setNoteRowBusy(null)
+    if (!res.ok) { setActionNote(`Could not save the note — ${res.error}.`); return }
+    setNoteEdit(null)
+    refreshNotes()
+  }
+  const deleteNote = async (n) => {
+    if (noteRowBusy) return
+    if (!window.confirm('Delete this note? It goes for good.')) return
+    setNoteRowBusy(n.id)
+    const res = await deleteOrderNote(n.id)
+    setNoteRowBusy(null)
+    if (!res.ok) { setActionNote(`Could not delete the note — ${res.error}.`); return }
+    if (noteEdit?.id === n.id) setNoteEdit(null)
+    refreshNotes()
+  }
   // POST-IT (Paul 2026-10-20): the header's bright note writes the SAME
   // order_notes rows the Notes section lists — newest on top, history scrolls.
   const addStickyNote = async (text) => {
@@ -2074,7 +2114,6 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     ...(showMake ? [{ id: 'od-make', label: 'Design summary' }] : []),
     { id: 'od-financial', label: 'Financial' },
     { id: 'od-permit', label: 'Permit' },
-    { id: 'od-job', label: 'Related job' },
     { id: 'od-attachments', label: 'Attachments' },
     ...(completionPhotos.length > 0 ? [{ id: 'od-photos', label: 'Completion photos' }] : []),
     { id: 'od-notes', label: 'Notes' },
@@ -2100,7 +2139,6 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const _currentProof = proofVers.find(p => p.is_current) || proofVers[0] || null
   const foundationMs = milestoneStatus(job, ['foundation_poured', 'foundation_cured'])
   const nra = job ? getNextRequiredAction(job) : null
-  const jobStage = job ? jobStatusInfo(job.overall_status) : null
   // Status Overview card — same engine as the rail (they can never disagree).
   const overviewPipe = buildPipeline(order, job)
   const overviewPressure = computeOrderPressure(order, job, job?.milestones)
@@ -2346,7 +2384,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
           {/* POST-IT (Paul 2026-10-20): "a bright note, top right, left of
               balance due — quickly type something, add multiple, the most
               recent stays on top, scroll the history." Same rows as Notes. */}
-          <StickyNote notes={notes} onAdd={addStickyNote} busy={stickyBusy} />
+          <StickyNote notes={notes} onAdd={addStickyNote} busy={stickyBusy} onEdit={startNoteEdit} onDelete={deleteNote} />
           <div className="sb-od-header-balance">
             <div className="sb-od-balance-label">Balance due</div>
             <div className={`sb-od-balance-value${balance > 0 ? '' : ' sb-od-balance-clear'}`}>{fmtUSD(balance)}</div>
@@ -3262,24 +3300,9 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             </div>
           </Section>
 
-          {/* 5 — Related job */}
-          <Section id="od-job" title="Related job">
-            {job ? (
-              <>
-                <Field label="Stage" value={jobStage?.label} />
-                <Field label="Next task" value={nra?.label} />
-                <Field label="Blocker" value={pressure.blocker?.label} />
-                <Field label="Target completion" value={order.target_completion_date
-                  ? fmtDate(order.target_completion_date) + (order.target_completion_end_date ? ` – ${fmtDate(order.target_completion_end_date)}` : '') : null} />
-                <Field label="Foundation / install / delivery dates" value={null} hint="scheduler batch data — not loaded this commit" />
-                <div className="sb-od-inline-actions">
-                  <button type="button" className="sb-od-link" onClick={() => onOpenJob?.(job.id)}>Open full Job view →</button>
-                </div>
-              </>
-            ) : (
-              <div className="sb-od-empty-inline">No production job yet — created when the order is signed.</div>
-            )}
-          </Section>
+          {/* Related job card REMOVED (Paul 2026-10-20: "remove related job") —
+              the Status Overview up top carries the stage / next action, and
+              the Design hub button opens the job. */}
 
           {/* 7 — Attachments (aggregated from existing buckets) */}
           <Section id="od-attachments" title="Attachments" span={2}>
@@ -3486,8 +3509,27 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
               <div className="sb-od-note-list">
                 {notes.map(n => (
                   <div key={n.id} className="sb-od-note">
-                    <div className="sb-od-note-body">{n.body}</div>
-                    <div className="sb-od-note-meta">{n.author || 'Staff'} · {fmtDate(n.created_at)}</div>
+                    {noteEdit?.id === n.id ? (
+                      <div className="sb-od-note-editing">
+                        <textarea className="sb-od-note-input" rows={3} autoFocus value={noteEdit.body}
+                          onChange={e => setNoteEdit(d => ({ ...d, body: e.target.value }))}
+                          onKeyDown={e => { if (e.key === 'Escape') setNoteEdit(null) }} />
+                        <div className="sb-od-note-actions">
+                          <button type="button" className="sb-od-btn sb-od-btn-primary" disabled={noteRowBusy === n.id || !(noteEdit.body || '').trim()} onClick={saveNoteEdit}>{noteRowBusy === n.id ? 'Saving…' : 'Save'}</button>
+                          <button type="button" className="sb-od-btn" disabled={noteRowBusy === n.id} onClick={() => setNoteEdit(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="sb-od-note-body">{n.body}</div>
+                        <div className="sb-od-note-meta">{n.author || 'Staff'} · {fmtDate(n.created_at)}
+                          <span className="sb-od-note-links">
+                            <button type="button" className="sb-od-link sb-od-note-link" onClick={() => setNoteEdit({ id: n.id, body: n.body || '' })}>Edit</button>
+                            <button type="button" className="sb-od-link sb-od-note-link sb-od-note-link-del" disabled={noteRowBusy === n.id} onClick={() => deleteNote(n)}>Delete</button>
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -4451,7 +4493,14 @@ const OD_CSS = `
   .sb-od-note { padding: 10px 0; }
   .sb-od-note + .sb-od-note { border-top: 0.5px solid #f1efeb; }
   .sb-od-note-body { font-size: 13.5px; color: #222; white-space: pre-wrap; word-break: break-word; }
-  .sb-od-note-meta { font-size: 11.5px; color: #8a8a85; margin-top: 4px; }
+  .sb-od-note-meta { font-size: 11.5px; color: #8a8a85; margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .sb-od-note-links { display: inline-flex; gap: 10px; }
+  .sb-od-note-link { font-size: 11.5px; }
+  .sb-od-note-link-del { color: #B3261E; }
+  .sb-od-note-editing { display: flex; flex-direction: column; gap: 8px; }
+  .sb-od-note-actions { display: flex; gap: 8px; }
+  .sb-od-sticky-links { display: inline-flex; gap: 8px; margin-left: 8px; }
+  .sb-od-sticky-link { font: inherit; font-size: 11px; color: #7A5A00; background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
 
   /* Email traffic */
   .sb-od-draft-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
