@@ -20,11 +20,11 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   fmtUSD, fmtDate, fmtPhone, properName, customerName,
   rowBalanceDue, rowGrandTotal, rowTotalPaid,
-  sendShopEmail, getEmailSenders, listOrderAttachments,
+  sendShopEmail, getEmailSenders, listOrderAttachments, todayISO,
 } from '../lib/stonebooksData'
 import {
-  STAGES, stageDef, listCollectionLog, addCollectionLog,
-  lastContactOf, lastNoteOf, daysAgo,
+  STAGES, stageDef, listCollectionLog, addCollectionLog, setPromiseToPay,
+  lastContactOf, lastNoteOf, activePromiseOf, promiseMissed, daysAgo,
 } from '../lib/collections'
 import ConfirmSend from './ConfirmSend'
 
@@ -42,11 +42,13 @@ const SORTS = [
   { code: 'balance',   label: 'Balance owed' },
   { code: 'contact',   label: 'Longest since contact' },
   { code: 'scheduled', label: 'Install date' },
+  { code: 'promise',   label: 'Promise date' },
   { code: 'cemetery',  label: 'By cemetery' },
   { code: 'family',    label: 'Family name' },
   { code: 'oldest',    label: 'Oldest contract' },
 ]
 
+const addDaysISO = (iso, n) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + n); return todayISO(d) }
 const familyOf = (o) => {
   const last = (o.primary_lastname || '').trim()
   if (last) return properName(last)
@@ -126,6 +128,8 @@ function balanceTextToHtml(text) {
 export default function CollectBalancesView({ orders, queues, loading, onOpenOrder, onRefreshQueues }) {
   const [log, setLog] = useState(() => new Map())  // Map(order_id → rows desc)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [today, setToday] = useState(() => todayISO())
+  const [promiseDraft, setPromiseDraft] = useState({})   // order id → { date, note }
   const [sort, setSort] = useState('priority')
   const [stageF, setStageF] = useState('all')
   const [q, setQ] = useState('')
@@ -150,6 +154,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
       if (balance <= 0) continue
       const entries = log.get(o.id) || []
       const lc = lastContactOf(entries)
+      const promise = activePromiseOf(entries)
       out.push({
         id: o.id, order: o, name: familyOf(o),
         cemetery: o.cemetery?.name ? properName(o.cemetery.name) : '',
@@ -158,18 +163,19 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
         balance, total: rowGrandTotal(o), paid: rowTotalPaid(o),
         email: (o.customer?.email || '').trim(), phone: o.customer?.phone_primary || '',
         log: entries, lastContact: lc, lastNote: lastNoteOf(entries),
+        promise, promiseMissed: promiseMissed(promise, today),
         days: lc ? daysAgo(lc.created_at, nowMs) : null,
         signedMs: o.signed_at ? new Date(o.signed_at).getTime() : (o.created_at ? new Date(o.created_at).getTime() : 0),
       })
     }
     return out
-  }, [orders, queues, log, nowMs])
+  }, [orders, queues, log, nowMs, today])
 
   const ids = useMemo(() => rows.map(r => r.id).join(','), [rows])
   const loadLog = useCallback(async () => {
     if (!ids) return
     const m = await listCollectionLog(ids.split(',')).catch(() => new Map())
-    setLog(m); setNowMs(Date.now())
+    setLog(m); setNowMs(Date.now()); setToday(todayISO())
   }, [ids])
   useEffect(() => { loadLog() }, [loadLog])   // eslint-disable-line react-hooks/set-state-in-effect
 
@@ -192,7 +198,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
     const norm = q.trim().toLowerCase()
     let list = rows.filter(r => {
       if (stageF !== 'all' && !r.stages.has(stageF)) return false
-      if (touchOnly && r.days != null && r.days < TOUCH_DAYS) return false
+      if (touchOnly && !r.promiseMissed && r.days != null && r.days < TOUCH_DAYS) return false
       if (norm) {
         const hay = `${r.name} ${r.order.order_number || ''} ${r.cemetery} ${customerName(r.order.customer) || ''}`.toLowerCase()
         if (!hay.includes(norm)) return false
@@ -202,7 +208,9 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
     const rank = (r) => stageDef(r.stage)?.rank ?? 9
     const sched = (r) => r.scheduledDate ? new Date(r.scheduledDate + 'T00:00:00').getTime() : Infinity
     const contactKey = (r) => r.lastContact ? new Date(r.lastContact.created_at).getTime() : -Infinity
+    const promiseKey = (r) => r.promise ? new Date(r.promise.promised_for + 'T00:00:00').getTime() : Infinity
     const cmp = {
+      promise:   (a, b) => promiseKey(a) - promiseKey(b) || b.balance - a.balance,
       priority:  (a, b) => rank(a) - rank(b) || sched(a) - sched(b) || b.balance - a.balance,
       balance:   (a, b) => b.balance - a.balance,
       contact:   (a, b) => contactKey(a) - contactKey(b) || b.balance - a.balance,
@@ -215,7 +223,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
     return list
   }, [rows, q, stageF, touchOnly, sort])
 
-  const touchCount = useMemo(() => rows.filter(r => r.days == null || r.days >= TOUCH_DAYS).length, [rows])
+  const touchCount = useMemo(() => rows.filter(r => r.promiseMissed || r.days == null || r.days >= TOUCH_DAYS).length, [rows])
 
   // ── actions ───────────────────────────────────────────────────────────────
   const logCall = async (r) => {
@@ -240,6 +248,24 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
     loadLog()
   }
   const toggleOpen = (id) => setOpen(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  // Promise to pay: the panel's strip. Default date = a week out; a standing
+  // promise seeds its own date so "Update" starts from what they said.
+  const draftFor = (r) => promiseDraft[r.id] || { date: r.promise?.promised_for || addDaysISO(today, 7), note: '' }
+  const openPromise = (r) => {
+    setOpen(s => new Set(s).add(r.id))
+    setPromiseDraft(d => ({ ...d, [r.id]: draftFor(r) }))
+  }
+  const savePromise = async (r) => {
+    const pd = draftFor(r)
+    if (!pd.date || busyId) return
+    setBusyId(r.id)
+    const res = await setPromiseToPay({ orderId: r.id, family: r.name, orderNumber: r.order.order_number, balance: r.balance, promisedFor: pd.date, note: pd.note })
+    setBusyId(null)
+    if (!res.ok) { say(res.error || 'Could not save the promise.'); return }
+    setPromiseDraft(d => ({ ...d, [r.id]: { date: pd.date, note: '' } }))
+    say(`${r.name} promised ${fmtUSD(r.balance)} by ${fmtDate(pd.date)} — reminder task set for that day.`)
+    loadLog()
+  }
 
   const contactText = (r) => {
     if (!r.lastContact) return null
@@ -343,6 +369,11 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                 <div className="sb-col-money">
                   <span className="sb-col-bal">{fmtUSD(r.balance)}</span>
                   <span className="sb-col-sub">{fmtUSD(r.total)} contract · {fmtUSD(r.paid)} paid</span>
+                  {r.promise && (
+                    <span className={`sb-col-promise${r.promiseMissed ? ' missed' : ''}`} title={r.promise.note || ''}>
+                      {r.promiseMissed ? 'Promise missed' : 'Promised by'} {fmtDate(r.promise.promised_for)}
+                    </span>
+                  )}
                 </div>
                 <div className={`sb-col-last sb-col-last-${tone}`}>
                   {r.lastContact ? (
@@ -363,11 +394,31 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                 <div className="sb-col-actions">
                   <button type="button" className="sb-col-btn sb-col-btn-gold" onClick={() => setEmailFor(r)} title="Preview and send a balance request">Request balance</button>
                   <button type="button" className="sb-col-btn" disabled={busyId === r.id} onClick={() => logCall(r)} title="Log a call — updates last contact">Call</button>
+                  <button type="button" className={`sb-col-btn${r.promiseMissed ? ' sb-col-btn-red' : ''}`} onClick={() => openPromise(r)} title="Record the date they promised to pay — a reminder task lands that day">Promise</button>
                   <button type="button" className={`sb-col-btn${isOpen ? ' on' : ''}`} onClick={() => toggleOpen(r.id)}>Notes{r.log.length ? ` ${r.log.length}` : ''}</button>
                 </div>
               </div>
               {isOpen && (
                 <div className="sb-col-panel">
+                  {(() => {
+                    const pd = draftFor(r)
+                    return (
+                      <div className="sb-col-promise-strip">
+                        <span className="sb-col-promise-lab">Promise to pay</span>
+                        {r.promise
+                          ? <span className={`sb-col-promise${r.promiseMissed ? ' missed' : ''}`}>{r.promiseMissed ? 'Missed' : 'Promised'} · {fmtDate(r.promise.promised_for)}{r.promise.note ? ` — ${r.promise.note}` : ''}</span>
+                          : <span className="sb-col-none">no promise on record</span>}
+                        <input type="date" className="sb-pay-input sb-col-promise-date" value={pd.date} min={today}
+                          onChange={e => setPromiseDraft(d => ({ ...d, [r.id]: { ...pd, date: e.target.value } }))} />
+                        <input className="sb-pay-input sb-col-promise-note" placeholder="What they said (optional)" value={pd.note}
+                          onChange={e => setPromiseDraft(d => ({ ...d, [r.id]: { ...pd, note: e.target.value } }))}
+                          onKeyDown={e => { if (e.key === 'Enter') savePromise(r) }} />
+                        <button type="button" className="sb-col-btn sb-col-btn-dark" disabled={busyId === r.id || !pd.date} onClick={() => savePromise(r)}>
+                          {r.promise ? 'Update promise' : 'Save promise'}
+                        </button>
+                      </div>
+                    )
+                  })()}
                   <div className="sb-col-addnote">
                     <input className="sb-pay-input" value={drafts[r.id] || ''} placeholder="Add a note — what was said, what they promised, when to try again"
                       onChange={e => setDrafts(d => ({ ...d, [r.id]: e.target.value }))}
@@ -380,9 +431,11 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                     <ul className="sb-col-log">
                       {r.log.map(e => (
                         <li key={e.id} className={`sb-col-log-${e.kind}`}>
-                          <span className="sb-col-log-kind">{e.kind === 'call' ? 'CALL' : e.kind === 'email' ? 'EMAIL' : e.kind === 'text' ? 'TEXT' : 'NOTE'}</span>
+                          <span className="sb-col-log-kind">{e.kind === 'call' ? 'CALL' : e.kind === 'email' ? 'EMAIL' : e.kind === 'text' ? 'TEXT' : e.kind === 'promise' ? 'PROMISE' : 'NOTE'}</span>
                           <span className="sb-col-log-body">
-                            {e.kind === 'email' ? `Balance request sent${e.sent_to ? ` to ${e.sent_to}` : ''}${e.amount ? ` for ${fmtUSD(e.amount)}` : ''}` : e.kind === 'call' ? `Called about the balance${e.amount ? ` (${fmtUSD(e.amount)} owed)` : ''}` : ''}
+                            {e.kind === 'email' ? `Balance request sent${e.sent_to ? ` to ${e.sent_to}` : ''}${e.amount ? ` for ${fmtUSD(e.amount)}` : ''}`
+                              : e.kind === 'call' ? `Called about the balance${e.amount ? ` (${fmtUSD(e.amount)} owed)` : ''}`
+                              : e.kind === 'promise' ? `Promised ${e.amount ? `${fmtUSD(e.amount)} ` : ''}by ${e.promised_for ? fmtDate(e.promised_for) : '—'}` : ''}
                             {e.note ? (e.kind === 'note' ? e.note : ` — ${e.note}`) : ''}
                           </span>
                           <span className="sb-col-log-when">{fmtDate(e.created_at)}{e.actor ? ` · ${e.actor}` : ''}</span>
@@ -626,6 +679,15 @@ const COLLECT_CSS = `
   .sb-col-btn-gold { background: #9A7209; border-color: #9A7209; color: #fff; }
   .sb-col-btn-gold:hover:not(:disabled) { background: #876307; }
   .sb-col-btn-dark { background: #1e2d3d; border-color: #1e2d3d; color: #fff; }
+  .sb-col-btn-red { color: #B3261E; border-color: #dda9a4; background: #fdf1f0; }
+  .sb-col-promise { font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #1f6b3d; background: #e6f4ec; border: 1px solid #bfe0cb; border-radius: 999px; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .sb-col-promise.missed { color: #B3261E; background: #fdf1f0; border-color: #dda9a4; }
+  .sb-col-promise-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; padding: 8px 10px; border-radius: 8px; background: #fbf3e4; border: 0.5px solid #e9c46a; }
+  .sb-col-promise-lab { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #7A5A00; white-space: nowrap; }
+  .sb-col-promise-strip .sb-col-promise { text-transform: none; letter-spacing: 0; font-weight: 700; font-size: 12px; }
+  .sb-col-promise-date { width: 160px; padding: 7px 10px; font-size: 13px; }
+  .sb-col-promise-note { flex: 1; min-width: 180px; padding: 7px 10px; font-size: 13px; }
+  .sb-col-log-promise .sb-col-log-kind { background: #e6f4ec; color: #1f6b3d; }
   .sb-col-panel { padding: 0 16px 14px 16px; }
   .sb-col-addnote { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   .sb-col-addnote .sb-pay-input { flex: 1; min-width: 0; padding: 8px 11px; font-size: 13px; }

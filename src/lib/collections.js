@@ -20,7 +20,10 @@
 //   line     — on an assembly line, earlier than the blasting queue
 // =============================================================================
 import { supabase } from './supabase'
-import { getInstallList, getCurrentStaffName, logOrderActivity } from './stonebooksData'
+import {
+  getInstallList, getCurrentStaffName, logOrderActivity,
+  addShopTask, updateShopTask, listShopTasksForOrder, todayISO, fmtUSD, fmtDate,
+} from './stonebooksData'
 import { listFloorLines, lineLabel } from './floorLines'
 import { phaseIndex } from './jobComponents'
 
@@ -121,7 +124,7 @@ export async function listCollectionLog(orderIds) {
   const out = new Map()
   for (let i = 0; i < ids.length; i += 150) {
     const { data, error } = await supabase.from('balance_collection_log')
-      .select('id, order_id, kind, note, amount, sent_to, actor, created_at')
+      .select('id, order_id, kind, note, amount, sent_to, actor, created_at, promised_for, task_id')
       .in('order_id', ids.slice(i, i + 150))
       .order('created_at', { ascending: false })
     if (error) { console.warn('[collect] log:', error.message); continue }
@@ -135,18 +138,56 @@ export async function listCollectionLog(orderIds) {
 
 // A call, an email, a text, or a note. Calls/emails/texts move "last contacted
 // for payment"; every kind lands in the order's activity feed too.
-export async function addCollectionLog({ orderId, kind = 'note', note = '', amount = null, sentTo = null }) {
+export async function addCollectionLog({ orderId, kind = 'note', note = '', amount = null, sentTo = null, promisedFor = null, taskId = null }) {
   if (!orderId) return { ok: false, error: 'Missing order' }
   const actor = await getCurrentStaffName().catch(() => null)
-  const row = { order_id: orderId, kind, note: (note || '').trim() || null, amount: amount ?? null, sent_to: sentTo || null, actor: actor || null }
+  const row = {
+    order_id: orderId, kind, note: (note || '').trim() || null, amount: amount ?? null, sent_to: sentTo || null, actor: actor || null,
+    promised_for: promisedFor || null, task_id: taskId || null,
+  }
   const { data, error } = await supabase.from('balance_collection_log').insert(row).select().single()
   if (error) return { ok: false, error: error.message }
-  const label = kind === 'call' ? 'Called about the balance' : kind === 'email' ? 'Balance request emailed' : kind === 'text' ? 'Texted about the balance' : 'Collection note'
+  const label = kind === 'call' ? 'Called about the balance' : kind === 'email' ? 'Balance request emailed' : kind === 'text' ? 'Texted about the balance'
+    : kind === 'promise' ? `Promised to pay by ${promisedFor ? fmtDate(promisedFor) : 'a date'}` : 'Collection note'
   logOrderActivity(orderId, { type: 'change', field: 'Balance', newValue: kind, note: [label, sentTo ? `to ${sentTo}` : null, row.note].filter(Boolean).join(' — '), actor }).catch(() => {})
   return { ok: true, row: data }
+}
+
+// ── Promise to pay (COLLECT-2) ──────────────────────────────────────────────
+// "They said they'd pay by the 24th." One log row with the date, and ONE open
+// reminder task on the order due that day (details.auto = 'promise_to_pay') —
+// a newer promise re-dates the same task instead of stacking a second one.
+// The task lands in the Task Command Center / Today for whoever logged it
+// (the shop's "I am" person), Admin department when nobody is picked.
+export const PROMISE_AUTO = 'promise_to_pay'
+export async function setPromiseToPay({ orderId, family, orderNumber, balance = 0, promisedFor, note = '' }) {
+  if (!orderId) return { ok: false, error: 'Missing order' }
+  if (!promisedFor) return { ok: false, error: 'Pick the date they promised.' }
+  const staff = await getCurrentStaffName().catch(() => null)
+  const title = `Promised balance due — ${family || 'order'}${orderNumber ? ` (${orderNumber})` : ''} · ${fmtUSD(balance)} promised by ${fmtDate(promisedFor)}`.slice(0, 300)
+  const details = { auto: PROMISE_AUTO, amount: balance, promised_for: promisedFor, note: (note || '').trim() || null }
+  const existing = (await listShopTasksForOrder(orderId).catch(() => []))
+    .find(t => t.details?.auto === PROMISE_AUTO && t.status !== 'done')
+  let taskId = existing?.id || null
+  if (existing) {
+    const r = await updateShopTask(existing.id, { title, dueDate: promisedFor, details })
+    if (!r.ok) return r
+  } else {
+    const r = await addShopTask({
+      title, assignee: staff || 'Admin', assigneeKind: staff ? 'person' : 'department',
+      orderId, dueDate: promisedFor, createdBy: staff, taskedBy: staff, taskType: 'order', details,
+    })
+    if (!r.ok) return r
+    taskId = r.task?.id || r.row?.id || null
+  }
+  return addCollectionLog({ orderId, kind: 'promise', note, amount: balance, promisedFor, taskId })
 }
 
 export const CONTACT_KINDS = new Set(['call', 'email', 'text'])
 export const lastContactOf = (rows) => (rows || []).find(r => CONTACT_KINDS.has(r.kind)) || null
 export const lastNoteOf = (rows) => (rows || []).find(r => r.kind === 'note' && r.note) || null
+// The standing promise = the newest promise row (the balance still owing is
+// what keeps it alive — a paid order leaves the list and the promise with it).
+export const activePromiseOf = (rows) => (rows || []).find(r => r.kind === 'promise' && r.promised_for) || null
+export const promiseMissed = (p, today = todayISO()) => !!p?.promised_for && p.promised_for < today
 export const daysAgo = (iso, nowMs = Date.now()) => iso ? Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 86400000)) : null
