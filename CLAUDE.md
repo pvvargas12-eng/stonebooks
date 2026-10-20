@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Sprint PERMIT-QUICK (2026-10-20): Make permit from the order, blank template print, EXISTING CUSTOMER badge, mdy $595
+
+Paul's four-line punch list, one commit (03117f9).
+- **Make permit → (OrderDetail › Permit & Foundation):** the Permit Hub's `sb-open-permit-builder` window event now carries `{ orderId }`; Stonebooks keeps it in `permitBuilderFor` and hands it to `PermitBuilderTab` as `openForOrderId` (consumed once per id via a ref). The tab RESUMES the order's existing `permit_docs` row when there is one (`listPermitDocs({ orderId })`, newest first), else seeds a doc from the single template that matches the cemetery (`templateMatchesCemetery`), else lands on Build with the order searched and its template picker open — `HomeView` is keyed on the focus order and takes `q` / `pickFor` as INITIAL state, no effect (React 19 set-state-in-effect lint). Want a second permit for an order that already has one? Back → Build as before.
+- **Print blank copy (template editor, on the Also-for row under Save template):** `exportPermitPdf` over the pages/fields AS THEY SIT IN THE EDITOR — fixed text and pre-ticked checks kept, every autofill box empty — opened as a bloburl for the print dialog. Nothing is saved or attached.
+- **EXISTING CUSTOMER badge (Inquiries, card + table, next to the name):** `findExistingCustomers(rows)` in `src/lib/inquiries.js` = ONE targeted query per load (`ilikeAnyOf('email', …)` + `in('phone_primary', …)`, never the whole customer book; both filter shapes runtime-verified 200 against prod). A customer only counts when `customers.created_at` is BEFORE the inquiry — the lead minted from the inquiry itself (Done → Leads / Sales email) creates a customer with the same email and must not read as a repeat. Hover shows the book name.
+- **Inscription Month/day/year tier 550 → 595** in `INSCRIPTION_TIERS` (orderRates.js) and the SalesMode `lett-mdy` add-on. Saved contracts keep their stored line items.
+- Repo gotcha learned: `Stonebooks.jsx` is CRLF while most `src/` files are LF — exact-string patch scripts must normalize per file or they silently match nothing.
+
 ## Sprint RESET-TAG-1 (2026-10-19): the yard reset + numbered stones + "Die is here" by family
 
 Paul re-founds the stone inventory from scratch: he walks the yard zone by zone, paints a permanent running number (001, 002, …) on a sawn face of every stone, tapes its status (BLUE free / GREEN sold with family name + order number / RED problem) and records each stone on his phone. The old list (~225 available + 75 allocated rows) gets OUT of the way but is NEVER deleted.
