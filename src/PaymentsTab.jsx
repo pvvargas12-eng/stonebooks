@@ -1086,14 +1086,16 @@ function ZelleReceiptEmailModal({ alert, orders, onClose, onSent }) {
       || null
   }, [receiptOrder, alert])
 
-  const balance = ord ? rowBalanceDue(ord) : 0
   const firstName = ord?.customer?.first_name || ''
   const [to, setTo] = useState(ord?.customer?.email || '')
   const [subject, setSubject] = useState(`Payment receipt — ${ord?.order_number || ''}`.trim())
   const [body, setBody] = useState(() => {
     const amt = payment ? fmtUSD(Number(payment.amount) || 0) : zAmt(alert)
     const when = alert.sent_date ? ` received ${fmtDate(alert.sent_date)}` : ''
-    return `Dear ${firstName || 'friend'},\n\nThank you for your Zelle payment of ${amt}${when}. Your receipt is attached.\n\n${balance > 0 ? `The remaining balance on the order is ${fmtUSD(balance)}.` : 'This order is paid in full — thank you.'}`
+    // RECEIPT-TEXT (Paul 2026-10-20): NO balance sentence — a customer who
+    // had just made her final payment read "the remaining balance is $2,500"
+    // and was very upset. The email thanks them for the payment, full stop.
+    return `Dear ${firstName || 'friend'},\n\nThank you for your Zelle payment of ${amt}${when}. Your receipt is attached.`
   })
   const [gate, setGate] = useState(null)   // { filename, contentBase64 }
   const [busy, setBusy] = useState(false)

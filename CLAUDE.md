@@ -11,6 +11,13 @@ Paul: "another tab inside payments next to zelle reconcile for collecting balanc
 - Verified on the dev server through a temporary `/smoke-collect` route (removed before commit) over nine stubbed orders across every stage: tiles summed per stage with IN REACH counting each order once; Priority put the install list first with the scheduled stone on top; Balance owed re-sorted; the Blasting queue tile filtered; Notes opened inline; the composer prefilled To/subject/message and the gate rendered the recipient + formatted letter; Cancel paths clean; long cemetery names and the 24px total ellipsize instead of leaking (the IN REACH tile spans two columns). Lint + build green. The live writes (log rows, the actual send) sit behind the auth wall — Paul's first click.
 - **Gotcha for next time:** `engineRowGrandTotal` returns 0 until `lib/orderRates` has loaded (it registers the engine) — PaymentsTab gets it through SalesMode; a standalone mount of anything that prices rows must import orderRates itself.
 
+## Fix RECEIPT-TEXT (2026-10-20): the Zelle receipt email no longer talks about a remaining balance
+
+Paul: "when sending receipts this was a huge issue — the customer was very upset, she made the final payment and it said remaining balance is $xxxx. REMOVE THAT LINE, just say thank you for your payment."
+
+- `ZelleReceiptEmailModal` (PaymentsTab) body is now exactly: "Dear {first}, Thank you for your Zelle payment of $X received {date}. Your receipt is attached." The `remaining balance on the order is …` / `paid in full` sentence is gone (and the `balance` read with it). Subject and the attached receipt PDF are unchanged.
+- NOTE for Paul: the attached receipt PDF (`generateReceiptPDF`, SalesMode) still prints the running totals and, when the order's math shows money owed, a closing line "The remaining balance of $X is due before carving work begins" plus the Zelle block. If the email case above was a final payment, the ORDER's total disagrees with what the customer was told — worth a look at that order's line items. Not changed here.
+
 ## Fix OD-NOTES + NO-RELATED-JOB (2026-10-20): notes edit and delete, Related job card gone
 
 Paul: "remove related job" + "must be able to edit and delete notes."
