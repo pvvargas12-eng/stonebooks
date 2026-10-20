@@ -37,6 +37,44 @@ export const inqMessage = (r) => (r.parsed?.message || r.parsed?.comments || r.p
 export const inqFormKind = (r) => /catalog/i.test(r.form_name || '') ? 'catalog' : 'contact'
 export const inqDisplayName = (r) => inqName(r) || inqEmail(r) || (inqPhone(r) ? `(${inqPhone(r).slice(0, 3)}) ${inqPhone(r).slice(3, 6)}-${inqPhone(r).slice(6)}` : 'Unknown')
 
+// ── Existing customer? (Paul 2026-10-20: "if an existing customer contacts us
+// through the website have a label next to their name") ─────────────────────
+// Match the inquiry's email or phone against the customer book — ONE targeted
+// query for the whole list, never the full table. A customer only counts when
+// it existed BEFORE the inquiry came in: the lead minted from this very
+// inquiry (Done → Leads / Sales email) creates a customer with the same email,
+// and that must not read as a repeat customer. Returns Map(inquiry id → {
+// id, name }).
+const CUST_MATCH_COLS = 'id, first_name, last_name, email, phone_primary, created_at'
+export async function findExistingCustomers(rows) {
+  const out = new Map()
+  const list = (rows || []).filter(Boolean)
+  const emails = [...new Set(list.map(r => inqEmail(r).toLowerCase()).filter(e => e.includes('@')))]
+  const phones = [...new Set(list.map(inqPhone).filter(p => p.length === 10))]
+  if (!emails.length && !phones.length) return out
+  const qs = []
+  if (emails.length) qs.push(supabase.from('customers').select(CUST_MATCH_COLS).ilikeAnyOf('email', emails).limit(400))
+  if (phones.length) qs.push(supabase.from('customers').select(CUST_MATCH_COLS).in('phone_primary', phones).limit(400))
+  const res = await Promise.all(qs.map(q => q.then(r => r.data || []).catch(() => [])))
+  const custs = res.flat()
+  if (!custs.length) return out
+  const byEmail = new Map(), byPhone = new Map()
+  for (const c of custs) {
+    const e = String(c.email || '').trim().toLowerCase()
+    const p = String(c.phone_primary || '').replace(/\D/g, '').slice(0, 10)
+    if (e && !byEmail.has(e)) byEmail.set(e, c)
+    if (p.length === 10 && !byPhone.has(p)) byPhone.set(p, c)
+  }
+  for (const r of list) {
+    const c = byEmail.get(inqEmail(r).toLowerCase()) || byPhone.get(inqPhone(r)) || null
+    if (!c) continue
+    if (c.created_at && r.created_at && new Date(c.created_at) >= new Date(r.created_at)) continue
+    const name = [c.first_name, c.last_name].filter(Boolean).join(' ').trim()
+    out.set(r.id, { id: c.id, name })
+  }
+  return out
+}
+
 export async function listInquiries({ status = 'new', limit = 200 } = {}) {
   let q = supabase.from('website_leads').select(INQ_SELECT).order('created_at', { ascending: false }).limit(status === 'all' ? 1000 : limit)
   if (status === 'new') q = q.eq('inquiry_status', 'new')

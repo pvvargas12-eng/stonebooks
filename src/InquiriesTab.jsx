@@ -18,7 +18,7 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import {
   listInquiries, getInquiryCounts, getInquiryFunnel, updateInquiry, markInquiryEmailed,
-  listInquiryEmails, msgAt, interestLabel,
+  listInquiryEmails, msgAt, interestLabel, findExistingCustomers,
   INTERESTS, inqName, inqEmail, inqPhone, inqMessage, inqFormKind, inqDisplayName,
 } from './lib/inquiries'
 import { sendShopEmail, getCurrentStaffName, addShopTask, bulkArchiveOrders, fmtUSD, fmtPhone, fmtDate, todayISO, getOrderById } from './lib/stonebooksData'
@@ -201,12 +201,15 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
   // keep seeing the email chains"). Loaded for every card on the Emailed
   // view, on demand elsewhere.
   const [threads, setThreads] = useState(() => new Map())
+  // Repeat customers (inquiry id → { id, name }) — the EXISTING CUSTOMER badge.
+  const [existing, setExisting] = useState(() => new Map())
   const [expanded, setExpanded] = useState(() => new Set())   // message ids showing the full body
   const [salesFor, setSalesFor] = useState(null)             // { inquiry, order } → SalesEmailModal
 
   const load = useCallback(async () => {
     const [list, c] = await Promise.all([listInquiries({ status }), getInquiryCounts()])
     setRows(list); setCounts(c); setNowMs(Date.now())
+    findExistingCustomers(list).then(setExisting).catch(() => {})
     if (status === 'emailed' && list.length) {
       const pairs = await Promise.all(list.slice(0, 60).map(r => listInquiryEmails(r).then(ms => [r.id, ms]).catch(() => [r.id, []])))
       setThreads(new Map(pairs))
@@ -328,7 +331,7 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                   {shown.map(r => (
                     <tr key={r.id} className={r.order_id ? 'click' : ''} onClick={() => r.order_id && onOpenOrderDetail?.(r.order_id)}>
                       <td className="mono">{fmtDate(r.created_at)}</td>
-                      <td className="b">{inqDisplayName(r)}</td>
+                      <td className="b">{inqDisplayName(r)}{existing.has(r.id) && <span className="sb-inq-existing" title={existing.get(r.id)?.name ? `In the customer book as ${existing.get(r.id).name}` : 'Already in the customer book'}>Existing customer</span>}</td>
                       <td><span className={`sb-inq-form sb-inq-form-${inqFormKind(r)}`}>{inqFormKind(r) === 'catalog' ? 'Catalog' : 'Contact'}</span></td>
                       <td>{interestLabel(r.interest) || '—'}</td>
                       <td><span className={`sb-inq-st sb-inq-st-${r.inquiry_status}`}>{STATUS_LABEL[r.inquiry_status] || r.inquiry_status}</span></td>
@@ -350,6 +353,9 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
               <article key={r.id} className={`sb-inq-card sb-inq-card-${r.inquiry_status}`}>
                 <div className="sb-inq-row">
                   <span className="sb-inq-name">{inqDisplayName(r)}</span>
+                  {existing.has(r.id) && (
+                    <span className="sb-inq-existing" title={existing.get(r.id)?.name ? `In the customer book as ${existing.get(r.id).name}` : 'Already in the customer book'}>Existing customer</span>
+                  )}
                   <span className={`sb-inq-form sb-inq-form-${kind}`}>{kind === 'catalog' ? 'Catalog popup' : 'Contact page'}</span>
                   {r.first_touch_at && <span className="sb-inq-sent">Emailed {new Date(r.first_touch_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}{r.first_touch_by ? ` · ${r.first_touch_by}` : ''}</span>}
                   {r.order_id && <button type="button" className="sb-inq-leadlink" onClick={() => onOpenOrderDetail?.(r.order_id)}>Open lead →</button>}
@@ -511,6 +517,7 @@ const CSS = `
   .sb-inq-name { font: 700 15px/1.2 inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .sb-inq-form { font: 700 10px/1 inherit; letter-spacing: .06em; text-transform: uppercase; color: #185F8F; background: rgba(29,111,168,.12); border-radius: 999px; padding: 3px 8px; white-space: nowrap; }
   .sb-inq-form-contact { color: #6B6455; background: #F5F1E6; border: 1px solid #E4DCC8; }
+  .sb-inq-existing { font: 800 10px/1 inherit; letter-spacing: .06em; text-transform: uppercase; color: #7A5A00; background: #FBF1D2; border: 1px solid #E9C46A; border-radius: 999px; padding: 3px 8px; white-space: nowrap; margin-left: 6px; vertical-align: middle; }
   .sb-inq-sent { font: 700 10px/1 inherit; letter-spacing: .04em; text-transform: uppercase; color: #1d7a55; background: #e7f4ec; border-radius: 5px; padding: 3px 7px; white-space: nowrap; }
   .sb-inq-leadlink { font: 700 11px/1 inherit; font-family: inherit; color: #1d4ed8; background: none; border: none; padding: 0; cursor: pointer; }
   .sb-inq-when { margin-left: auto; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; color: #8a8472; white-space: nowrap; }

@@ -51,7 +51,7 @@ export const BASE_POLISH_MARGIN_PER_FOOT  = 55     // 2″ polished margin — P
 // inscription.tier stores the chosen code; computeFormLineItems adds the base.
 export const INSCRIPTION_TIERS = [
   { code: 'full', label: 'Full name & dates', price: 695 },
-  { code: 'mdy',  label: 'Month, day & year', price: 550 },
+  { code: 'mdy',  label: 'Month, day & year', price: 595 },
   { code: 'year', label: 'Year only',         price: 495 },
 ]
 

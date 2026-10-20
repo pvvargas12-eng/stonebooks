@@ -54,8 +54,11 @@ function SizeControls({ value, onDelta, onSet }) {
   )
 }
 
-export default function PermitBuilderTab({ onOpenOrderDetail }) {
+export default function PermitBuilderTab({ onOpenOrderDetail, openForOrderId = null, onConsumeOpenFor }) {
   const [view, setView] = useState({ name: 'home' })
+  // MAKE-PERMIT (2026-10-20): OrderDetail landed us here for ONE order —
+  // HomeView gets it as the focus (search prefilled, template picker open).
+  const [focusOrder, setFocusOrder] = useState(null)
   const [templates, setTemplates] = useState([])
   const [docs, setDocs] = useState([])
   const [orders, setOrders] = useState([])
@@ -90,6 +93,35 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
     if (!r.ok) { say(r.error, true); return }
     setView({ name: 'doc', id: r.doc.id })
   }
+
+  // "Make permit" from an order: resume the permit already built for it, or
+  // seed one from the cemetery's template when exactly one fits; otherwise
+  // land on Build with the order in focus. Each order id is handled once.
+  const openForHandled = useRef(null)
+  useEffect(() => {
+    if (!openForOrderId || openForHandled.current === openForOrderId) return
+    openForHandled.current = openForOrderId
+    ;(async () => {
+      const [t, o, d] = await Promise.all([
+        listPermitTemplates(),
+        listAllOrders({ archived: false }),
+        listPermitDocs({ orderId: openForOrderId, limit: 3 }),
+      ])
+      onConsumeOpenFor?.()
+      const order = (o || []).find(x => x.id === openForOrderId)
+      if (!order) { say('Could not find that order in the open orders.', true); return }
+      const existing = (d || [])[0]
+      if (existing) {
+        say(`Opened the permit already built for ${properName(order.primary_lastname || customerName(order.customer)) || 'this order'}.`)
+        setView({ name: 'doc', id: existing.id })
+        return
+      }
+      const tpls = (t || []).filter(tp => templateMatchesCemetery(tp, order.cemetery_id))
+      if (tpls.length === 1) { await openDocForOrder(order, tpls[0]); return }
+      setFocusOrder(order)
+      if (tpls.length === 0) say(`No template for ${order.cemetery?.name || 'this cemetery'} yet — create one on the right, or hit Upload to type over the permit file itself.`, true)
+    })()
+  }, [openForOrderId])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // "Upload a permit and edit over it" (Paul 2026-07-22): a one-off doc that
   // carries its OWN pages (data.pages, no template) — the doc editor's extras/
@@ -152,9 +184,9 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
         <PermitLogView onOpenOrderDetail={onOpenOrderDetail} />
       )}
       {view.name === 'home' && (
-        <HomeView
+        <HomeView key={focusOrder?.id || 'home'}
           templates={templates} docs={docs} orders={orders} cemeteries={cemeteries}
-          uploadBusy={uploadBusy}
+          uploadBusy={uploadBusy} focusOrder={focusOrder}
           onOpenTemplate={(id) => setView({ name: 'template', id })}
           onOpenDoc={(id) => setView({ name: 'doc', id })}
           onBuild={openDocForOrder}
@@ -196,13 +228,18 @@ export default function PermitBuilderTab({ onOpenOrderDetail }) {
 
 // ── HOME ────────────────────────────────────────────────────────────────────
 
-function HomeView({ templates, docs, orders, cemeteries, uploadBusy, onOpenTemplate, onOpenDoc, onBuild, onUploadDoc, onCreateTemplate, onDeleteDoc, say }) {
-  const [q, setQ] = useState('')
+function HomeView({ templates, docs, orders, cemeteries, uploadBusy, focusOrder = null, onOpenTemplate, onOpenDoc, onBuild, onUploadDoc, onCreateTemplate, onDeleteDoc, say }) {
+  // Arrived via "Make permit" with no single template to auto-pick: the
+  // search starts on that order with its template choice open, so the next
+  // click builds. The parent keys HomeView on the focus order → fresh state.
+  const [q, setQ] = useState(() => focusOrder
+    ? (focusOrder.primary_lastname || customerName(focusOrder.customer) || String(focusOrder.order_number || ''))
+    : '')
   const [docQ, setDocQ] = useState('')
   const [newOpen, setNewOpen] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [newCem, setNewCem] = useState('')
-  const [pickFor, setPickFor] = useState(null)   // order whose template choice is open
+  const [pickFor, setPickFor] = useState(focusOrder?.id || null)   // order whose template choice is open
   const upRef = useRef(null)                     // hidden input for per-order Upload
   const upForRef = useRef(null)                  // which order the pick belongs to
 
@@ -484,6 +521,25 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
   }
   const cemName = (cid) => (cemeteries || []).find(c => c.id === cid)?.name || 'Unknown cemetery'
 
+  // Print a BLANK copy of this form (Paul 2026-10-20) — the pages as they sit
+  // in the editor, fixed text and pre-ticked checks kept, every autofill box
+  // empty. Opens in the browser's PDF viewer so Print is one keystroke away.
+  const printBlank = async () => {
+    if (pages.length === 0) { say('Upload the form pages first.', true); return }
+    setBusy(true)
+    try {
+      const values = {}
+      for (const f of fields) {
+        if (f.kind === 'check')      values[f.id] = { on: !!f.on }
+        else if (f.kind === 'fixed') values[f.id] = { text: f.text || '' }
+        else                         values[f.id] = { text: '' }
+      }
+      const d = await exportPermitPdf({ template: { ...tpl, pages, fields }, docData: { values, extras: [], layout: null, dims: [] }, returnDoc: true })
+      window.open(d.output('bloburl'), '_blank')
+    } catch (e) { say(e?.message || 'Could not open the print view.', true) }
+    setBusy(false)
+  }
+
   if (!tpl) return <div className="pbt-empty" style={{ padding: 30 }}>Loading…</div>
 
   return (
@@ -528,6 +584,10 @@ function TemplateEditor({ id, cemeteries, say, onBack }) {
             .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <span className="pbt-hint" style={{ marginTop: 0 }}>Save the template to keep changes.</span>
+        <button type="button" className="pbt-btn pbt-btn-quiet" style={{ marginLeft: 'auto', flexShrink: 0 }}
+          title="Open a blank copy of this form for printing" onClick={printBlank} disabled={busy}>
+          Print blank copy
+        </button>
       </div>
 
       {delOpen && (

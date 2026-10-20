@@ -359,9 +359,12 @@ export default function Stonebooks() {
   const [ordersQueue, setOrdersQueue] = useState(null)   // Workflow Hubs → Orders pre-filter
 
   // Permit Hub → Permit Builder deep link. A window event instead of threading
-  // a prop through JobsTab → JobsDepartmentView → PermitHub.
+  // a prop through JobsTab → JobsDepartmentView → PermitHub. OrderDetail's
+  // "Make permit" sends the same event with { orderId } — the builder opens
+  // straight on that order (MAKE-PERMIT, 2026-10-20).
+  const [permitBuilderFor, setPermitBuilderFor] = useState(null)
   useEffect(() => {
-    const go = () => setTab('permitbuilder')
+    const go = (e) => { setPermitBuilderFor(e?.detail?.orderId || null); setTab('permitbuilder') }
     window.addEventListener('sb-open-permit-builder', go)
     return () => window.removeEventListener('sb-open-permit-builder', go)
   }, [])
@@ -811,7 +814,7 @@ export default function Stonebooks() {
 {tab === 'orders'    && <OrdersTab onOpenSales={() => openSales()} onOpenOrder={openSales} onNewOrder={() => openOrderForm(null)} onEditOrder={(id) => openOrderForm(id)} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} onOpenHub={(hubCode, jobId) => { setSelectedHub(user?.id, hubCode); if (jobId) setSelectedJobId(jobId); setTab('jobs') }} initialQueue={ordersQueue} onConsumeInitialQueue={() => setOrdersQueue(null)} initialSelectedId={orderDetailId} onConsumeInitialSelected={() => setOrderDetailId(null)} initialAction={orderDetailAction} onConsumeInitialAction={() => setOrderDetailAction(null)} returnTo={orderDetailReturn} onReturn={() => { const r = orderDetailReturn; setOrderDetailReturn(null); setOrderDetailId(null); if (r?.tab) setTab(r.tab) }} />}
 {tab === 'cemetery-orders' && <CemeteryOrdersTab onNewOrder={openCemeteryNew} onResumeDraft={openCemeteryResume} onEditOrder={openCemeteryEdit} onOpenJob={(id) => { setSelectedJobId(id); setTab('jobs') }} initialSelectedId={selectedCemeteryOrderId} onConsumeInitialSelected={() => setSelectedCemeteryOrderId(null)} staffName={profile?.display_name} />}
 {tab === 'jobs'      && <JobsTab userId={user?.id} selectedJobId={selectedJobId} setSelectedJobId={setSelectedJobId} initialQueue={pendingQueue} onConsumeInitialQueue={() => setPendingQueue(null)} onOpenOrder={openSales} onOpenOrderDetail={(id, action) => { setOrderDetailId(id); if (action && action !== 'production') setOrderDetailAction(action); setOrderDetailReturn({ label: action === 'design' ? 'Design hub' : action === 'production' ? 'Production floor' : 'Jobs', tab: 'jobs' }); setTab('orders') }} onOpenCustomer={(id) => { setSelectedCustomerId(id); setTab('customers') }} onSwitchTab={setTab} onOpenQueue={(q) => { setOrdersQueue(q); setTab('orders') }} onEditOrder={(id) => openOrderForm(id)} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
-{tab === 'permitbuilder' && <PermitBuilderTab onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Permit Builder', tab: 'permitbuilder' }); setTab('orders') }} />}
+{tab === 'permitbuilder' && <PermitBuilderTab openForOrderId={permitBuilderFor} onConsumeOpenFor={() => setPermitBuilderFor(null)} onOpenOrderDetail={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Permit Builder', tab: 'permitbuilder' }); setTab('orders') }} />}
 {tab === 'cemeteries' && <CemeteriesTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Cemeteries', tab: 'cemeteries' }); setTab('orders') }} />}
 {tab === 'scheduler' && <SchedulerTab user={user} profile={profile} onOpenJob={openJobSmart} onOpenOrder={openSales} onSwitchTab={setTab} />}
 {/* Calendar (CAL-2, 2026-07-22) — the dedicated owner calendar: layer filters,

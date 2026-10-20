@@ -3189,6 +3189,16 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                 {FDN_STATUS.map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
               </select>
             } />
+            {/* Make permit (Paul 2026-10-20): straight into Permit Builder ON
+                THIS ORDER — the builder resumes the permit already built for
+                it, or seeds a new one from the cemetery's template. Same window
+                event the Permit Hub uses, now carrying the order. */}
+            <div className="sb-od-inline-actions">
+              <button type="button" className="sb-od-btn"
+                onClick={() => window.dispatchEvent(new CustomEvent('sb-open-permit-builder', { detail: { orderId: order.id } }))}>
+                Make permit →
+              </button>
+            </div>
           </Section>
 
           {/* 5 — Related job */}

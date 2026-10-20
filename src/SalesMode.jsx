@@ -951,7 +951,7 @@ const ADD_ONS_CATALOG = [
 
   // Lettering (mainly for inscription services on existing stones)
   { code: 'lett-year',      label: 'Lettering: Year Only',       category: 'Lettering', price: 495 },
-  { code: 'lett-mdy',       label: 'Lettering: Month/Day/Year',  category: 'Lettering', price: 550 },
+  { code: 'lett-mdy',       label: 'Lettering: Month/Day/Year',  category: 'Lettering', price: 595 },
   { code: 'lett-full',      label: 'Lettering: Full Inscription',category: 'Lettering', price: 695 },
   // July 2026 sheet: Panel $195 (a sunk / flush panel on the stone).
   { code: 'panel',          label: 'Panel',                      category: 'Lettering', price: 195 },
