@@ -308,20 +308,37 @@ export const BRONZE_SIZES = [
 // totals never move underneath them.
 export const BRONZE_BACKER_PRICE = 489
 
-// ── Granite backers (Paul 2026-07-28) ───────────────────────────────────────
+// ── Granite backers (Paul 2026-07-28; prices from the July 2026 sheet,
+// Paul 2026-10-21: "the bronze prices are wrong") ────────────────────────────
 // Every bronze plate rides a matched granite backer. Prices are owner-editable
-// per size in Settings → Pricing (bronzeBackerPrices) — "typically the backer
-// has a 225 charge" seeds every row; the table is mutated in place by the
-// pricing config like every other rate table.
+// per size in Settings → Pricing (bronzeBackerPrices); the table is mutated in
+// place by the pricing config like every other rate table. Sheet column:
+// 24x12 → $230 · 24x14 → $235 · Lawn Crypt → $275 · 44x14 → $400. The 28x16
+// and 36x13 plates have no sheet row — Paul: price their backers like the next
+// size up ($400).
 export const BRONZE_BACKERS = [
-  { code: '28x16', label: '28″ × 16″', price: 225 },
-  { code: '28x18', label: '28″ × 18″', price: 225 },
-  { code: '32x20', label: '32″ × 20″', price: 225 },
-  { code: '40x17', label: '40″ × 17″', price: 225 },
-  { code: '42x18', label: '42″ × 18″', price: 225 },
-  { code: '48x18', label: '48″ × 18″', price: 225 },
-  { code: '20x28', label: '20″ × 28″ (lawn crypt)', price: 225 },
+  { code: '28x16', label: '28″ × 16″', price: 230 },
+  { code: '28x18', label: '28″ × 18″', price: 235 },
+  { code: '32x20', label: '32″ × 20″', price: 400 },
+  { code: '40x17', label: '40″ × 17″', price: 400 },
+  { code: '42x18', label: '42″ × 18″', price: 400 },
+  { code: '48x18', label: '48″ × 18″', price: 400 },
+  { code: '20x28', label: '20″ × 28″ (lawn crypt)', price: 275 },
 ]
+// "Bases add 4″ or more: +$50" on the sheet — Paul 2026-10-21: it is $60 now,
+// and it is an UPSIZE surcharge: charged only when the backer picked is 4″ or
+// more bigger (either way) than the plate's standard match. Owner-editable
+// (Settings → Pricing, bronzeBackerUpsize). Custom-typed backers carry their
+// own typed price and never get it automatically.
+export const BRONZE_RATES = { backerUpsize: 60 }
+const backerDims = (code) => { const m = /^(\d+)x(\d+)$/.exec(String(code || '')); return m ? [Number(m[1]), Number(m[2])] : null }
+export function bronzeBackerUpsized(plateCode, backerCode) {
+  const match = BRONZE_BACKER_MATCH[plateCode]
+  if (!match || !backerCode || backerCode === match) return false
+  const a = backerDims(backerCode), b = backerDims(match)
+  if (!a || !b) return false
+  return (a[0] - b[0] >= 4) || (a[1] - b[1] >= 4)
+}
 // Plate → its matched backer. 36×13 companions take 40×17 OR 42×18 — the match
 // autofills 40×17 and the dropdown offers the alternative.
 export const BRONZE_BACKER_MATCH = {
@@ -381,6 +398,10 @@ function bronzeBaseItems(order) {
         amount: bk ? bk.price : (Number(b.backerCustomPrice) || 225),
         editable: true,
       })
+      // Upsize surcharge — a standard backer 4″ or more over the plate's match.
+      if (bk && !nonMarker && bronzeBackerUpsized(b.size, b.backerSize)) {
+        items.push({ code: 'bronze-backer-upsize', label: 'Backer upsize — 4″ or more over standard', amount: BRONZE_RATES.backerUpsize, editable: true })
+      }
     } else {
       // Legacy boolean-only backer — keeps the historical flat price so
       // pre-existing orders never reprice underneath Paul.
@@ -775,6 +796,7 @@ function snapshotPricingConfig() {
     baseSizePrices: Object.fromEntries(BASE_SIZES.map(b => [b.code, b.price])),
     addOnPrices: Object.fromEntries(ADD_ONS_CATALOG.filter(a => !a.custom).map(a => [a.code, a.price])),
     bronzeBackerPrices: Object.fromEntries(BRONZE_BACKERS.map(b => [b.code, b.price])),
+    bronzeBackerUpsize: BRONZE_RATES.backerUpsize,
   }
 }
 
@@ -843,6 +865,7 @@ function applyConfigValues(config, skipNull) {
   if (config.baseSizePrices) BASE_SIZES.forEach(b => { if (ok(config.baseSizePrices[b.code])) b.price = num(config.baseSizePrices[b.code]) })
   if (config.addOnPrices) ADD_ONS_CATALOG.forEach(a => { if (ok(config.addOnPrices[a.code])) a.price = num(config.addOnPrices[a.code]) })
   if (config.bronzeBackerPrices) BRONZE_BACKERS.forEach(b => { if (ok(config.bronzeBackerPrices[b.code])) b.price = num(config.bronzeBackerPrices[b.code]) })
+  if (ok(config.bronzeBackerUpsize)) BRONZE_RATES.backerUpsize = num(config.bronzeBackerUpsize)
   // INSCRIPTION-PRICING-SYNC — the owner edits inscription prices under
   // "Inscription tiers" (INSCRIPTION_TIERS: full/mdy/year), but the wizard
   // prices inscriptions via the duplicate lett-* Lettering add-ons. Mirror the

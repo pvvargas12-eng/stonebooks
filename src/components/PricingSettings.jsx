@@ -129,6 +129,9 @@ export default function PricingSettings({ user, canEdit = false }) {
         {BRONZE_BACKERS.map(b => (
           <Num key={b.code} label={`Backer ${b.label}`} value={val(`bronzeBackerPrices.${b.code}`)} onChange={v => set(`bronzeBackerPrices.${b.code}`, v)} />
         ))}
+        {/* The sheet's "+$50" column — Paul 2026-10-21: $60, charged only when the
+            backer picked is 4″ or more over the plate's standard match. */}
+        <Num label="Backer upsize — 4″ or more over the standard match" value={val('bronzeBackerUpsize')} onChange={v => set('bronzeBackerUpsize', v)} />
       </Group>
 
       {/* Color premiums moved to Settings → Sales Options (sales_options table
