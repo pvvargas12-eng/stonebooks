@@ -26,7 +26,7 @@ import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TR
 // Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
 // stonebooks field to view the lines — active then other ones"). Read-only
 // on the phone: the strip + the L1 #07 tags; building lives on the desktop.
-import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem } from '../lib/floorLines'
+import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem, moveStoneToNextLine } from '../lib/floorLines'
 
 const LINE_TONE = {
   ready: { bg: 'transparent', bd: '#2d7a4f', fg: '#1d7a55' },
@@ -197,27 +197,38 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
       async () => { if (full) await addStonesToLine(line.id, [full], { by: actor }) })
   }
 
-  const advance = (c) => {
+  // `pieces` = every die of the order at this step (a double die has two) —
+  // one card, every verb moves them together (Paul 2026-10-21: no duplicates).
+  const each = (pieces, fn) => async () => {
+    let r = null
+    for (const p of pieces) { r = await fn(p); if (r && r.ok === false) return r }
+    return r || { ok: true }
+  }
+  const advance = (c, pieces = [c]) => {
     const next = nextPhase(c.track, c.current_phase)
     // Blasting out of the queue hands the piece to the installation list and
     // off the board — the undo has to bring it BACK onto the floor too.
     const handoff = c.track === 'new_stone' && next === 'ready_to_set'
     run(c.id,
-      () => advanceComponent(c.id, { actor, source: 'field' }),
+      each(pieces, p => advanceComponent(p.id, { actor, source: 'field' })),
       handoff ? `${famOf(c)} blasted → installation list` : `${famOf(c)} → ${next ? phaseLabel(next) : 'done'}`,
       handoff
-        ? async () => {
-            await reverseComponent(c.id, { actor, source: 'field' })
-            await setComponentOnFloor(c.id, true, { actor, source: 'field' })
-          }
-        : () => reverseComponent(c.id, { actor, source: 'field' }))
+        ? each(pieces, async (p) => {
+            await reverseComponent(p.id, { actor, source: 'field' })
+            return setComponentOnFloor(p.id, true, { actor, source: 'field' })
+          })
+        : each(pieces, p => reverseComponent(p.id, { actor, source: 'field' })))
   }
-  const back = (c) => {
+  const back = (c, pieces = [c]) => {
     const prev = prevPhase(c.track, c.current_phase)
     run(c.id,
-      () => reverseComponent(c.id, { actor, source: 'field' }),
+      each(pieces, p => reverseComponent(p.id, { actor, source: 'field' })),
       `${famOf(c)} ← ${prev ? phaseLabel(prev) : ''}`,
-      () => advanceComponent(c.id, { actor, source: 'field' }))
+      each(pieces, p => advanceComponent(p.id, { actor, source: 'field' })))
+  }
+  // Off this line, onto the next one — next week's queue (Paul 2026-10-21).
+  const nextLine = (c, pieces = [c]) => {
+    run(c.id, each(pieces, p => moveStoneToNextLine(p.id, { by: actor })), null, null)
   }
   // ONE ROW PER ORDER (Paul 2026-07-27): die and base are separate components,
   // so a name search listed the same order twice. The queue lists the JOB once
@@ -490,7 +501,9 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
               </div>
             </div>
           ))}
-          {bucketCards.map(c => {
+          {groupByOrder(bucketCards).map(g => {
+            const c = g.rep
+            const pcs = g.pieces
             const atQc = hasQc && c.current_phase === QC_PHASE
             const held = !!c.qc_issue
             const first = phaseIndex(c.track, c.current_phase) === 0
@@ -500,6 +513,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                 <div className="fl-rowtop">
                   <span className="fl-fam">{famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} />
                     {lineTagById.get(c.id) && <span className="fl-chip" style={{ marginLeft: 6, color: '#9A7209', border: '1px solid #C9A468', background: 'transparent' }}>{lineTagById.get(c.id)}</span>}
+                    {pcs.length > 1 && <span className="fl-chip fl-c-neutral" style={{ marginLeft: 6 }}>{pcs.length} DIES</span>}
                   </span>
                   {held ? <span className="fl-chip fl-c-bad">HELD</span>
                     : c.blocker ? <span className="fl-chip fl-c-warn">BLOCKED</span> : null}
@@ -546,11 +560,15 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                       // it says advance not blasted") — BLASTED, CUT, STENCIL
                       // STUCK… never "advance".
                       <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
-                        disabled={busy} onClick={() => advance(c)}>
+                        disabled={busy} onClick={() => advance(c, pcs)}>
                         {busy ? '…' : `${(advanceVerb(c.track, c.current_phase) || 'Done').toUpperCase()} →`}
                       </button>
                     )}
-                    <button type="button" className="fl-verb" disabled={busy || first} onClick={() => back(c)}>← BACK</button>
+                    <button type="button" className="fl-verb" disabled={busy || first} onClick={() => back(c, pcs)}>← BACK</button>
+                    {track === 'new_stone' && lineTagById.get(c.id) && (
+                      <button type="button" className="fl-verb" style={{ borderColor: '#2f5586', color: '#93c5fd' }} disabled={busy}
+                        title="Off this line, onto the next one — next week's queue" onClick={() => nextLine(c, pcs)}>NEXT LINE →</button>
+                    )}
                     {track === 'new_stone' && SIZE_PHASES.has(bucket) && (
                       <button type="button" className="fl-verb" style={{ borderColor: '#9A7209', color: '#9A7209' }}
                         disabled={busy} onClick={() => openSize(c)}>

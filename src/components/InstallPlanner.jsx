@@ -41,6 +41,7 @@ import {
 } from '../lib/meetingData'
 import { listInstallReminders, remindersFor, addInstallReminder, doneInstallReminder } from '../lib/installReminders'
 import { buildWeekPrintHtml, openPrintSheet, stopFacts, fmtDayLong } from '../lib/weekPrintSheet'
+import { listFloorLines, itemIsBlasted } from '../lib/floorLines'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 const EMPTY_JOBS = []
@@ -76,7 +77,7 @@ const TRACKS = {
     purposeBuild: 'Build the week\'s list from the set list, then put each stone on a day. Days become Scheduler trips (one per cemetery per day) and the Team Meeting\'s set lane reads the same list.',
     purposeSched: 'Everything on a day this week with its blockers — clear them here: record the balance, task a call, flip foundation / permit / arrival, tick reminders.',
     thing: 'stone', things: 'stones', notDone: 'not installed', verb: 'install', readyLabel: 'READY TO INSTALL',
-    addBtn: '+ Add from set list', poolHint: 'on the set list not on this week', emptyAdd: 'Add stones from the set list — ready ones first — then give each a day above.', emptyPool: 'Everything on the set list is already on this week.',
+    addBtn: '+ Add from set list / lines', poolHint: 'on the set list or an assembly line, not on this week', emptyAdd: 'Add stones from the set list or the assembly lines — ready ones first — then give each a day above.', emptyPool: 'Everything on the set list and the lines is already on this week.',
     foot: 'Days are Scheduler trips — reorder stops, assign a crew or set AM/PM in the Scheduler. The Team Meeting\'s set lane and Friday score read this week list.',
     milestone: installMilestone, scheduledKey: null,
     printLabel: 'Print install schedule', printTitle: 'INSTALL SCHEDULE',
@@ -101,7 +102,7 @@ const TRACKS = {
   },
 }
 
-function gateChips(job, cfg) {
+function gateChips(job, cfg, onLine = false) {
   const g = cfg.gates(job)
   const bal = rowBalanceDue(job?.order || {})
   return (
@@ -109,7 +110,9 @@ function gateChips(job, cfg) {
       <span className={`ip-g ${g.paid ? 'ok' : 'red'}`}>{g.paid ? 'PAID' : bal > 0 ? `BAL ${fmtUSD(bal)}` : 'NOT PAID'}</span>
       {cfg.key === 'set' && (g.fdn === null ? <span className="ip-g na">NO FDN</span> : <span className={`ip-g ${g.fdn ? 'ok' : 'red'}`}>{g.fdnCode === 'drop_off' ? 'DROP OFF' : g.fdn ? 'FDN IN' : 'FDN NOT IN'}</span>)}
       {g.permit === null ? <span className="ip-g na">NO PERMIT</span> : <span className={`ip-g ${g.permit ? 'ok' : 'red'}`}>{g.permit ? 'PERMIT OK' : 'PERMIT'}</span>}
-      {cfg.key === 'set' && <span className={`ip-g ${g.blasted ? 'ok' : 'red'}`}>{blastWord(job, g.blasted)}</span>}
+      {cfg.key === 'set' && (onLine && !g.blasted
+        ? <span className="ip-g line" title="Still on an assembly line — planned ahead, assuming it gets blasted">ON LINE</span>
+        : <span className={`ip-g ${g.blasted ? 'ok' : 'red'}`}>{blastWord(job, g.blasted)}</span>)}
       {cfg.key === 'inscription' && <span className={`ip-g ${g.cut ? 'ok' : 'red'}`}>{g.cut ? 'CUT' : 'NOT CUT'}</span>}
     </span>
   )
@@ -145,6 +148,9 @@ function ReminderChips({ list, busy, onDone }) {
 
 // The hot-list tag (Paul: "what's on the hot list in red so we know it's hot").
 const HotTag = ({ on }) => (on ? <span className="ip-hot" title="On the hot list">HOT</span> : null)
+// The assembly-line tag (Paul 2026-10-21: "pull from my assembly list — I want
+// to plan ahead the next week assuming those get done — a banner in blue").
+const LineTag = ({ on }) => (on ? <span className="ip-line" title="Still on an assembly line — planned ahead, assuming it gets blasted">ON ASSEMBLY LINE</span> : null)
 
 export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', onBack, onOpenOrderDetail, initialMode = 'build' }) {
   const cfg = TRACKS[track] || TRACKS.set
@@ -155,6 +161,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   const [setList, setSetList] = useState(null)
   const [ownJobs, setOwnJobs] = useState(null)  // loaded here when the parent passes none (the floor)
   const [hot, setHot] = useState(() => new Set())   // job ids + order ids on the open hot list
+  const [onLine, setOnLine] = useState(() => new Set())   // job ids with a die still on an assembly line
   const [rems, setRems] = useState({ byJob: new Map(), byCemetery: new Map() })
   const [overrides, setOverrides] = useState(() => new Map())   // job id → re-read job after a gate pick
   const [busy, setBusy] = useState(false)
@@ -189,6 +196,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   const jobs = jobsProp || ownJobs || EMPTY_JOBS   // stable while loading — `load` depends on it
   const jobById = new Map([...Object.values(extraJobs), ...jobs].map(j => [j.id, overrides.get(j.id) || j]))
   const isHot = (job) => !!job && (hot.has(job.id) || (job.order?.id ? hot.has(job.order.id) : false))
+  const isOnLine = (job) => !!job && onLine.has(job.id)
   // Done = the track's completion milestone is done, or the job itself was
   // closed (Paul 2026-10-12: "when stones on the install planner are set
   // remove them off the list automatically").
@@ -210,14 +218,19 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
 
   const load = useCallback(async () => {
     if (!week) return
-    const [ps, p0, bs, old, sl, hotRows] = await Promise.all([
+    const [ps, p0, bs, old, sl, hotRows, fl] = await Promise.all([
       listWeekPlans(),
       getWeekPlanWithItems(week),
       getBatches({ from: week, to: addDays(week, 6), kind: cfg.batchKind }).catch(() => []),
       getBatches({ from: addDays(week, -28), to: addDays(week, -1), kind: cfg.batchKind }).catch(() => []),
       cfg.key === 'set' ? getInstallList().catch(() => []) : Promise.resolve([]),
       getHotListItems().catch(() => []),
+      cfg.key === 'set' ? listFloorLines().catch(() => []) : Promise.resolve([]),
     ])
+    // Stones still on a line (not blasted) — the planner can pull them too.
+    setOnLine(new Set((fl || []).filter(l => l.status !== 'complete')
+      .flatMap(l => (l.items || []).filter(it => !itemIsBlasted(it)).map(it => it.job_id || it.component?.job_id))
+      .filter(Boolean)))
     let p = p0
     // ── Auto-roll: finished weeks' not-done jobs → this week's list ──
     // A week is finished once its Friday is behind today. Jobs from those
@@ -435,7 +448,14 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
 
   // ── Add picker: the track's pool, ready first, hot first within ready ────
   const pool = cfg.key === 'set'
-    ? (setList || []).map(m => jobById.get(m.job_id)).filter(Boolean)
+    ? (() => {
+        // The set list PLUS every stone still on an assembly line (Paul
+        // 2026-10-21) — each job once, set-list members first.
+        const seen = new Set(), out = []
+        for (const m of (setList || [])) { const j = jobById.get(m.job_id); if (j && !seen.has(j.id)) { seen.add(j.id); out.push(j) } }
+        for (const id of onLine) { const j = jobById.get(id); if (j && !seen.has(j.id) && !['closed', 'cancelled'].includes(j.overall_status)) { seen.add(j.id); out.push(j) } }
+        return out
+      })()
     : jobs.filter(j => j.job_type === 'inscription' && j.order && !j.order.archived && REAL_STATUSES.has(j.order.status) && !['closed', 'cancelled'].includes(j.overall_status))
   const addCandidates = pool
     .filter(j => !onWeek.has(j.id) && !isDone(j))
@@ -467,10 +487,10 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
     return (
       <div key={jobId} className={`ip-row${ready(job) ? ' ip-row-ready' : ''}${day ? ' ip-row-sched' : ''}${isHot(job) ? ' ip-row-hot' : ''}`}>
         <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, cfg.openAction)}>{famOf(job)}</button>
-        <HotTag on={isHot(job)} />
+        <HotTag on={isHot(job)} /><LineTag on={isOnLine(job)} />
         {trackTag(job)}
         <span className="ip-meta">{[job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
-        {gateChips(job, cfg)}
+        {gateChips(job, cfg, isOnLine(job))}
         <ReminderChips list={list} busy={busy} onDone={remDone} />
         {remFor?.jobId === jobId ? reminderInput(remFor) : (
           <button type="button" className="ip-remadd" title={`Add a reminder for this ${cfg.thing}`} onClick={() => { setRemFor({ jobId }); setRemText('') }}>+ reminder</button>
@@ -507,7 +527,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
                   <div key={l.job_id} className="ip-stop">
                     <span className="ip-stop-n">{l.stop_order || ''}</span>
                     <button type="button" className="ip-fam ip-fam-btn" onClick={() => job?.order?.id && onOpenOrderDetail?.(job.order.id, cfg.openAction)}>{job ? famOf(job) : '(job)'}</button>
-                    <HotTag on={isHot(job)} />
+                    <HotTag on={isHot(job)} /><LineTag on={isOnLine(job)} />
                     {trackTag(job, true)}
                     {job && <span className={`ip-g ${ok ? 'ok' : 'red'}`}>{ok ? 'READY' : 'GATE'}</span>}
                     {job && remsOf(job).length > 0 && <span className="ip-g rem" title={remsOf(job).map(r => r.text).join(' · ')}>{remsOf(job).length} REM</span>}
@@ -615,7 +635,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
                   <div key={stop.job_id} className={`ip-adm${ok ? ' ip-row-ready' : ' ip-adm-blocked'}${isHot(job) ? ' ip-row-hot' : ''}`}>
                     <div className="ip-adm-top">
                       <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, cfg.openAction)}>{famOf(job)}</button>
-                      <HotTag on={isHot(job)} />
+                      <HotTag on={isHot(job)} /><LineTag on={isOnLine(job)} />
                       {trackTag(job)}
                       <span className="ip-meta">{[batch.cemetery?.name || cemOf(job), job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
                       {ok ? <span className="ip-g ok">{cfg.readyLabel}</span> : <span className="ip-g red">BLOCKED</span>}
@@ -689,7 +709,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
         stops: b.batch_jobs.slice().sort((x, y) => (x.stop_order || 0) - (y.stop_order || 0))
           .map(l => jobById.get(l.job_id))
           .filter(Boolean)
-          .map(job => stopFacts(job, cfg.batchKind, remsOf(job))),
+          .map(job => stopFacts(job, cfg.batchKind, remsOf(job), { onLine: isOnLine(job) })),
       })),
     }))
     const html = buildWeekPrintHtml({
@@ -773,10 +793,10 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
                   {addCandidates.slice(0, 80).map(j => (
                     <div key={j.id} className={`ip-row${ready(j) ? ' ip-row-ready' : ''}${isHot(j) ? ' ip-row-hot' : ''}`}>
                       <span className="ip-fam">{famOf(j)}</span>
-                      <HotTag on={isHot(j)} />
+                      <HotTag on={isHot(j)} /><LineTag on={isOnLine(j)} />
                       {trackTag(j)}
                       <span className="ip-meta">{[cemOf(j), j.order?.order_number].filter(Boolean).join(' · ')}</span>
-                      {gateChips(j, cfg)}
+                      {gateChips(j, cfg, isOnLine(j))}
                       <ReminderChips list={remsOf(j)} busy={busy} onDone={remDone} />
                       <button type="button" className="ib-act ib-act-go" disabled={busy} onClick={() => addToWeek(j)}>Add →</button>
                     </div>
@@ -849,6 +869,8 @@ const IP_CSS = `
   /* Hot list = red (Paul: "so we know it's hot"). */
   .ip-row-hot { border-left: 3px solid #ef4444; }
   .ip-hot { font-size: 9px; font-weight: 900; letter-spacing: .08em; color: #fff; background: #dc2626; border-radius: 999px; padding: 2px 8px; white-space: nowrap; box-shadow: 0 0 0 1px rgba(220,38,38,.35), 0 0 10px rgba(220,38,38,.35); }
+  .ip-line { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #e4ecf7; color: #1d4ed8; border: 1px solid #93c5fd; white-space: nowrap; }
+  .ip-g.line { background: #e4ecf7; color: #1d4ed8; border-color: #93c5fd; }
   .ip-fam { font-size: 13px; font-weight: 700; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
   .ip-fam-btn { font: inherit; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .ip-fam-btn:hover { color: #fbbf24; }

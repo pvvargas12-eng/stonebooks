@@ -31,7 +31,10 @@ export const fmtDayWeek = (iso) => new Date(iso + 'T00:00:00').toLocaleDateStrin
 // reminders (plain), ready. Blockers depend on what the run is: setting /
 // delivery = the four install gates, inscription = paid + permit + stencil
 // cut, blasting = stencil cut, everything else = money + permit only.
-export function stopFacts(job, kind, reminders = []) {
+// `onLine` (Paul 2026-10-21): the stone is still on an assembly line — planned
+// ahead assuming it gets blasted. Prints a blue ON ASSEMBLY LINE tag instead
+// of a red NOT BLASTED blocker.
+export function stopFacts(job, kind, reminders = [], { onLine = false } = {}) {
   const o = job?.order || {}
   const g = installGates(o, job)
   const bal = rowBalanceDue(o)
@@ -40,7 +43,7 @@ export function stopFacts(job, kind, reminders = []) {
   const isSet = kind === 'setting' || kind === 'delivery'
   if (isSet && g.fdn === false) blockers.push('FDN NOT IN')
   if (g.permit === false && kind !== 'blasting' && kind !== 'acid_wash' && kind !== 'repair') blockers.push('PERMIT NOT APPROVED')
-  if (isSet && g.blasted === false) blockers.push(job?.job_type === 'bronze' ? 'NOT ARRIVED' : 'NOT BLASTED')
+  if (isSet && g.blasted === false && !onLine) blockers.push(job?.job_type === 'bronze' ? 'NOT ARRIVED' : 'NOT BLASTED')
   if ((kind === 'inscription' || kind === 'blasting') && !stencilCut(job)) blockers.push('STENCIL NOT CUT')
   const mb = o.manual_blocker
   if (mb?.kind === 'hold') blockers.push(`HOLD${mb.reason ? ` — ${mb.reason}` : ''}`)
@@ -49,6 +52,7 @@ export function stopFacts(job, kind, reminders = []) {
   return {
     family: familyOfJob(job),
     tag: TAG[job?.job_type] || '',
+    line: !!onLine,
     orderNo: o.order_number || '',
     location: composeGraveLocation(o) || '',
     notes,
@@ -77,11 +81,11 @@ export function buildWeekPrintHtml({ title, subtitle, days, printedAt = new Date
           <div class="cem-h">${esc(t.name)}${t.kindTag ? ` <span class="kind">${esc(t.kindTag)}</span>` : ''}${t.ampm ? ` <span class="kind">${esc(String(t.ampm).toUpperCase())}</span>` : ''}</div>
           ${t.stops.map((s, i) => `
             <div class="stone"><span class="num">${i + 1}</span><div>
-              <div class="fam">${esc(s.family)}${s.tag ? `<span class="tag">${esc(s.tag)}</span>` : ''}</div>
+              <div class="fam">${esc(s.family)}${s.tag ? `<span class="tag">${esc(s.tag)}</span>` : ''}${s.line ? '<span class="tag line">ON ASSEMBLY LINE</span>' : ''}</div>
               ${(s.orderNo || s.location || s.notes.length) ? `<div class="meta">${esc([s.orderNo, s.location, ...s.notes].filter(Boolean).join(' · '))}</div>` : ''}
               ${s.blockers.length ? `<div class="blk">${s.blockers.map(b => `<span class="b">${esc(b)}</span>`).join('')}</div>` : ''}
               ${s.reminders.map(r => `<div class="rem">${esc(r)}</div>`).join('')}
-              ${s.ready ? '<div class="ready">READY</div>' : ''}
+              ${s.ready && !s.line ? '<div class="ready">READY</div>' : ''}
             </div></div>`).join('')}
         </div>`).join('')}
     </div>`).join('')
@@ -116,6 +120,7 @@ export function buildWeekPrintHtml({ title, subtitle, days, printedAt = new Date
   .stone .num { font-family: Consolas, "Courier New", monospace; font-size: 9.5px; color: #666; padding-top: 2px; }
   .stone .fam { font-weight: 700; font-size: 11.5px; overflow-wrap: anywhere; }
   .stone .fam .tag { font-family: Consolas, "Courier New", monospace; font-weight: 600; font-size: 8.5px; letter-spacing: .06em; color: #555; margin-left: 4px; vertical-align: 1px; }
+  .stone .fam .tag.line { color: #1d4ed8; border: 1px solid #1d4ed8; border-radius: 3px; padding: 0 4px; }
   .stone .meta { font-family: Consolas, "Courier New", monospace; font-size: 9px; color: #555; overflow-wrap: anywhere; }
   .blk { margin-top: 2px; display: flex; flex-direction: column; gap: 1px; }
   .blk .b { color: #C8102E; font-weight: 700; font-size: 10px; letter-spacing: .02em; display: flex; align-items: center; gap: 4px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }

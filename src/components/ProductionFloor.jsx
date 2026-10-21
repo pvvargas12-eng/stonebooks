@@ -22,7 +22,7 @@ import {
 } from '../lib/stonebooksData'
 import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
-import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney } from '../lib/floorLines'
+import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney, moveStoneToNextLine } from '../lib/floorLines'
 import { openPrintSheet, openPrintSheetAsync } from '../lib/weekPrintSheet'
 import { buildFloorPrintHtml, buildLineSheetsHtml, pieceFacts, lineSheetFrom } from '../lib/floorPrintSheet'
 import LinePlanner from './LinePlanner'
@@ -527,8 +527,12 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
                   </div>
                   <div className="pf-col-body">
                     {cards.length === 0 && alsoCards.length === 0 && <div className="pf-col-empty">—</div>}
-                    {cards.map(c => (
-                      <ComponentCard key={c.id} comp={c} todayMs={todayMs} onChanged={load} lineTag={lineTagById.get(c.id) || null} onPeek={setPeek}
+                    {/* ONE CARD PER ORDER (Paul 2026-10-21: "I don't want duplicates
+                        like Lugo and Kyriakatos") — a double die's two dies at the
+                        same step share a card; every verb moves both. */}
+                    {groupByOrder(cards).map(g => (
+                      <ComponentCard key={g.rep.id} comp={g.rep} pieces={g.pieces} todayMs={todayMs} onChanged={load}
+                        lineTag={g.pieces.map(p => lineTagById.get(p.id)).filter(Boolean).join(' · ') || null} onPeek={setPeek}
                         onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
                     ))}
                     {alsoCards.map(c => (
@@ -647,7 +651,10 @@ function AlsoCard({ comp, phase, onChanged, setErr, onPeek = null }) {
   )
 }
 
-function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail, lineTag = null, onPeek = null }) {
+function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail, lineTag = null, onPeek = null, pieces = null }) {
+  // `pieces` = every die of this order at this step (a double die has two);
+  // the card faces the first and every verb runs on all of them.
+  const all = (pieces && pieces.length) ? pieces : [comp]
   const [busy, setBusy] = useState(false)
   const [menu, setMenu] = useState(false)
   const [mode, setMode] = useState(null)   // 'deny' | 'note' | 'block' | 'override'
@@ -662,7 +669,11 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
   const run = async (fn) => {
     setBusy(true); setErr(null)
     const actor = await getCurrentStaffName()
-    const r = await fn(actor)
+    let r = null
+    for (const pc of all) {
+      r = await fn(actor, pc.id)
+      if (r && r.ok === false) break
+    }
     setBusy(false)
     if (r && r.ok === false) { setErr(r.error || 'Action failed'); return }
     setMenu(false); setMode(null); setText('')
@@ -678,6 +689,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
           : <span className="pf-card-fam">{famOf(comp)}</span>}
         <span className="pf-card-tags">
           {lineTag && <span className="pf-pos" title="Line · position">{lineTag}</span>}
+          {all.length > 1 && <span className="pf-card-type" title="Dies of this order at this step — every verb moves them together">{all.length} DIES</span>}
           <span className="pf-card-type">{TYPE_LABEL[comp.component_type] || comp.label}</span>
         </span>
       </div>
@@ -705,10 +717,10 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
           )}
           <div className="pf-card-form-actions">
             <button type="button" className="pf-btn pf-btn-go" disabled={busy} onClick={() => {
-              if (mode === 'deny') return run(a => qcDenyComponent(comp.id, text, { actor: a }))
-              if (mode === 'note') return run(a => setComponentNotes(comp.id, text, { actor: a }))
-              if (mode === 'block') return run(a => setComponentBlocker(comp.id, text, { actor: a }))
-              if (mode === 'override') { if (!text) { setErr('Pick a phase'); return } return run(a => overrideComponentPhase(comp.id, text, { actor: a })) }
+              if (mode === 'deny') return run((a, id) => qcDenyComponent(id, text, { actor: a }))
+              if (mode === 'note') return run((a, id) => setComponentNotes(id, text, { actor: a }))
+              if (mode === 'block') return run((a, id) => setComponentBlocker(id, text, { actor: a }))
+              if (mode === 'override') { if (!text) { setErr('Pick a phase'); return } return run((a, id) => overrideComponentPhase(id, text, { actor: a })) }
             }}>{busy ? '…' : 'Save'}</button>
             <button type="button" className="pf-btn" onClick={() => { setMode(null); setText(''); setErr(null) }}>Cancel</button>
           </div>
@@ -717,17 +729,17 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
         <div className="pf-card-actions">
           {atQc ? (
             <>
-              <button type="button" className="pf-btn pf-btn-go" disabled={busy || held} title={held ? 'Clear the issue first' : 'Approve'} onClick={() => run(a => qcApproveComponent(comp.id, { actor: a }))}>✓ Approve</button>
+              <button type="button" className="pf-btn pf-btn-go" disabled={busy || held} title={held ? 'Clear the issue first' : 'Approve'} onClick={() => run((a, id) => qcApproveComponent(id, { actor: a }))}>✓ Approve</button>
               {held
-                ? <button type="button" className="pf-btn" disabled={busy} onClick={() => run(a => clearComponentQcIssue(comp.id, { actor: a }))}>Clear issue</button>
+                ? <button type="button" className="pf-btn" disabled={busy} onClick={() => run((a, id) => clearComponentQcIssue(id, { actor: a }))}>Clear issue</button>
                 : <button type="button" className="pf-btn pf-btn-deny" disabled={busy} onClick={() => openMode('deny')}>✕ Deny</button>}
             </>
           ) : (
-            <button type="button" className="pf-btn pf-btn-go" disabled={busy} onClick={() => run(a => advanceComponent(comp.id, { actor: a }))}>
+            <button type="button" className="pf-btn pf-btn-go" disabled={busy} onClick={() => run((a, id) => advanceComponent(id, { actor: a }))}>
               {advanceVerb(comp.track, comp.current_phase) || 'Done'} →
             </button>
           )}
-          <button type="button" className="pf-btn" disabled={busy} onClick={() => run(a => reverseComponent(comp.id, { actor: a }))}>← Back</button>
+          <button type="button" className="pf-btn" disabled={busy} onClick={() => run((a, id) => reverseComponent(id, { actor: a }))}>← Back</button>
           <button type="button" className="pf-btn pf-btn-more" onClick={() => setMenu(m => !m)}>⋯</button>
         </div>
       )}
@@ -735,12 +747,15 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
       {menu && !mode && (
         <div className="pf-menu">
           <button type="button" onClick={() => openMode('override')}>Override phase</button>
-          {comp.on_floor && <button type="button" onClick={() => run(a => setComponentOnFloor(comp.id, false, { actor: a }))}>↩ Return to queue</button>}
+          {comp.on_floor && <button type="button" onClick={() => run((a, id) => setComponentOnFloor(id, false, { actor: a }))}>↩ Return to queue</button>}
+          {comp.track === 'new_stone' && lineTag && (
+            <button type="button" title="Off this line, onto the next one (next week's queue)" onClick={() => run((a, id) => moveStoneToNextLine(id, { by: a }))}>Move to next line →</button>
+          )}
           {comp.blocker
-            ? <button type="button" onClick={() => run(a => setComponentBlocker(comp.id, null, { actor: a }))}>Clear blocker</button>
+            ? <button type="button" onClick={() => run((a, id) => setComponentBlocker(id, null, { actor: a }))}>Clear blocker</button>
             : <>
                 {/* Paul 2026-10-07: one-click Needs-fixing category — no typing. */}
-                <button type="button" onClick={() => run(a => setComponentBlocker(comp.id, 'NEEDS FIXING', { actor: a }))}>Mark NEEDS FIXING</button>
+                <button type="button" onClick={() => run((a, id) => setComponentBlocker(id, 'NEEDS FIXING', { actor: a }))}>Mark NEEDS FIXING</button>
                 <button type="button" onClick={() => openMode('block')}>Mark blocked…</button>
               </>}
           <button type="button" onClick={() => openMode('note')}>Add / edit note</button>

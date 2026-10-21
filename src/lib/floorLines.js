@@ -179,6 +179,29 @@ export async function removeLineItem(itemId) {
   return error ? { ok: false, error: error.message } : { ok: true }
 }
 
+// MOVE A STONE TO THE NEXT LINE (Paul 2026-10-21: "I want to be able to move
+// stones to the next week or the next line, like Rubinstein and Flores — I
+// want them on the next queue"). Finds the stone's line, moves its row to the
+// next non-complete line (creating one when there is none), and — because
+// that line is not running — takes the piece OFF the board so the running
+// line stops showing it; the next line's start brings it back up.
+export async function moveStoneToNextLine(componentId, { by = null } = {}) {
+  if (!componentId) return { ok: false, error: 'Missing stone' }
+  const lines = await listFloorLines()
+  const from = lines.find(l => (l.items || []).some(it => it.component_id === componentId))
+  if (!from) return { ok: false, error: 'This stone is not on a line.' }
+  const it = from.items.find(x => x.component_id === componentId)
+  let to = lines.find(l => l.number > from.number && l.status !== 'complete') || null
+  if (!to) { const r = await createFloorLine(); if (!r.ok) return r; to = r.line }
+  const r = await moveLineItem(it.id, to.id)
+  if (!r.ok) return r
+  if (!to.started_at) {
+    const actor = by || await getCurrentStaffName().catch(() => null)
+    await setComponentOnFloor(componentId, false, { actor, source: 'line' }).catch(() => {})
+  }
+  return { ok: true, line: to }
+}
+
 export async function moveLineItem(itemId, toLineId) {
   const { data: it } = await supabase.from('floor_line_items').select('id, component_id, job_id, order_id').eq('id', itemId).single()
   if (!it) return { ok: false, error: 'Stone not found' }
