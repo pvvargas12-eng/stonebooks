@@ -22,6 +22,7 @@ import {
 } from '../lib/floorLines'
 import { openPrintSheet } from '../lib/weekPrintSheet'
 import { buildLineSheetsHtml, lineSheetFrom } from '../lib/floorPrintSheet'
+import OrderPeek from './OrderPeek'
 
 const DAY_MS = 86400000
 const niceCase = (s) => {
@@ -44,7 +45,29 @@ const dueTone = (iso, todayMs) => {
 }
 const fmtWeek = (iso) => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''
 
-export default function LinePlanner({ onBack, onOpenOrderDetail }) {
+// A line is for NEW STONE work. An inscription / repair order can carry a
+// stray new-stone die component (re-typed orders — Vamos E-26-0802, Paul
+// 2026-10-21); the order's service types decide, not the component's track.
+const STONE_SERVICES = ['NEW_STONE', 'CIVIC_MEMORIAL', 'MAUSOLEUM']
+const isStoneOrder = (o) => {
+  const s = o?.service_types
+  if (!Array.isArray(s) || s.length === 0) return true   // older rows with no types: trust the track
+  return s.some(x => STONE_SERVICES.includes(x))
+}
+// One row per ORDER (a double die has two die components — Kyriakatos showed
+// twice). Picking the row adds every die of that order to the line.
+const groupByOrder = (pieces) => {
+  const out = [], idx = new Map()
+  for (const c of pieces) {
+    const key = c.order_id || c.id
+    if (!idx.has(key)) { idx.set(key, out.length); out.push({ key, lead: c, comps: [] }) }
+    out[idx.get(key)].comps.push(c)
+  }
+  return out
+}
+
+export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = null }) {
+  const [peek, setPeek] = useState(null)   // order id → OrderPeek
   const [lines, setLines] = useState(null)
   const [comps, setComps] = useState([])
   const [recs, setRecs] = useState(() => ({ byJob: new Map() }))
@@ -91,7 +114,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
   // contracted) — due date first, then oldest signing.
   const phases = boardPhases('new_stone')
   const pool = comps
-    .filter(c => c.track === 'new_stone' && c.component_type !== 'base' && !c.on_floor
+    .filter(c => c.track === 'new_stone' && c.component_type !== 'base' && !c.on_floor && isStoneOrder(c.order)
       && phases.includes(c.current_phase) && !onLine.has(c.id) && c.job_id && recs.byJob.get(c.job_id)?.ready)
     .sort((a, b) => {
       const da = dueOf(a) || '9999-12-31', db = dueOf(b) || '9999-12-31'
@@ -103,7 +126,8 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
     if (!t) return true
     return [famOf(c), orderNoOf(c), cemOf(c), c.size].filter(Boolean).join(' ').toLowerCase().includes(t)
   }
-  const poolShown = pool.filter(matches)
+  const poolGroups = groupByOrder(pool)
+  const poolShown = poolGroups.filter(g => matches(g.lead))
 
   // Fill target = the first unstarted line with room; else the last unstarted
   // line; else nothing (the + New line button is the answer).
@@ -128,7 +152,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
   const fillByDue = (line) => {
     const room = Math.max(0, (line.capacity || DEFAULT_LINE_CAPACITY) - line.counts.open)
     if (!room) { setCapWarn({ lineId: line.id }); return }
-    addTo(line, pool.slice(0, room))
+    addTo(line, poolGroups.slice(0, room).flatMap(g => g.comps))
   }
   const moveLast = (line) => run(async () => {
     const last = line.open[line.open.length - 1]
@@ -226,7 +250,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
                 <div key={it.id} className="lp-row">
                   <span className="lp-row-n">{i + 1}</span>
                   {full?.order_id
-                    ? <button type="button" className="lp-row-fam lp-row-btn" onClick={() => onOpenOrderDetail?.(full.order_id, 'production')}>{famOf(full)}</button>
+                    ? <button type="button" className="lp-row-fam lp-row-btn" title="Preview the order" onClick={() => setPeek(full.order_id)}>{famOf(full)}</button>
                     : <span className="lp-row-fam">{full ? famOf(full) : '—'}</span>}
                   <span className="lp-row-meta">{[full?.size, orderNoOf(full), cemOf(full)].filter(Boolean).join(' · ')}</span>
                   <span className={`lp-due lp-due-${dueTone(dueOf(full), todayMs)}`}>{dueOf(full) ? fmtDate(dueOf(full)) : 'no due date'}</span>
@@ -283,33 +307,41 @@ export default function LinePlanner({ onBack, onOpenOrderDetail }) {
           <aside className="lp-pool" aria-label="Recommended">
             <div className="lp-pool-head">
               <span className="lp-pool-title">Recommended{target ? ` for ${lineLabel(target)}` : ''}</span>
-              <span className="lp-pool-n">{pool.length} ready</span>
+              <span className="lp-pool-n">{poolGroups.length} ready</span>
             </div>
             <div className="lp-pool-hint">Design approved · stone here or in stock · contracted. Due date first. Nothing already on a line.</div>
             <div className="lp-pool-acts">
-              {target && pool.length > 0 && (
+              {target && poolGroups.length > 0 && (
                 <button type="button" className="pf-btn pf-btn-go" disabled={busy} onClick={() => fillByDue(target)}>
-                  Add top {Math.min(pool.length, Math.max(0, (target.capacity || DEFAULT_LINE_CAPACITY) - target.counts.total)) || pool.length} → {lineLabel(target)}
+                  Add top {Math.min(poolGroups.length, Math.max(0, (target.capacity || DEFAULT_LINE_CAPACITY) - target.counts.total)) || poolGroups.length} → {lineLabel(target)}
                 </button>
               )}
               {!target && <span className="lp-pool-hint">Every line is running — hit + New line to plan the next one.</span>}
               <input className="pf-input lp-search" type="search" placeholder="Search family, order #, cemetery…" value={q} onChange={e => setQ(e.target.value)} />
             </div>
             <div className="lp-pool-list">
-              {poolShown.slice(0, 80).map(c => (
-                <div key={c.id} className="lp-row">
-                  {c.order_id
-                    ? <button type="button" className="lp-row-fam lp-row-btn" onClick={() => onOpenOrderDetail?.(c.order_id, 'production')}>{famOf(c)}</button>
-                    : <span className="lp-row-fam">{famOf(c)}</span>}
-                  <span className="lp-row-meta">{[c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
-                  <span className={`lp-due lp-due-${dueTone(dueOf(c), todayMs)}`}>{dueOf(c) ? fmtDate(dueOf(c)) : 'no due date'}</span>
-                  {target && <button type="button" className="pf-btn pf-btn-gold" disabled={busy} onClick={() => addTo(target, [c])}>→ L{target.number}</button>}
-                </div>
-              ))}
+              {poolShown.slice(0, 80).map(g => {
+                const c = g.lead
+                return (
+                  <div key={g.key} className="lp-row">
+                    {c.order_id
+                      ? <button type="button" className="lp-row-fam lp-row-btn" title="Preview the order — stone here? design approved?" onClick={() => setPeek(c.order_id)}>{famOf(c)}</button>
+                      : <span className="lp-row-fam">{famOf(c)}</span>}
+                    <span className="lp-row-meta">{[g.comps.length > 1 ? `${g.comps.length} dies` : null, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
+                    <span className={`lp-due lp-due-${dueTone(dueOf(c), todayMs)}`}>{dueOf(c) ? fmtDate(dueOf(c)) : 'no due date'}</span>
+                    {target && <button type="button" className="pf-btn pf-btn-gold" disabled={busy} onClick={() => addTo(target, g.comps)}>→ L{target.number}</button>}
+                  </div>
+                )
+              })}
               {poolShown.length === 0 && <div className="lp-empty">{q ? 'Nothing ready matches.' : 'Nothing ready and unassigned — every ready stone is on a line.'}</div>}
             </div>
           </aside>
         </div>
+      )}
+      {peek && (
+        <OrderPeek orderId={peek} onClose={() => setPeek(null)}
+          onOpenOrder={() => { const id = peek; setPeek(null); onOpenOrderDetail?.(id, 'production') }}
+          onOpenSales={onOpenSales ? () => { const id = peek; setPeek(null); onOpenSales(id) } : null} />
       )}
     </div>
   )

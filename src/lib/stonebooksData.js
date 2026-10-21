@@ -3027,7 +3027,7 @@ export async function countCutReady() {
 export async function getBringUpReady() {
   const empty = { count: 0, readyByTrack: {}, byJob: new Map() }
   const { data: comps, error } = await supabase.from('job_components')
-    .select('job_id, track')
+    .select('job_id, track, order_id')
     .eq('on_floor', false)
     .not('job_id', 'is', null)
     // The die is the stone — bases never count toward the red bring-up
@@ -3036,6 +3036,20 @@ export async function getBringUpReady() {
   if (error) { console.warn('[floor] bringUpReady comps:', error.message); return empty }
   const queueJobs = new Set((comps || []).map(c => c.job_id))
   if (!queueJobs.size) return empty
+  // THE ORDER'S DIE STATUS WINS (Paul 2026-10-21, Kyriakatos: "it says it's
+  // ordered — why is it on the list to bring up?"). The Monument card's Die
+  // status (orders.die_stone_status: not_ordered / ordered / in_stock) is what
+  // he reads; a stale stone_received milestone must not overrule it. When the
+  // order carries no die status (older orders) the milestones decide as before.
+  const orderOfJob = new Map()
+  for (const c of (comps || [])) if (c.job_id && c.order_id && !orderOfJob.has(c.job_id)) orderOfJob.set(c.job_id, c.order_id)
+  const dieByOrder = new Map()
+  const orderIds = [...new Set([...orderOfJob.values()])]
+  for (let i = 0; i < orderIds.length; i += 150) {
+    const { data: os, error: oe } = await supabase.from('orders').select('id, die_stone_status').in('id', orderIds.slice(i, i + 150))
+    if (oe) { console.warn('[floor] bringUpReady die status:', oe.message); break }
+    for (const o of (os || [])) dieByOrder.set(o.id, o.die_stone_status || null)
+  }
 
   const [{ data: ms }, proofs, contracted] = await Promise.all([
     supabase.from('job_milestones')
@@ -3057,11 +3071,14 @@ export async function getBringUpReady() {
   for (const jobId of queueJobs) {
     const keys = keysByJob.get(jobId) || {}
     const hasStoneKey = ('stone_received' in keys) || ('stone_in_stock' in keys)
-    const stoneOk = !hasStoneKey || keys.stone_received === 'done' || keys.stone_in_stock === 'done'
+    const dieStatus = dieByOrder.get(orderOfJob.get(jobId)) || null
+    const stoneOk = dieStatus
+      ? dieStatus === 'in_stock'
+      : (!hasStoneKey || keys.stone_received === 'done' || keys.stone_in_stock === 'done')
     const designOk = keys.proof_approved === 'done' || keys.bronze_proof_approved === 'done'
       || !!proofs.get(jobId)?.approved_at
     const isContracted = contracted.has(jobId)
-    byJob.set(jobId, { contracted: isContracted, designOk, stoneOk, hasStoneKey, ready: isContracted && designOk && stoneOk })
+    byJob.set(jobId, { contracted: isContracted, designOk, stoneOk, hasStoneKey, dieStatus, ready: isContracted && designOk && stoneOk })
   }
   const readyByTrack = {}
   let count = 0
@@ -6516,7 +6533,7 @@ export async function getProductionComponents() {
   const { data, error } = await supabase.from('job_components')
     .select(`*,
       job:jobs(id, overall_status, last_update_at),
-      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at, target_completion_date,
+      order:orders(id, order_number, primary_lastname, permit_status, status, signed_at, created_at, target_completion_date, service_types,
         shape, polish_level, granite_color, top_shape, sides, standard_size_code,
         width_inches, depth_inches, thickness_inches, height_inches, base_config, pricing,
         customer:customers(last_name), cemetery:cemeteries(name)),
