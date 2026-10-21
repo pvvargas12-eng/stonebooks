@@ -29,6 +29,7 @@ import { TRACK_LABEL, phaseIndex } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 import CompletionPhotoUploader from './CompletionPhotoUploader'
 import InstallPlanner from './InstallPlanner'
+import { nextInstallMonday, getWeekPlanWithItems, addPlanItem, removePlanItem } from '../lib/meetingData'
 
 // Track's STRICT terminal phase for "stone done" (decision-locked).
 const TERMINAL = { new_stone: 'ready_to_set', bronze: 'mounted_on_base', inscription: 'inscription_complete', door: 'drop_off_doors' }
@@ -54,6 +55,11 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   // default view — gates inform, they never keep a stone off his list.
   const [activeKpi, setActiveKpi] = useState('setlist')
   const [setList, setSetList] = useState(null)     // install_list rows
+  // SCHEDULED INSTALLS = the Install Planner's week list (Paul 2026-10-21: "on
+  // the order I can press add to scheduled installs and it would add it to
+  // that list; once added I want it shaded"). The next install week's plan,
+  // lane 'set' — the same rows the planner's Build / Scheduled views read.
+  const [weekPlan, setWeekPlan] = useState(null)   // { week, planId, byJob: Map(job_id → item) }
   const [addOpen, setAddOpen] = useState(false)
   const [addQ, setAddQ] = useState('')
   const [listBusy, setListBusy] = useState(null)   // job id mid-write
@@ -77,6 +83,16 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const [view, setView] = useState('board')        // 'board' | 'planner'
   const effJobs = useMemo(() => (jobs || []).map(j => jobOverrides.get(j.id) || j), [jobs, jobOverrides])
 
+  const loadWeekPlan = async () => {
+    try {
+      const week = await nextInstallMonday()
+      const r = await getWeekPlanWithItems(week)
+      if (!r.ok) { setWeekPlan({ week, planId: null, byJob: new Map() }); return }
+      const byJob = new Map()
+      for (const it of (r.items || [])) if (it.lane === 'set' && it.job_id && !byJob.has(it.job_id)) byJob.set(it.job_id, it)
+      setWeekPlan({ week, planId: r.plan.id, byJob })
+    } catch { setWeekPlan({ week: null, planId: null, byJob: new Map() }) }
+  }
   const load = useCallback(async () => {
     const [d, l] = await Promise.all([
       getProductionComponents(),
@@ -86,7 +102,24 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     setSetList(l || [])
     const now = new Date(); setMonthKey(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
     setTodayMs(now.getTime())
+    loadWeekPlan()
   }, [])
+  const addToWeek = async (row) => {
+    if (!weekPlan?.planId || !row?.jobId) return
+    setListBusy(row.jobId)
+    const r = await addPlanItem({ planId: weekPlan.planId, lane: 'set', jobId: row.jobId, orderId: row.orderId || null })
+    setListBusy(null)
+    if (!r.ok) { alert(r.error || 'Could not add it to scheduled installs.'); return }
+    loadWeekPlan()
+  }
+  const removeFromWeek = async (row, item) => {
+    if (!item?.id) return
+    setListBusy(row.jobId)
+    const r = await removePlanItem(item.id)
+    setListBusy(null)
+    if (!r.ok) { alert(r.error || 'Could not take it off scheduled installs.'); return }
+    loadWeekPlan()
+  }
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   // Index components by job_id → track + phases + cemetery/order context.
@@ -354,6 +387,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   const canAct = activeKpi !== 'done'
   const cardProps = {
     onOpenJob, onOpenOrderDetail, canAct, onSchedule: openSchedule, onMarkInstalled: openInstall,
+    weekJobs: weekPlan?.byJob || null, weekOf: weekPlan?.week || null, onAddToWeek: addToWeek, onRemoveFromWeek: removeFromWeek,
     onRemove: activeKpi !== 'done' ? removeFromList : null, listBusy, todayMs,
     onGate: activeKpi !== 'done' ? changeGate : null, gateBusy,
   }
@@ -382,7 +416,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
           </button>
           {/* Paul 2026-10-08: "Scheduled Installs on the installation page
               below Install Planner" — the office's blocker list, one click. */}
-          <button type="button" className="pf-lp-btn ib-plan-btn ib-plan-btn-green" onClick={() => setView('scheduled')} title="This week's scheduled stones with their blockers — balances first">
+          <button type="button" className="pf-lp-btn ib-plan-btn ib-plan-btn-blue" onClick={() => setView('scheduled')} title="The scheduled installs list — the week the cards' blue button adds to, with every blocker">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7.5-8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
             Scheduled Installs
           </button>
@@ -558,7 +592,8 @@ function GateSelect({ tone, label, value, options, onChange, disabled, title }) 
   )
 }
 
-function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0, onGate = null, gateBusy = null }) {
+function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0, onGate = null, gateBusy = null, weekJobs = null, weekOf = null, onAddToWeek = null, onRemoveFromWeek = null }) {
+  const weekItem = weekJobs ? (weekJobs.get(row.jobId) || null) : null
   // Component track when one exists, else the job type — a bronze job whose
   // components predate BRONZE-WIRE still wears its BRONZE SERVICES tag.
   const cardTrack = row.track || ({ new_stone: 'new_stone', bronze: 'bronze', inscription: 'inscription', mausoleum_door: 'door' }[row.jobType] || null)
@@ -606,7 +641,7 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
     && row.gates4.paid !== false && row.gates4.fdn !== false
     && row.gates4.permit !== false && row.gates4.blasted !== false
   return (
-    <div className={`ib-card${row.onList ? ' ib-card-list' : ''}`}>
+    <div className={`ib-card${row.onList ? ' ib-card-list' : ''}${weekItem ? ' ib-card-week' : ''}`}>
       <div className="ib-card-top">
         <button type="button" className="ib-card-fam" onClick={() => onOpenJob?.(row.jobId)}>{row.family}</button>
         {readyNow && <span className="ib-ready">READY TO INSTALL</span>}
@@ -666,10 +701,19 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
       )}
       {row.installed && <div className="ib-installed">✓ Installed</div>}
       {row.scheduled && row.scheduledDate && <div className="ib-sched">📅 Scheduled {row.scheduledDate}</div>}
+      {weekItem && <div className="ib-week">ON SCHEDULED INSTALLS{weekOf ? ` · week of ${weekOf.slice(5, 7)}/${weekOf.slice(8, 10)}` : ''}</div>}
       {row.unmet && row.unmet.length > 0 && <div className="ib-blocked">Blocked: {row.unmet.join(' + ')}</div>}
       {canAct && (
         <div className="ib-card-actions">
-          {!row.scheduled && <button type="button" className="ib-act" onClick={() => onSchedule?.(row)}>Schedule install</button>}
+          {/* Paul 2026-10-21: the blue button IS the Scheduled Installs list —
+              press it on the card, the stone lands on the planner's week list;
+              press again to take it off. The date comes from the planner. */}
+          {weekItem
+            ? <button type="button" className="ib-act ib-act-week on" disabled={listBusy === row.jobId} title="On the scheduled installs list — click to take it off"
+                onClick={() => onRemoveFromWeek?.(row, weekItem)}>On scheduled installs ✓</button>
+            : <button type="button" className="ib-act ib-act-week" disabled={listBusy === row.jobId || !onAddToWeek} title="Put this stone on the scheduled installs list (the planner's week)"
+                onClick={() => onAddToWeek?.(row)}>Add to scheduled installs</button>}
+          {!row.scheduled && !weekItem && onSchedule && <button type="button" className="ib-act" title="Pick an install date right here (stamps the milestone)" onClick={() => onSchedule?.(row)}>Set a date</button>}
           <button type="button" className="ib-act ib-act-go" onClick={() => onMarkInstalled?.(row)}>Mark installed</button>
           {onRemove && (
             <button type="button" className="ib-act ib-act-x" disabled={listBusy === row.jobId}
@@ -743,6 +787,12 @@ const IB_CSS = `
   .ib-plan-stack { flex-direction: column; align-items: flex-end; gap: 8px; }
   .ib-plan-btn-green { border-color: #34d399; background: linear-gradient(135deg, #0f2a1d 0%, #1a212b 60%); color: #34d399; box-shadow: 0 0 0 1px rgba(52,211,153,0.15), 0 6px 18px rgba(52,211,153,0.12); }
   .ib-plan-btn-green:hover { color: #6ee7b7; box-shadow: 0 0 0 1px rgba(52,211,153,0.3), 0 10px 24px rgba(52,211,153,0.2); }
+  .ib-plan-btn-blue { border-color: #60a5fa; background: linear-gradient(135deg, #0f1f3a 0%, #1a212b 60%); color: #93c5fd; box-shadow: 0 0 0 1px rgba(96,165,250,0.15), 0 6px 18px rgba(96,165,250,0.12); }
+  .ib-plan-btn-blue:hover { color: #bfdbfe; box-shadow: 0 0 0 1px rgba(96,165,250,0.3), 0 10px 24px rgba(96,165,250,0.2); }
+  .ib-card-week { background: #111c2e; border-color: #2f5586; box-shadow: inset 3px 0 0 #3b82f6; }
+  .ib-week { font-size: 10px; font-weight: 800; letter-spacing: .08em; color: #93c5fd; margin-top: 6px; }
+  .ib-act-week { border-color: #2f5586; background: #14213a; color: #93c5fd; }
+  .ib-act-week.on { background: #2f5586; border-color: #3b82f6; color: #fff; }
   .ib-flag-sel { position: relative; cursor: pointer; display: inline-flex; align-items: center; }
   .ib-flag-sel select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; }
   .ib-flag-sel select:disabled { cursor: default; }

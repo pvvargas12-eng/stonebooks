@@ -11,6 +11,15 @@ Paul: "another tab inside payments next to zelle reconcile for collecting balanc
 - Verified on the dev server through a temporary `/smoke-collect` route (removed before commit) over nine stubbed orders across every stage: tiles summed per stage with IN REACH counting each order once; Priority put the install list first with the scheduled stone on top; Balance owed re-sorted; the Blasting queue tile filtered; Notes opened inline; the composer prefilled To/subject/message and the gate rendered the recipient + formatted letter; Cancel paths clean; long cemetery names and the 24px total ellipsize instead of leaking (the IN REACH tile spans two columns). Lint + build green. The live writes (log rows, the actual send) sit behind the auth wall — Paul's first click.
 - **Gotcha for next time:** `engineRowGrandTotal` returns 0 until `lib/orderRates` has loaded (it registers the engine) — PaymentsTab gets it through SalesMode; a standalone mount of anything that prices rows must import orderRates itself.
 
+## Round ADD-TO-SCHEDULED (2026-10-21): the set-list card's blue button IS the scheduled installs list
+
+Paul (Installation page): "Schedule install — a different color, not green; the Scheduled Installs button a different color, and that to be the same thing — on the order I press add to scheduled installs and it adds it to that list; once added I want it shaded so I know."
+
+- **One list behind both:** the Install Planner's week list (`week_plans` / `week_plan_items`, lane `set`, the next install Monday via `nextInstallMonday()` — the same week the planner opens on). `InstallBoard` loads it (`loadWeekPlan`, `weekPlan.byJob`) alongside the set list.
+- **Card:** the green-neighbor "Schedule install" is gone. Its spot holds a **blue "Add to scheduled installs"** (`addPlanItem`, 23505 = already there) that becomes **"On scheduled installs ✓"** (click again = `removePlanItem`). A card on the list is **shaded blue** (`.ib-card-week`, blue left rail) with an "ON SCHEDULED INSTALLS · week of M/D" line. The old date picker survives as a quiet **"Set a date"** for stones not on the list (it stamps the install milestone directly — the planner's M–F buttons are the normal path).
+- **Top button:** SCHEDULED INSTALLS is blue now (`.ib-plan-btn-blue`), the same blue as the card button — press it to see the list the cards fill.
+- Lint 0 errors, build green. Behind the auth wall — Paul's first click.
+
 ## Round LINES-AHEAD + ONE-CARD + NEXT-LINE (2026-10-21): plan installs off the assembly line, one card per order, move a stone to the next line
 
 Paul (floor screenshot): "for my setting schedule I want to pull from my assembly list — right now it blocks that; I want to plan ahead the next week assuming those get done — a banner in blue ON ASSEMBLY LINE, same in the print view. I don't want duplicates like Lugo and Kyriakatos. I want to move stones to the next week / next line, like Rubinstein and Flores — put them on the next queue."
