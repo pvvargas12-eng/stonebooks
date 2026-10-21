@@ -17,6 +17,7 @@ Paul: "in Stonebooks Field in floor when I view the lines I want to be able to c
 
 - **`src/field/ProductionFloorScreen.jsx` Lines block is no longer read-only.** An open line shows **+ ADD STONE** (bottom sheet: the same pool as the desktop Line Planner — new-stone dies off the board, on no line, STONE orders only, meeting the bring-up gates; one row per order with "2 dies" when it is a double; search; `→ L1` adds every die of that order via `addStonesToLine` with the phone's person as `added_by`) and every stone tile wears a **×** (`removeLineItem`; blasted "out" tiles have none — they left by themselves). Both carry the field-standard **8-second undo** (add → the new items are removed and, on a running line, the pieces come back off the board; remove → re-added). The empty-line text reads "tap + ADD STONE" instead of pointing at the desktop.
 - Lint 0 errors, build green. On-phone tap-through is Paul's.
+- **Deploy note:** Vercel queued the two pushes for ~20 minutes and then built them OUT OF ORDER — the planner commit (older) finished last and took Production, leaving this (newer) commit built but not promoted; an EMPTY commit does not create a deployment at all. A real one-line change re-triggered a build of head. Lesson: after back-to-back pushes, verify the live bundle carries the NEWEST commit, not just "a" deployment.
 
 ## Fix PLANNER-POOL + PEEK-GATES (2026-10-21): the recommended rail tells the truth, and the preview answers the two questions
 
