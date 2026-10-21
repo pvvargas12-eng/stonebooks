@@ -139,6 +139,16 @@ export async function getWeekPlanWithItems(weekStartISO) {
 }
 
 // Read-only fetch (no auto-create) — for history/scoring of past weeks.
+// Items of several plans at once (the Install Planner's rolling backlog reads
+// the neighbouring weeks' lists).
+export async function listPlanItemsForPlans(planIds = []) {
+  const ids = [...new Set((planIds || []).filter(Boolean))]
+  if (!ids.length) return []
+  const { data, error } = await supabase.from('week_plan_items').select('*').in('plan_id', ids)
+  if (error) { console.warn('[meeting] listPlanItemsForPlans:', error.message); return [] }
+  return data || []
+}
+
 export async function peekWeekPlan(weekStartISO) {
   const { data: plan } = await supabase.from('week_plans').select('*').eq('week_start', weekStartISO).maybeSingle()
   if (!plan) return { ok: true, plan: null, items: [] }

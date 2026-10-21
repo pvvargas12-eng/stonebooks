@@ -36,7 +36,7 @@ import {
 import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import {
-  isoOf, mondayOf, addDays, listWeekPlans, kindFromPlans, nextInstallMonday,
+  isoOf, mondayOf, addDays, listWeekPlans, kindFromPlans, nextInstallMonday, listPlanItemsForPlans,
   getWeekPlanWithItems, addPlanItem, removePlanItem, peekWeekPlan,
 } from '../lib/meetingData'
 import { listInstallReminders, remindersFor, addInstallReminder, doneInstallReminder } from '../lib/installReminders'
@@ -187,6 +187,13 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   // `rolled` = what this load rolled in, shown as a strip.
   const [rolled, setRolled] = useState([])
   const [pastBatches, setPastBatches] = useState([])   // older batches of this kind (for cleanup on place)
+  // ROLLING BACKLOG (Paul 2026-10-21: "I want all of the orders ready to be
+  // scheduled shown on both weeks unless it's scheduled for a day — on the
+  // next week I want to see everything that wasn't scheduled the week prior,
+  // this way I can build depth"). Other weeks' list rows + far batches, so a
+  // stone with no day anywhere shows on every week until it gets one.
+  const [otherItems, setOtherItems] = useState([])     // week_plan_items of the neighbouring weeks' plans
+  const [farBatches, setFarBatches] = useState([])     // batches of this kind in the weeks after this one
   const [todayIso] = useState(() => todayISO())
   // Stops whose job the parent's getJobs no longer carries (a CLOSED job —
   // the closeout after an install drops it) are fetched one by one so the
@@ -218,7 +225,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
 
   const load = useCallback(async () => {
     if (!week) return
-    const [ps, p0, bs, old, sl, hotRows, fl] = await Promise.all([
+    const [ps, p0, bs, old, sl, hotRows, fl, fut] = await Promise.all([
       listWeekPlans(),
       getWeekPlanWithItems(week),
       getBatches({ from: week, to: addDays(week, 6), kind: cfg.batchKind }).catch(() => []),
@@ -226,6 +233,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
       cfg.key === 'set' ? getInstallList().catch(() => []) : Promise.resolve([]),
       getHotListItems().catch(() => []),
       cfg.key === 'set' ? listFloorLines().catch(() => []) : Promise.resolve([]),
+      getBatches({ from: addDays(week, 7), to: addDays(week, 63), kind: cfg.batchKind }).catch(() => []),
     ])
     // Stones still on a line (not blasted) — the planner can pull them too.
     setOnLine(new Set((fl || []).filter(l => l.status !== 'complete')
@@ -259,6 +267,9 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
     if (p.ok) { setPlan(p); setErr(null) } else setErr(p.error)
     setBatches(bs || [])
     setPastBatches(old || [])
+    setFarBatches(fut || [])
+    const neighbours = (ps || []).filter(w => w.week_start !== week && w.week_start >= addDays(week, -28) && w.week_start <= addDays(week, 63))
+    setOtherItems(neighbours.length ? await listPlanItemsForPlans(neighbours.map(w => w.id)).catch(() => []) : [])
     // Stops whose job isn't in the loaded set (closed after the install) —
     // fetch them so they read as done and drop off the list.
     const loadedIds = new Set(jobs.map(j => j.id))
@@ -299,11 +310,31 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   const doneIds = new Set()
   for (const it of (plan?.items || [])) if (it.lane === cfg.lane && it.job_id && isDone(jobById.get(it.job_id))) doneIds.add(it.job_id)
   for (const b of batches) for (const l of (b.batch_jobs || [])) if (isDone(jobById.get(l.job_id))) doneIds.add(l.job_id)
-  const weekItems = (plan?.items || []).filter(it => it.lane === cfg.lane && it.job_id && !doneIds.has(it.job_id))
-  const onWeek = new Set(weekItems.map(it => it.job_id))
   const dayOfJob = new Map()
   const batchOfJob = new Map()
   for (const b of batches) for (const l of (b.batch_jobs || [])) { dayOfJob.set(l.job_id, b.scheduled_date); batchOfJob.set(l.job_id, b) }
+  // This week's own rows …
+  const ownItems = (plan?.items || []).filter(it => it.lane === cfg.lane && it.job_id && !doneIds.has(it.job_id))
+  const ownIds = new Set(ownItems.map(it => it.job_id))
+  // … a day ANYWHERE (past, this week, the weeks ahead) …
+  const dayAnywhere = new Map()
+  for (const b of [...pastBatches, ...batches, ...farBatches]) for (const l of (b.batch_jobs || [])) if (!l.completed_at) dayAnywhere.set(l.job_id, b.scheduled_date)
+  // … and the CARRIED rows: other weeks' list stones with no day anywhere —
+  // they show here too (earliest week first, each job once) until placed.
+  const weekOfPlan = new Map((plans || []).map(w => [w.id, w.week_start]))
+  const carried = []
+  const seenCarry = new Set()
+  for (const it of [...otherItems].sort((a, b) => String(weekOfPlan.get(a.plan_id) || '').localeCompare(String(weekOfPlan.get(b.plan_id) || '')))) {
+    if (it.lane !== cfg.lane || !it.job_id || it.outcome === 'dropped') continue
+    if (ownIds.has(it.job_id) || seenCarry.has(it.job_id) || doneIds.has(it.job_id)) continue
+    const job = jobById.get(it.job_id)
+    if (!job || isDone(job) || dayAnywhere.has(it.job_id)) continue
+    seenCarry.add(it.job_id)
+    carried.push({ ...it, _carried: true, _fromWeek: weekOfPlan.get(it.plan_id) || null })
+  }
+  // Own rows with a day in ANOTHER week live on that week's list, not here.
+  const weekItems = [...ownItems.filter(it => !dayAnywhere.has(it.job_id) || dayOfJob.has(it.job_id)), ...carried]
+  const onWeek = new Set(weekItems.map(it => it.job_id))
   const days = DAYS.map((label, i) => {
     const iso = addDays(week || isoOf(mondayOf()), i)
     const dayBatches = batches.filter(b => b.scheduled_date === iso)
@@ -339,6 +370,14 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
     if (!job) return { ok: false, error: 'Job not loaded' }
     const cemId = cemIdOf(job)
     if (!cemId) return { ok: false, error: `${famOf(job)} has no cemetery linked — link one on the order first.` }
+    // A carried stone (another week's list) joins THIS week's plan the moment
+    // it gets a day here; its old row goes unless that week is already finished.
+    if (!ownIds.has(jobId)) {
+      const src = carried.find(it => it.job_id === jobId)
+      const a = await addPlanItem({ planId: plan.plan.id, lane: cfg.lane, jobId, orderId: job.order?.id || null, title: famOf(job) })
+      if (!a.ok) return a
+      if (src && src._fromWeek && !(addDays(src._fromWeek, 4) < todayIso)) await removePlanItem(src.id).catch(() => {})
+    }
     const prev = batchOfJob.get(jobId)
     if (prev) { const r = await removeJobFromBatch(prev.id, jobId); if (!r.ok) return r }
     // A rolled-over job may still sit on an OLD week's trip (the Scheduler
@@ -374,13 +413,13 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   // planner lands on next week.
   const moveWeekForward = () => run(async () => {
     const next = addDays(week, 7)
-    const n = weekItems.length, t = batches.length
+    const n = ownItems.length, t = batches.length
     if (!n && !t) return { ok: false, error: 'Nothing on this week to move.' }
     if (!window.confirm(`Move this week's ${n} ${n === 1 ? cfg.thing : cfg.things} and ${t} trip${t === 1 ? '' : 's'} to the week of ${fmtDay(next)}? Days keep their weekday (Mon → Mon).`)) return { ok: true }
     const np = await getWeekPlanWithItems(next)
     if (!np.ok) return np
     const onNext = new Set((np.items || []).filter(it => it.lane === cfg.lane).map(it => it.job_id))
-    for (const it of weekItems) {
+    for (const it of ownItems) {
       if (!onNext.has(it.job_id)) {
         const a = await addPlanItem({ planId: np.plan.id, lane: cfg.lane, jobId: it.job_id, orderId: it.order_id || null, title: it.title || null })
         if (!a.ok) return a
@@ -489,6 +528,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
         <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, cfg.openAction)}>{famOf(job)}</button>
         <HotTag on={isHot(job)} /><LineTag on={isOnLine(job)} />
         {trackTag(job)}
+        {onWeekRow?._carried && <span className="ip-carry" title="On an earlier week's list with no day yet — give it a day here, or leave it for later">FROM WEEK OF {onWeekRow._fromWeek ? `${onWeekRow._fromWeek.slice(5, 7)}/${onWeekRow._fromWeek.slice(8, 10)}` : '—'}</span>}
         <span className="ip-meta">{[job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
         {gateChips(job, cfg, isOnLine(job))}
         <ReminderChips list={list} busy={busy} onDone={remDone} />
@@ -871,6 +911,7 @@ const IP_CSS = `
   .ip-hot { font-size: 9px; font-weight: 900; letter-spacing: .08em; color: #fff; background: #dc2626; border-radius: 999px; padding: 2px 8px; white-space: nowrap; box-shadow: 0 0 0 1px rgba(220,38,38,.35), 0 0 10px rgba(220,38,38,.35); }
   .ip-line { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #e4ecf7; color: #1d4ed8; border: 1px solid #93c5fd; white-space: nowrap; }
   .ip-g.line { background: #e4ecf7; color: #1d4ed8; border-color: #93c5fd; }
+  .ip-carry { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #1f2937; color: #cbd5e1; border: 1px solid #334155; white-space: nowrap; }
   .ip-fam { font-size: 13px; font-weight: 700; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
   .ip-fam-btn { font: inherit; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .ip-fam-btn:hover { color: #fbbf24; }
