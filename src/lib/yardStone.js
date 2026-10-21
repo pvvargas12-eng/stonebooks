@@ -26,6 +26,38 @@ export const YARD_TYPES = [
 export const yardTypeLabel = (code) => YARD_TYPES.find(t => t.code === String(code || '').toLowerCase())?.label
   || (code ? String(code).replace(/\b\w/g, c => c.toUpperCase()) : '')
 
+// CATEGORIES (Paul 2026-10-21, the founding walk): the first question on the
+// phone — "grass, hickey, slant, single upright, double upright… then size,
+// shape, polish, color". Stored in inventory_stock.category; item_type stays
+// the coarse type every matcher reads (single / double upright → die).
+export const YARD_CATEGORIES = [
+  { code: 'grass',          label: 'Grass marker',   type: 'grass' },
+  { code: 'hickey',         label: 'Hickey',         type: 'hickey' },
+  { code: 'slant',          label: 'Slant',          type: 'slant' },
+  { code: 'single_upright', label: 'Single upright', type: 'die' },
+  { code: 'double_upright', label: 'Double upright', type: 'die' },
+  { code: 'base',           label: 'Base',           type: 'base' },
+  { code: 'backer',         label: 'Backer',         type: 'backer' },
+  { code: 'other',          label: 'Other',          type: 'other' },
+]
+export const categoryToType = (code) => YARD_CATEGORIES.find(c => c.code === code)?.type || 'other'
+export const categoryLabel = (code) => YARD_CATEGORIES.find(c => c.code === code)?.label || null
+// A row's category: stored, else the 1:1 types (slant / grass / hickey / base /
+// backer); a bare die has no stored category → its type label.
+export const yardCategoryLabel = (row) => categoryLabel(row?.category)
+  || categoryLabel(YARD_CATEGORIES.find(c => c.type === row?.item_type && c.code === row?.item_type)?.code)
+  || yardTypeLabel(row?.item_type)
+// From an ORDER's shape (the "Die is here" path): double-die → double upright, etc.
+export const categoryFromShape = (shape, piece = 'die') => {
+  if (piece === 'base') return 'base'
+  const s = String(shape || '').toLowerCase()
+  if (/double-die|double-upright|upright-double/.test(s)) return 'double_upright'
+  if (/slant/.test(s)) return 'slant'
+  if (/hickey/.test(s)) return 'hickey'
+  if (/grass|flat|marker|lawn/.test(s)) return 'grass'
+  return 'single_upright'
+}
+
 // Which chip rows apply to which type.
 const DIE_FAMILY = new Set(['die', 'slant', 'hickey', 'grass', 'marker', 'flat', 'upright'])
 export const isDieFamily = (t) => DIE_FAMILY.has(String(t || '').toLowerCase())
@@ -36,8 +68,10 @@ export const hasTopShape = (t) => isDieFamily(t) && !['grass', 'flat', 'marker']
 // Chip sets — code + the short word the contract line prints.
 export const TOP_SHAPE_CHIPS = TOP_SHAPES.map(t => ({ code: t.code, label: t.label }))
 export const POLISH_CHIPS = POLISH_LEVELS.map(p => ({ code: p.code, label: p.code.startsWith('P') ? p.code : p.label }))
-export const BASE_FINISH_CHIPS = BASE_FINISHES.map(f => ({ code: f.code, label: f.code }))
-export const BASE_TOP_CHIPS = [{ code: 'pol', label: 'POL TOP' }, { code: 'frost', label: 'FROST TOP' }]
+// Paul's words on the walk: "BRP, pol top, sawed or saw back".
+const BASE_CHIP_WORDS = { SB: 'Saw back', RB: 'Rock back', BRP: 'BRP', AP: 'All polished', AS: 'All sawn' }
+export const BASE_FINISH_CHIPS = BASE_FINISHES.map(f => ({ code: f.code, label: BASE_CHIP_WORDS[f.code] || f.code }))
+export const BASE_TOP_CHIPS = [{ code: 'pol', label: 'Pol top' }, { code: 'frost', label: 'Frost top' }]
 
 export const CONDITIONS = [
   { code: 'good', label: 'Good' }, { code: 'chip', label: 'Chip' }, { code: 'crack', label: 'Crack' },

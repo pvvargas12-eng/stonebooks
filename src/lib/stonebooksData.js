@@ -11202,6 +11202,7 @@ export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
   const txt = (v) => (v == null ? null : (String(v).trim() || null))
   const base = {
     item_type: txt(item.item_type) ? String(item.item_type).trim().toLowerCase() : null,
+    category: txt(item.category) ? String(item.category).trim().toLowerCase() : null,   // YARD-CATEGORY (2026-10-21)
     color: txt(item.color), size: txt(item.size), specs: txt(item.specs),
     sides: txt(item.sides), back: txt(item.back),
     zone: txt(item.zone), crate: txt(item.crate), location: txt(item.location),
@@ -11297,8 +11298,17 @@ export async function setOrderPieceInStock(orderId, piece) {
 // finish, top_finish, polish_margin, specs, condition, condition_note).
 export async function markPieceHere({ orderId, orderNumber = null, family = null, piece = 'die', spec = {}, zone = null, crate = null, spot = null, by = null }) {
   if (!orderId) return { ok: false, error: 'Missing order.' }
+  // The category from the order's shape (double-die → double upright …).
+  let category = spec.category || null
+  if (!category) {
+    const { data: sh } = await supabase.from('orders').select('shape').eq('id', orderId).maybeSingle()
+    const s = String(sh?.shape || '').toLowerCase()
+    category = piece === 'base' ? 'base'
+      : /double-die|double-upright|upright-double/.test(s) ? 'double_upright'
+      : /slant/.test(s) ? 'slant' : /hickey/.test(s) ? 'hickey' : /grass|flat|marker|lawn/.test(s) ? 'grass' : 'single_upright'
+  }
   const r = await tagYardStone({
-    ...spec, item_type: piece === 'base' ? 'base' : 'die', zone, crate, spot,
+    ...spec, category, item_type: piece === 'base' ? 'base' : 'die', zone, crate, spot,
     status: 'allocated', assigned_to: family || null, allocated_order_id: orderId,
   }, { by })
   if (!r.ok) return r

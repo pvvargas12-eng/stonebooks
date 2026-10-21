@@ -26,7 +26,7 @@ import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TR
 // Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
 // stonebooks field to view the lines — active then other ones"). Read-only
 // on the phone: the strip + the L1 #07 tags; building lives on the desktop.
-import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem, moveStoneToNextLine, closeFloorLine } from '../lib/floorLines'
+import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem, moveStoneToNextLine, closeFloorLine, createFloorLine } from '../lib/floorLines'
 
 const LINE_TONE = {
   ready: { bg: 'transparent', bd: '#2d7a4f', fg: '#1d7a55' },
@@ -360,7 +360,12 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
               to see every stone on it with where it physically is. */}
           {!loading && track === 'new_stone' && liveLines.length > 0 && (
             <div style={{ margin: '0 2px 14px' }}>
-              <div className="fl-label" style={{ marginBottom: 6 }}>Lines</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <div className="fl-label" style={{ marginBottom: 0 }}>Lines</div>
+                <button type="button" className="fl-verb" style={{ borderColor: '#9A7209', color: '#9A7209' }} disabled={busyId === 'newline'}
+                  title="Plan the next line — it waits on deck until the running one closes"
+                  onClick={() => run('newline', () => createFloorLine(), null, null)}>+ NEW LINE</button>
+              </div>
               {liveLines.map(l => {
                 const open = lineOpen === l.id || (lineOpen === null && l.status === 'active')
                 const c = l.counts

@@ -60,7 +60,7 @@ import { loadStonePositionData, stoneVerdict, verdictChipText, isStoneOrder } fr
 import { contractDieLabel, contractBaseLabel, tradeDimsFromLabel } from '../lib/jobComponents'
 import { displayColorLabel, GRANITE_COLORS, orderHasBase, SHAPES } from '../lib/monumentCatalog'
 import {
-  YARD_TYPES, yardTypeLabel, isBaseType, hasTopShape, isDieFamily,
+  yardTypeLabel, isBaseType, hasTopShape, isDieFamily, YARD_CATEGORIES, categoryToType, yardCategoryLabel,
   TOP_SHAPE_CHIPS, POLISH_CHIPS, BASE_FINISH_CHIPS, BASE_TOP_CHIPS, CONDITIONS, conditionLabel,
   yardStoneSpecLine, yardStoneWhere, specFromOrder, sizeMateriallyDifferent, looksLikeStone, stoneFromSearch,
 } from '../lib/yardStone'
@@ -71,7 +71,7 @@ const FRESH_MS = 90 * DAY_MS
 
 const familyOf = (o) => String(o?.primary_lastname || o?.customer?.last_name || o?.customer?.first_name || '').trim().toUpperCase()
 const orderLabel = (o) => [familyOf(o) || '—', o?.order_number].filter(Boolean).join(' ')
-const stoneTitle = (it) => [yardTypeLabel(it.item_type) || 'Stone', it.color].filter(Boolean).join(' · ')
+const stoneTitle = (it) => [yardCategoryLabel(it) || yardTypeLabel(it.item_type) || 'Stone', it.color].filter(Boolean).join(' · ')
 const me = () => getActiveStaffUser() || null
 
 // The tape a stone should wear, from its row.
@@ -512,10 +512,11 @@ function SpecFields({ type, fields, onChange, colors }) {
       <div className="fl-lab">Size (trade format)</div>
       <input className="fl-input" placeholder="1-10 x 0-8 x 2-0" value={fields.size || ''} onChange={set('size')}
         onBlur={() => onChange({ ...fields, size: formatTradeSize(fields.size) })} />
+      {/* Paul's order on the walk: size → shape · polish (base: finish · top) → color */}
+      <SpecChips type={type} fields={fields} onChange={onChange} />
       <div className="fl-lab">Color</div>
       <input className="fl-input" list="fl-yd-colors" placeholder="e.g. Barre Gray" value={fields.color || ''} onChange={set('color')} />
       <datalist id="fl-yd-colors">{colors.map(c => <option key={c} value={c} />)}</datalist>
-      <SpecChips type={type} fields={fields} onChange={onChange} />
       <div className="fl-lab">Specs</div>
       <input className="fl-input" placeholder="Anything else about the cut" value={fields.specs || ''} onChange={set('specs')} />
     </>
@@ -837,7 +838,9 @@ function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
 function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
   const [tag, setTag] = useState('')
   const [nextHint, setNextHint] = useState(null)
-  const [type, setType] = useState(seed?.item_type || 'die')
+  // CATEGORY first (Paul 2026-10-21) — item_type follows from it.
+  const [category, setCategory] = useState(seed?.category || (seed?.item_type === 'die' || !seed?.item_type ? 'single_upright' : (YARD_CATEGORIES.some(c => c.code === seed.item_type) ? seed.item_type : 'other')))
+  const type = categoryToType(category)
   const [fields, setFields] = useState({ size: seed?.size || '', color: seed?.color || '', specs: seed?.specs || '', top: seed?.top || null, polish_level: seed?.polish_level || null, finish: seed?.finish || null, top_finish: seed?.top_finish || null, polish_margin: !!seed?.polish_margin })
   const [photo, setPhoto] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -857,7 +860,7 @@ function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
   const save = async () => {
     if (busy || !tagOk || taken) return
     setBusy(true); setMsg(null)
-    const r = await tagYardStone({ ...fields, item_type: type, status: 'available' }, { tag: tagNum, by: me() })
+    const r = await tagYardStone({ ...fields, item_type: type, category, status: 'available' }, { tag: tagNum, by: me() })
     if (!r.ok) { setBusy(false); setMsg(r.error || 'Could not save the stone.'); return }
     if (photo) { const p = await uploadYardStonePhoto(r.row.id, photo); if (!p.ok) undo.showError(`Saved, but the photo did not upload: ${p.error}`) }
     setBusy(false)
@@ -882,8 +885,8 @@ function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
       {taken && <div className="fl-yd-warn">{fmtYardTag(tagNum)} is already painted on another stone. Next free is {fmtYardTag(nextHint)}.</div>}
       {!taken && tagOk && nextHint != null && tagNum !== nextHint && <div className="fl-yd-note">Next free number is {fmtYardTag(nextHint)} — you typed {fmtYardTag(tagNum)}.</div>}
 
-      <div className="fl-lab">Type</div>
-      <Chips options={YARD_TYPES} value={type} onChange={(t) => { if (t) setType(t) }} allowNone={false} />
+      <div className="fl-lab">Category</div>
+      <Chips options={YARD_CATEGORIES} value={category} onChange={(c) => { if (c) setCategory(c) }} allowNone={false} />
 
       <SpecFields type={type} fields={fields} onChange={setFields} colors={colors} />
 

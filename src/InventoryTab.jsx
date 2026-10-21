@@ -27,7 +27,7 @@ import InventoryPhotoEtching from './components/InventoryPhotoEtching'
 import InventoryNeedsOrdering from './components/InventoryNeedsOrdering'
 import StonePositionList from './components/StonePositionList'
 import InventorySuppliers from './components/InventorySuppliers'
-import { yardStoneSpecLine, conditionLabel } from './lib/yardStone'
+import { yardStoneSpecLine, conditionLabel, yardCategoryLabel } from './lib/yardStone'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -157,7 +157,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
       if (needle) {
         if (needleNum != null && Number(r.yard_tag) === needleNum) return true
         if (tagOnly) return false
-        const hay = [fmtYardTag(r.yard_tag), r.item_type, r.color, r.size, r.specs, yardStoneSpecLine(r), r.top, r.sides, r.back, r.zone, r.crate, r.spot, r.location, r.assigned_to, r.notes, r.condition_note]
+        const hay = [fmtYardTag(r.yard_tag), r.item_type, yardCategoryLabel(r), r.color, r.size, r.specs, yardStoneSpecLine(r), r.top, r.sides, r.back, r.zone, r.crate, r.spot, r.location, r.assigned_to, r.notes, r.condition_note]
           .filter(Boolean).join(' ').toLowerCase()
         if (!hay.includes(needle)) return false
       }
@@ -395,7 +395,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
                   <td className="inv-tag">{r.yard_tag != null ? fmtYardTag(r.yard_tag) : <span className="inv-muted">—</span>}</td>
                   <td className="inv-loc">{r.zone || '—'}</td>
                   <td className="inv-mono inv-wrap">{[r.crate, r.spot].filter(Boolean).join(' · ') || '—'}</td>
-                  <td>{r.item_type ? titleCase(r.item_type) : '—'}</td>
+                  <td>{yardCategoryLabel(r) || (r.item_type ? titleCase(r.item_type) : '—')}</td>
                   <td className="inv-wrap">{r.color || '—'}</td>
                   <td className="inv-mono">{r.size || '—'}</td>
                   <td className="inv-wrap inv-specs">{yardStoneSpecLine(r, { withSize: false, withColor: false }) || '—'}</td>
@@ -448,7 +448,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
                       {oldRows.map(r => (
                         <tr key={r.id}>
                           <td className="inv-wrap" style={{ fontWeight: 700 }}>{r.assigned_to || <span className="inv-muted">—</span>}</td>
-                          <td>{r.item_type ? titleCase(r.item_type) : '—'}</td>
+                          <td>{yardCategoryLabel(r) || (r.item_type ? titleCase(r.item_type) : '—')}</td>
                           <td className="inv-wrap">{r.color || '—'}</td>
                           <td className="inv-mono">{r.size || '—'}</td>
                           <td>{r.top || '—'}</td>
