@@ -26,7 +26,7 @@ import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TR
 // Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
 // stonebooks field to view the lines — active then other ones"). Read-only
 // on the phone: the strip + the L1 #07 tags; building lives on the desktop.
-import { listFloorLines, lineLabel, itemTone } from '../lib/floorLines'
+import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem } from '../lib/floorLines'
 
 const LINE_TONE = {
   ready: { bg: 'transparent', bd: '#2d7a4f', fg: '#1d7a55' },
@@ -120,6 +120,8 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   const [todayMs, setTodayMs] = useState(0)
   const [lines, setLines] = useState([])
   const [lineOpen, setLineOpen] = useState(null)   // line id expanded in the lines strip
+  const [lineAddFor, setLineAddFor] = useState(null)   // line id with the add sheet open (LINES on the phone)
+  const [lq, setLq] = useState('')
   const load = useCallback(async () => {
     try {
       const [d, rec, ls] = await Promise.all([
@@ -174,6 +176,27 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
     if (undoLabel && undoFn) undo.show(undoLabel, async () => { await undoFn().catch(() => {}); load() })
   }
 
+  // Add to / remove from a line — the field-standard 8s undo reverses each.
+  const addToLine = (line, group) => {
+    const dies = group.pieces.filter(pc => pc.component_type !== 'base')
+    const ids = new Set(dies.map(pc => pc.id))
+    run(group.rep.id, () => addStonesToLine(line.id, dies, { by: actor }),
+      `Added ${famOf(group.rep)} to ${lineLabel(line)}`,
+      async () => {
+        const ls = await listFloorLines().catch(() => [])
+        const its = (ls.find(l => l.id === line.id)?.items || []).filter(it => ids.has(it.component_id))
+        for (const it of its) await removeLineItem(it.id)
+        // A running line put the piece on the board — the undo takes it back off.
+        if (line.status === 'active') for (const pc of dies) await setComponentOnFloor(pc.id, false, { actor, source: 'field' }).catch(() => {})
+      })
+  }
+  const removeFromLine = (line, it) => {
+    const full = compById.get(it.component_id)
+    run(it.id, () => removeLineItem(it.id),
+      `Removed ${full ? famOf(full) : 'the stone'} from ${lineLabel(line)}`,
+      async () => { if (full) await addStonesToLine(line.id, [full], { by: actor }) })
+  }
+
   const advance = (c) => {
     const next = nextPhase(c.track, c.current_phase)
     // Blasting out of the queue hands the piece to the installation list and
@@ -200,6 +223,18 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   // so a name search listed the same order twice. The queue lists the JOB once
   // (die is the face) and adding brings every piece of it — nothing orphaned.
   const queueGroups = groupByOrder(queueSorted)
+
+  // LINES ON THE PHONE (Paul 2026-10-21: "when I view the lines I want to be
+  // able to click on the lines then add and remove"). The pool mirrors the
+  // desktop Line Planner: new-stone dies off the board, on no line, STONE
+  // orders only (an inscription order with a stray die stays out), meeting the
+  // bring-up gates. One row per order; adding takes every die of the order.
+  const onLineIds = new Set(lines.flatMap(l => l.items.map(it => it.component_id)))
+  const isStoneOrder = (o) => { const st = o?.service_types; return !Array.isArray(st) || st.length === 0 || st.some(x => ['NEW_STONE', 'CIVIC_MEMORIAL', 'MAUSOLEUM'].includes(x)) }
+  const linePhases = boardPhases('new_stone')
+  const linePool = groupByOrder((comps || []).filter(c => c.track === 'new_stone' && c.component_type !== 'base' && !c.on_floor
+    && linePhases.includes(c.current_phase) && !onLineIds.has(c.id) && isStoneOrder(c.order) && readyOf(c)))
+  const lineMatches = (c) => { const t = lq.trim().toLowerCase(); return !t || `${famOf(c)} ${metaOf(c)}`.toLowerCase().includes(t) }
   const addToBucket = (g) => {
     const prev = g.pieces.map(p => ({ id: p.id, phase: p.current_phase }))
     run(g.rep.id,
@@ -332,7 +367,13 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                         : l.status === 'on_deck' ? 'Slides in when the running line is blasted out' : `${c.total} / ${l.capacity || 18} built`}
                     </div>
                     {open && (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, marginTop: 10 }}>
+                      <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }} onClick={e => e.stopPropagation()}>
+                        <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
+                          onClick={() => { setLq(''); setLineAddFor(l.id) }}>+ ADD STONE</button>
+                        <span className="fl-spec" style={{ margin: 0 }}>tap × on a stone to take it off</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, marginTop: 8 }}>
                         {l.items.map((it, i) => {
                           const tone = l.status === 'active' ? itemTone(it) : 'deck'
                           const t = LINE_TONE[tone] || LINE_TONE.deck
@@ -340,14 +381,22 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                           return (
                             <div key={it.id} style={{ background: t.bg, border: `1.5px solid ${t.bd}`, color: t.fg, borderRadius: 7, padding: '6px 7px', minWidth: 0, minHeight: 44 }}
                               onClick={e => { e.stopPropagation(); if (full) openPiece(full) }}>
-                              <div style={{ fontSize: 10, fontWeight: 800, opacity: .7, fontFamily: 'var(--font-m, monospace)' }}>#{i + 1}</div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontSize: 10, fontWeight: 800, opacity: .7, fontFamily: 'var(--font-m, monospace)' }}>#{i + 1}</span>
+                                {tone !== 'out' && (
+                                  <button type="button" aria-label="Take this stone off the line" disabled={busyId === it.id}
+                                    onClick={e => { e.stopPropagation(); removeFromLine(l, it) }}
+                                    style={{ font: 'inherit', fontSize: 15, lineHeight: 1, fontWeight: 800, background: 'none', border: 'none', color: 'inherit', opacity: .85, padding: '0 2px', cursor: 'pointer' }}>×</button>
+                                )}
+                              </div>
                               <div style={{ fontSize: 12.5, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{full ? famOf(full) : '—'}</div>
                               {full?.size && <div style={{ fontSize: 9.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'var(--font-m, monospace)' }}>{full.size}</div>}
                             </div>
                           )
                         })}
-                        {l.items.length === 0 && <div className="fl-spec" style={{ gridColumn: '1 / -1' }}>Empty — build it in the Line Planner on the desktop.</div>}
+                        {l.items.length === 0 && <div className="fl-spec" style={{ gridColumn: '1 / -1' }}>Empty — tap + ADD STONE.</div>}
                       </div>
+                      </>
                     )}
                   </div>
                 )
@@ -601,6 +650,44 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
       {/* CONFIRM SIZE — measure the stone that's actually on the line; the
           stencil cutter cuts to THIS (actual runs off an inch from spec).
           Shows up on the desktop Cut list next to STONE IS UP. */}
+      {/* LINES on the phone — the add sheet for one line. */}
+      {lineAddFor && (() => {
+        const line = lines.find(l => l.id === lineAddFor)
+        if (!line) return null
+        const shown = linePool.filter(g => lineMatches(g.rep)).slice(0, 40)
+        return (
+          <>
+            <div className="fl-sheet-scrim" onClick={() => setLineAddFor(null)} />
+            <div className="fl-sheet">
+              <div className="fl-sheet-grab" />
+              <div className="fl-sheet-title">Add to {lineLabel(line)}</div>
+              <div className="fl-label" style={{ color: '#1d7a55' }}>{linePool.length} ready — design approved · stone here · contracted · on no line yet</div>
+              <input className="fl-input" placeholder="Search family, order #, cemetery" value={lq} onChange={e => setLq(e.target.value)} />
+              <div style={{ maxHeight: '48vh', overflowY: 'auto', marginTop: 6 }}>
+                {shown.map(g => {
+                  const c = g.rep
+                  const dies = g.pieces.filter(pc => pc.component_type !== 'base').length
+                  return (
+                    <div key={g.key} className="fl-row" style={{ cursor: 'default' }}>
+                      <div className="fl-rowtop">
+                        <span className="fl-fam" style={{ fontSize: 14.5 }} role={c.job_id || c.order_id ? 'button' : undefined} onClick={() => openPiece(c)}>
+                          {famOf(c)} <AgeDot n={ageDaysOf(c, todayMs)} />
+                        </span>
+                        <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
+                          disabled={busyId === c.id} onClick={() => addToLine(line, g)}>
+                          {busyId === c.id ? '…' : `→ L${line.number}`}
+                        </button>
+                      </div>
+                      <div className="fl-spec">{[dies > 1 ? `${dies} dies` : null, groupMeta(g)].filter(Boolean).join(' · ')}</div>
+                    </div>
+                  )
+                })}
+                {shown.length === 0 && <div className="fl-empty">{lq ? 'Nothing ready matches.' : 'Nothing ready and unassigned — every ready stone is on a line.'}</div>}
+              </div>
+            </div>
+          </>
+        )
+      })()}
       {sizeFor && (
         <>
           <div className="fl-sheet-scrim" onClick={() => setSizeFor(null)} />

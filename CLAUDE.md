@@ -11,6 +11,13 @@ Paul: "another tab inside payments next to zelle reconcile for collecting balanc
 - Verified on the dev server through a temporary `/smoke-collect` route (removed before commit) over nine stubbed orders across every stage: tiles summed per stage with IN REACH counting each order once; Priority put the install list first with the scheduled stone on top; Balance owed re-sorted; the Blasting queue tile filtered; Notes opened inline; the composer prefilled To/subject/message and the gate rendered the recipient + formatted letter; Cancel paths clean; long cemetery names and the 24px total ellipsize instead of leaking (the IN REACH tile spans two columns). Lint + build green. The live writes (log rows, the actual send) sit behind the auth wall — Paul's first click.
 - **Gotcha for next time:** `engineRowGrandTotal` returns 0 until `lib/orderRates` has loaded (it registers the engine) — PaymentsTab gets it through SalesMode; a standalone mount of anything that prices rows must import orderRates itself.
 
+## Round FIELD-LINES (2026-10-21): the phone's Lines block adds and removes
+
+Paul: "in Stonebooks Field in floor when I view the lines I want to be able to click on the lines then add and remove."
+
+- **`src/field/ProductionFloorScreen.jsx` Lines block is no longer read-only.** An open line shows **+ ADD STONE** (bottom sheet: the same pool as the desktop Line Planner — new-stone dies off the board, on no line, STONE orders only, meeting the bring-up gates; one row per order with "2 dies" when it is a double; search; `→ L1` adds every die of that order via `addStonesToLine` with the phone's person as `added_by`) and every stone tile wears a **×** (`removeLineItem`; blasted "out" tiles have none — they left by themselves). Both carry the field-standard **8-second undo** (add → the new items are removed and, on a running line, the pieces come back off the board; remove → re-added). The empty-line text reads "tap + ADD STONE" instead of pointing at the desktop.
+- Lint 0 errors, build green. On-phone tap-through is Paul's.
+
 ## Fix PLANNER-POOL + PEEK-GATES (2026-10-21): the recommended rail tells the truth, and the preview answers the two questions
 
 Paul (Line Planner screenshots): "why is Vamos, an inscription, showing up for my line planner? I need to click on an order and see a quick preview — is the stone here and is the design approved — then an option to go to the order. Seeing lots of duplicates, same order number. Kyriakatos says it's ordered — why is it on the list to bring up?"
