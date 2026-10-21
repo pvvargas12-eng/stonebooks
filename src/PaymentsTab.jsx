@@ -1212,7 +1212,8 @@ function LogIncomingModal({ orders, prefill, onClose, onLogged }) {
   const submit = async () => {
     if (!pick) { setError('Pick an order first.'); return }
     const amt = Number(amount)
-    if (!Number.isFinite(amt) || amt <= 0) { setError('Enter an amount greater than zero.'); return }
+    // 0.00 is allowed: the record-only payment that makes an old order an order.
+    if (!Number.isFinite(amt) || amt < 0) { setError('Enter an amount of 0.00 or more.'); return }
     if (missingCheckRef(method, ref)) { setError('Check number is required for check payments.'); setConfirm(false); return }
     if (!confirm) { setConfirm(true); setError(null); return }
     setBusy(true); setError(null)

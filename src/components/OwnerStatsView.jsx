@@ -17,7 +17,7 @@
 // The type chips re-slice everything on the page. CSV export per table.
 // =============================================================================
 import { useState, useMemo, useEffect } from 'react'
-import { rowGrandTotal, rowTotalPaid, rowBalanceDue, fmtUSD } from '../lib/stonebooksData'
+import { rowGrandTotal, rowMoneyDown, rowBalanceDue, fmtUSD } from '../lib/stonebooksData'
 import { downloadReportCSV } from '../lib/reportsData'
 import { getLineStats } from '../lib/floorLines'
 
@@ -98,7 +98,7 @@ export default function OwnerStatsView({ bundle, now }) {
   // ── ACTIVE NOW — signed + money down, nothing terminal ────────────────────
   const active = useMemo(() => orders.filter(o =>
     !o.archived && !LEAD_STATUSES.has(o.status) && !TERMINAL_STATUSES.has(o.status)
-    && o.signed_at && rowTotalPaid(o) > 0), [orders])
+    && o.signed_at && rowMoneyDown(o)), [orders])
   const activeByType = useMemo(() => {
     const m = new Map()
     for (const o of active) for (const s of servicesOf(o)) {

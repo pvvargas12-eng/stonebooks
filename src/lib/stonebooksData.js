@@ -1858,6 +1858,16 @@ export function rowGrandTotal(order) {
 // Exported in TODAY-COMMAND-CENTER so TodayTab can walk payment lines (each
 // carries .receivedAt + .amount) for month-to-date and week-to-date money math.
 // financial_records is empty in prod; orders.payments[] is the live money truth.
+// MONEY DOWN (Paul 2026-10-21, Wiuff E-26-0969: "this is an old order, I still
+// want a record of it, I don't want money recorded — add a payment of 0.00 so
+// it becomes an order, it's still a lead"). An ORDER is signed/contracted WITH
+// a recorded payment: real money, OR an explicit $0.00 record (a historical
+// order whose money never went through Stonebooks). Drafts with no payment at
+// all stay leads. Every lead-vs-order surface reads this one rule.
+export function rowMoneyDown(order) {
+  if (rowTotalPaid(order) > 0) return true
+  return rowNonVoidedPayments(order).some(p => Number(p.amount) === 0)
+}
 export function rowNonVoidedPayments(order) {
   // Sprint M2 Phase 2.1 — defensive `?? true`: stonebooksData reads rows
   // directly via select('*'), bypassing rowToOrder's read-time auto-lock. A
@@ -2941,7 +2951,7 @@ async function _filterRealWorkJobIds(jobIds) {
       const o = r.order
       if (!o || o.archived) continue
       if (['draft', 'scoping', 'quoted', 'closed', 'cancelled'].includes(o.status)) continue
-      if (rowTotalPaid(o) <= 0) continue
+      if (!rowMoneyDown(o)) continue
       real.add(r.id)
     }
   }
@@ -3101,7 +3111,9 @@ export async function getBringUpReady() {
 export async function recordOrderPayment(orderId, input = {}) {
   if (!orderId) return { ok: false, error: 'Missing order id' }
   const amount = Number(input.amount)
-  if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: 'Enter a payment amount greater than zero.' }
+  // $0.00 is allowed on purpose — the "record only" payment that turns an old
+  // order into an order without inventing money (rowMoneyDown).
+  if (!Number.isFinite(amount) || amount < 0) return { ok: false, error: 'Enter a payment amount of 0.00 or more.' }
 
   const { data: row, error: readErr } = await supabase.from('orders').select('*').eq('id', orderId).single()
   if (readErr || !row) return { ok: false, error: readErr?.message || 'Order not found' }

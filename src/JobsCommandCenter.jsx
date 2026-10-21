@@ -12,7 +12,7 @@
 // reconciliation closes the phantom orders. That drop is expected and correct.
 // =============================================================================
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { getJobs, computeOrderPressure, backfillJobComponents, rowTotalPaid, getProductionComponents, getInstallList } from './lib/stonebooksData'
+import { getJobs, computeOrderPressure, backfillJobComponents, rowMoneyDown, getProductionComponents, getInstallList } from './lib/stonebooksData'
 import { currentStage } from './lib/jobsRowHelpers'
 import { ThreeTrackFunnel } from './components/ProductionFloor'
 import { phaseIndex, trackPhases } from './lib/jobComponents'
@@ -30,7 +30,7 @@ const isRealJob = (j) => {
   const o = j?.order
   if (!o || o.archived) return false
   if (['draft', 'scoping', 'quoted', 'closed', 'cancelled'].includes(o.status)) return false
-  return rowTotalPaid(o) > 0
+  return rowMoneyDown(o)
 }
 // "Being worked" = an on-floor piece past its track's first rung and before
 // its last (e.g. new stone: Brought to Line → Blasting Queue).

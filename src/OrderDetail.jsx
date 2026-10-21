@@ -15,7 +15,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getOrderById, getJobByOrderId, createJobFromOrder, designStatusOptions, statusDimApplies,
-  rowGrandTotal, rowTotalPaid, rowBalanceDue,
+  rowGrandTotal, rowTotalPaid, rowMoneyDown, rowBalanceDue,
   fmtUSD, fmtDate, fmtPhone, statusInfo, customerName, properName,
   computeOrderPressure, getNextRequiredAction,
   getOrderNotes, addOrderNote, updateOrderNote, deleteOrderNote, getCurrentStaffName,
@@ -729,7 +729,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const ensureJobId = async () => {
     if (job?.id) return job.id
     // LEADS never auto-create jobs (audit A3) — see OrdersTab.ensureJobForStatus.
-    const isLead = !order?.signed_at && !(CONTRACTED_STATUSES.includes(order?.status) && rowTotalPaid(order) > 0)
+    const isLead = !order?.signed_at && !(CONTRACTED_STATUSES.includes(order?.status) && rowMoneyDown(order))
     if (isLead) {
       setActionNote('Still a lead — statuses activate once there’s a signed contract or a deposit.')
       return null
@@ -1904,7 +1904,8 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const handleRecordPayment = async () => {
     if (!payModal || payModal.busy) return
     const amount = Number(payModal.amount)
-    if (!Number.isFinite(amount) || amount <= 0) { setPayModal(m => ({ ...m, error: 'Enter an amount greater than zero.' })); return }
+    // 0.00 is allowed: the record-only payment that makes an old order an order.
+    if (!Number.isFinite(amount) || amount < 0) { setPayModal(m => ({ ...m, error: 'Enter an amount of 0.00 or more.' })); return }
     if (missingCheckRef(payModal.method, payModal.ref)) { setPayModal(m => ({ ...m, confirm: false, error: 'Check number is required for check payments.' })); return }
     // Money safety — explicit confirm step before the record is written.
     if (!payModal.confirm) { setPayModal(m => ({ ...m, confirm: true, error: null })); return }
@@ -2044,7 +2045,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // payment = STILL A LEAD, no matter the status, because stones sometimes get
   // ordered before any money lands. Signed-but-unpaid still reads LEAD on
   // purpose. Terminal states excluded.
-  const isLead = paid <= 0 && !['closed', 'cancelled', 'archived'].includes(order.status)
+  const isLead = !rowMoneyDown(order) && !['closed', 'cancelled', 'archived'].includes(order.status)
 
   const familyName =
     (order.primary_lastname && String(order.primary_lastname).trim()) ||
@@ -3997,6 +3998,9 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                   <input type="number" className="sb-od-note-input" value={payModal.amount} disabled={payModal.confirm}
                     onChange={e => setPayModal(m => ({ ...m, amount: e.target.value }))} placeholder="0.00" />
                 </span>
+                {Number(payModal.amount) === 0 && String(payModal.amount).trim() !== '' && (
+                  <span className="sb-od-hint" style={{ display: 'block', marginTop: 4 }}>0.00 = record only — makes an old order an order without recording money.</span>
+                )}
               </label>
               <label className="sb-od-modal-field">
                 <span>Date received</span>

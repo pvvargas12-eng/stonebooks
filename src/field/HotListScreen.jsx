@@ -10,13 +10,13 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   HOT_CATEGORIES, getHotListItems, addHotListItem, markHotListItemDone, removeHotListItem,
-  getJobs, rowTotalPaid, dueDateTone, properName,
+  getJobs, rowMoneyDown, dueDateTone, properName,
 } from '../lib/stonebooksData'
 import { familyNameOf } from './fieldShared'
 
 const LEAD_STATUSES = new Set(['draft', 'scoping', 'quoted'])
 const TERMINAL_STATUSES = new Set(['closed', 'cancelled'])
-const isRealWork = (o) => o && !o.archived && !LEAD_STATUSES.has(o.status) && !TERMINAL_STATUSES.has(o.status) && rowTotalPaid(o) > 0
+const isRealWork = (o) => o && !o.archived && !LEAD_STATUSES.has(o.status) && !TERMINAL_STATUSES.has(o.status) && rowMoneyDown(o)
 
 export default function HotListScreen({ onOpenJob, undo = null }) {
   const [items, setItems] = useState(null)

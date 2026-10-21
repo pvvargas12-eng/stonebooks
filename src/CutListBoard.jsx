@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   getJobs, getStencilCutList, addToStencilCutList, removeFromStencilCutList,
   getCurrentProofsByJob, designStateFor, setOrderStoneStatus, orderStatusWritePlan, syncFloorStencilCut,
-  customerName, properName, rowTotalPaid, getStoneUpByJob,
+  customerName, properName, rowMoneyDown, getStoneUpByJob,
 } from './lib/stonebooksData'
 import { rowToOrder } from './SalesMode'
 import { buildDieSpec, displayGraniteColor } from './lib/monumentCatalog'
@@ -46,7 +46,7 @@ const isRealWork = (job) => {
   const o = job.order
   if (!o || o.archived) return false
   if (PRE_CONTRACT.has(o.status) || TERMINAL.has(o.status)) return false
-  if (rowTotalPaid(o) <= 0) return false
+  if (!rowMoneyDown(o)) return false
   return true
 }
 

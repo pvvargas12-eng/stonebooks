@@ -17,7 +17,11 @@ export function isLeadStatus(status) { return LEAD_STATUSES.includes(status) }
 export const CONTRACTED_STATUSES = ['contracted', 'in_production', 'installed', 'paid_in_full', 'closed']
 export function isOrderRow(o, paid) {
   const contracted = !!o?.signed_at || CONTRACTED_STATUSES.includes(o?.status)
-  return contracted && (paid ?? 0) > 0
+  // Money down = real money, or an explicit $0.00 record (an old order whose
+  // money never went through Stonebooks — Paul 2026-10-21). Same rule as
+  // stonebooksData.rowMoneyDown; this file stays dependency-free.
+  const zeroRecord = Array.isArray(o?.payments) && o.payments.some(p => p && !p.voided && (p.locked ?? true) && Number(p.amount) === 0)
+  return contracted && ((paid ?? 0) > 0 || zeroRecord)
 }
 
 // Who's holding the ball. side 'us' renders in red/warning — WE are the

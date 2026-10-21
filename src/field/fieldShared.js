@@ -1,14 +1,14 @@
 // =============================================================================
 // fieldShared.js — tiny helpers shared by the Field Mode screens
 // =============================================================================
-import { rowTotalPaid } from '../lib/stonebooksData'
+import { rowMoneyDown } from '../lib/stonebooksData'
 
 // LEAD = no real (locked, non-voided) money down and not a terminal status —
 // the same money-half rule the desktop LEAD pills use.
 export function isLeadRaw(orderRow) {
   if (!orderRow) return false
   if (['closed', 'cancelled', 'archived'].includes(orderRow.status)) return false
-  return (rowTotalPaid(orderRow) || 0) <= 0
+  return !rowMoneyDown(orderRow)
 }
 
 export function familyNameOf(orderRow) {

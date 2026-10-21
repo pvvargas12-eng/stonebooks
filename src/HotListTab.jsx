@@ -22,7 +22,7 @@ import {
   HOT_CATEGORIES, getHotListItems, addHotListItem, markHotListItemDone, removeHotListItem,
   getJobs, getProductionComponents, getInstallList,
   installGates, dueDateTone, dueRelativeText,
-  rowTotalPaid, rowBalanceDue, properName, fmtUSD, customerName,
+  rowTotalPaid, rowMoneyDown, rowBalanceDue, properName, fmtUSD, customerName,
 } from './lib/stonebooksData'
 
 const INSTALL_KEYS = ['installed', 'door_installed', 'work_completed']
@@ -33,7 +33,7 @@ const SUPER_HOT_AT = 4
 function isRealWork(order) {
   if (!order || order.archived) return false
   if (LEAD_STATUSES.has(order.status) || TERMINAL_STATUSES.has(order.status)) return false
-  return rowTotalPaid(order) > 0
+  return rowMoneyDown(order)
 }
 
 function ageDays(order) {
