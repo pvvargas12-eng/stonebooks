@@ -26,7 +26,7 @@ import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TR
 // Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
 // stonebooks field to view the lines — active then other ones"). Read-only
 // on the phone: the strip + the L1 #07 tags; building lives on the desktop.
-import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem, moveStoneToNextLine } from '../lib/floorLines'
+import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem, moveStoneToNextLine, closeFloorLine } from '../lib/floorLines'
 
 const LINE_TONE = {
   ready: { bg: 'transparent', bd: '#2d7a4f', fg: '#1d7a55' },
@@ -382,6 +382,14 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }} onClick={e => e.stopPropagation()}>
                         <button type="button" className="fl-verb" style={{ borderColor: '#1d7a55', color: '#1d7a55' }}
                           onClick={() => { setLq(''); setLineAddFor(l.id) }}>+ ADD STONE</button>
+                        {l.status === 'active' && (
+                          <button type="button" className="fl-verb" style={{ borderColor: '#B3261E', color: '#B3261E' }} disabled={busyId === l.id}
+                            onClick={() => {
+                              const n = (l.open || []).length
+                              if (!window.confirm(n > 0 ? `Close ${lineLabel(l)}? ${n} stone${n === 1 ? '' : 's'} not blasted move to the next line.` : `Close ${lineLabel(l)}?`)) return
+                              run(l.id, () => closeFloorLine(l.id), null, null)
+                            }}>CLOSE LINE</button>
+                        )}
                         <span className="fl-spec" style={{ margin: 0 }}>tap × on a stone to take it off</span>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, marginTop: 8 }}>

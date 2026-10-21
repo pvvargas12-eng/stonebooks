@@ -16,7 +16,7 @@ import { getProductionComponents, getBringUpReady, fmtDate, fmtUSD } from '../li
 import { boardPhases, phaseLabel } from '../lib/jobComponents'
 import {
   reconcileFloorLines, createFloorLine, updateFloorLine, deleteFloorLine, addStonesToLine,
-  removeLineItem, moveLineItem, startFloorLine, itemTone, lineLabel,
+  removeLineItem, moveLineItem, startFloorLine, closeFloorLine, itemTone, lineLabel,
   DEFAULT_LINE_CAPACITY,
   attachLineMoney,
 } from '../lib/floorLines'
@@ -231,9 +231,21 @@ export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = n
               {l.status === 'on_deck' ? 'Start now →' : 'Start this line →'}
             </button>
           )}
-          {/* No "Mark complete" (Paul 2026-10-12: "we individually mark off
-              each stone when blasted") — a line completes by itself when its
-              last stone is blasted. */}
+          {/* A line completes by itself when its last stone is blasted. CLOSE
+              LINE (Paul 2026-10-21) is the override for the week's end: every
+              stone not blasted moves to the next line, this one is done, the
+              next one starts — the running number moves on. */}
+          {l.status === 'active' && (
+            <button type="button" className="pf-btn pf-btn-deny" disabled={busy}
+              title="Close this line — stones not blasted move to the next line, and the next line starts"
+              onClick={() => {
+                const n = c.open
+                const msg = n > 0
+                  ? `Close ${lineLabel(l)}? ${n} stone${n === 1 ? '' : 's'} not blasted will move to the next line, and that line starts now.`
+                  : `Close ${lineLabel(l)}? Every stone on it is blasted.`
+                if (window.confirm(msg)) run(() => closeFloorLine(l.id))
+              }}>Close line</button>
+          )}
           {l.status !== 'active' && l.status !== 'complete' && c.total === 0 && (
             <button type="button" className="pf-btn pf-btn-deny" disabled={busy} onClick={() => run(() => deleteFloorLine(l.id))}>Delete</button>
           )}

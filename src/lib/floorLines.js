@@ -153,7 +153,7 @@ export async function deleteFloorLine(id) {
 // Append stones (components) to a line. A stone already on another line is
 // MOVED (component_id is unique). If the target line is RUNNING, the stone
 // goes on the board at Ready to Bring Up right away.
-export async function addStonesToLine(lineId, comps = [], { by = null } = {}) {
+export async function addStonesToLine(lineId, comps = [], { by = null, place = true } = {}) {
   if (!lineId || !comps.length) return { ok: true, added: 0 }
   const { data: line } = await supabase.from('floor_lines').select('id, started_at, completed_at').eq('id', lineId).single()
   if (!line) return { ok: false, error: 'Line not found' }
@@ -167,7 +167,7 @@ export async function addStonesToLine(lineId, comps = [], { by = null } = {}) {
     const { error } = await supabase.from('floor_line_items').upsert(row, { onConflict: 'component_id' })
     if (error) { console.warn('[lines] add:', error.message); continue }
     added++
-    if (line.started_at && !line.completed_at && !c.on_floor) {
+    if (place && line.started_at && !line.completed_at && !c.on_floor) {
       await setComponentOnFloor(c.id, true, { actor, phase: 'ready_to_bring_up', source: 'line' })
     }
   }
@@ -247,6 +247,34 @@ export async function completeFloorLine(lineId) {
   return error ? { ok: false, error: error.message } : { ok: true }
 }
 
+// CLOSE A LINE (Paul 2026-10-21: "some stones may not have made it up or
+// didn't get blasted — I want to be able to close the lines and whatever
+// stone wasn't marked complete gets pushed to the next line"). Every row not
+// yet blasted moves to the next non-complete line (created when there is
+// none), the line is stamped complete, and the reconcile pass that follows
+// starts the next line — the pieces already up stay on the board at their
+// step, so the running line simply changes its number.
+export async function closeFloorLine(lineId) {
+  const lines = await listFloorLines()
+  const line = lines.find(l => l.id === lineId)
+  if (!line) return { ok: false, error: 'Line not found' }
+  if (line.completed_at) return { ok: true, moved: 0 }
+  const open = (line.items || []).filter(it => !itemIsBlasted(it))
+  let moved = 0
+  if (open.length) {
+    let to = lines.find(l => l.number > line.number && l.status !== 'complete') || null
+    if (!to) { const r = await createFloorLine({ track: line.track || 'new_stone' }); if (!r.ok) return r; to = r.line }
+    for (const it of open) {
+      const r = await moveLineItem(it.id, to.id)
+      if (r.ok) moved++
+    }
+  }
+  const r = await completeFloorLine(lineId)
+  if (!r.ok) return r
+  await reconcileFloorLines({ track: line.track || 'new_stone' })
+  return { ok: true, moved }
+}
+
 // The reconcile — runs on every board/planner load (cheap: two small reads):
 //   1. a running line whose stones are ALL blasted → completed_at
 //   2. nothing running + an unstarted line exists → start the lowest number
@@ -296,6 +324,23 @@ export async function reconcileFloorLines({ track = 'new_stone', floorComps = nu
       }
     }
     if (target) { await addStonesToLine(target.id, strays, { by: 'auto' }); changed = true }
+  }
+  if (changed) { lines = await listFloorLines({ track }); changed = false }
+
+  // 3b. dies blasted OFF the line (Paul went to the order and marked it
+  //     blasted) since the running line started → logged under that line so
+  //     its stats tell the truth (Paul 2026-10-21: "all of those changed to
+  //     blasted this week logged under line 1"). Row only — the stone stays
+  //     off the board (it already handed off to the install list).
+  const running = activeLines(lines)[0] || null
+  if (running?.started_at) {
+    const onLine2 = new Set(lines.flatMap(l => l.items.map(it => it.component_id)))
+    const { data: blasted } = await supabase.from('job_components')
+      .select('id, job_id, order_id, track, component_type, on_floor, current_phase, phase_changed_at')
+      .eq('track', track).eq('on_floor', false).neq('component_type', 'base')
+      .eq('current_phase', 'ready_to_set').gte('phase_changed_at', running.started_at)
+    const late = (blasted || []).filter(c => !onLine2.has(c.id))
+    if (late.length) { await addStonesToLine(running.id, late, { by: 'auto', place: false }); changed = true }
   }
   if (changed) lines = await listFloorLines({ track })
   return lines
