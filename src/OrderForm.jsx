@@ -40,6 +40,7 @@ import {
   MONUMENT_TYPES, INSCRIPTION_TIERS, ACID_WASH_BY_TYPE,
   computeFormLineItems, priceOrderTotals, addonPrice, stoneFaceArea,
   BRONZE_SIZES, BRONZE_BACKERS, BRONZE_BACKER_MATCH, BRONZE_WORK_TYPES,
+  releaseSignedLines,
 } from './lib/orderRates'
 
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
@@ -266,7 +267,9 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
 
   const unlockContract = () => {
     if (!window.confirm('Unlock this signed contract?\n\nThe signature is voided and the pricing opens up for editing. The contract must be signed again afterward (Save and re-sign). Storage copies of the signed PDF are kept.')) return
-    setOrder(o => ({
+    // Unlock releases the signed pins into plain overrides: the contract
+    // price stays put through the edit (SIGNED PRICES NEVER MOVE).
+    setOrder(o => releaseSignedLines({
       ...o,
       customerSignature: null, repSignature: null,
       customerSignatureUrl: null, customerSignaturePath: null,

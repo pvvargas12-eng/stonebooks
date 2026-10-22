@@ -190,7 +190,8 @@ export function foldBaseRows(items, order) {
   const extrasSum = list.reduce((s, it) => s + (BASE_FOLD_CODES.has(String(it.code)) ? (Number(it.amount) || 0) : 0), 0)
   const folded = { ...list[baseIdx] }
   const natural = (Number(list[baseIdx].amount) || 0) + extrasSum
-  const ov = order?.pricing?.lineItemOverrides?.['base-block']
+  const manual = order?.pricing?.lineItemOverrides?.['base-block']
+  const ov = (manual != null && manual !== '') ? manual : signedPins(order)['base-block']   // signed pin under the manual override
   folded.amount = (ov != null && ov !== '') ? Number(ov) : natural
   folded.label = buildBaseSpec(order || {})
   return list
@@ -211,6 +212,79 @@ function legacyNonBaseOverrides(overrides) {
     out[code] = val
   }
   return out
+}
+
+// ── SIGNED PRICES NEVER MOVE (2026-10-22 incident) ──────────────────────────
+// The July 2026 price sheet (10-16) moved the die / base / inscription lines of
+// 51 SIGNED contracts, because every surface re-prices from the LIVE catalog
+// (Poniatowski E-26-0406: signed $2,995 die, rendered $3,195; a balance email
+// went out for $200 too much). The rule now:
+//   • The moment an order saves signed/locked, every engine line is pinned at
+//     its amount — pricing.signedLines = { code: amount } (pinSignedLines).
+//   • While the order is locked the engine reads those pins UNDER the manual
+//     overrides, so a human's price edit after signing still wins, but no
+//     catalog / Settings → Pricing change can reach the contract.
+//   • Unlocking releases the pins into plain lineItemOverrides (releaseSignedLines)
+//     so the price does not jump mid-edit; staff reset a line from the Finance
+//     card if they really want the live rate, then Save and re-sign re-pins.
+//   • Settings → Pricing pins every signed order BEFORE the new rates apply
+//     (pinAllSignedOrders) — the guarantee that covers every signing path,
+//     including signatures stamped server-side (e-sign) or by SQL.
+export const isPricingLocked = (o) => !!(o?.signedAt || o?.pricingLockedAt || o?.signed_at || o?.pricing_locked_at)
+function signedPins(order) {
+  const sl = order?.pricing?.signedLines
+  return (isPricingLocked(order) && sl && typeof sl === 'object' && !Array.isArray(sl)) ? sl : {}
+}
+export function pinSignedLines(order) {
+  const pr = order?.pricing || {}
+  if (!isPricingLocked(order)) return order
+  if (pr.signedLines && typeof pr.signedLines === 'object' && !Array.isArray(pr.signedLines)) return order
+  const signedLines = {}
+  for (const it of priceOrderTotals(order).items) {
+    if (it.custom || it.quotePending) continue        // custom lines carry their own amount; unpriced lines are not a price
+    signedLines[String(it.code)] = Number(it.amount) || 0
+  }
+  return { ...order, pricing: { ...pr, signedLines, signedLinesAt: new Date().toISOString() } }
+}
+export function releaseSignedLines(order) {
+  const pr = order?.pricing || {}
+  if (!pr.signedLines || typeof pr.signedLines !== 'object') return order
+  const next = { ...pr, lineItemOverrides: { ...pr.signedLines, ...(pr.lineItemOverrides || {}) } }
+  delete next.signedLines; delete next.signedLinesAt; delete next.signedLinesNote
+  return { ...order, pricing: next }
+}
+// Pin every signed/locked order that has no pins yet, at the rates in effect
+// RIGHT NOW. Called by savePricingConfig before the new rates are stored, so a
+// rate change can never move a contract. Optimistic per-row guard on updated_at;
+// a row edited mid-sweep is retried once, then the sweep refuses (and so does the
+// rate change) rather than leave a contract exposed.
+export async function pinAllSignedOrders() {
+  if (!supabase) return { ok: false, error: 'Supabase is not configured' }
+  try {
+    let pinned = 0
+    for (let pass = 0; pass < 2; pass++) {
+      const { data, error } = await supabase.from('orders').select('*')
+        .or('signed_at.not.is.null,pricing_locked_at.not.is.null')
+      if (error) return { ok: false, error: error.message }
+      const todo = (data || []).filter(r => !(r.pricing?.signedLines && typeof r.pricing.signedLines === 'object'))
+      if (todo.length === 0) return { ok: true, pinned }
+      const stale = []
+      for (const row of todo) {
+        const o = pinSignedLines(rowToOrder(row))
+        if (!o.pricing?.signedLines) continue
+        const pricing = { ...(row.pricing || {}), signedLines: o.pricing.signedLines, signedLinesAt: o.pricing.signedLinesAt }
+        const { data: upd, error: upErr } = await supabase.from('orders')
+          .update({ pricing }).eq('id', row.id).eq('updated_at', row.updated_at).select('id')
+        if (upErr) return { ok: false, error: upErr.message }
+        if (upd && upd.length) pinned++; else stale.push(row.order_number)
+      }
+      if (stale.length === 0) return { ok: true, pinned }
+      if (pass === 1) return { ok: false, error: 'still being edited: ' + stale.join(', ') }
+    }
+    return { ok: true, pinned }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
 }
 
 // Options-only helper (NOT part of priceOrderTotals — the total reads the SELECTED
@@ -599,6 +673,9 @@ export function computeFormLineItems(order) {
   // B). The retired wizard map (pricing.overrides) is read as a NON-base fallback
   // so un-migrated legacy orders price identically (lineItemOverrides wins).
   const ov = { ...legacyNonBaseOverrides(pr.overrides), ...(pr.lineItemOverrides || {}) }
+  for (const [code, amt] of Object.entries(signedPins(order))) {
+    if (ov[code] == null || ov[code] === '') ov[code] = amt     // signed pin, under any manual override
+  }
   for (const it of items) {
     if (it.code === 'base-block' || BASE_FOLD_CODES.has(it.code)) continue
     if (ov[it.code] != null && ov[it.code] !== '') it.amount = Number(ov[it.code])
@@ -919,6 +996,11 @@ export async function getEffectivePricingConfig() {
 // Persist the full edited config and re-apply immediately (form reprices live).
 export async function savePricingConfig(config, userId) {
   try {
+    // SIGNED PRICES NEVER MOVE: freeze every signed contract at today's rates
+    // before the new ones are stored. If that cannot be guaranteed, the rate
+    // change is refused.
+    const pin = await pinAllSignedOrders()
+    if (!pin.ok) return { ok: false, error: 'Rates NOT changed - signed contracts could not be pinned first (' + pin.error + ')' }
     const { error } = await supabase.from('pricing_config').upsert({
       tenant_id: PRICING_TENANT_ID,
       config,

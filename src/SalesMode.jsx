@@ -1504,6 +1504,15 @@ export async function saveOrder(order) {
     order.deceased.some(d => d.firstName || d.lastName)
   if (!hasSubstance) return { ok: false, reason: 'empty' }
 
+  // SIGNED PRICES NEVER MOVE (2026-10-22): a signed/locked order pins every
+  // engine line at save (pricing.signedLines) so no later catalog or
+  // Settings → Pricing change can reach it. Dynamic import = this file's
+  // existing orderRates cycle guard. No-op once pinned.
+  if (order.signedAt || order.pricingLockedAt) {
+    const { pinSignedLines } = await import('./lib/orderRates')
+    order = pinSignedLines(order)
+  }
+
   // Step 1: customer. Resolve the customer to write — prefer the entered
   // Customer card; if it's empty (a deceased-only order, which still "has
   // substance" and saves), FALL BACK to the primary deceased's name so the

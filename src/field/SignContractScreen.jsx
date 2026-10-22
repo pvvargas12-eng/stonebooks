@@ -20,6 +20,7 @@ import {
   rowToOrder, saveOrder, uploadSignature, generateContractPDF, SignatureCanvas,
 } from '../SalesMode'
 import ConfirmSend from '../components/ConfirmSend'
+import { releaseSignedLines } from '../lib/orderRates'
 import { isLeadRaw, familyNameOf } from './fieldShared'
 
 const fmtDay = (iso) => {
@@ -259,7 +260,8 @@ export default function SignContractScreen({ who, onClose }) {
     setBusy(true); setErr(null)
     try {
       const stamp = `[CONTRACT UNSIGNED on the sales iPad${who?.name ? ` by ${who.name}` : ''} on ${new Date().toLocaleString()}: prior signature voided.]`
-      const unsigned = {
+      // Unlock releases the signed pins into plain overrides (SIGNED PRICES NEVER MOVE).
+      const unsigned = releaseSignedLines({
         ...order,
         status: 'draft',
         customerSignature: null, repSignature: null,
@@ -268,7 +270,7 @@ export default function SignContractScreen({ who, onClose }) {
         customerPrintedName: null,
         signedAt: null, pricingLockedAt: null,
         notes: (order.notes || '') + (order.notes ? '\n\n' : '') + stamp,
-      }
+      })
       const res = await saveOrder(unsigned)
       if (!res.ok) throw new Error(res.error?.message || res.reason || 'Save failed')
       logOrderActivity(order.id, {

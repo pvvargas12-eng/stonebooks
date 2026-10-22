@@ -1973,6 +1973,13 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     const d = order.signed_at ? String(order.signed_at).slice(0, 10) : todayISO()
     const patch = { signed_at: `${d}T00:00:00` }
     if (['draft', 'scoping', 'quoted'].includes(order.status)) patch.status = 'contracted'
+    // SIGNED PRICES NEVER MOVE: marking the paper contract signed pins every
+    // engine line at today's amount, same as the wizard / phone signature.
+    try {
+      const { pinSignedLines } = await import('./lib/orderRates')
+      const pinned = pinSignedLines(rowToOrder({ ...order, ...patch }))
+      if (pinned?.pricing?.signedLines) patch.pricing = { ...(order.pricing || {}), signedLines: pinned.pricing.signedLines, signedLinesAt: pinned.pricing.signedLinesAt }
+    } catch (e) { console.warn('[signedLines] pin skipped:', e?.message) }
     const res = await bulkUpdateOrders([orderId], patch)
     if (!res.ok) { setActionNote(res.error || 'Could not mark contracted.'); return }
     setOrder(o => ({ ...o, ...patch }))
