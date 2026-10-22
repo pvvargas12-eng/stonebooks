@@ -11198,7 +11198,8 @@ const _isTagClash = (msg) => /uq_inventory_stock_yard_tag|duplicate key|23505/i.
 // else the next free one — and on a clash with a concurrent mint the next
 // number is tried again (up to 5 times). verified_at/by are stamped: tagging a
 // stone means a human stood in front of it.
-export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
+// The row every yard-stone insert writes (single + bulk) — one builder.
+function _yardStoneRow(item = {}, by = null) {
   const txt = (v) => (v == null ? null : (String(v).trim() || null))
   const base = {
     item_type: txt(item.item_type) ? String(item.item_type).trim().toLowerCase() : null,
@@ -11221,6 +11222,10 @@ export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
   // A base carries no die chips and a die no base chips — never cross-store.
   if (base.item_type === 'base') { base.top = null; base.polish_level = null }
   else { base.finish = null; base.top_finish = null; base.polish_margin = false }
+  return base
+}
+export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
+  const base = _yardStoneRow(item, by)
   if (!base.item_type) return { ok: false, error: 'Pick the type of stone.' }
   const explicit = Number(tag)
   const hasExplicit = Number.isInteger(explicit) && explicit > 0
@@ -11243,6 +11248,34 @@ export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
     } catch (e) { return { ok: false, error: String(e?.message || e) } }
   }
   return { ok: false, error: 'Could not find a free number — try again.' }
+}
+// BULK-STOCK (Paul 2026-10-22): "add 5 slants, log it and give me 001, 002,
+// 003 to label them". One identical row per number, start..start+count-1, in
+// ONE insert so the run is all-or-nothing; the unique yard_tag index rejects a
+// clash and the caller gets the numbers that are already painted.
+export async function tagYardStonesBulk(item = {}, { count = 1, startTag = null, by = null } = {}) {
+  const base = _yardStoneRow(item, by)
+  if (!base.item_type) return { ok: false, error: 'Pick the type of stone.' }
+  const n = Number(count)
+  if (!Number.isInteger(n) || n < 1 || n > 500) return { ok: false, error: 'Quantity must be 1 to 500.' }
+  let start = Number(startTag)
+  if (!Number.isInteger(start) || start <= 0) {
+    const nx = await getNextYardTag()
+    if (!nx.ok) return { ok: false, error: nx.error }
+    start = nx.next
+  }
+  const tags = Array.from({ length: n }, (_, i) => start + i)
+  try {
+    const { data, error } = await supabase.from('inventory_stock').insert(tags.map(t => ({ ...base, yard_tag: t }))).select()
+    if (!error) return { ok: true, rows: data || [], tags, start, end: start + n - 1 }
+    if (_isTagClash(error.message)) {
+      const { data: hit } = await supabase.from('inventory_stock').select('yard_tag').gte('yard_tag', start).lte('yard_tag', start + n - 1)
+      const taken = (hit || []).map(r => Number(r.yard_tag)).filter(Boolean).sort((a, b) => a - b)
+      const nx = await getNextYardTag()
+      return { ok: false, taken, next: nx.next, error: `${taken.map(fmtYardTag).join(', ') || 'A number in that run'} is already painted. Next free is ${fmtYardTag(nx.next)}.` }
+    }
+    return { ok: false, error: error.message }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
 // The order's spec columns for the is-here prefill (contractDieLabel /

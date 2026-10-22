@@ -54,7 +54,7 @@ import {
   getActiveStaffUser, properName, customerName,
   fmtYardTag, getNextYardTag, tagYardStone, markPieceHere,
   moveYardStone, flagYardStoneProblem, linkYardStoneToOrder, unlinkYardStone, uploadYardStonePhoto,
-  setYardStoneCondition, getOrderSpecRow, INVENTORY_STATUS_LABEL,
+  setYardStoneCondition, getOrderSpecRow, INVENTORY_STATUS_LABEL, tagYardStonesBulk,
 } from '../lib/stonebooksData'
 import { loadStonePositionData, stoneVerdict, verdictChipText, isStoneOrder } from '../lib/stonePosition'
 import { contractDieLabel, contractBaseLabel, tradeDimsFromLabel } from '../lib/jobComponents'
@@ -114,6 +114,8 @@ export default function InventoryScreen({ undo }) {
   const [q, setQ] = useState('')
   const [stockOpen, setStockOpen] = useState(false)   // "No order, it's stock"
   const [stockPrefill, setStockPrefill] = useState(null)
+  const [bulkOpen, setBulkOpen] = useState(false)     // "Add bulk to stock" (BULK-STOCK 2026-10-22)
+  const [bulkDone, setBulkDone] = useState(null)      // { tags, rows, tape, where, whereLine, label }
   const [counting, setCounting] = useState(false)
   const [countBusy, setCountBusy] = useState(null)
   const [nowMs, setNowMs] = useState(0)
@@ -215,7 +217,8 @@ export default function InventoryScreen({ undo }) {
   }, [orderHits, specById])
 
   // When does the free-stock form show?
-  const showStock = !counting && (stockOpen || stoneTyped || (!!needle && !tagOnly && orderHits.length === 0 && data))
+  const showStock = !counting && !bulkOpen && (stockOpen || stoneTyped || (!!needle && !tagOnly && orderHits.length === 0 && data))
+  const showBulk = !counting && bulkOpen && !needle
   const stockSeed = useMemo(() => {
     if (stockPrefill) return stockPrefill
     if (stoneTyped) { const s = stoneFromSearch(q); return { item_type: s.item_type || 'die', size: s.size ? parseSizeInput(s.size).trade : '' } }
@@ -297,14 +300,23 @@ export default function InventoryScreen({ undo }) {
           <div className="fl-eyebrow">Add stone</div>
           <input className="fl-search" style={{ marginBottom: 8 }} type="search" inputMode="search"
             placeholder="Search order (family) or type the stone"
-            value={q} onChange={e => { setQ(e.target.value); if (stockPrefill) setStockPrefill(null); if (stockOpen && e.target.value.trim()) setStockOpen(false) }} />
+            value={q} onChange={e => { setQ(e.target.value); if (stockPrefill) setStockPrefill(null); if (stockOpen && e.target.value.trim()) setStockOpen(false); if (bulkOpen && e.target.value.trim()) setBulkOpen(false) }} />
           <div className="fl-yd-addrow">
             <button type="button" className={`fl-chip-btn${showStock ? ' on' : ''}`}
-              onClick={() => { setStockOpen(v => !v); if (!stockOpen) { setQ(''); setStockPrefill(null) } }}>
-              No order, it&apos;s stock
+              onClick={() => { setStockOpen(v => !v); if (!stockOpen) { setQ(''); setStockPrefill(null); setBulkOpen(false) } }}>
+              ADD TO STOCK
             </button>
             <span className="fl-yd-hint">{needle ? (stoneTyped ? 'Reads as a stone — the form is below.' : orderHits.length ? 'Tap the piece you are holding.' : 'No open order with that name — tag it as stock, or check the spelling.') : 'A family name finds the order. Dimensions or a type go straight to stock.'}</span>
           </div>
+          {/* BULK-STOCK (Paul 2026-10-22): the same stone × many, one run of numbers. */}
+          {!needle && (
+            <div className="fl-yd-addrow2">
+              <button type="button" className={`fl-chip-btn${showBulk ? ' on' : ''}`}
+                onClick={() => { setBulkOpen(v => !v); if (!bulkOpen) { setStockOpen(false); setStockPrefill(null) } }}>
+                Add bulk to stock
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -333,8 +345,15 @@ export default function InventoryScreen({ undo }) {
           onMinted={async (row) => { await refreshStock(); setAfterMint({ row, tag: row.yard_tag, tape: 'Blue tape' }) }} />
       )}
 
+      {/* BULK STOCK — the same stone × many */}
+      {showBulk && (
+        <BulkStockForm undo={undo} takenTags={takenTags} zones={zones} lastWhere={lastWhere}
+          onClose={() => setBulkOpen(false)}
+          onDone={async (res) => { await refreshStock(); setLastWhere(w => ({ ...w, zone: res.where.zone, crate: res.where.crate })); setBulkOpen(false); setBulkDone(res) }} />
+      )}
+
       {/* COUNT THE YARD */}
-      {!needle && !showStock && (
+      {!needle && !showStock && !showBulk && (
         <button type="button" className={counting ? 'fl-btn fl-btn-green' : 'fl-btn fl-btn-ghost'}
           onClick={() => { setCounting(v => !v); setNowMs(Date.now()) }}>
           {counting ? `Counting — ${confirmed}/${countable.length} confirmed · tap to stop` : 'Count the yard'}
@@ -424,6 +443,7 @@ export default function InventoryScreen({ undo }) {
         <AfterMintSheet mint={afterMint} zones={zones} undo={undo} lastWhere={lastWhere}
           onDone={async (line, where) => { setAfterMint(null); if (where) setLastWhere(where); await refreshStock(); setConfirmLine(line) }} />
       )}
+      {bulkDone && <BulkDoneSheet res={bulkDone} onDone={() => setBulkDone(null)} />}
       {action && (
         <StoneActionSheet action={action} zones={zones} orders={stoneOrders} undo={undo}
           onClose={() => setAction(null)}
@@ -939,6 +959,118 @@ function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
   )
 }
 
+// ADD BULK TO STOCK (Paul 2026-10-22): "it could be backers, slants, or
+// whatever flat markers the same exact thing... i would give you the quantity
+// then you would add all and give me a label for each... 5 slants → 001, 002,
+// 003". Category + the same spec fields as one stone, how many, the first
+// number (defaults to the next free), where the pile sits (once, for all).
+// Save inserts the whole run in ONE call (all-or-nothing); the sheet after
+// lists every number to paint. Condition = good; a chipped one gets marked
+// from its row afterwards.
+function BulkStockForm({ undo, takenTags, zones, lastWhere, onClose, onDone }) {
+  const [category, setCategory] = useState('slant')
+  const type = categoryToType(category)
+  const [fields, setFields] = useState({ size: '', color: '', specs: '', top: null, polish_level: null, finish: null, top_finish: null, polish_margin: false })
+  const [qty, setQty] = useState('')
+  const [start, setStart] = useState('')
+  const [nextHint, setNextHint] = useState(null)
+  const [zone, setZone] = useState(lastWhere.zone || '')
+  const [crate, setCrate] = useState(lastWhere.crate || '')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const colors = useMemo(() => activeColorNames(), [])
+
+  useEffect(() => {
+    let on = true
+    getNextYardTag().then(r => { if (!on) return; setNextHint(r.next); setStart(String(r.next)) })
+    return () => { on = false }
+  }, [])
+
+  const n = Number(qty), startNum = Number(start)
+  const qtyOk = Number.isInteger(n) && n >= 1 && n <= 500
+  const startOk = Number.isInteger(startNum) && startNum > 0
+  const endNum = startOk && qtyOk ? startNum + n - 1 : null
+  const clash = useMemo(() => {
+    if (!startOk || !qtyOk) return []
+    const out = []
+    for (let t = startNum; t <= endNum; t++) if (takenTags.has(t)) out.push(t)
+    return out
+  }, [startOk, qtyOk, startNum, endNum, takenTags])
+  const bump = (d) => setQty(String(Math.max(1, Math.min(500, (Number(qty) || 0) + d))))
+
+  const save = async () => {
+    if (busy || !qtyOk || !startOk || clash.length) return
+    setBusy(true); setMsg(null)
+    const r = await tagYardStonesBulk(
+      { ...fields, item_type: type, category, status: 'available', zone: zone.trim() || null, crate: crate.trim() || null },
+      { count: n, startTag: startNum, by: me() })
+    setBusy(false)
+    if (!r.ok) {
+      setMsg(r.error || 'Could not save the stones.')
+      if (r.next) { setNextHint(r.next); setStart(String(r.next)) }
+      undo.showError(r.error || 'Could not save the stones.')
+      return
+    }
+    const whereLine = [zone.trim() && `Zone ${zone.trim()}`, crate.trim() && `crate ${crate.trim()}`].filter(Boolean).join(' ')
+    onDone({ tags: r.tags, rows: r.rows, tape: 'Blue tape', where: { zone: zone.trim(), crate: crate.trim() }, whereLine, label: `${n} × ${yardCategoryLabel(category)}` })
+  }
+
+  return (
+    <div className="fl-card">
+      <div className="fl-rowtop">
+        <div className="fl-eyebrow" style={{ marginBottom: 0 }}>Bulk stock — the same stone, many of them</div>
+        <button type="button" className="fl-event-undo" onClick={onClose}>Close</button>
+      </div>
+      <div className="fl-lab" style={{ marginTop: 10 }}>Category</div>
+      <Chips options={YARD_CATEGORIES} value={category} onChange={(c) => { if (c) setCategory(c) }} allowNone={false} />
+
+      <SpecFields type={type} fields={fields} onChange={setFields} colors={colors} />
+
+      <div className="fl-lab">How many</div>
+      <div className="fl-yd-qty">
+        <button type="button" className="fl-yd-qty-btn" onClick={() => bump(-1)} aria-label="One fewer">−</button>
+        <input className="fl-input fl-yd-bignum fl-yd-qty-in" type="text" inputMode="numeric" pattern="[0-9]*" placeholder="5"
+          value={qty} onChange={e => setQty(e.target.value.replace(/\D/g, '').slice(0, 3))} />
+        <button type="button" className="fl-yd-qty-btn" onClick={() => bump(1)} aria-label="One more">+</button>
+      </div>
+
+      <div className="fl-lab">First number to paint</div>
+      <input className="fl-input fl-yd-bignum" type="text" inputMode="numeric" pattern="[0-9]*" value={start}
+        onChange={e => setStart(e.target.value.replace(/\D/g, ''))} />
+      {clash.length > 0 && <div className="fl-yd-warn">{clash.slice(0, 6).map(fmtYardTag).join(', ')}{clash.length > 6 ? '…' : ''} already painted on another stone. Next free is {fmtYardTag(nextHint)}.</div>}
+      {!clash.length && startOk && nextHint != null && startNum !== nextHint && <div className="fl-yd-note">Next free number is {fmtYardTag(nextHint)} — you typed {fmtYardTag(startNum)}.</div>}
+      {qtyOk && startOk && !clash.length && <div className="fl-yd-sizeread">= {fmtYardTag(startNum)} to {fmtYardTag(endNum)}, {n} {n === 1 ? 'stone' : 'stones'}</div>}
+
+      <div className="fl-lab">Where the pile sits (all of them)</div>
+      <ZonePicker zones={zones} value={zone} onChange={setZone} />
+      <input className="fl-input" style={{ marginTop: 8 }} placeholder="Crate, e.g. C-7" value={crate} onChange={e => setCrate(e.target.value)} />
+
+      {msg && <div className="fl-yd-warn">{msg}</div>}
+      <button type="button" className="fl-btn fl-btn-gold" style={{ marginTop: 14, marginBottom: 0 }} disabled={busy || !qtyOk || !startOk || clash.length > 0} onClick={save}>
+        {busy ? 'Saving…' : qtyOk && startOk ? `Save ${n} — paint ${fmtYardTag(startNum)} to ${fmtYardTag(endNum)}` : 'Save — how many?'}
+      </button>
+    </div>
+  )
+}
+
+// After a bulk save: the run of numbers to paint, big, one per stone.
+function BulkDoneSheet({ res, onDone }) {
+  const first = res.tags[0], last = res.tags[res.tags.length - 1]
+  return (
+    <>
+      <div className="fl-sheet-scrim" />
+      <div className="fl-sheet">
+        <div className="fl-sheet-grab" />
+        <div className="fl-yd-paint">Paint {fmtYardTag(first)}{res.tags.length > 1 ? ` to ${fmtYardTag(last)}` : ''}</div>
+        <div className="fl-yd-tapeline">{res.tape}{res.whereLine ? ` · ${res.whereLine}` : ''}</div>
+        <div className="fl-spec fl-yd-wrap" style={{ fontFamily: 'inherit', marginBottom: 10 }}>{res.label}{res.rows[0] ? ` · ${yardStoneSpecLine(res.rows[0])}` : ''}</div>
+        <div className="fl-yd-tagrun">{res.tags.map(t => <span key={t} className="fl-yd-tagrun-n">{fmtYardTag(t)}</span>)}</div>
+        <button type="button" className="fl-btn fl-btn-green" style={{ marginTop: 16, marginBottom: 0 }} onClick={onDone}>Done — all labeled</button>
+      </div>
+    </>
+  )
+}
+
 // Fix a count on an old-style multi-quantity row (the walk's Fix verb).
 function ReceiveForm({ item, undo, onDone, onCancel }) {
   const [delta, setDelta] = useState(1)
@@ -1008,6 +1140,12 @@ const YD_CSS = `
   .fl-yd-ask { font-size: 15px; font-weight: 700; color: #16150F; margin: 10px 0 2px; }
   .fl-yd-chiprow { display: flex; gap: 6px; flex-wrap: wrap; }
   .fl-yd-bignum { font-family: "JetBrains Mono", Consolas, monospace; font-size: 34px; font-weight: 800; text-align: center; letter-spacing: 0.06em; padding: 10px 14px; }
+  .fl-yd-addrow2 { margin-top: 8px; min-width: 0; }
+  .fl-yd-qty { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .fl-yd-qty-btn { flex-shrink: 0; width: 52px; height: 52px; border-radius: 12px; border: 1px solid #DAD3C2; background: #FBFAF6; color: #16150F; font-family: inherit; font-size: 26px; font-weight: 800; cursor: pointer; }
+  .fl-yd-qty-in { flex: 1; min-width: 0; }
+  .fl-yd-tagrun { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; max-height: 40dvh; overflow-y: auto; }
+  .fl-yd-tagrun-n { font-family: "JetBrains Mono", Consolas, monospace; font-size: 22px; font-weight: 800; color: #16150F; background: #F5F3EE; border: 1px solid #E2DCCE; border-radius: 10px; padding: 8px 12px; letter-spacing: 0.04em; }
   .fl-yd-sizerow { display: flex; gap: 8px; min-width: 0; }
   .fl-yd-sizecell { flex: 1 1 0; min-width: 0; }
   .fl-yd-sizelab { font-size: 12px; font-weight: 800; color: #7C7562; margin: 0 0 3px 2px; letter-spacing: 0.04em; }
@@ -1024,4 +1162,5 @@ const YD_CSS = `
   .fl-yd-tapeline { font-size: 15px; font-weight: 800; color: #14775A; margin: 2px 0 8px; overflow-wrap: anywhere; }
   .fl-yd-tapeline-red { color: #B3261E; }
 `
+
 
