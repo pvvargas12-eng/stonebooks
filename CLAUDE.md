@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Round SLANT-BACK (2026-10-22, on the founding walk): the slant's back finish, right after polish
+
+Paul: "in stonebooks field with inventory... so when you select slant i need you to add after polish RB or SB which is roughback, Sawback, or also SB & Pol back".
+
+- **Phone Add stone card (`SpecChips` in `src/field/InventoryScreen.jsx`):** when the stone is a slant — category chip Slant (item_type `slant`), or the order path's Fix on a slant order (item_type `die` with category `slant`, `specFromOrder` now stamps the category from the order's shape) — a **Back** chip row sits right after Polish with exactly Paul's three words: **RB / SB / SB & Pol back**. The hint line under it reads the long form ("SB = saw back"; all three while nothing is picked). Every other category (die, base, grass, hickey, backer, other) never shows it. The free-stock form, the bulk form and the Fix sheet all share `SpecChips`, so one picker covers single, bulk and order-linked stones; the single form keeps the pick for the next stone like the other chips.
+- **Storage = the existing `inventory_stock.back` column** (the importer's free-text column — no migration): codes `RB` / `SB` / `SBP`. `_yardStoneRow` (single + bulk) nulls `back` on anything that is not a slant by type or category, so the code never lands on a die or base; legacy free text on archived rows renders as is. `yardStoneSpecLine` prints the label after polish ("2-0 x 0-10 x 0-6 · Serp · P2 · SB & Pol back · Barre Gray"), so the stone row, the mint confirmation, the bulk done sheet and the desktop Yard list's Specs column all carry it.
+- **`src/lib/yardStone.js`:** `SLANT_BACK_CHIPS` (code / label / hint), `isSlantStone(type, category)`, `slantBackLabel`, `slantBackHint`. Chips inside `.fl-yd-chiprow` gained the overflow guard (min-width 0, wrap) and the hint wraps.
+- Verified on the dev server through a temporary `/smoke-slant` route (removed before commit) at 375px: Single upright showed no Back row; picking Slant put Back right after Polish; SB lit and the hint read "SB = saw back"; switching back to Single upright dropped the row; the bulk form (defaults Slant) showed the picker; a fake run's done sheet read "3 × Slant · 2-0 x 0-10 x 0-6 · Serp · P2 · SB & Pol back · Barre Gray"; no element overflowed, no console errors. The live insert is behind the auth wall — Paul's next slant on the walk is the prod test. Lint + build green.
+
 ## Round SIGNED-PRICES-NEVER-MOVE (2026-10-22, EMERGENCY): the July 2026 sheet moved 51 signed contracts
 
 Paul: "we recently made an update to the pricing and it appears that changed the price on preexisting contracts... customers are calling freaking out... audit all contracts that prices automatically changed and revert them to what they were before the update... we did some price adjustments manually so don't revert those."

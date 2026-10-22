@@ -72,6 +72,20 @@ export const POLISH_CHIPS = POLISH_LEVELS.map(p => ({ code: p.code, label: p.cod
 const BASE_CHIP_WORDS = { SB: 'Saw back', RB: 'Rock back', BRP: 'BRP', AP: 'All polished', AS: 'All sawn' }
 export const BASE_FINISH_CHIPS = BASE_FINISHES.map(f => ({ code: f.code, label: BASE_CHIP_WORDS[f.code] || f.code }))
 export const BASE_TOP_CHIPS = [{ code: 'pol', label: 'Pol top' }, { code: 'frost', label: 'Frost top' }]
+// SLANT BACK (Paul 2026-10-22, on the walk): "when you select slant add after
+// polish RB or SB which is roughback, Sawback, or also SB & Pol back". Stored
+// in inventory_stock.back (the importer's free-text column — a code on new
+// rows, legacy text renders as is). Slants only; no other type carries it.
+export const SLANT_BACK_CHIPS = [
+  { code: 'RB',  label: 'RB',            hint: 'rough back' },
+  { code: 'SB',  label: 'SB',            hint: 'saw back' },
+  { code: 'SBP', label: 'SB & Pol back', hint: 'saw back and polished back' },
+]
+// A slant by type (category chip → item_type 'slant') or by category (the
+// order path stores item_type 'die' with category 'slant').
+export const isSlantStone = (type, category) => String(type || '').toLowerCase() === 'slant' || String(category || '').toLowerCase() === 'slant'
+export const slantBackLabel = (code) => SLANT_BACK_CHIPS.find(c => c.code === code)?.label || (code ? String(code) : null)
+export const slantBackHint = (code) => SLANT_BACK_CHIPS.find(c => c.code === code)?.hint || null
 
 export const CONDITIONS = [
   { code: 'good', label: 'Good' }, { code: 'chip', label: 'Chip' }, { code: 'crack', label: 'Crack' },
@@ -105,7 +119,10 @@ export function yardStoneSpecLine(row, { withSize = true, withColor = true } = {
     if (top) parts.push(top)
     const pol = polishLabel(row.polish_level)
     if (pol) parts.push(pol)
-    if (!top && !pol && row.sides) parts.push(row.sides)
+    // Slant back finish right after polish (RB / SB / SB & Pol back).
+    const back = slantBackLabel(row.back)
+    if (back) parts.push(back)
+    if (!top && !pol && !back && row.sides) parts.push(row.sides)
   }
   if (withColor && row.color) parts.push(row.color)
   if (row.specs) parts.push(row.specs)
@@ -150,6 +167,7 @@ export function specFromOrder(spec, piece, dims) {
   }
   return {
     item_type: 'die', size: dims?.dims || null, color,
+    category: categoryFromShape(spec.shape, 'die'),   // a slant order's Fix shows the back picker
     top: spec.top_shape || null,
     polish_level: spec.polish_level || null,
     specs: dims ? restMinus(dims.rest, ['die', 'upright', spec.polish_level, ...colorWords]) : null,

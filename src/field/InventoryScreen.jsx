@@ -62,6 +62,7 @@ import { displayColorLabel, GRANITE_COLORS, orderHasBase, SHAPES } from '../lib/
 import {
   yardTypeLabel, isBaseType, hasTopShape, isDieFamily, YARD_CATEGORIES, categoryToType, yardCategoryLabel,
   TOP_SHAPE_CHIPS, POLISH_CHIPS, BASE_FINISH_CHIPS, BASE_TOP_CHIPS, CONDITIONS, conditionLabel,
+  SLANT_BACK_CHIPS, isSlantStone, slantBackHint,
   yardStoneSpecLine, yardStoneWhere, specFromOrder, sizeMateriallyDifferent, looksLikeStone, stoneFromSearch, parseSizeInput, sizeTokens, tokenToInches, inchesToTrade,
 } from '../lib/yardStone'
 
@@ -517,6 +518,17 @@ function SpecChips({ type, fields, onChange }) {
         </>)}
         <div className="fl-lab">Polish</div>
         <Chips options={POLISH_CHIPS} value={fields.polish_level || null} onChange={set('polish_level')} />
+        {/* SLANT-BACK (Paul 2026-10-22): right after polish, slants only —
+            RB / SB / SB & Pol back. The hint reads the long form. */}
+        {isSlantStone(type, fields.category) && (<>
+          <div className="fl-lab">Back</div>
+          <Chips options={SLANT_BACK_CHIPS} value={fields.back || null} onChange={set('back')} />
+          <div className="fl-yd-note fl-yd-backhint">
+            {fields.back
+              ? `${SLANT_BACK_CHIPS.find(c => c.code === fields.back)?.label || fields.back} = ${slantBackHint(fields.back) || 'as typed'}`
+              : SLANT_BACK_CHIPS.map(c => `${c.label} = ${c.hint}`).join(' · ')}
+          </div>
+        </>)}
       </>
     )
   }
@@ -899,7 +911,7 @@ function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
   // CATEGORY first (Paul 2026-10-21) — item_type follows from it.
   const [category, setCategory] = useState(seed?.category || (seed?.item_type === 'die' || !seed?.item_type ? 'single_upright' : (YARD_CATEGORIES.some(c => c.code === seed.item_type) ? seed.item_type : 'other')))
   const type = categoryToType(category)
-  const [fields, setFields] = useState({ size: seed?.size || '', color: seed?.color || '', specs: seed?.specs || '', top: seed?.top || null, polish_level: seed?.polish_level || null, finish: seed?.finish || null, top_finish: seed?.top_finish || null, polish_margin: !!seed?.polish_margin })
+  const [fields, setFields] = useState({ size: seed?.size || '', color: seed?.color || '', specs: seed?.specs || '', top: seed?.top || null, polish_level: seed?.polish_level || null, back: seed?.back || null, finish: seed?.finish || null, top_finish: seed?.top_finish || null, polish_margin: !!seed?.polish_margin })
   const [photo, setPhoto] = useState(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
@@ -970,7 +982,7 @@ function TagStoneForm({ undo, takenTags, seed, onClose, onMinted }) {
 function BulkStockForm({ undo, takenTags, zones, lastWhere, onClose, onDone }) {
   const [category, setCategory] = useState('slant')
   const type = categoryToType(category)
-  const [fields, setFields] = useState({ size: '', color: '', specs: '', top: null, polish_level: null, finish: null, top_finish: null, polish_margin: false })
+  const [fields, setFields] = useState({ size: '', color: '', specs: '', top: null, polish_level: null, back: null, finish: null, top_finish: null, polish_margin: false })
   const [qty, setQty] = useState('')
   const [start, setStart] = useState('')
   const [nextHint, setNextHint] = useState(null)
@@ -1138,7 +1150,9 @@ const YD_CSS = `
   .fl-yd-piece-label { font-size: 13px; font-weight: 800; color: #16150F; }
   .fl-yd-piece-go { flex-shrink: 0; font-size: 12px; font-weight: 800; color: #fff; background: #1D9E75; border-radius: 999px; padding: 8px 12px; white-space: nowrap; }
   .fl-yd-ask { font-size: 15px; font-weight: 700; color: #16150F; margin: 10px 0 2px; }
-  .fl-yd-chiprow { display: flex; gap: 6px; flex-wrap: wrap; }
+  .fl-yd-chiprow { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .fl-yd-chiprow .fl-chip-btn { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: center; }
+  .fl-yd-backhint { min-width: 0; white-space: normal; }
   .fl-yd-bignum { font-family: "JetBrains Mono", Consolas, monospace; font-size: 34px; font-weight: 800; text-align: center; letter-spacing: 0.06em; padding: 10px 14px; }
   .fl-yd-addrow2 { margin-top: 8px; min-width: 0; }
   .fl-yd-qty { display: flex; align-items: center; gap: 8px; min-width: 0; }

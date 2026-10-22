@@ -11222,6 +11222,9 @@ function _yardStoneRow(item = {}, by = null) {
   // A base carries no die chips and a die no base chips — never cross-store.
   if (base.item_type === 'base') { base.top = null; base.polish_level = null }
   else { base.finish = null; base.top_finish = null; base.polish_margin = false }
+  // SLANT-BACK (2026-10-22): the back finish code (RB / SB / SBP) is a slant's
+  // alone — by type, or by category on the order path (item_type die).
+  if (base.item_type !== 'slant' && base.category !== 'slant') base.back = null
   return base
 }
 export async function tagYardStone(item = {}, { tag = null, by = null } = {}) {
