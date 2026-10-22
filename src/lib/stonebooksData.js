@@ -11043,6 +11043,7 @@ export async function updateInventoryItem(id, patch = {}) {
   const row = { updated_at: new Date().toISOString() }
   const txt = (v) => (v == null ? null : (String(v).trim() || null))
   if (patch.item_type !== undefined) row.item_type = patch.item_type || null
+  if (patch.category !== undefined) row.category = txt(patch.category)
   if (patch.color !== undefined) row.color = txt(patch.color)
   if (patch.size !== undefined) row.size = txt(patch.size)
   if (patch.top !== undefined) row.top = txt(patch.top)
@@ -11394,6 +11395,62 @@ export function unlinkYardStone(id) {
 export function setYardStonePhoto(id, url) {
   return _yardPatch(id, { photo_url: url || null })
 }
+// EDIT the stone's spec from its row (Paul 2026-10-22: "i cant click on any
+// and edit them"). Same keys + the same cross-store rules as _yardStoneRow:
+// a base carries no die chips, a die no base chips, back is a slant's alone.
+export function setYardStoneSpec(id, fields = {}) {
+  const txt = (v) => (v == null ? null : (String(v).trim() || null))
+  const p = {
+    item_type: txt(fields.item_type) ? String(fields.item_type).trim().toLowerCase() : null,
+    category: txt(fields.category) ? String(fields.category).trim().toLowerCase() : null,
+    size: txt(fields.size), color: txt(fields.color), specs: txt(fields.specs),
+    top: txt(fields.top), polish_level: txt(fields.polish_level), back: txt(fields.back),
+    finish: txt(fields.finish), top_finish: txt(fields.top_finish), polish_margin: !!fields.polish_margin,
+  }
+  if (!p.item_type) return Promise.resolve({ ok: false, error: 'Pick the type of stone.' })
+  if (p.item_type === 'base') { p.top = null; p.polish_level = null }
+  else { p.finish = null; p.top_finish = null; p.polish_margin = false }
+  if (p.item_type !== 'slant' && p.category !== 'slant') p.back = null
+  return _yardPatch(id, p)
+}
+// MANY photos per stone (YARD-PHOTOS 2026-10-22): inventory_stock.photos =
+// [{ url, path, at, by }], newest last; photo_url stays = the first photo so
+// older readers keep working. Legacy rows with only photo_url read as one.
+export function yardStonePhotos(row) {
+  const list = Array.isArray(row?.photos) ? row.photos.filter(p => p && p.url) : []
+  if (!list.length && row?.photo_url) return [{ url: row.photo_url, path: null, legacy: true }]
+  return list
+}
+export async function addYardStonePhotos(stoneId, files = [], { by = null } = {}) {
+  if (!stoneId || !files.length) return { ok: false, error: 'Missing stone or file' }
+  const { data: cur, error: readErr } = await supabase.from('inventory_stock').select('photos, photo_url').eq('id', stoneId).maybeSingle()
+  if (readErr) return { ok: false, error: readErr.message }
+  const list = yardStonePhotos(cur || {}).filter(p => !p.legacy)
+  const legacy = (!list.length && cur?.photo_url) ? [{ url: cur.photo_url, path: null, at: null, by: null }] : []
+  const added = []
+  for (const file of files) {
+    const safe = String(file.name || 'photo').replace(/[^\w.-]+/g, '_')
+    const path = `yard/${stoneId}/${crypto.randomUUID()}_${safe}`
+    const { error } = await supabase.storage.from('orders-attachments-public').upload(path, file, { upsert: false, contentType: file.type || undefined })
+    if (error) return { ok: false, error: error.message, added }
+    const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+    added.push({ url: data.publicUrl, path, at: new Date().toISOString(), by: by || null })
+  }
+  const photos = [...legacy, ...list, ...added]
+  const r = await _yardPatch(stoneId, { photos, photo_url: photos[0]?.url || null })
+  if (!r.ok) return { ...r, added }
+  return { ok: true, added, photos }
+}
+export async function removeYardStonePhoto(stoneId, photo) {
+  if (!stoneId || !photo?.url) return { ok: false, error: 'Missing stone or photo' }
+  const { data: cur, error: readErr } = await supabase.from('inventory_stock').select('photos, photo_url').eq('id', stoneId).maybeSingle()
+  if (readErr) return { ok: false, error: readErr.message }
+  const photos = yardStonePhotos(cur || {}).filter(p => !p.legacy && p.url !== photo.url)
+  const r = await _yardPatch(stoneId, { photos, photo_url: photos[0]?.url || null })
+  if (!r.ok) return r
+  if (photo.path) await supabase.storage.from('orders-attachments-public').remove([photo.path]).catch(() => {})
+  return { ok: true, photos }
+}
 // The stone's photo rides the same public bucket the field completion photos
 // use, under yard/<stone id>/.
 export async function uploadYardStonePhoto(stoneId, file, { kind = 'photo' } = {}) {
@@ -11405,7 +11462,10 @@ export async function uploadYardStonePhoto(stoneId, file, { kind = 'photo' } = {
     .upload(path, file, { upsert: false, contentType: file.type || undefined })
   if (error) return { ok: false, error: error.message }
   const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
-  const p = kind === 'damage' ? await _yardPatch(stoneId, { damage_photo_url: data.publicUrl }) : await setYardStonePhoto(stoneId, data.publicUrl)
+  // The Add-form photo lands in the photos list too (YARD-PHOTOS), first slot.
+  const p = kind === 'damage'
+    ? await _yardPatch(stoneId, { damage_photo_url: data.publicUrl })
+    : await _yardPatch(stoneId, { photo_url: data.publicUrl, photos: [{ url: data.publicUrl, path, at: new Date().toISOString(), by: null }] })
   if (!p.ok) return p
   return { ok: true, url: data.publicUrl, path }
 }

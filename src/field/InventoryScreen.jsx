@@ -55,6 +55,7 @@ import {
   fmtYardTag, getNextYardTag, tagYardStone, markPieceHere,
   moveYardStone, flagYardStoneProblem, linkYardStoneToOrder, unlinkYardStone, uploadYardStonePhoto,
   setYardStoneCondition, getOrderSpecRow, INVENTORY_STATUS_LABEL, tagYardStonesBulk,
+  setYardStoneSpec, addYardStonePhotos, removeYardStonePhoto, yardStonePhotos,
 } from '../lib/stonebooksData'
 import { loadStonePositionData, stoneVerdict, verdictChipText, isStoneOrder } from '../lib/stonePosition'
 import { contractDieLabel, contractBaseLabel, tradeDimsFromLabel } from '../lib/jobComponents'
@@ -117,6 +118,12 @@ export default function InventoryScreen({ undo }) {
   const [stockPrefill, setStockPrefill] = useState(null)
   const [bulkOpen, setBulkOpen] = useState(false)     // "Add bulk to stock" (BULK-STOCK 2026-10-22)
   const [bulkDone, setBulkDone] = useState(null)      // { tags, rows, tape, where, whereLine, label }
+  // YARD-PHOTOS (Paul 2026-10-22): the Photos verb on a row opens the phone's
+  // picker (camera or library, several at once); a thumb tap opens it big.
+  const photoInput = useRef(null)
+  const photoTarget = useRef(null)
+  const [photoBusy, setPhotoBusy] = useState(null)    // stone id uploading
+  const [zoomPhoto, setZoomPhoto] = useState(null)    // { stone, photo }
   const [counting, setCounting] = useState(false)
   const [countBusy, setCountBusy] = useState(null)
   const [nowMs, setNowMs] = useState(0)
@@ -144,6 +151,29 @@ export default function InventoryScreen({ undo }) {
 
   const items = data?.stock || null
   const orderById = useMemo(() => new Map((data?.orders || []).map(o => [o.id, o])), [data])
+
+  const pickPhotos = (it) => { photoTarget.current = it; photoInput.current?.click() }
+  const onPhotosPicked = async (e) => {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    const it = photoTarget.current
+    photoTarget.current = null
+    if (!it || !files.length) return
+    setPhotoBusy(it.id)
+    const r = await addYardStonePhotos(it.id, files, { by: me() })
+    setPhotoBusy(null)
+    if (!r.ok) undo.showError(r.error || 'Could not upload the photo.')
+    await refreshStock()
+  }
+  const removePhoto = async () => {
+    if (!zoomPhoto) return
+    const { stone, photo } = zoomPhoto
+    if (!window.confirm('Remove this photo from the stone?')) return
+    setZoomPhoto(null)
+    const r = await removeYardStonePhoto(stone.id, photo)
+    if (!r.ok) undo.showError(r.error || 'Could not remove the photo.')
+    await refreshStock()
+  }
   const stoneOrders = useMemo(() => (data?.orders || []).filter(isStoneOrder), [data])
   const zones = useMemo(() => {
     const s = new Set()
@@ -374,9 +404,11 @@ export default function InventoryScreen({ undo }) {
         const fresh = isFresh(it)
         const tape = tapeFor(it, orderById)
         const cond = it.condition && it.condition !== 'good'
+        const photos = yardStonePhotos(it)
         return (
           <div key={it.id} className="fl-row" style={{ cursor: 'default', ...(counting && fresh ? { opacity: 0.62 } : null) }}>
-            <div className="fl-row-flex">
+            {/* Tap the stone itself to edit its spec (Paul: "i cant click on any and edit them"). */}
+            <div className="fl-row-flex" style={counting ? null : { cursor: 'pointer' }} onClick={() => { if (!counting) setAction({ kind: 'edit', stone: it }) }}>
               <div className={`fl-yd-tag${it.yard_tag == null ? ' fl-yd-tag-none' : ''}`}>{fmtYardTag(it.yard_tag) || '—'}</div>
               <div className="fl-row-main">
                 <div className="fl-fam fl-yd-ellip" style={{ fontSize: 15 }}>{yardTypeLabel(it.item_type) || 'Stone'}</div>
@@ -389,6 +421,15 @@ export default function InventoryScreen({ undo }) {
               </div>
               {Number(it.quantity) > 1 && <div className="fl-inv-qty"><small>QTY</small>{Number(it.quantity)}</div>}
             </div>
+            {photos.length > 0 && (
+              <div className="fl-yd-thumbrow">
+                {photos.map((p, i) => (
+                  <button key={`${p.path || p.url}#${i}`} type="button" className="fl-yd-thumbbtn" onClick={() => setZoomPhoto({ stone: it, photo: p })} aria-label={`Photo ${i + 1} of ${photos.length}`}>
+                    <img className="fl-yd-thumb" src={p.url} alt="" loading="lazy" />
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="fl-chips">
               <span className={`fl-chip ${tape.cls} fl-yd-chipwrap`}>{tape.text}</span>
               {cond && <span className="fl-chip fl-c-warn fl-yd-chipwrap">{conditionLabel(it.condition).toUpperCase()}</span>}
@@ -416,6 +457,10 @@ export default function InventoryScreen({ undo }) {
                 </>
               ) : (
                 <>
+                  <button type="button" className="fl-event-undo" onClick={() => setAction({ kind: 'edit', stone: it })}>Edit</button>
+                  <button type="button" className="fl-event-undo" disabled={photoBusy === it.id} onClick={() => pickPhotos(it)}>
+                    {photoBusy === it.id ? 'Uploading…' : (photos.length ? `Photos (${photos.length})` : 'Add photo')}
+                  </button>
                   <button type="button" className="fl-event-undo" onClick={() => setAction({ kind: 'move', stone: it })}>Move</button>
                   {it.status === 'allocated'
                     ? <button type="button" className="fl-event-undo" onClick={() => setAction({ kind: 'unlink', stone: it })}>Unlink</button>
@@ -445,6 +490,20 @@ export default function InventoryScreen({ undo }) {
           onDone={async (line, where) => { setAfterMint(null); if (where) setLastWhere(where); await refreshStock(); setConfirmLine(line) }} />
       )}
       {bulkDone && <BulkDoneSheet res={bulkDone} onDone={() => setBulkDone(null)} />}
+      {/* One hidden picker for every row — no capture attr, so iOS offers camera AND library. */}
+      <input ref={photoInput} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={onPhotosPicked} />
+      {zoomPhoto && (
+        <div className="fl-zoom-overlay fl-yd-zoom" onClick={() => setZoomPhoto(null)}>
+          <img src={zoomPhoto.photo.url} alt="stone" />
+          <div className="fl-yd-zoomtools" onClick={e => e.stopPropagation()}>
+            <div className="fl-yd-zoomtitle fl-yd-ellip">{fmtYardTag(zoomPhoto.stone.yard_tag) || stoneTitle(zoomPhoto.stone)} · {yardStoneSpecLine(zoomPhoto.stone, { withColor: false }) || stoneTitle(zoomPhoto.stone)}</div>
+            <div className="fl-yd-btnrow" style={{ marginTop: 6 }}>
+              <button type="button" className="fl-btn fl-btn-ghost fl-yd-zoombtn" onClick={() => setZoomPhoto(null)}>Close</button>
+              <button type="button" className="fl-btn fl-yd-zoombtn fl-yd-zoombtn-red" onClick={removePhoto}>Remove photo</button>
+            </div>
+          </div>
+        </div>
+      )}
       {action && (
         <StoneActionSheet action={action} zones={zones} orders={stoneOrders} undo={undo}
           onClose={() => setAction(null)}
@@ -790,6 +849,12 @@ function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
   const [oq, setOq] = useState('')
   const [busy, setBusy] = useState(false)
   const tagText = fmtYardTag(stone.yard_tag) || stoneTitle(stone)
+  // EDIT (Paul 2026-10-22): the same category chips + SpecFields as the Add
+  // stone card, seeded from the row; Save rewrites the spec, undo puts it back.
+  const [category, setCategory] = useState(stone.category || (YARD_CATEGORIES.some(c => c.code === stone.item_type) ? stone.item_type : (stone.item_type === 'die' ? 'single_upright' : 'other')))
+  const [spec, setSpec] = useState({ size: stone.size || '', color: stone.color || '', specs: stone.specs || '', top: stone.top || null, polish_level: stone.polish_level || null, back: stone.back || null, finish: stone.finish || null, top_finish: stone.top_finish || null, polish_margin: !!stone.polish_margin })
+  const colors = useMemo(() => activeColorNames(), [])
+  const priorSpec = { item_type: stone.item_type, category: stone.category, size: stone.size, color: stone.color, specs: stone.specs, top: stone.top, polish_level: stone.polish_level, back: stone.back, finish: stone.finish, top_finish: stone.top_finish, polish_margin: stone.polish_margin }
 
   const hits = useMemo(() => {
     const n = oq.trim().toLowerCase()
@@ -813,6 +878,20 @@ function StoneActionSheet({ action, zones, orders, undo, onClose, onDone }) {
       <div className="fl-sheet">
         <div className="fl-sheet-grab" />
         <div className="fl-sheet-title fl-yd-ellip">{tagText} · {stoneTitle(stone)}</div>
+
+        {kind === 'edit' && (<>
+          <div className="fl-lab" style={{ marginTop: 6 }}>Category</div>
+          <Chips options={YARD_CATEGORIES} value={category} onChange={(c) => { if (c) setCategory(c) }} allowNone={false} />
+          <SpecFields type={categoryToType(category)} fields={spec} onChange={setSpec} colors={colors} />
+          <button type="button" className="fl-btn" style={{ marginTop: 16 }} disabled={busy}
+            onClick={() => run(
+              () => setYardStoneSpec(stone.id, { ...spec, item_type: categoryToType(category), category }),
+              null,
+              () => setYardStoneSpec(stone.id, priorSpec),
+              `${tagText} spec saved`)}>
+            {busy ? 'Saving…' : 'Save the stone'}
+          </button>
+        </>)}
 
         {kind === 'move' && (<>
           <div className="fl-label">Zone</div>
@@ -1172,6 +1251,14 @@ const YD_CSS = `
   .fl-yd-note { font-size: 12px; color: #8A5A12; margin: 6px 2px 0; overflow-wrap: anywhere; }
   .fl-yd-photo { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .fl-yd-thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 10px; border: 1px solid #E2DCCE; flex-shrink: 0; }
+  .fl-yd-thumbrow { display: flex; gap: 6px; margin-top: 8px; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .fl-yd-thumbbtn { flex-shrink: 0; padding: 0; border: none; background: none; cursor: pointer; line-height: 0; }
+  .fl-yd-zoom { flex-direction: column; gap: 10px; }
+  .fl-yd-zoom img { max-height: 72dvh; }
+  .fl-yd-zoomtools { width: 100%; max-width: 420px; min-width: 0; }
+  .fl-yd-zoomtitle { color: #E8E2D4; font-size: 13px; font-weight: 700; text-align: center; }
+  .fl-yd-zoombtn { margin-bottom: 0; flex: 1; min-width: 0; }
+  .fl-yd-zoombtn-red { background: #B3261E; color: #fff; border-color: #B3261E; }
   .fl-yd-paint { font-size: 30px; font-weight: 800; color: #16150F; margin-top: 8px; overflow-wrap: anywhere; }
   .fl-yd-tapeline { font-size: 15px; font-weight: 800; color: #14775A; margin: 2px 0 8px; overflow-wrap: anywhere; }
   .fl-yd-tapeline-red { color: #B3261E; }

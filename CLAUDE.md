@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Round YARD-EDIT-PHOTOS (2026-10-22, same walk): edit any stone from its row, many photos per stone
+
+Paul: "i cant click on any and edit them must be able to edit also i want to be able to click on some and upload pictures we have many with designs that i want to be able to also upload what it looks like."
+
+- **Edit from the row (`StoneActionSheet` kind `edit`, `src/field/InventoryScreen.jsx`):** tapping the stone itself (number + spec block) or the new **Edit** verb opens a sheet seeded from the row — Category chips + the same `SpecFields` the Add stone card uses (L W H boxes, shape / polish / back or finish / top, color, specs). **Save the stone** → `setYardStoneSpec(id, fields)` (stonebooksData; the `_yardStoneRow` cross-store rules — a base carries no die chips, back is a slant's alone); the 8-second undo writes the prior spec back. `updateInventoryItem` gained `category` for the desktop's sake.
+- **Migration `20261022_inventory_photos.sql` APPLIED + read back:** `inventory_stock.photos jsonb not null default '[]'` = `[{ url, path, at, by }]`, newest last; `photo_url` stays = the first photo so every older reader keeps working. `yardStonePhotos(row)` reads the list (a legacy row with only `photo_url` reads as one), `addYardStonePhotos(id, files, { by })` uploads each to `orders-attachments-public/yard/<id>/` and appends, `removeYardStonePhoto(id, photo)` drops one (storage object removed best-effort, `photo_url` re-pointed). The Add-form photo (`uploadYardStonePhoto`) lands in the list too.
+- **Phone row:** a thumb strip under the spec (scrolls sideways, never leaks); the **Add photo / Photos (N)** verb opens ONE hidden `<input type=file accept=image/* multiple>` with no `capture`, so iOS offers Take Photo AND the library and several can go at once ("Uploading…" while they go). Tap a thumb → the dark full-screen view with the stone's number + spec, **Close** and a red **Remove photo** (confirm). Everything refreshes through `refreshStock`.
+- Verified on the dev server through a temporary `/smoke-yard` route over a two-stone fake yard (removed before commit) at 375px: both rows showed Edit + the photo verb; the slant's Edit sheet opened pre-filled (Slant, 2-0 / 0-10 / 0-6, Serp, P2, SB & Pol back, Barre Gray) with no overflow; tapping the die row opened its sheet with no Back row; the thumb opened the zoom with the title "041 · 2-0 x 0-10 x 0-6 · Serp · P2 · SB & Pol back" and the two buttons. The live upload + the spec write sit behind the auth wall — Paul's first tap. Lint + build green.
+
 ## Round SLANT-BACK (2026-10-22, on the founding walk): the slant's back finish, right after polish
 
 Paul: "in stonebooks field with inventory... so when you select slant i need you to add after polish RB or SB which is roughback, Sawback, or also SB & Pol back".
