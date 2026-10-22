@@ -156,15 +156,43 @@ export function specFromOrder(spec, piece, dims) {
   }
 }
 
-// "1-10 x 0-8 x 2-0" / "22 x 8 x 24" → [22, 8, 24] (inches). Unreadable → [].
+// SIZE, typed EITHER way (Paul 2026-10-22): plain inches ("12") or the trade
+// form ("1-0") per dimension. The phone has THREE boxes (L W H — SizeBoxes in
+// InventoryScreen); these read one token or a whole "1-0 x 0-8 x 2-0" /
+// "12 x 8 x 24" string (separators x / × / * / comma / "by", else whitespace;
+// inch marks ignored).
+export function sizeTokens(raw) {
+  const s = String(raw || '').trim().replace(/[″"']/g, '')
+  if (!s) return []
+  const hasSep = /[x×X*,]|\bby\b/i.test(s)
+  return (hasSep ? s.split(/\s*(?:[x×X*,]|\bby\b)\s*/i) : s.split(/\s+/)).map(t => t.trim()).filter(Boolean)
+}
+// "1-10" → 22, "8" → 8, "6.5" → 6.5, anything else → null.
+export function tokenToInches(t) {
+  let m = /^(\d+)-(\d+(?:\.\d+)?)$/.exec(t)
+  if (m) return Number(m[1]) * 12 + Number(m[2])
+  m = /^(\d+(?:\.\d+)?)$/.exec(t)
+  return m ? Number(m[1]) : null
+}
+// 22 → "1-10", 8 → "0-8", 6.5 → "0-6.5"
+export function inchesToTrade(n) {
+  const ft = Math.floor(n / 12); const inch = Math.round((n - ft * 12) * 10) / 10
+  return `${ft}-${inch}`
+}
+const fmtIn = (n) => String(Math.round(n * 10) / 10)
+// The readout under the boxes. ok needs 2+ numbers that all read; otherwise
+// trade = the raw text so nothing Paul typed gets eaten.
+//   parseSizeInput('12 x 8 x 24') → { ok: true, dims: [12, 8, 24], trade: '1-0 x 0-8 x 2-0', inches: '12 x 8 x 24' }
+export function parseSizeInput(raw) {
+  const toks = sizeTokens(raw)
+  const dims = toks.map(tokenToInches)
+  if (toks.length < 2 || dims.some(v => v == null)) return { ok: false, dims: [], trade: String(raw || '').trim(), inches: '' }
+  return { ok: true, dims, trade: dims.map(inchesToTrade).join(' x '), inches: dims.map(fmtIn).join(' x ') }
+}
+
+// "1-10 x 0-8 x 2-0" / "22 x 8 x 24" / "22, 8, 24" → [22, 8, 24] (inches). Unreadable → [].
 export function sizeToInches(size) {
-  return String(size || '').split(/\s*[x×X]\s*/).map(t => {
-    const v = t.trim().replace(/[″"']/g, '')
-    let m = /^(\d+)-(\d+(?:\.\d+)?)$/.exec(v)
-    if (m) return Number(m[1]) * 12 + Number(m[2])
-    m = /^(\d+(?:\.\d+)?)$/.exec(v)
-    return m ? Number(m[1]) : null
-  }).filter(v => v != null)
+  return sizeTokens(size).map(tokenToInches).filter(v => v != null)
 }
 // A MATERIAL size change (Paul's rule): a different number of dims, or any
 // dim off by more than an inch. Unreadable sizes never count as different.

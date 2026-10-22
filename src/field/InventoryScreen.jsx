@@ -54,7 +54,7 @@ import {
   getActiveStaffUser, properName, customerName,
   fmtYardTag, getNextYardTag, tagYardStone, markPieceHere,
   moveYardStone, flagYardStoneProblem, linkYardStoneToOrder, unlinkYardStone, uploadYardStonePhoto,
-  setYardStoneCondition, getOrderSpecRow, formatTradeSize, INVENTORY_STATUS_LABEL,
+  setYardStoneCondition, getOrderSpecRow, INVENTORY_STATUS_LABEL,
 } from '../lib/stonebooksData'
 import { loadStonePositionData, stoneVerdict, verdictChipText, isStoneOrder } from '../lib/stonePosition'
 import { contractDieLabel, contractBaseLabel, tradeDimsFromLabel } from '../lib/jobComponents'
@@ -62,7 +62,7 @@ import { displayColorLabel, GRANITE_COLORS, orderHasBase, SHAPES } from '../lib/
 import {
   yardTypeLabel, isBaseType, hasTopShape, isDieFamily, YARD_CATEGORIES, categoryToType, yardCategoryLabel,
   TOP_SHAPE_CHIPS, POLISH_CHIPS, BASE_FINISH_CHIPS, BASE_TOP_CHIPS, CONDITIONS, conditionLabel,
-  yardStoneSpecLine, yardStoneWhere, specFromOrder, sizeMateriallyDifferent, looksLikeStone, stoneFromSearch,
+  yardStoneSpecLine, yardStoneWhere, specFromOrder, sizeMateriallyDifferent, looksLikeStone, stoneFromSearch, parseSizeInput, sizeTokens, tokenToInches, inchesToTrade,
 } from '../lib/yardStone'
 
 const DAY_MS = 86400000
@@ -218,7 +218,7 @@ export default function InventoryScreen({ undo }) {
   const showStock = !counting && (stockOpen || stoneTyped || (!!needle && !tagOnly && orderHits.length === 0 && data))
   const stockSeed = useMemo(() => {
     if (stockPrefill) return stockPrefill
-    if (stoneTyped) { const s = stoneFromSearch(q); return { item_type: s.item_type || 'die', size: s.size ? formatTradeSize(s.size) : '' } }
+    if (stoneTyped) { const s = stoneFromSearch(q); return { item_type: s.item_type || 'die', size: s.size ? parseSizeInput(s.size).trade : '' } }
     return null
   }, [stockPrefill, stoneTyped, q])
 
@@ -509,9 +509,8 @@ function SpecFields({ type, fields, onChange, colors }) {
   const set = (k) => (e) => onChange({ ...fields, [k]: e.target.value })
   return (
     <>
-      <div className="fl-lab">Size (trade format)</div>
-      <input className="fl-input" placeholder="1-10 x 0-8 x 2-0" value={fields.size || ''} onChange={set('size')}
-        onBlur={() => onChange({ ...fields, size: formatTradeSize(fields.size) })} />
+      <div className="fl-lab">Size</div>
+      <SizeBoxes value={fields.size || ''} onChange={(size) => onChange({ ...fields, size })} />
       {/* Paul's order on the walk: size → shape · polish (base: finish · top) → color */}
       <SpecChips type={type} fields={fields} onChange={onChange} />
       <div className="fl-lab">Color</div>
@@ -519,6 +518,45 @@ function SpecFields({ type, fields, onChange, colors }) {
       <datalist id="fl-yd-colors">{colors.map(c => <option key={c} value={c} />)}</datalist>
       <div className="fl-lab">Specs</div>
       <input className="fl-input" placeholder="Anything else about the cut" value={fields.specs || ''} onChange={set('specs')} />
+    </>
+  )
+}
+
+// THREE boxes, L W H (Paul 2026-10-22: "i want 3 boxes for l w h"). Each box
+// takes inches ("12") or feet-inches ("1-0"); leaving a box settles it to the
+// trade form, and the yard stores the composed "1-0 x 0-8 x 2-0". The readout
+// under the boxes shows both readings so a typo shows before Save.
+const SIZE_SLOTS = ['L', 'W', 'H']
+const tradeOf = (t) => { const n = tokenToInches(String(t || '').trim()); return n == null ? String(t || '').trim() : inchesToTrade(n) }
+const composeSize = (parts) => parts.map(tradeOf).filter(Boolean).join(' x ')
+function SizeBoxes({ value, onChange }) {
+  const [parts, setParts] = useState(() => { const t = sizeTokens(value); return [t[0] || '', t[1] || '', t[2] || ''] })
+  // A prefill from outside (the search box, Fix on an order) lands in the boxes
+  // — the "adjust state when a prop changes" pattern, no effect needed.
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    if (composeSize(parts) !== String(value || '').trim()) { const t = sizeTokens(value); setParts([t[0] || '', t[1] || '', t[2] || '']) }
+  }
+  const update = (i, text) => { const next = parts.slice(); next[i] = text; setParts(next); onChange(composeSize(next)) }
+  const settle = (i) => { const t = tradeOf(parts[i]); if (t !== parts[i]) { const next = parts.slice(); next[i] = t; setParts(next) } }
+  const filled = parts.filter(p => p.trim()).length
+  const p = parseSizeInput(composeSize(parts))
+  return (
+    <>
+      <div className="fl-yd-sizerow">
+        {SIZE_SLOTS.map((lab, i) => (
+          <div key={lab} className="fl-yd-sizecell">
+            <div className="fl-yd-sizelab">{lab}</div>
+            <input className="fl-input fl-yd-sizebox" placeholder={i === 0 ? '12 or 1-0' : i === 1 ? '8 or 0-8' : '24 or 2-0'} value={parts[i]}
+              onChange={(e) => update(i, e.target.value)} onBlur={() => settle(i)} />
+          </div>
+        ))}
+      </div>
+      {filled === 0 ? <div className="fl-yd-sizeread fl-yd-sizeread-muted">Inches (12) or feet-inches (1-0) in each box. Either way.</div>
+        : filled < 3 ? <div className="fl-yd-sizeread fl-yd-sizeread-muted">Fill all three: L, W, H.</div>
+        : !p.ok ? <div className="fl-yd-sizeread fl-yd-sizeread-muted">A box did not read. Numbers only, like 12 or 1-0.</div>
+        : <div className="fl-yd-sizeread">= {p.trade} <span className="fl-yd-sizeread-in">({p.inches} in)</span></div>}
     </>
   )
 }
@@ -970,6 +1008,13 @@ const YD_CSS = `
   .fl-yd-ask { font-size: 15px; font-weight: 700; color: #16150F; margin: 10px 0 2px; }
   .fl-yd-chiprow { display: flex; gap: 6px; flex-wrap: wrap; }
   .fl-yd-bignum { font-family: "JetBrains Mono", Consolas, monospace; font-size: 34px; font-weight: 800; text-align: center; letter-spacing: 0.06em; padding: 10px 14px; }
+  .fl-yd-sizerow { display: flex; gap: 8px; min-width: 0; }
+  .fl-yd-sizecell { flex: 1 1 0; min-width: 0; }
+  .fl-yd-sizelab { font-size: 12px; font-weight: 800; color: #7C7562; margin: 0 0 3px 2px; letter-spacing: 0.04em; }
+  .fl-yd-sizebox { width: 100%; min-width: 0; box-sizing: border-box; text-align: center; font-variant-numeric: tabular-nums; }
+  .fl-yd-sizeread { font-size: 13px; font-weight: 800; color: #14775A; margin: 5px 2px 0; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .fl-yd-sizeread-in { font-weight: 600; color: #5B7F72; }
+  .fl-yd-sizeread-muted { color: #7C7562; font-weight: 600; }
   .fl-yd-warn { font-size: 12.5px; color: #B3261E; font-weight: 700; margin: 6px 2px 0; overflow-wrap: anywhere; }
   .fl-yd-warnbox { margin-top: 12px; border: 1px solid rgba(179,38,30,0.4); background: rgba(179,38,30,0.06); border-radius: 12px; padding: 10px 12px; min-width: 0; }
   .fl-yd-note { font-size: 12px; color: #8A5A12; margin: 6px 2px 0; overflow-wrap: anywhere; }
@@ -979,3 +1024,4 @@ const YD_CSS = `
   .fl-yd-tapeline { font-size: 15px; font-weight: 800; color: #14775A; margin: 2px 0 8px; overflow-wrap: anywhere; }
   .fl-yd-tapeline-red { color: #B3261E; }
 `
+
