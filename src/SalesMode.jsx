@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, ensureRubTask, setOrderDesignStatus, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, ensureRubTask, setOrderDesignStatus, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus, findCemeteryByName, normalizeCemeteryName } from './lib/stonebooksData'
 import { designTags, rankDiversify } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -1449,42 +1449,58 @@ function titleCaseCemeteryName(raw) {
   }).join(' ')
 }
 
-// Upsert a cemetery; returns { data, error }.
+// Resolve the order's cemetery to a library row; returns { data, error }.
+//
+// CEM-RENAME-INCIDENT (2026-10-26): this used to UPDATE the linked row with
+// everything on the form, NAME INCLUDED. Typing "Beth Abraham" over an order
+// linked to Beth Israel renamed Beth Israel for 73 orders (same for
+// Resurrection Piscataway -> Staten Island on 2026-08-26 and Forest Lawn on
+// 2026-10-24). Rules now:
+//   - an order save NEVER renames a library row. When the typed name is not the
+//     linked row's name, this order wants a DIFFERENT cemetery: look that name
+//     up (whole name) or create it, and link the order there.
+//   - info fields (address, phone, ...) carry onto the linked row only when the
+//     form holds a value; a blank on the form never blanks the library.
+//   - renames and merges live on the Cemeteries tab, where they are guarded.
+const CEMETERY_INFO_COLS = ['address', 'city', 'state', 'zip', 'contact_phone', 'contact_email', 'website', 'notes']
 async function upsertCemetery(cem) {
+  const typed = (cem.name || '').trim()
   if (cem.id) {
-    const { data, error } = await supabase
-      .from('cemeteries')
-      .update(cemeteryToRow(cem))
-      .eq('id', cem.id)
-      .select()
-      .single()
-    if (error) console.error('updateCemetery error:', error)
-    return { data, error }
+    const { data: row, error: rowErr } = await supabase
+      .from('cemeteries').select('*').eq('id', cem.id).maybeSingle()
+    if (rowErr) { console.error('upsertCemetery lookup error:', rowErr); return { data: null, error: rowErr } }
+    if (row && (!typed || normalizeCemeteryName(row.name) === normalizeCemeteryName(typed))) {
+      const incoming = cemeteryToRow(cem)
+      const patch = {}
+      for (const k of CEMETERY_INFO_COLS) {
+        const v = incoming[k]
+        if (v !== null && v !== undefined && String(v).trim() !== '' && v !== row[k]) patch[k] = v
+      }
+      if (!Object.keys(patch).length) return { data: row, error: null }
+      const { data, error } = await supabase
+        .from('cemeteries').update(patch).eq('id', cem.id).select().single()
+      if (error) { console.error('updateCemetery error:', error); return { data: null, error } }
+      return { data, error: null }
+    }
+    if (row) console.warn(`[cemetery] "${typed}" typed over linked "${row.name}" — linking by name, not renaming the library row`)
+    // Linked row gone (merged away) or a different name typed: resolve by name.
   }
-  // LOOKUP-OR-CREATE: a cemetery without an id but with a name must not blindly
-  // INSERT — a name that already exists violates cemeteries_name_unique_idx and
-  // aborts the whole order save (the New Lead "(no name)" crash). Reuse the
-  // existing row's id when the name already exists (case-insensitive); only
-  // insert a genuinely new one.
-  const name = (cem.name || '').trim()
-  if (name) {
-    const { data: existing } = await supabase
-      .from('cemeteries').select('*').ilike('name', name).limit(1).maybeSingle()
-    if (existing?.id) return { data: existing, error: null }
-  }
+  if (!typed) return { data: null, error: { message: 'Cemetery name is empty' } }
+  const { data: existing, error: findErr } = await findCemeteryByName(typed)
+  if (findErr) { console.error('findCemetery error:', findErr); return { data: null, error: findErr } }
+  if (existing?.id) return { data: existing, error: null }
   const newRow = cemeteryToRow(cem)
-  if (newRow.name) newRow.name = titleCaseCemeteryName(newRow.name)
+  newRow.name = titleCaseCemeteryName(typed)
   const { data, error } = await supabase
     .from('cemeteries')
     .insert(newRow)
     .select()
     .single()
   if (error) {
-    // Unique-violation (race or space/case normalization the ilike missed) → the
-    // row exists now; fetch and reuse it instead of failing the order save.
-    if (error.code === '23505' && name) {
-      const { data: found } = await supabase
-        .from('cemeteries').select('*').ilike('name', name).limit(1).maybeSingle()
+    // Unique-violation (a race) → the row exists now; reuse it instead of
+    // failing the order save.
+    if (error.code === '23505') {
+      const { data: found } = await findCemeteryByName(typed)
       if (found?.id) return { data: found, error: null }
     }
     console.error('insertCemetery error:', error)
@@ -2834,6 +2850,18 @@ export function CemeteryStep({ order, update }) {
   const updateCem  = (patch) => update({ cemetery: { ...cem, ...patch } })
   const updatePlot = (patch) => update({ plot: { ...plot, ...patch } })
 
+  // Typing a different name over a LINKED cemetery detaches the link and starts
+  // a fresh cemetery for this order (lookup-or-create on save). It never
+  // renames the library row: that is how Beth Israel became "Beth Abraham"
+  // for 73 orders on 2026-10-21. Renames live on the Cemeteries tab.
+  const onNameType = (v) => {
+    if (cem.id && normalizeCemeteryName(v) !== normalizeCemeteryName(cem.name)) {
+      update({ cemetery: { ...makeBlankOrder().cemetery, name: v } })
+      return
+    }
+    updateCem({ name: v })
+  }
+
   const pickExistingCem = (row) => {
     update({ cemetery: rowToCemetery(row) })
     setQuery('')
@@ -2922,10 +2950,11 @@ export function CemeteryStep({ order, update }) {
         )}
 
         <div className="sm-grid-2">
-          <Field label="Cemetery name" required>
+          <Field label="Cemetery name" required
+            hint={cem.id ? 'Linked to the library. A different name here picks or creates another cemetery for this order only. To rename the cemetery itself, use the Cemeteries tab.' : undefined}>
             <TextInput
               value={cem.name}
-              onChange={v => updateCem({ name: v })}
+              onChange={onNameType}
               placeholder="Mount Lebanon Cemetery"
             />
           </Field>
@@ -10926,7 +10955,9 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
         if (result.customerId && !o.customer.id) {
           setOrder(prev => ({ ...prev, customer: { ...prev.customer, id: result.customerId } }))
         }
-        if (result.cemeteryId && !o.cemetery.id) {
+        // The save may have resolved the cemetery to a DIFFERENT row than the
+        // form held (a new name typed over a linked one): follow it.
+        if (result.cemeteryId && result.cemeteryId !== o.cemetery.id) {
           setOrder(prev => ({ ...prev, cemetery: { ...prev.cemetery, id: result.cemeteryId } }))
         }
       }

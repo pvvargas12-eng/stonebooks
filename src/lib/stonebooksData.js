@@ -4675,6 +4675,14 @@ export async function listCemeteriesWithPermit() {
 }
 export async function updateCemeteryPermit(id, patch) {
   if (!id) return { ok: false, error: 'No cemetery id' }
+  // Info/permit fields only. The name goes through renameCemetery (guarded);
+  // a stray name here is dropped, never written (CEM-RENAME-INCIDENT 2026-10-26).
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'name')) {
+    console.warn('[cemetery] updateCemeteryPermit ignores name — use renameCemetery')
+    patch = { ...patch }
+    delete patch.name
+    if (!Object.keys(patch).length) return { ok: true }
+  }
   const { error } = await supabase.from('cemeteries').update(patch).eq('id', id).eq('tenant_id', TENANT_ID)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
@@ -4792,14 +4800,47 @@ const _titleCaseCem = (raw) => {
     return w.replace(/^./, ch => ch.toUpperCase())
   }).join(' ')
 }
-// Add a cemetery from the Cemeteries tab. Case-insensitive lookup first so a
-// retyped existing name reuses the row instead of duping; new names get the
-// same auto-casing as the sales path.
+// ── CEMETERY NAME LOOKUP (CEM-RENAME-INCIDENT, 2026-10-26) ──────────────────
+// The ONE whole-name lookup every lookup-or-create path uses (sales wizard,
+// New Lead, phone intake, Cemeteries tab Add). Case- and whitespace-
+// insensitive, never prefix/contains, wildcards escaped (ilike reads % and _
+// as wildcards). An error comes back AS an error: a lookup that failed quietly
+// used to fall through to INSERT and mint a duplicate row.
+export const normalizeCemeteryName = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim()
+export async function findCemeteryByName(name) {
+  const want = normalizeCemeteryName(name)
+  if (!want) return { data: null, error: null }
+  const pattern = want.replace(/[\\%_]/g, ch => `\\${ch}`).replace(/ /g, '%')
+  const { data, error } = await supabase.from('cemeteries').select('*').ilike('name', pattern).limit(20)
+  if (error) return { data: null, error }
+  const rows = (data || []).filter(r => normalizeCemeteryName(r.name) === want)
+  // The unique index is name + city, so one name can hold several rows; the
+  // oldest is the library's original.
+  rows.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+  return { data: rows[0] || null, error: null }
+}
+// Rename a library row: the ONLY sanctioned rename path (Cemeteries tab, after
+// the order-count confirm). Refuses when another row already answers to that
+// name — that is a merge, not a rename.
+export async function renameCemetery(id, newName) {
+  const name = String(newName || '').trim()
+  if (!id || !name) return { ok: false, error: 'Name the cemetery.' }
+  const { data: clash, error } = await findCemeteryByName(name)
+  if (error) return { ok: false, error: error.message }
+  if (clash && clash.id !== id) return { ok: false, error: `"${clash.name}" already exists. Use Merge to fold this cemetery into it instead of renaming.`, clash }
+  const { error: uErr } = await supabase.from('cemeteries').update({ name }).eq('id', id).eq('tenant_id', TENANT_ID)
+  if (uErr) return { ok: false, error: uErr.message }
+  return { ok: true }
+}
+
+// Add a cemetery from the Cemeteries tab. Whole-name lookup first so a retyped
+// existing name reuses the row instead of duping; new names get the same
+// auto-casing as the sales path.
 export async function createCemetery({ name, city = null, state = null }) {
   const typed = String(name || '').trim()
   if (!typed) return { ok: false, error: 'Name the cemetery.' }
-  const { data: existing } = await supabase.from('cemeteries')
-    .select('id, name').ilike('name', typed).limit(1).maybeSingle()
+  const { data: existing, error: findErr } = await findCemeteryByName(typed)
+  if (findErr) return { ok: false, error: findErr.message }
   if (existing?.id) return { ok: true, cemetery: existing, existed: true }
   const { data, error } = await supabase.from('cemeteries').insert({
     tenant_id: TENANT_ID, name: _titleCaseCem(typed),
@@ -4808,8 +4849,7 @@ export async function createCemetery({ name, city = null, state = null }) {
   }).select().single()
   if (error) {
     if (error.code === '23505') {
-      const { data: found } = await supabase.from('cemeteries')
-        .select('id, name').ilike('name', typed).limit(1).maybeSingle()
+      const { data: found } = await findCemeteryByName(typed)
       if (found?.id) return { ok: true, cemetery: found, existed: true }
     }
     return { ok: false, error: error.message }
@@ -4830,6 +4870,10 @@ const CEMETERY_REFS = [
   ['permit_docs', 'cemetery_id'],
   ['cemetery_maps', 'cemetery_id'],
   ['work_batches', 'destination_cemetery_id'],
+  // Both FK ON DELETE CASCADE (prod audit 2026-10-26): a merge that skipped
+  // them silently dropped the duplicate's pins and reminders with the row.
+  ['cemetery_map_pins', 'cemetery_id'],
+  ['install_reminders', 'cemetery_id'],
 ]
 export async function cemeteryRefCounts(cemeteryId) {
   if (!cemeteryId) return null
@@ -4838,8 +4882,8 @@ export async function cemeteryRefCounts(cemeteryId) {
       .select('id', { count: 'exact', head: true }).eq(col, cemeteryId)
     return error ? 0 : (count || 0)
   }
-  const [orders, templates, docs, maps, batches] = await Promise.all(CEMETERY_REFS.map(one))
-  return { orders, templates, docs, maps, batches, total: orders + templates + docs + maps + batches }
+  const [orders, templates, docs, maps, batches, pins, reminders] = await Promise.all(CEMETERY_REFS.map(one))
+  return { orders, templates, docs, maps, batches, pins, reminders, total: orders + templates + docs + maps + batches + pins + reminders }
 }
 // Merge: blank-fill the keeper's info from the duplicate (never overwrite),
 // re-point every referencing row, then delete the duplicate. Ordered so a

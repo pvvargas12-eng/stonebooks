@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   listCemeteriesWithPermit, updateCemeteryPermit, createCemetery,
   listCemeteryMaps, addCemeteryMap, updateCemeteryMap, deleteCemeteryMap, countCemeteryMaps,
-  cemeteryRefCounts, mergeCemeteries, listOrdersAtCemetery, listPermitTemplatesForCemetery,
+  cemeteryRefCounts, mergeCemeteries, renameCemetery, listOrdersAtCemetery, listPermitTemplatesForCemetery,
   listMapPins, addMapPin, deleteMapPin, listInstallHistoryAtCemetery,
   getCurrentStaffName, properName,
 } from './lib/stonebooksData'
@@ -184,7 +184,7 @@ export default function CemeteriesTab({ onOpenOrder }) {
         <main className="cmt-main">
           {!sel
             ? <div className="cmt-empty" style={{ padding: 60, textAlign: 'center' }}>Pick a cemetery on the left — info, Drive link, location pin, and its map pages live here.</div>
-            : <CemeteryDetail key={sel.id} cem={sel} say={say} onSaved={reload}
+            : <CemeteryDetail key={sel.id} cem={sel} list={list || []} say={say} onSaved={reload}
                 onOpenOrder={onOpenOrder}
                 onStartMerge={() => setMerge({ keepId: '', awayId: sel.id })} />}
         </main>
@@ -279,20 +279,27 @@ function MergeModal({ list, initialKeepId, initialAwayId, say, onClose, onMerged
   const [keepId, setKeepId] = useState(initialKeepId || '')
   const [awayId, setAwayId] = useState(initialAwayId || '')
   const [counts, setCounts] = useState(null)
+  const [moving, setMoving] = useState(null)   // open orders on the duplicate, named in the confirm
+  const [typed, setTyped] = useState('')       // the duplicate's name, typed when the pair is not a lookalike
   const [busy, setBusy] = useState(false)
   const keep = list.find(c => c.id === keepId) || null
   const away = list.find(c => c.id === awayId) || null
+  // MERGE GUARD (CEM-RENAME-INCIDENT 2026-10-26): lookalikes (same scent) merge
+  // on a click; anything else — "SAINT STANS" into "Sacred Heart" — is typed.
+  const lookalike = !!(keep && away && normCemName(keep.name) === normCemName(away.name))
+  const confirmed = lookalike || !!(away && typed.trim().toLowerCase() === String(away.name || '').trim().toLowerCase())
 
   useEffect(() => {
-    if (!awayId) { setCounts(null); return }
+    if (!awayId) { setCounts(null); setMoving(null); return }
     let alive = true
-    setCounts(null)
+    setCounts(null); setMoving(null); setTyped('')
     cemeteryRefCounts(awayId).then(c => { if (alive) setCounts(c) }).catch(() => { if (alive) setCounts(null) })
+    listOrdersAtCemetery(awayId, { limit: 200 }).then(o => { if (alive) setMoving(o || []) }).catch(() => { if (alive) setMoving([]) })
     return () => { alive = false }
   }, [awayId])
 
   const doMerge = async () => {
-    if (!keep || !away || busy) return
+    if (!keep || !away || busy || !confirmed) return
     setBusy(true)
     const r = await mergeCemeteries(away.id, keep.id)
     setBusy(false)
@@ -318,7 +325,7 @@ function MergeModal({ list, initialKeepId, initialAwayId, say, onClose, onMerged
       <div className="cmt-card" style={{ maxWidth: 520, width: '100%', cursor: 'default' }} onClick={e => e.stopPropagation()}>
         <h2 className="cmt-h2" style={{ marginBottom: 4 }}>Merge duplicates</h2>
         <div className="cmt-hint">
-          Everything on the duplicate — orders, permit templates, built permits, map pages, scheduled runs — moves onto the keeper. Blank info on the keeper (phone, address, pin, Drive link) fills in from the duplicate. The duplicate row is then removed. Nothing about any order changes except which cemetery it points to.
+          Everything on the duplicate — orders, permit templates, built permits, map pages, map pins, install reminders, scheduled runs — moves onto the keeper. Blank info on the keeper (phone, address, pin, Drive link) fills in from the duplicate. The duplicate row is then removed. Nothing about any order changes except which cemetery it points to.
         </div>
         {pickRow('Keep this one', keepId, setKeepId, awayId)}
         {pickRow('Merge this one away', awayId, setAwayId, keepId)}
@@ -332,13 +339,25 @@ function MergeModal({ list, initialKeepId, initialAwayId, say, onClose, onMerged
           <div className="cmt-pinline" style={{ marginTop: 4 }}>
             {counts === null
               ? `Counting what's on "${away.name}"…`
-              : `Moving from "${away.name}": ${counts.orders} order${counts.orders === 1 ? '' : 's'} · ${counts.templates} permit template${counts.templates === 1 ? '' : 's'} · ${counts.docs} built permit${counts.docs === 1 ? '' : 's'} · ${counts.maps} map page${counts.maps === 1 ? '' : 's'} · ${counts.batches} scheduled run${counts.batches === 1 ? '' : 's'}`}
+              : `Moving from "${away.name}": ${counts.orders} order${counts.orders === 1 ? '' : 's'} · ${counts.templates} permit template${counts.templates === 1 ? '' : 's'} · ${counts.docs} built permit${counts.docs === 1 ? '' : 's'} · ${counts.maps} map page${counts.maps === 1 ? '' : 's'} · ${counts.batches} scheduled run${counts.batches === 1 ? '' : 's'} · ${counts.pins || 0} map pin${counts.pins === 1 ? '' : 's'} · ${counts.reminders || 0} reminder${counts.reminders === 1 ? '' : 's'}`}
           </div>
+        )}
+        {away && moving && moving.length > 0 && (
+          <div className="cmt-pinline" style={{ marginTop: 6, maxHeight: 132, overflowY: 'auto', overflowWrap: 'anywhere', minWidth: 0 }}>
+            Open orders that will read "{keep ? keep.name : '…'}" afterwards: {moving.map(o => `${o.order_number} ${famOfOrder(o)}`).join(' · ')}
+            {counts && counts.orders > moving.length ? ` (plus ${counts.orders - moving.length} closed or cancelled)` : ''}
+          </div>
+        )}
+        {keep && away && !lookalike && (
+          <label className="cmt-field" style={{ marginTop: 10 }}>
+            <span style={{ color: '#8a5a12' }}>"{away.name}" and "{keep.name}" are not variants of one name. Type the duplicate's name to confirm it belongs under the keeper.</span>
+            <input className="cmt-input" value={typed} onChange={e => setTyped(e.target.value)} placeholder={away.name} />
+          </label>
         )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
           <button type="button" className="cmt-btn cmt-btn-quiet" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="button" className="cmt-btn cmt-btn-danger" onClick={doMerge}
-            disabled={busy || !keep || !away || counts === null}>
+            disabled={busy || !keep || !away || counts === null || !confirmed}>
             {busy ? 'Merging…' : keep ? `Merge — keep "${keep.name}"` : 'Merge'}
           </button>
         </div>
@@ -347,7 +366,7 @@ function MergeModal({ list, initialKeepId, initialAwayId, say, onClose, onMerged
   )
 }
 
-function CemeteryDetail({ cem, say, onSaved, onOpenOrder, onStartMerge }) {
+function CemeteryDetail({ cem, list = [], say, onSaved, onOpenOrder, onStartMerge }) {
   // Open orders/leads here — shared by the Work card (list) and the map
   // viewer (the grave-pin picker). One fetch.
   const [openOrders, setOpenOrders] = useState(null)
@@ -370,9 +389,28 @@ function CemeteryDetail({ cem, say, onSaved, onOpenOrder, onStartMerge }) {
   const saveInfo = async () => {
     setBusy(true)
     const patch = {}
-    for (const [k] of INFO_FIELDS) patch[k] = (draft[k] || '').trim() || null
+    for (const [k] of INFO_FIELDS) if (k !== 'name') patch[k] = (draft[k] || '').trim() || null
     patch.notes = (draft.notes || '').trim() || null
     patch.drive_link = (draft.drive_link || '').trim() || null
+    // RENAME GUARD (CEM-RENAME-INCIDENT 2026-10-26): a rename changes the
+    // cemetery on EVERY order here, so it is confirmed with the count, and a
+    // name another row already answers to is a merge, never a rename.
+    const newName = (draft.name || '').trim()
+    const oldName = (cem.name || '').trim()
+    if (newName && newName !== oldName) {
+      const clash = list.find(c => c.id !== cem.id && normCemName(c.name) === normCemName(newName))
+      if (clash) {
+        setBusy(false)
+        say(`"${newName}" is already "${clash.name}". Use Merge… to fold this cemetery into it instead of renaming.`, true)
+        return
+      }
+      const counts = await cemeteryRefCounts(cem.id).catch(() => null)
+      const n = counts?.orders ?? 0
+      const ok = window.confirm(`Rename "${oldName}" to "${newName}"?\n\nThis renames the cemetery itself: all ${n} order${n === 1 ? '' : 's'} here will read "${newName}". To move one order to a different cemetery, change it on that order instead.`)
+      if (!ok) { setBusy(false); return }
+      const rn = await renameCemetery(cem.id, newName)
+      if (!rn.ok) { setBusy(false); say(rn.error, true); return }
+    }
     const r = await updateCemeteryPermit(cem.id, patch)
     setBusy(false)
     if (!r.ok) { say(r.error, true); return }
