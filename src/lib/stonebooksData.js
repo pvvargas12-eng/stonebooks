@@ -1941,7 +1941,12 @@ export function rowTotalPaid(order) {
   if (ps.length > 0) return ps.reduce((s, p) => s + (Number(p.amount) || 0), 0)
   return (Number(order?.deposit_amount) || 0) + (Number(order?.balance_amount) || 0)
 }
-export function rowBalanceDue(order)   { return Math.max(0, rowGrandTotal(order) - rowTotalPaid(order)) }
+// Balance in CENTS. The engine total can carry fractions of a cent (6.625% tax
+// on odd totals), while payments are entered in cents — Friend E-26-0614 owed
+// 0.4 of a cent, displayed $0.00, and read "Deposit" / "FINAL PAYMENT $0.00"
+// (Paul 2026-10-27). Every paid-in-full test rounds to the cent first.
+export function rowBalanceCents(order) { return Math.round((rowGrandTotal(order) - rowTotalPaid(order)) * 100) }
+export function rowBalanceDue(order)   { return Math.max(0, rowBalanceCents(order)) / 100 }
 
 // =============================================================================
 // ORDER STATUS DIMENSIONS — ONE SOURCE OF TRUTH (Orders / Jobs / Scheduler)
@@ -2026,7 +2031,11 @@ function _effectiveTotal(order) {
 export function derivePaymentStatus(order) {
   const total = _effectiveTotal(order)
   const paid = rowTotalPaid(order)
-  if (total > 0 && (total - paid) <= 0) return 'paid_in_full'
+  // The office's own "Paid in full" pick (orders.payment_status) is honored
+  // once money is down — Paul 2026-10-27: "i should be able to select paid in
+  // full even if it wasn't marked when the last payment was in".
+  if (order?.payment_status === 'paid_in_full' && paid > 0) return 'paid_in_full'
+  if (total > 0 && Math.round((total - paid) * 100) <= 0) return 'paid_in_full'
   if (paid > 0) return 'deposit'
   return 'quoted'
 }
@@ -3243,7 +3252,9 @@ function _paymentsColumnPatch(payments, row) {
   const p0 = lockedNV[0] || null, p1 = lockedNV[1] || null
   const grand = rowGrandTotal(row)
   const lockedSum = lockedNV.reduce((s, p) => s + (Number(p.amount) || 0), 0)
-  const fullyPaid = grand > 0 && Math.round(lockedSum) >= grand
+  // Cents, not whole dollars: the old Math.round(lockedSum) called $5,119.64
+  // "paid" against $5,119.645 while derivePaymentStatus did not.
+  const fullyPaid = grand > 0 && Math.round((grand - lockedSum) * 100) <= 0
   let status = row.status
   let statusBefore = row.status_before_paid_in_full
   if (fullyPaid && status !== 'paid_in_full' && status !== 'closed') {
@@ -7686,10 +7697,10 @@ export function computeOrderPressure(order, job = null, milestones = null) {
   // from the canonical payments[] path the Customers tab already uses.
   const total = rowGrandTotal(order)
   const paid  = rowTotalPaid(order)
-  const balance = total - paid
+  const balance = Math.round((total - paid) * 100) / 100   // cents (see rowBalanceCents)
   let paymentState = 'none'
   if (total > 0) {
-    if (balance <= 0) paymentState = 'paid_in_full'
+    if (balance <= 0 || order.payment_status === 'paid_in_full') paymentState = 'paid_in_full'
     else if (paid > 0) paymentState = 'partial'
     else paymentState = 'unpaid'
     if (balance > 0 && order.target_completion_date) {

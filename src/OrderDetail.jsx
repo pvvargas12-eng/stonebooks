@@ -2179,7 +2179,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const ordTag = `${fam2}${order.order_number ? ` (${order.order_number})` : ''}`
   const waitingOn = []
   if (!order.signed_at) waitingOn.push({ key: 'contract', label: 'CONTRACT UNSIGNED', short: 'the contract', task: `Get the contract signed — ${ordTag}` })
-  if (order.signed_at && balance > 0) waitingOn.push({ key: 'payment', label: `FINAL PAYMENT ${fmtUSD(balance)}`, short: 'final payment', task: `Call about the final payment — ${fmtUSD(balance)} due — ${ordTag}` })
+  if (order.signed_at && balance > 0 && derivePaymentStatus(order) !== 'paid_in_full') waitingOn.push({ key: 'payment', label: `FINAL PAYMENT ${fmtUSD(balance)}`, short: 'final payment', task: `Call about the final payment — ${fmtUSD(balance)} due — ${ordTag}` })
   if (ovGates?.fdn === false) waitingOn.push({ key: 'fdn', label: 'FDN NOT IN', short: 'the foundation', task: `Do the foundation — ${ordTag}${order.cemetery?.name ? ` at ${order.cemetery.name}` : ''}` })
   if (ovGates?.permit === false) waitingOn.push({ key: 'permit', label: 'PERMIT NOT APPROVED', short: 'the permit', task: `Get the permit approved — ${ordTag}` })
   // A bronze is never blasted — it arrives (Paul 2026-10-08): the gate is the

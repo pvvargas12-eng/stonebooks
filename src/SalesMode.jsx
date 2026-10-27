@@ -11813,7 +11813,8 @@ function PaymentTrackingSection({ order, update, onDepositLogged }) {
       .filter(p => !p.voided && (p.locked ?? true))
       .reduce((s, p) => s + (Number(p.amount) || 0), 0)
 
-    const shouldBePaid = grandTotal > 0 && lockedSum >= grandTotal
+    // Cents tolerance: the engine total can carry a fraction of a cent.
+    const shouldBePaid = grandTotal > 0 && Math.round((grandTotal - lockedSum) * 100) <= 0
     const isPaid = order.status === 'paid_in_full'
     const isClosed = order.status === 'closed'
 
