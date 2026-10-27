@@ -541,6 +541,12 @@ export function classifyAttachment({ filename, contentType } = {}) {
 // limit 3000 (was 1000): outbound rows have received_at NULL and sort after
 // every inbound row, so a tight limit could push outbound-only threads out of
 // the Sent bucket entirely (audit 2026-07-14).
+// The completion (closeout) email is recognized by its subject — the one
+// buildCompletionEmailDraft writes ("… memorial is complete"). Paul 2026-10-27:
+// every closeout he sends must show in the Email Command Center, and a reply
+// to one must stand out.
+const _isCloseoutSubject = (s) => /memorial is complete/i.test(String(s || ''))
+
 export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
   // body_text deliberately NOT selected — full bodies for 3000 messages were
   // the tab's biggest payload (perf pass 2026-07-15). The stored snippet
@@ -581,9 +587,16 @@ export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
         phone: c?.phone_primary || null,
         hasInbound: false, hasOutbound: false, hasAttachments: false, attachKinds: [], unread: 0,
         messageIds: [], _manualJunk: undefined,
+        closeout: null, _inboundAt: [],
       })
     }
     t.messageIds.push(r.id)
+    // Newest-first, so the first closeout seen is the latest one sent; replies
+    // are the inbound rows newer than it (resolved after the loop).
+    if (r.direction === 'outbound' && !t.closeout && _isCloseoutSubject(r.subject)) {
+      t.closeout = { sentAt: r.sent_at || r.created_at, replyAt: null }
+    }
+    if (r.direction === 'inbound') t._inboundAt.push(r.received_at || r.created_at)
     // Manual junk decision — rows iterate newest-first, so the first non-null
     // is_junk seen is the latest staff decision for the thread.
     if (r.is_junk != null && t._manualJunk === undefined) t._manualJunk = !!r.is_junk
@@ -598,6 +611,14 @@ export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
     if (r.direction === 'inbound' && !r.is_read) t.unread++
   }
   const threads = Array.from(map.values())
+  for (const t of threads) {
+    if (t.closeout) {
+      const sent = Date.parse(t.closeout.sentAt) || 0
+      const reply = t._inboundAt.find(d => (Date.parse(d) || 0) > sent)   // newest-first → the latest reply
+      if (reply) t.closeout.replyAt = reply
+    }
+    delete t._inboundAt
+  }
   threads.sort((a, b) => (Date.parse(b.latestDate) || 0) - (Date.parse(a.latestDate) || 0))
   // Vendor + production context for the workflow buckets: a thread is a VENDOR
   // thread when its address matches a supplier or partner on file; a thread is
@@ -623,8 +644,35 @@ export async function getEmailThreadsWorkspace({ limit = 3000 } = {}) {
     unlinked: threads.filter(t => !t.matched).length,
     photos: threads.filter(t => t.hasAttachments).length,
     sent: threads.filter(t => t.hasOutbound).length,
+    closeout_sent: threads.filter(t => t.closeout).length,
+    closeout_replies: threads.filter(t => t.closeout?.replyAt).length,
   }
   return { ok: true, threads, counts }
+}
+
+// Nav badge: customers who wrote back after their closeout email and whose
+// reply is still unread. Two light selects (the outbound closeouts, then the
+// unread inbound rows from those customers) — never the whole mailbox.
+export async function getCloseoutReplyCount() {
+  const { data: outs, error } = await supabase.from('messages')
+    .select('customer_id, sent_at, created_at')
+    .eq('direction', 'outbound').is('hidden_at', null).not('customer_id', 'is', null)
+    .ilike('subject', '%memorial is complete%')
+    .order('created_at', { ascending: false }).limit(500)
+  if (error) { console.warn('[email] closeout count:', error.message); return 0 }
+  const sentBy = new Map()
+  for (const r of (outs || [])) if (!sentBy.has(r.customer_id)) sentBy.set(r.customer_id, Date.parse(r.sent_at || r.created_at) || 0)
+  if (!sentBy.size) return 0
+  const { data: ins } = await supabase.from('messages')
+    .select('customer_id, received_at, created_at')
+    .eq('direction', 'inbound').eq('is_read', false).is('hidden_at', null)
+    .in('customer_id', [...sentBy.keys()].slice(0, 300)).limit(1000)
+  const hit = new Set()
+  for (const r of (ins || [])) {
+    const sent = sentBy.get(r.customer_id)
+    if (sent && (Date.parse(r.received_at || r.created_at) || 0) > sent) hit.add(r.customer_id)
+  }
+  return hit.size
 }
 
 // CRM "brain" for the Email context panel — the customer and their orders, so

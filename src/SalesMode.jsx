@@ -36,7 +36,7 @@ import DieOverrideField from './components/DieOverrideField'
 // Single boundary call between the sales wizard and the operational layer.
 // SalesMode does not depend on the result; failure surfaces as a non-fatal
 // notice on the locked view and does not undo the signing.
-import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, ensureRubTask, setOrderDesignStatus, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus, findCemeteryByName, normalizeCemeteryName } from './lib/stonebooksData'
+import { createJobFromOrder, setJobCostEstimate, ESTIMATE_CATEGORIES, applyDepositMilestones, needsSignedContract, maskPhoneInput, phoneDigits, setOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName, createSigningLink, getSignatureRequestsForOrder, voidSignatureRequest, getSignedContractUrl, logOrderActivity, ensureDerivedMilestones, ensureLeadCadence, sendShopEmail, properName, getJobByOrderId, addToFoundationList, orderNeedsDigList, ensureRubTask, setOrderDesignStatus, listOrderAttachments, deleteOrderAttachment, syncJobToOrderType, missingCheckRef, todayISO, hardDeleteOrder, syncJobsForOrderStatus, findCemeteryByName, normalizeCemeteryName, getActiveStaffUser, STAFF_NAMES } from './lib/stonebooksData'
 import { designTags, rankDiversify } from './lib/monumentSearch'
 import { generateCarveText } from './lib/carveText'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
@@ -2572,7 +2572,7 @@ function ServiceTypeStep({ order, update, mode }) {
       {mode === 'staff' && (
         <Section title="Sales rep" eyebrow="Who's handling this">
           <div className="sm-chip-row">
-            {SALES_REPS.map(rep => (
+            {[...new Set([...STAFF_NAMES, ...(order.salesRep ? [order.salesRep] : [])])].map(rep => (
               <ToggleChip
                 key={rep}
                 on={order.salesRep === rep}
@@ -10851,7 +10851,8 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
 
   // Order state
   const [order, setOrder] = useState(() => {
-    const blank = makeBlankOrder()
+    // USER-PROFILES: a fresh sale is the computer's person's sale.
+    const blank = { ...makeBlankOrder(), salesRep: getActiveStaffUser() || '' }
     if (initialOrderId || !seedDesign) return blank
     const m = seedDesign
     const snapshot = {
@@ -11031,7 +11032,7 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
 
   // ---- Resume screen actions -------------------------------------------------
   const startNew = () => {
-    setOrder(makeBlankOrder())
+    setOrder({ ...makeBlankOrder(), salesRep: getActiveStaffUser() || '' })
     lastSavedJsonRef.current = ''
     setStepIdx(0)
     setPhase('wizard')
@@ -11044,7 +11045,7 @@ export default function SalesMode({ onClose, initialOrderId = null, seedDesign =
   // cemetery, so re-using prior data invites mistakes.
   const startNewQuoteForCustomer = (customerRow) => {
     if (!customerRow) return startNew()
-    const blank = makeBlankOrder()
+    const blank = { ...makeBlankOrder(), salesRep: getActiveStaffUser() || '' }
     blank.customer = rowToCustomer(customerRow)
     blank.parentQuoteId = null  // not branched from a specific order; just same customer
     setOrder(blank)

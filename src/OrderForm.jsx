@@ -26,7 +26,7 @@ import {
   getOrderById, getJobByOrderId, createJobFromOrder,
   getOrderMilestoneTemplate, backfillJobMilestones, fmtUSD,
   autoDetectOrderPermit, maskPhoneInput, phoneDigits, fmtPhone, applyDepositMilestones,
-  missingCheckRef, logOrderActivity,
+  missingCheckRef, logOrderActivity, getActiveStaffUser, STAFF_NAMES,
 } from './lib/stonebooksData'
 import { generateCarveText } from './lib/carveText'
 import QuotesManager from './components/QuotesManager'
@@ -220,7 +220,7 @@ export default function OrderForm({ orderId = null, onClose, onSaved }) {
   const isEdit = !!orderId
   // Multiple job types can be active at once (e.g. Inscription + Acid wash).
   const [types, setTypes] = useState(['new_monument'])
-  const [order, setOrder] = useState(() => ({ ...makeBlankOrder(), serviceTypes: ORDER_TYPES.new_monument.serviceTypes }))
+  const [order, setOrder] = useState(() => ({ ...makeBlankOrder(), serviceTypes: ORDER_TYPES.new_monument.serviceTypes, salesRep: getActiveStaffUser() || '' }))
   const [jobId, setJobId] = useState(null)
   const [loading, setLoading] = useState(isEdit)
   const [busy, setBusy] = useState(false)
@@ -695,7 +695,7 @@ function CustomerCard({ order, update, updatePricing }) {
   return (
     <Card title="Customer & contact" sub="Search to autofill an existing customer, or type a new one.">
       <SelectField label="Created by" value={order.salesRep} onChange={v => update({ salesRep: v })}
-        options={SALES_REPS.map(r => ({ value: r, label: r }))} placeholder="Who's creating this order…" full />
+        options={[...new Set([...STAFF_NAMES, ...SALES_REPS, ...(order.salesRep ? [order.salesRep] : [])])].map(r => ({ value: r, label: r }))} placeholder="Who's creating this order…" full />
       <Field label="Find existing customer" full hint="Type a last name or phone — pick to autofill.">
         <AutoComplete
           search={searchCustomers}

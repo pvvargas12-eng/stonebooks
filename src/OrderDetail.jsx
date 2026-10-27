@@ -45,7 +45,7 @@ import {
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef, dueDateTone,
   installGates, STAFF_NAMES, getJobComponents, dueRelativeText, getActiveStaffUser, createBatch,
-  markApprovalLinkEmailed,
+  markApprovalLinkEmailed, buildCompletionEmailDraft, completionEmailHtml,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   addToFoundationList, removeFromFoundationList,
@@ -1794,11 +1794,13 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     const isCloseout = emailModal.mode === 'closeout'
     const photos = isCloseout ? (emailModal.photos || []) : []
     let html, attachments
-    if (photos.length) {
-      const bodyHtml = String(emailModal.body || '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+    if (isCloseout) {
+      // ONE closeout email everywhere (Paul 2026-10-27): the completion letter
+      // with the Google / Yelp / Facebook review links, Paul's signature block
+      // in the body (so the mailbox signature must not stack under it), and
+      // the finished-work photos inline + attached.
       const imgs = photos.map(p => `<img src="${p.url}" alt="Completed monument" style="max-width:100%;border-radius:8px;margin-top:14px" />`).join('')
-      html = `<div style="font-size:14px;line-height:1.6;color:#222">${bodyHtml}${imgs}</div>`
+      html = `${completionEmailHtml(emailModal.body || '')}${imgs}`
       // URL refs — the server fetches from OUR storage, so photos never ride
       // the ~4.5MB request body (the old cap Paul kept hitting). Full size.
       attachments = photos.map(p => ({ filename: p.name, url: p.url }))
@@ -1816,7 +1818,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       setEmailModal(m => ({ ...m, busy: false, error: 'Generated attachments are too large for one email — remove some and send the rest separately.' }))
       return
     }
-    const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments })
+    const res = await sendShopEmail({ orderId, customerId: order?.customer_id || null, to, subject, text: emailModal.body, html, attachments, includeSignature: !isCloseout })
     if (!res.ok) { setEmailModal(m => ({ ...m, busy: false, error: res.error || 'Send failed' })); return }
     // Approval emails stamp the link the moment they ACTUALLY send — the
     // Today tab's Approvals panel reads this as hard proof (Paul, 2026-07-14).
@@ -1869,7 +1871,18 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // prefilled. Nothing auto-sends; staff edits and sends via gmail-send.
   const draft = async (mode) => {
     if (drafting) return
-    setDrafting(mode); setActionNote(null)
+    setActionNote(null)
+    // The closeout is never AI-written: it is the one completion email (the
+    // review-links letter) with the photos riding along.
+    if (mode === 'closeout') {
+      const d = buildCompletionEmailDraft({ ...order, cemetery: order?.cemetery || null }, order?.customer || null)
+      setEmailModal({
+        to: order?.customer?.email || '', subject: d.subject, body: d.body, mode,
+        photos: completionPhotos.slice(0, 3), busy: false, error: null, sent: false,
+      })
+      return
+    }
+    setDrafting(mode)
     const res = await aiDraftEmail({ orderId, mode, balance, total, photoCount: completionPhotos.length })
     setDrafting(null)
     if (!res.ok) { setActionNote(`Could not draft — ${res.error || 'error'}.`); return }
@@ -2336,7 +2349,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const closeoutReady = installedDone && hasCompletionPhotos
   const draftModes = [
     hasInbound && { mode: 'reply', label: 'Draft reply (AI)', primary: true },
-    closeoutReady && { mode: 'closeout', label: 'Close out with customer (AI)', primary: !hasInbound },
+    closeoutReady && { mode: 'closeout', label: 'Close out with customer', primary: !hasInbound },
     hasProof && !proofApproved && { mode: 'request_approval', label: 'Request approval' },
     balance > 0 && { mode: 'balance_reminder', label: 'Balance reminder' },
     installedDone && !closeoutReady && { mode: 'install_complete', label: 'Install complete' },

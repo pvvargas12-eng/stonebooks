@@ -15,9 +15,11 @@ import {
   onAuthStateChange, updatePassword,
 } from './lib/auth'
 import { buildThemeCSS, loadTheme, saveTheme } from './lib/stonebooksTheme'
-import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount, getJobLinkIds, countOpenHotListItems } from './lib/stonebooksData'
+import { getUserSettings, upsertUserSettings, uploadProfilePhoto, fmtUSD, getEmailSignature, saveEmailSignature, getDueOpenTaskCount, getJobLinkIds, countOpenHotListItems, getCloseoutReplyCount } from './lib/stonebooksData'
 import { loadSalesOptions } from './lib/salesOptions'
-import { loadEmployees } from './lib/employees'
+import { loadEmployees, getActiveEmployees } from './lib/employees'
+import { redeemFieldLinkIfPresent } from './field/fieldLink'
+import { getActiveStaffUser, setActiveStaffUser } from './lib/stonebooksData'
 import { setSelectedHub } from './lib/workspaceState'
 import SalesOptionsSettings from './components/SalesOptionsSettings'
 import FieldAppSettings from './components/FieldAppSettings'
@@ -304,6 +306,9 @@ export default function Stonebooks() {
   const [hotCount, setHotCount] = useState(0)
   // Untouched website inquiries — the red badge on the Inquiries nav item.
   const [inquiryCount, setInquiryCount] = useState(0)
+  // Families who wrote back after their closeout email (unread) — the red
+  // badge on the Email nav item (Paul 2026-10-27: "notifications with responses").
+  const [closeoutReplyCount, setCloseoutReplyCount] = useState(0)
   const [theme, setTheme] = useState(loadTheme())
   // /?tab=payments style deep links — the phone app's MORE screen opens
   // desktop sections this way. Unknown keys fall back to today.
@@ -439,10 +444,21 @@ export default function Stonebooks() {
   // Subscribe to auth state on mount
   useEffect(() => {
     let unsub = null
-    getUser().then(u => setUser(u))
+    // USER-PROFILES: a /#k=<key> link (or a key this computer saved from one)
+    // signs the desktop in as that person before the login gate can show —
+    // the same redeem the phone app runs.
+    redeemFieldLinkIfPresent().catch(() => false).then(() => getUser()).then(u => setUser(u))
     unsub = onAuthStateChange((u) => setUser(u))
     return () => { if (unsub) unsub() }
   }, [])
+
+  // USER-PROFILES (Paul 2026-10-27: "right now they're all using mine and we
+  // don't know who is doing what"): every desktop must know its person. Once
+  // the roster is in, a computer with nobody picked gets the picker before
+  // anything else; the name then seeds new orders (sales rep), tasks, the
+  // Today "I am" row and the email sender identity.
+  const [me, setMe] = useState(null)
+  const [rosterReady, setRosterReady] = useState(false)
 
   // Resolve the vendor-portal binding once we have a signed-in user. A user
   // mapped in partner_users gets the partner portal; everyone else is staff.
@@ -507,6 +523,18 @@ export default function Stonebooks() {
     return () => { cancelled = true; clearInterval(id) }
   }, [user?.id, portal, tab])
 
+  // Staff-only: closeout replies badge — same cadence.
+  useEffect(() => {
+    if (!user?.id || portal !== null) return
+    let cancelled = false
+    const load = () => getCloseoutReplyCount()
+      .then(n => { if (!cancelled) setCloseoutReplyCount(n) })
+      .catch(() => {})
+    load()
+    const id = setInterval(load, 60000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [user?.id, portal, tab])
+
   // Staff-only: Hot List open-item badge — same refresh cadence as the other
   // nav badges; the tab itself also pushes live counts via onCountChange.
   useEffect(() => {
@@ -532,7 +560,7 @@ export default function Stonebooks() {
     // Dynamic import keeps the heavy orderRates chunk out of the entry
     // bundle; the load ORDER (pricing → sales options) is preserved.
     import('./lib/orderRates').then(m => m.loadPricingConfig()).then(() => loadSalesOptions())
-    loadEmployees()
+    loadEmployees().then(() => { setRosterReady(true); setMe(getActiveStaffUser()) })
   }, [user?.id])
 
   // Capture the Gmail OAuth return — the gmail-oauth-callback Edge Function
@@ -738,6 +766,10 @@ export default function Stonebooks() {
       <style>{themeCSS}</style>
       <style>{shellStyles}</style>
 
+      {rosterReady && !me && (
+        <DeskWhoPicker onPick={(name) => { setActiveStaffUser(name); setMe(name) }} />
+      )}
+
       <div className={`sb-root${navCollapsed ? ' sb-nav-collapsed' : ''}`} style={{ gridTemplateColumns: navCollapsed ? '0 1fr' : `${navWidth}px 1fr` }}>
         <aside className="sb-sidebar">
           <button type="button" className="sb-nav-collapse" onClick={toggleNav} title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
@@ -769,6 +801,9 @@ export default function Stonebooks() {
                 {item.key === 'inquiries' && inquiryCount > 0 && (
                   <span className="sb-nav-badge sb-nav-badge-inq" title={`${inquiryCount} website inquir${inquiryCount === 1 ? 'y' : 'ies'} not answered yet`}>{inquiryCount}</span>
                 )}
+                {item.key === 'email' && closeoutReplyCount > 0 && (
+                  <span className="sb-nav-badge sb-nav-badge-hot" title={`${closeoutReplyCount} famil${closeoutReplyCount === 1 ? 'y' : 'ies'} replied to a closeout email`}>{closeoutReplyCount}</span>
+                )}
               </button>
             ))}
 
@@ -793,10 +828,16 @@ export default function Stonebooks() {
                 </div>
               )}
               <div className="sb-user-info">
-                <div className="sb-user-name">{profile?.display_name || user.email}</div>
+                <div className="sb-user-name">{me || profile?.display_name || user.email}</div>
                 <div className="sb-user-shop">Shevchenko Monuments</div>
               </div>
             </button>
+            {me && (
+              <button type="button" className="sb-user-switch" title="Pick a different person for this computer"
+                onClick={() => { setActiveStaffUser(null); setMe(null) }}>
+                Not {me}? Switch person
+              </button>
+            )}
           </div>
         </aside>
 
@@ -1229,6 +1270,81 @@ function EmailSignatureSettings() {
 // =============================================================================
 // STYLES — single string injected once
 // =============================================================================
+
+// USER-PROFILES: the desktop's "who is at this computer" gate. Same roster,
+// same optional 4-digit PIN as the phone's picker; the pick sticks on this
+// browser (sb_active_staff) until "Switch person".
+function DeskWhoPicker({ onPick }) {
+  const people = getActiveEmployees()
+  const [pinFor, setPinFor] = useState(null)
+  const [pin, setPin] = useState('')
+  const [wrong, setWrong] = useState(false)
+  const tryPick = (p) => { if (p.pin) { setPinFor(p); setPin(''); setWrong(false) } else onPick(p.name) }
+  const submitPin = () => {
+    if (!pinFor) return
+    if (pin === String(pinFor.pin)) onPick(pinFor.name)
+    else { setWrong(true); setPin('') }
+  }
+  return (
+    <div className="sb-who-scrim">
+      <style>{DESK_WHO_CSS}</style>
+      <div className="sb-who-card">
+        <div className="sb-who-brand">STONEBOOKS</div>
+        {pinFor ? (
+          <>
+            <div className="sb-who-sub">Enter {pinFor.name}'s PIN</div>
+            <input className="sb-who-pin" type="password" inputMode="numeric" autoFocus maxLength={4} value={pin}
+              onChange={e => { setWrong(false); setPin(e.target.value.replace(/\D/g, '')) }}
+              onKeyDown={e => { if (e.key === 'Enter' && pin.length === 4) submitPin() }} />
+            {wrong && <div className="sb-who-err">Wrong PIN. Try again.</div>}
+            <div className="sb-who-row">
+              <button type="button" className="sb-who-btn" onClick={() => setPinFor(null)}>Back</button>
+              <button type="button" className="sb-who-btn sb-who-btn-gold" disabled={pin.length !== 4} onClick={submitPin}>Open</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="sb-who-sub">Who is using this computer?</div>
+            <div className="sb-who-list">
+              {people.map(p => (
+                <button key={p.id || p.name} type="button" className="sb-who-person" onClick={() => tryPick(p)}>
+                  <span className="sb-who-avatar">{String(p.name || '?').slice(0, 2).toUpperCase()}</span>
+                  <span className="sb-who-main">
+                    <span className="sb-who-name">{p.name}</span>
+                    <span className="sb-who-dept">{p.is_owner ? 'Owner' : (p.department || 'Staff')}{p.pin ? ' · PIN' : ''}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="sb-who-note">Your pick sticks on this computer. Orders, tasks and emails made here carry your name. Change it any time from the bottom of the sidebar.</div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+const DESK_WHO_CSS = `
+  .sb-who-scrim { position: fixed; inset: 0; z-index: 9000; background: rgba(15, 20, 25, 0.78); display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .sb-who-card { width: min(440px, 100%); max-height: 90vh; overflow: auto; background: #FBF8F1; border-radius: 14px; padding: 22px 22px 18px; box-shadow: 0 24px 60px rgba(0,0,0,0.45); color: #14161a; font-family: Inter, system-ui, sans-serif; }
+  .sb-who-brand { font-size: 12px; letter-spacing: 0.22em; font-weight: 800; color: #9A7209; }
+  .sb-who-sub { font-size: 19px; font-weight: 700; margin: 6px 0 14px; }
+  .sb-who-list { display: flex; flex-direction: column; gap: 6px; }
+  .sb-who-person { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: #fff; border: 1px solid #E6DECB; border-radius: 10px; padding: 10px 12px; cursor: pointer; font: inherit; color: inherit; min-width: 0; }
+  .sb-who-person:hover { border-color: #9A7209; background: #FFF9E8; }
+  .sb-who-avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; background: #0F1419; color: #E9C46A; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; }
+  .sb-who-main { display: flex; flex-direction: column; min-width: 0; }
+  .sb-who-name { font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-who-dept { font-size: 12px; color: #6b6256; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-who-note { font-size: 12px; color: #6b6256; margin-top: 14px; line-height: 1.45; }
+  .sb-who-pin { width: 100%; font-size: 26px; letter-spacing: 0.4em; text-align: center; padding: 10px; border: 1.5px solid #E6DECB; border-radius: 10px; font-family: inherit; }
+  .sb-who-err { color: #B3261E; font-size: 13px; margin-top: 8px; }
+  .sb-who-row { display: flex; gap: 8px; margin-top: 14px; }
+  .sb-who-btn { flex: 1; padding: 10px; border-radius: 9px; border: 1px solid #E6DECB; background: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  .sb-who-btn-gold { background: #9A7209; color: #fff; border-color: #9A7209; }
+  .sb-who-btn:disabled { opacity: 0.5; cursor: default; }
+  .sb-user-switch { display: block; width: 100%; margin-top: 4px; padding: 4px 12px 8px; background: none; border: none; font: inherit; font-size: 11px; color: rgba(255,255,255,0.55); text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-user-switch:hover { color: #E9C46A; }
+`
 
 const shellStyles = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');

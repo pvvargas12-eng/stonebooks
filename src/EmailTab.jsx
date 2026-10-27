@@ -23,6 +23,7 @@ import {
   getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, hydrateEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
   getOrderById, getProofVersionsByOrder,
+  buildCompletionEmailDraft, completionEmailHtml, getActiveStaffUser,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF } from './SalesMode'
 import { computeDieBaseTrade } from './DesignPacket'
@@ -37,6 +38,8 @@ const BUCKET_GROUPS = [
     { key: 'inbox', label: 'Inbox' },
     { key: 'needs_reply', label: 'Needs reply', tone: 'amber' },
     { key: 'unlinked', label: 'Unlinked', tone: 'red' },
+    // Every closeout (completion) email that went out, with the replies on top.
+    { key: 'closeout_sent', label: 'Closeout emails' },
   ] },
   { label: 'Replies', items: [
     { key: 'customer_replies', label: 'Customer replies' },
@@ -49,7 +52,7 @@ const BUCKET_GROUPS = [
     { key: 'rp', filter: 'payments', label: 'Receipts / payments' },
     { key: 'photos', label: 'Photos & files' },
     { key: 'cp', filter: 'permit', label: 'Cemetery / permits' },
-    { key: 'co', filter: 'closeout', label: 'Closeout' },
+    { key: 'co', filter: 'closeout', label: 'Ready to close out' },
   ] },
   { label: 'Workflow', items: [
     { key: 'production_questions', label: 'Production questions', tone: 'amber' },
@@ -65,7 +68,7 @@ const BUCKET_GROUPS = [
 ]
 const BUCKET_LABEL = {
   tasks: 'Review queue',
-  inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies',
+  inbox: 'Inbox', needs_reply: 'Needs reply', customer_replies: 'Customer replies', closeout_sent: 'Closeout emails',
   vendor_replies: 'Vendor replies', production_questions: 'Production questions',
   waiting_customer: 'Waiting on customer', waiting_vendor: 'Waiting on vendor',
   unlinked: 'Unlinked', photos: 'Photos & files', sent: 'Sent', junk: 'Junk / spam',
@@ -111,6 +114,7 @@ function matchBucket(t, b) {
     case 'waiting_customer': return t.matched && !t.vendor && t.latestDirection === 'outbound'
     case 'waiting_vendor': return t.vendor && t.latestDirection === 'outbound'
     case 'unlinked': return !t.matched && !t.vendor
+    case 'closeout_sent': return !!t.closeout
     case 'photos': return t.hasAttachments
     case 'sent': return t.hasOutbound
     default: return true
@@ -207,7 +211,11 @@ export default function EmailTab() {
       setSenders(list)
       let saved = ''
       try { saved = localStorage.getItem('cc_sender') || '' } catch { /* ignore */ }
-      setSenderId(list.find(s => s.id === saved)?.id || list[0]?.id || '')
+      // The person this computer is pinned to sends as themselves (their
+      // signature), when a sender identity carries their name.
+      const me = getActiveStaffUser()
+      const mine = me ? list.find(s => String(s.name || '').toLowerCase().startsWith(me.toLowerCase())) : null
+      setSenderId(mine?.id || list.find(s => s.id === saved)?.id || list[0]?.id || '')
     })
     return () => { cancelled = true }
   }, [])
@@ -249,7 +257,7 @@ export default function EmailTab() {
   const visible = useMemo(() => {
     const query = q.trim()
     if (query) return threads.filter(t => matchSearch(t, q))   // universal: search EVERY thread, any bucket
-    return threads.filter(t => {
+    const list = threads.filter(t => {
       const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
       if (bucket === 'junk') return j
       if (!matchBucket(t, bucket)) return false
@@ -257,6 +265,12 @@ export default function EmailTab() {
       if (bucket === 'photos' && attachKind !== 'all' && !(t.attachKinds || []).includes(attachKind)) return false
       return true
     })
+    // Closeout emails: the families who wrote back float to the top.
+    if (bucket === 'closeout_sent') {
+      list.sort((a, b) => (b.closeout?.replyAt ? 1 : 0) - (a.closeout?.replyAt ? 1 : 0)
+        || (Date.parse(b.closeout?.replyAt || b.closeout?.sentAt) || 0) - (Date.parse(a.closeout?.replyAt || a.closeout?.sentAt) || 0))
+    }
+    return list
   }, [threads, bucket, q, junkOverride, attachKind])
   // Per-kind thread counts for the Photos & files sub-filter chips.
   const attachKindCounts = useMemo(() => {
@@ -269,7 +283,7 @@ export default function EmailTab() {
     return m
   }, [threads, junkOverride])
   const msgCounts = useMemo(() => {
-    const c = { inbox: 0, needs_reply: 0, customer_replies: 0, vendor_replies: 0, production_questions: 0, waiting_customer: 0, waiting_vendor: 0, unlinked: 0, photos: 0, sent: 0, junk: 0 }
+    const c = { inbox: 0, needs_reply: 0, customer_replies: 0, vendor_replies: 0, production_questions: 0, waiting_customer: 0, waiting_vendor: 0, unlinked: 0, photos: 0, sent: 0, junk: 0, closeout_sent: 0, closeout_replies: 0 }
     for (const t of threads) {
       const j = (junkOverride[t.key] !== undefined ? junkOverride[t.key] : !!t.junk)
       if (j) c.junk++
@@ -284,6 +298,7 @@ export default function EmailTab() {
       if (!t.matched && !t.vendor && inb) c.unlinked++
       if (t.hasAttachments && inb) c.photos++
       if (t.hasOutbound) c.sent++
+      if (t.closeout) { c.closeout_sent++; if (t.closeout.replyAt) c.closeout_replies++ }
     }
     return c
   }, [threads, junkOverride])
@@ -328,7 +343,9 @@ export default function EmailTab() {
     const bodies = {
       balance_due: `Hi ${first},\n\nWe hope you're doing well. This is a friendly reminder that a balance of ${fmtUSD(task.amount)} remains on your order${ord}. Whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com.\n\nPlease let us know if you have any questions — we're always glad to help.`,
       followup: `Hi ${first},\n\nJust following up on the estimate we put together for you${ord}. We'd be glad to help you move forward whenever you're ready, and we're happy to answer questions or make adjustments.\n\nPlease let us know how you'd like to proceed.`,
-      closeout: `Hi ${first},\n\nIt was our privilege to complete your order${ord}, and we hope it brings you and your family comfort for years to come. Thank you for trusting Shevchenko Monuments with something so meaningful.\n\nIf there's ever anything we can do for you, please don't hesitate to reach out.`,
+      // ONE closeout letter everywhere (Paul 2026-10-27) — the completion email
+      // with the review links; sends through completionEmailHtml (see send()).
+      closeout: buildCompletionEmailDraft({ order_number: task.orderNumber }, { first_name: first }).body,
       deposit: `Hi ${first},\n\nThank you for choosing Shevchenko Monuments for your order${ord}. To begin work, we ask for a 50% deposit of ${fmtUSD((task.amount || 0) / 2)}. You can send it by check or Zelle to shevcoteam@gmail.com and we'll get started right away.\n\nPlease let us know if you have any questions.`,
       permit: `Hi ${first},\n\nGood news — the cemetery permit for your order${ord} has been approved, so we're clear to move forward with the work. We'll keep you posted as we progress.\n\nPlease reach out anytime with questions.`,
       layout: `Hi ${first},\n\nYour monument layout is ready for your review${ord} — the layout approval sheet is attached with the design and specs. Please look over the lettering, dates, and design and let us know if everything looks right or if you'd like any changes. Once you approve, we'll move into production.`,
@@ -339,8 +356,9 @@ export default function EmailTab() {
       photo: `Hi ${first},\n\nYour memorial${ord} is complete, and we've attached a photo so you can see the finished work. We hope it brings you and your family comfort.\n\nA balance of ${fmtUSD(task.amount)} remains on the order — whenever it's convenient, you can send payment by check or Zelle to shevcoteam@gmail.com. Please reach out with any questions.`,
     }
     const body = bodies[task.type] || bodies.followup
+    const subject = task.type === 'closeout' ? buildCompletionEmailDraft({ order_number: task.orderNumber }, { first_name: first }).subject : task.subject
     const willAttach = task.type === 'layout' ? !!(task.orderId || task.fileUrl) : !!task.fileUrl
-    setComposer({ to: task.email || '', subject: task.subject, body, customerId: task.customerId || null, attachments: [], attaching: willAttach, busy: false, error: null, sent: false })
+    setComposer({ to: task.email || '', subject, body, mode: task.type, customerId: task.customerId || null, attachments: [], attaching: willAttach, busy: false, error: null, sent: false })
     // Pull the real file(s) in the background and attach: layout tasks get the
     // generated approval-sheet PDF (+ the raw proof image as a fallback);
     // everything else keeps its single task file (photo / vendor order sheet).
@@ -521,10 +539,14 @@ export default function EmailTab() {
     // If a sender is chosen, append THEIR signature and tell the backend not to
     // add the shared one; otherwise fall back to the shop signature.
     const sender = senders.find(s => s.id === senderId)
-    const useOwn = !!sender?.signature_text
+    // The closeout letter carries its own signature block and the review
+    // links — no sender / mailbox signature stacks under it.
+    const isCloseout = composer.mode === 'closeout'
+    const useOwn = !isCloseout && !!sender?.signature_text
     const finalText = useOwn ? `${composer.body ? composer.body + '\n\n' : ''}-- \n${sender.signature_text}` : composer.body
     const res = await sendShopEmail({
-      to, subject, text: finalText, includeSignature: !useOwn,
+      to, subject, text: finalText, includeSignature: !useOwn && !isCloseout,
+      html: isCloseout ? completionEmailHtml(composer.body || '') : undefined,
       attachments: (composer.attachments && composer.attachments.length) ? composer.attachments : undefined,
       customerId: composer.customerId || null,
       inReplyTo: composer.inReplyTo || null, references: composer.references || null,
@@ -594,8 +616,13 @@ export default function EmailTab() {
                     : item.key === 'failed' ? failed.length
                       : item.filter === 'payments' ? ((typeCounts.deposit || 0) + (typeCounts.balance_due || 0))
                         : item.filter ? (typeCounts[item.filter] || 0)
-                          : (msgCounts[item.key] ?? counts[item.key])
-                const tone = item.key === 'tasks' ? 'amber' : item.tone
+                          : item.key === 'closeout_sent' ? ((msgCounts.closeout_replies || 0) || (msgCounts.closeout_sent || 0))
+                            : (msgCounts[item.key] ?? counts[item.key])
+                // Closeout emails: the badge turns red and counts the REPLIES
+                // while any family has written back; otherwise it counts sends.
+                const tone = item.key === 'tasks' ? 'amber'
+                  : item.key === 'closeout_sent' ? ((msgCounts.closeout_replies || 0) > 0 ? 'red' : null)
+                    : item.tone
                 const go = isTaskBucket
                   ? () => { setBucket('tasks'); setTaskFilter(filt); setReading(null); setBrain(null) }
                   : () => { setBucket(item.key); setReading(null); setBrain(null) }
@@ -707,6 +734,7 @@ export default function EmailTab() {
                     {t.orderNumber && <span className="cc-tag">{t.orderNumber}</span>}
                     {t.vendor && <span className="cc-tag cc-tag-vendor-thread">vendor</span>}
                     {!t.matched && !t.vendor && <span className="cc-tag cc-tag-warn">unlinked</span>}
+                    {t.closeout && <span className={`cc-tag ${t.closeout.replyAt ? 'cc-tag-unread' : 'cc-tag-closeout'}`}>{t.closeout.replyAt ? 'closeout reply' : 'closeout sent'}</span>}
                     {(t.attachKinds || []).slice(0, 3).map(k => <span key={k} className={`cc-tag cc-tag-att-${k}`}>{ATTACH_KIND_LABELS[k]}</span>)}
                     {t.unread > 0 && <span className="cc-tag cc-tag-unread">{t.unread}</span>}
                   </div>

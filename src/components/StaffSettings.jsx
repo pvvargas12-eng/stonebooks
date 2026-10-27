@@ -14,7 +14,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { listEmployees, addEmployee, updateEmployee, DEPARTMENTS } from '../lib/employees'
-import { makeFieldKey, fieldLinkFor } from '../field/fieldLink'
+import { makeFieldKey, fieldLinkFor, desktopLinkFor } from '../field/fieldLink'
+import { sendOrderEmail } from '../lib/stonebooksData'
 
 export default function StaffSettings({ canEdit = false }) {
   const [rows, setRows] = useState(null)      // null = loading
@@ -215,38 +216,66 @@ function EmployeeRow({ row, canEdit, busy, run }) {
 // Opening the link signs the phone in silently and pins it to this person;
 // regenerating kills the old link everywhere it was saved (lost phone).
 function FieldLinkControl({ row, busy, run }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState(null)   // 'field' | 'desktop' | null
   const [armed, setArmed] = useState(false)
-  const copy = async () => {
+  const [mailing, setMailing] = useState(false)
+  const copy = async (kind) => {
+    const link = kind === 'desktop' ? desktopLinkFor(row.field_key) : fieldLinkFor(row.field_key)
     try {
-      await navigator.clipboard.writeText(fieldLinkFor(row.field_key))
-      setCopied(true); setTimeout(() => setCopied(false), 1600)
+      await navigator.clipboard.writeText(link)
+      setCopied(kind); setTimeout(() => setCopied(null), 1600)
     } catch {
-      window.prompt('Copy the link:', fieldLinkFor(row.field_key))
+      window.prompt('Copy the link:', link)
     }
+  }
+  // USER-PROFILES (Paul 2026-10-27): "email the links" — one internal email
+  // with the desktop link and the phone link. The address prompt is the
+  // confirmation; the links are credentials, so the text says so.
+  const emailLinks = async () => {
+    const to = window.prompt(`Email ${row.name}'s Stonebooks links to which address?`, '')
+    if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to.trim())) { if (to) window.alert('That does not look like an email address.'); return }
+    setMailing(true)
+    const body =
+      `Hi ${row.name},\n\n` +
+      `Here are your private Stonebooks links. Open each one ONCE on the device you use and it signs you in as you. No password.\n\n` +
+      `Desktop (office computer):\n${desktopLinkFor(row.field_key)}\n\n` +
+      `Stonebooks Field (your phone, open in Safari, then Share > Add to Home Screen):\n${fieldLinkFor(row.field_key)}\n\n` +
+      `Everything you do in Stonebooks from those devices (orders, tasks, emails) carries your name. ` +
+      `Keep the links to yourself: anyone holding one is you in Stonebooks. If a link gets out, ask Paul for a new one.\n\n` +
+      `Shevchenko Monuments`
+    const res = await sendOrderEmail({ orderId: null, to: to.trim(), subject: `Your Stonebooks links, ${row.name}`, body })
+    setMailing(false)
+    if (!res?.ok) window.alert(`Could not send: ${res?.error || 'unknown error'}`)
+    else window.alert(`Sent to ${to.trim()}.`)
   }
   if (!row.field_key) {
     return (
       <button type="button" className="sb-link" disabled={busy}
-        title="A private sign-in link for this person's phone — opening it signs the phone in and pins it to them. No password."
-        onClick={() => run(() => updateEmployee(row.id, { fieldKey: makeFieldKey() }), `${row.name} has a field link — copy and text it to them`)}>
-        Create field link
+        title="A private sign-in link for this person's phone AND desktop — opening it signs the device in and pins it to them. No password."
+        onClick={() => run(() => updateEmployee(row.id, { fieldKey: makeFieldKey() }), `${row.name} has links now — copy or email them`)}>
+        Create links
       </button>
     )
   }
   return (
     <>
-      <button type="button" className="sb-link" disabled={busy} onClick={copy}>
-        {copied ? 'Copied' : 'Copy field link'}
+      <button type="button" className="sb-link" disabled={busy} onClick={() => copy('desktop')} title="The desktop link — opens Stonebooks on a computer signed in as this person">
+        {copied === 'desktop' ? 'Copied' : 'Copy desktop link'}
+      </button>
+      <button type="button" className="sb-link" disabled={busy} onClick={() => copy('field')} title="The phone link — opens Stonebooks Field pinned to this person">
+        {copied === 'field' ? 'Copied' : 'Copy field link'}
+      </button>
+      <button type="button" className="sb-link" disabled={busy || mailing} onClick={emailLinks} title="Email both links to this person">
+        {mailing ? 'Sending…' : 'Email links'}
       </button>
       <button type="button" className={`sb-link${armed ? ' sb-link-danger' : ''}`} disabled={busy}
         title="Makes a new link and kills the old one everywhere it was saved (lost phone, resend, etc.)"
         onClick={() => {
           if (!armed) { setArmed(true); setTimeout(() => setArmed(false), 2500); return }
           setArmed(false)
-          run(() => updateEmployee(row.id, { fieldKey: makeFieldKey() }), `${row.name}'s old link is dead — copy the new one`)
+          run(() => updateEmployee(row.id, { fieldKey: makeFieldKey() }), `${row.name}'s old links are dead — copy or email the new ones`)
         }}>
-        {armed ? 'Tap again — kills old link' : 'New link'}
+        {armed ? 'Tap again — kills old links' : 'New links'}
       </button>
     </>
   )

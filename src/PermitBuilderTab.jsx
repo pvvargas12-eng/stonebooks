@@ -23,7 +23,7 @@ import {
   listPermitTemplates, getPermitTemplate, createPermitTemplate, updatePermitTemplate,
   templateMatchesCemetery,
   listPermitDocs, getPermitDoc, createPermitDoc, updatePermitDoc, deletePermitDoc,
-  uploadPermitAsset, rasterizePdfFile, readImageSize,
+  uploadPermitAsset, rasterizePdfFile, readImageSize, fitLayoutImg, pageAspectFor,
   AUTOFILL_FIELDS, autofillValue, seedDocData, effectiveBox, exportPermitPdf, fmtPhoneUS,
   missingAutofill, MISSING_ORDER_WRITEBACK, getOrderContext, attachPermitPdfToOrder,
 } from './lib/permitBuilder'
@@ -907,7 +907,9 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   )
   const [missDraft, setMissDraft] = useState({})
   const [missBusy, setMissBusy] = useState(false)
-  const [missHidden, setMissHidden] = useState(false)
+  // Paul (2026-10-27): the fill-in panel stays out of the way until asked for —
+  // the boxes autofill from the order; "Edit information" opens it.
+  const [missHidden, setMissHidden] = useState(true)
   const fillMissing = async (m) => {
     const v = (missDraft[m.key] || '').trim()
     if (!v) return
@@ -950,7 +952,10 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     const frame = slotDef
       ? { page: slotDef.page, x: slotDef.x, y: slotDef.y, w: slotDef.w, h: slotDef.h }
       : { page: typeof page === 'number' ? page : 0, x: 0.1, y: 0.55, w: 0.8, h: 0.3 }
-    setData(prev => ({ ...prev, layout: { mode: 'front', src, iw: size.w, ih: size.h, frame, img: { scale: 1, ox: 0, oy: 0 } } }))
+    // Whole picture visible by default (fit); Crop to fill / drag crops from there.
+    const lay = { mode: 'front', src, iw: size.w, ih: size.h, frame }
+    lay.img = fitLayoutImg(lay, pageAspectFor(pages, frame.page))
+    setData(prev => ({ ...prev, layout: lay }))
     setPage(frame.page)
     setLaySel(true)
     setPickerOpen(false)
@@ -976,7 +981,10 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   const layoutToBack = () => {
     setData(prev => ({
       ...prev,
-      layout: { ...prev.layout, mode: 'back', frame: { page: 'back', x: 0.08, y: 0.08, w: 0.84, h: 0.8 } },
+      layout: (() => {
+        const lay = { ...prev.layout, mode: 'back', frame: { page: 'back', x: 0.08, y: 0.08, w: 0.84, h: 0.8 } }
+        return { ...lay, img: fitLayoutImg(lay, pageAspectFor(pages, 'back')) }
+      })(),
     }))
     setPage('back')
   }
@@ -985,7 +993,10 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
     const frame = slotDef
       ? { page: slotDef.page, x: slotDef.x, y: slotDef.y, w: slotDef.w, h: slotDef.h }
       : { page: 0, x: 0.1, y: 0.55, w: 0.8, h: 0.3 }
-    setData(prev => ({ ...prev, layout: { ...prev.layout, mode: 'front', frame } }))
+    setData(prev => {
+      const lay = { ...prev.layout, mode: 'front', frame }
+      return { ...prev, layout: { ...lay, img: fitLayoutImg(lay, pageAspectFor(pages, frame.page)) } }
+    })
     setPage(frame.page)
   }
 
@@ -1155,6 +1166,14 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
           <div className="pbt-rail-hint">Custom text counts top to bottom, left to right. Section / lot / grave answers also save back to the order, so it knows next time.</div>
         </div>
       )}
+      {(missing.length > 0 || customPending.length > 0) && missHidden && (
+        <div className="pbt-missing pbt-missing-collapsed">
+          <span className="pbt-missing-title">
+            {missing.length + customPending.length} blank{missing.length + customPending.length === 1 ? '' : 's'} the order could not fill on this permit
+          </span>
+          <button type="button" className="pbt-btn" onClick={() => setMissHidden(false)}>Edit information</button>
+        </div>
+      )}
 
       <div className="pbt-docgrid">
         <div className="pbt-docmain">
@@ -1250,10 +1269,15 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
 
           {laySel && layout && (
             <div className="pbt-toolbar">
-              <span className="pbt-tool-label">Layout — drag the picture to crop</span>
+              <span className="pbt-tool-label">Layout</span>
+              <button type="button" className="pbt-btn" title="Show the whole picture inside the box"
+                onClick={() => setData(prev => ({ ...prev, layout: { ...prev.layout, img: fitLayoutImg(prev.layout, pageAspectFor(pages, prev.layout.frame?.page)) } }))}>Fit whole picture</button>
+              <button type="button" className="pbt-btn" title="Fill the box and crop whatever runs over — then drag the picture to pick the crop"
+                onClick={() => setData(prev => ({ ...prev, layout: { ...prev.layout, img: fitLayoutImg(prev.layout, pageAspectFor(pages, prev.layout.frame?.page), 'fill') } }))}>Crop to fill</button>
+              <span className="pbt-tool-label" style={{ marginLeft: 6 }}>Zoom</span>
               <input type="range" min="0.4" max="4" step="0.05" value={layout.img?.scale ?? 1}
                 onChange={e => setData(prev => ({ ...prev, layout: { ...prev.layout, img: { ...(prev.layout.img || { ox: 0, oy: 0 }), scale: Number(e.target.value) } } }))} />
-              <button type="button" className="pbt-btn" onClick={() => setData(prev => ({ ...prev, layout: { ...prev.layout, img: { scale: 1, ox: 0, oy: 0 } } }))}>Fit</button>
+              <span className="pbt-hint" style={{ marginTop: 0 }}>Drag the picture to choose the crop · drag the corner to resize the box</span>
               {layout.frame?.page === 'back'
                 ? <button type="button" className="pbt-btn" onClick={layoutToFront}>Put on front</button>
                 : <button type="button" className="pbt-btn" onClick={layoutToBack}>Put on back page</button>}
@@ -1699,6 +1723,8 @@ const localStyles = `
     background: #FDF6E3; border: 0.5px solid #BA7517; border-radius: 9px; padding: 11px 14px;
   }
   .pbt-missing-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .pbt-missing-collapsed { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 14px; }
+  .pbt-missing-collapsed .pbt-missing-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pbt-missing-title { font-size: 12.5px; font-weight: 700; color: #854F0B; }
   .pbt-missing-rows { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
   .pbt-missing-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

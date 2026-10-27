@@ -66,3 +66,10 @@ export function makeFieldKey() {
 export function fieldLinkFor(key) {
   return `${window.location.origin}/field#k=${key}`
 }
+
+// USER-PROFILES (2026-10-27): the SAME key opens the desktop app pinned to
+// the person — the shell redeems #k= exactly like /field does, so the orders,
+// tasks and emails that computer creates carry their name, not Paul's.
+export function desktopLinkFor(key) {
+  return `${window.location.origin}/#k=${key}`
+}

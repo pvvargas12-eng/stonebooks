@@ -132,6 +132,7 @@ const SORT_OPTIONS = [
   { code: 'createdDesc',    label: 'Sort: Newest first' },
   { code: 'actionPriority', label: 'Sort: Action priority' },
   { code: 'lastActivity',   label: 'Sort: Recent activity' },
+  { code: 'closedDesc',     label: 'Sort: Recently closed' },
   { code: 'ageDesc',        label: 'Sort: Age oldest first' },
   { code: 'balanceDesc',    label: 'Sort: Balance high→low' },
   { code: 'totalDesc',      label: 'Sort: Total high→low' },
@@ -250,6 +251,9 @@ const ROW_SORTERS = {
     return new Date(b.updated_at) - new Date(a.updated_at)
   },
   lastActivity: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+  // Closed view default (Paul 2026-10-27): the job's closed_at is the close
+  // stamp; an order with no job falls back to its last write.
+  closedDesc:  (a, b) => new Date(b._job?.closed_at || b.updated_at || 0) - new Date(a._job?.closed_at || a.updated_at || 0),
   ageDesc:     (a, b) => (b._pressure.ageDays || 0) - (a._pressure.ageDays || 0),
   balanceDesc: (a, b) => b._balance - a._balance,
   totalDesc:   (a, b) => b._total - a._total,
@@ -1034,7 +1038,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const onQuickView = (code) => setQuickView(v => v === code ? null : code)
   // Pick a primary axis (Active/Closed/Archived). Archived refetches; Active↔Closed
   // is client-side. Clears stale selection on change.
-  const onPrimaryView = (code) => { setPrimaryView(code); clearSelection() }
+  const onPrimaryView = (code) => {
+    setPrimaryView(code); clearSelection()
+    // Closed lands on "recently closed"; leaving it goes back to newest first.
+    setSortKey(k => (code === 'closed' ? (k === 'createdDesc' ? 'closedDesc' : k) : (k === 'closedDesc' ? 'createdDesc' : k)))
+  }
   // Single-select category chip ('all' or null clears it).
   const onCategory = (code) => { setCategoryFilter(code === 'all' ? null : code); clearSelection() }
 

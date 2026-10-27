@@ -342,10 +342,10 @@ const localStyles = `
     padding: 2px 8px; cursor: move; z-index: 3;
   }
   .pmc-frame {
-    position: absolute; overflow: hidden; border: 1.5px solid transparent; cursor: pointer;
-    background: rgba(0,0,0,0.015);
+    position: absolute; overflow: hidden; border: 1.5px dashed transparent; cursor: pointer;
+    background: transparent;
   }
-  .pmc-frame:hover { border-color: rgba(154, 114, 9, 0.4); }
+  .pmc-frame:hover { border-color: rgba(154, 114, 9, 0.35); }
   .pmc-frame.on { border-color: #9A7209; }
   .pmc-frame-img { position: absolute; max-width: none; cursor: grab; }
   .pmc-frame-img:active { cursor: grabbing; }

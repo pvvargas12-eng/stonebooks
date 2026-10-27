@@ -20,7 +20,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   fmtUSD, fmtDate, fmtPhone, properName, customerName,
   rowBalanceDue, rowGrandTotal, rowTotalPaid,
-  sendShopEmail, getEmailSenders, listOrderAttachments, todayISO,
+  sendShopEmail, getEmailSenders, listOrderAttachments, todayISO, getActiveStaffUser,
 } from '../lib/stonebooksData'
 import {
   STAGES, stageDef, listCollectionLog, addCollectionLog, setPromiseToPay,
@@ -488,7 +488,15 @@ function BalanceRequestModal({ row, onClose, onSent }) {
 
   useEffect(() => {
     let alive = true
-    getEmailSenders().then(list => { if (alive) setSenders(list || []) }).catch(() => {})
+    getEmailSenders().then(list => {
+      if (!alive) return
+      setSenders(list || [])
+      // USER-PROFILES: the computer's person sends as themselves when a sender
+      // identity carries their name (their signature rides the email).
+      const me = getActiveStaffUser()
+      const mine = me ? (list || []).find(s => String(s.name || '').toLowerCase().startsWith(me.toLowerCase())) : null
+      if (mine) setSenderId(mine.id)
+    }).catch(() => {})
     listOrderAttachments(row.id).then(list => { if (alive) setFiles(list || []) }).catch(() => {})
     return () => { alive = false }
   }, [row.id])

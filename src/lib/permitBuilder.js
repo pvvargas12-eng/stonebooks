@@ -543,6 +543,31 @@ async function toJpegDataUrl(dataUrl, quality = 0.82) {
 }
 
 const LETTER = { w: 215.9, h: 279.4 }   // mm, portrait
+
+// Page height ÷ width for the page the layout frame sits on (the synthetic
+// back page is a letter sheet). Frame fractions are of page width AND page
+// height, so the image math needs this ratio to know the frame's true shape.
+export function pageAspectFor(pages, pageKey) {
+  if (pageKey === 'back') return LETTER.h / LETTER.w
+  const p = Array.isArray(pages) ? pages[pageKey] : null
+  return (p?.h || 2200) / (p?.w || 1700)
+}
+
+// The layout picture inside its frame: 'fit' shows the WHOLE picture (letter-
+// boxed, centered — Paul: "I want to see the full thing"), 'fill' covers the
+// frame (crops the overflow). scale = picture width as a fraction of the frame
+// width; ox / oy = picture offset as fractions of the frame's width / height —
+// exactly what PermitCanvas renders and drawLayoutImage prints.
+export function fitLayoutImg(layout, pageAspect, mode = 'fit') {
+  const f = layout?.frame
+  if (!f) return { scale: 1, ox: 0, oy: 0 }
+  const ia = (layout.ih || 1) / (layout.iw || 1)          // picture height ÷ width
+  const fw = f.w, fh = f.h * (pageAspect || 1)              // frame size in page-width units
+  const byWidth = 1, byHeight = fh / (fw * ia)
+  const scale = mode === 'fill' ? Math.max(byWidth, byHeight) : Math.min(byWidth, byHeight)
+  const imgH = scale * fw * ia
+  return { scale, ox: (1 - scale) / 2, oy: (fh - imgH) / (2 * fh) }
+}
 const MM_TO_PT = 72 / 25.4
 
 // Page transform: CONTAIN the page image in the letter sheet (scans are letter

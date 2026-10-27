@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { makeBlankOrder, saveOrder, searchCemeteries, rowToCemetery } from '../SalesMode'
-import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName, TASK_KINDS, STAFF_NAMES } from '../lib/stonebooksData'
+import { phoneDigits, addOrderNote, addOrderTask, updateOrderLeadFields, getCurrentStaffName, getActiveStaffUser, TASK_KINDS, STAFF_NAMES } from '../lib/stonebooksData'
 
 // Today as YYYY-MM-DD. Call only in event handlers / effects (never in render).
 const todayISO = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
@@ -90,6 +90,7 @@ export default function NewLeadModal({ onClose, onSaved }) {
     const leadOrder = {
       ...blank,
       status: 'draft',
+      salesRep: getActiveStaffUser() || blank.salesRep || '',
       serviceTypes: serviceType ? [serviceType] : [],
       customer: {
         ...blank.customer,
