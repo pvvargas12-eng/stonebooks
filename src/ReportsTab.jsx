@@ -161,7 +161,7 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
       {/* Owner stats — its own period/type controls, no report cards. */}
       {mode === 'stats' && (
         !bundle ? <div className="sb-empty">Loading stats…</div>
-        : <OwnerStatsView bundle={bundle} now={now} />
+        : <OwnerStatsView bundle={bundle} now={now} onOpenOrder={onOpenOrder} />
       )}
 
       {/* Library group sub-tabs */}

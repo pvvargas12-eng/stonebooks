@@ -24,13 +24,19 @@
 // =============================================================================
 import { supabase } from './supabase'
 import {
-  getInstallList, getCurrentStaffName, logOrderActivity,
+  getInstallList, getCurrentStaffName, logOrderActivity, fetchAllPaged,
   addShopTask, updateShopTask, listShopTasksForOrder, todayISO, fmtUSD, fmtDate,
 } from './stonebooksData'
 import { listFloorLines, lineLabel } from './floorLines'
 import { phaseIndex } from './jobComponents'
 
+// INSTALLED (Paul 2026-10-30: "orders that have been installed must be in bold
+// in red so we can see we must get that money in, also the date and how many
+// days it has been installed"): the work is DONE and the money is not in —
+// the install milestone went done, the order is not closed, a balance owes.
+// Sits above the delivery queue; `installedDate` = the milestone's status_date.
 export const STAGES = [
+  { code: 'installed', label: 'Installed, still owed', short: 'INSTALLED', rank: -1, tone: 'red', sub: 'work is done, money is not in' },
   { code: 'delivery', label: 'Delivery queue', short: 'DELIVERY QUEUE', rank: 0, tone: 'green', sub: 'install list · blasted · bronze arrived' },
   { code: 'blast',    label: 'Blasting queue', short: 'BLASTING QUEUE', rank: 1, tone: 'amber', sub: 'on a line, bring up through blasting' },
 ]
@@ -42,38 +48,59 @@ const installMs = (ms) => (ms || []).find(m => INSTALL_KEYS.includes(m.milestone
 // ── The queues ──────────────────────────────────────────────────────────────
 // Returns Map(order_id → { stages: Set, stage (the top-priority one), line,
 // phase, detail (why it is in the delivery queue / the floor phase), bronze,
-// scheduledDate, jobId }). Orders already installed never appear.
+// scheduledDate, installedDate, jobId }). Installed orders appear under the
+// `installed` stage (the view drops the ones that are closed or paid).
 export async function getCollectionQueues() {
   const out = new Map()
   const touch = (orderId) => {
     if (!orderId) return null
-    if (!out.has(orderId)) out.set(orderId, { stages: new Set(), stage: null, line: null, phase: null, detail: null, bronze: false, scheduledDate: null, jobId: null })
+    if (!out.has(orderId)) out.set(orderId, { stages: new Set(), stage: null, line: null, phase: null, detail: null, bronze: false, scheduledDate: null, installedDate: null, jobId: null })
     return out.get(orderId)
   }
 
-  const [setList, lines, bronzeMs] = await Promise.all([
+  const [setList, lines, bronzeMs, installedMs] = await Promise.all([
     getInstallList().catch(() => []),
     listFloorLines().catch(() => []),
     supabase.from('job_milestones').select('job_id').eq('milestone_key', 'bronze_received').eq('status', 'done')
       .then(r => r.data || []).catch(() => []),
+    // Every job whose install/completion milestone went done — the view keeps
+    // only the ones that still owe money and are not closed.
+    fetchAllPaged(() => supabase.from('job_milestones').select('job_id, status_date').in('milestone_key', INSTALL_KEYS).eq('status', 'done'))
+      .catch(() => []),
   ])
 
-  // Jobs we need the order + install milestone for: set-list jobs and bronze jobs.
+  // Jobs we need the order + install milestone for: set-list jobs, bronze jobs
+  // and installed jobs. Closed/cancelled jobs are out of every queue, so they
+  // are filtered at the query.
   const jobIds = [...new Set([
     ...(setList || []).map(r => r.job_id),
     ...(bronzeMs || []).map(r => r.job_id),
+    ...(installedMs || []).map(r => r.job_id),
   ].filter(Boolean))]
   const jobs = new Map()
   for (let i = 0; i < jobIds.length; i += 150) {
     const { data, error } = await supabase.from('jobs')
       .select('id, order_id, job_type, overall_status, milestones:job_milestones(milestone_key, status, due_date, status_date)')
       .in('id', jobIds.slice(i, i + 150))
+      .not('overall_status', 'in', '(closed,cancelled)')
     if (error) { console.warn('[collect] jobs:', error.message); continue }
     for (const j of (data || [])) jobs.set(j.id, j)
   }
   const installed = (j) => {
     const ms = installMs(j?.milestones)
     return ms?.status === 'done' || j?.overall_status === 'closed' || j?.overall_status === 'cancelled'
+  }
+
+  // 0. Installed and not closed — the money we are owed on finished work.
+  for (const r of (installedMs || [])) {
+    const j = jobs.get(r.job_id)
+    if (!j || !j.order_id || j.overall_status === 'closed' || j.overall_status === 'cancelled') continue
+    const e = touch(j.order_id)
+    e.stages.add('installed'); if (!e.jobId) e.jobId = j.id
+    const ms = installMs(j.milestones)
+    const d = ms?.status_date || r.status_date || null
+    if (d && (!e.installedDate || d < e.installedDate)) e.installedDate = d
+    e.detail = e.detail || 'installed'
   }
 
   // 1. Install list — the delivery queue.

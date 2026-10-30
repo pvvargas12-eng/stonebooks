@@ -16,7 +16,7 @@ import {
   listAllOrders, getJobs,
   statusInfo, customerName,
   rowGrandTotal, rowTotalPaid, rowBalanceDue,
-  fmtUSD,
+  fmtUSD, fmtDate,
   computeOrderPressure,
   ORDER_STATUSES,
   bulkArchiveOrders, bulkRestoreOrders, bulkSetOrderStatus, bulkHardDeleteOrders,
@@ -1379,6 +1379,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <OrderRow key={o.id} order={o} grid={grid} indexInFiltered={filteredIds.indexOf(o.id)}
                 selected={selectedIds.has(o.id)} onToggle={toggleOne} onOpen={setSelectedOrderId}
                 showScope={view === 'all'}
+                closedView={primaryView === 'closed'}
                 onInlinePayment={inlinePayment}
                 onInlineDesign={inlineDesign} onInlineStone={inlineStone} onInlineFdn={inlineFdn} onInlinePermit={inlinePermit}
                 onInlineDate={inlineDate} onInlineSigned={inlineSigned} onInlineTotal={inlineTotal} busy={false} />
@@ -1476,8 +1477,12 @@ function InlineDateField({ value, disabled, onCommit, ariaLabel, tone = null }) 
   )
 }
 
-function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlinePermit, onInlineDate, onInlineSigned, onInlineTotal, busy, showScope = false }) {
+function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen, onInlinePayment, onInlineDesign, onInlineStone, onInlineFdn, onInlinePermit, onInlineDate, onInlineSigned, onInlineTotal, busy, showScope = false, closedView = false }) {
   const hasJob = !!o._job
+  // Closed list (Paul 2026-10-30): the close DATE beside the name, not the
+  // missing-info badge — same stamp the Closed sort uses (job closed_at, else
+  // the order's last write).
+  const closedAt = closedView ? (o._job?.closed_at || o.updated_at || null) : null
   const custName = [o.customer?.first_name, o.customer?.last_name].map(properName).filter(Boolean).join(' ')
 
   const blocker = o._pressure?.blocker || null
@@ -1493,7 +1498,9 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
           <span className="sb-crm-primary sb-ord-cust-name">{properName(o._familyName)}</span>
-          {o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
+          {closedView
+            ? (closedAt && <span className="sb-tw-closed" title={`Closed ${new Date(closedAt).toLocaleString()}`}>Closed {fmtDate(closedAt)}</span>)
+            : (o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>)}
         </div>
         {/* Pills live UNDER the name, never beside it — the wide LEAD banner
             was flex-crushing the name span to zero width (Paul, 2026-07-14:
@@ -1909,6 +1916,7 @@ const TW_CSS = `
   .sb-tw-cust { text-align: left; background: none; border: none; font: inherit; cursor: pointer; padding: 0; min-width: 0; }
   .sb-tw-cust:hover .sb-crm-primary { color: #9A7209; }
   .sb-tw-badge { margin-left: 8px; font-size: 10px; font-weight: 600; color: #B8842A; background: #fbf1da; border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
+  .sb-tw-closed { margin-left: 8px; font-size: 11px; font-weight: 600; color: #6b6b66; white-space: nowrap; vertical-align: middle; }
   /* Status dropdowns fill their column so every column aligns edge-to-edge. */
   .sb-tw-inline { font: inherit; font-size: 12.5px; padding: 5px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; width: 100%; box-sizing: border-box; cursor: pointer; }
   .sb-tw-inline:hover:not(:disabled) { border-color: #9A7209; }

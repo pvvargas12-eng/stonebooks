@@ -64,6 +64,7 @@ const serviceTag = (o) => {
 }
 const stageSentence = (row) => {
   const cem = row.cemetery ? ` at ${row.cemetery}` : ''
+  if (row.stage === 'installed') return `has been installed${cem}${row.installedDate ? ` on ${fmtDate(row.installedDate)}` : ''}`
   if (row.stage === 'delivery') {
     if (row.bronze) return 'has arrived at our shop'
     if (row.detail === 'blasted') return `has been blasted and is ready to be set${cem}`
@@ -80,9 +81,13 @@ function buildBalanceRequest(row, { sender = null } = {}) {
   const lines = [
     `Dear ${first || 'Family'},`,
     '',
-    `Good news: the memorial for ${fam} ${stageSentence(row)}. We would like to schedule its delivery and installation${row.cemetery && row.stage !== 'delivery' ? ` at ${row.cemetery}` : ''}.`,
+    row.stage === 'installed'
+      ? `The memorial for ${fam} ${stageSentence(row)}. We hope it brings your family comfort.`
+      : `Good news: the memorial for ${fam} ${stageSentence(row)}. We would like to schedule its delivery and installation${row.cemetery && row.stage !== 'delivery' ? ` at ${row.cemetery}` : ''}.`,
     '',
-    'Before we can deliver, the remaining balance must be paid in full. Once we receive it, we will call you right away to set the installation date.',
+    row.stage === 'installed'
+      ? 'Our records show a remaining balance on the order. We kindly ask that it be paid in full at your earliest convenience.'
+      : 'Before we can deliver, the remaining balance must be paid in full. Once we receive it, we will call you right away to set the installation date.',
     '',
     `Contract total: ${fmtUSD(row.total)}`,
     `Paid to date: ${fmtUSD(row.paid)}`,
@@ -160,6 +165,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
         cemetery: o.cemetery?.name ? properName(o.cemetery.name) : '',
         service: serviceTag(o),
         stage: e.stage, stages: e.stages, line: e.line, phase: e.phase, detail: e.detail, bronze: !!e.bronze, scheduledDate: e.scheduledDate,
+        installedDate: e.installedDate || null, installedDays: e.installedDate ? daysAgo(`${e.installedDate}T12:00:00`, nowMs) : null,
         balance, total: rowGrandTotal(o), paid: rowTotalPaid(o),
         email: (o.customer?.email || '').trim(), phone: o.customer?.phone_primary || '',
         log: entries, lastContact: lc, lastNote: lastNoteOf(entries),
@@ -207,7 +213,10 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
     // toggle flips the rest. "High to low" on a date = latest first; on
     // contact = longest ago first (never-contacted counts as longest).
     const flip = dir === 'asc' ? -1 : 1
-    const sched = (r) => r.scheduledDate ? new Date(r.scheduledDate + 'T00:00:00').getTime() : null
+    // Install date = the scheduled day for stones not set yet, the day it was
+    // set for installed ones — one axis, so Low to high puts the longest
+    // installed first.
+    const sched = (r) => (r.installedDate || r.scheduledDate) ? new Date((r.installedDate || r.scheduledDate) + 'T00:00:00').getTime() : null
     const contactKey = (r) => r.lastContact ? (nowMs - new Date(r.lastContact.created_at).getTime()) : Number.MAX_SAFE_INTEGER
     const promiseKey = (r) => r.promise ? new Date(r.promise.promised_for + 'T00:00:00').getTime() : null
     const byBalance = (a, b) => flip * (b.balance - a.balance)
@@ -291,7 +300,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
 
       {/* The money to target */}
       <div className="sb-col-tiles">
-        <button type="button" className={`sb-col-tile sb-col-tile-total${stageF.size === 0 ? ' on' : ''}`} onClick={() => setStageF(new Set())} title="Show both queues">
+        <button type="button" className={`sb-col-tile sb-col-tile-total${stageF.size === 0 ? ' on' : ''}`} onClick={() => setStageF(new Set())} title="Show every queue">
           <span className="sb-col-tile-label">In reach</span>
           <span className="sb-col-tile-amt">{fmtUSD(totals.owed)}</span>
           <span className="sb-col-tile-sub">{totals.n} order{totals.n === 1 ? '' : 's'} with work done or nearly done</span>
@@ -346,13 +355,13 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
         </div>
         {isLoading && <div className="sb-pay-empty">Loading the queues…</div>}
         {!isLoading && shown.length === 0 && (
-          <div className="sb-pay-empty">{rows.length === 0 ? 'Nothing owed on the install list, the lines, or arrived bronze — every stone in reach is paid.' : 'No orders match.'}</div>
+          <div className="sb-pay-empty">{rows.length === 0 ? 'Nothing owed on installed stones, the install list, the lines, or arrived bronze — every stone in reach is paid.' : 'No orders match.'}</div>
         )}
         {!isLoading && shown.map(r => {
           const isOpen = open.has(r.id)
           const tone = contactTone(r)
           return (
-            <div key={r.id} className={`sb-col-row${isOpen ? ' open' : ''}`}>
+            <div key={r.id} className={`sb-col-row${isOpen ? ' open' : ''}${r.stages.has('installed') ? ' sb-col-row-installed' : ''}`}>
               <div className="sb-col-grid">
                 <div className="sb-col-who">
                   <button type="button" className="sb-col-name" onClick={() => onOpenOrder?.(r.id)} title="Open the order">{r.name}</button>
@@ -371,7 +380,12 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                     const d = stageDef(code)
                     return <span key={code} className={`sb-col-pill sb-col-pill-${d?.tone || 'grey'}${code === r.stage ? ' main' : ''}`}>{d?.short || code}</span>
                   })}
-                  {r.scheduledDate && <span className="sb-col-sched">Install {fmtDate(r.scheduledDate)}</span>}
+                  {r.installedDate && (
+                    <span className="sb-col-installed" title="The install milestone's date">
+                      Installed {fmtDate(r.installedDate)} · {r.installedDays === 0 ? 'today' : r.installedDays === 1 ? '1 day' : `${r.installedDays} days`}
+                    </span>
+                  )}
+                  {!r.installedDate && r.scheduledDate && <span className="sb-col-sched">Install {fmtDate(r.scheduledDate)}</span>}
                   {r.stages.has('delivery') && r.detail && r.detail !== 'install list' && <span className="sb-col-line">{r.detail}</span>}
                   {r.stages.has('blast') && r.line && <span className="sb-col-line">{r.line}{r.phase ? ` · ${phaseLabel(r.phase)}` : ''}</span>}
                 </div>
@@ -639,6 +653,9 @@ const COLLECT_CSS = `
   .sb-col-tile-total .sb-col-tile-amt { color: #fff; font-size: 24px; }
   .sb-col-tile-total .sb-col-tile-sub { color: #c7cdd4; }
   .sb-col-tile-total.on { box-shadow: 0 0 0 2px rgba(201,178,122,.5); }
+  .sb-col-tile-red { border-color: #e4b4b0; }
+  .sb-col-tile-red .sb-col-tile-label { color: #B3261E; }
+  .sb-col-tile-red.on { background: #fbeeec; border-color: #B3261E; box-shadow: 0 0 0 2px rgba(179,38,30,.16); }
   .sb-col-tile-green.on { background: #f1f9f4; }
   .sb-col-tile-amber.on { background: #fbf3e4; }
   .sb-col-dir { border-color: #1e2d3d; color: #1e2d3d; font-weight: 700; }
@@ -673,6 +690,10 @@ const COLLECT_CSS = `
   .sb-col-pill { font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 3px 8px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; opacity: .72; }
   .sb-col-pill.main { opacity: 1; }
   .sb-col-pill-green { background: #e6f4ec; color: #1f6b3d; border-color: #bfe0cb; }
+  .sb-col-pill-red { background: #B3261E; color: #fff; border-color: #B3261E; opacity: 1; }
+  .sb-col-installed { font-size: 12px; font-weight: 800; color: #B3261E; white-space: nowrap; }
+  .sb-col-row-installed { background: #fff8f7; }
+  .sb-col-row-installed .sb-col-name { color: #B3261E; font-weight: 800; }
   .sb-col-pill-amber { background: #fbf1d2; color: #7A5A00; border-color: #e9c46a; }
   .sb-col-pill-blue { background: #e4ecf7; color: #1d4ed8; border-color: #c2d2ec; }
   .sb-col-pill-grey { background: #f1efeb; color: #55503F; border-color: #e2dcce; }
