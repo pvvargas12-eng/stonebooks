@@ -17,7 +17,11 @@ const BUCKET = 'receipts'
 
 // ── Schedule C vocabulary (single-member LLC files on Schedule C) ────────────
 export const SCHEDC_CATEGORIES = [
-  { code: 'materials_cogs',   label: 'Materials (COGS)',    line: '4'   },
+  // COGS (line 4) in three pieces — Paul 2026-10-30: "a column for material
+  // that should be stone and bronze costs, then also other stuff".
+  { code: 'materials_stone',  label: 'Materials — stone',   line: '4'   },
+  { code: 'materials_bronze', label: 'Materials — bronze',  line: '4'   },
+  { code: 'materials_cogs',   label: 'Materials — other',   line: '4'   },
   { code: 'advertising',      label: 'Advertising',         line: '8'   },
   { code: 'car_truck',        label: 'Car & truck',         line: '9'   },
   { code: 'contract_labor',   label: 'Contract labor',      line: '11'  },
@@ -27,6 +31,10 @@ export const SCHEDC_CATEGORIES = [
   { code: 'rent',             label: 'Rent',                line: '20b' },
   { code: 'repairs',          label: 'Repairs',             line: '21'  },
   { code: 'supplies',         label: 'Supplies',            line: '22'  },
+  // Permits & cemetery fees used to ride line 23 with the taxes (Paul
+  // 2026-10-30: "instead of taxes and licenses I want that broken up and
+  // permits"). Their own line now; the CPA places it on the return.
+  { code: 'permits',          label: 'Permits & cemetery fees', line: '23' },
   { code: 'taxes_licenses',   label: 'Taxes & licenses',    line: '23'  },
   { code: 'travel',           label: 'Travel',              line: '24a' },
   { code: 'meals',            label: 'Meals (50%)',         line: '24b' },
@@ -34,6 +42,7 @@ export const SCHEDC_CATEGORIES = [
   { code: 'wages',            label: 'Wages (payroll)',     line: '26'  },
   { code: 'other',            label: 'Other',               line: '27a' },
 ]
+export const COGS_CODES = ['materials_stone', 'materials_bronze', 'materials_cogs']
 export const schedcLabel = (code) =>
   SCHEDC_CATEGORIES.find(c => c.code === code)?.label || (code ? String(code) : '—')
 
@@ -45,7 +54,7 @@ const OUTGOING_TO_SCHEDC = {
   'Debt/loan': { category: 'other', writeoff: 'pending' },
   'Subscription': { category: 'office', writeoff: 'yes' },
   'Supplier/materials': { category: 'materials_cogs', writeoff: 'yes' },
-  'Permits': { category: 'taxes_licenses', writeoff: 'yes' },
+  'Permits': { category: 'permits', writeoff: 'yes' },
   'Taxes': { category: 'taxes_licenses', writeoff: 'yes' },
   'Other': { category: 'other', writeoff: 'pending' },
 }
@@ -59,8 +68,10 @@ const RULES = [
     category: 'car_truck', writeoff: 'yes', why: 'fuel / vehicle' },
   { re: /\b(lunch|dinner|breakfast|food|pizza|deli|diner|restaurant|manor|dunkin|starbucks|coffee|bagel|sandwich|catering)\b/i,
     category: 'meals', writeoff: 'yes', pct: 50, why: 'business meal — 50% cap applied' },
-  { re: /\b(peerless|coldspring|matthews|granite|bronze|monument|stone|quarry|marker)\b/i,
-    category: 'materials_cogs', writeoff: 'yes', why: 'known supplier' },
+  { re: /\b(matthews|bronze)\b/i,
+    category: 'materials_bronze', writeoff: 'yes', why: 'bronze supplier' },
+  { re: /\b(peerless|coldspring|kani|glenrock|wenzco|ew granite|granite|monument|stone|quarry|marker)\b/i,
+    category: 'materials_stone', writeoff: 'yes', why: 'stone supplier' },
   { re: /\b(home depot|lowe'?s|lowes|harbor freight|grainger|fastenal|ace hardware|concrete|rebar|lumber|hardware)\b/i,
     category: 'supplies', writeoff: 'yes', why: 'shop / job supplies' },
   { re: /\b(insurance|selective|geico|progressive|allstate|liberty mutual)\b/i,
@@ -69,8 +80,10 @@ const RULES = [
     category: 'utilities', writeoff: 'yes', why: 'utility' },
   { re: /\b(adp|gusto|paychex|payroll)\b/i,
     category: 'wages', writeoff: 'yes', why: 'payroll' },
-  { re: /\b(permit|cemetery fee|license|dmv|registration)\b/i,
-    category: 'taxes_licenses', writeoff: 'yes', why: 'permit / license' },
+  { re: /\b(permit|cemetery)\b/i,
+    category: 'permits', writeoff: 'yes', why: 'permit / cemetery fee' },
+  { re: /\b(license|dmv|registration|irs|nj treasury|sales tax)\b/i,
+    category: 'taxes_licenses', writeoff: 'yes', why: 'tax / license' },
   { re: /\b(accountant|cpa|attorney|lawyer|legal)\b/i,
     category: 'legal_professional', writeoff: 'yes', why: 'professional services' },
   { re: /\b(staples|office depot|ink|printer|paper|quickbooks|software|subscription)\b/i,
@@ -268,8 +281,15 @@ export function deductibleAmount(e) {
   return (Number(e.amount) || 0) * ((Number(e.writeoff_pct) || 100) / 100)
 }
 
-export function summarizeSchedC(expenses, { year } = {}) {
-  const inYear = (e) => !year || String(e.expense_date || '').startsWith(String(year))
+// A year, or a slice of it (Paul 2026-10-30: "broken up yearly and quarterly").
+// from / to are YYYY-MM-DD, inclusive; with neither, the year prefix rules.
+export const inRangeFor = ({ year, from, to } = {}) => (e) => {
+  const d = String(e.expense_date || '').slice(0, 10)
+  if (from || to) return (!from || d >= from) && (!to || d <= to)
+  return !year || d.startsWith(String(year))
+}
+export function summarizeSchedC(expenses, { year, from, to } = {}) {
+  const inYear = inRangeFor({ year, from, to })
   const byCat = new Map()
   let cogs = 0, totalDeductible = 0
   for (const e of expenses) {
@@ -277,20 +297,23 @@ export function summarizeSchedC(expenses, { year } = {}) {
     const amt = deductibleAmount(e)
     if (amt <= 0) continue
     totalDeductible += amt
-    if (e.category === 'materials_cogs') { cogs += amt; continue }
     const key = e.category || 'other'
+    if (COGS_CODES.includes(key)) cogs += amt
     byCat.set(key, (byCat.get(key) || 0) + amt)
   }
+  const cogsLines = SCHEDC_CATEGORIES
+    .filter(c => COGS_CODES.includes(c.code))
+    .map(c => ({ ...c, total: byCat.get(c.code) || 0 }))
   const lines = SCHEDC_CATEGORIES
-    .filter(c => c.code !== 'materials_cogs')
+    .filter(c => !COGS_CODES.includes(c.code))
     .map(c => ({ ...c, total: byCat.get(c.code) || 0 }))
     .filter(l => l.total > 0)
-  return { cogs, lines, totalDeductible }
+  return { cogs, cogsLines, lines, totalDeductible }
 }
 
 // Plain-words book review — the rule-based expert pass (flags, not writes).
-export function analyzeBooks(expenses, { year } = {}) {
-  const inYear = (e) => !year || String(e.expense_date || '').startsWith(String(year))
+export function analyzeBooks(expenses, { year, from, to } = {}) {
+  const inYear = inRangeFor({ year, from, to })
   const rows = expenses.filter(inYear)
   const flags = []
   const pending = rows.filter(e => e.writeoff === 'pending')
@@ -373,6 +396,7 @@ export async function downloadCpaPacket({ year, income, expenses, flags }) {
   head(`Schedule C draft — ${year}`)
   row('1 · Gross receipts (order payments in)', _usd(income), true)
   row('4 · Cost of goods sold (materials)', _usd(sched.cogs))
+  for (const l of (sched.cogsLines || [])) if (l.total > 0) row(`    ${l.label}`, _usd(l.total))
   row('Gross profit', _usd(income - sched.cogs), true)
   for (const l of sched.lines) row(`${l.line} · ${l.label}`, _usd(l.total))
   const profit = income - sched.totalDeductible

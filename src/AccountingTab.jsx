@@ -21,7 +21,7 @@ import {
   addAcctExpense, listAcctExpenses, updateAcctExpense, confirmAcctExpense, deleteAcctExpense,
   sweepOutgoingIntoBook,
   DOC_KINDS, docKindLabel, addAcctDocument, listAcctDocuments, deleteAcctDocument,
-  deductibleAmount, summarizeSchedC, analyzeBooks, downloadCpaPacket, holderKey, isCardCharge, cardBucket, PERSONAL_HINT } from './lib/acctData'
+  deductibleAmount, summarizeSchedC, analyzeBooks, downloadCpaPacket, holderKey, isCardCharge, cardBucket, PERSONAL_HINT, COGS_CODES, inRangeFor } from './lib/acctData'
 
 const SECTIONS = [
   { code: 'inbox', label: 'Inbox' },
@@ -29,6 +29,8 @@ const SECTIONS = [
   { code: 'cards', label: 'Credit cards' },
   { code: 'docs',  label: 'Statements & documents' },
   { code: 'tax',   label: 'Tax center' },
+  // Paul 2026-10-30: "payroll stats, password protected" — who is paid what, why it moved.
+  { code: 'payroll', label: 'Payroll' },
   // Paul 2026-09-17: "profit I want that to be a tab in accounting" — the
   // whole ProfitTab surface rides here now (its nav entry is gone).
   { code: 'profit', label: 'Profit' },
@@ -53,6 +55,7 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
   const [expenses, setExpenses] = useState(null)
   const [docs, setDocs] = useState(null)
   const [income, setIncome] = useState(null)   // year total, orders.payments[]
+  const [incomeByMonth, setIncomeByMonth] = useState({})   // YYYY-MM → payments in (every year)
   const [year] = useState(() => String(new Date().getFullYear()))
   const [busyId, setBusyId] = useState(null)
   const [err, setErr] = useState(null)
@@ -74,14 +77,19 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
     fetchAllPaged(q).then(rows => {
       if (cancelled) return
       let sum = 0
+      const byMonth = {}
       for (const r of rows || []) {
         for (const p of (Array.isArray(r.payments) ? r.payments : [])) {
           if (!p || p.voided || !(p.locked ?? true)) continue
-          const d = String(p.receivedAt || p.createdAt || '').slice(0, 4)
-          if (d === year) sum += Number(p.amount) || 0
+          const day = String(p.receivedAt || p.createdAt || '').slice(0, 10)
+          const amt = Number(p.amount) || 0
+          if (day.slice(0, 4) === year) sum += amt
+          const mk = day.slice(0, 7)
+          if (mk.length === 7) byMonth[mk] = (byMonth[mk] || 0) + amt
         }
       }
       setIncome(sum)
+      setIncomeByMonth(byMonth)
     }).catch(() => { if (!cancelled) setIncome(0) })
     return () => { cancelled = true }
   }, [loadExpenses, loadDocs, year])
@@ -242,9 +250,13 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
         />
       )}
 
+      {sec === 'payroll' && (
+        <PayrollSection loading={loading} expenses={expenses || []} docs={docs || []} year={year} />
+      )}
+
       {sec === 'tax' && (
         <TaxSection loading={loading || income === null} expenses={expenses || []}
-          income={income || 0} year={year}
+          income={income || 0} incomeByMonth={incomeByMonth} year={year}
           onResolvePending={async (e, writeoff) => {
             patchLocal(e.id, { writeoff })
             const r = await updateAcctExpense(e.id, { writeoff })
@@ -621,6 +633,138 @@ function CardsSection({ loading, rows, onView, onSetCategory }) {
     </>
   )
 }
+// ── Payroll stats (behind a PIN) ─────────────────────────────────────────────
+// Paul 2026-10-30: "payroll stats, password protected; how much each
+// person is being paid; I don't understand why payroll skyrocketed." The bank
+// shows payroll as ADP lump debits per pay run (net wages, taxes, 401k, fees)
+// plus checks written from the payroll account — so this page answers WHEN
+// and HOW MUCH per run and per month, and names the checks by amount. Per-
+// PERSON pay lives only in ADP's payroll register; upload it under Statements
+// & documents › Payroll report and the next pass reads it in.
+// The PIN is a courtesy curtain on a shared screen, not security: anyone who
+// can sign in to Stonebooks can read these rows in the Expense book.
+// Only the SHA-256 of the PIN lives here; the PIN itself is Paul's.
+const PAYROLL_PIN_SHA256 = '3f735c67d29014733cf56508d3c5dba2c87abb07313998e23b49b7c8cc0d7e4a'
+const sha256Hex = async (t) => { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('') }
+const PAYROLL_KEY = 'sb_payroll_ok'
+const payrollKind = (e) => {
+  const v = `${e.vendor || ''} ${e.note || ''}`
+  if (/net wages|wage pay/i.test(v)) return 'net'
+  if (/payroll tax|adp tax/i.test(v)) return 'tax'
+  if (/401/.test(v)) return 'k401'
+  if (/service fee|payroll fee/i.test(v)) return 'fees'
+  if (/^payroll check|payroll checking · check/i.test(v)) return 'check'
+  return 'other'
+}
+const PAYROLL_KIND_LABEL = { net: 'Net wages (ADP)', tax: 'Payroll taxes (ADP)', k401: '401(k)', fees: 'ADP fees', check: 'Checks from the payroll account', other: 'Other payroll' }
+const isPayrollRow = (e) => e.category === 'wages' || /^Payroll/.test(e.ai?.bucket || '')
+function PayrollSection({ loading, expenses, docs, year }) {
+  const [ok, setOk] = useState(() => { try { return sessionStorage.getItem(PAYROLL_KEY) === '1' } catch { return false } })
+  const [pin, setPin] = useState('')
+  const [bad, setBad] = useState(false)
+  const [q, setQ] = useState('')
+  const rows = useMemo(() => expenses.filter(isPayrollRow).sort((a, b) => String(b.expense_date || '').localeCompare(String(a.expense_date || ''))), [expenses])
+  const months = useMemo(() => {
+    const m = new Map()
+    for (const e of rows) {
+      const k = monthOf(e); if (!k) continue
+      const r = m.get(k) || { key: k, total: 0, net: 0, tax: 0, k401: 0, fees: 0, check: 0, other: 0, runs: 0, checks: 0 }
+      const amt = Number(e.amount) || 0, kind = payrollKind(e)
+      r.total += amt; r[kind] += amt
+      if (kind === 'net') r.runs++
+      if (kind === 'check') r.checks++
+      m.set(k, r)
+    }
+    const list = [...m.values()].sort((a, b) => a.key.localeCompare(b.key))
+    list.forEach((r, i) => { const p = list[i - 1]; r.delta = p && p.total > 0 ? Math.round((r.total - p.total) / p.total * 100) : null })
+    return list.reverse()
+  }, [rows])
+  const checksByAmount = useMemo(() => {
+    const m = new Map()
+    for (const e of rows) { if (payrollKind(e) !== 'check') continue; const k = (Number(e.amount) || 0).toFixed(2); const r = m.get(k) || { amount: Number(k), n: 0, dates: [] }; r.n++; r.dates.push(e.expense_date); m.set(k, r) }
+    return [...m.values()].sort((a, b) => b.n * b.amount - a.n * a.amount)
+  }, [rows])
+  const payrollDocs = useMemo(() => docs.filter(d => d.kind === 'payroll'), [docs])
+  const shown = useMemo(() => { const n = q.trim().toLowerCase(); return n ? rows.filter(e => `${e.vendor || ''} ${e.note || ''} ${PAYROLL_KIND_LABEL[payrollKind(e)]}`.toLowerCase().includes(n)) : rows }, [rows, q])
+  const monthLabel = (k) => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) }
+  const unlock = async () => { const h = await sha256Hex(pin.trim()).catch(() => ''); if (h === PAYROLL_PIN_SHA256) { setOk(true); setBad(false); try { sessionStorage.setItem(PAYROLL_KEY, '1') } catch { /* fine */ } } else setBad(true) }
+  const lock = () => { setOk(false); setPin(''); try { sessionStorage.removeItem(PAYROLL_KEY) } catch { /* fine */ } }
+  if (!ok) {
+    return (
+      <div className="sb-acct-gate">
+        <div className="sb-acct-gate-box">
+          <div className="sb-acct-gate-h">Payroll is behind a PIN</div>
+          <div className="sb-acct-sub">Who is paid what stays off a shared screen. Type the PIN to open it for this browser session.</div>
+          <input className="sb-acct-in" type="password" inputMode="numeric" autoFocus value={pin} placeholder="PIN" onChange={e => { setPin(e.target.value); setBad(false) }} onKeyDown={e => { if (e.key === 'Enter') unlock() }} />
+          {bad && <div className="sb-acct-flag">That is not it.</div>}
+          <button type="button" className="sb-acct-btn sb-acct-btn-dark" onClick={unlock}>Open payroll</button>
+        </div>
+      </div>
+    )
+  }
+  const latest = months[0], prev = months[1]
+  return (
+    <>
+      <div className="sb-acct-lede">
+        Every payroll dollar the bank saw, by month and by pay run: ADP net wages, the payroll taxes ADP pulls, 401(k), ADP fees, and checks written from the payroll account. <b>Per-person pay is not in the bank data</b> — ADP moves one lump per run. Upload ADP's payroll register under Statements & documents (Payroll report) and the next pass reads names and amounts off it.
+        <button type="button" className="sb-acct-link" style={{ marginLeft: 10 }} onClick={lock}>Lock</button>
+      </div>
+      {loading ? <div className="sb-acct-empty">Loading…</div> : rows.length === 0 ? <div className="sb-acct-empty">No payroll lines in the book yet — load the payroll account's statements.</div> : (
+        <>
+          {latest && prev && (
+            <div className={`sb-acct-note ${latest.total > prev.total * 1.15 ? 'sb-acct-note-flag' : ''}`}>
+              <h5>Why {monthLabel(latest.key)} reads {latest.delta != null ? `${latest.delta > 0 ? '+' : ''}${latest.delta}%` : 'the way it does'} against {monthLabel(prev.key)}</h5>
+              <p>{monthLabel(latest.key)}: {latest.runs} pay run{latest.runs === 1 ? '' : 's'} ({fmtUSD(latest.net)} net wages, {fmtUSD(latest.tax)} taxes) and {latest.checks} check{latest.checks === 1 ? '' : 's'} from the payroll account ({fmtUSD(latest.check)}). {monthLabel(prev.key)}: {prev.runs} run{prev.runs === 1 ? '' : 's'} ({fmtUSD(prev.net)} net, {fmtUSD(prev.tax)} taxes) and {prev.checks} check{prev.checks === 1 ? '' : 's'} ({fmtUSD(prev.check)}). A month with a third biweekly pay date, or extra checks, is the usual reason a month jumps; a higher net per run means more hours or more people.</p>
+            </div>
+          )}
+          <div className="sb-acct-table">
+            <div className="sb-acct-row sb-acct-row-head sb-acct-pay-grid"><div>Month</div><div className="num">Runs</div><div className="num">Net wages</div><div className="num">Taxes</div><div className="num">401(k)</div><div className="num">Fees</div><div className="num">Checks</div><div className="num">Total</div><div className="num">vs prev</div></div>
+            {months.map(r => (
+              <div key={r.key} className="sb-acct-row sb-acct-pay-grid">
+                <span><b>{monthLabel(r.key)}</b></span>
+                <span className="num">{r.runs}</span>
+                <span className="num">{fmtUSD(r.net)}</span>
+                <span className="num">{fmtUSD(r.tax)}</span>
+                <span className="num">{fmtUSD(r.k401)}</span>
+                <span className="num">{fmtUSD(r.fees)}</span>
+                <span className="num">{fmtUSD(r.check)}<span className="sb-acct-sub"> {r.checks || ''}</span></span>
+                <span className="num sb-acct-amt">{fmtUSD(r.total)}</span>
+                <span className={`num ${r.delta > 0 ? 'sb-acct-flag' : ''}`}>{r.delta == null ? '—' : `${r.delta > 0 ? '+' : ''}${r.delta}%`}</span>
+              </div>
+            ))}
+          </div>
+          <div className="sb-acct-taxgrid">
+            <div className="sb-acct-note">
+              <h5>Checks from the payroll account — who are they?</h5>
+              {checksByAmount.length === 0 ? <p>None.</p> : checksByAmount.map(c => (
+                <div key={c.amount} className="sb-acct-pendrow"><span>{fmtUSD(c.amount)} × {c.n} — {c.dates.map(d => fmtDate(d)).join(', ')}</span><span className="sb-acct-sub">{c.n > 1 ? 'the same amount every time reads as one person' : ''}</span></div>
+              ))}
+              <p className="sb-acct-sub">Name them in the Inbox / Expense book (the vendor field) and they will read as people here.</p>
+            </div>
+            <div className="sb-acct-note">
+              <h5>Per-person pay</h5>
+              {payrollDocs.length === 0
+                ? <p>No ADP payroll register in the cabinet yet. Upload one month's register under <b>Statements & documents › Payroll report</b>, then ask Claude to read it: names, gross, net, hours, per run.</p>
+                : <p>{payrollDocs.length} payroll report{payrollDocs.length === 1 ? '' : 's'} in the cabinet ({payrollDocs.map(d => d.month).filter(Boolean).join(', ')}). Ask Claude to read them into per-person rows.</p>}
+            </div>
+          </div>
+          <div className="sb-acct-controls"><input className="sb-acct-search" placeholder="Search payroll lines…" value={q} onChange={e => setQ(e.target.value)} /><span className="sb-acct-filt-sum">{shown.length} line{shown.length === 1 ? '' : 's'} · {fmtUSD(shown.reduce((t, e) => t + (Number(e.amount) || 0), 0))}</span></div>
+          <div className="sb-acct-table">
+            <div className="sb-acct-row sb-acct-row-head sb-acct-payrow-grid"><div>Date</div><div>What</div><div>Kind</div><div className="num">Amount</div></div>
+            {shown.slice(0, 300).map(e => (
+              <div key={e.id} className="sb-acct-row sb-acct-payrow-grid">
+                <span>{e.expense_date ? fmtDate(e.expense_date) : '—'}</span>
+                <span><span className="sb-acct-vendor">{e.vendor || '—'}</span><div className="sb-acct-sub">{e.note || ''}{e.status === 'inbox' ? ' · INBOX' : ''}</div></span>
+                <span className="sb-acct-sub">{PAYROLL_KIND_LABEL[payrollKind(e)]}</span>
+                <span className="num sb-acct-amt">{e.amount != null ? fmtUSD(Number(e.amount)) : '—'}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  )
+}
 // ── Statements & documents ───────────────────────────────────────────────────
 function DocsSection({ loading, rows, onView, onUpload, onDelete }) {
   const [kind, setKind] = useState('bank_statement')
@@ -674,28 +818,77 @@ function DocsSection({ loading, rows, onView, onUpload, onDelete }) {
 }
 
 // ── Tax center ───────────────────────────────────────────────────────────────
-function TaxSection({ loading, expenses, income, year, onResolvePending }) {
-  const sched = useMemo(() => summarizeSchedC(expenses, { year }), [expenses, year])
-  const flags = useMemo(() => analyzeBooks(expenses, { year }), [expenses, year])
-  const pending = expenses.filter(e => String(e.expense_date || '').startsWith(year) && e.status === 'confirmed' && e.writeoff === 'pending')
+const TAX_PERIODS = [
+  { code: 'year', label: 'Whole year', months: [1, 12] },
+  { code: 'Q1', label: 'Q1 · Jan–Mar', months: [1, 3] },
+  { code: 'Q2', label: 'Q2 · Apr–Jun', months: [4, 6] },
+  { code: 'Q3', label: 'Q3 · Jul–Sep', months: [7, 9] },
+  { code: 'Q4', label: 'Q4 · Oct–Dec', months: [10, 12] },
+]
+const pad2 = (n) => String(n).padStart(2, '0')
+function TaxSection({ loading, expenses, income: incomeYear, incomeByMonth = {}, year, onResolvePending }) {
+  // Whole year or a quarter (Paul 2026-10-30: "broken up yearly and quarterly").
+  const [period, setPeriod] = useState('year')
+  const per = TAX_PERIODS.find(p => p.code === period) || TAX_PERIODS[0]
+  const from = `${year}-${pad2(per.months[0])}-01`
+  const to = `${year}-${pad2(per.months[1])}-31`
+  const inP = useMemo(() => inRangeFor({ from, to }), [from, to])
+  const income = useMemo(() => {
+    if (period === 'year') return incomeYear
+    let t = 0; for (let m = per.months[0]; m <= per.months[1]; m++) t += incomeByMonth[`${year}-${pad2(m)}`] || 0
+    return t
+  }, [period, incomeYear, incomeByMonth, year, per])
+  const sched = useMemo(() => summarizeSchedC(expenses, { from, to }), [expenses, from, to])
+  const flags = useMemo(() => analyzeBooks(expenses, { from, to }), [expenses, from, to])
+  const pending = expenses.filter(e => inP(e) && e.status === 'confirmed' && e.writeoff === 'pending')
+  // Months in this period (up to today) with NO statement lines loaded — the
+  // book is blind there, so the profit number is too high by whatever those
+  // months cost.
+  const blindMonths = useMemo(() => {
+    const now = new Date(); const cur = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`
+    const have = new Set(expenses.filter(e => e.source === 'statement').map(monthOf))
+    const out = []
+    for (let m = per.months[0]; m <= per.months[1]; m++) { const k = `${year}-${pad2(m)}`; if (k <= cur && !have.has(k)) out.push(k) }
+    return out
+  }, [expenses, per, year])
+  const loansP = expenses.filter(e => inP(e) && (e.ai?.bucket === 'Mortgage & loans')).reduce((t, e) => t + (Number(e.amount) || 0), 0)
   // Inbox lines are NOT in the write-off total until confirmed (Paul 2026-10-30:
   // "shouldn't the write-off be much higher?" — it was: 534 statement lines sat
   // in the Inbox). Say so on the tile instead of letting the number mislead.
-  const inboxYear = expenses.filter(e => String(e.expense_date || '').startsWith(year) && e.status === 'inbox')
+  const inboxYear = expenses.filter(e => inP(e) && e.status === 'inbox')
   const inboxUsd = inboxYear.reduce((t, e) => t + (Number(e.amount) || 0), 0)
   const profit = income - sched.totalDeductible
   // Rough self-employment + income tax figure — clearly labeled rough; the
   // packet carries the worksheets and the CPA trues it up.
   const seTax = Math.max(0, profit * 0.9235 * 0.153)
   const [busy, setBusy] = useState(false)
+  // Click a Schedule C line → every row behind it, searchable (Paul
+  // 2026-10-30: "click on permits and scroll through and see and search").
+  const [drill, setDrill] = useState(null)   // a category code, or 'cogs' for all three
+  const [dq, setDq] = useState('')
+  const drillRows = useMemo(() => {
+    if (!drill) return []
+    const needle = dq.trim().toLowerCase()
+    return expenses.filter(e => inP(e)
+      && (drill === 'cogs' ? COGS_CODES.includes(e.category) : (e.category || 'other') === drill)
+      && (!needle || `${e.vendor || ''} ${e.note || ''} ${e.ai?.bucket || ''}`.toLowerCase().includes(needle)))
+      .sort((a, b) => String(b.expense_date || '').localeCompare(String(a.expense_date || '')))
+  }, [expenses, inP, drill, dq])
+  const drillCounted = drillRows.reduce((t, e) => t + deductibleAmount(e), 0)
+  const drillAll = drillRows.reduce((t, e) => t + (Number(e.amount) || 0), 0)
+  const drillLabel = drill === 'cogs' ? 'Cost of goods sold' : schedcLabel(drill)
+  const toggle = (code) => { setDrill(d => d === code ? null : code); setDq('') }
   return (
     <>
       <div className="sb-acct-lede">
         The year, shaped like the form your return files on — <b>Schedule C</b>, single-member LLC. It knows where you operate (Perth Amboy, NJ · Middlesex County): meals capped 50%, federal + New Jersey quarterlies. Estimates here are rough by design — <b>the packet preps the filing, your CPA signs</b>.
       </div>
+      <div className="sb-acct-filt" style={{ marginBottom: 12 }}>
+        {TAX_PERIODS.map(p => <button key={p.code} type="button" className={`sb-acct-fchip ${period === p.code ? 'on' : ''}`} onClick={() => { setPeriod(p.code); setDrill(null) }}>{p.label}</button>)}
+      </div>
       <div className="sb-acct-cards">
-        <div className="sb-acct-card sb-acct-card-green"><div className="k">Income · {year}</div><div className="v">{loading ? '—' : fmtUSD(income)}</div><div className="s">order payments in</div></div>
-        <div className="sb-acct-card"><div className="k">Write-offs · {year}</div><div className="v">{loading ? '—' : fmtUSD(sched.totalDeductible)}</div><div className="s">confirmed, caps applied{inboxUsd > 0 && <span className="sb-acct-flag"> · {fmtUSD(inboxUsd)} in {inboxYear.length} Inbox lines not counted yet</span>}</div></div>
+        <div className="sb-acct-card sb-acct-card-green"><div className="k">Income · {period === 'year' ? year : `${year} ${period}`}</div><div className="v">{loading ? '—' : fmtUSD(income)}</div><div className="s">order payments in</div></div>
+        <div className="sb-acct-card"><div className="k">Write-offs · {period === 'year' ? year : `${year} ${period}`}</div><div className="v">{loading ? '—' : fmtUSD(sched.totalDeductible)}</div><div className="s">confirmed, caps applied{inboxUsd > 0 && <span className="sb-acct-flag"> · {fmtUSD(inboxUsd)} in {inboxYear.length} Inbox lines not counted yet</span>}</div></div>
         <div className="sb-acct-card sb-acct-card-gold"><div className="k">Tentative profit</div><div className="v">{loading ? '—' : fmtUSD(profit)}</div><div className="s">what tax is figured on</div></div>
         <div className="sb-acct-card sb-acct-card-red"><div className="k">Your call</div><div className="v">{loading ? '—' : pending.length}</div><div className="s">write-off decisions waiting</div></div>
       </div>
@@ -703,7 +896,7 @@ function TaxSection({ loading, expenses, income, year, onResolvePending }) {
       <div className="sb-acct-taxgrid">
         <div className="sb-acct-sched">
           <div className="sb-acct-schedhead">
-            <span>Schedule C — {year}</span>
+            <span>Schedule C — {year}{period !== 'year' ? ` · ${per.label}` : ''}</span>
             <button type="button" className="sb-acct-btn sb-acct-btn-dark" disabled={busy || loading}
               onClick={async () => {
                 setBusy(true)
@@ -715,15 +908,52 @@ function TaxSection({ loading, expenses, income, year, onResolvePending }) {
             </button>
           </div>
           <div className="sb-acct-schedrow"><span><i>1</i>Gross receipts (order payments in)</span><b>{fmtUSD(income)}</b></div>
-          <div className="sb-acct-schedrow"><span><i>4</i>Cost of goods sold (materials)</span><b>{fmtUSD(sched.cogs)}</b></div>
+          <button type="button" className={`sb-acct-schedrow sb-acct-schedbtn ${drill === 'cogs' ? 'on' : ''}`} onClick={() => toggle('cogs')}><span><i>4</i>Cost of goods sold (materials)</span><b>{fmtUSD(sched.cogs)}</b></button>
+          {(sched.cogsLines || []).map(l => (
+            <button key={l.code} type="button" className={`sb-acct-schedrow sb-acct-schedbtn sb-acct-schedind ${drill === l.code ? 'on' : ''}`} onClick={() => toggle(l.code)}><span>{l.label.replace(/^Materials — /, '')}</span><b>{fmtUSD(l.total)}</b></button>
+          ))}
           <div className="sb-acct-schedrow sb-acct-schedsub"><span>Gross profit</span><b>{fmtUSD(income - sched.cogs)}</b></div>
           {sched.lines.map(l => (
-            <div key={l.code} className="sb-acct-schedrow"><span><i>{l.line}</i>{l.label}</span><b>{fmtUSD(l.total)}</b></div>
+            <button key={l.code} type="button" className={`sb-acct-schedrow sb-acct-schedbtn ${drill === l.code ? 'on' : ''}`} onClick={() => toggle(l.code)}><span><i>{l.line}</i>{l.label}</span><b>{fmtUSD(l.total)}</b></button>
           ))}
           <div className="sb-acct-schedrow sb-acct-schedtotal"><span>Tentative profit</span><b>{fmtUSD(profit)}</b></div>
+          {drill && (
+            <div className="sb-acct-drill">
+              <div className="sb-acct-drill-head">
+                <div><b>{drillLabel}</b> · {year} <span className="sb-acct-sub">{drillRows.length} row{drillRows.length === 1 ? '' : 's'} · counted {fmtUSD(drillCounted)}{drillAll !== drillCounted ? ` · all lines ${fmtUSD(drillAll)}` : ''}</span></div>
+                <button type="button" className="sb-acct-link" onClick={() => setDrill(null)}>close</button>
+              </div>
+              <input className="sb-acct-search" placeholder={`Search ${drillLabel.toLowerCase()}…`} value={dq} onChange={e => setDq(e.target.value)} />
+              <div className="sb-acct-drill-list">
+                {drillRows.length === 0 && <div className="sb-acct-empty">Nothing here{dq ? ' for that search' : ''}.</div>}
+                {drillRows.slice(0, 300).map(e => {
+                  const counted = deductibleAmount(e) > 0
+                  return (
+                    <div key={e.id} className="sb-acct-drill-row">
+                      <span className="sb-acct-drill-date">{e.expense_date ? fmtDate(e.expense_date) : '—'}</span>
+                      <span className="sb-acct-drill-main"><span className="sb-acct-vendor">{properName(e.vendor || '') || e.note || '—'}</span><div className="sb-acct-sub">{[e.source === 'outgoing' ? 'Payments › Outgoing' : e.source === 'statement' ? (e.ai?.accountName || 'statement') : e.source, e.ai?.cardholder ? holderKey(e.ai.cardholder) : null, e.note && e.vendor ? e.note : null].filter(Boolean).join(' · ')}</div></span>
+                      <span>{counted ? <span className="sb-acct-chip sb-acct-chip-good">COUNTED</span> : e.status === 'inbox' ? <span className="sb-acct-chip sb-acct-chip-warn">INBOX</span> : <span className="sb-acct-chip sb-acct-chip-bad">{e.writeoff === 'no' ? 'EXCLUDED' : 'YOUR CALL'}</span>}</span>
+                      <span className="num sb-acct-amt">{e.amount != null ? fmtUSD(Number(e.amount)) : '—'}</span>
+                    </div>
+                  )
+                })}
+                {drillRows.length > 300 && <div className="sb-acct-sub">Showing 300 of {drillRows.length} — narrow it with the search.</div>}
+              </div>
+            </div>
+          )}
         </div>
 
         <div>
+          {/* Paul 2026-10-30: "I still don't see how there is $600k in tentative
+              profit — we aren't profitable." This is a TAX-FORM number built from
+              confirmed write-offs only; the box says exactly what it is missing. */}
+          <div className="sb-acct-note sb-acct-note-flag">
+            <h5>Why this profit is not your cash profit</h5>
+            <p>Only <b>confirmed</b> write-offs count here. {inboxUsd > 0 ? <>The Inbox still holds <b>{fmtUSD(inboxUsd)}</b> in {inboxYear.length} lines for this period that are not counted yet — confirm them and the profit drops by most of that. </> : null}
+            {blindMonths.length > 0 ? <>No bank or card statement lines are loaded for <b>{blindMonths.length} month{blindMonths.length === 1 ? '' : 's'}</b> in this period ({blindMonths.join(', ')}) — payroll, loans, insurance and card spend for those months are simply absent, so the book is blind there. </> : null}
+            {loansP > 0 ? <>Loan and mortgage payments ({fmtUSD(loansP)} here) are cash out but mostly not deductible (principal is not an expense), so they never lower this number. </> : null}
+            Cash in versus cash out, the number that says whether the shop made money, is on Reports › Monthly review.</p>
+          </div>
           {pending.length > 0 && (
             <div className="sb-acct-note sb-acct-note-flag">
               <h5>Your call — decide these</h5>
@@ -776,6 +1006,19 @@ const ACCT_CSS = `
   .sb-acct-inbox-grid { grid-template-columns: 130px 1.6fr 170px 140px 110px 150px; }
   .sb-acct-book-grid { grid-template-columns: 92px 1.5fr 170px 150px 130px 110px; }
   .sb-acct-cards-grid { grid-template-columns: 92px 1.6fr 150px 170px 170px 130px; }
+  .sb-acct-schedbtn { font: inherit; width: 100%; text-align: left; background: none; border: none; border-bottom: 0.5px solid #efece6; cursor: pointer; color: inherit; }
+  .sb-acct-schedbtn:hover { background: #FBF9F4; } .sb-acct-schedbtn.on { background: #16150F; color: #F3EAD6; } .sb-acct-schedbtn.on b { color: #E9C46A; } .sb-acct-schedbtn.on i { color: #BDB6A6; }
+  .sb-acct-schedind { padding-left: 34px !important; font-size: 12.5px; color: #6b6b66; }
+  .sb-acct-drill { border-top: 2px solid #16150F; padding: 12px 14px 8px; background: #FBF9F4; }
+  .sb-acct-drill-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 8px; flex-wrap: wrap; }
+  .sb-acct-drill-list { margin-top: 8px; max-height: 520px; overflow-y: auto; }
+  .sb-acct-drill-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 110px 110px; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 0.5px solid #efece6; font-size: 13px; }
+  .sb-acct-drill-row > * { min-width: 0; overflow-wrap: anywhere; } .sb-acct-drill-date { white-space: nowrap; color: #6b6b66; }
+  .sb-acct-pay-grid { grid-template-columns: 150px 60px 1fr 1fr 90px 80px 1fr 1fr 80px; }
+  .sb-acct-payrow-grid { grid-template-columns: 92px 1.6fr 200px 120px; }
+  .sb-acct-gate { display: flex; justify-content: center; padding: 40px 0; }
+  .sb-acct-gate-box { width: min(380px, 100%); background: #fff; border: 0.5px solid #e6e3dd; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .sb-acct-gate-h { font-size: 17px; font-weight: 800; color: #16150F; }
   .sb-acct-cards-grid > * { min-width: 0; overflow-wrap: anywhere; }
   .sb-acct-who { font-weight: 700; color: #16150F; }
   .sb-acct-people { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -860,5 +1103,6 @@ const ACCT_CSS = `
   .sb-acct-note p { margin: 0; font-size: 12.5px; color: #6b6b66; line-height: 1.5; }
   .sb-acct-pendrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: #2c2c2a; padding: 5px 0; }
 `
+
 
 
