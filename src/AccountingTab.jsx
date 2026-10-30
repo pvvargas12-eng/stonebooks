@@ -828,7 +828,10 @@ const TAX_PERIODS = [
 const pad2 = (n) => String(n).padStart(2, '0')
 function TaxSection({ loading, expenses, income: incomeYear, incomeByMonth = {}, year, onResolvePending }) {
   // Whole year or a quarter (Paul 2026-10-30: "broken up yearly and quarterly").
-  const [period, setPeriod] = useState('year')
+  // Opens on the CURRENT quarter (Paul 2026-10-30: "auto-start on the current
+  // quarter" — income runs the whole year and back into 2025 while expenses
+  // cover a few months, so the whole-year view flatters the result).
+  const [period, setPeriod] = useState(() => `Q${Math.floor(new Date().getMonth() / 3) + 1}`)
   const per = TAX_PERIODS.find(p => p.code === period) || TAX_PERIODS[0]
   const from = `${year}-${pad2(per.months[0])}-01`
   const to = `${year}-${pad2(per.months[1])}-31`
@@ -889,7 +892,7 @@ function TaxSection({ loading, expenses, income: incomeYear, incomeByMonth = {},
       <div className="sb-acct-cards">
         <div className="sb-acct-card sb-acct-card-green"><div className="k">Income · {period === 'year' ? year : `${year} ${period}`}</div><div className="v">{loading ? '—' : fmtUSD(income)}</div><div className="s">order payments in</div></div>
         <div className="sb-acct-card"><div className="k">Write-offs · {period === 'year' ? year : `${year} ${period}`}</div><div className="v">{loading ? '—' : fmtUSD(sched.totalDeductible)}</div><div className="s">confirmed, caps applied{inboxUsd > 0 && <span className="sb-acct-flag"> · {fmtUSD(inboxUsd)} in {inboxYear.length} Inbox lines not counted yet</span>}</div></div>
-        <div className="sb-acct-card sb-acct-card-gold"><div className="k">Tentative profit</div><div className="v">{loading ? '—' : fmtUSD(profit)}</div><div className="s">what tax is figured on</div></div>
+        <div className="sb-acct-card sb-acct-card-gold"><div className="k">Tentative profit</div><div className="v">{loading ? '—' : fmtUSD(profit)}</div><div className="s">what tax is figured on{blindMonths.length > 0 && <span className="sb-acct-flag"> · not comparable: no statements for {blindMonths.length} of this period's months</span>}</div></div>
         <div className="sb-acct-card sb-acct-card-red"><div className="k">Your call</div><div className="v">{loading ? '—' : pending.length}</div><div className="s">write-off decisions waiting</div></div>
       </div>
 
