@@ -27,6 +27,7 @@ import {
 const SECTIONS = [
   { code: 'inbox', label: 'Inbox' },
   { code: 'book',  label: 'Expense book' },
+  { code: 'cards', label: 'Credit cards' },
   { code: 'docs',  label: 'Statements & documents' },
   { code: 'tax',   label: 'Tax center' },
   // Paul 2026-09-17: "profit I want that to be a tab in accounting" — the
@@ -183,6 +184,17 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
               })
             }
             loadExpenses()
+          }}
+        />
+      )}
+
+      {sec === 'cards' && (
+        <CardsSection loading={loading} rows={expenses || []}
+          onView={viewReceipt}
+          onSetCategory={async (e, category) => {
+            patchLocal(e.id, { category })
+            const r = await updateAcctExpense(e.id, { category })
+            if (!r.ok) { setErr(r.error); loadExpenses() }
           }}
         />
       )}
@@ -444,6 +456,175 @@ function BookSection({ loading, rows, year, onView, onSetWriteoff, onSetCategory
   )
 }
 
+// ── Credit cards — charges by person ─────────────────────────────────────────
+// Paul 2026-10-30: "in accounting for expense book I want a credit card
+// section and then see credit card charges by person, select a person and see
+// their total spending and then spending history." A card charge is any
+// statement line that carries a cardholder (the parser stamps ai.cardholder
+// and ai.accountName on every card-statement purchase). The same person on
+// two cards is ONE person: names fold to first + last word, proper-cased.
+const holderKey = (raw) => {
+  const parts = String(raw || '').trim().toUpperCase().split(/\s+/).filter(Boolean)
+  if (!parts.length) return ''
+  const words = parts.length > 1 ? [parts[0], parts[parts.length - 1]] : parts
+  return words.map(w => w[0] + w.slice(1).toLowerCase()).join(' ')
+}
+const isCardCharge = (e) => e?.source === 'statement' && !!e?.ai?.cardholder
+const cardBucket = (e) => e.ai?.bucket || (e.category ? schedcLabel(e.category) : 'Uncategorized')
+const PERSONAL_HINT = /personal|sort: shop vs personal|unclear|groceries/i
+
+function CardsSection({ loading, rows, onView, onSetCategory }) {
+  const [person, setPerson] = useState('')      // '' = everyone
+  const [card, setCard] = useState('all')
+  const [month, setMonth] = useState('all')
+  const [q, setQ] = useState('')
+  const charges = useMemo(() => rows.filter(isCardCharge), [rows])
+  const cards = useMemo(() => [...new Set(charges.map(e => e.ai?.accountName).filter(Boolean))].sort(), [charges])
+  const months = useMemo(() => [...new Set(charges.map(monthOf).filter(Boolean))].sort().reverse(), [charges])
+  // The pool the person tiles are built from: card + month + search, NOT person.
+  const pool = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    return charges.filter(e =>
+      (card === 'all' || e.ai?.accountName === card)
+      && (month === 'all' || monthOf(e) === month)
+      && (!needle || `${e.vendor || ''} ${e.note || ''} ${cardBucket(e)}`.toLowerCase().includes(needle)))
+  }, [charges, card, month, q])
+  const people = useMemo(() => {
+    const m = new Map()
+    for (const e of pool) {
+      const k = holderKey(e.ai?.cardholder); if (!k) continue
+      const r = m.get(k) || { key: k, total: 0, n: 0, cards: new Set(), buckets: new Map(), last: null, personal: 0 }
+      const amt = Number(e.amount) || 0
+      r.total += amt; r.n++; if (e.ai?.accountName) r.cards.add(e.ai.accountName)
+      const b = cardBucket(e); r.buckets.set(b, (r.buckets.get(b) || 0) + amt)
+      if (PERSONAL_HINT.test(b)) r.personal += amt
+      if (!r.last || String(e.expense_date) > r.last) r.last = String(e.expense_date)
+      m.set(k, r)
+    }
+    return [...m.values()].sort((a, b) => b.total - a.total)
+  }, [pool])
+  const everyone = useMemo(() => ({ total: pool.reduce((s, e) => s + (Number(e.amount) || 0), 0), n: pool.length }), [pool])
+  const sel = person ? people.find(p => p.key === person) : null
+  const shown = useMemo(() => {
+    const list = person ? pool.filter(e => holderKey(e.ai?.cardholder) === person) : pool
+    return [...list].sort((a, b) => String(b.expense_date).localeCompare(String(a.expense_date)) || (Number(b.amount) - Number(a.amount)))
+  }, [pool, person])
+  const byMonth = useMemo(() => {
+    const m = new Map()
+    for (const e of shown) { const k = monthOf(e); if (!k) continue; const r = m.get(k) || { total: 0, n: 0 }; r.total += Number(e.amount) || 0; r.n++; m.set(k, r) }
+    return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]))
+  }, [shown])
+  const byCard = useMemo(() => {
+    const m = new Map()
+    for (const e of shown) { const k = e.ai?.accountName || 'Card'; const r = m.get(k) || { total: 0, n: 0 }; r.total += Number(e.amount) || 0; r.n++; m.set(k, r) }
+    return [...m.entries()].sort((a, b) => b[1].total - a[1].total)
+  }, [shown])
+  const topBuckets = useMemo(() => {
+    const m = new Map()
+    for (const e of shown) { const b = cardBucket(e); m.set(b, (m.get(b) || 0) + (Number(e.amount) || 0)) }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
+  }, [shown])
+  const shownTotal = shown.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+  const inboxN = shown.filter(e => e.status === 'inbox').length
+  const monthLabel = (k) => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) }
+  return (
+    <>
+      <div className="sb-acct-lede">
+        Every card charge in the book, by the person whose name is on the card. Pick a person to see their total, their split by card and by what it was for, month by month, and every charge. Charges land here from the statement load (Inbox and confirmed alike); a charge still in the Inbox wears an INBOX tag.
+      </div>
+      <div className="sb-acct-controls">
+        <input className="sb-acct-search" placeholder="Search vendor, note, what it was for…" value={q} onChange={e => setQ(e.target.value)} />
+        <select className="sb-acct-in" value={card} onChange={e => setCard(e.target.value)}>
+          <option value="all">All cards</option>
+          {cards.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="sb-acct-in" value={month} onChange={e => setMonth(e.target.value)}>
+          <option value="all">All months</option>
+          {months.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+        </select>
+      </div>
+      {loading ? <div className="sb-acct-empty">Loading the book…</div>
+        : charges.length === 0 ? <div className="sb-acct-empty">No card charges in the book yet. Load a card statement (Statements & documents, then the monthly review) and they show here by person.</div>
+        : (
+          <>
+            <div className="sb-acct-people">
+              <button type="button" className={`sb-acct-ptile ${!person ? 'on' : ''}`} onClick={() => setPerson('')}>
+                <div className="sb-acct-ptile-name">Everyone</div>
+                <div className="sb-acct-ptile-total">{fmtUSD(everyone.total)}</div>
+                <div className="sb-acct-ptile-sub">{everyone.n} charge{everyone.n === 1 ? '' : 's'} · {people.length} {people.length === 1 ? 'person' : 'people'}</div>
+              </button>
+              {people.map(p => (
+                <button key={p.key} type="button" className={`sb-acct-ptile ${person === p.key ? 'on' : ''}`} onClick={() => setPerson(person === p.key ? '' : p.key)}>
+                  <div className="sb-acct-ptile-name">{p.key}</div>
+                  <div className="sb-acct-ptile-total">{fmtUSD(p.total)}</div>
+                  <div className="sb-acct-ptile-sub">{p.n} charge{p.n === 1 ? '' : 's'} · {[...p.cards].length} card{p.cards.size === 1 ? '' : 's'}{p.last ? ` · last ${fmtDate(p.last)}` : ''}</div>
+                  {p.personal > 0 && <div className="sb-acct-ptile-flag">{fmtUSD(p.personal)} to sort (shop vs personal)</div>}
+                </button>
+              ))}
+            </div>
+
+            <div className="sb-acct-pdetail">
+              <div className="sb-acct-pdetail-head">
+                <div className="sb-acct-pdetail-title">{sel ? sel.key : 'Everyone'} <span className="sb-acct-sub">{card === 'all' ? 'all cards' : card} · {month === 'all' ? 'all months' : monthLabel(month)}</span></div>
+                <div className="sb-acct-summary" style={{ marginBottom: 0 }}>
+                  <span>Total: <strong>{fmtUSD(shownTotal)}</strong></span>
+                  <span><strong>{shown.length}</strong> charge{shown.length === 1 ? '' : 's'}</span>
+                  <span>Avg: <strong>{fmtUSD(shown.length ? shownTotal / shown.length : 0)}</strong></span>
+                  {inboxN > 0 && <span className="sb-acct-flag">{inboxN} still in the Inbox</span>}
+                </div>
+              </div>
+              <div className="sb-acct-pdetail-grid">
+                <div className="sb-acct-pbox">
+                  <div className="sb-acct-pbox-h">By card</div>
+                  {byCard.map(([k, v]) => (
+                    <div key={k} className="sb-acct-pline"><span className="sb-acct-pline-k">{k}</span><span className="sb-acct-pline-bar"><span style={{ width: `${Math.round(v.total / (byCard[0][1].total || 1) * 100)}%` }} /></span><span className="sb-acct-pline-v">{fmtUSD(v.total)} <span className="sb-acct-sub">{v.n}</span></span></div>
+                  ))}
+                </div>
+                <div className="sb-acct-pbox">
+                  <div className="sb-acct-pbox-h">What it was for</div>
+                  {topBuckets.map(([k, v]) => (
+                    <div key={k} className="sb-acct-pline"><span className="sb-acct-pline-k">{k}</span><span className="sb-acct-pline-bar"><span style={{ width: `${Math.round(v / (topBuckets[0][1] || 1) * 100)}%` }} /></span><span className="sb-acct-pline-v">{fmtUSD(v)} <span className="sb-acct-sub">{shownTotal > 0 ? `${Math.round(v / shownTotal * 100)}%` : ''}</span></span></div>
+                  ))}
+                </div>
+                <div className="sb-acct-pbox">
+                  <div className="sb-acct-pbox-h">Month by month</div>
+                  {byMonth.map(([k, v]) => (
+                    <div key={k} className="sb-acct-pline"><span className="sb-acct-pline-k">{monthLabel(k)}</span><span className="sb-acct-pline-bar"><span style={{ width: `${Math.round(v.total / (Math.max(...byMonth.map(x => x[1].total)) || 1) * 100)}%` }} /></span><span className="sb-acct-pline-v">{fmtUSD(v.total)} <span className="sb-acct-sub">{v.n}</span></span></div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="sb-acct-table">
+              <div className="sb-acct-row sb-acct-row-head sb-acct-cards-grid">
+                <div>Date</div><div>Charge</div><div>Who</div><div>Card</div><div>Category</div><div className="num">Amount</div>
+              </div>
+              {shown.length === 0 ? <div className="sb-acct-empty">Nothing matches the filters.</div>
+                : shown.map(e => (
+                  <div key={e.id} className="sb-acct-row sb-acct-cards-grid">
+                    <span>{e.expense_date ? fmtDate(e.expense_date) : '—'}</span>
+                    <span>
+                      <span className="sb-acct-vendor">{properName(e.vendor || '') || e.note || '—'}</span>
+                      <div className="sb-acct-sub">{cardBucket(e)}{e.status === 'inbox' ? ' · ' : ''}{e.status === 'inbox' && <span className="sb-acct-chip sb-acct-chip-warn">INBOX</span>}{e.ai?.flag ? ` · ${e.ai.flag}` : ''}</div>
+                    </span>
+                    <span className="sb-acct-who">{holderKey(e.ai?.cardholder)}</span>
+                    <span className="sb-acct-sub">{e.ai?.accountName || '—'}</span>
+                    <select className="sb-acct-in" value={e.category || ''} onChange={ev => onSetCategory(e, ev.target.value || null)}>
+                      <option value="">—</option>
+                      {SCHEDC_CATEGORIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+                    </select>
+                    <span className="num sb-acct-amt">
+                      {e.amount != null ? fmtUSD(Number(e.amount)) : '—'}
+                      {e.receipt_path && <button type="button" className="sb-acct-link" style={{ marginLeft: 8 }} onClick={() => onView(e.receipt_path)}>Receipt</button>}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </>
+        )}
+    </>
+  )
+}
 // ── Statements & documents ───────────────────────────────────────────────────
 function DocsSection({ loading, rows, onView, onUpload, onDelete }) {
   const [kind, setKind] = useState('bank_statement')
@@ -501,6 +682,11 @@ function TaxSection({ loading, expenses, income, year, onResolvePending }) {
   const sched = useMemo(() => summarizeSchedC(expenses, { year }), [expenses, year])
   const flags = useMemo(() => analyzeBooks(expenses, { year }), [expenses, year])
   const pending = expenses.filter(e => String(e.expense_date || '').startsWith(year) && e.status === 'confirmed' && e.writeoff === 'pending')
+  // Inbox lines are NOT in the write-off total until confirmed (Paul 2026-10-30:
+  // "shouldn't the write-off be much higher?" — it was: 534 statement lines sat
+  // in the Inbox). Say so on the tile instead of letting the number mislead.
+  const inboxYear = expenses.filter(e => String(e.expense_date || '').startsWith(year) && e.status === 'inbox')
+  const inboxUsd = inboxYear.reduce((t, e) => t + (Number(e.amount) || 0), 0)
   const profit = income - sched.totalDeductible
   // Rough self-employment + income tax figure — clearly labeled rough; the
   // packet carries the worksheets and the CPA trues it up.
@@ -513,7 +699,7 @@ function TaxSection({ loading, expenses, income, year, onResolvePending }) {
       </div>
       <div className="sb-acct-cards">
         <div className="sb-acct-card sb-acct-card-green"><div className="k">Income · {year}</div><div className="v">{loading ? '—' : fmtUSD(income)}</div><div className="s">order payments in</div></div>
-        <div className="sb-acct-card"><div className="k">Write-offs · {year}</div><div className="v">{loading ? '—' : fmtUSD(sched.totalDeductible)}</div><div className="s">confirmed, caps applied</div></div>
+        <div className="sb-acct-card"><div className="k">Write-offs · {year}</div><div className="v">{loading ? '—' : fmtUSD(sched.totalDeductible)}</div><div className="s">confirmed, caps applied{inboxUsd > 0 && <span className="sb-acct-flag"> · {fmtUSD(inboxUsd)} in {inboxYear.length} Inbox lines not counted yet</span>}</div></div>
         <div className="sb-acct-card sb-acct-card-gold"><div className="k">Tentative profit</div><div className="v">{loading ? '—' : fmtUSD(profit)}</div><div className="s">what tax is figured on</div></div>
         <div className="sb-acct-card sb-acct-card-red"><div className="k">Your call</div><div className="v">{loading ? '—' : pending.length}</div><div className="s">write-off decisions waiting</div></div>
       </div>
@@ -593,6 +779,28 @@ const ACCT_CSS = `
   .sb-acct-row-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; color: #8a8a85; background: #fbfaf6; }
   .sb-acct-inbox-grid { grid-template-columns: 130px 1.6fr 170px 140px 110px 150px; }
   .sb-acct-book-grid { grid-template-columns: 92px 1.5fr 170px 150px 130px 110px; }
+  .sb-acct-cards-grid { grid-template-columns: 92px 1.6fr 150px 170px 170px 130px; }
+  .sb-acct-cards-grid > * { min-width: 0; overflow-wrap: anywhere; }
+  .sb-acct-who { font-weight: 700; color: #16150F; }
+  .sb-acct-people { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .sb-acct-ptile { font: inherit; text-align: left; background: #fff; border: 1px solid #e6e3dd; border-radius: 12px; padding: 12px 14px; cursor: pointer; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .sb-acct-ptile:hover { border-color: #C9A468; }
+  .sb-acct-ptile.on { background: #16150F; border-color: #16150F; color: #F3EAD6; }
+  .sb-acct-ptile-name { font-weight: 800; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-acct-ptile-total { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .sb-acct-ptile.on .sb-acct-ptile-total { color: #C9A468; }
+  .sb-acct-ptile-sub { font-size: 11.5px; color: #8a8a85; overflow-wrap: anywhere; } .sb-acct-ptile.on .sb-acct-ptile-sub { color: #BDB6A6; }
+  .sb-acct-ptile-flag { font-size: 11px; font-weight: 700; color: #B3261E; margin-top: 4px; overflow-wrap: anywhere; } .sb-acct-ptile.on .sb-acct-ptile-flag { color: #F2A59E; }
+  .sb-acct-pdetail { background: #fff; border: 1px solid #e6e3dd; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; min-width: 0; }
+  .sb-acct-pdetail-head { display: flex; justify-content: space-between; gap: 14px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
+  .sb-acct-pdetail-title { font-size: 17px; font-weight: 800; color: #16150F; overflow-wrap: anywhere; }
+  .sb-acct-pdetail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .sb-acct-pbox { min-width: 0; }
+  .sb-acct-pbox-h { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; color: #8a8a85; margin-bottom: 6px; }
+  .sb-acct-pline { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(50px, 1fr) auto; gap: 8px; align-items: center; font-size: 12.5px; padding: 3px 0; min-width: 0; }
+  .sb-acct-pline-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #16150F; }
+  .sb-acct-pline-bar { height: 7px; background: #efece6; border-radius: 999px; overflow: hidden; } .sb-acct-pline-bar span { display: block; height: 100%; background: #C9A468; border-radius: 999px; }
+  .sb-acct-pline-v { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; color: #16150F; }
   .sb-acct-doc-grid { grid-template-columns: 90px 190px 1fr 60px 60px; }
   .sb-acct-empty { padding: 22px 14px; font-size: 13px; color: #8a8a85; text-align: center; }
   .sb-acct-in { font: inherit; font-size: 12.5px; padding: 7px 9px; border: 0.5px solid #e6e3dd; border-radius: 7px; background: #fff; width: 100%; box-sizing: border-box; }
@@ -654,3 +862,4 @@ const ACCT_CSS = `
   .sb-acct-note p { margin: 0; font-size: 12.5px; color: #6b6b66; line-height: 1.5; }
   .sb-acct-pendrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: #2c2c2a; padding: 5px 0; }
 `
+
