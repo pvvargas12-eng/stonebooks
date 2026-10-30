@@ -10,7 +10,7 @@
 // =============================================================================
 import { useState, useEffect } from 'react'
 import {
-  getOrderById, listCompletionPhotos, buildCompletionEmailDraft, completionEmailHtml,
+  getOrderById, listCompletionPhotos, buildCompletionEmailDraft, completionEmailHtml, getDropOffDefaultForOrder,
   sendShopEmail, addTaskReply, logOrderActivity, updateShopTask, getCurrentStaffName,
   closeOrder, setShopTaskStatus, rowBalanceDue, rowGrandTotal, rowTotalPaid, fmtUSD,
 } from '../lib/stonebooksData'
@@ -31,6 +31,7 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
   const [to, setTo] = useState('')
   const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
+  const [dropOff, setDropOff] = useState(false)   // the cemetery installs it (bronzes, flats)
   const [gate, setGate] = useState(false)
   const [attachments, setAttachments] = useState(null)   // null until built for the gate
   const [busy, setBusy] = useState(false)
@@ -40,16 +41,18 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [o, ph] = await Promise.all([
+      const [o, ph, dflt] = await Promise.all([
         getOrderById(orderId),
         listCompletionPhotos(orderId),
+        getDropOffDefaultForOrder(orderId).catch(() => false),
       ])
       if (cancelled) return
       setOrder(o || null)
       setPhotos(ph || [])
       setPicked(new Set((ph || []).map(p => p.path)))
+      setDropOff(!!dflt)
       if (o) {
-        const draft = buildCompletionEmailDraft(o, o.customer)
+        const draft = buildCompletionEmailDraft(o, o.customer, { dropOff: !!dflt })
         setTo(o.customer?.email || '')
         setSubject(draft.subject)
         setBody(draft.body)
@@ -137,6 +140,14 @@ export default function CompletionEmailModal({ task, onClose, onChanged }) {
             </label>
             <label className="sb-cem-l">Subject
               <input className="sb-cem-in" value={subject} onChange={e => setSubject(e.target.value)} />
+            </label>
+            <label className="sb-cem-l" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <input type="checkbox" checked={dropOff} onChange={e => {
+                const v = e.target.checked; setDropOff(v)
+                // Re-write the letter in the other wording (any hand edits are replaced).
+                if (order) setBody(buildCompletionEmailDraft(order, order.customer, { dropOff: v }).body)
+              }} />
+              <span>Dropped off — the cemetery installs it (bronzes, flat markers). Unticked = we set it.</span>
             </label>
             <label className="sb-cem-l">Message
               <textarea className="sb-cem-in sb-cem-body" rows={9} value={body} onChange={e => setBody(e.target.value)} />

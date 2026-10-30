@@ -13,7 +13,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   listOrderAttachments, uploadOrderAttachment, deleteOrderAttachment,
-  getSignedContract, signedContractFileUrl, getApprovalSigned, approvalSignedFileUrl,
+  getSignedContract, signedContractFileUrl, getApprovalSigned, approvalSignedFileUrl, uploadGravePhoto,
 } from '../lib/stonebooksData'
 
 const IMG_RE = /\.(jpe?g|png|gif|heic|heif|webp|bmp)$/i
@@ -25,6 +25,7 @@ export default function OrderFilesCard({ orderId, showMoney = false, undo }) {
   const [zoomUrl, setZoomUrl] = useState(null)
   const camRef = useRef(null)
   const libRef = useRef(null)
+  const graveRef = useRef(null)   // grave photo / drawing → attachments/<order>/grave/
 
   const reload = useCallback(async () => {
     const [atts, contract, approval] = await Promise.all([
@@ -37,6 +38,24 @@ export default function OrderFilesCard({ orderId, showMoney = false, undo }) {
   }, [orderId, showMoney])
   useEffect(() => { if (orderId) reload() }, [orderId, reload])
 
+  // Grave photo / drawing (Paul 2026-10-30): "search the name, add a photo".
+  const onPickGrave = async (e) => {
+    const files = [...(e.target.files || [])]
+    e.target.value = ''
+    if (!files.length) return
+    setBusy(true)
+    const uploaded = []
+    let failed = null
+    for (const f of files) {
+      const up = await uploadGravePhoto(orderId, f)
+      if (up.ok) uploaded.push(up)
+      else { failed = up.error || 'Upload failed.'; break }
+    }
+    setBusy(false)
+    await reload()
+    if (failed) { undo?.showError(failed); return }
+    if (uploaded.length) undo?.show(`Grave ${uploaded.length === 1 ? 'photo' : 'photos'} added`, async () => { for (const u of uploaded) await deleteOrderAttachment(u.path); await reload() })
+  }
   const onPick = async (e) => {
     const files = [...(e.target.files || [])]
     e.target.value = ''
@@ -114,8 +133,11 @@ export default function OrderFilesCard({ orderId, showMoney = false, undo }) {
               {photos.map(p => (
                 <button key={p.path} type="button" onClick={() => setZoomUrl(p.url)}
                   style={{ padding: 0, border: '1px solid #DAD3C2', borderRadius: 8, overflow: 'hidden', background: '#fff', cursor: 'pointer' }}>
-                  <img src={p.url} alt={p.name} loading="lazy"
-                    style={{ display: 'block', width: '100%', height: 92, objectFit: 'cover' }} />
+                  <span style={{ display: 'block', position: 'relative' }}>
+                    <img src={p.url} alt={p.name} loading="lazy"
+                      style={{ display: 'block', width: '100%', height: 92, objectFit: 'cover' }} />
+                    {p.isGrave && <span style={{ position: 'absolute', left: 4, top: 4, fontSize: 9.5, fontWeight: 800, letterSpacing: '0.06em', background: '#16150F', color: '#E9C46A', borderRadius: 999, padding: '2px 6px' }}>GRAVE</span>}
+                  </span>
                 </button>
               ))}
             </div>
@@ -134,6 +156,12 @@ export default function OrderFilesCard({ orderId, showMoney = false, undo }) {
               Upload files
             </button>
           </div>
+          <button type="button" className="fl-btn fl-btn-ghost" style={{ marginTop: 8, marginBottom: 0, width: '100%' }}
+            disabled={busy} onClick={() => graveRef.current?.click()}>
+            Grave photo or drawing
+          </button>
+          <input ref={graveRef} type="file" accept="image/*,.pdf" multiple
+            style={{ display: 'none' }} onChange={onPickGrave} />
           <input ref={camRef} type="file" accept="image/*" capture="environment" multiple
             style={{ display: 'none' }} onChange={onPick} />
           <input ref={libRef} type="file" multiple style={{ display: 'none' }} onChange={onPick} />

@@ -468,6 +468,7 @@ function CardsSection({ loading, rows, onView, onSetCategory }) {
   const [card, setCard] = useState('all')
   const [month, setMonth] = useState('all')
   const [q, setQ] = useState('')
+  const [bucketF, setBucketF] = useState('')   // a purpose picked in "What it was for" (Paul 2026-10-30)
   const charges = useMemo(() => rows.filter(isCardCharge), [rows])
   const cards = useMemo(() => [...new Set(charges.map(e => e.ai?.accountName).filter(Boolean))].sort(), [charges])
   const months = useMemo(() => [...new Set(charges.map(monthOf).filter(Boolean))].sort().reverse(), [charges])
@@ -495,27 +496,32 @@ function CardsSection({ loading, rows, onView, onSetCategory }) {
   }, [pool])
   const everyone = useMemo(() => ({ total: pool.reduce((s, e) => s + (Number(e.amount) || 0), 0), n: pool.length }), [pool])
   const sel = person ? people.find(p => p.key === person) : null
-  const shown = useMemo(() => {
+  // personRows = the picked person (or everyone); the purpose / card / month
+  // boxes are built from it so the list of purposes never shrinks to the one
+  // you clicked. shown = personRows narrowed to the clicked purpose.
+  const personRows = useMemo(() => {
     const list = person ? pool.filter(e => holderKey(e.ai?.cardholder) === person) : pool
     return [...list].sort((a, b) => String(b.expense_date).localeCompare(String(a.expense_date)) || (Number(b.amount) - Number(a.amount)))
   }, [pool, person])
+  const shown = useMemo(() => bucketF ? personRows.filter(e => cardBucket(e) === bucketF) : personRows, [personRows, bucketF])
   const byMonth = useMemo(() => {
     const m = new Map()
-    for (const e of shown) { const k = monthOf(e); if (!k) continue; const r = m.get(k) || { total: 0, n: 0 }; r.total += Number(e.amount) || 0; r.n++; m.set(k, r) }
+    for (const e of personRows) { const k = monthOf(e); if (!k) continue; const r = m.get(k) || { total: 0, n: 0 }; r.total += Number(e.amount) || 0; r.n++; m.set(k, r) }
     return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]))
-  }, [shown])
+  }, [personRows])
   const byCard = useMemo(() => {
     const m = new Map()
-    for (const e of shown) { const k = e.ai?.accountName || 'Card'; const r = m.get(k) || { total: 0, n: 0 }; r.total += Number(e.amount) || 0; r.n++; m.set(k, r) }
+    for (const e of personRows) { const k = e.ai?.accountName || 'Card'; const r = m.get(k) || { total: 0, n: 0 }; r.total += Number(e.amount) || 0; r.n++; m.set(k, r) }
     return [...m.entries()].sort((a, b) => b[1].total - a[1].total)
-  }, [shown])
+  }, [personRows])
   const topBuckets = useMemo(() => {
     const m = new Map()
-    for (const e of shown) { const b = cardBucket(e); m.set(b, (m.get(b) || 0) + (Number(e.amount) || 0)) }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
-  }, [shown])
+    for (const e of personRows) { const b = cardBucket(e); m.set(b, (m.get(b) || 0) + (Number(e.amount) || 0)) }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
+  }, [personRows])
   const shownTotal = shown.reduce((s, e) => s + (Number(e.amount) || 0), 0)
   const inboxN = shown.filter(e => e.status === 'inbox').length
+  const personTotal = personRows.reduce((s, e) => s + (Number(e.amount) || 0), 0)
   const monthLabel = (k) => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) }
   return (
     <>
@@ -555,7 +561,7 @@ function CardsSection({ loading, rows, onView, onSetCategory }) {
 
             <div className="sb-acct-pdetail">
               <div className="sb-acct-pdetail-head">
-                <div className="sb-acct-pdetail-title">{sel ? sel.key : 'Everyone'} <span className="sb-acct-sub">{card === 'all' ? 'all cards' : card} · {month === 'all' ? 'all months' : monthLabel(month)}</span></div>
+                <div className="sb-acct-pdetail-title">{sel ? sel.key : 'Everyone'}{bucketF && <> · {bucketF} <button type="button" className="sb-acct-link" onClick={() => setBucketF('')}>show everything</button></>} <span className="sb-acct-sub">{card === 'all' ? 'all cards' : card} · {month === 'all' ? 'all months' : monthLabel(month)}</span></div>
                 <div className="sb-acct-summary" style={{ marginBottom: 0 }}>
                   <span>Total: <strong>{fmtUSD(shownTotal)}</strong></span>
                   <span><strong>{shown.length}</strong> charge{shown.length === 1 ? '' : 's'}</span>
@@ -573,7 +579,7 @@ function CardsSection({ loading, rows, onView, onSetCategory }) {
                 <div className="sb-acct-pbox">
                   <div className="sb-acct-pbox-h">What it was for</div>
                   {topBuckets.map(([k, v]) => (
-                    <div key={k} className="sb-acct-pline"><span className="sb-acct-pline-k">{k}</span><span className="sb-acct-pline-bar"><span style={{ width: `${Math.round(v / (topBuckets[0][1] || 1) * 100)}%` }} /></span><span className="sb-acct-pline-v">{fmtUSD(v)} <span className="sb-acct-sub">{shownTotal > 0 ? `${Math.round(v / shownTotal * 100)}%` : ''}</span></span></div>
+                    <button key={k} type="button" className={`sb-acct-pline sb-acct-pline-btn ${bucketF === k ? 'on' : ''}`} onClick={() => setBucketF(bucketF === k ? '' : k)} title="Click to see just these charges"><span className="sb-acct-pline-k">{k}</span><span className="sb-acct-pline-bar"><span style={{ width: `${Math.round(v / (topBuckets[0][1] || 1) * 100)}%` }} /></span><span className="sb-acct-pline-v">{fmtUSD(v)} <span className="sb-acct-sub">{personTotal > 0 ? `${Math.round(v / personTotal * 100)}%` : ''}</span></span></button>
                   ))}
                 </div>
                 <div className="sb-acct-pbox">
@@ -791,6 +797,8 @@ const ACCT_CSS = `
   .sb-acct-pline-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #16150F; }
   .sb-acct-pline-bar { height: 7px; background: #efece6; border-radius: 999px; overflow: hidden; } .sb-acct-pline-bar span { display: block; height: 100%; background: #C9A468; border-radius: 999px; }
   .sb-acct-pline-v { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; color: #16150F; }
+  .sb-acct-pline-btn { font: inherit; width: 100%; text-align: left; background: none; border: none; border-radius: 6px; cursor: pointer; padding: 3px 4px; }
+  .sb-acct-pline-btn:hover { background: #FBF9F4; } .sb-acct-pline-btn.on { background: #16150F; } .sb-acct-pline-btn.on .sb-acct-pline-k, .sb-acct-pline-btn.on .sb-acct-pline-v { color: #F3EAD6; } .sb-acct-pline-btn.on .sb-acct-sub { color: #BDB6A6; }
   .sb-acct-doc-grid { grid-template-columns: 90px 190px 1fr 60px 60px; }
   .sb-acct-empty { padding: 22px 14px; font-size: 13px; color: #8a8a85; text-align: center; }
   .sb-acct-in { font: inherit; font-size: 12.5px; padding: 7px 9px; border: 0.5px solid #e6e3dd; border-radius: 7px; background: #fff; width: 100%; box-sizing: border-box; }
@@ -852,4 +860,5 @@ const ACCT_CSS = `
   .sb-acct-note p { margin: 0; font-size: 12.5px; color: #6b6b66; line-height: 1.5; }
   .sb-acct-pendrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: #2c2c2a; padding: 5px 0; }
 `
+
 

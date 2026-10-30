@@ -340,11 +340,17 @@ function CardsView({ loading, rows, onCategory, onOpen }) {
   const [person, setPerson] = useState('')
   const [card, setCard] = useState('all')
   const [month, setMonth] = useState('all')
+  const [q, setQ] = useState('')
+  const [bucketF, setBucketF] = useState('')
   const [limit, setLimit] = useState(60)
   const charges = useMemo(() => rows.filter(isCardCharge), [rows])
   const cards = useMemo(() => [...new Set(charges.map(e => e.ai?.accountName).filter(Boolean))].sort(), [charges])
   const months = useMemo(() => [...new Set(charges.map(monthOf).filter(Boolean))].sort().reverse(), [charges])
-  const pool = useMemo(() => charges.filter(e => (card === 'all' || e.ai?.accountName === card) && (month === 'all' || monthOf(e) === month)), [charges, card, month])
+  const pool = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    return charges.filter(e => (card === 'all' || e.ai?.accountName === card) && (month === 'all' || monthOf(e) === month)
+      && (!needle || `${e.vendor || ''} ${e.note || ''} ${cardBucket(e)} ${holderKey(e.ai?.cardholder)}`.toLowerCase().includes(needle)))
+  }, [charges, card, month, q])
   const people = useMemo(() => {
     const m = new Map()
     for (const e of pool) {
@@ -356,17 +362,20 @@ function CardsView({ loading, rows, onCategory, onOpen }) {
     }
     return [...m.values()].sort((a, b) => b.total - a.total)
   }, [pool])
-  const shown = useMemo(() => (person ? pool.filter(e => holderKey(e.ai?.cardholder) === person) : pool)
+  const personRows = useMemo(() => (person ? pool.filter(e => holderKey(e.ai?.cardholder) === person) : pool)
     .slice().sort((a, b) => String(b.expense_date).localeCompare(String(a.expense_date)) || (Number(b.amount) - Number(a.amount))), [pool, person])
-  const group = (f) => { const m = new Map(); for (const e of shown) { const k = f(e); m.set(k, (m.get(k) || 0) + (Number(e.amount) || 0)) } return [...m.entries()].sort((a, b) => b[1] - a[1]) }
-  const byCard = useMemo(() => group(e => e.ai?.accountName || 'Card'), [shown])  // eslint-disable-line react-hooks/exhaustive-deps
-  const byBucket = useMemo(() => group(cardBucket).slice(0, 8), [shown])  // eslint-disable-line react-hooks/exhaustive-deps
-  const byMonth = useMemo(() => group(monthOf).sort((a, b) => b[0].localeCompare(a[0])), [shown])  // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = useMemo(() => bucketF ? personRows.filter(e => cardBucket(e) === bucketF) : personRows, [personRows, bucketF])
+  const group = (f) => { const m = new Map(); for (const e of personRows) { const k = f(e); m.set(k, (m.get(k) || 0) + (Number(e.amount) || 0)) } return [...m.entries()].sort((a, b) => b[1] - a[1]) }
+  const byCard = useMemo(() => group(e => e.ai?.accountName || 'Card'), [personRows])  // eslint-disable-line react-hooks/exhaustive-deps
+  const byBucket = useMemo(() => group(cardBucket).slice(0, 12), [personRows])  // eslint-disable-line react-hooks/exhaustive-deps
+  const byMonth = useMemo(() => group(monthOf).sort((a, b) => b[0].localeCompare(a[0])), [personRows])  // eslint-disable-line react-hooks/exhaustive-deps
   const total = shown.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+  const personTotal = personRows.reduce((s, e) => s + (Number(e.amount) || 0), 0)
   const inboxN = shown.filter(e => e.status === 'inbox').length
   const sel = people.find(p => p.key === person)
   return (
     <>
+      <input style={{ ...inputStyle, marginTop: 6 }} placeholder="Search vendor, note, what it was for, who…" value={q} onChange={e => setQ(e.target.value)} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
         <select style={selStyle} value={card} onChange={e => setCard(e.target.value)}><option value="all">All cards</option>{cards.map(c => <option key={c} value={c}>{c}</option>)}</select>
         <select style={selStyle} value={month} onChange={e => setMonth(e.target.value)}><option value="all">All months</option>{months.map(m => <option key={m} value={m}>{monthName(m)}</option>)}</select>
@@ -387,12 +396,21 @@ function CardsView({ loading, rows, onCategory, onOpen }) {
               </div>
             </Card>
             <div className="fl-sect"><span className="fl-sect-h">By card</span></div>
-            <Card style={{ padding: '4px 14px' }}>{byCard.map(([k, v]) => <StatRow key={k} k={k} v={fmtUSD(v)} sub={total > 0 ? `${Math.round(v / total * 100)}%` : ''} />)}</Card>
+            <Card style={{ padding: '4px 14px' }}>{byCard.map(([k, v]) => <StatRow key={k} k={k} v={fmtUSD(v)} sub={personTotal > 0 ? `${Math.round(v / personTotal * 100)}%` : ''} />)}</Card>
             <div className="fl-sect"><span className="fl-sect-h">What it was for</span></div>
-            <Card style={{ padding: '4px 14px' }}>{byBucket.map(([k, v]) => <StatRow key={k} k={k} v={fmtUSD(v)} sub={total > 0 ? `${Math.round(v / total * 100)}%` : ''} />)}</Card>
+            <Card style={{ padding: '4px 14px' }}>
+              {byBucket.map(([k, v]) => (
+                <button key={k} type="button" onClick={() => setBucketF(bucketF === k ? '' : k)}
+                  style={{ font: 'inherit', display: 'block', width: '100%', textAlign: 'left', background: bucketF === k ? '#16150F' : 'none', color: bucketF === k ? '#F3EAD6' : 'inherit', border: 'none', borderRadius: 8, padding: '0 6px', cursor: 'pointer' }}>
+                  <StatRow k={k} v={fmtUSD(v)} sub={personTotal > 0 ? `${Math.round(v / personTotal * 100)}%` : ''} />
+                </button>
+              ))}
+              <Sub>Tap a line to see just those charges below.</Sub>
+            </Card>
             <div className="fl-sect"><span className="fl-sect-h">Month by month</span></div>
             <Card style={{ padding: '4px 14px' }}>{byMonth.map(([k, v]) => <StatRow key={k} k={monthName(k)} v={fmtUSD(v)} />)}</Card>
-            <div className="fl-sect"><span className="fl-sect-h">Every charge</span><span className="fl-sect-pill">{shown.length}</span></div>
+            <div className="fl-sect"><span className="fl-sect-h">{bucketF ? bucketF : 'Every charge'}</span><span className="fl-sect-pill">{shown.length} · {fmtUSD(total)}</span></div>
+            {bucketF && <Btn style={{ width: '100%', marginBottom: 6 }} onClick={() => setBucketF('')}>Show every charge</Btn>}
             {shown.slice(0, limit).map(e => (
               <Card key={e.id} style={{ marginTop: 8 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>

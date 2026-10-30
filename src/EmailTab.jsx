@@ -23,7 +23,7 @@ import {
   getEmailSenders, saveEmailSender, classifyAttachment, ATTACH_KIND_LABELS, hydrateEmailAttachment,
   rowBalanceDue, statusInfo, customerName, fmtUSD, properName,
   getOrderById, getProofVersionsByOrder,
-  buildCompletionEmailDraft, completionEmailHtml, getActiveStaffUser,
+  buildCompletionEmailDraft, completionEmailHtml, getActiveStaffUser, getDropOffDefaultForOrder,
 } from './lib/stonebooksData'
 import { generateApprovalSheetPDF } from './SalesMode'
 import { computeDieBaseTrade } from './DesignPacket'
@@ -359,6 +359,15 @@ export default function EmailTab() {
     const subject = task.type === 'closeout' ? buildCompletionEmailDraft({ order_number: task.orderNumber }, { first_name: first }).subject : task.subject
     const willAttach = task.type === 'layout' ? !!(task.orderId || task.fileUrl) : !!task.fileUrl
     setComposer({ to: task.email || '', subject, body, mode: task.type, customerId: task.customerId || null, attachments: [], attaching: willAttach, busy: false, error: null, sent: false })
+    // Drop-off closeouts (the cemetery installs it) read differently — the
+    // order's jobs decide; swap the letter in only while it is still untouched.
+    if (task.type === 'closeout' && task.orderId) {
+      getDropOffDefaultForOrder(task.orderId).then(d => {
+        if (!d) return
+        const alt = buildCompletionEmailDraft({ order_number: task.orderNumber }, { first_name: first }, { dropOff: true }).body
+        setComposer(c => (c && c.mode === 'closeout' && c.body === body) ? { ...c, body: alt } : c)
+      }).catch(() => {})
+    }
     // Pull the real file(s) in the background and attach: layout tasks get the
     // generated approval-sheet PDF (+ the raw proof image as a fallback);
     // everything else keeps its single task file (photo / vendor order sheet).

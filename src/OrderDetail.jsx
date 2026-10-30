@@ -22,7 +22,7 @@ import {
   getOrderActivity, addOrderActivityNote, addOrderTask, setOrderTaskStatus, logOrderActivity,
   listShopTasksForOrder, deleteShopTask, getChangeRequestThread, updateShopTask, uploadTaskAttachment, addShopTask,
   updateOrderLeadFields, TASK_KINDS,
-  uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment,
+  uploadOrderAttachment, listOrderAttachments, deleteOrderAttachment, listCompletionPhotos, recordOrderPayment, uploadGravePhoto,
   closeOrder, photoAttachment, setJobOverallStatus, setOrderFamilyName,
   updateOrderPayment, voidOrderPayment,
   getSignedContract, signedContractFileUrl, markContractSigned, removeSignedContract,
@@ -45,7 +45,7 @@ import {
   PAYMENT_STATUS, DESIGN_STATUS, STONE_STATUS, FDN_STATUS, stoneStatusOptions,
   MANUAL_BLOCKER_KINDS, manualBlockerKindLabel, manualBlockerChipText, setOrderManualBlocker, missingCheckRef, dueDateTone,
   installGates, STAFF_NAMES, getJobComponents, dueRelativeText, getActiveStaffUser, createBatch,
-  markApprovalLinkEmailed, buildCompletionEmailDraft, completionEmailHtml,
+  markApprovalLinkEmailed, buildCompletionEmailDraft, completionEmailHtml, isDropOffJob,
   derivePaymentStatus, deriveDesignStatus, deriveFdnStatus,
   setOrderDesignStatus, setOrderFdnStatus,
   addToFoundationList, removeFromFoundationList,
@@ -451,6 +451,10 @@ function SectionRail({ items }) {
 // =============================================================================
 // MAIN
 // =============================================================================
+// Image attachments show a small preview (Paul 2026-10-30: "any photos here
+// like the layout, you see a small preview of it").
+const IMG_URL_RE = /\.(jpe?g|png|gif|webp|heic|heif|bmp)(\?|$)/i
+
 export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onEditInSales, onEditInSalesPortal, onOpenJob, onOpenCustomer, onOpenHub, initialAction = null, onConsumeInitialAction }) {
   const [order, setOrder] = useState(null)
   const [job, setJob] = useState(null)
@@ -468,6 +472,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   // Attachments
   const [proofVers, setProofVers] = useState([])
   const [uploads, setUploads] = useState([])
+  const [graveBusy, setGraveBusy] = useState(false)
   const [completionPhotos, setCompletionPhotos] = useState([])
   const [uploadBusy, setUploadBusy] = useState(false)
   const fileRef = useRef(null)
@@ -1875,7 +1880,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     // The closeout is never AI-written: it is the one completion email (the
     // review-links letter) with the photos riding along.
     if (mode === 'closeout') {
-      const d = buildCompletionEmailDraft({ ...order, cemetery: order?.cemetery || null }, order?.customer || null)
+      const d = buildCompletionEmailDraft({ ...order, cemetery: order?.cemetery || null }, order?.customer || null, { dropOff: isDropOffJob(job) })
       setEmailModal({
         to: order?.customer?.email || '', subject: d.subject, body: d.body, mode,
         photos: completionPhotos.slice(0, 3), busy: false, error: null, sent: false,
@@ -2323,11 +2328,11 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     ...uploads.map((u, i) => {
       const isCurrentContract = u.name === 'Contract (current).pdf'
       return {
-        key: `up-${i}`, kind: u.isCompletion ? 'Completion photo' : 'Upload',
+        key: `up-${i}`, kind: u.isCompletion ? 'Completion photo' : u.isGrave ? 'Grave photo' : 'Upload',
         // The kind chip already says "Completion photo" — drop the name prefix
         // here (other consumers of listOrderAttachments keep it as the marker).
         label: (isCurrentContract && signedContract) ? 'Contract (draft)'
-          : u.isCompletion ? u.name.replace(/^Completion photo — /, '') : u.name,
+          : u.isCompletion ? u.name.replace(/^Completion photo — /, '') : u.isGrave ? u.name.replace(/^Grave — /, '') : u.name,
         sub: u.createdAt ? fmtDate(u.createdAt) : null, href: u.url,
         path: u.path, deletable: true,
         draft: isCurrentContract && !!signedContract,
@@ -2770,6 +2775,24 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
             <Field label="Grave type" value={humanize(order.plot_type)} hint={order.plot_type ? null : 'from plot_type'} />
             <Field label="Plot / location notes" value={[order.plot_pin_notes, order.plot_other].filter(Boolean).join(' · ')} />
             <Field label="Cemetery requirements" value={cem.notes} />
+            {/* Grave photo / drawing (Paul 2026-10-30) — the grave/ objects on the
+                order; thumbnails preview, click opens; add from here or the phone. */}
+            <Field label="Grave photo / drawing" value={(
+              <div className="sb-od-grave">
+                {uploads.filter(u => u.isGrave).map(u => IMG_URL_RE.test(u.url)
+                  ? <button key={u.path} type="button" className="sb-od-grave-thumb" title={u.name} onClick={() => openPreview(u.name.replace(/^Grave — /, ''), u.url, '', false)}><img src={u.url} alt={u.name} loading="lazy" /></button>
+                  : <button key={u.path} type="button" className="sb-od-link" onClick={() => openPreview(u.name.replace(/^Grave — /, ''), u.url, '', false)}>{u.name.replace(/^Grave — /, '')}</button>)}
+                <label className="sb-od-grave-add">{graveBusy ? 'Uploading…' : '+ Add photo or drawing'}
+                  <input type="file" accept="image/*,.pdf" multiple style={{ display: 'none' }} disabled={graveBusy} onChange={async (e) => {
+                    const files = [...(e.target.files || [])]; e.target.value = ''
+                    if (!files.length) return
+                    setGraveBusy(true)
+                    for (const f of files) { const r = await uploadGravePhoto(orderId, f); if (!r.ok) { setActionNote(`Could not add ${f.name} — ${r.error}`); break } }
+                    setGraveBusy(false); refreshUploads()
+                  }} />
+                </label>
+              </div>
+            )} />
             {/* Permit + foundation live on their own cards (single source of truth). */}
             <Field label="Foundation status" value={foundationMs ? humanize(foundationMs) : null} hint="from job milestones" />
           </Section>
@@ -3333,6 +3356,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
               <div className="sb-od-attach-list">
                 {attachmentRows.map(a => (
                   <div key={a.key} className={`sb-od-attach-row${(a.signed || a.signedApproval) ? ' sb-od-attach-row-signed' : ''}${a.draft ? ' sb-od-attach-row-draft' : ''}`}>
+                    {a.href && IMG_URL_RE.test(a.href) && <button type="button" className="sb-od-attach-thumb" onClick={() => openPreview(a.label, a.href, '', false)}><img src={a.href} alt="" loading="lazy" /></button>}
                     <span className="sb-od-attach-kind">{a.kind}</span>
                     <span className="sb-od-attach-label">
                       {a.label}
@@ -4497,6 +4521,12 @@ const OD_CSS = `
   .sb-od-attach-list { display: flex; flex-direction: column; }
   .sb-od-attach-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13.5px; }
   .sb-od-attach-row + .sb-od-attach-row { border-top: 0.5px solid #f1efeb; }
+  .sb-od-attach-thumb { flex: 0 0 auto; width: 46px; height: 46px; padding: 0; border: 1px solid #E6E1D6; border-radius: 6px; overflow: hidden; background: #FBF9F4; cursor: pointer; }
+  .sb-od-attach-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .sb-od-grave { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+  .sb-od-grave-thumb { width: 72px; height: 72px; padding: 0; border: 1px solid #E6E1D6; border-radius: 8px; overflow: hidden; background: #FBF9F4; cursor: pointer; }
+  .sb-od-grave-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .sb-od-grave-add { display: inline-flex; align-items: center; font-size: 12.5px; font-weight: 700; color: #9A7209; border: 1px dashed #D9C78F; border-radius: 8px; padding: 8px 10px; cursor: pointer; white-space: nowrap; }
   .sb-od-attach-kind {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
     color: #8a8a85; background: #f4f2ee; border-radius: 4px; padding: 2px 7px; flex-shrink: 0; min-width: 92px; text-align: center;

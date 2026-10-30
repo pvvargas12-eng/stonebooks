@@ -1137,6 +1137,22 @@ export async function uploadOrderAttachment(orderId, file) {
   return { ok: true, url: data.publicUrl, path, name: safe }
 }
 
+// GRAVE PHOTO / DRAWING (Paul 2026-10-30: "a spot to attach a photo of the
+// grave or a drawing; easy from Stonebooks Field too — search the name, add
+// a photo; any photo here shows a small preview"). Same public bucket, under
+// attachments/<order_id>/grave/ — storage is the record, so the Files list
+// and the Cemetery & grave card read the same objects (tagged isGrave).
+export async function uploadGravePhoto(orderId, file) {
+  if (!orderId || !file) return { ok: false, error: 'Missing orderId or file' }
+  const safe = String(file.name || 'file').replace(/[^\w.-]+/g, '_')
+  const path = `attachments/${orderId}/grave/${crypto.randomUUID()}_${safe}`
+  const { error } = await supabase.storage.from('orders-attachments-public')
+    .upload(path, file, { upsert: false, contentType: file.type || undefined })
+  if (error) return { ok: false, error: error.message }
+  const { data } = supabase.storage.from('orders-attachments-public').getPublicUrl(path)
+  return { ok: true, url: data.publicUrl, path, name: safe }
+}
+
 // Delete an order attachment object from the public bucket (manual delete, #A).
 // Storage IS the record here, so removing the object removes the attachment.
 export async function deleteOrderAttachment(path) {
@@ -1252,12 +1268,16 @@ export async function listOrderAttachments(orderId) {
   // 2026-08-24). Same objects as the Completion-photos section: deleting one
   // from Attachments removes the photo itself, not a copy.
   const compDir = `${orderId}/completion`
-  const [main, comp] = await Promise.all([
+  const graveDir = `${dir}/grave`
+  const [main, comp, grave] = await Promise.all([
     supabase.storage.from('orders-attachments-public')
       .list(dir, { sortBy: { column: 'created_at', order: 'desc' } }),
     supabase.storage.from('orders-attachments-public')
       .list(compDir, { sortBy: { column: 'created_at', order: 'desc' } }),
+    supabase.storage.from('orders-attachments-public')
+      .list(graveDir, { sortBy: { column: 'created_at', order: 'desc' } }),
   ])
+  if (grave.error) console.warn('[orders] listOrderAttachments (grave):', grave.error.message)
   if (main.error) console.warn('[orders] listOrderAttachments:', main.error.message)
   if (comp.error) console.warn('[orders] listOrderAttachments (completion):', comp.error.message)
   const rowsFrom = (res, base, opts = {}) => (res.data || [])
@@ -1271,11 +1291,13 @@ export async function listOrderAttachments(orderId) {
         name: opts.prefix ? `${opts.prefix}${display}` : display,
         url: u.publicUrl, path, createdAt: f.created_at || null,
         ...(opts.isCompletion ? { isCompletion: true } : {}),
+        ...(opts.isGrave ? { isGrave: true } : {}),
       }
     })
   return [
     ...rowsFrom(main, dir),
     ...rowsFrom(comp, compDir, { prefix: 'Completion photo — ', isCompletion: true }),
+    ...rowsFrom(grave, graveDir, { prefix: 'Grave — ', isGrave: true }),
   ].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
 }
 
@@ -4398,7 +4420,30 @@ export function completionEmailHtml(text) {
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#222">${h.replace(/\n/g, '<br>')}</div>`
 }
 
-export function buildCompletionEmailDraft(orderRow, customer) {
+// DROP-OFF (Paul 2026-10-30): "for drop offs — most bronzes and some flats —
+// the cemetery installs them; the wording should be that it was dropped off
+// and the cemetery will be installing it; only for ones selected drop off."
+// The selection IS the Foundation status "Drop Off" (foundation_scheduled
+// done — the same code the cards label DROP OFF). A bronze job with no
+// foundation line at all is treated as a drop-off too (the cemetery sets
+// bronzes); the send modal shows the choice and lets the sender flip it.
+export function isDropOffJob(job) {
+  if (!job) return false
+  const fdn = deriveFdnStatus(job)
+  if (fdn === 'drop_off') return true
+  return job.job_type === 'bronze' && fdn === 'na'
+}
+// The drop-off default for an order (every job on it — any drop-off wins).
+export async function getDropOffDefaultForOrder(orderId) {
+  if (!orderId) return false
+  const { data, error } = await supabase.from('jobs')
+    .select('id, job_type, milestones:job_milestones(milestone_key, status)')
+    .eq('order_id', orderId)
+  if (error) { console.warn('[closeout] drop-off default:', error.message); return false }
+  return (data || []).some(isDropOffJob)
+}
+
+export function buildCompletionEmailDraft(orderRow, customer, { dropOff = false } = {}) {
   const first = (customer?.first_name || '').trim() || 'there'
   const fam = orderRow?.primary_lastname ? ` ${orderRow.primary_lastname}` : ''
   const ord = orderRow?.order_number ? ` (${orderRow.order_number})` : ''
@@ -4409,7 +4454,10 @@ export function buildCompletionEmailDraft(orderRow, customer) {
   // so the mailbox signature never stacks under this one.
   const body =
     `Hi ${first},\n\n` +
-    `We're glad to share that your memorial${ord} has been completed and set${cem}. ` +
+    (dropOff
+      ? `We're glad to share that your memorial${ord} has been completed and dropped off${cem}. ` +
+        `The cemetery will be installing it from here, on their own schedule. `
+      : `We're glad to share that your memorial${ord} has been completed and set${cem}. `) +
     `A photo of the finished work is attached so you can see it right away.\n\n` +
     `It has been a pleasure serving you, and we truly appreciate you trusting us ` +
     `with something so meaningful. It was an honor for us to bless you. If you were ` +
