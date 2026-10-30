@@ -238,3 +238,22 @@ export function stoneFromSearch(q) {
   const m = /(\d[\d\-x×X\s"″']*\d)/.exec(s)
   return { item_type, size: m ? m[1].trim() : null }
 }
+
+// ── Size search boxes (Paul 2026-10-30: "search by size, type in the size L
+// box W box H box, the rest is optional — even if I just type L 1-10 I want to
+// see all that pop up") ───────────────────────────────────────────────────────
+// boxes = [L, W, H] as typed (trade "1-10" or inches "22"); any subset filled.
+// A row matches when every FILLED box equals that dimension of the row's size
+// within half an inch. A box that does not read as a number matches nothing.
+export const sizeBoxesActive = (boxes) => (boxes || []).some(b => String(b || '').trim())
+export function sizeBoxesMatch(rowSize, boxes) {
+  const dims = sizeToInches(rowSize)
+  for (let i = 0; i < 3; i++) {
+    const raw = String(boxes?.[i] || '').trim()
+    if (!raw) continue
+    const want = tokenToInches(raw)
+    if (want == null) return false
+    if (dims[i] == null || Math.abs(dims[i] - want) > 0.5) return false
+  }
+  return true
+}

@@ -27,7 +27,7 @@ import InventoryPhotoEtching from './components/InventoryPhotoEtching'
 import InventoryNeedsOrdering from './components/InventoryNeedsOrdering'
 import StonePositionList from './components/StonePositionList'
 import InventorySuppliers from './components/InventorySuppliers'
-import { yardStoneSpecLine, conditionLabel, yardCategoryLabel } from './lib/yardStone'
+import { yardStoneSpecLine, conditionLabel, yardCategoryLabel, sizeBoxesActive, sizeBoxesMatch } from './lib/yardStone'
 
 const BLANK = {
   item_type: '', color: '', size: '', top: '', sides: '', back: '',
@@ -44,6 +44,11 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
   const [loadErr, setLoadErr] = useState(null)
 
   const [q, setQ] = useState('')
+  // Find by (Paul 2026-10-30): anything / number / family / SIZE — size is
+  // three boxes L W H, any subset filled ("even if I just type L 1-10 I want
+  // to see all that pop up").
+  const [findBy, setFindBy] = useState('any')   // any | tag | family | size
+  const [sizeQ, setSizeQ] = useState(['', '', ''])
   const [fType, setFType] = useState('')
   const [fStatus, setFStatus] = useState('')
   const [fCond, setFCond] = useState('')     // '' all · 'good' · 'look' (anything but good)
@@ -154,7 +159,13 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
       if (fZone && String(r.zone || '').trim() !== fZone) return false
       if (fCond === 'good' && (r.condition || 'good') !== 'good') return false
       if (fCond === 'look' && (r.condition || 'good') === 'good') return false
-      if (needle) {
+      if (findBy === 'size') {
+        if (sizeBoxesActive(sizeQ) && !sizeBoxesMatch(r.size, sizeQ)) return false
+      } else if (findBy === 'tag' && needle) {
+        if (!(needleNum != null && Number(r.yard_tag) === needleNum) && !String(fmtYardTag(r.yard_tag) || '').includes(needle)) return false
+      } else if (findBy === 'family' && needle) {
+        if (!String(r.assigned_to || '').toLowerCase().includes(needle)) return false
+      } else if (needle) {
         if (needleNum != null && Number(r.yard_tag) === needleNum) return true
         if (tagOnly) return false
         const hay = [fmtYardTag(r.yard_tag), r.item_type, yardCategoryLabel(r), r.color, r.size, r.specs, yardStoneSpecLine(r), r.top, r.sides, r.back, r.zone, r.crate, r.spot, r.location, r.assigned_to, r.notes, r.condition_note]
@@ -181,7 +192,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
       status: (a, b) => cmpText(a.status, b.status) * dir,
     }
     return [...l].sort(by[sort.key] || by.tag)
-  }, [rows, q, fType, fStatus, fZone, fCond, sort])
+  }, [rows, q, findBy, sizeQ, fType, fStatus, fZone, fCond, sort])
 
   const totalQty = useMemo(() => filtered.reduce((s, r) => s + (Number(r.quantity) || 0), 0), [filtered])
   const toggleSort = (key) => setSort(s => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
@@ -340,8 +351,28 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
 
       {/* SEARCH + FILTERS */}
       <div className="inv-toolbar">
-        <input className="sb-input inv-search" value={q} onChange={e => setQ(e.target.value)}
-          placeholder="Find a number, family, type, color, size, zone, crate…" />
+        <select className="sb-input inv-filter" value={findBy} onChange={e => setFindBy(e.target.value)} title="What to search by">
+          <option value="any">Find anything</option>
+          <option value="tag">By number</option>
+          <option value="family">By family</option>
+          <option value="size">By size</option>
+        </select>
+        {findBy === 'size' ? (
+          <div className="inv-sizeq">
+            {['L', 'W', 'H'].map((lab, i) => (
+              <label key={lab} className="inv-sizeq-box">
+                <span>{lab}</span>
+                <input className="sb-input" value={sizeQ[i]} placeholder={i === 0 ? '1-10' : i === 1 ? '0-8' : '2-0'} inputMode="text"
+                  onChange={e => setSizeQ(prev => prev.map((v, j) => j === i ? e.target.value : v))} />
+              </label>
+            ))}
+            <span className="inv-sizeq-hint">{sizeBoxesActive(sizeQ) ? 'Matching every box you filled, within half an inch.' : 'Type any box — 1-10 or 22. Leave the rest blank.'}</span>
+            {sizeBoxesActive(sizeQ) && <button type="button" className="inv-sizeq-clear" onClick={() => setSizeQ(['', '', ''])}>Clear</button>}
+          </div>
+        ) : (
+          <input className="sb-input inv-search" value={q} onChange={e => setQ(e.target.value)}
+            placeholder={findBy === 'tag' ? 'Painted number — 41 finds 041' : findBy === 'family' ? 'Family name on the tape' : 'Find a number, family, type, color, size, zone, crate…'} />
+        )}
         <select className="sb-input inv-filter" value={fZone} onChange={e => setFZone(e.target.value)}>
           <option value="">All zones</option>
           {zones.map(z => <option key={z} value={z}>Zone {z}</option>)}
@@ -593,6 +624,11 @@ const INV_CSS = `
 
   .inv-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
   .inv-search { flex: 1 1 280px; min-width: 220px; }
+  .inv-sizeq { display: flex; align-items: center; gap: 8px; flex: 1 1 320px; min-width: 0; flex-wrap: wrap; }
+  .inv-sizeq-box { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; color: #6b6b66; }
+  .inv-sizeq-box input { width: 76px; font-family: "JetBrains Mono", Consolas, monospace; }
+  .inv-sizeq-hint { font-size: 12px; color: #8a8a85; min-width: 0; overflow-wrap: anywhere; }
+  .inv-sizeq-clear { font: inherit; font-size: 12px; font-weight: 700; color: #9A7209; background: none; border: none; cursor: pointer; text-decoration: underline; }
   .inv-filter { flex: 0 0 auto; min-width: 130px; }
   .inv-count { margin-left: auto; font-size: 12.5px; color: var(--sb-text-muted, #8a7f6c); white-space: nowrap; }
 

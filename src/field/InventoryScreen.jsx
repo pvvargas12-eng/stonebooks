@@ -65,6 +65,7 @@ import {
   TOP_SHAPE_CHIPS, POLISH_CHIPS, BASE_FINISH_CHIPS, BASE_TOP_CHIPS, CONDITIONS, conditionLabel,
   SLANT_BACK_CHIPS, isSlantStone, slantBackHint,
   yardStoneSpecLine, yardStoneWhere, specFromOrder, sizeMateriallyDifferent, looksLikeStone, stoneFromSearch, parseSizeInput, sizeTokens, tokenToInches, inchesToTrade,
+  sizeBoxesActive, sizeBoxesMatch,
 } from '../lib/yardStone'
 
 const DAY_MS = 86400000
@@ -188,6 +189,10 @@ export default function InventoryScreen({ undo }) {
     return Number.isFinite(t) && nowMs - t < FRESH_MS
   }, [nowMs])
 
+  // Find by size (Paul 2026-10-30): three boxes, any subset filled.
+  const [sizeQ, setSizeQ] = useState(['', '', ''])
+  const [sizeOpen, setSizeOpen] = useState(false)
+  const sizeActive = sizeOpen && sizeBoxesActive(sizeQ)
   const needle = q.trim().toLowerCase()
   // A short all-digit search is a PAINTED NUMBER: "41" finds 041 and nothing
   // else. Dims / a type word read as a STONE → the free-stock form.
@@ -198,6 +203,7 @@ export default function InventoryScreen({ undo }) {
   const stoneHits = useMemo(() => {
     if (!items) return []
     let l = items
+    if (sizeActive) l = l.filter(it => sizeBoxesMatch(it.size, sizeQ))
     if (needle) {
       l = l.filter(it => {
         if (needleNum != null && Number(it.yard_tag) === needleNum) return true
@@ -222,7 +228,7 @@ export default function InventoryScreen({ undo }) {
       })
     }
     return l
-  }, [items, needle, needleNum, tagOnly, counting, isFresh, orderById])
+  }, [items, needle, needleNum, tagOnly, counting, isFresh, orderById, sizeActive, sizeQ])
 
   const orderHits = useMemo(() => {
     if (!needle || !data || tagOnly || stoneTyped) return []
@@ -332,6 +338,17 @@ export default function InventoryScreen({ undo }) {
           <input className="fl-search" style={{ marginBottom: 8 }} type="search" inputMode="search"
             placeholder="Search order (family) or type the stone"
             value={q} onChange={e => { setQ(e.target.value); if (stockPrefill) setStockPrefill(null); if (stockOpen && e.target.value.trim()) setStockOpen(false); if (bulkOpen && e.target.value.trim()) setBulkOpen(false) }} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+            <button type="button" className={`fl-chip-btn${sizeOpen ? ' on' : ''}`} onClick={() => { setSizeOpen(v => !v); if (sizeOpen) setSizeQ(['', '', '']) }}>Find by size</button>
+            {sizeOpen && ['L', 'W', 'H'].map((lab, i) => (
+              <label key={lab} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: '#55503F' }}>
+                {lab}
+                <input className="fl-search" style={{ width: 72, margin: 0, fontFamily: '"JetBrains Mono", Consolas, monospace' }} inputMode="text" placeholder={i === 0 ? '1-10' : i === 1 ? '0-8' : '2-0'}
+                  value={sizeQ[i]} onChange={e => setSizeQ(prev => prev.map((v, j) => j === i ? e.target.value : v))} />
+              </label>
+            ))}
+          </div>
+          {sizeOpen && <div className="fl-yd-hint" style={{ marginBottom: 8 }}>{sizeActive ? `${stoneHits.length} stone${stoneHits.length === 1 ? '' : 's'} match every box you filled.` : 'Type any box — 1-10 or 22. Leave the rest blank.'}</div>}
           <div className="fl-yd-addrow">
             <button type="button" className={`fl-chip-btn${showStock ? ' on' : ''}`}
               onClick={() => { setStockOpen(v => !v); if (!stockOpen) { setQ(''); setStockPrefill(null); setBulkOpen(false) } }}>
@@ -397,8 +414,8 @@ export default function InventoryScreen({ undo }) {
       )}
 
       {/* STONES */}
-      {(needle || orderHits.length > 0) && stoneHits.length > 0 && <div className="fl-daylabel">Stones</div>}
-      {!needle && !showStock && !counting && <div className="fl-daylabel"><b>{items.length}</b> stones in the yard</div>}
+      {(needle || sizeActive || orderHits.length > 0) && stoneHits.length > 0 && <div className="fl-daylabel">Stones</div>}
+      {!needle && !sizeActive && !showStock && !counting && <div className="fl-daylabel"><b>{items.length}</b> stones in the yard</div>}
       {items.length === 0 && !showStock && <div className="fl-empty">The yard list is empty — tag the first stone.</div>}
       {stoneHits.map(it => {
         const fresh = isFresh(it)
