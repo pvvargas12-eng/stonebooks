@@ -290,11 +290,6 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Filters — 2-tier: PRIMARY axis (Active/Closed/Archived) + a single-select
   // category chip; everything else lives in the "More filters" dropdown.
   const [primaryView, setPrimaryView] = useState('active')   // active | closed | archived
-  // Closed list (Paul 2026-10-30): Design and Stone are obviously done on a
-  // closed order — the Design slot becomes CLOSED DATE and the Stone column
-  // drops out of the grid.
-  const closedView = primaryView === 'closed'
-  const grid = closedView ? cols.filter((_, i) => i !== 8).join(' ') : gridAll
   const [categoryFilter, setCategoryFilter] = useState(null) // ORDER_CATEGORIES code | null (= All)
   const [moreOpen, setMoreOpen] = useState(false)            // More-filters dropdown
   const [pipelineFilters, setPipelineFilters] = useState(new Set())
@@ -314,6 +309,12 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // a header handle pins that column to a px width, others keep their fr ratio.
   const [cols, setCols] = useState(DEFAULT_COLS)
   const gridAll = cols.join(' ')
+  // Closed list (Paul 2026-10-30): Design and Stone are obviously done on a
+  // closed order — the Design slot becomes CLOSED DATE and the Stone column
+  // drops out of the grid. (Declared AFTER cols — reading it earlier was a
+  // temporal-dead-zone crash on every Sales mount, 2026-10-30.)
+  const closedView = primaryView === 'closed'
+  const grid = closedView ? cols.filter((_, i) => i !== 8).join(' ') : gridAll
   const startColResize = (i) => (e) => {
     e.preventDefault(); e.stopPropagation()
     const startX = e.clientX
