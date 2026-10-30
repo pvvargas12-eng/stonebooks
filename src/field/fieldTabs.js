@@ -15,6 +15,8 @@ export const TAB_REGISTRY = [
   { key: 'schedule',   label: 'SCHEDULE' },
   { key: 'jobs',       label: 'JOBS' },
   { key: 'sales',      label: 'SALES', ownerOnly: true },
+  // Paul 2026-10-30: "payments in Field, and money on the table, in a Payments tab".
+  { key: 'payments',   label: 'PAYMENTS', ownerOnly: true },
   { key: 'find',       label: 'FIND' },
   { key: 'more',       label: 'MORE', locked: 'last' },
 ]

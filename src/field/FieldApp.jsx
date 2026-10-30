@@ -30,6 +30,7 @@ import WorkHubScreen from './WorkHubScreen'
 import FindScreen from './FindScreen'
 import SalesScreen from './SalesScreen'
 import MoreScreen from './MoreScreen'
+import PaymentsScreen from './PaymentsScreen'
 import NotificationsScreen from './NotificationsScreen'
 import PermissionSheet from './PermissionSheet'
 import NotifPrefsSheet from './NotifPrefsSheet'
@@ -183,6 +184,7 @@ const GLYPH = {
   jobs: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13.5 4.5 l6 6 -2.5 2.5 -6-6z" /><path d="M12.5 9.5 L4 18 l2 2 8.5-8.5" /><path d="M15 3 l6 6" /></svg>,
   sales: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3 h8 l4 4 v14 h-12 z" /><path d="M14 3 v4 h4" /><line x1="9" y1="12" x2="15" y2="12" /><line x1="9" y1="16" x2="15" y2="16" /></svg>,
   more: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></svg>,
+  payments: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="2" x2="12" y2="22" /><path d="M17 5.5 H9.5 a3 3 0 0 0 0 6 h5 a3 3 0 0 1 0 6 H7" /></svg>,
   find: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="10.5" cy="10.5" r="6.5" /><line x1="15.5" y1="15.5" x2="21" y2="21" /></svg>,
   cam: <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 8 h3 l2-2.5 h6 L17 8 h3 v11 H4 z" /><circle cx="12" cy="13" r="3.5" /></svg>,
   bell: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 10 a6 6 0 0 1 12 0 c0 5 2 6 2 6 H4 c0 0 2-1 2-6" /><path d="M10 19.5 a2.2 2.2 0 0 0 4 0" /></svg>,
@@ -414,6 +416,9 @@ export default function FieldApp() {
           )}
           {tab === 'sales' && isOwner && (
             <SalesScreen onOpenJob={openJob} who={who} undo={undo} />
+          )}
+          {tab === 'payments' && isOwner && (
+            <PaymentsScreen who={who} undo={undo} onOpenJob={openJob} />
           )}
           {tab === 'more' && (
             <MoreScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
