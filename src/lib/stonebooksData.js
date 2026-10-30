@@ -4164,6 +4164,7 @@ export const taskTypeLabel = (code) =>
 const TASK_SELECT = '*, order:orders(id, order_number, primary_lastname, status, signed_at)'
 
 export async function listShopTasks({ doneWithinDays = 14 } = {}) {
+  await ensureMonthlyReviewTask()   // the standing 5th-of-the-month task re-mints itself (OWNER-REVIEW-1)
   const cutoff = new Date(Date.now() - doneWithinDays * 86400000).toISOString()
   const { data, error } = await supabase
     .from('shop_tasks')
@@ -4176,6 +4177,40 @@ export async function listShopTasks({ doneWithinDays = 14 } = {}) {
   return data || []
 }
 
+// ── The monthly money review task (OWNER-REVIEW-1, Paul 2026-10-30: "yes, add
+// the task") ────────────────────────────────────────────────────────────────
+// shop_tasks has no recurrence, so this keeper stands in: whenever the task
+// list loads and there is NO open task tagged details.auto =
+// 'monthly_money_review', one is minted for the next 5th of the month (this
+// month's 5th while it is still ahead) — unless that month's task was already
+// done or deleted. Marking it done is what rolls it forward. One select per
+// load; errors are swallowed so the task list itself never fails on it.
+export const MONTHLY_REVIEW_TASK_AUTO = 'monthly_money_review'
+export const MONTHLY_REVIEW_TASK_ASSIGNEE = 'Paul'
+export async function ensureMonthlyReviewTask(now = new Date()) {
+  try {
+    const { data, error } = await supabase.from('shop_tasks')
+      .select('id, status, due_date, deleted_at, details')
+      .eq('details->>auto', MONTHLY_REVIEW_TASK_AUTO)
+      .order('created_at', { ascending: false }).limit(24)
+    if (error) return { ok: false, error: error.message }
+    const rows = data || []
+    if (rows.some(t => !t.deleted_at && (t.status === 'open' || t.status === 'pending'))) return { ok: true, skipped: true }
+    const target = now.getDate() <= 5 ? new Date(now.getFullYear(), now.getMonth(), 5) : new Date(now.getFullYear(), now.getMonth() + 1, 5)
+    const monthKey = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}`
+    if (rows.some(t => t.details?.month === monthKey)) return { ok: true, skipped: true }   // done or deleted for this month already
+    const due = `${monthKey}-05`
+    const monthName = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    return addShopTask({
+      title: `Monthly money review — ${monthName}: statements in the cabinet, inbox confirmed, review written (Reports › Monthly review)`,
+      assignee: MONTHLY_REVIEW_TASK_ASSIGNEE, assigneeKind: 'person', dueDate: due,
+      createdBy: 'Stonebooks', taskedBy: 'Stonebooks', taskType: 'general',
+      details: { auto: MONTHLY_REVIEW_TASK_AUTO, month: monthKey },
+    })
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+}
 // Check jobs (site inspections before a repair quote) — powers the Jobs →
 // Check jobs tab. Live ones plus the last month of completed ones.
 export async function listCheckJobTasks({ doneWithinDays = 30 } = {}) {
