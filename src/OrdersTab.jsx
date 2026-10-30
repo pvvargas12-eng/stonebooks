@@ -290,6 +290,11 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Filters — 2-tier: PRIMARY axis (Active/Closed/Archived) + a single-select
   // category chip; everything else lives in the "More filters" dropdown.
   const [primaryView, setPrimaryView] = useState('active')   // active | closed | archived
+  // Closed list (Paul 2026-10-30): Design and Stone are obviously done on a
+  // closed order — the Design slot becomes CLOSED DATE and the Stone column
+  // drops out of the grid.
+  const closedView = primaryView === 'closed'
+  const grid = closedView ? cols.filter((_, i) => i !== 8).join(' ') : gridAll
   const [categoryFilter, setCategoryFilter] = useState(null) // ORDER_CATEGORIES code | null (= All)
   const [moreOpen, setMoreOpen] = useState(false)            // More-filters dropdown
   const [pipelineFilters, setPipelineFilters] = useState(new Set())
@@ -308,7 +313,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   // Item 6 — draggable column widths. Each cols[] entry is a grid track; dragging
   // a header handle pins that column to a px width, others keep their fr ratio.
   const [cols, setCols] = useState(DEFAULT_COLS)
-  const grid = cols.join(' ')
+  const gridAll = cols.join(' ')
   const startColResize = (i) => (e) => {
     e.preventDefault(); e.stopPropagation()
     const startX = e.clientX
@@ -1345,14 +1350,23 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
               <button type="button" className={`sb-ord-sort-th ${sortKey === 'payment' ? 'on' : ''}`} onClick={() => handleHeaderSort('payment')} title="Sort by payment status">Payment{sortCaret('payment')}</button>
               <span onMouseDown={startColResize(6)} style={COL_RESIZE} />
             </div>
-            <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
-              <span onMouseDown={startColResize(7)} style={COL_RESIZE} />
-            </div>
-            <div style={{ position: 'relative', minWidth: 0 }}>
-              <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone / bronze stage">Stone / Bronze{sortCaret('stone')}</button>
-              <span onMouseDown={startColResize(8)} style={COL_RESIZE} />
-            </div>
+            {closedView ? (
+              <div style={{ position: 'relative', minWidth: 0 }}>
+                <span className="sb-ord-sort-th" style={{ cursor: 'default' }}>Closed date</span>
+                <span onMouseDown={startColResize(7)} style={COL_RESIZE} />
+              </div>
+            ) : (
+              <>
+                <div style={{ position: 'relative', minWidth: 0 }}>
+                  <button type="button" className={`sb-ord-sort-th ${sortKey === 'design' ? 'on' : ''}`} onClick={() => handleHeaderSort('design')} title="Sort by design stage">Design{sortCaret('design')}</button>
+                  <span onMouseDown={startColResize(7)} style={COL_RESIZE} />
+                </div>
+                <div style={{ position: 'relative', minWidth: 0 }}>
+                  <button type="button" className={`sb-ord-sort-th ${sortKey === 'stone' ? 'on' : ''}`} onClick={() => handleHeaderSort('stone')} title="Sort by stone / bronze stage">Stone / Bronze{sortCaret('stone')}</button>
+                  <span onMouseDown={startColResize(8)} style={COL_RESIZE} />
+                </div>
+              </>
+            )}
             <div style={{ position: 'relative', minWidth: 0 }}>
               <button type="button" className={`sb-ord-sort-th ${sortKey === 'permit' ? 'on' : ''}`} onClick={() => handleHeaderSort('permit')} title="Sort by permit status">Permit{sortCaret('permit')}</button>
               <span onMouseDown={startColResize(9)} style={COL_RESIZE} />
@@ -1498,9 +1512,7 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       <button type="button" className="sb-tw-cust" onClick={() => onOpen(o.id)} style={{ minWidth: 0 }}>
         <div className="sb-ord-cust-line">
           <span className="sb-crm-primary sb-ord-cust-name">{properName(o._familyName)}</span>
-          {closedView
-            ? (closedAt && <span className="sb-tw-closed" title={`Closed ${new Date(closedAt).toLocaleString()}`}>Closed {fmtDate(closedAt)}</span>)
-            : (o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>)}
+          {!closedView && o._missingInfo && <span className="sb-tw-badge" title="Missing shape / size / color">info</span>}
         </div>
         {/* Pills live UNDER the name, never beside it — the wide LEAD banner
             was flex-crushing the name span to zero width (Paul, 2026-07-14:
@@ -1576,23 +1588,33 @@ function OrderRow({ order: o, grid, indexInFiltered, selected, onToggle, onOpen,
       {/* Design (inline → milestone; jobless orders create the job on first
           set). Hidden entirely where the dimension doesn't exist (acid wash /
           repair have no design work). */}
-      <div onClick={e => e.stopPropagation()}>
-        {statusDimApplies('design', o._job, o) ? (
-          <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${designStatusTone(o._design || 'not_created')}`} value={o._design || 'not_created'} disabled={busy} onChange={e => onInlineDesign(o, e.target.value)}>
-            {designStatusOptions(o._job, o).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
-          </select>
-        ) : <span className="sb-crm-muted">—</span>}
-      </div>
+      {closedView ? (
+        <div style={{ minWidth: 0 }}>
+          {closedAt
+            ? <span className="sb-tw-closed-date" title={`Closed ${new Date(closedAt).toLocaleString()}`}>{fmtDate(closedAt)}</span>
+            : <span className="sb-crm-muted">—</span>}
+        </div>
+      ) : (
+        <>
+          <div onClick={e => e.stopPropagation()}>
+            {statusDimApplies('design', o._job, o) ? (
+              <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${designStatusTone(o._design || 'not_created')}`} value={o._design || 'not_created'} disabled={busy} onChange={e => onInlineDesign(o, e.target.value)}>
+                {designStatusOptions(o._job, o).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </select>
+            ) : <span className="sb-crm-muted">—</span>}
+          </div>
 
-      {/* Stone (inline → milestone) — inscriptions carve an existing stone,
-          acid wash / repair order nothing: no stone dimension. */}
-      <div onClick={e => e.stopPropagation()}>
-        {statusDimApplies('stone', o._job, o) ? (
-          <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${stoneStatusTone(o._stone || 'not_ordered')}`} value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
-            {stoneStatusOptions(o._job).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
-          </select>
-        ) : <span className="sb-crm-muted">—</span>}
-      </div>
+          {/* Stone (inline → milestone) — inscriptions carve an existing stone,
+              acid wash / repair order nothing: no stone dimension. */}
+          <div onClick={e => e.stopPropagation()}>
+            {statusDimApplies('stone', o._job, o) ? (
+              <select className={`sb-tw-inline sb-tw-perm sb-tw-perm-${stoneStatusTone(o._stone || 'not_ordered')}`} value={o._stone || 'not_ordered'} disabled={busy} onChange={e => onInlineStone(o, e.target.value)}>
+                {stoneStatusOptions(o._job).map(s => <option key={s.code} value={s.code}>{s.label}</option>)}
+              </select>
+            ) : <span className="sb-crm-muted">—</span>}
+          </div>
+        </>
+      )}
 
       {/* Permit (inline → orders.permit_status — single source of truth). Applies to
           EVERY order; legacy 'required'/'unknown' show as a disabled display-only
@@ -1916,7 +1938,7 @@ const TW_CSS = `
   .sb-tw-cust { text-align: left; background: none; border: none; font: inherit; cursor: pointer; padding: 0; min-width: 0; }
   .sb-tw-cust:hover .sb-crm-primary { color: #9A7209; }
   .sb-tw-badge { margin-left: 8px; font-size: 10px; font-weight: 600; color: #B8842A; background: #fbf1da; border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
-  .sb-tw-closed { margin-left: 8px; font-size: 11px; font-weight: 600; color: #6b6b66; white-space: nowrap; vertical-align: middle; }
+  .sb-tw-closed-date { font-size: 13px; font-weight: 800; color: #16150F; white-space: nowrap; }
   /* Status dropdowns fill their column so every column aligns edge-to-edge. */
   .sb-tw-inline { font: inherit; font-size: 12.5px; padding: 5px 6px; border: 0.5px solid #d8d6d1; border-radius: 6px; background: #fff; color: #222; width: 100%; box-sizing: border-box; cursor: pointer; }
   .sb-tw-inline:hover:not(:disabled) { border-color: #9A7209; }
@@ -1934,7 +1956,9 @@ const TW_CSS = `
 
   /* Orders-redesign cells */
   .sb-ord-cust-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-  .sb-ord-cust-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The family name is NEVER condensed (Paul 2026-10-30: "i never want to see
+     the family name condensed") — it wraps onto a second line instead. */
+  .sb-ord-cust-name { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
   .sb-ord-cust-num { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
   .sb-ord-block { margin-top: 2px; font-size: 11px; font-weight: 600; color: #B54040; }
   .sb-ord-total-input { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; text-align: right; padding: 5px 6px; border: 0.5px solid transparent; border-radius: 6px; background: transparent; color: #222; font-variant-numeric: tabular-nums; }

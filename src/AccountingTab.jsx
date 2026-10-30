@@ -59,7 +59,7 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
 
   const loadExpenses = useCallback(async () => {
     try { await sweepOutgoingIntoBook() } catch { /* mirror is best-effort */ }
-    setExpenses(await listAcctExpenses())
+    setExpenses(await listAcctExpenses({ limit: 6000 }))
   }, [])
   const loadDocs = useCallback(async () => setDocs(await listAcctDocuments()), [])
 
@@ -147,6 +147,21 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
             if (!r.ok) { setErr(r.error); return }
             patchLocal(e.id, { status: 'confirmed' })
           }}
+          onConfirmMany={async (list) => {
+            // Statement lines arrive by the hundred (the bank audit) — one
+            // press files every shown row that already has a category.
+            const by = await getCurrentStaffName().catch(() => null)
+            let failed = 0
+            for (const e of list) {
+              setBusyId(e.id)
+              const r = await confirmAcctExpense(e.id, { by, category: e.category, writeoff: e.writeoff, writeoffPct: e.writeoff_pct })
+              if (!r.ok) { failed++; continue }
+              await updateAcctExpense(e.id, { expenseDate: e.expense_date, vendor: e.vendor, amount: e.amount })
+              patchLocal(e.id, { status: 'confirmed' })
+            }
+            setBusyId(null)
+            if (failed) setErr(`${failed} row${failed === 1 ? '' : 's'} could not be confirmed.`)
+          }}
           onDelete={async (e) => {
             if (!window.confirm('Delete this inbox item? (Use this for mistaken snaps only.)')) return
             setBusyId(e.id)
@@ -231,12 +246,63 @@ export default function AccountingTab({ onOpenJob, onOpenCemeteryOrder }) {
 }
 
 // ── Inbox ────────────────────────────────────────────────────────────────────
-function InboxSection({ loading, rows, busyId, onView, onEdit, onConfirm, onDelete, onUpload }) {
+const SOURCE_LABEL = { phone: 'PHONE SNAP', upload: 'UPLOAD', statement: 'STATEMENT', outgoing: 'OUTGOING' }
+function InboxSection({ loading, rows, busyId, onView, onEdit, onConfirm, onConfirmMany, onDelete, onUpload }) {
+  // Filters (bank-audit load, 2026-10-30): by source, by account, by the
+  // audit's bucket — and one button to file every shown row that has a category.
+  const [src, setSrc] = useState('all')
+  const [acct, setAcct] = useState('all')
+  const [bucket, setBucket] = useState('all')
+  const [armed, setArmed] = useState(false)
+  const accounts = useMemo(() => [...new Set(rows.map(e => e.ai?.accountName).filter(Boolean))].sort(), [rows])
+  const buckets = useMemo(() => {
+    const m = new Map()
+    for (const e of rows) { const b = e.ai?.bucket; if (b) m.set(b, (m.get(b) || 0) + 1) }
+    return [...m.entries()].sort((a, b) => b[1] - a[1])
+  }, [rows])
+  const shown = useMemo(() => rows.filter(e =>
+    (src === 'all' || e.source === src)
+    && (acct === 'all' || e.ai?.accountName === acct)
+    && (bucket === 'all' || e.ai?.bucket === bucket)), [rows, src, acct, bucket])
+  const ready = shown.filter(e => e.category && e.amount != null)
+  const shownTotal = shown.reduce((s, e) => s + (Number(e.amount) || 0), 0)
   return (
     <>
       <div className="sb-acct-lede">
-        Phone receipt snaps and desk uploads land here with the category and write-off <b>proposed</b> — obvious business spend is assumed written off, meals ride the 50% cap, gray areas say YOUR CALL. Fix anything, then <b>Confirm</b> moves it into the book. Nothing moves itself.
+        Phone receipt snaps, desk uploads and bank-statement lines land here with the category and write-off <b>proposed</b> — obvious business spend is assumed written off, meals ride the 50% cap, gray areas say YOUR CALL. Fix anything, then <b>Confirm</b> moves it into the book. Nothing moves itself.
       </div>
+      {rows.length > 0 && (
+        <div className="sb-acct-filt">
+          <span className="sb-acct-filt-lab">Show</span>
+          {[['all', `All ${rows.length}`], ...Object.keys(SOURCE_LABEL).filter(s => rows.some(e => e.source === s)).map(s => [s, `${SOURCE_LABEL[s]} ${rows.filter(e => e.source === s).length}`])].map(([code, label]) => (
+            <button key={code} type="button" className={`sb-acct-fchip${src === code ? ' on' : ''}`} onClick={() => { setSrc(code); setArmed(false) }}>{label}</button>
+          ))}
+          {accounts.length > 1 && (
+            <select className="sb-acct-in sb-acct-filt-sel" value={acct} onChange={e => { setAcct(e.target.value); setArmed(false) }}>
+              <option value="all">Every account</option>
+              {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          )}
+          {buckets.length > 1 && (
+            <select className="sb-acct-in sb-acct-filt-sel" value={bucket} onChange={e => { setBucket(e.target.value); setArmed(false) }}>
+              <option value="all">Every kind</option>
+              {buckets.map(([b, n]) => <option key={b} value={b}>{b} ({n})</option>)}
+            </select>
+          )}
+          <span className="sb-acct-filt-sum">{shown.length} shown · ${shownTotal.toFixed(2)}</span>
+          {ready.length > 0 && !armed && (
+            <button type="button" className="sb-acct-btn sb-acct-btn-gold" disabled={!!busyId} onClick={() => setArmed(true)}>Confirm all shown ({ready.length})</button>
+          )}
+          {armed && (
+            <span className="sb-acct-filt-arm">
+              File {ready.length} row{ready.length === 1 ? '' : 's'} into the book with the categories as they stand?
+              <button type="button" className="sb-acct-btn sb-acct-btn-gold" disabled={!!busyId} onClick={async () => { setArmed(false); await onConfirmMany(ready) }}>Yes, confirm {ready.length}</button>
+              <button type="button" className="sb-acct-btn" onClick={() => setArmed(false)}>Cancel</button>
+            </span>
+          )}
+          {shown.length > ready.length && <span className="sb-acct-sub">{shown.length - ready.length} shown row{shown.length - ready.length === 1 ? ' has' : 's have'} no category yet — pick one to include them.</span>}
+        </div>
+      )}
       <label className="sb-acct-drop">
         Drop receipts or expense reports here — or <b>browse files</b> (photos or PDFs, several at once)
         <input type="file" multiple accept="image/*,.pdf" style={{ display: 'none' }}
@@ -248,7 +314,8 @@ function InboxSection({ loading, rows, busyId, onView, onEdit, onConfirm, onDele
         </div>
         {loading ? <div className="sb-acct-empty">Loading the inbox…</div>
           : rows.length === 0 ? <div className="sb-acct-empty">Inbox zero — everything captured is in the book.</div>
-          : rows.map(e => (
+          : shown.length === 0 ? <div className="sb-acct-empty">Nothing matches these filters.</div>
+          : shown.map(e => (
             <div key={e.id} className="sb-acct-row sb-acct-inbox-grid">
               <input className="sb-acct-in" type="date" value={e.expense_date || ''}
                 onChange={ev => onEdit(e.id, { expense_date: ev.target.value })} />
@@ -256,8 +323,9 @@ function InboxSection({ loading, rows, busyId, onView, onEdit, onConfirm, onDele
                 <input className="sb-acct-in" placeholder="Vendor" value={e.vendor || ''}
                   onChange={ev => onEdit(e.id, { vendor: ev.target.value })} />
                 <div className="sb-acct-sub">
-                  {e.source === 'phone' ? 'PHONE SNAP' : 'UPLOAD'}{e.note ? ` · ${e.note}` : ''}
-                  {e.ai?.why ? ` · ${e.ai.why}` : ''}
+                  {SOURCE_LABEL[e.source] || 'UPLOAD'}{e.ai?.accountName ? ` · ${e.ai.accountName}` : ''}{e.note ? ` · ${e.note}` : ''}
+                  {e.ai?.why && e.ai.why !== e.ai?.bucket ? ` · ${e.ai.why}` : ''}
+                  {e.ai?.flag && <> · <b className="sb-acct-flag">{e.ai.flag}</b></>}
                   {e.receipt_path && <> · <button type="button" className="sb-acct-link" onClick={() => onView(e.receipt_path)}>view receipt</button></>}
                 </div>
               </div>
@@ -539,6 +607,14 @@ const ACCT_CSS = `
   .sb-acct-btn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 8px 13px; border: 0.5px solid #e6e3dd; border-radius: 8px; background: #fff; color: #2c2c2a; cursor: pointer; }
   .sb-acct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .sb-acct-btn-gold { background: #9A7209; border-color: #9A7209; color: #fff; }
+  .sb-acct-filt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; min-width: 0; }
+  .sb-acct-filt-lab { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #8a8a85; }
+  .sb-acct-fchip { font: inherit; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px; border: 1px solid #e6e3dd; background: #fff; color: #6a6a66; cursor: pointer; white-space: nowrap; }
+  .sb-acct-fchip.on { background: #16150F; border-color: #16150F; color: #C9A468; }
+  .sb-acct-filt-sel { max-width: 320px; }
+  .sb-acct-filt-sum { font-size: 12.5px; font-weight: 700; color: #2c2c2a; white-space: nowrap; }
+  .sb-acct-filt-arm { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 700; color: #B3261E; }
+  .sb-acct-flag { color: #B3261E; font-weight: 700; }
   .sb-acct-btn-dark { background: #0F1419; border-color: #0F1419; color: #E8C15A; }
   .sb-acct-btn-mini { padding: 4px 9px; font-size: 11.5px; margin-left: 6px; }
   .sb-acct-chip { display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; border-radius: 999px; padding: 3px 8px; white-space: nowrap; }

@@ -13,6 +13,7 @@ import {
   getBatches, getUserSettings, upsertUserSettings,
 } from './stonebooksData'
 import { ORDER_PRICING_COLUMNS } from './pricingCore'
+import { listAcctExpenses } from './acctData'
 
 // ORDER_PRICING_COLUMNS is the pricing-column contract — this list once
 // under-selected (no base_config/shape/dims), so every Reports dollar figure
@@ -27,15 +28,19 @@ const REPORT_ORDER_SELECT =
 // One bundle for every report. Best-effort per source so one failure doesn't
 // blank the whole tab.
 export async function loadReportsData() {
-  const [orders, jobs, outgoing, promises, batches] = await Promise.all([
+  const [orders, jobs, outgoing, promises, batches, expenses] = await Promise.all([
     fetchAllPaged(() => supabase.from('orders').select(REPORT_ORDER_SELECT)
       .or('archived.is.null,archived.eq.false').order('created_at', { ascending: false })).catch(() => []),
     getJobs({ includeClosed: true, limit: 2000 }).catch(() => []),
     listOutgoingPayments().catch(() => []),
     getAllOpenPromises({ includeResolved: true }).catch(() => []),
     getBatches({}).catch(() => []),
+    // The Accounting book (confirmed + inbox) = cash OUT for Owner stats
+    // (OWNER-NUMBERS-2). Outgoing payments mirror into it, so it is the one
+    // place every dollar out lives once.
+    listAcctExpenses({ limit: 6000 }).catch(() => []),
   ])
-  return { orders: orders || [], jobs: jobs || [], outgoing: outgoing || [], promises: promises || [], batches: batches || [] }
+  return { orders: orders || [], jobs: jobs || [], outgoing: outgoing || [], promises: promises || [], batches: batches || [], expenses: expenses || [] }
 }
 
 // ── Date range ───────────────────────────────────────────────────────────────

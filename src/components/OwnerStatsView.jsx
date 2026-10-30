@@ -32,6 +32,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { rowGrandTotal, rowMoneyDown, rowBalanceDue, rowTotalPaid, rowNonVoidedPayments, fmtUSD, fmtDate, properName, customerName } from '../lib/stonebooksData'
 import { downloadReportCSV } from '../lib/reportsData'
+import { schedcLabel } from '../lib/acctData'
 import { getLineStats } from '../lib/floorLines'
 
 const INSTALL_KEYS = ['installed', 'door_installed', 'work_completed']
@@ -194,6 +195,10 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
 
   const orders = bundle?.orders || []
   const jobs = bundle?.jobs || []
+  // CASH OUT (Paul 2026-10-30: "not only cash in but also cash out") = the
+  // Accounting book — confirmed rows AND inbox lines (a bank line is money
+  // gone whether or not it has been filed yet). Type chips cannot slice it.
+  const expenses = bundle?.expenses || []
   const orderById = useMemo(() => new Map(orders.map(o => [o.id, o])), [orders])
 
   // Completion date per ORDER — the earliest done install-key milestone's own
@@ -233,7 +238,13 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
   // ── SALES + CASH IN + COMPLETED per period (each row keeps its lists) ─────
   const table = useMemo(() => {
     const keys = lastPeriods(now, gran, periodCount(gran))
-    const rows = new Map(keys.map(k => [k, { key: k, sales: 0, salesUsd: 0, cashIn: 0, cashN: 0, completed: 0, salesOrders: [], payments: [], completedOrders: [] }]))
+    const rows = new Map(keys.map(k => [k, { key: k, sales: 0, salesUsd: 0, cashIn: 0, cashN: 0, cashOut: 0, outN: 0, completed: 0, salesOrders: [], payments: [], outRows: [], completedOrders: [] }]))
+    for (const e of expenses) {
+      if (!e.expense_date || !(Number(e.amount) > 0)) continue
+      const k = periodKey(e.expense_date, gran)
+      const r = k && rows.get(k)
+      if (r) { r.cashOut += Number(e.amount); r.outN++; r.outRows.push(e) }
+    }
     for (const o of orders) {
       if (!matchesType(o)) continue
       if (o.signed_at) {
@@ -259,24 +270,25 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
     for (const r of rows.values()) {
       r.salesOrders.sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)))
       r.payments.sort((a, b) => b.day.localeCompare(a.day))
+      r.outRows.sort((a, b) => String(b.expense_date).localeCompare(String(a.expense_date)) || (Number(b.amount) - Number(a.amount)))
       r.completedOrders.sort((a, b) => String(completionByOrder.get(b.id)).localeCompare(String(completionByOrder.get(a.id))))
     }
     return keys.map(k => rows.get(k))
-  }, [orders, completionByOrder, gran, now, typeFilter])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [orders, expenses, completionByOrder, gran, now, typeFilter])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const totals = useMemo(() => table.reduce((a, r) => ({
-    sales: a.sales + r.sales, salesUsd: a.salesUsd + r.salesUsd, cashIn: a.cashIn + r.cashIn, cashN: a.cashN + r.cashN, completed: a.completed + r.completed,
-  }), { sales: 0, salesUsd: 0, cashIn: 0, cashN: 0, completed: 0 }), [table])
+    sales: a.sales + r.sales, salesUsd: a.salesUsd + r.salesUsd, cashIn: a.cashIn + r.cashIn, cashN: a.cashN + r.cashN, cashOut: a.cashOut + r.cashOut, outN: a.outN + r.outN, completed: a.completed + r.completed,
+  }), { sales: 0, salesUsd: 0, cashIn: 0, cashN: 0, cashOut: 0, outN: 0, completed: 0 }), [table])
 
   const exportCsv = () => {
     downloadReportCSV(
       `owner-stats-${gran}${typeFilter ? `-${typeFilter.toLowerCase()}` : ''}.csv`,
-      ['Period', 'New sales', 'Sales $', 'Avg sale $', 'Cash in $', 'Payments', 'Completed'],
-      table.map(r => [periodLabel(r.key, gran), r.sales, r.salesUsd.toFixed(2), r.sales ? (r.salesUsd / r.sales).toFixed(2) : '', r.cashIn.toFixed(2), r.cashN, r.completed]),
+      ['Period', 'New sales', 'Sales $', 'Avg sale $', 'Cash in $', 'Payments', 'Cash out $', 'Expense lines', 'Net cash $', 'Completed'],
+      table.map(r => [periodLabel(r.key, gran), r.sales, r.salesUsd.toFixed(2), r.sales ? (r.salesUsd / r.sales).toFixed(2) : '', r.cashIn.toFixed(2), r.cashN, r.cashOut.toFixed(2), r.outN, (r.cashIn - r.cashOut).toFixed(2), r.completed]),
     )
   }
 
-  const maxUsd = Math.max(1, ...table.map(r => Math.max(r.salesUsd, r.cashIn)))
+  const maxUsd = Math.max(1, ...table.map(r => Math.max(r.salesUsd, r.cashIn, r.cashOut)))
 
   // ── The drill: the rows behind a period ───────────────────────────────────
   const drillRow = useMemo(() => table.find(r => r.key === drillKey) || null, [table, drillKey])
@@ -288,11 +300,12 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
     if (!drillRow) return []
     const inType = (o) => !drillType || servicesOf(o).includes(drillType)
     if (drillTab === 'cash') return drillRow.payments.filter(x => inType(x.order))
+    if (drillTab === 'out') return drillRow.outRows
     if (drillTab === 'completed') return drillRow.completedOrders.filter(inType)
     return drillRow.salesOrders.filter(inType)
   }, [drillRow, drillTab, drillType])
   const drillTypes = useMemo(() => {
-    if (!drillRow) return []
+    if (!drillRow || drillTab === 'out') return []
     const src = drillTab === 'cash' ? drillRow.payments.map(x => x.order) : drillTab === 'completed' ? drillRow.completedOrders : drillRow.salesOrders
     const m = new Map()
     for (const o of src) for (const s of servicesOf(o)) m.set(s, (m.get(s) || 0) + 1)
@@ -300,7 +313,15 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
   }, [drillRow, drillTab])
   const drillSum = useMemo(() => {
     if (drillTab === 'cash') return drillList.reduce((s, x) => s + x.amount, 0)
+    if (drillTab === 'out') return drillList.reduce((s, e) => s + (Number(e.amount) || 0), 0)
     return drillList.reduce((s, o) => s + (rowGrandTotal(o) || 0), 0)
+  }, [drillList, drillTab])
+  // Cash out, grouped by category for the drill's summary line.
+  const outByCat = useMemo(() => {
+    if (drillTab !== 'out') return []
+    const m = new Map()
+    for (const e of drillList) { const k = e.category || 'uncategorized'; m.set(k, (m.get(k) || 0) + (Number(e.amount) || 0)) }
+    return [...m.entries()].sort((a, b) => b[1] - a[1])
   }, [drillList, drillTab])
 
   // ── PRODUCTION per period — per JOB, by the milestone's own date ──────────
@@ -402,7 +423,7 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
       {/* SALES + CASH IN + COMPLETED trend */}
       <div className="ost-panel">
         <div className="ost-panel-head">
-          <span className="ost-panel-title">Sales, cash in & completions{typeFilter ? ` — ${SERVICE_LABELS[typeFilter]}` : ''}</span>
+          <span className="ost-panel-title">Sales, cash in, cash out & completions{typeFilter ? ` — ${SERVICE_LABELS[typeFilter]}` : ''}</span>
           <div className="ost-grans">
             {[['week', 'By week'], ['month', 'By month'], ['year', 'By year']].map(([code, label]) => (
               <button type="button" key={code} className={`ost-chip${gran === code ? ' on' : ''}`} onClick={() => { setGran(code); setDrillKey(null) }}>{label}</button>
@@ -412,14 +433,16 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
         </div>
         <div className="ost-hint">
           Sales = contracts SIGNED in the period (count + contract total). Cash in = every payment RECEIVED in the
-          period, deposits and balances, whenever the order was signed. Completed = the install/completion milestone
-          went done in the period. Newest first. <b>Click a row</b> to see the orders and payments behind it.
+          period, deposits and balances, whenever the order was signed. Cash out = every expense in the Accounting
+          book (confirmed or still in the inbox) by the day it was paid; the type chips do not slice it. Completed = the
+          install/completion milestone went done in the period. Newest first. <b>Click a row</b> to see the orders,
+          payments and expenses behind it.
         </div>
         <table className="ost-table ost-table-click">
           <thead>
             <tr>
-              <th>Period</th><th className="n">New sales</th><th className="n">Sales $</th><th className="n">Cash in</th>
-              <th className="bar"><span className="ost-key"><i className="k-gold" />sales $ <i className="k-green" />cash in</span></th>
+              <th>Period</th><th className="n">New sales</th><th className="n">Sales $</th><th className="n">Cash in</th><th className="n">Cash out</th>
+              <th className="bar"><span className="ost-key"><i className="k-gold" />sales $ <i className="k-green" />cash in <i className="k-red" />cash out</span></th>
               <th className="n">Avg sale</th><th className="n">Completed</th>
             </tr>
           </thead>
@@ -432,22 +455,25 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
                   <td className="n"><button type="button" className="ost-cell-btn" onClick={e => { e.stopPropagation(); openDrill(r.key, 'sales') }}>{r.sales || '—'}</button></td>
                   <td className="n money">{r.salesUsd ? fmtUSD(r.salesUsd) : '—'}</td>
                   <td className="n money cash"><button type="button" className="ost-cell-btn" onClick={e => { e.stopPropagation(); openDrill(r.key, 'cash') }}>{r.cashIn ? fmtUSD(r.cashIn) : '—'}</button></td>
+                  <td className="n money out"><button type="button" className="ost-cell-btn" onClick={e => { e.stopPropagation(); openDrill(r.key, 'out') }}>{r.cashOut ? fmtUSD(r.cashOut) : '—'}</button></td>
                   <td className="bar">
                     <i className="b-gold" style={{ width: `${Math.round((r.salesUsd / maxUsd) * 100)}%` }} />
                     <i className="b-green" style={{ width: `${Math.round((r.cashIn / maxUsd) * 100)}%` }} />
+                    <i className="b-red" style={{ width: `${Math.round((r.cashOut / maxUsd) * 100)}%` }} />
                   </td>
                   <td className="n">{r.sales ? fmtUSD(Math.round(r.salesUsd / r.sales)) : '—'}</td>
                   <td className="n"><button type="button" className="ost-cell-btn" onClick={e => { e.stopPropagation(); openDrill(r.key, 'completed') }}>{r.completed || '—'}</button></td>
                 </tr>,
                 on && drillRow && (
                   <tr key={`${r.key}-drill`} className="ost-drill-tr">
-                    <td colSpan={7}>
+                    <td colSpan={8}>
                       <div className="ost-drill">
                         <div className="ost-drill-head">
                           <span className="ost-drill-title">{periodLabel(r.key, gran)}</span>
                           <div className="ost-drill-tabs">
                             <button type="button" className={`ost-chip${drillTab === 'sales' ? ' on' : ''}`} onClick={() => { setDrillTab('sales'); setDrillType('') }}>Sales {drillRow.sales} · {fmtUSD(drillRow.salesUsd)}</button>
                             <button type="button" className={`ost-chip${drillTab === 'cash' ? ' on' : ''}`} onClick={() => { setDrillTab('cash'); setDrillType('') }}>Cash in {fmtUSD(drillRow.cashIn)} · {drillRow.cashN} payment{drillRow.cashN === 1 ? '' : 's'}</button>
+                            <button type="button" className={`ost-chip${drillTab === 'out' ? ' on' : ''}`} onClick={() => { setDrillTab('out'); setDrillType('') }}>Cash out {fmtUSD(drillRow.cashOut)} · {drillRow.outN} line{drillRow.outN === 1 ? '' : 's'}</button>
                             <button type="button" className={`ost-chip${drillTab === 'completed' ? ' on' : ''}`} onClick={() => { setDrillTab('completed'); setDrillType('') }}>Completed {drillRow.completed}</button>
                           </div>
                           <button type="button" className="ost-drill-close" onClick={() => setDrillKey(null)}>Close</button>
@@ -461,20 +487,36 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
                           </div>
                         )}
                         <div className="ost-drill-sum">
-                          {drillList.length} {drillTab === 'cash' ? 'payment' : 'order'}{drillList.length === 1 ? '' : 's'}
-                          {drillType ? ` · ${SERVICE_LABELS[drillType]}` : ''} · {fmtUSD(drillSum)}{drillTab === 'cash' ? ' received' : ' contract value'}
+                          {drillList.length} {drillTab === 'cash' ? 'payment' : drillTab === 'out' ? 'expense line' : 'order'}{drillList.length === 1 ? '' : 's'}
+                          {drillType ? ` · ${SERVICE_LABELS[drillType]}` : ''} · {fmtUSD(drillSum)}{drillTab === 'cash' ? ' received' : drillTab === 'out' ? ' paid out' : ' contract value'}
                         </div>
+                        {drillTab === 'out' && outByCat.length > 0 && (
+                          <div className="ost-chips ost-chips-sm">
+                            {outByCat.map(([c, v]) => <span key={c} className="ost-chip ost-chip-static">{schedcLabel(c)} <b>{fmtUSD(v)}</b></span>)}
+                          </div>
+                        )}
                         {drillList.length === 0 ? <div className="ost-hint">Nothing in this period.</div> : (
                           <table className="ost-table ost-drill-table">
                             <thead>
-                              {drillTab === 'cash' ? (
+                              {drillTab === 'out' ? (
+                                <tr><th>Paid</th><th>Payee</th><th>What</th><th>Category</th><th>Status</th><th className="n">Amount</th></tr>
+                              ) : drillTab === 'cash' ? (
                                 <tr><th>Family</th><th>Order</th><th>Type</th><th>Cemetery</th><th className="n">Received</th><th>Method</th><th className="n">Amount</th><th className="n">Contract</th><th className="n">Still owed</th></tr>
                               ) : (
                                 <tr><th>Family</th><th>Order</th><th>Type</th><th>Cemetery</th><th className="n">{drillTab === 'completed' ? 'Completed' : 'Signed'}</th><th className="n">Contract</th><th className="n">Paid</th><th className="n">Still owed</th></tr>
                               )}
                             </thead>
                             <tbody>
-                              {drillTab === 'cash' ? drillList.map((x, i) => {
+                              {drillTab === 'out' ? drillList.map(e => (
+                                <tr key={e.id}>
+                                  <td className="n">{e.expense_date ? fmtDate(e.expense_date) : '—'}</td>
+                                  <td className="p">{e.vendor || '—'}</td>
+                                  <td className="t" title={e.note || ''}>{e.note || '—'}</td>
+                                  <td>{schedcLabel(e.category)}</td>
+                                  <td>{e.status === 'confirmed' ? 'In the book' : 'Inbox — not filed yet'}</td>
+                                  <td className="n money out">{fmtUSD(Number(e.amount) || 0)}</td>
+                                </tr>
+                              )) : drillTab === 'cash' ? drillList.map((x, i) => {
                                 const o = x.order, owed = rowBalanceDue(o)
                                 return (
                                   <tr key={`${o.id}-${x.payment?.id || i}`} className="ost-row" onClick={() => open(o.id)} title="Open the order">
@@ -521,6 +563,7 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
               <td className="n">{totals.sales}</td>
               <td className="n money">{fmtUSD(totals.salesUsd)}</td>
               <td className="n money cash">{fmtUSD(totals.cashIn)}</td>
+              <td className="n money out">{fmtUSD(totals.cashOut)}</td>
               <td className="bar"></td>
               <td className="n">{totals.sales ? fmtUSD(Math.round(totals.salesUsd / totals.sales)) : '—'}</td>
               <td className="n">{totals.completed}</td>
@@ -695,6 +738,11 @@ const CSS = `
   .ost-table .mono { font-family: var(--sb-font-mono, 'JetBrains Mono'), monospace; font-size: 12px; white-space: nowrap; }
   .ost-table .money { font-family: var(--sb-font-mono, 'JetBrains Mono'), monospace; font-size: 12.5px; }
   .ost-table .money.cash { color: #2E7D4F; font-weight: 700; }
+  .ost-table .money.out { color: #B3261E; font-weight: 700; }
+  .ost-table .bar i.b-red { background: #B3261E; margin-top: 2px; }
+  .ost-key i.k-red { background: #B3261E; }
+  .ost-chip-static { cursor: default; }
+  .ost-chip-static:hover { border-color: var(--sb-border, #E2D8C6); color: #6a6a66; }
   .ost-table .money.owed { color: #B3261E; font-weight: 700; }
   .ost-table .bar { width: 20%; min-width: 110px; }
   .ost-table .bar i { display: block; height: 6px; border-radius: 4px; min-width: 2px; }
