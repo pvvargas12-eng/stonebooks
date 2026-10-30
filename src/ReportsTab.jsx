@@ -15,6 +15,7 @@ import {
 } from './lib/reportsData'
 import { REPORTS, REPORTS_BY_ID, REPORT_GROUPS } from './lib/reportDefs'
 import OwnerStatsView from './components/OwnerStatsView'
+import OwnerReviewView from './components/OwnerReviewView'
 import ReportCard, { REPORT_CSS } from './components/ReportCard'
 
 const RANGES = [
@@ -136,10 +137,11 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
       <div className="rt-controls">
         <div className="rt-modes" role="tablist">
           <button type="button" className={`rt-mode ${mode === 'stats' ? 'on' : ''}`} onClick={() => setMode('stats')}>Owner stats</button>
+          <button type="button" className={`rt-mode ${mode === 'review' ? 'on' : ''}`} onClick={() => setMode('review')}>Monthly review</button>
           <button type="button" className={`rt-mode ${mode === 'daily' ? 'on' : ''}`} onClick={() => setMode('daily')}>Daily Command</button>
           <button type="button" className={`rt-mode ${mode === 'library' ? 'on' : ''}`} onClick={() => setMode('library')}>Library</button>
         </div>
-        {mode !== 'stats' && <div className="rt-ctrl-right">
+        {mode !== 'stats' && mode !== 'review' && <div className="rt-ctrl-right">
           <div className="rt-ranges">
             {RANGES.map(r => (
               <button key={r.code} type="button" className={`rt-range ${rangeCode === r.code ? 'on' : ''}`} onClick={() => setRangeCode(r.code)}>{r.label}</button>
@@ -162,6 +164,12 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
       {mode === 'stats' && (
         !bundle ? <div className="sb-empty">Loading stats…</div>
         : <OwnerStatsView bundle={bundle} now={now} onOpenOrder={onOpenOrder} />
+      )}
+
+      {/* Monthly review — growth by month, statements in the cabinet, the written reviews (OWNER-REVIEW-1). */}
+      {mode === 'review' && (
+        !bundle ? <div className="sb-empty">Loading the money…</div>
+        : <OwnerReviewView bundle={bundle} now={now} user={user} />
       )}
 
       {/* Library group sub-tabs */}
