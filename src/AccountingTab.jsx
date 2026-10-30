@@ -21,8 +21,7 @@ import {
   addAcctExpense, listAcctExpenses, updateAcctExpense, confirmAcctExpense, deleteAcctExpense,
   sweepOutgoingIntoBook,
   DOC_KINDS, docKindLabel, addAcctDocument, listAcctDocuments, deleteAcctDocument,
-  deductibleAmount, summarizeSchedC, analyzeBooks, downloadCpaPacket,
-} from './lib/acctData'
+  deductibleAmount, summarizeSchedC, analyzeBooks, downloadCpaPacket, holderKey, isCardCharge, cardBucket, PERSONAL_HINT } from './lib/acctData'
 
 const SECTIONS = [
   { code: 'inbox', label: 'Inbox' },
@@ -463,15 +462,6 @@ function BookSection({ loading, rows, year, onView, onSetWriteoff, onSetCategory
 // statement line that carries a cardholder (the parser stamps ai.cardholder
 // and ai.accountName on every card-statement purchase). The same person on
 // two cards is ONE person: names fold to first + last word, proper-cased.
-const holderKey = (raw) => {
-  const parts = String(raw || '').trim().toUpperCase().split(/\s+/).filter(Boolean)
-  if (!parts.length) return ''
-  const words = parts.length > 1 ? [parts[0], parts[parts.length - 1]] : parts
-  return words.map(w => w[0] + w.slice(1).toLowerCase()).join(' ')
-}
-const isCardCharge = (e) => e?.source === 'statement' && !!e?.ai?.cardholder
-const cardBucket = (e) => e.ai?.bucket || (e.category ? schedcLabel(e.category) : 'Uncategorized')
-const PERSONAL_HINT = /personal|sort: shop vs personal|unclear|groceries/i
 
 function CardsSection({ loading, rows, onView, onSetCategory }) {
   const [person, setPerson] = useState('')      // '' = everyone

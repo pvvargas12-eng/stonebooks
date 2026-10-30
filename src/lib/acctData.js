@@ -105,6 +105,20 @@ export function proposeExpense({ vendor, note, chip } = {}) {
   return { category: null, writeoff: 'pending', writeoffPct: 100, why: 'no rule matched — your call' }
 }
 
+// ── Credit-card charges by person (CARDS-BY-PERSON, 2026-10-30) ─────────────
+// A card charge is any statement line that carries a cardholder (the parser
+// stamps ai.cardholder + ai.accountName on every card-statement purchase).
+// The same person on two cards is ONE person: names fold to first + last
+// word, proper-cased ("CATHERINA M VARGAS" and "CATHERINA VARGAS" meet).
+export const holderKey = (raw) => {
+  const parts = String(raw || '').trim().toUpperCase().split(/\s+/).filter(Boolean)
+  if (!parts.length) return ''
+  const words = parts.length > 1 ? [parts[0], parts[parts.length - 1]] : parts
+  return words.map(w => w[0] + w.slice(1).toLowerCase()).join(' ')
+}
+export const isCardCharge = (e) => e?.source === 'statement' && !!e?.ai?.cardholder
+export const cardBucket = (e) => e?.ai?.bucket || (e?.category ? schedcLabel(e.category) : 'Uncategorized')
+export const PERSONAL_HINT = /personal|sort: shop vs personal|unclear|groceries/i
 // ── Files (private bucket → signed URLs only) ────────────────────────────────
 export async function uploadAcctFile(prefix, file) {
   if (!file) return { ok: false, error: 'No file' }
