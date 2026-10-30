@@ -11126,6 +11126,49 @@ export async function getActiveStoneOrders() {
 // field count, the Team Meeting inventory slide, the PR builder. The old list
 // is read on purpose via getArchivedInventoryStock. Numbered stones list first
 // (tag ascending), untagged legacy rows after.
+// A stone that was SET leaves the yard list by itself (Paul 2026-10-30: "we
+// have stone in inventory that has already been set; once it is installed it
+// must be removed from inventory"). Runs on every live yard read — the ONE
+// chokepoint every yard reader goes through — over the rows linked to an
+// order (allocated_order_id): when that order's job has an install-key
+// milestone done, or the job is closed, the row is soft-ARCHIVED with the
+// install date in the reason (never deleted; the assignment stays for the
+// record, numbers are never reused). Rows that only carry a family name and
+// no order link are not touched — nothing to match them against. Best-effort:
+// a failed sweep never fails the read.
+const YARD_SET_KEYS = ['installed', 'door_installed', 'work_completed']
+async function _sweepInstalledOutOfYard(rows) {
+  const linked = (rows || []).filter(r => r.allocated_order_id && !r.archived_at)
+  if (!linked.length) return new Set()
+  const orderIds = [...new Set(linked.map(r => r.allocated_order_id))]
+  const doneBy = new Map()   // order_id -> install date (or the closed stamp)
+  for (let i = 0; i < orderIds.length; i += 150) {
+    const { data, error } = await supabase.from('jobs')
+      .select('order_id, overall_status, closed_at, milestones:job_milestones(milestone_key, status, status_date)')
+      .in('order_id', orderIds.slice(i, i + 150))
+    if (error) { console.warn('[yard] installed sweep:', error.message); return new Set() }
+    for (const j of data || []) {
+      const done = (j.milestones || []).filter(m => YARD_SET_KEYS.includes(m.milestone_key) && m.status === 'done')
+      const when = done.map(m => m.status_date).filter(Boolean).sort()[0]
+        || (j.overall_status === 'closed' ? String(j.closed_at || '').slice(0, 10) || 'closed' : null)
+      if (when && !doneBy.has(j.order_id)) doneBy.set(j.order_id, when)
+    }
+  }
+  const gone = linked.filter(r => doneBy.has(r.allocated_order_id))
+  if (!gone.length) return new Set()
+  const now = new Date().toISOString()
+  const out = new Set()
+  for (const r of gone) {
+    const reason = `Installed ${doneBy.get(r.allocated_order_id)} — left the yard (auto)`
+    const { error } = await supabase.from('inventory_stock')
+      .update({ archived_at: now, archived_reason: reason, updated_at: now })
+      .eq('id', r.id).is('archived_at', null)
+    if (error) { console.warn('[yard] installed sweep write:', error.message); continue }
+    out.add(r.id)
+  }
+  return out
+}
+
 export async function getInventoryStock({ includeArchived = false } = {}) {
   try {
     let q = supabase.from('inventory_stock').select('*')
@@ -11135,7 +11178,11 @@ export async function getInventoryStock({ includeArchived = false } = {}) {
       .order('location', { ascending: true })
       .order('created_at', { ascending: false })
     if (error) return { ok: false, rows: [], error: error.message }
-    return { ok: true, rows: data || [], error: null }
+    let rows = data || []
+    if (!includeArchived) {
+      try { const gone = await _sweepInstalledOutOfYard(rows); if (gone.size) rows = rows.filter(r => !gone.has(r.id)) } catch (e) { console.warn('[yard] installed sweep:', e?.message || e) }
+    }
+    return { ok: true, rows, error: null }
   } catch (e) {
     return { ok: false, rows: [], error: String(e?.message || e) }
   }
