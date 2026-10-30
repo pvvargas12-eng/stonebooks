@@ -24,6 +24,7 @@ import {
 } from './lib/stonebooksData'
 import ExpenseModal from './components/ExpenseModal'
 import EstimatesModal from './components/EstimatesModal'
+import { familyNameForJob, currentStage } from './lib/jobsRowHelpers'
 
 // ─── design tokens (literal hex from the demo spec) ────────────────────────
 const C = {
@@ -114,7 +115,7 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = f
   const [ov, setOv] = useState(null)
   const [payments, setPayments] = useState([])
   const [expenses, setExpenses] = useState([])
-  const [labels, setLabels] = useState({ cemetery: {}, job: {}, order: {} })
+  const [labels, setLabels] = useState({ cemetery: {}, job: {}, jobMeta: {}, order: {} })
   const [loading, setLoading] = useState(true)
 
   const [section, setSection] = useState('profitability')
@@ -145,7 +146,7 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = f
         getFinancialRecords({ recordType: 'payment_received' }),
         getFinancialRecords({ recordType: 'expense_incurred' }),
         getCemeteryOrders(),
-        getJobs({ includeClosed: true, limit: 500 }),
+        getJobs({ includeClosed: true, limit: 1000 }),   // 749 jobs in Oct 2026 — 500 left a third of the rows unnamed
         listAllOrders(),
       ])
       const [r_ov, r_pays, r_exps, r_cem, r_jobs, r_orders] = results
@@ -164,9 +165,26 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = f
       if (overview?._error) setLoadError(prev => prev || overview._error)
       setOv(overview); setPayments(pays); setExpenses(exps)
       const cem = {}; for (const o of cemOrders) cem[o.id] = `${o.order_number || 'draft'} · ${o.cemetery_name}`
-      const job = {}; for (const j of jobs) job[j.id] = j.customer_name || j.deceased_name || j.title || (j.door_index != null ? `Door ${j.door_index + 1}` : `Job ${String(j.id).slice(0, 8)}`)
+      // Paul 2026-10-30: "in active jobs P&L I want Family Name, not Job#".
+      // Same family name the Jobs tab prints (order.primary_lastname, else the
+      // customer's last name) and the same stage the Jobs tab derives (first
+      // actionable milestone), so the two tabs tell one story. The old map read
+      // fields jobs never had, so every row fell back to "Job <id>".
+      const job = {}; const jobMeta = {}
+      for (const j of jobs) {
+        const fam = familyNameForJob(j)
+        job[j.id] = (fam && fam !== '—') ? fam
+          : j.customer ? customerName(j.customer)
+          : (j.door_index != null ? `Door ${j.door_index + 1}` : `Job ${String(j.id).slice(0, 8)}`)
+        jobMeta[j.id] = {
+          first: j.customer?.first_name || '',
+          cemetery: j.cemetery?.name || '',
+          orderNumber: j.order?.order_number || '',
+          stage: currentStage(j).fineLabel,
+        }
+      }
       const order = {}; for (const o of orders) order[o.id] = customerName(o)
-      setLabels({ cemetery: cem, job, order })
+      setLabels({ cemetery: cem, job, jobMeta, order })
     } catch (e) {
       // Defensive — Promise.allSettled never rejects, but any post-processing
       // throw lands here so we still flip out of the loading state.
@@ -209,15 +227,21 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = f
     : r.order_id ? (labels.order[r.order_id] || 'Order')
     : 'General overhead'
   const rowLabel = (r) => r.kind === 'Cemetery order' ? r.label : (labels.job[r.key.slice(2)] || r.label || `Job ${r.key.slice(2, 10)}`)
-  const rowSubMeta = (r) => r.kind === 'Cemetery order'
-    ? `Cemetery order · ${r.jobCount || 0} door${r.jobCount === 1 ? '' : 's'}`
-    : `${(r.jobType || 'job').replace(/_/g, ' ')} · ${r.key.slice(2, 10)}`
+  const rowSubMeta = (r) => {
+    if (r.kind === 'Cemetery order') return `Cemetery order · ${r.jobCount || 0} door${r.jobCount === 1 ? '' : 's'}`
+    const m = labels.jobMeta?.[r.key.slice(2)]
+    return [m?.first, (r.jobType || 'job').replace(/_/g, ' '), m?.orderNumber, m?.cemetery].filter(Boolean).join(' · ')
+  }
+  // The overview's own stage guess ranks milestone GROUPS first, so a job with
+  // one stale intake line reads "Intake" forever; the Jobs tab's derivation
+  // wins whenever we have that job loaded.
+  const rowStage = (r) => r.kind === 'Cemetery order' ? r.stage : (labels.jobMeta?.[r.key.slice(2)]?.stage || r.stage)
 
   const filteredPayments = useMemo(() => payments.filter(p => payMethod === 'all' || p.payment_method === payMethod), [payments, payMethod])
   const filteredExpenses = useMemo(() => expenses.filter(e => expCategory === 'all' || e.category === expCategory), [expenses, expCategory])
 
   const activeRows = ov?.activeRows || []
-  const enrichedRows = useMemo(() => activeRows.map(r => ({ ...r, _label: rowLabel(r), _sub: rowSubMeta(r) })), [activeRows, labels])
+  const enrichedRows = useMemo(() => activeRows.map(r => ({ ...r, _label: rowLabel(r), _sub: rowSubMeta(r), _stage: rowStage(r) })), [activeRows, labels])
   const filteredRows = useMemo(() => {
     let rows = enrichedRows
     if (statusFilter === 'active') rows = rows.filter(r => r.active)
@@ -226,7 +250,7 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = f
     if (typeFilter) rows = rows.filter(r => r.jobType === typeFilter)
     if (needsOnly) rows = rows.filter(r => r.signals.some(s => s.severity === 'red'))
     const q = search.trim().toLowerCase()
-    if (q) rows = rows.filter(r => (r._label || '').toLowerCase().includes(q))
+    if (q) rows = rows.filter(r => `${r._label || ''} ${r._sub || ''}`.toLowerCase().includes(q))
     const val = (r) => { const v = rowMarginPct(r); return v == null ? (profSort === 'worst' ? Infinity : -Infinity) : v }
     if (profSort === 'worst') rows = [...rows].sort((a, b) => val(a) - val(b))
     else if (profSort === 'best') rows = [...rows].sort((a, b) => val(b) - val(a))
@@ -447,7 +471,7 @@ export default function ProfitTab({ onOpenJob, onOpenCemeteryOrder, embedded = f
                           <div className="px-jt-jobname">{r._label}</div>
                           <div className="px-jt-jobmeta">{r._sub}</div>
                         </td>
-                        <td className="px-jt-stage"><StagePill tone={r.tone || 'neutral'}>{r.stage}</StagePill></td>
+                        <td className="px-jt-stage"><StagePill tone={r.tone || 'neutral'}>{r._stage}</StagePill></td>
                         <td className="px-jt-r sb-mono">{fmtUSD(r.revenue || 0)}</td>
                         <td className="px-jt-r sb-mono">{fmtUSD(r.cost || 0)}</td>
                         <td className="px-jt-r sb-mono" style={{ color: TONE_FILL[r.tone] || C.textPri }}>{pct1(mp)}</td>
@@ -698,8 +722,8 @@ const styles = `
   .px-jt-row > td{ padding:10px 8px; border-bottom:.5px solid rgba(0,0,0,0.06); font-size:13px; color:#0F1419; vertical-align:middle; }
   .px-jt-row:hover > td{ background:#fafaf7; }
   .px-jt-row.on > td{ background:#fafaf7; }
-  .px-jt-jobname{ font-weight:600; font-size:13.5px; }
-  .px-jt-jobmeta{ font-size:11px; color:#8a8a82; margin-top:2px; }
+  .px-jt-jobname{ font-weight:600; font-size:13.5px; overflow-wrap:anywhere; }
+  .px-jt-jobmeta{ font-size:11px; color:#8a8a82; margin-top:2px; overflow-wrap:anywhere; }
   .px-jt-job{ width:30%; }
   .px-jt-stage{ width:140px; }
   .px-jt-bar{ width:18%; }
