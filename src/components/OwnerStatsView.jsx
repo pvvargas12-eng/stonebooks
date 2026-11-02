@@ -170,6 +170,71 @@ function BarChart({ series, gran, label, tone = 'gold' }) {
   )
 }
 
+// ── Line chart (several series on ONE axis) ────────────────────────────────
+// Paul 2026-11-02: "a line chart of orders by type of order so I can see if
+// sales are increasing and decreasing". Fixed hue per type (never cycled),
+// 2px lines, round markers, a legend, one shared y axis, hover = every
+// series for that period in the foot.
+const SALES_LINES = [
+  { code: 'total',       label: 'All orders',  color: '#16150F', dash: '5 4' },
+  { code: 'NEW_STONE',   label: 'New stone',   color: '#B8893A' },
+  { code: 'BRONZE',      label: 'Bronze',      color: '#2F5D9E' },
+  { code: 'INSCRIPTION', label: 'Inscription', color: '#2E7D4F' },
+  { code: 'OTHER',       label: 'Other',       color: '#8A8A85' },
+]
+function LineChart({ keys, series, gran, label }) {
+  const [hover, setHover] = useState(null)
+  const W = 900, H = 240, padL = 30, padR = 14, padT = 16, padB = 30
+  const n = keys.length
+  const max = Math.max(1, ...SALES_LINES.flatMap(l => series[l.code].map(v => v.value)))
+  const innerW = W - padL - padR, innerH = H - padT - padB
+  const slot = innerW / Math.max(1, n)
+  const x = (i) => padL + slot * i + slot / 2
+  const y = (v) => padT + innerH - (v / max) * innerH
+  const ticks = [0, Math.round(max / 2), max].filter((v, i, a) => a.indexOf(v) === i)
+  const showEvery = n > 14 ? 2 : 1
+  const path = (vals) => vals.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v.value).toFixed(1)}`).join(' ')
+  return (
+    <div className="ost-chart">
+      <div className="ost-chart-title">{label}</div>
+      <div className="ost-legend">
+        {SALES_LINES.map(l => (
+          <span key={l.code} className="ost-legend-item"><span className="ost-legend-swatch" style={{ background: l.color }} />{l.label}</span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="ost-chart-svg" role="img" aria-label={`${label} by period`} onMouseLeave={() => setHover(null)}>
+        {ticks.map(t => (
+          <g key={t}>
+            <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} className="ost-grid" />
+            <text x={padL - 5} y={y(t) + 3.5} className="ost-tick" textAnchor="end">{t}</text>
+          </g>
+        ))}
+        <line x1={padL} x2={W - padR} y1={y(0)} y2={y(0)} className="ost-axis" />
+        {hover != null && <line x1={x(hover)} x2={x(hover)} y1={padT} y2={y(0)} className="ost-cross" />}
+        {SALES_LINES.map(l => (
+          <path key={l.code} d={path(series[l.code])} className="ost-line" stroke={l.color} strokeDasharray={l.dash || undefined} />
+        ))}
+        {SALES_LINES.map(l => series[l.code].map((v, i) => (
+          <circle key={`${l.code}-${v.key}`} cx={x(i)} cy={y(v.value)} r={hover === i ? 5 : 3.5} fill={l.color} className="ost-dot" />
+        )))}
+        {keys.map((k, i) => (
+          <g key={k} onMouseEnter={() => setHover(i)} onMouseMove={() => setHover(i)}>
+            <rect x={padL + slot * i} y={padT} width={slot} height={innerH} fill="transparent" />
+            {(i % showEvery === 0 || i === n - 1) && (
+              <text x={x(i)} y={H - padB + 15} className={`ost-tick${hover === i ? ' on' : ''}`} textAnchor="middle">{tickLabel(k, gran)}</text>
+            )}
+          </g>
+        ))}
+      </svg>
+      <div className="ost-chart-foot">
+        {hover != null
+          ? <span className="ost-chart-tip"><b>{periodLabel(keys[hover], gran)}</b>{SALES_LINES.map(l => <span key={l.code}> · {l.label} <b>{series[l.code][hover].value}</b></span>)}</span>
+          : <span className="ost-chart-tip muted">hover a period for the counts</span>}
+      </div>
+    </div>
+  )
+}
+
 // "Last 4 vs the 4 before" — the plain-words trend line under each chart.
 function trendWords(series, gran) {
   const n = gran === 'year' ? 1 : gran === 'month' ? 3 : 4
@@ -323,6 +388,27 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
     for (const e of drillList) { const k = e.category || 'uncategorized'; m.set(k, (m.get(k) || 0) + (Number(e.amount) || 0)) }
     return [...m.entries()].sort((a, b) => b[1] - a[1])
   }, [drillList, drillTab])
+
+  // ── SALES per period by type — the line chart (same periods as production) ─
+  // An order counts once, under its main service: new stone, else bronze, else
+  // inscription, else other — so the four type lines add up to the total line.
+  // Signed contracts only (signed_at), cancelled ones out; leads never count.
+  const salesChart = useMemo(() => {
+    const keys = lastPeriods(now, prodGran, prodPeriodCount(prodGran)).reverse()
+    const idx = new Map(keys.map((k, i) => [k, i]))
+    const mk = () => keys.map(k => ({ key: k, value: 0 }))
+    const series = { total: mk(), NEW_STONE: mk(), BRONZE: mk(), INSCRIPTION: mk(), OTHER: mk() }
+    for (const o of orders) {
+      if (!o.signed_at || o.archived || o.status === 'cancelled') continue
+      const i = idx.get(periodKey(o.signed_at, prodGran))
+      if (i == null) continue
+      const sv = servicesOf(o)
+      const t = sv.includes('NEW_STONE') || sv.includes('CIVIC_MEMORIAL') || sv.includes('MAUSOLEUM') ? 'NEW_STONE' : sv.includes('BRONZE') ? 'BRONZE' : sv.includes('INSCRIPTION') ? 'INSCRIPTION' : 'OTHER'
+      series.total[i].value++; series[t][i].value++
+    }
+    const totals = Object.fromEntries(Object.entries(series).map(([k, v]) => [k, v.reduce((a, r) => a + r.value, 0)]))
+    return { keys, series, totals }
+  }, [orders, prodGran, now])
 
   // ── PRODUCTION per period — per JOB, by the milestone's own date ──────────
   const production = useMemo(() => {
@@ -572,6 +658,39 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
         </table>
       </div>
 
+      {/* SALES — orders signed over time, one line per type */}
+      <div className="ost-panel">
+        <div className="ost-panel-head">
+          <span className="ost-panel-title">Sales — orders signed</span>
+          <div className="ost-grans">
+            {[['week', 'By week'], ['month', 'By month'], ['year', 'By year']].map(([code, label]) => (
+              <button type="button" key={code} className={`ost-chip${prodGran === code ? ' on' : ''}`} onClick={() => setProdGran(code)}>{label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="ost-hint">
+          Counted on the day the contract was signed, one line per kind of order (an order with a stone and an inscription counts as a stone). {spanLabel(prodGran, prodPeriodCount(prodGran))}, oldest on the left.
+        </div>
+        <div className="ost-cards ost-cards-3">
+          {SALES_LINES.map(l => {
+            const t = trendWords(salesChart.series[l.code], prodGran)
+            return (
+              <div key={l.code} className="ost-card">
+                <div className="ost-card-l"><span className="ost-legend-swatch" style={{ background: l.color }} />{l.label}</div>
+                <div className="ost-card-v">{salesChart.totals[l.code]}</div>
+                <div className="ost-card-s">
+                  {spanLabel(prodGran, prodPeriodCount(prodGran))}
+                  {t && <> · <span className={`ost-trend ost-trend-${t.word}`}>{t.word}</span> — {t.text}</>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div className="ost-charts">
+          <LineChart keys={salesChart.keys} series={salesChart.series} gran={prodGran} label="Orders signed, by kind" />
+        </div>
+      </div>
+
       {/* PRODUCTION — volume over time */}
       <div className="ost-panel">
         <div className="ost-panel-head">
@@ -782,4 +901,12 @@ const CSS = `
   .ost-val { font-size: 10.5px; fill: #16150F; font-weight: 700; font-family: var(--sb-font-mono, 'JetBrains Mono'), monospace; }
   .ost-chart-foot { min-height: 18px; font-size: 12px; color: #16150F; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ost-chart-tip.muted { color: #a09c93; }
+  .ost-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .ost-dot { stroke: #fff; stroke-width: 1.5; }
+  .ost-cross { stroke: #cfc7b6; stroke-width: 1; stroke-dasharray: 3 3; }
+  .ost-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 2px 0 6px; font-size: 11.5px; color: #16150F; }
+  .ost-legend-item { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  .ost-legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; flex: 0 0 auto; }
+  .ost-chart-foot { white-space: normal; }
+  .ost-chart-foot .ost-chart-tip { white-space: normal; overflow-wrap: anywhere; }
 `

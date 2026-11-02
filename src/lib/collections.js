@@ -140,7 +140,12 @@ export async function getCollectionQueues() {
     }
   }
 
+  // Paul 2026-11-02: "why do things that are installed show up in the delivery
+  // queue?" A blasted stone keeps its floor_line_items row after it is set, so
+  // step 3 kept adding 'delivery' to orders already installed. Installed is the
+  // whole story for an order: it is not in a queue any more.
   for (const e of out.values()) {
+    if (e.stages.has('installed')) { e.stages.delete('delivery'); e.stages.delete('blast'); e.detail = 'installed' }
     e.stage = STAGES.find(s => e.stages.has(s.code))?.code || null
   }
   return out

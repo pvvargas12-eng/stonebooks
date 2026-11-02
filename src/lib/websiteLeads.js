@@ -27,14 +27,23 @@ const SWEEP_WINDOW_DAYS = 14
 
 // "Label: value" body lines → { label(lower): value }; strips the trailing
 // "[tel:…]" / "[mailto:…]" duplicates Duda appends.
-function parseFormBody(bodyText) {
+// Paul 2026-11-02: "I need to be able to see their whole contact message."
+// A message runs over several lines in the notification; only the first line
+// used to be kept. A line that is not a new "Label:" continues the last field.
+export function parseFormBody(bodyText) {
   const out = {}
+  let last = null
   for (const raw of String(bodyText || '').split(/\r?\n/)) {
     const m = raw.match(/^([A-Za-z][A-Za-z0-9 /#()'-]{1,40}):\s*(.+)$/)
-    if (!m) continue
+    if (!m) {
+      const cont = raw.trim()
+      if (last && cont) out[last] = (out[last] ? out[last] + '\n' : '') + cont
+      continue
+    }
     const key = m[1].trim().toLowerCase()
-    if (key === 'form response notification') continue
+    if (key === 'form response notification') { last = null; continue }
     out[key] = m[2].trim().replace(/\s*\[(?:tel|mailto):[^\]]*\]\s*$/i, '')
+    last = key
   }
   return out
 }

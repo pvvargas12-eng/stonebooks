@@ -351,7 +351,7 @@ export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
       {/* Summary cards */}
       <div className="sb-pay-cards">
         <SummaryCard label="Outstanding" value={outstanding} sub={`Owed to you · ${openBalances.length} order${openBalances.length === 1 ? '' : 's'}`} tone="amber" />
-        <SummaryCard label="On the table" value={onTheTable} sub={`${estimates.length} open estimate${estimates.length === 1 ? '' : 's'}`} tone="blue" />
+        <SummaryCard label="Estimates out" value={onTheTable} sub={`${estimates.length} open estimate${estimates.length === 1 ? '' : 's'}`} tone="blue" />
         <SummaryCard label="Collected" value={collectedThisMonth} sub="This month · incoming" tone="green" />
         <SummaryCard label="Paid out" value={paidOutThisMonth} sub="This month · outgoing" tone="red" />
       </div>
