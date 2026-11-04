@@ -24,7 +24,7 @@ import {
 } from '../lib/stonebooksData'
 import {
   STAGES, stageDef, listCollectionLog, addCollectionLog, setPromiseToPay,
-  lastContactOf, lastNoteOf, activePromiseOf, promiseMissed, daysAgo,
+  lastContactOf, lastNoteOf, activePromiseOf, promiseMissed, daysAgo, CONTACT_VERB, logLine,
 } from '../lib/collections'
 import ConfirmSend from './ConfirmSend'
 import { phaseLabel } from '../lib/jobComponents'
@@ -37,6 +37,10 @@ const SHOP = {
   cardFeePct: 2,
 }
 const TOUCH_DAYS = 14   // "needs a touch" = never contacted or older than this
+// Paul 2026-11-04: one CONTACT button instead of Call + Promise — the panel
+// asks how you reached them and what was said; a plain note counts as a
+// touch too ("when you put a note in it should mark as contacted").
+const CONTACT_WAYS = [['call', 'Called'], ['text', 'Texted'], ['note', 'Note only']]
 
 // Round 3 (Paul): no Priority / Balance owed / Family / Oldest chips — the
 // list is ordered by balance unless one of these is picked, and the direction
@@ -141,6 +145,8 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
   const [touchOnly, setTouchOnly] = useState(false)
   const [open, setOpen] = useState(() => new Set())   // rows with the notes panel open
   const [drafts, setDrafts] = useState({})            // order id → note draft
+  const [ways, setWays] = useState({})                // order id → 'call' | 'text' | 'note'
+  const noteRefs = useRef({})                         // order id → the note input
   const [busyId, setBusyId] = useState(null)
   const [emailFor, setEmailFor] = useState(null)
   const [toast, setToast] = useState(null)
@@ -240,35 +246,30 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
   const touchCount = useMemo(() => rows.filter(r => r.promiseMissed || r.days == null || r.days >= TOUCH_DAYS).length, [rows])
 
   // ── actions ───────────────────────────────────────────────────────────────
-  const logCall = async (r) => {
-    if (busyId) return
-    setBusyId(r.id)
-    const res = await addCollectionLog({ orderId: r.id, kind: 'call', amount: r.balance })
-    setBusyId(null)
-    if (!res.ok) { say(res.error || 'Could not log the call.'); return }
+  const wayOf = (r) => ways[r.id] || 'call'
+  // Contact = open the panel on the contact strip with the note box focused.
+  const openContact = (r) => {
     setOpen(s => new Set(s).add(r.id))
-    setDrafts(d => ({ ...d, [r.id]: d[r.id] || '' }))
-    say(`Call logged for ${r.name} — add a note on what was said.`)
-    loadLog()
+    setTimeout(() => noteRefs.current[r.id]?.focus(), 0)
   }
-  const saveNote = async (r) => {
+  // One save = one log row of the picked kind with the words typed. A call or
+  // a text may go in with nothing typed (no answer); a note needs words.
+  const saveContact = async (r) => {
     const text = (drafts[r.id] || '').trim()
-    if (!text || busyId) return
+    const kind = wayOf(r)
+    if (busyId || (kind === 'note' && !text)) return
     setBusyId(r.id)
-    const res = await addCollectionLog({ orderId: r.id, kind: 'note', note: text })
+    const res = await addCollectionLog({ orderId: r.id, kind, note: text, amount: kind === 'note' ? null : r.balance })
     setBusyId(null)
-    if (!res.ok) { say(res.error || 'Could not save the note.'); return }
+    if (!res.ok) { say(res.error || 'Could not save the contact.'); return }
     setDrafts(d => ({ ...d, [r.id]: '' }))
+    say(`${CONTACT_VERB[kind]} — ${r.name} marked contacted today.`)
     loadLog()
   }
   const toggleOpen = (id) => setOpen(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   // Promise to pay: the panel's strip. Default date = a week out; a standing
   // promise seeds its own date so "Update" starts from what they said.
   const draftFor = (r) => promiseDraft[r.id] || { date: r.promise?.promised_for || addDaysISO(today, 7), note: '' }
-  const openPromise = (r) => {
-    setOpen(s => new Set(s).add(r.id))
-    setPromiseDraft(d => ({ ...d, [r.id]: draftFor(r) }))
-  }
   const savePromise = async (r) => {
     const pd = draftFor(r)
     if (!pd.date || busyId) return
@@ -283,8 +284,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
 
   const contactText = (r) => {
     if (!r.lastContact) return null
-    const k = r.lastContact.kind
-    const verb = k === 'call' ? 'Called' : k === 'email' ? 'Emailed' : 'Texted'
+    const verb = CONTACT_VERB[r.lastContact.kind] || 'Contacted'
     const d = r.days
     const when = d === 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`
     return `${verb} ${when}${r.lastContact.actor ? ` · ${r.lastContact.actor}` : ''}`
@@ -409,20 +409,33 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                 <div className="sb-col-note">
                   {r.lastNote ? (
                     <>
-                      <span className="sb-col-note-text">{r.lastNote.note}</span>
+                      <span className="sb-col-note-text" title={logLine(r.lastNote)}>{logLine(r.lastNote)}</span>
                       <span className="sb-col-sub">{fmtDate(r.lastNote.created_at)}{r.lastNote.actor ? ` · ${r.lastNote.actor}` : ''}</span>
                     </>
                   ) : <span className="sb-col-none">—</span>}
                 </div>
                 <div className="sb-col-actions">
                   <button type="button" className="sb-col-btn sb-col-btn-gold" onClick={() => setEmailFor(r)} title="Preview and send a balance request">Request balance</button>
-                  <button type="button" className="sb-col-btn" disabled={busyId === r.id} onClick={() => logCall(r)} title="Log a call — updates last contact">Call</button>
-                  <button type="button" className={`sb-col-btn${r.promiseMissed ? ' sb-col-btn-red' : ''}`} onClick={() => openPromise(r)} title="Record the date they promised to pay — a reminder task lands that day">Promise</button>
+                  <button type="button" className={`sb-col-btn${r.promiseMissed ? ' sb-col-btn-red' : ''}`} onClick={() => openContact(r)} title="Log a call, a text, or a note — marks the order contacted today; a promise date can go in too">Contact</button>
                   <button type="button" className={`sb-col-btn${isOpen ? ' on' : ''}`} onClick={() => toggleOpen(r.id)}>Notes{r.log.length ? ` ${r.log.length}` : ''}</button>
                 </div>
               </div>
               {isOpen && (
                 <div className="sb-col-panel">
+                  <div className="sb-col-addnote">
+                    <div className="sb-col-ways" role="radiogroup" aria-label="How you reached them">
+                      {CONTACT_WAYS.map(([code, label]) => (
+                        <button key={code} type="button" className={`sb-col-chip sb-col-way${wayOf(r) === code ? ' on' : ''}`} onClick={() => setWays(w => ({ ...w, [r.id]: code }))}>{label}</button>
+                      ))}
+                    </div>
+                    <input className="sb-pay-input" ref={el => { noteRefs.current[r.id] = el }} value={drafts[r.id] || ''}
+                      placeholder={wayOf(r) === 'note' ? 'What to remember — counts as a touch' : 'What was said, what they promised, when to try again'}
+                      onChange={e => setDrafts(d => ({ ...d, [r.id]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter') saveContact(r) }} />
+                    <button type="button" className="sb-col-btn sb-col-btn-dark" disabled={busyId === r.id || (wayOf(r) === 'note' && !(drafts[r.id] || '').trim())} onClick={() => saveContact(r)}>
+                      {wayOf(r) === 'note' ? 'Save note' : 'Save contact'}
+                    </button>
+                  </div>
                   {(() => {
                     const pd = draftFor(r)
                     return (
@@ -442,12 +455,6 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                       </div>
                     )
                   })()}
-                  <div className="sb-col-addnote">
-                    <input className="sb-pay-input" value={drafts[r.id] || ''} placeholder="Add a note — what was said, what they promised, when to try again"
-                      onChange={e => setDrafts(d => ({ ...d, [r.id]: e.target.value }))}
-                      onKeyDown={e => { if (e.key === 'Enter') saveNote(r) }} />
-                    <button type="button" className="sb-col-btn sb-col-btn-dark" disabled={busyId === r.id || !(drafts[r.id] || '').trim()} onClick={() => saveNote(r)}>Save note</button>
-                  </div>
                   {r.log.length === 0 ? (
                     <div className="sb-col-none" style={{ padding: '6px 0' }}>No calls, emails, or notes yet.</div>
                   ) : (
@@ -455,12 +462,7 @@ export default function CollectBalancesView({ orders, queues, loading, onOpenOrd
                       {r.log.map(e => (
                         <li key={e.id} className={`sb-col-log-${e.kind}`}>
                           <span className="sb-col-log-kind">{e.kind === 'call' ? 'CALL' : e.kind === 'email' ? 'EMAIL' : e.kind === 'text' ? 'TEXT' : e.kind === 'promise' ? 'PROMISE' : 'NOTE'}</span>
-                          <span className="sb-col-log-body">
-                            {e.kind === 'email' ? `Balance request sent${e.sent_to ? ` to ${e.sent_to}` : ''}${e.amount ? ` for ${fmtUSD(e.amount)}` : ''}`
-                              : e.kind === 'call' ? `Called about the balance${e.amount ? ` (${fmtUSD(e.amount)} owed)` : ''}`
-                              : e.kind === 'promise' ? `Promised ${e.amount ? `${fmtUSD(e.amount)} ` : ''}by ${e.promised_for ? fmtDate(e.promised_for) : '—'}` : ''}
-                            {e.note ? (e.kind === 'note' ? e.note : ` — ${e.note}`) : ''}
-                          </span>
+                          <span className="sb-col-log-body">{logLine(e)}</span>
                           <span className="sb-col-log-when">{fmtDate(e.created_at)}{e.actor ? ` · ${e.actor}` : ''}</span>
                         </li>
                       ))}
@@ -709,6 +711,8 @@ const COLLECT_CSS = `
   .sb-col-last-warm .sb-col-last-main { color: #7A5A00; }
   .sb-col-last-fresh .sb-col-last-main { color: #1f6b3d; }
   .sb-col-note { display: flex; flex-direction: column; gap: 2px; }
+  .sb-col-ways { display: flex; gap: 4px; flex: 0 0 auto; }
+  .sb-col-way { padding: 6px 10px; }
   .sb-col-note-text { font-size: 13px; color: #1e2d3d; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
   .sb-col-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
   .sb-col-btn { font: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 12px; border-radius: 8px; border: 0.5px solid #e6e3dd; background: #fff; color: #1e2d3d; cursor: pointer; white-space: nowrap; }

@@ -216,9 +216,25 @@ export async function setPromiseToPay({ orderId, family, orderNumber, balance = 
   return addCollectionLog({ orderId, kind: 'promise', note, amount: balance, promisedFor, taskId })
 }
 
-export const CONTACT_KINDS = new Set(['call', 'email', 'text'])
+// Paul 2026-11-04: "when you put a note in it should mark as contacted" — every
+// log row is a touch (a note or a promise comes out of a conversation), so
+// "last contact" is simply the newest row. The verb says which kind it was.
+export const CONTACT_KINDS = new Set(['call', 'email', 'text', 'note', 'promise'])
 export const lastContactOf = (rows) => (rows || []).find(r => CONTACT_KINDS.has(r.kind)) || null
-export const lastNoteOf = (rows) => (rows || []).find(r => r.kind === 'note' && r.note) || null
+export const CONTACT_VERB = { call: 'Called', email: 'Emailed', text: 'Texted', note: 'Noted', promise: 'Promise taken' }
+// The latest note = the newest row with words on it, else the newest row at
+// all (an email or a call with nothing typed still says what happened).
+export const lastNoteOf = (rows) => (rows || []).find(r => r.note) || (rows || [])[0] || null
+// One line for a log row: what happened, then the words typed.
+export function logLine(e) {
+  if (!e) return ''
+  const head = e.kind === 'email' ? `Balance request sent${e.sent_to ? ` to ${e.sent_to}` : ''}${e.amount ? ` for ${fmtUSD(e.amount)}` : ''}`
+    : e.kind === 'call' ? `Called about the balance${e.amount ? ` (${fmtUSD(e.amount)} owed)` : ''}`
+    : e.kind === 'text' ? `Texted about the balance${e.amount ? ` (${fmtUSD(e.amount)} owed)` : ''}`
+    : e.kind === 'promise' ? `Promised ${e.amount ? `${fmtUSD(e.amount)} ` : ''}by ${e.promised_for ? fmtDate(e.promised_for) : '—'}` : ''
+  if (!e.note) return head
+  return head ? `${head} — ${e.note}` : e.note
+}
 // The standing promise = the newest promise row (the balance still owing is
 // what keeps it alive — a paid order leaves the list and the promise with it).
 export const activePromiseOf = (rows) => (rows || []).find(r => r.kind === 'promise' && r.promised_for) || null
