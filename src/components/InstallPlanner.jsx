@@ -310,15 +310,27 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   const doneIds = new Set()
   for (const it of (plan?.items || [])) if (it.lane === cfg.lane && it.job_id && isDone(jobById.get(it.job_id))) doneIds.add(it.job_id)
   for (const b of batches) for (const l of (b.batch_jobs || [])) if (isDone(jobById.get(l.job_id))) doneIds.add(l.job_id)
-  const dayOfJob = new Map()
-  const batchOfJob = new Map()
-  for (const b of batches) for (const l of (b.batch_jobs || [])) { dayOfJob.set(l.job_id, b.scheduled_date); batchOfJob.set(l.job_id, b) }
+  // MISSED (Paul 2026-11-06: "if the day passes and it wasn't installed it
+  // must go back into the queue, otherwise I don't know what I still need to
+  // install"): a stop on a day that is BEHIND today, not ticked complete,
+  // whose job is not done, is not a day any more — the stone is unplaced
+  // again and wears MISSED M/D. Read-time only: the old stop and the old
+  // plan row stay (the Scheduler shows the overdue trip, the Friday score
+  // reads the row); placing the stone on a new day clears the old stop.
+  const missedOf = new Map()   // job_id → the latest passed day it was never done on
+  for (const b of [...pastBatches, ...batches]) for (const l of (b.batch_jobs || [])) {
+    if (l.completed_at || !(b.scheduled_date < todayIso) || isDone(jobById.get(l.job_id))) continue
+    if (!missedOf.has(l.job_id) || missedOf.get(l.job_id) < b.scheduled_date) missedOf.set(l.job_id, b.scheduled_date)
+  }
+  const dayOfJob = new Map()     // this week's LIVE days (today or later)
+  const batchOfJob = new Map()   // every stop of this week, missed ones too — place / unplace / × clean them up
+  for (const b of batches) for (const l of (b.batch_jobs || [])) { if (!(b.scheduled_date < todayIso) || l.completed_at) dayOfJob.set(l.job_id, b.scheduled_date); batchOfJob.set(l.job_id, b) }
   // This week's own rows …
   const ownItems = (plan?.items || []).filter(it => it.lane === cfg.lane && it.job_id && !doneIds.has(it.job_id))
   const ownIds = new Set(ownItems.map(it => it.job_id))
-  // … a day ANYWHERE (past, this week, the weeks ahead) …
+  // … a day ANYWHERE (past, this week, the weeks ahead) — a missed day is not one …
   const dayAnywhere = new Map()
-  for (const b of [...pastBatches, ...batches, ...farBatches]) for (const l of (b.batch_jobs || [])) if (!l.completed_at) dayAnywhere.set(l.job_id, b.scheduled_date)
+  for (const b of [...pastBatches, ...batches, ...farBatches]) for (const l of (b.batch_jobs || [])) if (!l.completed_at && !(b.scheduled_date < todayIso)) dayAnywhere.set(l.job_id, b.scheduled_date)
   // … and the CARRIED rows: other weeks' list stones with no day anywhere —
   // they show here too (earliest week first, each job once) until placed.
   const weekOfPlan = new Map((plans || []).map(w => [w.id, w.week_start]))
@@ -332,8 +344,22 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
     seenCarry.add(it.job_id)
     carried.push({ ...it, _carried: true, _fromWeek: weekOfPlan.get(it.plan_id) || null })
   }
+  // An own row that still has no day here but sits on an EARLIER week's list
+  // too (the auto-roll copied it in) says where it came from, like a carried
+  // row does — so a slipped stone never reads as new.
+  const earlierWeekOf = new Map()
+  for (const it of otherItems) {
+    if (it.lane !== cfg.lane || !it.job_id || it.outcome === 'dropped') continue
+    const w = weekOfPlan.get(it.plan_id)
+    if (!w || !(w < week)) continue
+    if (!earlierWeekOf.has(it.job_id) || w < earlierWeekOf.get(it.job_id)) earlierWeekOf.set(it.job_id, w)
+  }
   // Own rows with a day in ANOTHER week live on that week's list, not here.
-  const weekItems = [...ownItems.filter(it => !dayAnywhere.has(it.job_id) || dayOfJob.has(it.job_id)), ...carried]
+  const weekItems = [
+    ...ownItems.filter(it => !dayAnywhere.has(it.job_id) || dayOfJob.has(it.job_id))
+      .map(it => (!dayOfJob.has(it.job_id) && earlierWeekOf.has(it.job_id) ? { ...it, _fromWeek: earlierWeekOf.get(it.job_id) } : it)),
+    ...carried,
+  ]
   const onWeek = new Set(weekItems.map(it => it.job_id))
   const days = DAYS.map((label, i) => {
     const iso = addDays(week || isoOf(mondayOf()), i)
@@ -344,6 +370,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
   })
   const doneNames = [...doneIds].map(id => famOf(jobById.get(id))).filter(n => n && n !== '—').sort()
   const unplaced = weekItems.filter(it => !dayOfJob.has(it.job_id))
+  const missedRows = unplaced.filter(it => missedOf.has(it.job_id))
   const remsOf = (job) => remindersFor(job, rems)
   const gatesOf = (job) => cfg.gates(job)
   const ready = (job) => cfg.ready(gatesOf(job))
@@ -528,7 +555,8 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
         <button type="button" className="ip-fam ip-fam-btn" onClick={() => job.order?.id && onOpenOrderDetail?.(job.order.id, cfg.openAction)}>{famOf(job)}</button>
         <HotTag on={isHot(job)} /><LineTag on={isOnLine(job)} />
         {trackTag(job)}
-        {onWeekRow?._carried && <span className="ip-carry" title="On an earlier week's list with no day yet — give it a day here, or leave it for later">FROM WEEK OF {onWeekRow._fromWeek ? `${onWeekRow._fromWeek.slice(5, 7)}/${onWeekRow._fromWeek.slice(8, 10)}` : '—'}</span>}
+        {onWeekRow?._fromWeek && <span className="ip-carry" title="On an earlier week's list with no day yet — give it a day here, or leave it for later">FROM WEEK OF {`${onWeekRow._fromWeek.slice(5, 7)}/${onWeekRow._fromWeek.slice(8, 10)}`}</span>}
+        {onWeekRow && missedOf.has(jobId) && !day && <span className="ip-missed" title={`Was on ${fmtDay(missedOf.get(jobId))} and never marked ${cfg.verb === 'install' ? 'installed' : 'completed'} — back on the list, give it a new day`}>MISSED {fmtDay(missedOf.get(jobId)).toUpperCase()}</span>}
         <span className="ip-meta">{[job.order?.order_number, composeGraveLocation(job.order || {})].filter(Boolean).join(' · ')}</span>
         {gateChips(job, cfg, isOnLine(job))}
         <ReminderChips list={list} busy={busy} onDone={remDone} />
@@ -569,7 +597,9 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
                     <button type="button" className="ip-fam ip-fam-btn" onClick={() => job?.order?.id && onOpenOrderDetail?.(job.order.id, cfg.openAction)}>{job ? famOf(job) : '(job)'}</button>
                     <HotTag on={isHot(job)} /><LineTag on={isOnLine(job)} />
                     {trackTag(job, true)}
-                    {job && <span className={`ip-g ${ok ? 'ok' : 'red'}`}>{ok ? 'READY' : 'GATE'}</span>}
+                    {job && (missedOf.has(l.job_id) && b.scheduled_date < todayIso
+                      ? <span className="ip-g missed" title="This day passed without the install — the stone is back on the week list below">MISSED</span>
+                      : <span className={`ip-g ${ok ? 'ok' : 'red'}`}>{ok ? 'READY' : 'GATE'}</span>)}
                     {job && remsOf(job).length > 0 && <span className="ip-g rem" title={remsOf(job).map(r => r.text).join(' · ')}>{remsOf(job).length} REM</span>}
                     <button type="button" className="ip-x" disabled={busy} title="Take off this day" onClick={() => unplace(l.job_id)}>×</button>
                   </div>
@@ -796,6 +826,12 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
         </div>
       )}
 
+      {mode === 'build' && missedRows.length > 0 && (
+        <div className="ip-missed-strip">
+          <b>Missed — back on the list:</b> {missedRows.slice(0, 8).map(it => `${famOf(jobById.get(it.job_id))} (${fmtDay(missedOf.get(it.job_id))})`).join(', ')}{missedRows.length > 8 ? ` +${missedRows.length - 8} more` : ''}. The day passed without the {cfg.verb} — give each a new day.
+        </div>
+      )}
+
       {kind !== 'install' && week && <div className="ip-note">This is a B (production) week. You can still plan here — or flip the week to A in the Team Meeting.</div>}
       {err && <div className="jobcc-err">{err}</div>}
 
@@ -819,7 +855,7 @@ export default function InstallPlanner({ jobs: jobsProp = null, track = 'set', o
             <div className="ip-panel-head">
               <span className="ip-panel-title">Week list</span>
               <span className="ip-n">{weekItems.length}</span>
-              <span className="ip-hint">{unplaced.length ? `${unplaced.length} still need a day` : weekItems.length ? `Every ${cfg.thing} has a day` : 'Nothing on the list yet'}</span>
+              <span className="ip-hint">{unplaced.length ? `${unplaced.length} still need a day${missedRows.length ? ` · ${missedRows.length} missed` : ''}` : weekItems.length ? `Every ${cfg.thing} has a day` : 'Nothing on the list yet'}</span>
               <button type="button" className="ib-act ib-act-go" style={{ marginLeft: 'auto' }} onClick={() => { setAddOpen(o => !o); setAddQ('') }}>{addOpen ? 'Close' : cfg.addBtn}</button>
             </div>
             {addOpen && (
@@ -911,7 +947,10 @@ const IP_CSS = `
   .ip-hot { font-size: 9px; font-weight: 900; letter-spacing: .08em; color: #fff; background: #dc2626; border-radius: 999px; padding: 2px 8px; white-space: nowrap; box-shadow: 0 0 0 1px rgba(220,38,38,.35), 0 0 10px rgba(220,38,38,.35); }
   .ip-line { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #e4ecf7; color: #1d4ed8; border: 1px solid #93c5fd; white-space: nowrap; }
   .ip-g.line { background: #e4ecf7; color: #1d4ed8; border-color: #93c5fd; }
-  .ip-carry { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #1f2937; color: #cbd5e1; border: 1px solid #334155; white-space: nowrap; }
+  .ip-carry { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #1f2937; color: #cbd5e1; border: 1px solid #334155; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  /* A day that passed without the install — the stone is back in the queue. */
+  .ip-missed { font-size: 9.5px; font-weight: 800; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #3a1a1a; color: #fca5a5; border: 1px solid #7f1d1d; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .ip-g.missed { background: #3a1a1a; color: #fca5a5; border-color: #7f1d1d; }
   .ip-fam { font-size: 13px; font-weight: 700; color: #f4f6fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
   .ip-fam-btn { font: inherit; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .ip-fam-btn:hover { color: #fbbf24; }
@@ -943,7 +982,8 @@ const IP_CSS = `
   .ip-day:disabled { opacity: .5; cursor: default; }
   .ip-day.past { opacity: .22; text-decoration: line-through; }
   .ip-movebtn { border-color: #C9A468; color: #fbbf24; }
-  .ip-rolled { font-size: 12px; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+  .ip-rolled { font-size: 12px; color: #fbbf24; background: #2a2210; border: 1px solid #5a4a1e; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
+  .ip-missed-strip { font-size: 12px; color: #fca5a5; background: #2a1414; border: 1px solid #7f1d1d; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; overflow-wrap: anywhere; min-width: 0; }
   .ip-printbtn { border-color: #C9A468 !important; color: #C9A468 !important; font-weight: 700; }
   .ip-printbtn:hover { background: #C9A468 !important; color: #0F1419 !important; }
   .ip-done { font-size: 12px; color: #6ee7b7; background: #0f2a1f; border: 1px solid #1f5a40; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
