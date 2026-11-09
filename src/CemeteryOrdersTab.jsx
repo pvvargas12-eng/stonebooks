@@ -38,7 +38,9 @@ const PAY_PILL = {
   partial: { label: 'Partial',      color: '#b8842a' },
   paid:    { label: 'Paid in full', color: '#2d7a4f' },
 }
-const GRID = '108px minmax(160px,1fr) 56px 104px 118px 150px 96px 232px'
+// Actions sizes to its buttons (Invoice · Pricing · Archive · Delete) so they
+// never run into Updated; Cemetery is the only column that gives.
+const GRID = '108px minmax(140px,1fr) 56px 104px 118px 150px 84px max-content'
 
 const rowTotal = (o) => {
   if (o.total_amount != null) return Number(o.total_amount)
@@ -233,8 +235,10 @@ const styles = `
   .col-head:hover{ background:transparent; }
   .col-row-muted{ opacity:.6; }
   .col-row-archived{ opacity:.55; background:#faf8f4; }
-  .col-actions{ display:flex; gap:6px; justify-content:flex-end; }
-  .col-act{ font:inherit; font-size:11.5px; padding:4px 10px; border-radius:6px; border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text-muted); cursor:pointer; }
+  .col-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:nowrap; white-space:nowrap; }
+  .col-act{ font:inherit; font-size:11.5px; padding:4px 9px; border-radius:6px; border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text-muted); cursor:pointer; white-space:nowrap; }
+  .col-row > *{ min-width:0; }
+  .col-row .col-actions{ min-width:max-content; }
   .col-act:hover{ color:var(--sb-text); border-color:#9A7209; }
   .col-act-gold{ color:#9A7209; border-color:#9A7209; font-weight:600; }
   .col-act-gold:hover{ color:#fff; background:#9A7209; }
