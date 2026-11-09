@@ -30,6 +30,7 @@ import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
 import QuoteStatusBlock from './components/QuoteStatusBlock'
+import CemeteryInvoiceModal from './components/CemeteryInvoiceModal'
 
 // Production lifecycle (NOT payment — payment is computed separately).
 const CO_STATUS = {
@@ -64,6 +65,7 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const [editPay, setEditPay] = useState(null)               // { id, amount, method, date, reference } inline editor
   const [payRowBusy, setPayRowBusy] = useState(null)
   const [payRowErr, setPayRowErr] = useState(null)
+  const [invoiceOpen, setInvoiceOpen] = useState(false)      // CEM-INVOICE preview
 
   const reload = useCallback(async () => {
     const [o, js, pays] = await Promise.all([
@@ -116,7 +118,9 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const lastReceiptPayment = lastReceiptId ? receiptOrder.payments.find(p => p.id === lastReceiptId) : null
   const payPill = PAY_PILL[payState]
   const isCancelled = order.status === 'cancelled'
+  const isDraftOrder = order.status === 'draft'
   const canRecordPayment = !isCancelled && total > 0 && balance > 0
+  const orderExtras = (Array.isArray(order.extra_charges) ? order.extra_charges : []).filter(x => x?.label || Number(x?.price))
 
   const downloadPacket = async () => {
     const url = await getCemeteryPacketSignedUrl(order.packet_storage_path)
@@ -131,9 +135,10 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
 
   // Edit: drafts resume the wizard at Step 1; submitted orders reopen it in
   // edit mode (lands on the doors editor — Phase 7).
-  const onEdit = () => {
+  // step: 'pricing' opens the wizard straight on the Review page (CEM-INVOICE).
+  const onEdit = (step) => {
     if (order.status === 'draft') onResumeDraft?.(order.id)
-    else onEditOrder?.(order.id)
+    else onEditOrder?.(order.id, typeof step === 'string' ? step : undefined)
   }
 
   // ── record payment ──────────────────────────────────────────────────────
@@ -233,8 +238,10 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
       </div>
 
       <div className="cod-actions">
-        <button className="cod-btn" onClick={onEdit}>Edit order</button>
+        <button className="cod-btn" onClick={() => onEdit()}>Edit order</button>
+        <button className="cod-btn" onClick={() => onEdit('pricing')}>Adjust pricing</button>
         {canRecordPayment && <button className="cod-btn cod-btn-primary" onClick={openPay}>Record payment</button>}
+        {!isDraftOrder && <button className="cod-btn cod-btn-gold" onClick={() => setInvoiceOpen(true)}>Invoice</button>}
         <button className="cod-btn" onClick={() => window.print()}>Print PO</button>
         {order.packet_storage_path && <button className="cod-btn" onClick={downloadPacket}>Packet</button>}
       </div>
@@ -261,12 +268,31 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
                   </div>
                 )
               })}
+              {(d.extras || []).filter(x => x?.label || Number(x?.price)).map((x, xi) => (
+                <div key={`x${xi}`} className="cod-li cod-li-extra">
+                  <span>+ {x.label || 'Additional charge'}</span>
+                  <span className="sb-mono">{fmtUSD(x.price)}</span>
+                </div>
+              ))}
             </div>
             {d.inscriptionText && <div className="cod-inscr">“{d.inscriptionText}”</div>}
             {d.notes && <div className="cod-notes">Note: {d.notes}</div>}
           </div>
         )
       })}
+      {orderExtras.length > 0 && (
+        <div className="cod-door cod-door-other">
+          <div className="cod-door-head">
+            <strong>Other charges</strong>
+            <span className="cod-door-sub">{fmtUSD(orderExtras.reduce((s, x) => s + (Number(x.price) || 0), 0))}</span>
+          </div>
+          <div className="cod-door-items">
+            {orderExtras.map((x, xi) => (
+              <div key={xi} className="cod-li"><span>{x.label || 'Custom charge'}</span><span className="sb-mono">{fmtUSD(x.price)}</span></div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Per-order P&L: estimates, actuals, margin, variance signals */}
       <JobPnLPanel target={{ cemeteryOrderId: order.id }} label={order.cemetery_name} />
@@ -419,6 +445,9 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
       {receiptPreview && (
         <ReceiptPreviewModal order={receiptOrder} payment={receiptPreview.payment} grandTotalOverride={total} onClose={() => setReceiptPreview(null)} />
       )}
+      {invoiceOpen && (
+        <CemeteryInvoiceModal orderId={order.id} onClose={() => { setInvoiceOpen(false); reload() }} onAdjustPricing={() => { setInvoiceOpen(false); onEdit('pricing') }} />
+      )}
 
       {/* print-only PO */}
       <div className="cod-print">
@@ -443,13 +472,22 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
               return (
                 <tr key={i}>
                   <td>{i + 1}{isSplit && d.location ? ` (${d.location})` : ''}</td>
-                  <td>{(d.selectedItems || []).map(s => map[keyOf(s)]?.label || keyOf(s)).join(', ')}{d.inscriptionText ? <div className="cod-ppo-inscr">“{d.inscriptionText}”</div> : null}</td>
+                  <td>
+                    {(d.selectedItems || []).map(s => map[keyOf(s)]?.label || keyOf(s)).join(', ')}
+                    {d.inscriptionText ? <div className="cod-ppo-inscr">“{d.inscriptionText}”</div> : null}
+                    {(d.extras || []).filter(x => x?.label || Number(x?.price)).map((x, xi) => (
+                      <div key={xi} className="cod-ppo-extra"><span>+ {x.label || 'Additional charge'}</span><span className="sb-mono">{fmtUSD(x.price)}</span></div>
+                    ))}
+                  </td>
                   <td className="r sb-mono">{fmtUSD(getDoorPrice(d, pricing))}</td>
                 </tr>
               )
             })}
           </tbody>
-          <tfoot><tr><td colSpan={2} className="r"><strong>Total</strong></td><td className="r sb-mono"><strong>{total ? fmtUSD(total) : '—'}</strong></td></tr></tfoot>
+          <tfoot>
+            {orderExtras.map((x, xi) => <tr key={xi}><td colSpan={2} className="r">{x.label || 'Custom charge'}</td><td className="r sb-mono">{fmtUSD(x.price)}</td></tr>)}
+            <tr><td colSpan={2} className="r"><strong>Total</strong></td><td className="r sb-mono"><strong>{total ? fmtUSD(total) : '—'}</strong></td></tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -475,6 +513,11 @@ const styles = `
   .cod-btn:disabled{ opacity:.5; cursor:not-allowed; }
   .cod-btn-primary{ background:var(--sb-text); color:var(--sb-bg); border-color:transparent; }
   .cod-btn-primary:hover{ opacity:.88; background:var(--sb-text); }
+  .cod-btn-gold{ color:#9A7209; border-color:#9A7209; font-weight:600; }
+  .cod-btn-gold:hover{ background:#9A7209; color:#fff; }
+  .cod-li-extra{ padding-left:14px; font-style:italic; color:var(--sb-text-muted); }
+  .cod-door-other{ border-style:dashed; }
+  .cod-ppo-extra{ display:flex; justify-content:space-between; gap:12px; padding-left:14px; font-size:11px; color:#555; font-style:italic; margin-top:2px; }
   .cod-input{ border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text); border-radius:6px; padding:7px 10px; font:inherit; font-size:13px; width:100%; box-sizing:border-box; }
   .cod-linkbtn{ border:none; background:none; padding:0; font:inherit; font-size:12px; color:#9A7209; cursor:pointer; }
   .cod-linkbtn:hover{ text-decoration:underline; }

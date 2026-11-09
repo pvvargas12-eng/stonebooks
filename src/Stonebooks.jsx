@@ -338,6 +338,7 @@ export default function Stonebooks() {
   const [salesOrderId, setSalesOrderId] = useState(null)   // when set, open Sales Mode with that order pre-loaded
   const [salesCemeteryId, setSalesCemeteryId] = useState(null)  // when set, resume the cemetery wizard on that draft
   const [salesCemeteryEdit, setSalesCemeteryEdit] = useState(false)  // true → wizard opens in edit mode (submitted order)
+  const [salesCemeteryStep, setSalesCemeteryStep] = useState(null)  // 'pricing' → cemetery wizard lands on the Review page (CEM-INVOICE)
   const [salesKind, setSalesKind] = useState(null)         // null = show order-type chooser; 'family' | 'cemetery'
   const [salesStep, setSalesStep] = useState(null)         // optional wizard step key to open on (e.g. 'sign' after an unlock)
   // New Order form (single-screen, type-aware). orderFormId null = new, set = edit.
@@ -417,9 +418,10 @@ export default function Stonebooks() {
     setSalesOpen(true)
   }
   // Edit a submitted cemetery order — wizard opens in edit mode (doors editor).
-  const openCemeteryEdit = (cemeteryOrderId) => {
+  const openCemeteryEdit = (cemeteryOrderId, step = null) => {
     setSalesCemeteryId(cemeteryOrderId)
     setSalesCemeteryEdit(true)
+    setSalesCemeteryStep(step === 'pricing' ? 'pricing' : null)
     setSalesKind('cemetery')
     setSalesOpen(true)
   }
@@ -428,6 +430,7 @@ export default function Stonebooks() {
     setSalesOrderId(null)
     setSalesStep(null)
     setSalesCemeteryId(null)
+    setSalesCemeteryStep(null)
     setSalesCemeteryEdit(false)
     setSalesKind(null)
   }
@@ -715,7 +718,7 @@ export default function Stonebooks() {
       return <Suspense fallback={<TabFallback />}><SalesMode onClose={closeSales} initialOrderId={salesOrderId} initialStep={salesStep} /></Suspense>
     }
     if (salesKind === 'cemetery') {
-      return <Suspense fallback={<TabFallback />}><CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} onSubmitted={() => { closeSales(); setTab('jobs') }} /></Suspense>
+      return <Suspense fallback={<TabFallback />}><CemeteryOrderWizard onClose={closeSales} initialOrderId={salesCemeteryId} editMode={salesCemeteryEdit} initialStep={salesCemeteryStep} onSubmitted={() => { closeSales(); setTab('jobs') }} /></Suspense>
     }
     return (
       <OrderTypeChooser

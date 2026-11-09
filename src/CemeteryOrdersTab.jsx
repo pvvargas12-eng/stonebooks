@@ -20,6 +20,7 @@ import {
   fmtRelative,
 } from './lib/stonebooksData'
 import CemeteryOrderDetail from './CemeteryOrderDetail'
+import CemeteryInvoiceModal from './components/CemeteryInvoiceModal'
 
 // Production lifecycle pills (neutral / muted — distinct from payment).
 const CO_STATUS = {
@@ -37,7 +38,7 @@ const PAY_PILL = {
   partial: { label: 'Partial',      color: '#b8842a' },
   paid:    { label: 'Paid in full', color: '#2d7a4f' },
 }
-const GRID = '108px minmax(160px,1fr) 56px 104px 118px 150px 96px 132px'
+const GRID = '108px minmax(160px,1fr) 56px 104px 118px 150px 96px 232px'
 
 const rowTotal = (o) => {
   if (o.total_amount != null) return Number(o.total_amount)
@@ -56,6 +57,7 @@ export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrd
   const [selectedId, setSelectedId] = useState(null)   // non-draft → detail view
   const [archiveView, setArchiveView] = useState('active')   // active | archived | all
   const [msg, setMsg] = useState(null)                       // { error, text }
+  const [invoiceId, setInvoiceId] = useState(null)           // row → one-page invoice preview (CEM-INVOICE)
 
   useEffect(() => { getDistinctCemeteryNames().then(setCemeteryNames) }, [])
 
@@ -194,6 +196,9 @@ export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrd
                 </div>
                 <div className="col-r col-muted">{fmtRelative(o.updated_at)}</div>
                 <div className="col-actions" onClick={e => e.stopPropagation()}>
+                  {/* CEM-INVOICE: Invoice preview + the fast path to the pricing page (Review step). */}
+                  {!isDraft && <button type="button" className="col-act col-act-gold" onClick={() => setInvoiceId(o.id)}>Invoice</button>}
+                  <button type="button" className="col-act" title="Open the pricing and line items page" onClick={() => (isDraft ? onResumeDraft?.(o.id) : onEditOrder?.(o.id, 'pricing'))}>Pricing</button>
                   <button type="button" className="col-act" onClick={() => handleArchive(o)}>{o.archived ? 'Restore' : 'Archive'}</button>
                   <button type="button" className="col-act col-act-del" onClick={() => handleDelete(o)}>Delete</button>
                 </div>
@@ -201,6 +206,14 @@ export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrd
             )
           })}
         </div>
+      )}
+
+      {invoiceId && (
+        <CemeteryInvoiceModal
+          orderId={invoiceId}
+          onClose={() => setInvoiceId(null)}
+          onAdjustPricing={(o) => { const id = o?.id || invoiceId; setInvoiceId(null); onEditOrder?.(id, 'pricing') }}
+        />
       )}
     </div>
   )
@@ -223,6 +236,8 @@ const styles = `
   .col-actions{ display:flex; gap:6px; justify-content:flex-end; }
   .col-act{ font:inherit; font-size:11.5px; padding:4px 10px; border-radius:6px; border:.5px solid var(--sb-border); background:var(--sb-surface); color:var(--sb-text-muted); cursor:pointer; }
   .col-act:hover{ color:var(--sb-text); border-color:#9A7209; }
+  .col-act-gold{ color:#9A7209; border-color:#9A7209; font-weight:600; }
+  .col-act-gold:hover{ color:#fff; background:#9A7209; }
   .col-act-del{ color:#b54040; }
   .col-act-del:hover{ color:#fff; background:#b54040; border-color:#b54040; }
   .col-r{ text-align:right; font-variant-numeric:tabular-nums; }

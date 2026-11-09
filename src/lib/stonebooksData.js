@@ -6051,10 +6051,19 @@ export function lookupCemeteryPricing(cemeteryName) {
 // selectedItems entries may be a bare key string (legacy) or an object
 // { key, price_override? }. A finite price_override wins over the list price,
 // powering the Step-6 inline edits.
+// Door-level ADDITIONAL charges (CEM-INVOICE 2026-11-09): door.extras =
+// [{ label, price }] — free-text charges the office types on top of the price
+// list ("say what it is"). They ride inside the doors jsonb, add into the
+// door's amount everywhere, and print indented under the door on the invoice.
+export function doorExtrasTotal(door) {
+  return (door?.extras || []).reduce((s, x) => s + (Number(x?.price) || 0), 0)
+}
+
 export function getDoorPrice(door, cemeteryPricing) {
   if (!door || !cemeteryPricing) return 0
+  const extras = doorExtrasTotal(door)
   if (cemeteryPricing.type === 'custom') {
-    return (door.customLineItems || []).reduce((sum, li) => sum + (Number(li.price) || 0), 0)
+    return extras + (door.customLineItems || []).reduce((sum, li) => sum + (Number(li.price) || 0), 0)
   }
   let itemMap = null
   if (cemeteryPricing.type === 'indoor_outdoor_split') {
@@ -6062,9 +6071,9 @@ export function getDoorPrice(door, cemeteryPricing) {
   } else if (cemeteryPricing.type === 'flat') {
     itemMap = cemeteryPricing.items || {}
   } else {
-    return 0
+    return extras
   }
-  return (door.selectedItems || []).reduce((sum, sel) => {
+  return extras + (door.selectedItems || []).reduce((sum, sel) => {
     const key = typeof sel === 'string' ? sel : sel?.key
     const override = (sel && typeof sel === 'object' && sel.price_override != null) ? Number(sel.price_override) : null
     if (override != null && Number.isFinite(override)) return sum + override
@@ -6082,6 +6091,27 @@ export function getCemeteryPricingForOrder(cemeteryOrder) {
     return { key: 'CUSTOM_SNAPSHOT', ...cemeteryOrder.cemetery_pricing_snapshot }
   }
   return lookupCemeteryPricing(cemeteryOrder.cemetery_name)
+}
+
+// ── Cemetery order money — ONE math for the wizard, the list, the detail, the
+// invoice and the submit snapshot (CEM-INVOICE 2026-11-09).
+//   doors      = sum of every door (price-list items + overrides + door extras)
+//   extras     = order-level custom charges (cemetery_orders.extra_charges)
+//   subtotal   = doors + extras
+//   tax / cc   = the Step-6 toggles, on the subtotal
+export const CEMETERY_TAX_RATE = 0.06625
+export const CEMETERY_CC_RATE = 0.03
+export function cemeteryOrderTotals(order) {
+  const pricing = getCemeteryPricingForOrder(order)
+  const doors = Array.isArray(order?.doors) ? order.doors : []
+  const doorsTotal = doors.reduce((s, d) => s + getDoorPrice(d, pricing), 0)
+  const extraCharges = Array.isArray(order?.extra_charges) ? order.extra_charges : []
+  const extrasTotal = extraCharges.reduce((s, x) => s + (Number(x?.price) || 0), 0)
+  const subtotal = doorsTotal + extrasTotal
+  const tax = order?.tax_applied ? subtotal * CEMETERY_TAX_RATE : 0
+  const cc = order?.cc_fee_applied ? subtotal * CEMETERY_CC_RATE : 0
+  const r2 = (n) => Math.round(n * 100) / 100
+  return { pricing, doorsTotal: r2(doorsTotal), extraCharges, extrasTotal: r2(extrasTotal), subtotal: r2(subtotal), tax: r2(tax), cc: r2(cc), total: r2(subtotal + tax + cc) }
 }
 
 // ── JOBS: template loading ───────────────────────────────────────────────────
@@ -7131,14 +7161,29 @@ export async function createCemeteryOrderDraft({ cemeteryName, cemeteryPricingSn
 
 export async function updateCemeteryOrder(id, patch) {
   if (!id) return { ok: false, error: 'Missing cemetery order id' }
-  const { data, error } = await supabase
+  const run = (p) => supabase
     .from('cemetery_orders')
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...p, updated_at: new Date().toISOString() })
     .eq('id', id)
     .select()
     .single()
+  let { data, error } = await run(patch)
+  // The 20261109 columns (extra_charges / invoiced_*) may lag the deploy: never
+  // let a missing column sink the doors + contact save. Retry without them.
+  const LATE = ['extra_charges', 'invoiced_at', 'invoiced_to']
+  if (error && LATE.some(k => k in patch && String(error.message || '').includes(k))) {
+    const slim = { ...patch }; for (const k of LATE) delete slim[k]
+    console.warn('[cemetery] updateCemeteryOrder: column missing, retrying without', LATE.filter(k => k in patch).join(', '), '— run migration 20261109_cemetery_order_extra_charges.sql')
+    ;({ data, error } = await run(slim))
+  }
   if (error) return { ok: false, error: error.message }
   return { ok: true, order: data }
+}
+
+// Stamp the invoice send on the order (CEM-INVOICE). Status stays whatever
+// production says — the stamp is the record that the cemetery was billed.
+export async function markCemeteryOrderInvoiced(id, { sentTo } = {}) {
+  return updateCemeteryOrder(id, { invoiced_at: new Date().toISOString(), invoiced_to: sentTo || null })
 }
 
 export async function getCemeteryOrder(id) {
@@ -8443,12 +8488,7 @@ export async function createJobsFromCemeteryOrder(cemeteryOrderId) {
 
   // Snapshot total (override-aware via getDoorPrice, plus the tax / CC-fee
   // toggles) + flip status. order_number assigned on first submit.
-  const pricing = getCemeteryPricingForOrder(co)
-  const subtotal = doors.reduce((s, d) => s + getDoorPrice(d, pricing), 0)
-  let totalAmount = subtotal
-  if (co.tax_applied)    totalAmount += subtotal * 0.06625
-  if (co.cc_fee_applied) totalAmount += subtotal * 0.03
-  totalAmount = Math.round(totalAmount * 100) / 100
+  const totalAmount = cemeteryOrderTotals(co).total
   const patch = {
     status: 'in_production',
     submitted_at: co.submitted_at || new Date().toISOString(),

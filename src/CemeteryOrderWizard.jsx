@@ -19,6 +19,7 @@ import {
   CEMETERY_DOOR_PRICING,
   getCemeteryPricingForOrder,
   getDoorPrice,
+  cemeteryOrderTotals,
   getCemeteryByName,
   createCemeteryOrderDraft,
   updateCemeteryOrder,
@@ -44,12 +45,43 @@ const COMPANY = {
 }
 const KNOWN_ORDER = ['ST_JAMES', 'BETH_ISRAEL', 'WOODBRIDGE_MEMORIAL_GARDENS', 'CLOVER_LEAF']
 const STEPS = ['Cemetery', 'Count', 'Doors', 'Packet', 'Contact', 'Review']
-const TAX_RATE = 0.06625
-const CC_RATE = 0.03
 
 const money = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const keyOf = (s) => (typeof s === 'string' ? s : s?.key)
-const blankDoor = () => ({ location: null, selectedItems: [], inscriptionText: '', notes: '' })
+const blankDoor = () => ({ location: null, selectedItems: [], inscriptionText: '', notes: '', extras: [] })
+
+// Custom charges editor (CEM-INVOICE 2026-11-09, Paul: "add a custom charge
+// then say what it is"). One shape everywhere: [{ label, price }]. Used for a
+// door's additional charges (door.extras — printed indented under the door on
+// the invoice) and the order-level charges (cemetery_orders.extra_charges).
+// Module-scope on purpose (an in-render component is a React 19 lint error).
+function ExtrasEditor({ extras, onChange, addLabel = '+ Add a charge', placeholder = 'What is this charge for?' }) {
+  const list = Array.isArray(extras) ? extras : []
+  const set = (i, patch) => onChange(list.map((x, idx) => (idx === i ? { ...x, ...patch } : x)))
+  const remove = (i) => onChange(list.filter((_, idx) => idx !== i))
+  const add = () => onChange([...list, { label: '', price: '' }])
+  return (
+    <div className="co-extras">
+      {list.map((x, i) => (
+        <div key={i} className="co-extra-row">
+          <span className="co-extra-plus" aria-hidden="true">+</span>
+          <input className="co-input co-extra-label" placeholder={placeholder} value={x.label || ''}
+            onChange={e => set(i, { label: e.target.value })} />
+          <input className="co-input co-extra-price mono" type="number" step="0.01" min="0" placeholder="0.00" value={x.price ?? ''}
+            onChange={e => set(i, { price: e.target.value })}
+            onBlur={e => { const v = e.target.value; set(i, { price: v === '' ? '' : Math.round(Number(v) * 100) / 100 }) }} />
+          <button type="button" className="co-extra-x" onClick={() => remove(i)} aria-label="Remove this charge">×</button>
+        </div>
+      ))}
+      <button type="button" className="co-link co-extra-add" onClick={add}>{addLabel}</button>
+    </div>
+  )
+}
+
+// Drop empty rows and store numbers, not strings, when saving.
+const cleanExtras = (list) => (Array.isArray(list) ? list : [])
+  .filter(x => String(x?.label || '').trim() || Number(x?.price))
+  .map(x => ({ label: String(x.label || '').trim(), price: Math.round((Number(x.price) || 0) * 100) / 100 }))
 
 function pricingHint(p) {
   if (!p) return ''
@@ -61,7 +93,10 @@ function pricingHint(p) {
   return 'Custom pricing'
 }
 
-export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrderId = null, editMode = false }) {
+// initialStep: 'pricing' lands an edit straight on the Review page (the fast
+// "adjust the pricing and line items" path from the Cemetery Orders row, the
+// detail page and the invoice preview).
+export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrderId = null, editMode = false, initialStep = null }) {
   const [step, setStep] = useState(0)
   const [resuming, setResuming] = useState(!!initialOrderId)
   const [editMeta, setEditMeta] = useState({ orderNumber: null, jobCount: 0 })   // edit-mode context
@@ -71,6 +106,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
     doors: [], packet_storage_path: null,
     cemetery_contact_name: '', cemetery_contact_email: '', cemetery_contact_phone: '',
     tax_applied: false, cc_fee_applied: false,
+    extra_charges: [],
   })
   // step 1
   const [choice, setChoice] = useState(null)            // known key | 'CUSTOM'
@@ -106,6 +142,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
     cemetery_contact_phone: co.cemetery_contact_phone || null,
     tax_applied: co.tax_applied,
     cc_fee_applied: co.cc_fee_applied,
+    extra_charges: cleanExtras(co.extra_charges),
     // In edit mode (submitted order), keep the total in sync as doors change.
     ...(editMode ? { total_amount: total } : {}),
   })
@@ -139,6 +176,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
         cemetery_contact_email: row.cemetery_contact_email || '',
         cemetery_contact_phone: row.cemetery_contact_phone || '',
         tax_applied: !!row.tax_applied, cc_fee_applied: !!row.cc_fee_applied,
+        extra_charges: Array.isArray(row.extra_charges) ? row.extra_charges : [],
       })
       // derive step-1 selection from the saved cemetery name
       const known = KNOWN_ORDER.find(k => CEMETERY_DOOR_PRICING[k].label === row.cemetery_name)
@@ -148,7 +186,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
       setResuming(false)
       if (editMode) {
         setEditMeta({ orderNumber: row.order_number || null, jobCount: 0 })
-        setStep(2)   // land on the doors editor
+        setStep(initialStep === 'pricing' ? 5 : 2)   // Review (pricing) or the doors editor
         getJobsForCemeteryOrder(row.id).then(js => setEditMeta(m => ({ ...m, jobCount: (js || []).length })))
       }
     })
@@ -164,10 +202,10 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
   const effPrice = (d, k) => { const o = overrideOf(d, k); return o != null ? o : defaultPrice(d, k) }
   const doorSubtotal = (d) => getDoorPrice(d, pricing)
 
-  const subtotal = co.doors.reduce((s, d) => s + doorSubtotal(d), 0)
-  const taxAmt = co.tax_applied ? subtotal * TAX_RATE : 0
-  const ccAmt = co.cc_fee_applied ? subtotal * CC_RATE : 0
-  const total = subtotal + taxAmt + ccAmt
+  // ONE money math with the list, the detail and the invoice (stonebooksData).
+  const totals = cemeteryOrderTotals(co)
+  const { doorsTotal, extrasTotal, subtotal, tax: taxAmt, cc: ccAmt, total } = totals
+  const setExtraCharges = (list) => setCo(c => ({ ...c, extra_charges: list }))
 
   const overrideStats = useMemo(() => {
     let count = 0, delta = 0
@@ -306,6 +344,7 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
       cemetery_contact_email: co.cemetery_contact_email || null,
       tax_applied: co.tax_applied,
       cc_fee_applied: co.cc_fee_applied,
+      extra_charges: cleanExtras(co.extra_charges),
     })
     const res = await createJobsFromCemeteryOrder(co.id)
     if (!res.ok) { setBusy(false); setError(res.error); return }
@@ -487,6 +526,11 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
                   </div>
 
                   <div className="co-field">
+                    <span className="co-label">Additional charges for this door</span>
+                    <ExtrasEditor extras={sel.extras} onChange={(list) => updateDoor(selDoor, { extras: list })} addLabel="+ Add a charge to this door" />
+                  </div>
+
+                  <div className="co-field">
                     <span className="co-label">Inscription content</span>
                     <textarea className="co-ta mono" rows={3} placeholder="Names / dates / verse carved on this door"
                       value={sel.inscriptionText || ''} onChange={e => updateDoor(selDoor, { inscriptionText: e.target.value })} />
@@ -586,12 +630,29 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
                         </div>
                       )
                     })}
+                    <div className="co-rextras">
+                      <ExtrasEditor extras={d.extras} onChange={(list) => updateDoor(i, { extras: list })} addLabel="+ Add a charge to this door" />
+                    </div>
                   </div>
                 )
               })}
+
+              {/* Order-level custom charges — "say what it is" */}
+              <div className="co-rcard co-rcard-other">
+                <div className="co-rcard-head">
+                  <div>
+                    <strong>Other charges</strong>
+                    <div className="co-rcard-inscr">Anything billed on this order that is not a door — trip, rush, permit, materials. Each one prints with its own words on the invoice.</div>
+                  </div>
+                  <div className="co-rcard-total">{money(extrasTotal)}</div>
+                </div>
+                <ExtrasEditor extras={co.extra_charges} onChange={setExtraCharges} addLabel="+ Add a custom charge" placeholder="What is this charge? (e.g. Second trip to the mausoleum)" />
+              </div>
             </div>
 
             <aside className="co-totals">
+              <div className="co-tot-row"><span>Doors</span><span className="mono">{money(doorsTotal)}</span></div>
+              {extrasTotal > 0 && <div className="co-tot-row"><span>Other charges</span><span className="mono">{money(extrasTotal)}</span></div>}
               <div className="co-tot-row"><span>Subtotal</span><span className="mono">{money(subtotal)}</span></div>
               <div className="co-tot-toggle">
                 <div><div className="co-tog-label">NJ sales tax</div><div className="co-tog-sub">6.625%</div></div>
@@ -696,13 +757,22 @@ export default function CemeteryOrderWizard({ onClose, onSubmitted, initialOrder
               return (
                 <tr key={i}>
                   <td>{i + 1}{isSplit && d.location ? ` (${d.location})` : ''}</td>
-                  <td>{(d.selectedItems || []).map(s => map[keyOf(s)]?.label || keyOf(s)).join(', ')}{d.inscriptionText ? <div className="co-ppo-inscr">“{d.inscriptionText}”</div> : null}</td>
+                  <td>
+                    {(d.selectedItems || []).map(s => map[keyOf(s)]?.label || keyOf(s)).join(', ')}
+                    {d.inscriptionText ? <div className="co-ppo-inscr">“{d.inscriptionText}”</div> : null}
+                    {(d.extras || []).filter(x => x.label || Number(x.price)).map((x, xi) => (
+                      <div key={xi} className="co-ppo-extra"><span>+ {x.label || 'Additional charge'}</span><span className="mono">{money(x.price)}</span></div>
+                    ))}
+                  </td>
                   <td className="r mono">{money(doorSubtotal(d))}</td>
                 </tr>
               )
             })}
           </tbody>
           <tfoot>
+            {cleanExtras(co.extra_charges).map((x, xi) => (
+              <tr key={`x${xi}`}><td colSpan={2} className="r">{x.label || 'Custom charge'}</td><td className="r mono">{money(x.price)}</td></tr>
+            ))}
             {co.tax_applied && <tr><td colSpan={2} className="r">NJ sales tax (6.625%)</td><td className="r mono">{money(taxAmt)}</td></tr>}
             {co.cc_fee_applied && <tr><td colSpan={2} className="r">Credit card fee (3%)</td><td className="r mono">{money(ccAmt)}</td></tr>}
             <tr><td colSpan={2} className="r"><strong>Total due</strong></td><td className="r mono"><strong>{money(total)}</strong></td></tr>
@@ -811,6 +881,17 @@ const styles = `
   .co-strike{ text-decoration:line-through; color:var(--sb-text-muted,#9a9da3); font-size:12px; }
   .co-ov{ color:var(--co-accent); font-weight:600; }
   .co-priceedit{ width:90px; text-align:right; border:1.5px solid var(--co-accent); background:var(--co-cream); border-radius:5px; padding:5px 8px; font-size:13px; }
+  .co-extras{ display:flex; flex-direction:column; gap:6px; min-width:0; }
+  .co-extra-row{ display:grid; grid-template-columns:14px minmax(0,1fr) 110px 28px; gap:8px; align-items:center; min-width:0; }
+  .co-extra-plus{ color:var(--co-accent); font-weight:700; text-align:center; }
+  .co-extra-label{ min-width:0; }
+  .co-extra-price{ text-align:right; }
+  .co-extra-x{ border:none; background:none; color:#b54040; font-size:18px; line-height:1; cursor:pointer; padding:0; }
+  .co-extra-add{ align-self:flex-start; text-decoration:none; padding:0; }
+  .co-rextras{ margin-top:8px; padding-top:8px; border-top:.5px dashed var(--sb-border,#e4e0d8); }
+  .co-rextras .co-extra-row{ padding-left:14px; }
+  .co-rcard-other{ border-style:dashed; }
+  .co-ppo-extra{ display:flex; justify-content:space-between; gap:12px; padding-left:14px; font-size:11.5px; color:#555; font-style:italic; margin-top:2px; }
   .co-totals{ position:sticky; top:24px; background:var(--co-ink); color:#fff; border-radius:12px; padding:22px; }
   .co-tot-row{ display:flex; justify-content:space-between; font-size:13.5px; padding:6px 0; color:#cdd0d4; }
   .co-tot-add{ color:#9aa; font-size:12.5px; }
