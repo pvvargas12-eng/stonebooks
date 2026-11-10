@@ -13003,6 +13003,71 @@ export async function listCurrentProofRefs() {
 
 // job.id ↔ order_id pairs, one query — client-side joining of job-scoped proof
 // rows back to their orders.
+// ── SMART-WALK (2026-11-09) ──────────────────────────────────────────────────
+// "If stones are blasted remove it from this list because obviously the stone
+// is here." Per order: is the die / base already HERE by the order's own word
+// (die_stone_status / base_stone_status = in_stock), by the whole-stone
+// milestones (stone_received / stone_in_stock done), or because the stone is
+// BLASTED (production_completed done — the die is on the floor or past it).
+// Returns Map(orderId → { die, base, blasted, why }). Read-only.
+export async function getStoneHereByOrder(orderRows) {
+  const out = new Map()
+  const rows = Array.isArray(orderRows) ? orderRows : []
+  for (const r of rows) {
+    out.set(r.id, {
+      die: r.die_stone_status === 'in_stock',
+      base: r.base_stone_status === 'in_stock',
+      blasted: false,
+      why: r.die_stone_status === 'in_stock' ? 'die marked in stock' : null,
+    })
+  }
+  const ids = rows.map(r => r.id).filter(Boolean)
+  if (!ids.length) return out
+  try {
+    const jobByOrder = new Map()
+    for (let i = 0; i < ids.length; i += 150) {
+      const { data: js } = await supabase.from('jobs').select('id, order_id').in('order_id', ids.slice(i, i + 150))
+      for (const j of (js || [])) jobByOrder.set(j.id, j.order_id)
+    }
+    const jobIds = [...jobByOrder.keys()]
+    for (let i = 0; i < jobIds.length; i += 150) {
+      const { data: ms } = await supabase.from('job_milestones')
+        .select('job_id, milestone_key, status')
+        .in('job_id', jobIds.slice(i, i + 150))
+        .in('milestone_key', ['stone_received', 'stone_in_stock', 'production_completed'])
+        .eq('status', 'done')
+      for (const m of (ms || [])) {
+        const oid = jobByOrder.get(m.job_id)
+        const e = out.get(oid); if (!e) continue
+        if (m.milestone_key === 'production_completed') { e.blasted = true; e.die = true; e.base = true; e.why = 'blasted' }
+        else { e.die = true; e.base = true; e.why = e.why || 'stone received per the order status' }
+      }
+    }
+  } catch (e) { console.warn('[smart] getStoneHereByOrder:', e?.message) }
+  return out
+}
+
+// Dismissed Smart Matches cards (table smart_match_dismissals — migration
+// 20261109_smart_match_dismissals.sql). Missing table → empty set, never a crash.
+export async function listSmartMatchDismissals() {
+  const { data, error } = await supabase.from('smart_match_dismissals').select('need_key, order_id, kind, reason, dismissed_by, created_at')
+  if (error) { console.warn('[smart] listSmartMatchDismissals:', error.message); return { ok: false, rows: [], error: error.message } }
+  return { ok: true, rows: data || [], error: null }
+}
+export async function dismissSmartMatch({ needKey, orderId = null, kind = null, reason = null, by = null }) {
+  if (!needKey) return { ok: false, error: 'Missing need key.' }
+  const { error } = await supabase.from('smart_match_dismissals')
+    .upsert({ need_key: needKey, order_id: orderId, kind, reason, dismissed_by: by }, { onConflict: 'need_key' })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+export async function undismissSmartMatch(needKey) {
+  if (!needKey) return { ok: false, error: 'Missing need key.' }
+  const { error } = await supabase.from('smart_match_dismissals').delete().eq('need_key', needKey)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function listJobOrderPairs() {
   const { data, error } = await supabase
     .from('jobs').select('id, order_id').not('order_id', 'is', null)

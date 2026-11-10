@@ -223,7 +223,7 @@ export function matchNeedsToStock(needs, stock) {
     if (fulfilledBy) return { need, best: { stock: fulfilledBy, strength: 'fulfilled', why: [] }, candidateCount: 1, fulfilled: true }
 
     let best = null
-    let candidateCount = 0
+    const candidates = []
     for (const s of available) {
       if (normType(s.item_type) !== normType(need.itemType)) continue
       if (!colorMatch(need.color, s.color)) continue
@@ -231,12 +231,15 @@ export function matchNeedsToStock(needs, stock) {
       // contract's override text (SIZE-TRUTH-2).
       const sz = compareSize(need.computedSize || need.size, s.size)
       if (sz.strength === 'far') continue
-      candidateCount++
       const strength = sz.strength
       const why = strength === 'near' && sz.diff ? [sizeReason(sz.diff)] : []
       const cand = { stock: s, strength, why }
+      candidates.push(cand)
       if (!best || RANK[strength] > RANK[best.strength]) best = cand
     }
-    return { need, best, candidateCount }
+    // Every comparable yard piece, exact first then by painted number — the
+    // card lists their numbers so the walk can check any of them (SMART-WALK).
+    candidates.sort((a, b) => (RANK[b.strength] - RANK[a.strength]) || ((a.stock.yard_tag ?? 1e9) - (b.stock.yard_tag ?? 1e9)))
+    return { need, best, candidateCount: candidates.length, candidates }
   })
 }
