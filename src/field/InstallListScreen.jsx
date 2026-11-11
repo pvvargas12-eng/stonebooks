@@ -60,6 +60,12 @@ function GateChips({ order, job }) {
         : <span className={`fl-chip ${g.permit ? 'fl-c-good' : 'fl-c-bad'}`}>{g.permit ? 'PERMIT APPROVED' : 'PERMIT NOT APPROVED'}</span>}
       {/* A bronze is never blasted — it ARRIVES (Paul 2026-10-08). */}
       <span className={`fl-chip ${g.blasted ? 'fl-c-good' : 'fl-c-bad'}`}>{job?.job_type === 'bronze' ? (g.blasted ? 'ARRIVED' : 'NOT ARRIVED') : (g.blasted ? 'BLASTED' : 'NOT BLASTED')}</span>
+      {/* The office's hand-set blocker (set-list dots menu / order page). */}
+      {order?.manual_blocker?.kind && (
+        <span className="fl-chip fl-c-warn" style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          BLOCKER: {String(order.manual_blocker.kind === 'custom' ? (order.manual_blocker.label || 'Flagged') : order.manual_blocker.kind.replace(/_/g, ' ')).toUpperCase()}
+        </span>
+      )}
     </>
   )
 }
@@ -139,7 +145,7 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
     if (!mine || sort === 'cemetery') return null
     const byAgeDesc = (a, z) => (ageDaysOf(z.order, todayMs) ?? 0) - (ageDaysOf(a.order, todayMs) ?? 0)
     let rows = [...mine]
-    if (sort === 'ready') rows = rows.filter(j => gatesReady(installGates(j.order, j))).sort(byAgeDesc)
+    if (sort === 'ready') rows = rows.filter(j => !j.order?.manual_blocker?.kind && gatesReady(installGates(j.order, j))).sort(byAgeDesc)
     else if (sort === 'foundation') rows = rows.filter(j => installGates(j.order, j).fdn === false).sort(byAgeDesc)
     else if (sort === 'balance') rows = rows.filter(j => rowBalanceDue(j.order) > 0).sort((a, z) => rowBalanceDue(z.order) - rowBalanceDue(a.order))
     else if (sort === 'newstone') rows = rows.filter(j => JOB_TRACK[j.job_type] === 'new_stone').sort(byAgeDesc)
@@ -174,14 +180,13 @@ export default function InstallListScreen({ onOpenJob, onComplete }) {
 
   const add = async (jobId) => {
     setBusy(true)
-    const r = await addToInstallList(jobId)
-    setBusy(false)
-    if (r.ok) reload()
+    let r = null
+    try { r = await addToInstallList(jobId) } catch { r = null } finally { setBusy(false) }
+    if (r?.ok) reload()
   }
   const remove = async (jobId) => {
     setBusy(true)
-    await removeFromInstallList(jobId)
-    setBusy(false)
+    try { await removeFromInstallList(jobId) } catch { /* the reload shows the truth */ } finally { setBusy(false) }
     setPeekJob(null)
     reload()
   }
@@ -331,7 +336,7 @@ function InstallPeek({ job, onClose, onOpenJob, onComplete, onRemove, busy }) {
   const mapped = useMemo(() => (o ? rowToOrder(o, o.customer, o.cemetery) : null), [o])
   const die = mapped ? buildDieSpec(mapped) : ''
   const base = mapped ? buildBaseSpec(mapped) : ''
-  const granite = mapped?.graniteColor ? displayGraniteColor(mapped.graniteColor) : ''
+  const granite = mapped?.graniteColor ? (displayGraniteColor(mapped) || '') : ''
   const grave = composeGraveLocation(o) || o?.grave_location || ''
   const dir = directionsUrl(o?.cemetery)
 

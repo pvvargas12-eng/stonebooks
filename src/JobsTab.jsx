@@ -74,6 +74,7 @@ import FoundationsBoard from './FoundationsBoard'
 import CutListBoard from './CutListBoard'
 import CheckJobsBoard from './CheckJobsBoard'
 import { getJobsView, setJobsView } from './lib/workspaceState'
+import { takePendingSub } from './lib/deepLink'
 // JOBS-OPERATIONAL-HUBS Phase 2A — consolidated stone-design read-only
 // view rendered as a tab inside JobDetail. Pure read-arrange of the joined
 // order row; no new data fetch.
@@ -116,7 +117,8 @@ export default function JobsTab({
   // A saved 'hotlist' view predates HOT-LIST-2 (the hot list is a top-level
   // tab now) — fall back to Dashboard instead of an unknown hub.
   const [tab, setTab] = useState(() => {
-    const v = getJobsView(userId)
+    // A link from the Dashboard ("Design hub", "Foundations"...) wins once.
+    const v = takePendingSub('jobs') || getJobsView(userId)
     return RETIRED_JOBS_TABS.has(v) ? 'dashboard' : v
   })
   const handleTabChange = (next) => {
@@ -197,7 +199,7 @@ export default function JobsTab({
   if (tab === 'dashboard') {
     body = <div className="sb-crm-container"><JobsCommandCenter view="dashboard" onOpenJob={handleOpenJob} onOpenBoard={() => handleTabChange('production')} onOpenScheduler={() => onSwitchTab?.('scheduler')} /></div>
   } else if (tab === 'production') {
-    body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} onOpenSales={onOpenOrder} /></div>
+    body = <div className="sb-crm-container"><ProductionBoard onOpenJob={handleOpenJob} onOpenOrderDetail={onOpenOrderDetail} onOpenSales={onOpenOrder} onOpenCemeteryOrder={onOpenCemeteryOrder} /></div>
   } else if (tab === 'cutlist') {
     body = <div className="sb-crm-container"><CutListBoard onOpenJob={handleOpenJob} /></div>
   } else if (tab === 'foundations') {

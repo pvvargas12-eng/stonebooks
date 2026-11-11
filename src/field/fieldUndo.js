@@ -12,12 +12,12 @@ export function useUndoToast() {
   const timer = useRef(null)
   const show = useCallback((label, undo) => {
     if (timer.current) clearTimeout(timer.current)
-    setToast({ label, undo })
+    setToast({ label, undo, id: Date.now() })
     timer.current = setTimeout(() => setToast(null), 8000)
   }, [])
   const showError = useCallback((label) => {
     if (timer.current) clearTimeout(timer.current)
-    setToast({ label, error: true })
+    setToast({ label, error: true, id: Date.now() })
     timer.current = setTimeout(() => setToast(null), 8000)
   }, [])
   const clear = useCallback(() => {
@@ -54,7 +54,23 @@ export const FIELD_CSS = `
   .fl-sub { font-size: 11px; color: #8F8770; margin-top: 3px; }
 
   /* Body + nav */
-  .fl-body { flex: 1; padding: 14px 14px calc(92px + env(safe-area-inset-bottom)); }
+  /* 150px: the last row clears the nav AND the 8-second undo capsule. */
+  .fl-body { flex: 1; padding: 14px 14px calc(150px + env(safe-area-inset-bottom)); }
+  /* FIELD-POLISH 2026-11-11 — iOS: a box under 16px zooms the page on focus;
+     taps answer at once; a sheet never drags the page behind it. */
+  .fl-shell input, .fl-shell select, .fl-shell textarea { font-size: max(16px, 1em) !important; }
+  .fl-shell button, .fl-shell a { touch-action: manipulation; }
+  .fl-shell:has(.fl-sheet) .fl-toast { bottom: auto; top: calc(10px + env(safe-area-inset-top)); }
+  .fl-menu-scrim { position: fixed; inset: 0; z-index: 39; background: transparent; }
+  .fl-update {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: #9A7209; color: #fff; padding: 9px 14px; font-size: 13px; font-weight: 700;
+  }
+  .fl-update span { min-width: 0; overflow-wrap: anywhere; }
+  .fl-update button {
+    flex-shrink: 0; min-height: 36px; padding: 0 14px; border-radius: 9px; border: none; cursor: pointer;
+    background: #0F1419; color: #E8E2D4; font-family: inherit; font-size: 12px; font-weight: 800; letter-spacing: 0.05em;
+  }
   .fl-nav {
     position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
     max-width: 640px; margin: 0 auto;
@@ -374,8 +390,8 @@ export const FIELD_CSS = `
   .fl-btn-gold { display: flex; align-items: center; justify-content: center; min-height: 52px; background: #9A7209; color: #fff; border: none; border-radius: 12px; font-family: inherit; font-size: 14.5px; font-weight: 800; cursor: pointer; width: 100%; }
   .fl-btn-dashed { border-style: dashed; color: #6B6456; }
 
-  .fl-sheet-scrim { position: fixed; inset: 0; background: rgba(15,20,25,0.4); z-index: 60; }
-  .fl-sheet { position: fixed; left: 0; right: 0; bottom: 0; max-width: 640px; margin: 0 auto; background: #fff; border-radius: 20px 20px 0 0; z-index: 61; padding: 8px 18px calc(24px + env(safe-area-inset-bottom)); max-height: 86dvh; overflow-y: auto; }
+  .fl-sheet-scrim { position: fixed; inset: 0; background: rgba(15,20,25,0.4); z-index: 60; touch-action: none; }
+  .fl-sheet { position: fixed; left: 0; right: 0; bottom: 0; max-width: 640px; margin: 0 auto; background: #fff; border-radius: 20px 20px 0 0; z-index: 61; padding: 8px 18px calc(24px + env(safe-area-inset-bottom)); max-height: 86dvh; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
   .fl-sheet-grab { width: 36px; height: 5px; border-radius: 3px; background: #DAD3C2; margin: 4px auto 14px; }
   .fl-sheet-title { font-family: Fraunces, Georgia, serif; font-size: 22px; font-weight: 600; color: #16150F; margin-bottom: 12px; }
   .fl-input { font-family: inherit; font-size: 16px; padding: 13px 14px; border: 1px solid #DAD3C2; border-radius: 12px; background: #fff; width: 100%; box-sizing: border-box; }

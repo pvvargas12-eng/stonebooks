@@ -17,6 +17,7 @@ import { REPORTS, REPORTS_BY_ID, REPORT_GROUPS } from './lib/reportDefs'
 import OwnerStatsView from './components/OwnerStatsView'
 import OwnerReviewView from './components/OwnerReviewView'
 import ReportCard, { REPORT_CSS } from './components/ReportCard'
+import ShopPulse from './components/ShopPulse'
 
 const RANGES = [
   { code: 'month',   label: 'This month' },
@@ -48,7 +49,7 @@ function orderName(row) {
   return row?.order_number || 'Unknown'
 }
 
-export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
+export default function ReportsTab({ user, onOpenOrder, onOpenJob, onNavigate = null }) {
   const [now] = useState(() => new Date())
   const [bundle, setBundle] = useState(null)
   const [err, setErr] = useState(null)
@@ -138,10 +139,10 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
         <div className="rt-modes" role="tablist">
           <button type="button" className={`rt-mode ${mode === 'stats' ? 'on' : ''}`} onClick={() => setMode('stats')}>Owner stats</button>
           <button type="button" className={`rt-mode ${mode === 'review' ? 'on' : ''}`} onClick={() => setMode('review')}>Monthly review</button>
-          <button type="button" className={`rt-mode ${mode === 'daily' ? 'on' : ''}`} onClick={() => setMode('daily')}>Daily Command</button>
+          <button type="button" className={`rt-mode ${mode === 'daily' ? 'on' : ''}`} onClick={() => setMode('daily')}>Daily report</button>
           <button type="button" className={`rt-mode ${mode === 'library' ? 'on' : ''}`} onClick={() => setMode('library')}>Library</button>
         </div>
-        {mode !== 'stats' && mode !== 'review' && <div className="rt-ctrl-right">
+        {mode === 'library' && <div className="rt-ctrl-right">
           <div className="rt-ranges">
             {RANGES.map(r => (
               <button key={r.code} type="button" className={`rt-range ${rangeCode === r.code ? 'on' : ''}`} onClick={() => setRangeCode(r.code)}>{r.label}</button>
@@ -172,6 +173,20 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
         : <OwnerReviewView bundle={bundle} now={now} user={user} />
       )}
 
+      {/* Daily report (SHOP-PULSE, Paul 2026-11-10: "daily reports can be better
+          too, I want that reworked") — the pinned card wall is gone; this is
+          the same Dashboard as Inventory › Dashboard, opened on Today. The
+          cards themselves still live in the Library. */}
+      {mode === 'daily' && (
+        !bundle ? <div className="sb-empty">Loading the day…</div>
+        : <ShopPulse bundle={bundle} eyebrow="Reports · Daily report" defaultPeriod="day" onOpenOrder={onOpenOrder}
+            onGo={(key) => {
+              const map = { needs: ['inventory', 'needs'], design: ['jobs', 'design'], foundations: ['jobs', 'foundations'], install: ['jobs', 'installation'], production: ['jobs', 'production'], collect: ['payments', 'collect'] }
+              const t = map[key]
+              if (t && onNavigate) onNavigate(t[0], t[1])
+            }} />
+      )}
+
       {/* Library group sub-tabs */}
       {mode === 'library' && (
         <div className="rt-groups">
@@ -188,14 +203,10 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob }) {
 
       {err && <div className="sb-empty" style={{ color: '#b54040' }}>{err}</div>}
 
-      {mode !== 'stats' && (!bundle || !layout ? (
+      {mode === 'library' && (!bundle || !layout ? (
         <div className="sb-empty">Loading reports…</div>
       ) : visibleIds.length === 0 ? (
-        <div className="sb-empty">
-          {mode === 'daily'
-            ? 'No cards pinned to Daily Command yet. Open the Library and pin the reports you check each morning.'
-            : 'No reports in this group yet.'}
-        </div>
+        <div className="sb-empty">No reports in this group yet.</div>
       ) : (
         <div className="rt-grid">
           {visibleIds.map(id => {

@@ -34,6 +34,7 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState(false)
   const [spotOpen, setSpotOpen] = useState(false)
+  const [tryN, setTryN] = useState(0)          // Retry after a failed load
 
   const reloadJob = useCallback(async () => {
     if (jobId) { setJob(await getJob(jobId).catch(() => null)); return }
@@ -46,11 +47,15 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
     ;(async () => {
       try {
         const [o] = await Promise.all([orderId ? getOrderById(orderId) : null, reloadJob()])
-        if (!cancelled) setOrder(o)
+        if (cancelled) return
+        // getOrderById answers null on any error — say so instead of
+        // leaving the screen on Loading forever.
+        if (orderId && !o) setErr('Could not load this order. Check the signal and try again.')
+        else setOrder(o)
       } catch (e) { if (!cancelled) setErr(e?.message || 'Could not load the order.') }
     })()
     return () => { cancelled = true }
-  }, [orderId, reloadJob])
+  }, [orderId, reloadJob, tryN])
 
   // Approved layout image: job-scoped proofs first, then order-scoped (leads),
   // then the primary design snapshot. Image only, by design.
@@ -75,7 +80,16 @@ export default function JobDetailScreen({ jobId, orderId, onBack, onComplete, un
     return () => { cancelled = true }
   }, [job, order, orderId])
 
-  if (err) return <div><BackBtn onBack={onBack} /><div className="fl-empty">{err}</div></div>
+  if (err) return (
+    <div>
+      <BackBtn onBack={onBack} />
+      <div className="fl-empty">{err}</div>
+      <div style={{ textAlign: 'center' }}>
+        <button type="button" className="fl-btn" style={{ minHeight: 48, padding: '0 24px' }}
+          onClick={() => { setErr(null); setTryN(n => n + 1) }}>TRY AGAIN</button>
+      </div>
+    </div>
+  )
   if (!order || job === undefined) return <div><BackBtn onBack={onBack} /><div className="fl-empty">Loading…</div></div>
 
   const mapped = rowToOrder(order, order.customer, order.cemetery)

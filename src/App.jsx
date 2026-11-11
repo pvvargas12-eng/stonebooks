@@ -16,6 +16,7 @@ const CatalogTab = lazy(() => import('./CatalogTab'))
 const SignPage = lazy(() => import('./SignPage'))
 const ApprovePage = lazy(() => import('./ApprovePage'))
 const FieldApp = lazy(() => import('./field/FieldApp'))
+import FieldErrorBoundary from './field/FieldErrorBoundary'
 const SalesKioskApp = lazy(() => import('./SalesKioskApp'))
 
 const RouteFallback = () => <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontFamily: 'system-ui, sans-serif' }}>Loading…</div>
@@ -558,7 +559,7 @@ function AppRoutes() {
     return <TradePortalStandalone />
   }
   if (isFieldRoute()) {
-    return <Suspense fallback={<RouteFallback />}><FieldApp /></Suspense>
+    return <FieldErrorBoundary><Suspense fallback={<RouteFallback />}><FieldApp /></Suspense></FieldErrorBoundary>
   }
   if (isSalesKioskRoute()) {
     return <Suspense fallback={<RouteFallback />}><SalesKioskApp /></Suspense>

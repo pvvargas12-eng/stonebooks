@@ -13,7 +13,7 @@
 // list by cemetery, M T W T F under every stone, + Add sheet — the SAME
 // writes as the desktop planner (lib/weekPlanning.js).
 // =============================================================================
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { getBatches, getJobs, getInstallList, getHotListItems, getJob, rowBalanceDue, fmtUSD } from '../lib/stonebooksData'
 import { composeGraveLocation } from '../lib/monumentCatalog'
 import { isoOf, mondayOf, addDays, listWeekPlans, kindFromPlans, getWeekPlanWithItems, addPlanItem, removePlanItem } from '../lib/meetingData'
@@ -67,7 +67,10 @@ export default function WeekScheduleScreen({ who, onOpenJob, onBack }) {
   // today when this is today's week, else Monday.
   const day = (pickedDay >= week && pickedDay <= satIso) ? pickedDay : (todayIso >= week && todayIso <= satIso ? todayIso : week)
 
+  // Fast taps on the week arrows: only the newest load may land.
+  const loadSeq = useRef(0)
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current
     const [js, bs, old, ps, pl, sl, hotRows] = await Promise.all([
       getJobs({ limit: 2000 }).catch(() => []),
       getBatches({ from: week, to: addDays(week, 6) }).catch(() => []),
@@ -84,6 +87,7 @@ export default function WeekScheduleScreen({ who, onOpenJob, onBack }) {
     const missing = [...new Set(live.flatMap(b => (b.batch_jobs || []).map(l => l.job_id)).filter(id => id && !have.has(id)))].slice(0, 40)
     const fetched = missing.length ? await Promise.all(missing.map(id => getJob(id).catch(() => null))) : []
     const ex = Object.fromEntries(fetched.filter(Boolean).map(j => [j.id, j]))
+    if (seq !== loadSeq.current) return
     setJobs(js || []); setExtra(ex)
     setBatches(live); setPastBatches(old || [])
     setPlans(ps || []); setPlan(pl?.ok ? pl : null)
@@ -92,7 +96,8 @@ export default function WeekScheduleScreen({ who, onOpenJob, onBack }) {
     const ids = [...new Set([...live.flatMap(b => (b.batch_jobs || []).map(l => l.job_id)), ...((pl?.items || []).map(it => it.job_id))].filter(Boolean))]
     const all = [...(js || []), ...Object.values(ex)]
     const cems = [...new Set(ids.map(id => { const j = all.find(x => x.id === id); return j?.cemetery?.id || j?.order?.cemetery?.id || j?.order?.cemetery_id }).filter(Boolean))]
-    setRems(await listInstallReminders({ jobIds: ids, cemeteryIds: cems }).catch(() => ({ byJob: new Map(), byCemetery: new Map() })))
+    const rm = await listInstallReminders({ jobIds: ids, cemeteryIds: cems }).catch(() => ({ byJob: new Map(), byCemetery: new Map() }))
+    if (seq === loadSeq.current) setRems(rm)
   }, [week, cfg.batchKind, canBuild])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
   // Live refresh when an install is marked done from the job drill.
@@ -115,8 +120,8 @@ export default function WeekScheduleScreen({ who, onOpenJob, onBack }) {
   const run = async (fn) => {
     if (busy) return
     setBusy(true); setErr(null)
-    const r = await fn()
-    setBusy(false)
+    let r = null
+    try { r = await fn() } catch (e) { r = { ok: false, error: e?.message || 'That did not save.' } } finally { setBusy(false) }
     if (r && r.ok === false) { setErr(r.error || 'That did not save.'); return }
     load()
   }

@@ -22,6 +22,7 @@ import { getProductionComponents, deriveFdnStatus, rowBalanceDue, permitNeeded,
   // Gate dropdowns (Paul 2026-10-08): the same writes as the Sales row.
   setOrderFdnStatus, setOrderPermit, setOrderStoneStatus, getJob,
   deriveStoneStatus, stoneStatusOptions, FDN_STATUS, PERMIT_STATUS_OPTIONS, permitStatusLabel,
+  setOrderManualBlocker, manualBlockerChipText,
 } from '../lib/stonebooksData'
 import { DEPARTMENTS } from '../lib/employees'
 import { composeGraveLocation } from '../lib/monumentCatalog'
@@ -41,6 +42,11 @@ const GATE_DEFS = [
   { key: 'stone', label: 'Stone' }, { key: 'fdn', label: 'Fdn' }, { key: 'paid', label: 'Paid' },
   { key: 'cem', label: 'Cemetery' }, { key: 'permit', label: 'Permit' },
 ]
+// One-tap blocker words for the card's dots menu (Paul 2026-11-11: "add
+// blocker... custom blocker like needs fix, or needs base inscription").
+// Stored as the order's manual blocker (kind custom + the words), so the
+// same flag shows on the Sales row, the planner and the order page.
+const BLOCKER_PRESETS = ['Needs fix', 'Needs base inscription', 'Needs inscription', 'Needs cleaning', 'Waiting on family', 'Cemetery issue']
 const installMilestone = (job) => {
   const by = new Map((job.milestones || []).map(m => [m.milestone_key, m]))
   return by.get('installed') || by.get('door_installed') || by.get('work_completed') || null
@@ -79,6 +85,9 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   // hub reload.
   const [jobOverrides, setJobOverrides] = useState(() => new Map())
   const [gateBusy, setGateBusy] = useState(null)   // job id mid-write
+  // Blockers set from a card this session (order id -> blocker or null). The
+  // parent's jobs are a snapshot, so the card reads this first.
+  const [mbOver, setMbOver] = useState(() => new Map())
   // Install Planner (Paul 2026-10-08): build the week list, then Mon–Fri.
   const [view, setView] = useState('board')        // 'board' | 'planner'
   const effJobs = useMemo(() => (jobs || []).map(j => jobOverrides.get(j.id) || j), [jobs, jobOverrides])
@@ -210,6 +219,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       const ci = byJob.get(job.id) || { track: null, cemetery: job.order?.cemetery?.name || '', orderNumber: job.order?.order_number || '' }
       out.push(makeRow(job, ci, job.order || {}, {
         blockers: blockersFor(job),
+        mb: mbOver.has(job.order?.id) ? mbOver.get(job.order.id) : (job.order?.manual_blocker || null),
         gates4: installGates(job.order || {}, job),
         // Current codes behind the gate dropdowns — the Sales row's truth.
         permitCode: job.order?.permit_status || 'unknown',
@@ -222,7 +232,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
       }))
     }
     return out
-  }, [setList, jobs, effJobs, byJob, blockersFor])
+  }, [setList, jobs, effJobs, byJob, blockersFor, mbOver])
 
   // Add picker: EVERY open job — contracted, lead, draft, stone not ordered.
   // Paul overrides; the picker only reports what's missing.
@@ -272,6 +282,17 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     setGateBusy(null)
     // Blasted may have moved floor pieces / the install list — re-read those.
     if (dim === 'stone') load()
+  }
+
+  // Blocker from the card's dots menu: words -> the order's manual blocker
+  // (null clears it). Returns the result so the menu can show an error.
+  const changeBlocker = async (row, label) => {
+    if (!row?.orderId) return { ok: false, error: 'This card has no order to flag.' }
+    const r = await setOrderManualBlocker(row.orderId, label ? { kind: 'custom', label } : null)
+    if (r?.ok === false) return r
+    setMbOver(m => new Map(m).set(row.orderId, r.value || null))
+    logOrderActivity(row.orderId, { type: 'change', field: 'Blocker', newValue: label || 'Cleared', note: label ? `Blocker added from the set list: ${label}` : 'Blocker cleared from the set list', actor: await getCurrentStaffName().catch(() => null) }).catch(() => {})
+    return { ok: true }
   }
 
   const addToList = async (jobId) => {
@@ -341,7 +362,8 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
   // EVERY tile reads the SET LIST through the four-gate engine (Paul
   // 2026-08-04: "paid dropoff fdn in blasted its ready to set!!!") — the old
   // derived five-gate buckets are out of the tiles; one engine, no disagreement.
-  const rowReady = (r) => !r.installed && !!r.gates4
+  // A hand-set blocker takes the stone out of Ready (it reads yellow).
+  const rowReady = (r) => !r.installed && !!r.gates4 && !r.mb?.kind
     && r.gates4.paid !== false && r.gates4.fdn !== false
     && r.gates4.permit !== false && r.gates4.blasted !== false
   const rowAge = (r) => (r.signedAt && todayMs ? Math.floor((todayMs - Date.parse(r.signedAt)) / 86400000) : null)
@@ -353,7 +375,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     { key: 'setlist', label: 'My set list', tone: 'gold', value: setListRows.length, sub: slFdn.length > 0 ? `${slFdn.length} waiting on foundation` : 'hand-picked to schedule' },
     { key: 'ready', label: 'Ready to set', tone: 'green', value: slReady.length, sub: 'paid · foundation · permit · blasted' },
     { key: 'scheduled', label: 'Scheduled', tone: 'purple', value: slScheduled.length, sub: 'install date set' },
-    { key: 'blocked', label: 'Blocked', tone: 'red', value: slBlocked.length, sub: 'a gate reads red' },
+    { key: 'blocked', label: 'Blocked', tone: 'red', value: slBlocked.length, sub: 'a gate reads red or a blocker is set' },
     { key: 'foundation', label: 'Foundation needed', tone: 'amber', value: slFdn.length, sub: 'pour not in' },
     { key: 'done', label: 'Done this month', tone: 'green', value: buckets.doneThisMonth.length, sub: 'installed' },
   ]
@@ -390,6 +412,7 @@ export default function InstallBoard({ jobs, onOpenJob, onOpenOrderDetail }) {
     weekJobs: weekPlan?.byJob || null, weekOf: weekPlan?.week || null, onAddToWeek: addToWeek, onRemoveFromWeek: removeFromWeek,
     onRemove: activeKpi !== 'done' ? removeFromList : null, listBusy, todayMs,
     onGate: activeKpi !== 'done' ? changeGate : null, gateBusy,
+    onBlocker: activeKpi !== 'done' ? changeBlocker : null,
   }
 
   if (view === 'planner' || view === 'scheduled') {
@@ -592,7 +615,7 @@ function GateSelect({ tone, label, value, options, onChange, disabled, title }) 
   )
 }
 
-function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0, onGate = null, gateBusy = null, weekJobs = null, weekOf = null, onAddToWeek = null, onRemoveFromWeek = null }) {
+function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, onMarkInstalled, onRemove = null, listBusy = null, todayMs = 0, onGate = null, gateBusy = null, weekJobs = null, weekOf = null, onAddToWeek = null, onRemoveFromWeek = null, onBlocker = null }) {
   const weekItem = weekJobs ? (weekJobs.get(row.jobId) || null) : null
   // Component track when one exists, else the job type — a bronze job whose
   // components predate BRONZE-WIRE still wears its BRONZE SERVICES tag.
@@ -627,6 +650,23 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
     setTaskDone(true)
     setTimeout(() => { setTaskOpen(false); setTaskDone(false) }, 2200)
   }
+  // Dots menu (bottom left): add / change / clear a blocker.
+  const mb = row.mb?.kind ? row.mb : null
+  const mbText = mb ? manualBlockerChipText(mb) : ''
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [mbCustom, setMbCustom] = useState('')
+  const [mbBusy, setMbBusy] = useState(false)
+  const [mbErr, setMbErr] = useState('')
+  const pickBlocker = async (label) => {
+    if (mbBusy || !onBlocker) return
+    const words = label == null ? null : String(label).trim()
+    if (label != null && !words) return
+    setMbBusy(true); setMbErr('')
+    const r = await onBlocker(row, words)
+    setMbBusy(false)
+    if (r?.ok === false) { setMbErr(r.error || 'Could not save the blocker.'); return }
+    setMbCustom(''); setMenuOpen(false)
+  }
   // Order age from signing (Paul 2026-08-04): red at 6+ months, amber 3-5.
   const ageD = row.signedAt && todayMs ? Math.floor((todayMs - Date.parse(row.signedAt)) / 86400000) : null
   const ageCls = ageD == null ? '' : ageD >= 180 ? 'ib-age-red' : ageD >= 90 ? 'ib-age-amber' : 'ib-age-quiet'
@@ -637,14 +677,14 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
   // ALL FOUR GATES GREEN (n/a counts as good) = the truck can roll (Paul
   // 2026-08-04: "a label on these READY TO INSTALL for once that are paid in
   // full permit not required or approved foundation in and blasted").
-  const readyNow = !row.installed && row.gates4
+  const gatesGreen = !row.installed && row.gates4
     && row.gates4.paid !== false && row.gates4.fdn !== false
     && row.gates4.permit !== false && row.gates4.blasted !== false
   return (
-    <div className={`ib-card${row.onList ? ' ib-card-list' : ''}${weekItem ? ' ib-card-week' : ''}`}>
+    <div className={`ib-card${row.onList ? ' ib-card-list' : ''}${weekItem ? ' ib-card-week' : ''}${mb ? ' ib-card-mb' : ''}`}>
       <div className="ib-card-top">
         <button type="button" className="ib-card-fam" onClick={() => onOpenJob?.(row.jobId)}>{row.family}</button>
-        {readyNow && <span className="ib-ready">READY TO INSTALL</span>}
+        {gatesGreen && <span className={`ib-ready${mb ? ' ib-ready-hold' : ''}`} title={mb ? `Blocker: ${mbText}` : undefined}>READY TO INSTALL</span>}
         {cardTrack && <span className={`ib-track ib-track-${tone}`}>{TRACK_LABEL[cardTrack] || cardTrack}</span>}
       </div>
       <div className="ib-card-meta">
@@ -725,6 +765,42 @@ function InstallCard({ row, onOpenJob, onOpenOrderDetail, canAct, onSchedule, on
           )}
         </div>
       )}
+      {(mb || (canAct && onBlocker && row.orderId)) && (
+        <div className="ib-foot">
+          {canAct && onBlocker && row.orderId && (
+            <button type="button" className={`ib-dots${menuOpen ? ' on' : ''}`} aria-label="More: add a blocker" title="Add a blocker"
+              onClick={() => { setMenuOpen(v => !v); setMbErr('') }}>
+              <span /><span /><span />
+            </button>
+          )}
+          {mb && (
+            <span className="ib-mb" title={`${mbText}${mb.note ? ` - ${mb.note}` : ''}${mb.setBy ? ` · set by ${mb.setBy}` : ''}`}>
+              <span className="ib-mb-k">BLOCKER</span><span className="ib-mb-t">{mbText}{mb.note ? ` - ${mb.note}` : ''}</span>
+            </span>
+          )}
+          {menuOpen && (
+            <div className="ib-menu">
+              <div className="ib-menu-h">{mb ? 'Change the blocker' : 'Add a blocker'}</div>
+              <div className="ib-menu-chips">
+                {BLOCKER_PRESETS.map(p => (
+                  <button key={p} type="button" className={`ib-menu-chip${mbText === p ? ' on' : ''}`} disabled={mbBusy} onClick={() => pickBlocker(p)}>{p}</button>
+                ))}
+              </div>
+              <div className="ib-menu-row">
+                <input value={mbCustom} maxLength={60} placeholder="Or type your own" aria-label="Custom blocker"
+                  onChange={e => setMbCustom(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') pickBlocker(mbCustom); if (e.key === 'Escape') setMenuOpen(false) }} />
+                <button type="button" className="ib-act ib-act-hold" disabled={mbBusy || !mbCustom.trim()} onClick={() => pickBlocker(mbCustom)}>{mbBusy ? 'Saving' : 'Add'}</button>
+              </div>
+              {mbErr && <div className="ib-menu-err">{mbErr}</div>}
+              <div className="ib-menu-foot">
+                {mb && <button type="button" className="ib-act ib-act-go" disabled={mbBusy} onClick={() => pickBlocker(null)}>Clear blocker</button>}
+                <button type="button" className="ib-act" onClick={() => setMenuOpen(false)}>Close</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {taskOpen && (
         <div className="ib-tasker">
           {taskDone ? (
@@ -763,6 +839,28 @@ const IB_CSS = `
   .ib-track-purple { background: #261f3a; color: #a78bfa; } .ib-track-blue { background: #16263a; color: #6fb3f0; }
   .ib-track-neutral { background: #1a212b; color: #8b95a5; }
   .ib-ready { background: #123524; color: #34d399; border: 1px solid #1d7a55; font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
+  .ib-ready-hold { background: #33290c; color: #facc15; border-color: #a16207; }
+  .ib-card-mb { border-color: #6b5210; box-shadow: inset 3px 0 0 #eab308; }
+  .ib-card-week.ib-card-mb { box-shadow: inset 3px 0 0 #eab308; }
+  .ib-foot { position: relative; display: flex; align-items: center; gap: 8px; margin-top: 10px; min-width: 0; }
+  .ib-dots { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; gap: 3px; width: 30px; height: 24px; padding: 0; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; }
+  .ib-dots span { width: 4px; height: 4px; border-radius: 50%; background: #8b95a5; }
+  .ib-dots:hover, .ib-dots.on { background: #1a212b; border-color: #2a313c; }
+  .ib-dots:hover span, .ib-dots.on span { background: #e6e9ef; }
+  .ib-mb { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; background: #33290c; border: 1px solid #a16207; color: #facc15; border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 700; }
+  .ib-mb-k { flex-shrink: 0; font-size: 9px; font-weight: 800; letter-spacing: 0.08em; opacity: 0.75; }
+  .ib-mb-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ib-menu { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; width: min(300px, 100%); background: #0E1116; border: 1px solid #3a4454; border-radius: 10px; padding: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.55); }
+  .ib-menu-h { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #8b95a5; margin-bottom: 8px; }
+  .ib-menu-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ib-menu-chip { font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 9px; border-radius: 999px; border: 1px solid #2a313c; background: #1a212b; color: #e6e9ef; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ib-menu-chip:hover, .ib-menu-chip.on { border-color: #a16207; background: #33290c; color: #facc15; }
+  .ib-menu-row { display: flex; gap: 6px; margin-top: 9px; }
+  .ib-menu-row input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid #2a313c; border-radius: 7px; background: #151a22; color: #e6e9ef; }
+  .ib-menu-err { font-size: 11px; color: #f87171; margin-top: 6px; overflow-wrap: anywhere; }
+  .ib-menu-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 9px; }
+  .ib-act-hold { border-color: #a16207; background: #33290c; color: #facc15; }
+  .ib-act:disabled { opacity: 0.5; cursor: default; }
   .ib-flag-btn { border: none; cursor: pointer; font-family: inherit; }
   .ib-flag-btn:hover { filter: brightness(1.25); }
   .ib-age { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 2px 7px; white-space: nowrap; }

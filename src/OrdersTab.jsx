@@ -52,7 +52,7 @@ import { bronzeWorkTypeLabel } from './lib/orderRates'
 const ORDERS_BOARD_SELECT =
   'id, status, archived, order_number, created_at, updated_at, signed_at, pricing_locked_at, ' +
   'target_completion_date, primary_lastname, sales_rep, payments, deposit_amount, ' +
-  'balance_amount, payment_status, permit_required, permit_status, customer_id, cemetery_id, ' +
+  'balance_amount, payment_status, permit_required, permit_status, permit_filed_at, permit_approved_at, customer_id, cemetery_id, ' +
   // manual_blocker was MISSING here since the HOLD pill shipped — the Sales
   // row could never show "PUT ON PAUSE" for anyone (the Sandy bug, 2026-09-17).
   'next_follow_up, waiting_on, lost_reason, lost_at, manual_blocker, ' +
@@ -967,7 +967,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
   const inlineDate = async (o, field, value) => {
     const patch = {}
     if (field === 'signed_at') {
-      patch.signed_at = value ? `${value}T00:00:00` : null
+      patch.signed_at = value ? new Date(`${value}T12:00:00`).toISOString() : null
       if (value && o._isNewStone && !o.target_completion_date) {
         const due = plusFiveMonthsISO(value)
         if (due) patch.target_completion_date = due
@@ -987,7 +987,7 @@ export default function OrdersTab({ onOpenSales, onOpenOrder, onNewOrder, onEdit
     const patch = {}
     if (signed) {
       const d = o.signed_at ? toDateInput(o.signed_at) : _todayInput()
-      patch.signed_at = `${d}T00:00:00`
+      patch.signed_at = new Date(`${d}T12:00:00`).toISOString()
       if (['draft', 'scoping', 'quoted'].includes(o.status)) patch.status = 'contracted'
       if (o._isNewStone && !o.target_completion_date) { const due = plusFiveMonthsISO(d); if (due) patch.target_completion_date = due }
     } else {

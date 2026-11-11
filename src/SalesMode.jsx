@@ -12263,9 +12263,11 @@ function CancelOrderSection({ order, update }) {
       }
       // Mirror to in-memory state
       update(patch)
+      return true
     } catch (e) {
       setErr(e.message || 'Save failed')
       console.error(`${label} error:`, e)
+      return false
     } finally {
       setBusy(null)
     }
@@ -12273,21 +12275,26 @@ function CancelOrderSection({ order, update }) {
 
   const doCancel = async () => {
     if (!order.cancelReason) { alert('Pick a reason'); return }
-    await applyAndSave({
+    const ok = await applyAndSave({
       status: 'cancelled',
       cancelledAt: new Date().toISOString(),
     }, 'cancel')
-    if (!err) setShowCancelForm(false)
+    if (!ok) return
+    setShowCancelForm(false)
+    // Cancelling the order closes its job too (closeout doctrine: one write,
+    // both sides) so it leaves Jobs, the cut list and the bring-up pool.
+    if (order.id) syncJobsForOrderStatus([order.id], 'cancelled').catch(() => {})
   }
 
   const doRestore = async () => {
     if (!confirm('Restore this order to draft status?')) return
-    await applyAndSave({
+    const ok = await applyAndSave({
       status: 'draft',
       cancelledAt: null,
       cancelReason: null,
       cancelNotes: '',
     }, 'restore')
+    if (ok && order.id) syncJobsForOrderStatus([order.id], 'draft').catch(() => {})
   }
 
   const doArchive = async () => {

@@ -78,6 +78,19 @@ export const trackPhases = (track) => TRACK_PHASES[track] || []
 export const boardPhases = (track) =>
   track === 'new_stone' ? trackPhases(track).filter(p => p !== 'ready_to_set') : trackPhases(track)
 export const trackLabel = (track) => TRACK_LABEL[track] || track
+// IS THIS PIECE ON THE BOARD? Stones / inscriptions / bronzes are hand-picked
+// (on_floor). A CEMETERY ORDER's doors are on the board the moment the order
+// is submitted to production (Paul 2026-11-10: "I made an order yesterday, it
+// should show up here in production floor") — nobody pulls 6 doors up one by
+// one; the order IS the line. Read-time rule, nothing is written.
+export const isOnBoard = (c) => !!c && (!!c.on_floor || (c.track === 'door' && !!c.cemetery_order_id))
+// The door's name as the office typed it: the first line of its inscription
+// text (the crypt name), else "Door N". `doors` = cemetery_orders.doors.
+export const doorNameOf = (c) => {
+  const d = Array.isArray(c?.cemetery_order?.doors) ? c.cemetery_order.doors[c.sort_order] : null
+  const first = String(d?.inscriptionText || '').split(/\r?\n/)[0].replace(/\s+/g, ' ').trim()
+  return first || c?.label || `Door ${(Number(c?.sort_order) || 0) + 1}`
+}
 export const phaseIndex = (track, code) => trackPhases(track).indexOf(code)
 export const isValidPhase = (track, code) => phaseIndex(track, code) >= 0
 export const nextPhase = (track, code) => { const p = trackPhases(track); const i = p.indexOf(code); return i >= 0 && i < p.length - 1 ? p[i + 1] : null }

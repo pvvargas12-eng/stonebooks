@@ -762,7 +762,7 @@ export async function getEmailTasks() {
     const paid = rowTotalPaid(o)
     const grand = rowGrandTotal(o)
     const bal = Math.max(0, grand - paid)
-    if (o.status === 'contracted' && paid <= 0 && grand > 0) {
+    if (o.status === 'contracted' && !rowMoneyDown(o) && grand > 0) {
       tasks.push({
         key: `dep-${o.id}`, type: 'deposit', label: 'Deposit needed',
         orderId: o.id, orderNumber: o.order_number, customerId: o.customer_id, name, email,
@@ -2624,6 +2624,8 @@ export async function countInstallReady() {
       const installed = (j.milestones || []).some(m =>
         ['installed', 'door_installed', 'work_completed'].includes(m.milestone_key) && m.status === 'done')
       if (installed) continue
+      // A hand-set blocker (set-list dots menu, order page) is not ready.
+      if (j.order.manual_blocker?.kind) continue
       const g = installGates(j.order, j)
       if (g.paid !== false && g.fdn !== false && g.permit !== false && g.blasted !== false) n++
     }
@@ -6765,7 +6767,7 @@ export async function getProductionComponents() {
         shape, polish_level, granite_color, top_shape, sides, standard_size_code,
         width_inches, depth_inches, thickness_inches, height_inches, base_config, pricing,
         customer:customers(last_name), cemetery:cemeteries(name)),
-      cemetery_order:cemetery_orders(id, order_number, cemetery_name),
+      cemetery_order:cemetery_orders(id, order_number, cemetery_name, doors, status, total_amount, submitted_at),
       vendor_request:vendor_requests(id, family_name, dealer_order_number)`)
     // THE DIE IS THE STONE (Paul 2026-07-27 "i dont want the bases showing
     // up", re-flagged 2026-08-04): bases never ride the carving ladder, so
@@ -7470,12 +7472,14 @@ export async function getExpensesTotal({ dateRange, category } = {}) {
 export async function getPaidTotalsByCemeteryOrder() {
   const { data, error } = await supabase
     .from('financial_records')
-    .select('cemetery_order_id, amount')
+    .select('cemetery_order_id, amount, voided')
     .eq('record_type', 'payment_received')
     .not('cemetery_order_id', 'is', null)
   if (error) { console.warn('[fin] getPaidTotalsByCemeteryOrder:', error.message); return {} }
   const map = {}
-  for (const r of data || []) map[r.cemetery_order_id] = (map[r.cemetery_order_id] || 0) + Number(r.amount || 0)
+  // A voided payment is not money (audit 2026-11-10: the list's paid pill
+  // counted voids while the order page and the invoice skipped them).
+  for (const r of (data || []).filter(x => !x.voided)) map[r.cemetery_order_id] = (map[r.cemetery_order_id] || 0) + Number(r.amount || 0)
   return map
 }
 

@@ -15,14 +15,17 @@
 //              Ordered, NEVER writes to orders (data-layer guards), receivable.
 //   'edit'   — full-width editing of an existing PR's header + lines.
 // =============================================================================
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo } from 'react'
 import {
   listSuppliers, createSupplier, createPR, getBulkOrderWithItems,
   addBulkOrderItem, updateBulkOrderItem, deleteBulkOrderItem, updatePRHeader,
   getActiveStoneOrders, listOrderAttachments, getCurrentStaffName,
+  getInventoryStock, allocateInventoryItem, setOrderPieceInStock, logOrderActivity, fmtYardTag, fmtUSD,
 } from '../lib/stonebooksData'
 import { rowToOrder } from '../SalesMode'
-import { resolveStoneNeeds } from '../lib/inventoryMatch'
+import { resolveStoneNeeds, matchLineToStock } from '../lib/inventoryMatch'
+import { yardStoneSpecLine, yardStoneWhere } from '../lib/yardStone'
+import { bookKeyForSupplier, bookName, bookEdition, prBookCost } from '../lib/prCost'
 
 const TYPE_SUGGESTIONS = ['Die', 'Base', 'Backer', 'Grass', 'Hickey', 'Slant', 'Upright', 'Marker', 'Bench', 'Vase', 'Other']
 let _tmp = 0
@@ -34,7 +37,7 @@ const BLANK = { family_name: '', color: '', item_type: '', size: '', specs: '', 
 
 const VENDOR_CHIP = { display: 'inline-block', marginTop: 3, padding: '1px 7px', borderRadius: 999, background: '#16150F', color: '#E9C46A', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }
 
-export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onClose, onSaved }) {
+export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onClose, onSaved, preload = null }) {
   const isEdit = mode === 'edit'
   const isRecord = mode === 'record'
 
@@ -58,6 +61,17 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState(null)
 
+  // ── Yard matches (PR-MATCH, Paul 2026-11-10: "see if there is a match
+  // available before ordering") — the live yard, read once and again after
+  // every confirmed match. Matching is OFF when recording a PR that already
+  // happened and on a PR that was already received.
+  const [stock, setStock] = useState(null)
+  const [prStatus, setPrStatus] = useState(null)
+  const [matchBusy, setMatchBusy] = useState(null)   // row id being matched
+  const [moreFor, setMoreFor] = useState(null)       // row id showing every candidate
+  const [note, setNote] = useState(null)
+  const loadStock = useCallback(() => getInventoryStock().then(r => setStock(r.rows || [])).catch(() => setStock([])), [])
+
   // ── Rail ──
   const [orders, setOrders] = useState(null)     // active-order roster (raw rows)
   const [railQ, setRailQ] = useState('')
@@ -76,17 +90,24 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const [railFiles, setRailFiles] = useState(null)
 
   useEffect(() => {
+    // `preload` = smoke mounts only: sample suppliers / lines / yard, no reads.
+    if (preload) {
+      setSuppliers(preload.suppliers || []); setSupplierId(preload.supplierId || ''); setPoNumber(preload.poNumber || '')
+      setRows(preload.rows || []); setStock(preload.stock || []); setOrders([]); setLoading(false)
+      return
+    }
     let alive = true
     listSuppliers().then(r => { if (alive) setSuppliers(r.rows || []) }).catch(() => {})
     getCurrentStaffName().then(n => { if (alive && n) setCreatedBy(n) }).catch(() => {})
     getActiveStoneOrders().then(r => { if (alive) setOrders(r.rows || []) }).catch(() => { if (alive) setOrders([]) })
     if (!isEdit) setPlacedAt(todayISO())
+    if (!isRecord) getInventoryStock().then(r => { if (alive) setStock(r.rows || []) }).catch(() => { if (alive) setStock([]) })
     return () => { alive = false }
-  }, [isEdit])
+  }, [isEdit, isRecord, preload])
 
   // Edit mode: load the PR + its lines into the grid.
   useEffect(() => {
-    if (!isEdit || !bulkOrderId) return
+    if (!isEdit || !bulkOrderId || preload) return
     let alive = true
     ;(async () => {
       const r = await getBulkOrderWithItems(bulkOrderId)
@@ -94,6 +115,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
       if (!r.ok) { setErr(r.error); setLoading(false); return }
       const o = r.order || {}
       setPoNumber(o.po_number || '')
+      setPrStatus(o.received_at ? 'received' : (o.status || null))
       setSupplierId(o.supplier_id || '')
       setSupplierName(o.supplier_name || '')
       setPlacedAt(o.placed_at ? String(o.placed_at).slice(0, 10) : '')
@@ -113,7 +135,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
       setLoading(false)
     })().catch(e => { if (alive) { setErr(String(e?.message || e)); setLoading(false) } })
     return () => { alive = false }
-  }, [isEdit, bulkOrderId])
+  }, [isEdit, bulkOrderId, preload])
 
   // Order numbers for linked lines (display) once the roster is in.
   const orderNoById = useMemo(() => new Map((orders || []).map(o => [o.id, o.order_number])), [orders])
@@ -124,6 +146,88 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const toggleStock = (r) => setRow(r.id, r.is_stock
     ? { is_stock: false }
     : { is_stock: true, family_name: 'Stock', order_id: null, order_number: null })
+
+  // ── Yard match + book cost per line (both derived, nothing stored) ──
+  const matchOn = !isRecord && prStatus !== 'received' && prStatus !== 'cancelled'
+  const matchById = useMemo(() => {
+    const m = new Map()
+    if (!matchOn || !stock) return m
+    for (const r of rows) {
+      if (r.is_stock) continue
+      const res = matchLineToStock(r, stock)
+      if (res.reserved || res.candidates.length) m.set(r.id, res)
+    }
+    return m
+  }, [rows, stock, matchOn])
+  const matchCount = matchById.size
+
+  const supplierLabel = (suppliers.find(s => s.id === supplierId)?.name) || supplierName || ''
+  const bookKey = bookKeyForSupplier(supplierLabel)
+  const cost = useMemo(() => (bookKey ? prBookCost(rows.filter(r => r.size.trim() || r.item_type.trim()), bookKey) : null), [rows, bookKey])
+
+  const tagOf = (st) => (st?.yard_tag != null ? `#${fmtYardTag(st.yard_tag)}` : 'the unnumbered stone')
+  const pieceWord = (fam) => (fam === 'base' ? 'base' : fam === 'backer' ? 'backer' : 'die')
+
+  // Take a line off the PR for good: an existing line is deleted NOW (the
+  // yard stone was reserved a second ago; a Cancel must not leave the stone
+  // both reserved and still on order), a new line just leaves the grid. A
+  // line for several stones gives up one.
+  const dropLineFromPR = async (r) => {
+    const qty = Math.max(1, Number(r.quantity) || 1)
+    if (qty > 1) {
+      if (!r.isNew) { const u = await updateBulkOrderItem(r.id, { quantity: qty - 1 }); if (!u.ok) return u }
+      setRow(r.id, { quantity: qty - 1 })
+      setOrig(o => (o[r.id] ? { ...o, [r.id]: { ...o[r.id], quantity: qty - 1 } } : o))
+      return { ok: true, left: qty - 1 }
+    }
+    if (!r.isNew) { const d = await deleteBulkOrderItem(r.id); if (!d.ok) return d }
+    setOrig(o => { if (!o[r.id]) return o; const n = { ...o }; delete n[r.id]; return n })
+    removeRow(r.id)
+    return { ok: true, left: 0 }
+  }
+
+  // CONFIRM MATCH: the yard stone becomes this order's die / base — reserved
+  // to the order (allocated + linked), the order's piece flips to In stock
+  // (the Monument card's own write, so the Sales dropdown and the job stone
+  // status follow), and the line comes off the PR.
+  const confirmMatch = async (r, cand, fam) => {
+    if (matchBusy) return
+    setErr(null); setNote(null)
+    if (!r.order_id) { setErr('Link this line to its order first (search the order on the right, then Link), so the stone lands on the right order.'); return }
+    const piece = pieceWord(fam)
+    const who = r.family_name || r.order_number || orderNoById.get(r.order_id) || 'this order'
+    const where = yardStoneWhere(cand.stock)
+    const ok = window.confirm(`Use yard stone ${tagOf(cand.stock)}${where ? ` (${where})` : ''} as the ${piece.toUpperCase()} for ${who}?\n\nIt is reserved to the order, the order's ${piece} reads In stock, and this line comes off the PR.`)
+    if (!ok) return
+    setMatchBusy(r.id)
+    try {
+      const a = await allocateInventoryItem(cand.stock, { orderId: r.order_id, family: r.family_name || null })
+      if (!a.ok) throw new Error(`Could not reserve the stone: ${a.error}`)
+      let warn = ''
+      if (piece !== 'backer') {
+        const p = await setOrderPieceInStock(r.order_id, piece)
+        if (!p.ok) warn = ` The order's ${piece} status did not update (${p.error}); set it to In stock on the order.`
+      }
+      const d = await dropLineFromPR(r)
+      if (!d.ok) warn += ` The line could not be removed from the PR (${d.error}); remove it by hand.`
+      Promise.resolve(logOrderActivity(r.order_id, {
+        type: 'change', field: 'Stone', newValue: `${piece} from the yard`,
+        note: `Yard stone ${tagOf(cand.stock)} matched on ${poNumber || 'a new PR'}: reserved as the ${piece}, taken off the PR`, actor: createdBy || null,
+      })).catch(() => {})
+      setNote(`${tagOf(cand.stock)} is now the ${piece} for ${who}. ${d.ok && d.left > 0 ? `The line still orders ${d.left}.` : 'Line removed from the PR.'}${warn}`)
+      await loadStock()
+    } catch (e) { setErr(String(e?.message || e)) }
+    setMatchBusy(null)
+  }
+  const dropReserved = async (r) => {
+    if (matchBusy) return
+    setErr(null); setNote(null)
+    setMatchBusy(r.id)
+    const d = await dropLineFromPR(r)
+    setMatchBusy(null)
+    if (!d.ok) { setErr(d.error); return }
+    setNote(`${r.family_name || 'The line'}: taken off the PR. The stone is already reserved in the yard.`)
+  }
 
   // ── Rail derivations ──
   const railResults = useMemo(() => {
@@ -246,7 +350,13 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
       <div className="prw-top">
         <div className="prw-top-l">
           <div className="prw-eyebrow">{isEdit ? 'Edit Stone PR' : isRecord ? 'Record existing — never touches orders' : 'Build and send'}</div>
-          <h2 className="prw-title">{title}</h2>
+          <h2 className="prw-title">{title}
+            {cost && cost.priced > 0 && (
+              <span className="prw-cost-head" title={`${bookName(bookKey)} book, ${bookEdition(bookKey) || ''}. The listed price for each size and color. Shaped tops, extra polish and freight are not in it.`}>
+                {fmtUSD(cost.total)} <small>book cost · {cost.priced} line{cost.priced === 1 ? '' : 's'}{cost.unpriced ? ` · ${cost.unpriced} not priced` : ''}</small>
+              </span>
+            )}
+          </h2>
         </div>
         <div className="prw-top-r">
           {err && <span className="prw-err">{err}</span>}
@@ -282,6 +392,13 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
           <input className="sb-input" placeholder="PR notes (prints on the sheet)" value={notes} onChange={e => setNotes(e.target.value)} /></div>
       </div>
 
+      {(note || (matchOn && matchCount > 0)) && (
+        <div className="prw-matchbar">
+          {matchOn && matchCount > 0 && <span><b>{matchCount}</b> line{matchCount === 1 ? '' : 's'} may already be in the yard. Check the stone, then Confirm match so it is not ordered twice.</span>}
+          {note && <span className="prw-matchbar-note">{note}</span>}
+        </div>
+      )}
+
       <div className="prw-body">
         {/* ── LEFT: the PR lines ── */}
         <div className="prw-left">
@@ -292,11 +409,18 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                   <th className="prw-c-fam">Family</th><th className="prw-c-color">Color</th>
                   <th className="prw-c-type">Type</th><th className="prw-c-size">Size</th>
                   <th>Specs</th><th className="prw-c-qty">Qty</th>
-                  <th className="prw-c-stock">Stock</th><th className="prw-c-link">Order</th><th />
+                  <th className="prw-c-stock">Stock</th><th className="prw-c-link">Order</th>
+                  {bookKey && <th className="prw-c-cost">Cost</th>}<th />
                 </tr></thead>
                 <tbody>
-                  {rows.map(r => (
-                    <tr key={r.id} className={r.is_stock ? 'prw-row-stock' : ''}>
+                  {rows.map(r => {
+                    const m = matchById.get(r.id) || null
+                    const tone = m ? (m.reserved ? 'res' : m.best.strength === 'exact' ? 'exact' : 'near') : null
+                    const c = cost ? cost.byId.get(r.id) : null
+                    const shown = m ? (moreFor === r.id ? m.candidates : m.candidates.slice(0, 2)) : []
+                    return (
+                    <Fragment key={r.id}>
+                    <tr className={`${r.is_stock ? 'prw-row-stock' : ''}${tone ? ` prw-row-m prw-row-m-${tone}` : ''}`}>
                       <td><input className="sb-input" value={r.family_name} disabled={r.is_stock}
                         placeholder={r.is_stock ? 'Stock' : 'Family'} onChange={e => setRow(r.id, { family_name: e.target.value })} /></td>
                       <td><input className="sb-input" value={r.color} placeholder="Md Barre" onChange={e => setRow(r.id, { color: e.target.value })} /></td>
@@ -305,6 +429,13 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                       <td><input className="sb-input prw-mono" value={r.specs} placeholder="Pol Top; Saw Back; BRP" onChange={e => setRow(r.id, { specs: e.target.value })} /></td>
                       <td><input className="sb-input prw-qty" type="number" min="1" value={r.quantity} onChange={e => setRow(r.id, { quantity: e.target.value })} /></td>
                       <td className="prw-c-stock">
+                        {m && (
+                          <span className={`prw-mpill prw-mpill-${tone}`} title={m.reserved ? 'A yard stone is already reserved to this order' : `${m.candidates.length} yard stone${m.candidates.length === 1 ? '' : 's'} could fill this line`}>
+                            {m.reserved
+                              ? `IN YARD${m.reserved.yard_tag != null ? ` #${fmtYardTag(m.reserved.yard_tag)}` : ''}`
+                              : `${m.best.stock.yard_tag != null ? `#${fmtYardTag(m.best.stock.yard_tag)}` : 'MATCH'}${m.candidates.length > 1 ? ` +${m.candidates.length - 1}` : ''}`}
+                          </span>
+                        )}
                         <button type="button" className={`prw-stock${r.is_stock ? ' on' : ''}`} title="Stock = ordered to have; lands as available yard stock on receive"
                           onClick={() => toggleStock(r)}>{r.is_stock ? 'STOCK' : '—'}</button>
                       </td>
@@ -316,9 +447,51 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                             ? <button type="button" className="prw-mini" title={`Link to ${famOfRow(railSel)}`} onClick={() => linkRowToRail(r)}>Link</button>
                             : <span className="prw-nolink">—</span>}
                       </td>
+                      {bookKey && (
+                        <td className="prw-c-cost">
+                          {c && c.ok
+                            ? <span className="prw-cost" title={`${c.tier === 'exact' ? 'Printed row' : 'No printed row: face area x the book rate'} · ${c.sizeLabel} · ${c.columnLabel}${c.assumedColor ? ' (color on the line not recognized, priced at the lowest column)' : ''}${c.qty > 1 ? ` · ${fmtUSD(c.unit)} each x ${c.qty}` : ''}`}>
+                                {c.tier === 'estimate' || c.assumedColor ? '~' : ''}{fmtUSD(c.total)}
+                              </span>
+                            : <span className="prw-nolink" title={c ? c.why : ''}>—</span>}
+                        </td>
+                      )}
                       <td><button type="button" className="prw-rm" title="Remove line" onClick={() => removeRow(r.id)}>×</button></td>
                     </tr>
-                  ))}
+                    {m && (
+                      <tr className={`prw-mrow prw-mrow-${tone}`}>
+                        <td colSpan={bookKey ? 10 : 9}>
+                          <div className="prw-mbox">
+                            {m.reserved && (
+                              <div className="prw-mline">
+                                <span className="prw-mtag prw-mtag-res">ALREADY RESERVED</span>
+                                <span className="prw-mnum">{m.reserved.yard_tag != null ? `#${fmtYardTag(m.reserved.yard_tag)}` : 'no number'}</span>
+                                <span className="prw-mspec">{yardStoneSpecLine(m.reserved) || '—'}</span>
+                                <span className="prw-mwhere">{yardStoneWhere(m.reserved) || 'location not set'}</span>
+                                <button type="button" className="prw-mbtn" disabled={!!matchBusy} onClick={() => dropReserved(r)}>{matchBusy === r.id ? 'Working…' : 'Take line off the PR'}</button>
+                              </div>
+                            )}
+                            {!m.reserved && shown.map(cd => (
+                              <div key={cd.stock.id} className="prw-mline">
+                                <span className={`prw-mtag prw-mtag-${cd.strength}`}>{cd.strength === 'exact' ? 'EXACT' : cd.strength === 'near' ? 'NEAR' : 'CHECK COLOR'}</span>
+                                <span className="prw-mnum">{cd.stock.yard_tag != null ? `#${fmtYardTag(cd.stock.yard_tag)}` : 'no number'}</span>
+                                <span className="prw-mspec">{yardStoneSpecLine(cd.stock) || '—'}{cd.why.length ? <em> · {cd.why.join(' · ')}</em> : null}</span>
+                                <span className="prw-mwhere">{yardStoneWhere(cd.stock) || 'location not set'}{(Number(cd.stock.quantity) || 1) > 1 ? ` · ${cd.stock.quantity} in the pile` : ''}</span>
+                                <button type="button" className="prw-mbtn prw-mbtn-go" disabled={!!matchBusy}
+                                  title={r.order_id ? 'Reserve this stone to the order and take the line off the PR' : 'Link the line to its order first'}
+                                  onClick={() => confirmMatch(r, cd, m.family)}>{matchBusy === r.id ? 'Working…' : 'Confirm match'}</button>
+                              </div>
+                            ))}
+                            {!m.reserved && m.candidates.length > 2 && (
+                              <button type="button" className="prw-mmore" onClick={() => setMoreFor(moreFor === r.id ? null : r.id)}>{moreFor === r.id ? 'Show fewer' : `Show all ${m.candidates.length} yard stones`}</button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
               <datalist id="prw-types">{TYPE_SUGGESTIONS.map(t => <option key={t} value={t} />)}</datalist>
@@ -326,6 +499,22 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                 <button type="button" className="prw-add" onClick={() => addRow()}>+ Add line</button>
                 <button type="button" className="prw-add" onClick={() => addRow({ is_stock: true, family_name: 'Stock' })}>+ Add stock line</button>
               </div>
+              {cost && (cost.priced > 0 || cost.unpriced > 0) && (
+                <div className="prw-costfoot">
+                  <span className="prw-costfoot-l">{bookName(bookKey)} book cost{bookEdition(bookKey) ? ` · ${bookEdition(bookKey)}` : ''}</span>
+                  <span className="prw-costfoot-v">{fmtUSD(cost.total)}</span>
+                  <span className="prw-costfoot-n">
+                    {cost.priced} line{cost.priced === 1 ? '' : 's'} priced
+                    {cost.estimated ? ` · ${cost.estimated} by the book rate (~)` : ''}
+                    {cost.assumed ? ` · ${cost.assumed} with no readable color (~, lowest column)` : ''}
+                    {cost.unpriced ? ` · ${cost.unpriced} not priced (hover the dash)` : ''}
+                    . Listed price for the size and color; shaped tops, extra polish and freight are not in it.
+                  </span>
+                </div>
+              )}
+              {!bookKey && supplierLabel && rows.some(r => r.size.trim()) && (
+                <div className="prw-costfoot"><span className="prw-costfoot-n">No price book is loaded for {supplierLabel}, so no cost is shown. Peerless and Kani are loaded.</span></div>
+              )}
               {isRecord && <div className="prw-recnote">Recording only — this PR lands as Ordered for receiving, and never changes any order's data or status. Mismatches surface in the Reconcile tab for your call.</div>}
             </>
           )}
@@ -423,7 +612,40 @@ const PRW_CSS = `
   .prw-mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; }
   .prw-c-fam { width: 15%; } .prw-c-color { width: 11%; } .prw-c-type { width: 9%; } .prw-c-size { width: 17%; }
   .prw-c-qty { width: 58px; } .prw-qty { text-align: center; }
-  .prw-c-stock { width: 62px; text-align: center; } .prw-c-link { width: 96px; }
+  .prw-c-stock { width: 92px; text-align: center; } .prw-c-link { width: 96px; }
+  .prw-c-cost { width: 78px; text-align: right; white-space: nowrap; }
+  .prw-cost { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; font-weight: 700; color: #2a2a2a; }
+  .prw-cost-head { margin-left: 14px; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 17px; font-weight: 700; color: #9A7209; white-space: nowrap; }
+  .prw-cost-head small { font-family: var(--font-b, inherit); font-size: 11.5px; font-weight: 600; color: var(--sb-text-muted, #8a7f6c); }
+  .prw-costfoot { margin-top: 14px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; border-top: 1.5px solid #2a2a2a; padding-top: 10px; }
+  .prw-costfoot-l { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: #6b5d3a; }
+  .prw-costfoot-v { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 20px; font-weight: 700; color: #2a2a2a; }
+  .prw-costfoot-n { font-size: 12px; color: var(--sb-text-muted, #8a7f6c); flex: 1; min-width: 240px; overflow-wrap: anywhere; }
+  .prw-matchbar { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; padding: 8px 22px; background: #eef6ef; border-bottom: 1px solid #cfe3d3; font-size: 13px; color: #1f5c33; }
+  .prw-matchbar-note { font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+  .prw-row-m td { background: #f1f8f2; }
+  .prw-row-m-near td { background: #fbf6e6; }
+  .prw-row-m-res td { background: #edf2f9; }
+  .prw-row-m td:first-child, .prw-mrow td { box-shadow: inset 4px 0 0 #1f7a3d; }
+  .prw-row-m-near td:first-child, .prw-mrow-near td { box-shadow: inset 4px 0 0 #c9962a; }
+  .prw-row-m-res td:first-child, .prw-mrow-res td { box-shadow: inset 4px 0 0 #4a6fa5; }
+  .prw-mpill { display: block; margin: 0 auto 3px; max-width: 100%; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; font-weight: 800; border-radius: 999px; padding: 2px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .prw-mpill-exact { background: #1f7a3d; color: #fff; } .prw-mpill-near { background: #c9962a; color: #fff; } .prw-mpill-res { background: #4a6fa5; color: #fff; }
+  .prw-table .prw-mrow td { padding: 0 6px 8px; background: #f1f8f2; }
+  .prw-table .prw-mrow-near td { background: #fbf6e6; } .prw-table .prw-mrow-res td { background: #edf2f9; }
+  .prw-mbox { display: flex; flex-direction: column; gap: 5px; padding: 2px 4px 2px 10px; }
+  .prw-mline { display: grid; grid-template-columns: auto auto minmax(0, 1.6fr) minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 12.5px; min-width: 0; }
+  .prw-mtag { font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; border-radius: 4px; padding: 2px 6px; white-space: nowrap; }
+  .prw-mtag-exact { background: #dff0e3; color: #1f7a3d; } .prw-mtag-near, .prw-mtag-check { background: #f6e9c6; color: #8a6410; } .prw-mtag-res { background: #dbe6f5; color: #34558a; }
+  .prw-mnum { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 15px; font-weight: 800; color: #16150F; white-space: nowrap; }
+  .prw-mspec { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; color: #2a2a2a; min-width: 0; overflow-wrap: anywhere; }
+  .prw-mspec em { font-style: normal; color: #8a6410; }
+  .prw-mwhere { color: var(--sb-text-muted, #6f685c); min-width: 0; overflow-wrap: anywhere; }
+  .prw-mbtn { font: inherit; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 7px; border: 1px solid var(--sb-border, #d8d2c4); background: #fff; color: #34558a; cursor: pointer; white-space: nowrap; }
+  .prw-mbtn-go { background: #1f7a3d; border-color: #1f7a3d; color: #fff; }
+  .prw-mbtn:disabled { opacity: 0.55; cursor: default; }
+  .prw-mmore { align-self: flex-start; background: none; border: none; padding: 0; font: inherit; font-size: 12px; font-weight: 700; color: #6b5d3a; cursor: pointer; text-decoration: underline; }
+  @media (max-width: 1100px) { .prw-mline { grid-template-columns: auto auto minmax(0, 1fr); } .prw-mwhere { grid-column: 1 / -1; } }
   .prw-row-stock td { background: #f6f3ea; }
   .prw-stock { font: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; border-radius: 999px; border: 1px solid var(--sb-border, #d8d2c4); background: #fff; color: #9a948a; padding: 3px 9px; cursor: pointer; }
   .prw-stock.on { background: #6b5d3a; border-color: #6b5d3a; color: #fff; }

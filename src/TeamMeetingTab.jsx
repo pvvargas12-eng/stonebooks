@@ -15,7 +15,7 @@ import {
   getJobs, getInstallList, getFoundationList, getStencilCutList,
   installGates, deriveFdnStatus, deriveDesignStatus, deriveStoneStatus,
   stoneStatusLabel, fdnStatusLabel,
-  rowTotalPaid, rowBalanceDue, rowGrandTotal, properName, customerName, fmtUSD,
+  rowTotalPaid, rowMoneyDown, rowBalanceDue, rowGrandTotal, properName, customerName, fmtUSD,
   listOutgoingPayments, permitNeeded,
   getCalendarBatches, expandBatchOccurrences, updateBatch, createBatch, BATCH_KINDS,
   addShopTask, todayISO,
@@ -37,7 +37,7 @@ const LEAD = new Set(['draft', 'scoping', 'quoted'])
 const DEAD = new Set(['closed', 'cancelled'])
 const INSTALL_KEYS = ['installed', 'door_installed', 'work_completed']
 
-const isRealWork = (o) => o && !o.archived && !LEAD.has(o.status) && !DEAD.has(o.status) && rowTotalPaid(o) > 0
+const isRealWork = (o) => o && !o.archived && !LEAD.has(o.status) && !DEAD.has(o.status) && rowMoneyDown(o)
 const msDone = (job, keys) => (job?.milestones || []).some(m => keys.includes(m.milestone_key) && m.status === 'done')
 const familyOf = (o) => properName(o?.primary_lastname || customerName(o?.customer) || '—')
 // Current time is read once in the load effect (todayMs) — bare Date.now()

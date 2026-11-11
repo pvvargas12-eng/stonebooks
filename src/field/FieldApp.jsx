@@ -192,6 +192,22 @@ const GLYPH = {
   schedule: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="2" /><line x1="3.5" y1="10" x2="20.5" y2="10" /><line x1="8" y1="3" x2="8" y2="7" /><line x1="16" y1="3" x2="16" y2="7" /><line x1="7.5" y1="14" x2="10.5" y2="14" /><line x1="13.5" y1="14" x2="16.5" y2="14" /></svg>,
 }
 
+// Has a newer build gone live since this page loaded? Compares the entry
+// script in the page with the one the server hands out now. Dev = same file.
+async function newBundleLive() {
+  try {
+    const cur = document.querySelector('script[type="module"][src]')?.getAttribute('src')
+    if (!cur || !cur.includes('/assets/')) return false
+    const res = await fetch('/index.html', { cache: 'no-store' })
+    if (!res.ok) return false
+    const m = (await res.text()).match(/<script[^>]+type="module"[^>]+src="([^"]+)"/)
+    return !!m && m[1].includes('/assets/') && m[1] !== cur
+  } catch { return false }
+}
+const RESUME_OTHERS_MS = 5 * 60 * 1000       // away this long: hidden tabs reload on their next visit
+const RESUME_ALL_MS = 2 * 60 * 60 * 1000     // away this long: the open tab reloads too
+const TAB_STALE_MS = 90 * 1000               // a tab left this long reloads when you come back to it
+
 export default function FieldApp() {
   const [authed, setAuthed] = useState(undefined)
   const [staffOk, setStaffOk] = useState(undefined)
@@ -212,6 +228,54 @@ export default function FieldApp() {
   const [pushRev, setPushRev] = useState(0)           // bumps when the sheet closes
   const fileRef = useRef(null)
   const undo = useUndoToast()
+  // FIELD-POLISH (2026-11-11). Tabs you have opened stay loaded (hidden), so
+  // going back is instant and keeps its place; tabRev[key] is the remount
+  // key — bumped when the tab went stale, was re-tapped, or the app resumed.
+  const [tabRev, setTabRev] = useState({})
+  const [updateReady, setUpdateReady] = useState(false)
+  const viewRef = useRef({ tab: 'today', drill: null, notifOpen: false })
+  const scrollPos = useRef({})     // tab key -> window scroll offset
+  const leftAt = useRef({})        // tab key -> when it was last on screen
+  useEffect(() => { viewRef.current = { tab, drill, notifOpen } }, [tab, drill, notifOpen])
+  // Remember where the open tab is scrolled before anything covers it.
+  const saveScroll = useCallback(() => {
+    const v = viewRef.current
+    if (!v.drill && !v.notifOpen) scrollPos.current[v.tab] = window.scrollY
+  }, [])
+  // A drill / the bell opens at the top; a tab returns to where it was.
+  const drillView = drill?.view || null
+  const drillKey = drill ? (drill.orderId || drill.jobId || '') : ''
+  const curRev = tabRev[tab] || 0
+  useEffect(() => {
+    const y = (drillView || notifOpen) ? 0 : (scrollPos.current[tab] || 0)
+    const raf = requestAnimationFrame(() => window.scrollTo(0, y))
+    return () => cancelAnimationFrame(raf)
+  }, [tab, drillView, drillKey, notifOpen, curRev])
+  // Coming back to the app: old data goes, and a new build is picked up.
+  useEffect(() => {
+    let hiddenAt = 0
+    const onVis = async () => {
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
+      if (!hiddenAt) return
+      const away = Date.now() - hiddenAt
+      hiddenAt = 0
+      if (away < 60000) return
+      const fresh = await newBundleLive()
+      if (fresh && away >= RESUME_ALL_MS) { window.location.reload(); return }
+      if (fresh) setUpdateReady(true)
+      if (away < RESUME_OTHERS_MS) return
+      const cur = viewRef.current.tab
+      scrollPos.current = away >= RESUME_ALL_MS ? {} : { [cur]: scrollPos.current[cur] }
+      setTabRev(m => {
+        const next = {}
+        for (const k of Object.keys(m)) next[k] = (m[k] || 0) + ((k !== cur || away >= RESUME_ALL_MS) ? 1 : 0)
+        return next
+      })
+      setTaskRev(r => r + 1)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -272,11 +336,37 @@ export default function FieldApp() {
     return () => { cancelled = true }
   }, [who, tab, drill, taskRev, notifOpen])
 
-  const openJob = useCallback((ids, from) => { setNotifOpen(false); setDrill({ view: 'detail', ...ids, from: from || tab }) }, [tab])
-  const openComplete = useCallback((ids) => setDrill(d => ({ ...(d || {}), ...ids, view: 'complete' })), [])
-  const closeDrill = useCallback(() => setDrill(d => (d?.view === 'complete' ? { ...d, view: 'detail' } : null)), [])
-  const goTab = (k) => { setDrill(null); setMenuOpen(false); setNotifOpen(false); setTab(k) }
-  const openTask = useCallback((taskId) => { setDrill(null); setNotifOpen(false); setTaskFocus(taskId); setTab('tasks') }, [])
+  // Show a tab. A tab left longer than TAB_STALE_MS, or re-tapped while it
+  // is already on screen, reloads from the top; otherwise it is as you left it.
+  const showTab = useCallback((k) => {
+    const v = viewRef.current
+    const now = Date.now()
+    const covered = !!(v.drill || v.notifOpen)
+    if (!covered) scrollPos.current[v.tab] = window.scrollY
+    if (k === v.tab) {
+      if (!covered) { scrollPos.current[k] = 0; setTabRev(m => ({ ...m, [k]: (m[k] || 0) + 1 })) }
+    } else {
+      leftAt.current[v.tab] = now
+      const mounted = leftAt.current[k] != null
+      if (mounted && now - leftAt.current[k] > TAB_STALE_MS) {
+        scrollPos.current[k] = 0
+        setTabRev(m => ({ ...m, [k]: (m[k] || 0) + 1 }))
+      } else {
+        setTabRev(m => (k in m ? m : { ...m, [k]: 0 }))
+      }
+    }
+    setTab(k)
+  }, [])
+  const openJob = useCallback((ids, from) => { saveScroll(); setNotifOpen(false); setDrill({ view: 'detail', ...ids, from: from || viewRef.current.tab }) }, [saveScroll])
+  // Install complete opened straight from a list goes BACK to that list, not
+  // to a job screen that was never opened; via the job screen, back to it.
+  const openComplete = useCallback((ids) => {
+    saveScroll()
+    setDrill(d => ({ ...(d || {}), ...ids, view: 'complete', viaDetail: !!d && (d.view === 'detail' || !!d.viaDetail), from: d?.from || viewRef.current.tab }))
+  }, [saveScroll])
+  const closeDrill = useCallback(() => setDrill(d => (d?.view === 'complete' && d.viaDetail ? { ...d, view: 'detail' } : null)), [])
+  const goTab = (k) => { showTab(k); setDrill(null); setMenuOpen(false); setNotifOpen(false) }
+  const openTask = useCallback((taskId) => { showTab('tasks'); setDrill(null); setNotifOpen(false); setTaskFocus(taskId) }, [showTab])
 
   // FIELD-PUSH upkeep, once identity resolves: refresh this phone's
   // subscription row (re-keys it when the phone switched person), clear the
@@ -347,6 +437,48 @@ export default function FieldApp() {
   // crew get Find. Today anchors first, More holds the overflow, always.
   const TAB_DEFS = resolveTabs(who).map(k => [k, TAB_REGISTRY.find(t => t.key === k)?.label || k.toUpperCase()])
 
+  // One screen per tab key (plain render function — the tabs you have
+  // opened stay mounted, the rest are not built until first visit).
+  const renderTab = (k) => {
+    if (k === 'today') return (
+    <TodayScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
+      onOpenTab={goTab} onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev}
+      onAskPush={() => setPermOpen(true)} pushRev={pushRev}
+      onCapture={!isOwner ? () => fileRef.current?.click() : null} />
+    )
+    if (k === 'tasks') return (
+    <TasksScreen who={who} undo={undo} onOpenJob={openJob}
+      focusTaskId={taskFocus} onFocusConsumed={() => setTaskFocus(null)}
+      onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev} />
+    )
+    if (k === 'jobs') return (
+    <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
+      onComplete={openComplete} />
+    )
+    if (k === 'production') return (
+    <ProductionFloorScreen who={who} undo={undo} onOpenJob={openJob} />
+    )
+    if (k === 'schedule') return (
+    <WeekScheduleScreen who={who} onOpenJob={openJob} />
+    )
+    if (k === 'sales' && isOwner) return (
+    <SalesScreen onOpenJob={openJob} who={who} undo={undo} />
+    )
+    if (k === 'payments' && isOwner) return (
+    <PaymentsScreen who={who} undo={undo} onOpenJob={openJob} />
+    )
+    if (k === 'more') return (
+    <MoreScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
+      onAskPush={() => setPermOpen(true)} onOpenPrefs={() => setPrefsOpen(true)}
+      onSwitchPerson={() => { clearFieldWho(); setWho(null) }}
+      onTabsSaved={() => setWho(getFieldWho())} />
+    )
+    if (k === 'find') return (
+    <FindScreen who={who} undo={undo} onOpenJob={openJob} mode={isOwner ? 'search' : 'all'} />
+    )
+    return null
+  }
+
   return (
     <div className="fl-shell">
       <style>{FIELD_CSS}</style>
@@ -355,7 +487,7 @@ export default function FieldApp() {
           <div className="fl-brand">STONEBOOKS <em>FIELD</em></div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <button type="button" className="fl-bell" aria-label="Notifications"
-              onClick={() => { setMenuOpen(false); setDrill(null); setNotifOpen(v => !v) }}>
+              onClick={() => { saveScroll(); setMenuOpen(false); setDrill(null); setNotifOpen(v => !v) }}>
               {GLYPH.bell}
               {unread > 0 && <span className="fl-bell-badge">{unread > 9 ? '9+' : unread}</span>}
             </button>
@@ -365,6 +497,7 @@ export default function FieldApp() {
             </button>
           </div>
         </div>
+        {menuOpen && <div className="fl-menu-scrim" onClick={() => setMenuOpen(false)} />}
         {menuOpen && (
           <div className="fl-menu">
             <div className="fl-menu-role">{isOwner ? 'Owner build' : (who.department ? `${who.department} crew` : 'Crew build')}</div>
@@ -375,6 +508,12 @@ export default function FieldApp() {
           </div>
         )}
       </header>
+      {updateReady && (
+        <div className="fl-update">
+          <span>A newer Stonebooks Field is ready.</span>
+          <button type="button" onClick={() => window.location.reload()}>UPDATE</button>
+        </div>
+      )}
 
       <main className="fl-body">
         {notifOpen && !drill && (
@@ -382,7 +521,7 @@ export default function FieldApp() {
             onBack={() => setNotifOpen(false)} onAskPermission={() => setPermOpen(true)} />
         )}
         {drill?.view === 'detail' && (
-          <JobDetailScreen jobId={drill.jobId} orderId={drill.orderId}
+          <JobDetailScreen key={drill.orderId || drill.jobId} jobId={drill.jobId} orderId={drill.orderId}
             onBack={closeDrill} onComplete={openComplete} undo={undo} showMoney={isOwner}
             who={who} onTaskChanged={() => setTaskRev(r => r + 1)} />
         )}
@@ -393,46 +532,13 @@ export default function FieldApp() {
             their internal state — WorkHub's open queue, an open task thread,
             scroll — survives the round trip and back. */}
         <div style={{ display: (drill || notifOpen) ? 'none' : undefined }}>
-          {tab === 'today' && (
-            <TodayScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
-              onOpenTab={goTab} onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev}
-              onAskPush={() => setPermOpen(true)} pushRev={pushRev}
-              onCapture={!isOwner ? () => fileRef.current?.click() : null} />
-          )}
-          {tab === 'tasks' && (
-            <TasksScreen who={who} undo={undo} onOpenJob={openJob}
-              focusTaskId={taskFocus} onFocusConsumed={() => setTaskFocus(null)}
-              onNewTask={() => setNewTaskOpen(true)} refreshKey={taskRev} />
-          )}
-          {tab === 'jobs' && (
-            <WorkHubScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
-              onComplete={openComplete} />
-          )}
-          {tab === 'production' && (
-            <ProductionFloorScreen who={who} undo={undo} onOpenJob={openJob} />
-          )}
-          {tab === 'schedule' && (
-            <WeekScheduleScreen who={who} onOpenJob={openJob} />
-          )}
-          {tab === 'sales' && isOwner && (
-            <SalesScreen onOpenJob={openJob} who={who} undo={undo} />
-          )}
-          {tab === 'payments' && isOwner && (
-            <PaymentsScreen who={who} undo={undo} onOpenJob={openJob} />
-          )}
-          {tab === 'more' && (
-            <MoreScreen who={who} undo={undo} onOpenJob={openJob} onOpenTask={openTask}
-              onAskPush={() => setPermOpen(true)} onOpenPrefs={() => setPrefsOpen(true)}
-              onSwitchPerson={() => { clearFieldWho(); setWho(null) }}
-              onTabsSaved={() => setWho(getFieldWho())} />
-          )}
-          {tab === 'find' && (
-            <FindScreen who={who} undo={undo} onOpenJob={openJob} mode={isOwner ? 'search' : 'all'} />
-          )}
+          {[...new Set([...Object.keys(tabRev), tab])].map(k => (
+            <div key={`${k}:${tabRev[k] || 0}`} style={{ display: k === tab ? undefined : 'none' }}>{renderTab(k)}</div>
+          ))}
         </div>
       </main>
 
-      <UndoToast toast={undo.toast}
+      <UndoToast key={undo.toast?.id || 'none'} toast={undo.toast}
         onUndo={async () => { const u = undo.toast?.undo; undo.clear(); if (u) await u() }}
         onDismiss={undo.clear} />
 

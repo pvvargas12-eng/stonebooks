@@ -15,7 +15,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { getJobs, computeOrderPressure, backfillJobComponents, rowMoneyDown, getProductionComponents, getInstallList } from './lib/stonebooksData'
 import { currentStage } from './lib/jobsRowHelpers'
 import { ThreeTrackFunnel } from './components/ProductionFloor'
-import { phaseIndex, trackPhases } from './lib/jobComponents'
+import { phaseIndex, trackPhases, isOnBoard } from './lib/jobComponents'
 
 const REFRESH_MS = 30000
 const DAY_MS = 86400000
@@ -35,7 +35,7 @@ const isRealJob = (j) => {
 // "Being worked" = an on-floor piece past its track's first rung and before
 // its last (e.g. new stone: Brought to Line → Blasting Queue).
 const isWorkingPiece = (c) => {
-  if (!c.on_floor) return false
+  if (!isOnBoard(c)) return false
   const idx = phaseIndex(c.track, c.current_phase)
   return idx > 0 && idx < trackPhases(c.track).length - 1
 }

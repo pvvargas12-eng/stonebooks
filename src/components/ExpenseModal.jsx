@@ -10,6 +10,7 @@
 // =============================================================================
 
 import { useState, useEffect } from 'react'
+import { familyNameForJob } from '../lib/jobsRowHelpers'
 import {
   recordExpense,
   uploadReceipt,
@@ -78,7 +79,7 @@ export default function ExpenseModal({ presetLink = null, presetLabel = '', show
     onSaved?.(res.record)
   }
 
-  const jobLabel = (j) => j.customer_name || j.deceased_name || j.title || `Job ${String(j.id).slice(0, 8)}`
+  const jobLabel = (j) => { const n = familyNameForJob(j); return n && n !== '—' ? [n, j.order?.order_number].filter(Boolean).join(' · ') : `Job ${String(j.id).slice(0, 8)}` }
 
   return (
     <div className="em-bg" onClick={() => !busy && onClose?.()}>
@@ -102,7 +103,7 @@ export default function ExpenseModal({ presetLink = null, presetLabel = '', show
               )}
               {opts.orders.length > 0 && (
                 <optgroup label="Family orders">
-                  {opts.orders.map(o => <option key={o.id} value={`order:${o.id}`}>{customerName(o)}</option>)}
+                  {opts.orders.map(o => <option key={o.id} value={`order:${o.id}`}>{[(o.primary_lastname && String(o.primary_lastname).trim()) || customerName(o.customer), o.order_number].filter(Boolean).join(' · ')}</option>)}
                 </optgroup>
               )}
             </select>

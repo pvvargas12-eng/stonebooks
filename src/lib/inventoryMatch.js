@@ -243,3 +243,60 @@ export function matchNeedsToStock(needs, stock) {
     return { need, best, candidateCount: candidates.length, candidates }
   })
 }
+
+// ── PR line → yard (PR-MATCH, Paul 2026-11-10) ───────────────────────────────
+// "I want to see if there is a match available before ordering." A PR line is
+// free text in his vendor-sheet columns (Type / Color / Size), so this reads
+// the line itself, not the order: the same size + color comparison the Smart
+// Matches use, on a type FAMILY (Die / DIE / Upright are one family; Marker /
+// Grass / Flat are one family). PURE — nothing is written here.
+//   reserved   — a yard stone already allocated to this line's order (same family)
+//   candidates — available yard stones, best first:
+//       exact  = same size, color agrees
+//       near   = one dimension differs, color agrees
+//       check  = same size, but the line's color is blank / not a color ("IDK")
+export function stoneTypeFamily(t) {
+  const s = normType(t)
+  if (!s) return null
+  if (/base/.test(s)) return 'base'
+  if (/backer/.test(s)) return 'backer'
+  if (/slant/.test(s)) return 'slant'
+  if (/hickey/.test(s)) return 'hickey'
+  if (/grass|marker|flat|lawn/.test(s)) return 'flat'
+  if (/die|upright|monument|tablet/.test(s)) return 'die'
+  return s
+}
+const colorUnknown = (c) => { const s = String(c ?? '').trim(); return !s || /^(idk|tbd|unknown|n\/?a|\?+|-+)$/i.test(s) }
+const LINE_RANK = { exact: 3, near: 2, check: 1 }
+export function matchLineToStock(line, stock) {
+  const fam = stoneTypeFamily(line?.item_type)
+  const out = { family: fam, reserved: null, candidates: [], best: null }
+  if (!fam || !dimsOf(line?.size).length) return out
+  const all = stock || []
+  if (line.order_id) {
+    out.reserved = all.find(s => s.status === 'allocated' && s.allocated_order_id === line.order_id && stoneTypeFamily(s.item_type) === fam) || null
+  }
+  const noColor = colorUnknown(line.color)
+  for (const s of all) {
+    if ((s.status || 'available') !== 'available') continue
+    if (stoneTypeFamily(s.item_type) !== fam) continue
+    const sz = compareSize(line.size, s.size)
+    if (sz.strength === 'far') continue
+    // NEAR on a PR line = one dimension a few inches OVER (a stone that could
+    // stand in or be cut down). A short stone cannot fill the line, and a base
+    // two feet longer is not a match worth showing.
+    if (sz.strength === 'near' && !(sz.diff?.deltaIn != null && sz.diff.deltaIn > 0 && sz.diff.deltaIn <= 4)) continue
+    const colorOk = !noColor && colorMatch(line.color, s.color)
+    let strength = null
+    if (colorOk) strength = sz.strength                       // exact | near
+    else if (noColor && sz.strength === 'exact') strength = 'check'
+    if (!strength) continue
+    const why = []
+    if (strength === 'near' && sz.diff) why.push(sizeReason(sz.diff))
+    if (strength === 'check') why.push(`no color on the line; the yard stone is ${s.color || 'unlabeled'}`)
+    out.candidates.push({ stock: s, strength, why })
+  }
+  out.candidates.sort((a, b) => (LINE_RANK[b.strength] - LINE_RANK[a.strength]) || ((a.stock.yard_tag ?? 1e9) - (b.stock.yard_tag ?? 1e9)))
+  out.best = out.candidates[0] || null
+  return out
+}

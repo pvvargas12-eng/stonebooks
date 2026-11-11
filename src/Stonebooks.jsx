@@ -73,6 +73,7 @@ const TabFallback = () => <div className="sb-loading">Loading…</div>
 import CommandSurface from './CommandSurface'
 import { useCommandSurface } from './lib/useCommandSurface'
 import { subscribeCommand, refreshEntityIndex } from './lib/commandSurface'
+import { setPendingSub } from './lib/deepLink'
 
 // =============================================================================
 // LOGO COMPONENTS
@@ -868,11 +869,11 @@ export default function Stonebooks() {
     is retired from the nav but the Scheduler tab itself is untouched. */}
 {tab === 'calendar'  && <CalendarTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Calendar', tab: 'calendar' }); setTab('orders') }} />}
 {tab === 'email'     && <EmailTab />}
-{tab === 'reports'   && <ReportsTab user={user} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={openJobSmart} />}
+{tab === 'reports'   && <ReportsTab user={user} onNavigate={(t, sub) => { setPendingSub(t, sub); setTab(t) }} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onOpenJob={openJobSmart} />}
 {tab === 'payments'  && <PaymentsTab onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} onContactOrder={(id) => { setOrderDetailId(id); setOrderDetailAction('email'); setOrderDetailReturn(null); setTab('orders') }} />}
 {tab === 'accounting' && <AccountingTab onOpenJob={openJobSmart} onOpenCemeteryOrder={(id) => { setSelectedCemeteryOrderId(id); setTab('cemetery-orders') }} />}
 {tab === 'vendors'   && <VendorsTab />}
-{tab === 'inventory' && <InventoryTab canReset={isOwner(user)} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
+{tab === 'inventory' && <InventoryTab canReset={isOwner(user)} onNavigate={(t, sub) => { setPendingSub(t, sub); setTab(t) }} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn(null); setTab('orders') }} />}
 {/* Profit lives inside Accounting now (2026-09-17). */}
           {tab === 'quote'     && <QuoteGeneratorTab onOpenSales={(id) => openSales(id)} onOpenOrder={(id) => { setOrderDetailId(id); setOrderDetailReturn({ label: 'Quote Generator', tab: 'quote' }); setTab('orders') }} />}
           {tab === 'catalog'   && <CatalogLaunch />}

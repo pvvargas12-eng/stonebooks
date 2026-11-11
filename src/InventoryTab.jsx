@@ -20,7 +20,8 @@ import {
 } from './lib/stonebooksData'
 import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
-import InventoryDashboard from './components/InventoryDashboard'
+import ShopPulse from './components/ShopPulse'
+import { takePendingSub } from './lib/deepLink'
 import InventoryProcurement from './components/InventoryProcurement'
 import InventoryReceiving from './components/InventoryReceiving'
 import InventoryPhotoEtching from './components/InventoryPhotoEtching'
@@ -38,7 +39,7 @@ const titleCase = (s) => String(s || '').replace(/\b\w/g, c => c.toUpperCase())
 const statusLabel = (s) => INVENTORY_STATUS_LABEL[s || 'available'] || titleCase(s)
 const cmpText = (a, b) => String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' })
 
-export default function InventoryTab({ onOpenOrder, canReset = false }) {
+export default function InventoryTab({ onOpenOrder, canReset = false, onNavigate = null }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState(null)
@@ -59,7 +60,7 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState(null)
   const [showImport, setShowImport] = useState(false)
-  const [view, setView] = useState('dashboard')   // 'dashboard' | 'yard' | 'matches' | 'procurement'
+  const [view, setView] = useState(() => takePendingSub('inventory') || 'dashboard')   // 'dashboard' | 'yard' | 'matches' | 'procurement'
   const [autoNewPR, setAutoNewPR] = useState(false)
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
 
@@ -90,7 +91,13 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
   const saveEdit = async () => {
     if (editBusy || !editingId) return
     setEditBusy(true); setEditErr(null)
-    const r = await updateInventoryItem(editingId, editDraft)
+    // An unchanged status stays out of the patch: the data layer clears the
+    // family + order link on any status write that is not "allocated", so a
+    // zone fix on a missing / problem stone used to wipe whose stone it was.
+    const before = rows.find(x => x.id === editingId)
+    const draft = { ...editDraft }
+    if (before && (before.status || 'available') === draft.status) delete draft.status
+    const r = await updateInventoryItem(editingId, draft)
     setEditBusy(false)
     if (!r.ok) { setEditErr(r.error); return }
     cancelEdit()
@@ -251,11 +258,23 @@ export default function InventoryTab({ onOpenOrder, canReset = false }) {
       )}
 
       {view === 'dashboard' && (
-        <InventoryDashboard
-          onImport={() => setShowImport(true)}
-          onAddStone={() => setView('yard')}
-          onOpenMatches={() => setView('matches')}
-          onBuildPR={() => { setAutoNewPR(true); setView('procurement') }}
+        // SHOP-PULSE (Paul 2026-11-10): the dark "command center" is replaced by
+        // the Dashboard he approved as a mockup. Its rows link out; the yard
+        // shortcuts ride as buttons beside Print.
+        <ShopPulse
+          eyebrow="Inventory · Dashboard"
+          onOpenOrder={onOpenOrder}
+          onGo={(key) => {
+            if (key === 'needs') { setView('needs'); return }
+            const map = { design: ['jobs', 'design'], foundations: ['jobs', 'foundations'], install: ['jobs', 'installation'], production: ['jobs', 'production'], collect: ['payments', 'collect'] }
+            const t = map[key]
+            if (t && onNavigate) onNavigate(t[0], t[1])
+          }}
+          actions={<>
+            <button type="button" className="spl-btn" onClick={() => setView('matches')}>Smart Matches</button>
+            <button type="button" className="spl-btn" onClick={() => { setAutoNewPR(true); setView('procurement') }}>Build PR</button>
+            <button type="button" className="spl-btn" onClick={() => setShowImport(true)}>Import</button>
+          </>}
         />
       )}
 

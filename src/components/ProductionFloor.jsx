@@ -18,9 +18,9 @@ import {
   setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
   getBringUpReady,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
-  fmtUSD, getOrderBalancesByIds,
+  fmtUSD, getOrderBalancesByIds, getPaidTotalsByCemeteryOrder,
 } from '../lib/stonebooksData'
-import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex } from '../lib/jobComponents'
+import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex, isOnBoard, doorNameOf, nextPhase, prevPhase } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
 import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney, moveStoneToNextLine } from '../lib/floorLines'
 import { openPrintSheet, openPrintSheetAsync } from '../lib/weekPrintSheet'
@@ -50,7 +50,9 @@ const groupByOrder = (pieces) => {
   const order = []
   const byKey = new Map()
   for (const c of pieces) {
-    const k = c.job_id || `solo:${c.id}`
+    // A cemetery order's doors are ONE card per step (each door is its own
+    // job, so the job key would print six cards for six doors).
+    const k = (c.track === 'door' && c.cemetery_order_id) ? `co:${c.cemetery_order_id}` : (c.job_id || `solo:${c.id}`)
     if (!byKey.has(k)) { byKey.set(k, []); order.push(k) }
     byKey.get(k).push(c)
   }
@@ -153,6 +155,100 @@ function LineZone({ line, compById, onPlanner, onPrint }) {
   )
 }
 
+// ── Cemetery order lines (DOOR-LINES, Paul 2026-11-10) ───────────────────────
+// "For cemetery orders I made an order yesterday, it should show up here in
+// production floor, and I want each order to be like production lines and I
+// can see the status of them like I can in normal production." One strip per
+// submitted cemetery order: a tile per door toned by its step, the counts, the
+// money, and one button that moves the doors sitting at the furthest-behind
+// step forward together. Click a tile to move that one door by itself.
+const DOOR_TONE = { pickup_doors: 'ready', cut_stencil: 'up', stick_stencil: 'cut', blast: 'blast', quality_check: 'blast', drop_off_doors: 'out' }
+const DOOR_STEP_WORD = { pickup_doors: 'to pick up', cut_stencil: 'cut stencil', stick_stencil: 'stick stencil', blast: 'blasted', quality_check: 'quality check', drop_off_doors: 'to drop off' }
+function DoorLineZone({ co, doors, paid, onChanged, onOpenCemeteryOrder, setErr }) {
+  const [sel, setSel] = useState(null)     // component id of the picked door
+  const [busy, setBusy] = useState(false)
+  const phases = trackPhases('door')
+  const total = doors.length
+  const idxOf = (d) => phaseIndex('door', d.current_phase)
+  const minIdx = Math.min(...doors.map(idxOf))
+  const behind = doors.filter(d => idxOf(d) === minIdx)
+  const behindPhase = phases[minIdx]
+  const nextP = phases[minIdx + 1] || null
+  const done = doors.filter(d => idxOf(d) === phases.length - 1).length
+  const contract = Number(co?.total_amount) || 0
+  const owed = Math.max(0, Math.round((contract - (Number(paid) || 0)) * 100) / 100)
+  const picked = sel ? doors.find(d => d.id === sel) : null
+  const pct = (n) => total ? `${(n / total) * 100}%` : '0%'
+
+  const run = async (list, fn) => {
+    if (busy) return
+    setBusy(true); setErr(null)
+    const actor = await getCurrentStaffName()
+    for (const d of list) {
+      const r = await fn(d, actor)
+      if (r && r.ok === false) { setBusy(false); setErr(`${doorNameOf(d)}: ${r.error}`); onChanged(); return }
+    }
+    setBusy(false)
+    onChanged()
+  }
+  const forward = (d, actor) => (d.current_phase === QC_PHASE ? qcApproveComponent(d.id, { actor }) : advanceComponent(d.id, { actor }))
+
+  return (
+    <div className="pf-line pf-line-active">
+      <div className="pf-line-head">
+        <span className="pf-line-st pf-line-st-active">{co?.order_number || 'Cemetery order'}</span>
+        <span className="pf-line-name">{co?.cemetery_name || 'Cemetery'} · {total} door{total === 1 ? '' : 's'}{co?.submitted_at ? ` · submitted ${new Date(co.submitted_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}</span>
+        <span className="pf-line-cnt">
+          {phases.filter(p => doors.some(d => d.current_phase === p)).map((p, i) => (
+            <span key={p}>{i > 0 ? ' · ' : ''}<b className={`t-${DOOR_TONE[p] || 'ready'}`}>{doors.filter(d => d.current_phase === p).length} {DOOR_STEP_WORD[p] || phaseLabel(p)}</b></span>
+          ))}
+        </span>
+        {owed > 0
+          ? <span className="pf-line-owed" title={`Order total ${fmtUSD(contract)}, ${fmtUSD(Number(paid) || 0)} paid`}>{fmtUSD(owed)} OWED</span>
+          : contract > 0 ? <span className="pf-line-owed paid">PAID IN FULL</span> : null}
+      </div>
+      <div className="pf-line-bar">
+        {[...phases].reverse().map(p => {
+          const n = doors.filter(d => d.current_phase === p).length
+          const tone = DOOR_TONE[p]
+          const bg = tone === 'out' ? '#6f7a8a' : tone === 'blast' ? '#1d7a55' : tone === 'cut' ? '#7a5d12' : tone === 'up' ? '#2f5586' : 'transparent'
+          return n ? <i key={p} style={{ width: pct(n), background: bg }} /> : null
+        })}
+      </div>
+      <div className="pf-tiles">
+        {doors.map((d, i) => (
+          <button type="button" key={d.id} className={`pf-tl pf-tl-btn pf-tl-${DOOR_TONE[d.current_phase] || 'ready'}${sel === d.id ? ' pf-tl-sel' : ''}${d.qc_issue || d.blocker ? ' pf-tl-held' : ''}`}
+            title={`Door ${i + 1} · ${doorNameOf(d)} · ${phaseLabel(d.current_phase)}${d.qc_issue ? ` · HELD: ${d.qc_issue}` : ''}${d.blocker ? ` · ${d.blocker}` : ''}`}
+            onClick={() => setSel(sel === d.id ? null : d.id)}>
+            <span className="pf-tl-n">{i + 1}</span>
+            <span className="pf-tl-name">{doorNameOf(d)}</span>
+            <span className="pf-tl-size">{phaseLabel(d.current_phase)}</span>
+          </button>
+        ))}
+      </div>
+      {picked && (
+        <div className="pf-door-act">
+          <span className="pf-door-act-l"><b>{doorNameOf(picked)}</b> is at {phaseLabel(picked.current_phase)}</span>
+          {prevPhase('door', picked.current_phase) && <button type="button" className="pf-btn" disabled={busy} onClick={() => run([picked], (d, a) => reverseComponent(d.id, { actor: a }))}>← {phaseLabel(prevPhase('door', picked.current_phase))}</button>}
+          {nextPhase('door', picked.current_phase) && <button type="button" className="pf-btn pf-btn-go" disabled={busy || !!picked.qc_issue} title={picked.qc_issue ? 'Clear the quality check issue on its card first' : ''} onClick={() => run([picked], forward)}>{phaseLabel(nextPhase('door', picked.current_phase))} →</button>}
+          <button type="button" className="pf-btn" onClick={() => setSel(null)}>Close</button>
+        </div>
+      )}
+      <div className="pf-line-foot">
+        <span>{done === total ? 'Every door is at Drop Off Doors. Close the door jobs when they are back at the cemetery.' : `${done} of ${total} at Drop Off Doors. Click a door to move it by itself.`}</span>
+        {nextP && (
+          <button type="button" className="pf-btn pf-btn-go pf-door-all" disabled={busy || behind.some(d => d.qc_issue)}
+            title={behind.some(d => d.qc_issue) ? 'A door here is held at quality check' : `Moves the ${behind.length} door${behind.length === 1 ? '' : 's'} at ${phaseLabel(behindPhase)} forward together`}
+            onClick={() => run(behind, forward)}>
+            {busy ? 'Moving…' : `${behind.length === total && total > 1 ? `All ${total}` : behind.length} ${behind.length === 1 ? 'door' : 'doors'} → ${phaseLabel(nextP)}`}
+          </button>
+        )}
+        {onOpenCemeteryOrder && co?.id && <button type="button" className="pf-funnel-link" onClick={() => onOpenCemeteryOrder(co.id)}>Open the order →</button>}
+      </div>
+    </div>
+  )
+}
+
 // ── Dashboard funnel ─────────────────────────────────────────────────────────
 // MIRRORS THE BOARD (Paul 2026-08-04: "this is also not talking with the
 // others"): only on-floor pieces, and each phase row counts exactly what the
@@ -179,7 +275,7 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob, components: component
       <div className="pf-funnel-tracks">
         {TRACK_ORDER.map(track => {
           const phases = boardPhases(track)
-          const inTrack = (components || []).filter(c => c.track === track && c.on_floor && phases.includes(c.current_phase))
+          const inTrack = (components || []).filter(c => c.track === track && isOnBoard(c) && phases.includes(c.current_phase))
           const counts = phases.map(p => inTrack.filter(c => inColumn(c, p)).length)
           const max = Math.max(1, ...counts)
           const bottleneckIdx = counts.indexOf(Math.max(...counts))
@@ -228,8 +324,9 @@ export function ThreeTrackFunnel({ onOpenBoard, onOpenJob, components: component
 // pieces staff pulled up (on_floor). The full backlog lives in the Queue log —
 // searchable, never automatic. Every column has "+ Add" to search the queue and
 // drop a piece straight into that column.
-export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSales = null }) {
+export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSales = null, onOpenCemeteryOrder = null, preload = null }) {
   const [components, setComponents] = useState(null)
+  const [cemPaid, setCemPaid] = useState({})   // cemetery order id → paid to date
   // ORDER PEEK (Paul 2026-10-20): "click on the name and see a preview of all
   // important order information, then open the order in sales and quickly go
   // back." The name opens the peek; the peek opens the order / the wizard.
@@ -253,6 +350,8 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
   const [lineBusy, setLineBusy] = useState(false)
 
   const load = useCallback(async () => {
+    // `preload` = smoke mounts only: sample pieces, no reads, no line reconcile.
+    if (preload) { setComponents(preload.components || []); setCemPaid(preload.cemPaid || {}); setLines([]); const t0 = new Date(); t0.setHours(0, 0, 0, 0); setTodayMs(t0.getTime()); return }
     try {
       const [d, rec] = await Promise.all([
         getProductionComponents(),
@@ -260,10 +359,11 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
       ])
       setComponents(d || []); setRecs(rec); setErr(null)
       const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
+      if ((d || []).some(c => c.track === 'door' && c.cemetery_order_id)) getPaidTotalsByCemeteryOrder().then(m => setCemPaid(m || {})).catch(() => {})
       const ls = await reconcileFloorLines({ floorComps: d || [] }).catch(e => { console.warn('[lines] reconcile:', e?.message); return [] })
       setLines(await attachLineMoney(ls).catch(() => ls))
     } catch (e) { setErr(e?.message || 'Failed to load'); setComponents([]) }
-  }, [])
+  }, [preload])
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
 
   const compById = new Map((components || []).map(c => [c.id, c]))
@@ -314,8 +414,21 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
   // lives on the installation list, not on the floor (no column, no queue row).
   const phases = boardPhases(track)
   const inTrack = (components || []).filter(c => c.track === track && phases.includes(c.current_phase))
-  const floor = inTrack.filter(c => c.on_floor)
-  const queue = inTrack.filter(c => !c.on_floor)
+  const floor = inTrack.filter(isOnBoard)
+  const queue = inTrack.filter(c => !isOnBoard(c))
+  // CEMETERY ORDER LINES — every submitted order's doors, grouped by order,
+  // newest order first; doors in the order they were entered.
+  const doorLines = []
+  if (track === 'door') {
+    const byCo = new Map()
+    for (const c of (components || [])) {
+      if (c.track !== 'door' || !c.cemetery_order_id) continue
+      if (!byCo.has(c.cemetery_order_id)) byCo.set(c.cemetery_order_id, { co: c.cemetery_order || { id: c.cemetery_order_id }, doors: [] })
+      byCo.get(c.cemetery_order_id).doors.push(c)
+    }
+    for (const g of byCo.values()) { g.doors.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)); doorLines.push(g) }
+    doorLines.sort((a, b) => String(b.co?.submitted_at || '').localeCompare(String(a.co?.submitted_at || '')))
+  }
   // BRING-UP CONDITIONS (Paul 2026-07-23): design approved + stone here/in
   // stock + contracted. The red number on each track's first column = queued
   // pieces meeting them (need adding); the white number stays "on the board".
@@ -423,7 +536,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
     new_stone: <>Ready to Bring Up shows the <b>running line</b>. Lines are built ahead in the Line Planner from stones that are design approved, here or in stock, and contracted — in due-date order.</>,
     inscription: <>Rubbings, stencils and finished inscriptions. Plan the week's cemetery trips in the <b>Inscription Scheduler</b> — blockers (balance, permit, stencil not cut) and the hot list show there.</>,
     bronze: <>Bronze on order, received, mounted and delivered. A received bronze joins the installation list by itself.</>,
-    door: <>Mausoleum doors through pickup, inscription and return.</>,
+    door: <>Every cemetery order submitted to production is a line here by itself: one tile per door, from pickup through blasting to drop off. Move a whole order forward with one button, or click a door to move it alone.</>,
   }
 
   return (
@@ -460,7 +573,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
       {/* Track tabs */}
       <div className="pf-tabs">
         {TRACK_ORDER.map(t => {
-          const n = (components || []).filter(c => c.track === t && c.on_floor && boardPhases(t).includes(c.current_phase)).length
+          const n = (components || []).filter(c => c.track === t && isOnBoard(c) && boardPhases(t).includes(c.current_phase)).length
           const need = recs.readyByTrack[t] || 0
           return (
             <button key={t} type="button" className={`pf-tab${track === t ? ' on' : ''}`}
@@ -492,6 +605,19 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
           <button type="button" className="pf-btn pf-btn-gold" disabled={lineBusy} onClick={startNewLine}>Start a new line →</button>
           <button type="button" className="pf-btn" onClick={() => setCapDismissed(`${capLine.id}:${capLine.counts.open}`)}>Keep going</button>
         </div>
+      )}
+
+      {/* Cemetery order lines — one strip per submitted order (DOOR-LINES). */}
+      {track === 'door' && !loading && (
+        <section className="pf-lines">
+          {doorLines.map(g => (
+            <DoorLineZone key={g.co.id} co={g.co} doors={g.doors} paid={cemPaid[g.co.id] || 0}
+              onChanged={load} onOpenCemeteryOrder={onOpenCemeteryOrder} setErr={setErr} />
+          ))}
+          {!doorLines.length && (
+            <div className="pf-line pf-line-none">No cemetery order is in production. Submit one from Cemetery Orders and its doors show here as a line.</div>
+          )}
+        </section>
       )}
 
       {loading ? <div className="jobcc-empty">Loading…</div> : (
@@ -689,10 +815,14 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
           : <span className="pf-card-fam">{famOf(comp)}</span>}
         <span className="pf-card-tags">
           {lineTag && <span className="pf-pos" title="Line · position">{lineTag}</span>}
-          {all.length > 1 && <span className="pf-card-type" title="Dies of this order at this step — every verb moves them together">{all.length} DIES</span>}
+          {all.length > 1 && <span className="pf-card-type" title="Pieces of this order at this step — every verb moves them together">{all.length} {comp.track === 'door' ? 'DOORS' : 'DIES'}</span>}
           <span className="pf-card-type">{TYPE_LABEL[comp.component_type] || comp.label}</span>
         </span>
       </div>
+      {/* A cemetery order's card names its doors at this step. */}
+      {comp.track === 'door' && comp.cemetery_order_id && (
+        <div className="pf-card-doors">{all.map(d => doorNameOf(d)).join(' · ')}</div>
+      )}
       {/* buildDieSpec already ends with the color NAME — appending comp.color
           (the raw code) printed "Mountain Rose · mountain-rose". */}
       {comp.size && <div className="pf-card-spec">{comp.size}</div>}
@@ -747,7 +877,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
       {menu && !mode && (
         <div className="pf-menu">
           <button type="button" onClick={() => openMode('override')}>Override phase</button>
-          {comp.on_floor && <button type="button" onClick={() => run((a, id) => setComponentOnFloor(id, false, { actor: a }))}>↩ Return to queue</button>}
+          {comp.on_floor && !(comp.track === 'door' && comp.cemetery_order_id) && <button type="button" onClick={() => run((a, id) => setComponentOnFloor(id, false, { actor: a }))}>↩ Return to queue</button>}
           {comp.track === 'new_stone' && lineTag && (
             <button type="button" title="Off this line, onto the next one (next week's queue)" onClick={() => run((a, id) => moveStoneToNextLine(id, { by: a }))}>Move to next line →</button>
           )}
@@ -1029,6 +1159,16 @@ const PF_CSS = `
   .pf-tl-blast { background: #1d7a55; border-color: #34d399; color: #eafff4; }
   .pf-tl-out { background: #0e1116; border-color: #232a35; color: #3a4452; }
   .pf-tl-deck { background: none; border: 1px dashed #2f5586; color: #6f7a8a; }
+  .pf-tl-btn { font: inherit; cursor: pointer; text-align: center; }
+  .pf-tl-btn:hover { filter: brightness(1.2); }
+  .pf-tl-btn.pf-tl-out { background: #20262f; border-color: #3a4452; color: #aab3c0; }
+  .pf-tl-sel { outline: 2px solid #C9A468; outline-offset: 1px; }
+  .pf-tl-held { border-color: #f87171; }
+  .pf-door-act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #151a22; border: 1px solid #C9A468; border-radius: 9px; padding: 8px 12px; font-size: 13px; color: #e6e9ef; min-width: 0; }
+  .pf-door-act-l { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+  .pf-door-all { margin-left: auto; }
+  .pf-line-foot .pf-door-all + .pf-funnel-link { margin-left: 0; }
+  .pf-card-doors { font-size: 12px; color: #c7cedb; margin: 2px 0 4px; overflow-wrap: anywhere; line-height: 1.4; }
   .pf-line-empty { grid-column: 1 / -1; font-size: 11px; color: #6f7a8a; }
   .pf-line-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: #6f7a8a; }
   .pf-line-foot .pf-funnel-link { margin-left: auto; color: #C9A468; }

@@ -22,7 +22,7 @@ import {
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
   setComponentConfirmedSize, permitStatusLabel,
 } from '../lib/stonebooksData'
-import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb } from '../lib/jobComponents'
+import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TRACKS_WITH_QC, advanceVerb, isOnBoard, doorNameOf } from '../lib/jobComponents'
 // Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
 // stonebooks field to view the lines — active then other ones"). Read-only
 // on the phone: the strip + the L1 #07 tags; building lives on the desktop.
@@ -67,7 +67,9 @@ const famOf = (c) => String(
 const metaOf = (c) => [
   // c.size (buildDieSpec) already ends with the color name — c.color is the
   // raw code and read as a duplicate ("Mountain Rose · mountain-rose").
-  TYPE_LABEL[c.component_type] || c.label, c.size,
+  // A cemetery order's door reads by its own name (the crypt name), so six
+  // doors of one order are six different rows, not six "Door"s.
+  (c.track === 'door' && c.cemetery_order_id) ? doorNameOf(c) : (TYPE_LABEL[c.component_type] || c.label), c.size,
   c.order?.order_number || c.cemetery_order?.order_number,
   c.order?.cemetery?.name || c.cemetery_order?.cemetery_name,
 ].filter(Boolean).join(' · ')
@@ -144,8 +146,8 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
   // the installation list, never in a floor column or the add queue.
   const phases = boardPhases(track)
   const inTrack = (comps || []).filter(c => c.track === track && phases.includes(c.current_phase))
-  const floor = inTrack.filter(c => c.on_floor)
-  const queue = inTrack.filter(c => !c.on_floor)
+  const floor = inTrack.filter(isOnBoard)
+  const queue = inTrack.filter(c => !isOnBoard(c))
   const readyOf = (c) => !!(c.job_id && recs.byJob.get(c.job_id)?.ready)
   // HARD RULE (Paul 2026-07-23, cut-list doctrine): pieces we positively KNOW
   // are not contracted — drafts/leads — never appear in the add sheet at all.
@@ -341,7 +343,7 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
           {/* Track chips — counts = pieces ON the floor; red = queued + ready to add. */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '0 2px 12px' }}>
             {TRACK_ORDER.map(t => {
-              const n = (comps || []).filter(c => c.track === t && c.on_floor).length
+              const n = (comps || []).filter(c => c.track === t && isOnBoard(c)).length
               const need = recs.readyByTrack[t] || 0
               return (
                 <button key={t} type="button"

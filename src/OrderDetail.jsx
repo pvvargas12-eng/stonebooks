@@ -825,7 +825,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     const patch = {}
     if (signed) {
       const d = order.signed_at ? String(order.signed_at).slice(0, 10) : todayISO()
-      patch.signed_at = `${d}T00:00:00`
+      patch.signed_at = new Date(`${d}T12:00:00`).toISOString()
       if (['draft', 'scoping', 'quoted'].includes(order.status)) patch.status = 'contracted'
       if (isNewStoneOrder && !order.target_completion_date) { const due = plusFiveMonthsISO(d); if (due) patch.target_completion_date = due }
     } else {
@@ -842,7 +842,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
   const inlineDateField = async (field, value) => {
     const patch = {}
     if (field === 'signed_at') {
-      patch.signed_at = value ? `${value}T00:00:00` : null
+      patch.signed_at = value ? new Date(`${value}T12:00:00`).toISOString() : null
       if (value && isNewStoneOrder && !order.target_completion_date) {
         const due = plusFiveMonthsISO(value)
         if (due) patch.target_completion_date = due
@@ -1989,7 +1989,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     if (!contractArm) { setContractArm(true); setTimeout(() => setContractArm(false), 4000); return }
     setContractArm(false)
     const d = order.signed_at ? String(order.signed_at).slice(0, 10) : todayISO()
-    const patch = { signed_at: `${d}T00:00:00` }
+    const patch = { signed_at: new Date(`${d}T12:00:00`).toISOString() }
     if (['draft', 'scoping', 'quoted'].includes(order.status)) patch.status = 'contracted'
     // SIGNED PRICES NEVER MOVE: marking the paper contract signed pins every
     // engine line at today's amount, same as the wizard / phone signature.

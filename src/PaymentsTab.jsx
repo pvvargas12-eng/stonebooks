@@ -32,6 +32,7 @@ import CollectBalancesView from './components/CollectBalancesView'
 import { getCollectionQueues } from './lib/collections'
 import ConfirmSend from './components/ConfirmSend'
 import { ORDER_PRICING_COLUMNS } from './lib/pricingCore'
+import { takePendingSub } from './lib/deepLink'
 import {
   sweepZelleAlerts, listZelleAlerts, markZelleMatched,
   dismissZelleAlert, restoreZelleAlert, stampZelleReceiptSent,
@@ -126,7 +127,7 @@ const ORDER_SELECT =
   ORDER_PRICING_COLUMNS + ', customer:customers(id, first_name, last_name, email, phone_primary), cemetery:cemeteries(name)'
 
 export default function PaymentsTab({ onOpenOrder, onContactOrder }) {
-  const [view, setView] = useState('incoming')
+  const [view, setView] = useState(() => takePendingSub('payments') || 'incoming')
   const [orders, setOrders] = useState(null)
   const [outgoing, setOutgoing] = useState(null)
   const [bills, setBills] = useState(null)
