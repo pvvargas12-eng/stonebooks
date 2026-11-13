@@ -238,6 +238,25 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
       setSalesFor({ inquiry: { ...r, order_id: orderId }, order })
     } finally { setBusyId(null) }
   }
+  // Open order (Paul 2026-11-13: "an open order button where I can go to a
+  // profile sales page and start editing it and saying the status of the
+  // lead"). Mints the lead first when the inquiry has none (the same path as
+  // Done and Sales email), then opens its order page, where the lead status
+  // and follow-up day sit at the top. The inquiry stays in its list.
+  const openOrder = async (r) => {
+    setBusyId(r.id); setErr(null)
+    try {
+      let orderId = r.order_id
+      if (!orderId) {
+        const m = await import('./lib/websiteLeads')
+        const lead = await m.ensureLeadForInquiry(r)
+        if (!lead.ok) { setErr(lead.error || 'Could not create the lead.'); return }
+        orderId = lead.orderId
+      }
+      onOpenOrderDetail?.(orderId)
+    } catch (e) { setErr(e?.message || 'Could not open the order.') }
+    finally { setBusyId(null) }
+  }
   useEffect(() => { load() }, [load])  // eslint-disable-line react-hooks/set-state-in-effect
   useEffect(() => {
     let alive = true
@@ -403,6 +422,7 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                   {r.inquiry_status === 'junk' || r.inquiry_status === 'done' ? (
                     <>
                       <button type="button" className="sb-inq-btn" disabled={busy} onClick={() => reopen(r)}>Back to new</button>
+                      {(r.order_id || r.inquiry_status === 'done') && <button type="button" className="sb-inq-btn sb-inq-btn-open" disabled={busy} onClick={() => openOrder(r)}>Open order</button>}
                       {r.inquiry_status === 'done' && <button type="button" className="sb-inq-btn" disabled={busy} title="The full sales bundle — estimate, photos, files" onClick={() => openSales(r)}>Sales email</button>}
                     </>
                   ) : (
@@ -416,6 +436,7 @@ export default function InquiriesTab({ onOpenOrderDetail }) {
                         </>
                       )}
                       <button type="button" className="sb-inq-btn" disabled={busy} title="The full sales bundle — draft estimate, catalog photos, layout, files; creates the lead first if there isn't one" onClick={() => openSales(r)}>{busy ? '…' : 'Sales email'}</button>
+                      <button type="button" className="sb-inq-btn sb-inq-btn-open" disabled={busy} title={r.order_id ? 'Open this lead: edit it and set its status' : 'Starts the lead for this person and opens it: edit it and set its status'} onClick={() => openOrder(r)}>{busy ? '…' : 'Open order'}</button>
                       {phone && <a className="sb-inq-btn" href={`tel:${phone}`}>Call</a>}
                       {remindFor === r.id ? (
                         <span className="sb-inq-remind">
@@ -535,6 +556,7 @@ const CSS = `
   .sb-inq-btn { font: 700 11.5px/1 inherit; font-family: inherit; color: #16150F; background: #fff; border: 1px solid #D9D2C0; border-radius: 6px; padding: 7px 10px; cursor: pointer; white-space: nowrap; text-decoration: none; display: inline-flex; align-items: center; }
   .sb-inq-btn:disabled { opacity: .45; cursor: default; }
   .sb-inq-btn-mail { background: #9A7209; color: #fff; border-color: #9A7209; }
+  .sb-inq-btn-open { background: #1e2d3d; color: #fff; border-color: #1e2d3d; }
   .sb-inq-btn-done { background: #2d7a4f; color: #fff; border-color: #2d7a4f; }
   .sb-inq-btn-junk { color: #8a8472; }
   .sb-inq-btn-go { background: #16150F; color: #C9A468; border-color: #16150F; }

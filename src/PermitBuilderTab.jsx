@@ -59,6 +59,7 @@ export default function PermitBuilderTab({ onOpenOrderDetail, openForOrderId = n
   // MAKE-PERMIT (2026-10-20): OrderDetail landed us here for ONE order —
   // HomeView gets it as the focus (search prefilled, template picker open).
   const [focusOrder, setFocusOrder] = useState(null)
+  const [focusDocs, setFocusDocs] = useState([])   // permits already made for the focus order
   const [templates, setTemplates] = useState([])
   const [docs, setDocs] = useState([])
   const [orders, setOrders] = useState([])
@@ -81,45 +82,58 @@ export default function PermitBuilderTab({ onOpenOrderDetail, openForOrderId = n
       listCemeteriesWithPermit().catch(() => []),
     ])
     setTemplates(t); setDocs(d); setOrders(o || []); setCemeteries(c || [])
+    // Back from a permit: the focus order's own list picks up what was just made.
+    if (focusOrder?.id) listPermitDocs({ orderId: focusOrder.id, limit: 40 }).then(l => setFocusDocs(l || [])).catch(() => {})
   }
   useEffect(() => { reloadHome() }, [])
 
+  // Every Build makes a NEW permit (Paul 2026-11-13: "be able to make multiple
+  // and not override the last one, some cemeteries need 2 separate permits").
+  // A second permit off the same form is titled "<form> (2)" so the two read
+  // apart in the list and in the order's attachments; each permit keeps its
+  // own attachment file (the path carries the permit's id).
   const openDocForOrder = async (order, template) => {
     const seeded = seedDocData(template, order)
+    const siblings = await listPermitDocs({ orderId: order.id, limit: 40 }).catch(() => [])
+    const same = (siblings || []).filter(d => d.template_id === template.id).length
+    const title = same > 0 ? `${template.title} (${same + 1})` : template.title
     const r = await createPermitDoc({
       orderId: order.id, templateId: template.id, cemeteryId: order.cemetery_id || null,
-      title: template.title, data: seeded,
+      title, data: seeded,
     })
     if (!r.ok) { say(r.error, true); return }
     setView({ name: 'doc', id: r.doc.id })
+    // The new permit lands in the order's attachments right away, as the
+    // order filled it ("every time I hit permit and create, save it in
+    // attachments"). Save / Print / Download replace that same file later.
+    // Best-effort and in the background: the editor is already open.
+    ;(async () => {
+      try {
+        const d = await exportPermitPdf({ template, docData: seeded, returnDoc: true })
+        const staff = await getCurrentStaffName().catch(() => null)
+        await attachPermitPdfToOrder({ ...r.doc, order_id: order.id }, d.output('blob'), staff)
+      } catch { /* the permit itself was made; Save attaches it again */ }
+    })()
   }
 
-  // "Make permit" from an order: resume the permit already built for it, or
-  // seed one from the cemetery's template when exactly one fits; otherwise
-  // land on Build with the order in focus. Each order id is handled once.
+  // "Make permit" from an order: land on that order's own panel — every form
+  // its cemetery has, the permits already made for it, and Upload. Nothing is
+  // resumed or picked for the office. Each order id is handled once.
   const openForHandled = useRef(null)
   useEffect(() => {
     if (!openForOrderId || openForHandled.current === openForOrderId) return
     openForHandled.current = openForOrderId
     ;(async () => {
-      const [t, o, d] = await Promise.all([
-        listPermitTemplates(),
+      const [o, d] = await Promise.all([
         listAllOrders({ archived: false }),
-        listPermitDocs({ orderId: openForOrderId, limit: 3 }),
+        listPermitDocs({ orderId: openForOrderId, limit: 40 }),
       ])
       onConsumeOpenFor?.()
       const order = (o || []).find(x => x.id === openForOrderId)
       if (!order) { say('Could not find that order in the open orders.', true); return }
-      const existing = (d || [])[0]
-      if (existing) {
-        say(`Opened the permit already built for ${properName(order.primary_lastname || customerName(order.customer)) || 'this order'}.`)
-        setView({ name: 'doc', id: existing.id })
-        return
-      }
-      const tpls = (t || []).filter(tp => templateMatchesCemetery(tp, order.cemetery_id))
-      if (tpls.length === 1) { await openDocForOrder(order, tpls[0]); return }
+      setFocusDocs(d || [])
       setFocusOrder(order)
-      if (tpls.length === 0) say(`No template for ${order.cemetery?.name || 'this cemetery'} yet — create one on the right, or hit Upload to type over the permit file itself.`, true)
+      setView({ name: 'home' })
     })()
   }, [openForOrderId])   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -183,10 +197,22 @@ export default function PermitBuilderTab({ onOpenOrderDetail, openForOrderId = n
       {view.name === 'log' && (
         <PermitLogView onOpenOrderDetail={onOpenOrderDetail} />
       )}
+      {view.name === 'home' && focusOrder && (
+        <OrderPermitsPanel
+          order={focusOrder} docs={focusDocs} uploadBusy={uploadBusy}
+          templates={templates.filter(t => templateMatchesCemetery(t, focusOrder.cemetery_id))}
+          allTemplates={templates}
+          onBuild={(t) => openDocForOrder(focusOrder, t)}
+          onOpenDoc={(id) => setView({ name: 'doc', id })}
+          onUpload={(files) => uploadDocForOrder(focusOrder, files)}
+          onOpenOrder={onOpenOrderDetail ? () => onOpenOrderDetail(focusOrder.id) : null}
+          onClose={() => { setFocusOrder(null); setFocusDocs([]) }}
+        />
+      )}
       {view.name === 'home' && (
         <HomeView key={focusOrder?.id || 'home'}
           templates={templates} docs={docs} orders={orders} cemeteries={cemeteries}
-          uploadBusy={uploadBusy} focusOrder={focusOrder}
+          uploadBusy={uploadBusy} focusOrder={null}
           onOpenTemplate={(id) => setView({ name: 'template', id })}
           onOpenDoc={(id) => setView({ name: 'doc', id })}
           onBuild={openDocForOrder}
@@ -223,6 +249,83 @@ export default function PermitBuilderTab({ onOpenOrderDetail, openForOrderId = n
         <PbtConfirm {...confirm} onCancel={() => setConfirm(null)} />
       )}
     </div>
+  )
+}
+
+// ── ONE ORDER'S PERMITS (MAKE-PERMIT-2, Paul 2026-11-13) ────────────────────
+// "When you press the make a permit button have options for every permit in
+// that cemetery because some have 2 or 3, and be able to make multiple and not
+// override the last one." The panel the order page's Make permit lands on:
+// the permits already made for this order (open any), one button per form the
+// cemetery has (each press makes a NEW permit), any other form, and Upload.
+function OrderPermitsPanel({ order, docs, templates, allTemplates, uploadBusy, onBuild, onOpenDoc, onUpload, onOpenOrder, onClose }) {
+  const [other, setOther] = useState('')
+  const [busy, setBusy] = useState(false)
+  const upRef = useRef(null)
+  const fam = properName(order.primary_lastname || customerName(order.customer)) || 'This order'
+  const madeOf = (t) => (docs || []).filter(d => d.template_id === t.id).length
+  const others = (allTemplates || []).filter(t => !templates.some(x => x.id === t.id))
+  const build = async (t) => { if (busy) return; setBusy(true); try { await onBuild(t) } finally { setBusy(false) } }
+  return (
+    <section className="pbt-panel pbt-focus">
+      <div className="pbt-focus-head">
+        <div className="pbt-focus-id">
+          <h2 className="pbt-h2" style={{ margin: 0 }}>Permits for {fam}</h2>
+          <span className="pbt-orderrow-cem">{[order.order_number, order.cemetery?.name || 'no cemetery on the order'].filter(Boolean).join(' · ')}</span>
+        </div>
+        <div className="pbt-tplpick">
+          {onOpenOrder && <button type="button" className="pbt-btn" onClick={onOpenOrder}>Back to the order</button>}
+          <button type="button" className="pbt-btn pbt-btn-quiet" onClick={onClose}>Close</button>
+        </div>
+      </div>
+
+      <div className="pbt-focus-lab">Already made for this order · {(docs || []).length}</div>
+      {(docs || []).length === 0 && <div className="pbt-hint" style={{ marginTop: 0 }}>None yet.</div>}
+      {(docs || []).map(d => (
+        <div key={d.id} className="pbt-docrow">
+          <button type="button" className="pbt-docrow-open" onClick={() => onOpenDoc(d.id)}>
+            <span className="pbt-orderrow-name">{d.title || d.template?.title || 'Permit'}</span>
+            <span className="pbt-docrow-date">last saved {String(d.updated_at || '').slice(0, 10)}</span>
+          </button>
+          <button type="button" className="pbt-btn" onClick={() => onOpenDoc(d.id)}>Open</button>
+        </div>
+      ))}
+
+      <div className="pbt-focus-lab" style={{ marginTop: 14 }}>
+        Make a new permit{order.cemetery?.name ? ` · ${templates.length} form${templates.length === 1 ? '' : 's'} for ${order.cemetery.name}` : ''}
+      </div>
+      {templates.length === 0 && (
+        <div className="pbt-hint" style={{ marginTop: 0 }}>No form is set up for this cemetery yet. Pick any form below, upload the permit file, or create the template on the right.</div>
+      )}
+      <div className="pbt-focus-forms">
+        {templates.map(t => {
+          const n = madeOf(t)
+          return (
+            <button key={t.id} type="button" className="pbt-focus-form" disabled={busy} onClick={() => build(t)}>
+              <span className="pbt-focus-form-t">{t.title}</span>
+              <span className="pbt-focus-form-s">{n === 0 ? 'Make this permit' : `Made ${n} time${n === 1 ? '' : 's'} · make another`}</span>
+            </button>
+          )
+        })}
+      </div>
+      <div className="pbt-focus-more">
+        {others.length > 0 && (
+          <>
+            <select className="pbt-input" style={{ maxWidth: 300 }} value={other} onChange={e => setOther(e.target.value)}>
+              <option value="">Another form (any cemetery)…</option>
+              {others.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+            </select>
+            <button type="button" className="pbt-btn" disabled={!other || busy}
+              onClick={() => { const t = others.find(x => x.id === other); if (t) build(t) }}>Make it</button>
+          </>
+        )}
+        <button type="button" className="pbt-btn" disabled={uploadBusy} title="Upload this order's permit file and type over it"
+          onClick={() => upRef.current?.click()}>{uploadBusy ? 'Working…' : 'Upload a permit file'}</button>
+        <input ref={upRef} type="file" accept="image/*,application/pdf" multiple style={{ display: 'none' }}
+          onChange={e => { const files = [...e.target.files]; e.target.value = ''; if (files.length) onUpload(files) }} />
+      </div>
+      <div className="pbt-hint">Every permit is its own file in the order's attachments. Making another one never replaces the last.</div>
+    </section>
   )
 }
 
@@ -1031,6 +1134,19 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
   // Export sees one template shape whether the pages are the template's or the
   // doc's own upload.
   const exportTemplate = () => ({ ...(template || {}), pages, fields })
+  // Save = the permit saved AND its PDF in the order's attachments (Paul
+  // 2026-11-13: "every time I hit permit and create, save it in attachments").
+  const saveAndAttach = async () => {
+    setBusy(true)
+    try {
+      await save()
+      const d = await exportPermitPdf({ template: exportTemplate(), docData: data, returnDoc: true })
+      await attachBuiltPdf(d)
+    } catch (e) {
+      say(e?.message || 'Saved, but the copy for the order attachments could not be built.', true)
+    }
+    setBusy(false)
+  }
   const download = async () => {
     setBusy(true)
     try {
@@ -1103,7 +1219,7 @@ function DocEditor({ id, say, onBack, onOpenOrderDetail }) {
         </div>
         <div className="pbt-edhead-spacer" />
         <button type="button" className="pbt-btn pbt-btn-danger-quiet" onClick={() => setDelOpen(true)} disabled={busy}>Delete</button>
-        <button type="button" className="pbt-btn" onClick={save} disabled={busy}>Save</button>
+        <button type="button" className="pbt-btn" onClick={saveAndAttach} disabled={busy}>Save</button>
         {hasEsign && (
           <button type="button" className="pbt-btn" onClick={() => setSignOpen(true)} disabled={busy}>Email to sign</button>
         )}
@@ -1670,6 +1786,17 @@ const localStyles = `
   .pbt-docrow-open { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; background: none; border: none; font: inherit; cursor: pointer; text-align: left; padding: 0; }
   .pbt-docrow-date { font-size: 11px; color: var(--sb-text-muted, #888780); margin-left: auto; }
   .pbt-tplpick { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pbt-focus { margin-bottom: 18px; border-color: #9A7209; min-width: 0; }
+  .pbt-focus-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .pbt-focus-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+  .pbt-focus-lab { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--sb-text-muted, #888780); margin-bottom: 6px; overflow-wrap: anywhere; }
+  .pbt-focus-forms { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .pbt-focus-form { font: inherit; text-align: left; cursor: pointer; padding: 10px 12px; border-radius: 8px; border: 1px solid #9A7209; background: rgba(154,114,9,0.06); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .pbt-focus-form:hover:not(:disabled) { background: rgba(154,114,9,0.14); }
+  .pbt-focus-form:disabled { opacity: 0.5; cursor: wait; }
+  .pbt-focus-form-t { font-size: 13.5px; font-weight: 600; color: var(--sb-text, #2C2C2A); overflow-wrap: anywhere; }
+  .pbt-focus-form-s { font-size: 11.5px; color: #7d5d07; }
+  .pbt-focus-more { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
   .pbt-pill { font-size: 10.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; letter-spacing: 0.02em; }
   .pbt-pill-good { color: #0F6E56; border: 0.5px solid #1D9E75; }
   .pbt-pill-warn { color: #854F0B; border: 0.5px solid #BA7517; }

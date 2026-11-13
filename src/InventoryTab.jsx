@@ -113,7 +113,12 @@ export default function InventoryTab({ onOpenOrder, canReset = false, onNavigate
     setRows(r.rows || [])
     setLoading(false)
   }, [])
-  useEffect(() => { load() }, [load])
+  // Reload on every switch between the Inventory views: a stone matched on a
+  // Stone PR or allocated in Smart Matches changes the yard, and the Yard list
+  // was still showing what it read when the tab first opened (Paul 2026-11-13:
+  // "I'm not seeing stock allocated that I assigned" — the five stones were
+  // allocated in the data, the list was stale).
+  useEffect(() => { load() }, [load, view])
 
   const loadOld = useCallback(async () => {
     const r = await getArchivedInventoryStock()

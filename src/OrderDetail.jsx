@@ -62,7 +62,7 @@ import { Pill } from './lib/crmComponents.jsx'
 import CustomerProfileSheet from './components/CustomerProfileSheet'
 import AttachmentPreviewModal from './components/AttachmentPreviewModal'
 import OrderPipelineRail from './components/OrderPipelineRail'
-import { CONTRACTED_STATUSES } from './lib/leads'
+import { CONTRACTED_STATUSES, WAITING_ON_OPTIONS, leadLeftOff } from './lib/leads'
 import { buildPipeline } from './lib/orderPipeline'
 import { phaseLabel } from './lib/jobComponents'
 import { OrderProductionStatus } from './components/ProductionFloor'
@@ -979,6 +979,31 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
     await refreshJob(); refreshActivity()
     setCloseBusy(false); setCloseArm(false)
     setActionNote('Order completed & closed — off the work queues. ✓')
+  }
+
+  // ── Lead status (Paul 2026-11-13: "start editing it and saying the status of
+  // the lead") — the same "where it left off" pick the Leads tab writes
+  // (orders.waiting_on) plus the next follow-up day. Each change logs an
+  // activity line, so it counts as a contact on the Sales performance page.
+  const setLeadStatus = async (value) => {
+    let v = value
+    if (v === '__custom') {
+      const txt = window.prompt('Type the status, for example "Waiting on granite sample":')
+      if (!txt || !txt.trim()) return
+      v = txt.trim().slice(0, 60)
+    }
+    const r = await updateOrderLeadFields(orderId, { waiting_on: v || null })
+    if (r?.ok === false) { window.alert(r.error || 'Could not save the lead status.'); return }
+    setOrder(o => (o ? { ...o, waiting_on: v || null } : o))
+    const label = v ? (WAITING_ON_OPTIONS.find(w => w.code === v)?.label || v) : 'cleared'
+    const actor = await getCurrentStaffName()
+    await addOrderActivityNote(orderId, `Lead status: ${label}`, actor)
+    refreshActivity()
+  }
+  const setLeadFollowUp = async (iso) => {
+    const r = await updateOrderLeadFields(orderId, { next_follow_up: iso || null })
+    if (r?.ok === false) { window.alert(r.error || 'Could not save the follow-up day.'); return }
+    setOrder(o => (o ? { ...o, next_follow_up: iso || null } : o))
   }
 
   // ── Activity log (#4) handlers ──────────────────────────────────────────────
@@ -2426,6 +2451,25 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
                 ? 'Contract is signed but $0 has been collected. Not an active customer yet.'
                 : 'Nothing signed, nothing collected. Anything ordered for this job is at our risk.'}
             </span>
+            {(() => {
+              const left = leadLeftOff(order)
+              return (
+                <div className="sb-od-lead-status">
+                  <label>Lead status
+                    <select value={order.waiting_on || ''} onChange={e => setLeadStatus(e.target.value)}>
+                      <option value="">{order.waiting_on ? 'Clear (automatic)' : left.label}</option>
+                      {WAITING_ON_OPTIONS.map(w => <option key={w.code} value={w.code}>{w.label}</option>)}
+                      {left.code === 'custom' && <option value={order.waiting_on}>{left.label}</option>}
+                      <option value="__custom">Type your own…</option>
+                    </select>
+                  </label>
+                  <label>Next follow-up
+                    <input type="date" value={String(order.next_follow_up || '').slice(0, 10)} onChange={e => setLeadFollowUp(e.target.value)} />
+                  </label>
+                  {order.sales_rep && <span className="sb-od-lead-rep">Lead of {order.sales_rep}</span>}
+                </div>
+              )
+            })()}
           </div>
         )}
 
@@ -4290,6 +4334,10 @@ const OD_CSS = `
   }
   .sb-od-lead-banner-title { font-size: 15px; font-weight: 800; letter-spacing: 0.05em; color: #B3261E; }
   .sb-od-lead-banner-sub { font-size: 13px; color: #7a2a25; }
+  .sb-od-lead-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 8px; min-width: 0; }
+  .sb-od-lead-status label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #7a2a25; min-width: 0; }
+  .sb-od-lead-status select, .sb-od-lead-status input { font: inherit; font-size: 13px; font-weight: 600; text-transform: none; letter-spacing: 0; padding: 6px 8px; border: 1px solid #B3261E; border-radius: 7px; background: #fff; color: #2C2C2A; max-width: 260px; min-width: 0; }
+  .sb-od-lead-rep { font-size: 12.5px; color: #7a2a25; overflow-wrap: anywhere; }
 
   .sb-od-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
   .sb-od-actions-spacer { flex: 1 1 24px; }

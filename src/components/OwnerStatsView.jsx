@@ -34,6 +34,7 @@ import { rowGrandTotal, rowMoneyDown, rowBalanceDue, rowTotalPaid, rowNonVoidedP
 import { downloadReportCSV } from '../lib/reportsData'
 import { schedcLabel } from '../lib/acctData'
 import { getLineStats } from '../lib/floorLines'
+import StockSavingsPanel from './StockSavingsPanel'
 
 const INSTALL_KEYS = ['installed', 'door_installed', 'work_completed']
 const LEAD_STATUSES = new Set(['draft', 'scoping', 'quoted'])
@@ -505,6 +506,9 @@ export default function OwnerStatsView({ bundle, now, onOpenOrder }) {
           </button>
         ))}
       </div>
+
+      {/* Saved by using stock (Paul 2026-11-13) — the Stone PR match record. */}
+      <StockSavingsPanel now={now} onOpenOrder={onOpenOrder} />
 
       {/* SALES + CASH IN + COMPLETED trend */}
       <div className="ost-panel">

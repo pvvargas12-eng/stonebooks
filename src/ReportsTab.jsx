@@ -18,6 +18,7 @@ import OwnerStatsView from './components/OwnerStatsView'
 import OwnerReviewView from './components/OwnerReviewView'
 import ReportCard, { REPORT_CSS } from './components/ReportCard'
 import ShopPulse from './components/ShopPulse'
+import SalesPerformanceView from './components/SalesPerformanceView'
 
 const RANGES = [
   { code: 'month',   label: 'This month' },
@@ -141,6 +142,7 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob, onNavigate = 
           <button type="button" className={`rt-mode ${mode === 'review' ? 'on' : ''}`} onClick={() => setMode('review')}>Monthly review</button>
           <button type="button" className={`rt-mode ${mode === 'daily' ? 'on' : ''}`} onClick={() => setMode('daily')}>Daily report</button>
           <button type="button" className={`rt-mode ${mode === 'library' ? 'on' : ''}`} onClick={() => setMode('library')}>Library</button>
+          <button type="button" className={`rt-mode ${mode === 'sales' ? 'on' : ''}`} onClick={() => setMode('sales')}>Sales performance</button>
         </div>
         {mode === 'library' && <div className="rt-ctrl-right">
           <div className="rt-ranges">
@@ -185,6 +187,13 @@ export default function ReportsTab({ user, onOpenOrder, onOpenJob, onNavigate = 
               const t = map[key]
               if (t && onNavigate) onNavigate(t[0], t[1])
             }} />
+      )}
+
+      {/* Sales performance (SALES-PERF-1): sales, leads and the work behind
+          them, by employee; each person's pipeline with last contact. */}
+      {mode === 'sales' && (
+        !bundle ? <div className="sb-empty">Loading sales…</div>
+        : <SalesPerformanceView bundle={bundle} now={now} onOpenOrder={onOpenOrder} />
       )}
 
       {/* Library group sub-tabs */}

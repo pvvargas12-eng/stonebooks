@@ -627,7 +627,11 @@ function drawLayoutImage(doc, t, layout, dataUrl) {
   const ix = fx + (layout.img?.ox ?? 0) * fw
   const iy = fy + (layout.img?.oy ?? 0) * fh
   doc.saveGraphicsState()
-  doc.rect(fx, fy, fw, fh)
+  // style null = build the path WITHOUT painting it. A bare rect() strokes by
+  // default, which printed a box around the picture (Paul 2026-11-13: "we
+  // removed the box here but whenever I print it the box prints") and used the
+  // path up before clip() could take it.
+  doc.rect(fx, fy, fw, fh, null)
   doc.clip()
   doc.discardPath()
   doc.addImage(dataUrl, _imgFmt(dataUrl), ix, iy, iw, ih)

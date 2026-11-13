@@ -21,7 +21,7 @@
 // Cemetery-order payments live in a different ledger (financial_records) and
 // are NOT in Money in yet; the page says so.
 // =============================================================================
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   rowGrandTotal, rowBalanceDue, rowMoneyDown, rowNonVoidedPayments, fmtUSD, properName, customerName,
   deriveDesignStatus, deriveStoneStatus, deriveFdnStatus, statusDimApplies, getInstallList, getFoundationList,
@@ -37,7 +37,7 @@ const TERMINAL = new Set(['closed', 'cancelled'])
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const METHOD = { cash: 'cash', check: 'check', card: 'card', credit_card: 'card', zelle: 'Zelle', ach: 'ACH', bank_transfer: 'ACH', other: 'other' }
 const PERIODS = [
-  { code: 'day', label: 'Today' }, { code: 'week', label: 'This week' }, { code: 'month', label: 'Month' },
+  { code: 'day', label: 'Daily' }, { code: 'week', label: 'Full week' }, { code: 'month', label: 'Month' },
   { code: 'quarter', label: 'Quarter' }, { code: 'year', label: 'Year' },
 ]
 
@@ -53,18 +53,31 @@ const shortDay = (v) => { const d = asDate(v); return isNaN(d) ? '' : d.toLocale
 // period before (a week on Wednesday compares with last week through
 // Wednesday), so a part-way period never reads as "down". Today compares with
 // all of yesterday.
-function periodRange(code, now) {
+// Daily and Full week can look at any day / any week (`anchor`; null = now):
+// DAILY-WEEK, Paul 2026-11-13: "an option full week, then also be able to see
+// the daily". A full week is Monday through Sunday; the week we are in is
+// compared with the same point of last week, a finished week with the whole
+// week before it.
+function periodRange(code, now, anchor = null) {
   const today = sod(now)
   const endToday = new Date(today.getTime() + DAY)
   let start, prevStart, name, prevName
   if (code === 'day') {
-    start = today; prevStart = new Date(today.getTime() - DAY)
-    return { start, end: endToday, prevStart, prevEnd: start, name: 'today', prevName: 'yesterday', title: now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) }
+    start = sod(anchor || now); prevStart = new Date(start.getTime() - DAY)
+    const isToday = start.getTime() === today.getTime()
+    return { start, end: new Date(start.getTime() + DAY), prevStart, prevEnd: start, name: isToday ? 'today' : 'that day', prevName: isToday ? 'yesterday' : 'the day before', current: isToday,
+      title: start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) }
   }
   if (code === 'week') {
-    start = monday(now); prevStart = new Date(start.getTime() - 7 * DAY)
-    name = 'this week'; prevName = 'the same point last week'
-  } else if (code === 'month') {
+    start = monday(anchor || now); prevStart = new Date(start.getTime() - 7 * DAY)
+    const end = new Date(start.getTime() + 7 * DAY)
+    const current = start.getTime() === monday(now).getTime()
+    const prevEnd = current ? new Date(prevStart.getTime() + (endToday.getTime() - start.getTime())) : start
+    const fmt = (d) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+    return { start, end, prevStart, prevEnd, name: current ? 'this week' : 'that week', prevName: current ? 'the same point last week' : 'the week before', current,
+      title: `${fmt(start)} to ${fmt(new Date(end.getTime() - DAY))}` }
+  }
+  if (code === 'month') {
     start = new Date(now.getFullYear(), now.getMonth(), 1); prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
     name = MONTHS[now.getMonth()]; prevName = `the same point in ${MONTHS[prevStart.getMonth()]}`
   } else if (code === 'quarter') {
@@ -78,7 +91,7 @@ function periodRange(code, now) {
   const elapsed = endToday.getTime() - start.getTime()
   const prevEnd = new Date(Math.min(start.getTime(), prevStart.getTime() + elapsed))
   const title = `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} to ${today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-  return { start, end: endToday, prevStart, prevEnd, name, prevName, title }
+  return { start, end: endToday, prevStart, prevEnd, name, prevName, title, current: true }
 }
 const within = (v, a, b) => { if (!v) return false; const t = asDate(v).getTime(); return t >= a.getTime() && t < b.getTime() }
 
@@ -161,7 +174,7 @@ function trendCount(cur, prev, prevName) {
 }
 
 // ── Line chart: several series, one axis, last 12 weeks ─────────────────────
-function PulseLines({ keys, lines, fmt, label }) {
+function PulseLines({ keys, lines, fmt, label, onPick = null }) {
   const [hover, setHover] = useState(null)
   const W = 560, H = 220, L = 50, R = 14, T = 12, B = 30
   const max = Math.max(1, ...lines.flatMap(l => l.values))
@@ -191,7 +204,7 @@ function PulseLines({ keys, lines, fmt, label }) {
           <circle key={`${l.label}-${i}`} cx={x(i)} cy={y(v)} r={hover === i || i === l.values.length - 1 ? 4 : 2.5} fill={l.color} stroke="#fff" strokeWidth="1.5" />
         )))}
         {keys.map((k, i) => (
-          <g key={k.key} onMouseEnter={() => setHover(i)} onMouseMove={() => setHover(i)}>
+          <g key={k.key} onMouseEnter={() => setHover(i)} onMouseMove={() => setHover(i)} onClick={() => onPick?.(k.key)} style={onPick ? { cursor: 'pointer' } : undefined}>
             <rect x={x(i) - (W - L - R) / keys.length / 2} y={T} width={(W - L - R) / keys.length} height={H - T - B} fill="transparent" />
             {(i % 2 === 1 || i === keys.length - 1) && <text className={`spl-tick${hover === i ? ' on' : ''}`} x={x(i)} y={H - 10} textAnchor="middle">{k.label}</text>}
           </g>
@@ -199,12 +212,13 @@ function PulseLines({ keys, lines, fmt, label }) {
       </svg>
       <div className="spl-legend">
         {lines.map(l => <span key={l.label}><i style={{ background: l.color }} />{l.label}{hover != null ? <b> {fmt(l.values[hover])}</b> : null}</span>)}
-        <span className="spl-legend-wk">{hover != null ? `week of ${keys[hover].label}` : 'Hover a week for its numbers'}</span>
+        <span className="spl-legend-wk">{hover != null ? `week of ${keys[hover].label}${onPick ? ' · click to see its orders' : ''}` : (onPick ? 'Hover a week for its numbers, click it to see its orders' : 'Hover a week for its numbers')}</span>
       </div>
     </div>
   )
 }
 
+const LIST_CAP = 10
 const money0 = (v) => v >= 1000 ? `$${Math.round(v / 100) / 10}k` : `$${Math.round(v)}`
 const count0 = (v) => String(Math.round(v))
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
@@ -213,6 +227,8 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
   const [period, setPeriod] = useState(defaultPeriod)
   const [state, setState] = useState({ loading: true, now: null, bundle: null, queues: null, setList: [], fdnList: [], error: null })
   const [openList, setOpenList] = useState(null)   // 'pay' | 'sal' | 'wrk' — the one showing every row
+  const [anchor, setAnchor] = useState(null)       // the day / week being looked at (null = now)
+  const listsRef = useRef(null)
 
   const load = useCallback(async () => {
     try {
@@ -236,9 +252,19 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
   const jobs = useMemo(() => bundle?.jobs || [], [bundle])
   const events = useMemo(() => buildEvents(orders, jobs), [orders, jobs])
 
-  const range = useMemo(() => (now ? periodRange(period, now) : null), [period, now])
+  const range = useMemo(() => (now ? periodRange(period, now, anchor) : null), [period, now, anchor])
   const cur = useMemo(() => (range ? tally(events, range.start, range.end) : null), [events, range])
   const prev = useMemo(() => (range ? tally(events, range.prevStart, range.prevEnd) : null), [events, range])
+
+  // The week, day by day (Full week view): one tally per day, Monday first.
+  const weekDays = useMemo(() => {
+    if (!range || period !== 'week') return null
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(range.start); d.setDate(d.getDate() + i)
+      const e = new Date(d); e.setDate(e.getDate() + 1)
+      return { date: d, t: tally(events, d, e) }
+    })
+  }, [events, range, period])
 
   // ── Live shop state (not tied to the period) ──────────────────────────────
   const live = useMemo(() => {
@@ -345,10 +371,20 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
 
   const byNewest = (a, b) => asDate(b.day).getTime() - asDate(a.day).getTime()
   const lists = [
-    { code: 'pay', title: 'Money in', rows: [...cur.pay].sort(byNewest), right: (r) => fmtUSD(r.amount), mid: (r) => r.method },
-    { code: 'sal', title: 'Sales signed', rows: [...cur.sal].sort(byNewest), right: (r) => fmtUSD(r.total), mid: (r) => r.kind },
+    { code: 'pay', title: 'Money in', total: cur.payN ? fmtUSD(cur.money) : '', rows: [...cur.pay].sort(byNewest), right: (r) => fmtUSD(r.amount), mid: (r) => r.method },
+    { code: 'sal', title: 'Sales signed', total: cur.salesN ? fmtUSD(cur.salesUsd) : '', rows: [...cur.sal].sort(byNewest), right: (r) => fmtUSD(r.total), mid: (r) => r.kind },
     { code: 'wrk', title: 'Work done', rows: [...cur.wrk].sort(byNewest), right: () => '', mid: (r) => r.what },
   ]
+
+  // Daily / Full week: step a day or a week at a time, or jump back to now.
+  const stepBy = period === 'day' ? 1 : period === 'week' ? 7 : 0
+  const step = (dir) => { const d = new Date(range.start); d.setDate(d.getDate() + dir * stepBy); setAnchor(d); setOpenList(null) }
+  const canNext = stepBy > 0 && !range.current
+  // A tile shows its list: every row of that kind, family names first.
+  const showList = (code) => { setOpenList(code); requestAnimationFrame(() => listsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }
+  const pickWeek = (mondayYmd) => { setAnchor(asDate(mondayYmd)); setPeriod('week'); setOpenList(null) }
+  const sameDay = (a, b) => ymd(asDate(a)) === ymd(asDate(b))
+  const todayYmd = ymd(now)
 
   const printReport = () => {
     const sec = (title, rows, cols) => rows.length
@@ -362,7 +398,7 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
       .t { display: flex; gap: 10px; } .t div { flex: 1; border: 1px solid #111; padding: 8px 10px; } .t b { display: block; font-size: 18px; font-family: Consolas, monospace; } .t small { color: #555; }
       table { width: 100%; border-collapse: collapse; } td { padding: 3px 4px; border-bottom: 1px solid #ccc; vertical-align: top; overflow-wrap: anywhere; } td.r { text-align: right; white-space: nowrap; font-family: Consolas, monospace; }
     </style></head><body>
-      <h1>Shop report: ${esc(PERIODS.find(p => p.code === period)?.label || '')}</h1>
+      <h1>Shop report: ${esc(period === 'day' ? 'Day' : (PERIODS.find(p => p.code === period)?.label || ''))}</h1>
       <p class="m">${esc(range.title)} · printed ${esc(now.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</p>
       <div class="t">
         <div><small>MONEY IN</small><b>${esc(fmtUSD(cur.money))}</b><small>${esc(plural(cur.payN, 'payment'))}. ${esc(tMoney.text)}</small></div>
@@ -393,6 +429,14 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
           <div className="spl-chips">
             {PERIODS.map(p => <button key={p.code} type="button" className={`spl-chip${period === p.code ? ' on' : ''}`} onClick={() => { setPeriod(p.code); setOpenList(null) }}>{p.label}</button>)}
           </div>
+          {stepBy > 0 && (
+            <div className="spl-step">
+              <button type="button" className="spl-btn" onClick={() => step(-1)}>‹ {period === 'day' ? 'Day before' : 'Week before'}</button>
+              <span className="spl-step-t">{range.title}</span>
+              <button type="button" className="spl-btn" disabled={!canNext} onClick={() => step(1)}>{period === 'day' ? 'Next day' : 'Next week'} ›</button>
+              {!range.current && <button type="button" className="spl-btn spl-btn-now" onClick={() => { setAnchor(null); setOpenList(null) }}>{period === 'day' ? 'Today' : 'This week'}</button>}
+            </div>
+          )}
           <div className="spl-acts">
             {actions}
             <button type="button" className="spl-btn" onClick={printReport}>Print this report</button>
@@ -403,24 +447,76 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
       {state.error && <div className="spl-err">Some numbers could not load: {state.error}</div>}
 
       <div className="spl-tiles">
-        <div className="spl-tile">
+        <button type="button" className="spl-tile spl-tile-btn" onClick={() => showList('pay')}>
           <div className="spl-lab">Money in</div>
           <div className="spl-big">{fmtUSD(cur.money)}</div>
           <div className="spl-sub">{cur.payN ? `${plural(cur.payN, 'payment')} · ${methodLine}` : 'No payments recorded'}</div>
           <div className={`spl-trend ${tMoney.dir}`}>{tMoney.dir === 'up' ? '▲ ' : tMoney.dir === 'down' ? '▼ ' : ''}{tMoney.text}</div>
-        </div>
-        <div className="spl-tile">
+          <div className="spl-tile-go">{cur.payN ? `See the ${plural(cur.payN, 'payment')} by family ↓` : ''}</div>
+        </button>
+        <button type="button" className="spl-tile spl-tile-btn" onClick={() => showList('sal')}>
           <div className="spl-lab">Sales made</div>
           <div className="spl-big">{cur.salesN}</div>
           <div className="spl-sub">{cur.salesN ? `${fmtUSD(cur.salesUsd)} signed · ${kindLine}` : 'No contracts signed'}</div>
           <div className={`spl-trend ${tSales.dir}`}>{tSales.dir === 'up' ? '▲ ' : tSales.dir === 'down' ? '▼ ' : ''}{tSales.text}</div>
-        </div>
-        <div className="spl-tile">
+          <div className="spl-tile-go">{cur.salesN ? `See the ${plural(cur.salesN, 'order')} by family ↓` : ''}</div>
+        </button>
+        <button type="button" className="spl-tile spl-tile-btn" onClick={() => showList('wrk')}>
           <div className="spl-lab">Work done</div>
           <div className="spl-big">{cur.workN}</div>
           <div className="spl-sub">{workLine || 'Nothing marked done'}</div>
           <div className={`spl-trend ${tWork.dir}`}>{tWork.dir === 'up' ? '▲ ' : tWork.dir === 'down' ? '▼ ' : ''}{tWork.text}</div>
+          <div className="spl-tile-go">{cur.workN ? `See the ${plural(cur.workN, 'job')} by family ↓` : ''}</div>
+        </button>
+      </div>
+
+      {weekDays && (
+        <div className="spl-days">
+          {weekDays.map(({ date, t }) => {
+            const key = ymd(date)
+            const future = key > todayYmd
+            return (
+              <button type="button" key={key} className={`spl-day${key === todayYmd ? ' today' : ''}${future ? ' future' : ''}`} disabled={future}
+                title="Open this day" onClick={() => { setAnchor(date); setPeriod('day'); setOpenList(null) }}>
+                <span className="spl-day-d">{date.toLocaleDateString('en-US', { weekday: 'short' })} <b>{date.getMonth() + 1}/{date.getDate()}</b></span>
+                <span className="spl-day-m">{future ? '' : fmtUSD(t.money)}</span>
+                <span className="spl-day-s">{future ? 'not yet' : `${plural(t.salesN, 'sale')} · ${t.workN} done`}</span>
+              </button>
+            )
+          })}
         </div>
+      )}
+
+      <div className="spl-panel" ref={listsRef}>
+        <h2>What happened · {range.title} <span className="spl-h2r">every row opens its order</span></h2>
+        <div className="spl-lists">
+          {lists.map(l => {
+            const all = openList === l.code
+            const rows = all ? l.rows : l.rows.slice(0, LIST_CAP)
+            return (
+              <div key={l.code} className={`spl-list${all ? ' open' : ''}`}>
+                <div className="spl-list-h">{l.title} <b>{l.rows.length}</b>{l.total ? <span className="spl-list-tot">{l.total}</span> : null}</div>
+                {l.rows.length === 0 && <div className="spl-note">None in this period.</div>}
+                {rows.map((r, i) => {
+                  // Full week: a day line above the first row of each day.
+                  const head = period === 'week' && (i === 0 || !sameDay(rows[i - 1].day, r.day))
+                  return (
+                    <div key={i}>
+                      {head && <div className="spl-li-day">{asDate(r.day).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</div>}
+                      <button type="button" className="spl-li" disabled={!onOpenOrder || !r.orderId} onClick={() => onOpenOrder?.(r.orderId)}>
+                        <span className="spl-li-d">{shortDay(r.day)}</span>
+                        <span className="spl-li-n">{r.name}<small>{[r.orderNo, l.mid(r)].filter(Boolean).join(' · ')}</small></span>
+                        <span className="spl-li-a">{l.right(r)}</span>
+                      </button>
+                    </div>
+                  )
+                })}
+                {l.rows.length > LIST_CAP && <button type="button" className="spl-more" onClick={() => setOpenList(all ? null : l.code)}>{all ? 'Show fewer' : `Show all ${l.rows.length}`}</button>}
+              </div>
+            )
+          })}
+        </div>
+        <div className="spl-note">Money in = payments recorded on family orders, by the day received. Cemetery order payments are kept in a separate ledger and are not in this number yet. Sales = contracts by signing day. Work = the day each step was marked done.</div>
       </div>
 
       <div className="spl-cols">
@@ -479,12 +575,12 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
       <div className="spl-charts">
         <div className="spl-panel">
           <h2>Money in and sales signed · by week</h2>
-          <PulseLines keys={weekly.keys} fmt={money0} label="Money in and sales signed, last 12 weeks"
+          <PulseLines keys={weekly.keys} fmt={money0} onPick={pickWeek} label="Money in and sales signed, last 12 weeks"
             lines={[{ label: 'Money in', color: '#1f7a3d', values: weekly.s.money }, { label: 'Sales signed', color: '#9A7209', values: weekly.s.sales }]} />
         </div>
         <div className="spl-panel">
           <h2>Work done · by week</h2>
-          <PulseLines keys={weekly.keys} fmt={count0} label="Stones blasted, installs, inscriptions and bronzes set, last 12 weeks"
+          <PulseLines keys={weekly.keys} fmt={count0} onPick={pickWeek} label="Stones blasted, installs, inscriptions and bronzes set, last 12 weeks"
             lines={[
               { label: 'Blasted', color: '#4a6fa5', values: weekly.s.blasted }, { label: 'Installed', color: '#1f7a3d', values: weekly.s.installed },
               { label: 'Inscriptions', color: '#c9962a', values: weekly.s.inscription }, { label: 'Bronzes set', color: '#b54040', values: weekly.s.bronze },
@@ -492,30 +588,6 @@ export default function ShopPulse({ bundle: bundleProp = null, onGo = null, onOp
         </div>
       </div>
 
-      <div className="spl-panel">
-        <h2>What happened · {range.title}</h2>
-        <div className="spl-lists">
-          {lists.map(l => {
-            const all = openList === l.code
-            const rows = all ? l.rows : l.rows.slice(0, 6)
-            return (
-              <div key={l.code} className="spl-list">
-                <div className="spl-list-h">{l.title} <b>{l.rows.length}</b></div>
-                {l.rows.length === 0 && <div className="spl-note">None in this period.</div>}
-                {rows.map((r, i) => (
-                  <button type="button" key={i} className="spl-li" disabled={!onOpenOrder || !r.orderId} onClick={() => onOpenOrder?.(r.orderId)}>
-                    <span className="spl-li-d">{shortDay(r.day)}</span>
-                    <span className="spl-li-n">{r.name}<small>{[r.orderNo, l.mid(r)].filter(Boolean).join(' · ')}</small></span>
-                    <span className="spl-li-a">{l.right(r)}</span>
-                  </button>
-                ))}
-                {l.rows.length > 6 && <button type="button" className="spl-more" onClick={() => setOpenList(all ? null : l.code)}>{all ? 'Show fewer' : `Show all ${l.rows.length}`}</button>}
-              </div>
-            )
-          })}
-        </div>
-        <div className="spl-note">Money in = payments recorded on family orders, by the day received. Cemetery order payments are kept in a separate ledger and are not in this number yet. Sales = contracts by signing day. Work = the day each step was marked done.</div>
-      </div>
     </div>
   )
 }
@@ -582,6 +654,24 @@ const SPL_CSS = `
   .spl-legend i { display: inline-block; width: 18px; height: 2px; vertical-align: middle; margin-right: 6px; }
   .spl-legend-wk { margin-left: auto; }
 
+  .spl-step { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .spl-step-t { font-size: 13px; font-weight: 600; padding: 0 4px; overflow-wrap: anywhere; }
+  .spl-btn:disabled { opacity: .4; cursor: default; }
+  .spl-btn-now { border-color: var(--gold); color: var(--gold); }
+  .spl-tile-btn { font: inherit; color: inherit; text-align: left; cursor: pointer; display: block; width: 100%; }
+  .spl-tile-btn:hover { border-color: var(--gold); }
+  .spl-tile-go { font-size: 12px; font-weight: 600; color: var(--gold); margin-top: 6px; min-height: 15px; overflow-wrap: anywhere; }
+  .spl-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+  .spl-day { font: inherit; color: inherit; text-align: left; cursor: pointer; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .spl-day:hover:not(:disabled) { border-color: var(--gold); }
+  .spl-day.today { border-color: var(--fg); border-width: 1.5px; }
+  .spl-day.future { opacity: .5; cursor: default; }
+  .spl-day-d { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .spl-day-d b { color: var(--fg); }
+  .spl-day-m { font-family: var(--font-m, 'JetBrains Mono'), Consolas, monospace; font-size: 15px; font-weight: 700; min-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spl-day-s { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .spl-list-tot { float: right; font-family: var(--font-m, 'JetBrains Mono'), Consolas, monospace; }
+  .spl-li-day { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 10px 0 2px; }
   .spl-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
   .spl-list { min-width: 0; }
   .spl-list-h { font-size: 12.5px; font-weight: 700; padding-bottom: 6px; border-bottom: 1.5px solid var(--fg); }
@@ -595,5 +685,5 @@ const SPL_CSS = `
   .spl-li-a { font-family: var(--font-m, 'JetBrains Mono'), Consolas, monospace; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
   .spl-more { margin-top: 6px; background: none; border: none; padding: 0; font: inherit; font-size: 12px; font-weight: 700; color: #6b5d3a; cursor: pointer; text-decoration: underline; }
 
-  @media (max-width: 900px) { .spl-tiles, .spl-cols, .spl-charts, .spl-lists { grid-template-columns: 1fr; } .spl-head-r { align-items: flex-start; } .spl-chips, .spl-acts { justify-content: flex-start; } }
+  @media (max-width: 900px) { .spl-tiles, .spl-cols, .spl-charts, .spl-lists { grid-template-columns: 1fr; } .spl-head-r { align-items: flex-start; } .spl-chips, .spl-acts, .spl-step { justify-content: flex-start; } .spl-days { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 `

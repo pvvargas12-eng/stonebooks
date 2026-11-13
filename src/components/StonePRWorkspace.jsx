@@ -20,8 +20,9 @@ import {
   listSuppliers, createSupplier, createPR, getBulkOrderWithItems,
   addBulkOrderItem, updateBulkOrderItem, deleteBulkOrderItem, updatePRHeader,
   getActiveStoneOrders, listOrderAttachments, getCurrentStaffName,
-  getInventoryStock, allocateInventoryItem, setOrderPieceInStock, logOrderActivity, fmtYardTag, fmtUSD,
+  getInventoryStock, allocateInventoryItem, releaseInventoryItem, setOrderPieceInStock, setOrderPieceStatus, logOrderActivity, fmtYardTag, fmtUSD,
 } from '../lib/stonebooksData'
+import { addStockMatch, removeStockMatch, attachStockMatchesToPR, listStockMatches } from '../lib/stockMatches'
 import { rowToOrder } from '../SalesMode'
 import { resolveStoneNeeds, matchLineToStock } from '../lib/inventoryMatch'
 import { yardStoneSpecLine, yardStoneWhere } from '../lib/yardStone'
@@ -70,6 +71,14 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const [matchBusy, setMatchBusy] = useState(null)   // row id being matched
   const [moreFor, setMoreFor] = useState(null)       // row id showing every candidate
   const [note, setNote] = useState(null)
+  // PR-MATCH-2 (Paul 2026-11-13): a confirmed match STAYS on the list with its
+  // stock number until the PR is saved; Review shows everything, Final PR
+  // shows only what the vendor gets. The match record (and the money saved)
+  // lives in stock_match_log.
+  const [view, setView] = useState('review')            // 'review' | 'final'
+  const [hideMatches, setHideMatches] = useState(false) // fold every yard-match strip
+  const [folded, setFolded] = useState(() => new Set()) // row ids folded one by one
+  const [matchLog, setMatchLog] = useState([])          // this PR's live match records
   const loadStock = useCallback(() => getInventoryStock().then(r => setStock(r.rows || [])).catch(() => setStock([])), [])
 
   // ── Rail ──
@@ -93,7 +102,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
     // `preload` = smoke mounts only: sample suppliers / lines / yard, no reads.
     if (preload) {
       setSuppliers(preload.suppliers || []); setSupplierId(preload.supplierId || ''); setPoNumber(preload.poNumber || '')
-      setRows(preload.rows || []); setStock(preload.stock || []); setOrders([]); setLoading(false)
+      setRows(preload.rows || []); setStock(preload.stock || []); setOrders([]); setLoading(false); setMatchLog(preload.matchLog || [])
       return
     }
     let alive = true
@@ -102,8 +111,9 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
     getActiveStoneOrders().then(r => { if (alive) setOrders(r.rows || []) }).catch(() => { if (alive) setOrders([]) })
     if (!isEdit) setPlacedAt(todayISO())
     if (!isRecord) getInventoryStock().then(r => { if (alive) setStock(r.rows || []) }).catch(() => { if (alive) setStock([]) })
+    if (isEdit && bulkOrderId) listStockMatches({ bulkOrderId }).then(l => { if (alive) setMatchLog(l) }).catch(() => {})
     return () => { alive = false }
-  }, [isEdit, isRecord, preload])
+  }, [isEdit, isRecord, preload, bulkOrderId])
 
   // Edit mode: load the PR + its lines into the grid.
   useEffect(() => {
@@ -143,27 +153,48 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
   const setRow = (id, patch) => setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r))
   const removeRow = (id) => setRows(rs => rs.filter(r => r.id !== id))
   const addRow = (patch = {}) => setRows(rs => [...rs, { ...BLANK, id: tmpId(), isNew: true, ...patch }])
+  // Stock on / off. Turning it on used to wipe the family and the order link
+  // for good (Paul 2026-11-13: "it removes the family name and makes it
+  // stock, not helpful"); the line now remembers both and gets them back when
+  // Stock is turned off again.
   const toggleStock = (r) => setRow(r.id, r.is_stock
-    ? { is_stock: false }
-    : { is_stock: true, family_name: 'Stock', order_id: null, order_number: null })
+    ? { is_stock: false, family_name: r._prev ? r._prev.family_name : (r.family_name === 'Stock' ? '' : r.family_name), order_id: r._prev?.order_id || null, order_number: r._prev?.order_number || null, _prev: null }
+    : { is_stock: true, family_name: 'Stock', order_id: null, order_number: null, _prev: { family_name: r.family_name, order_id: r.order_id, order_number: r.order_number } })
+  const toggleFold = (id) => setFolded(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
   // ── Yard match + book cost per line (both derived, nothing stored) ──
   const matchOn = !isRecord && prStatus !== 'received' && prStatus !== 'cancelled'
   const matchById = useMemo(() => {
     const m = new Map()
     if (!matchOn || !stock) return m
+    const used = new Set()   // a reserved stone answers ONE line (double dies: two lines, two stones)
     for (const r of rows) {
       if (r.is_stock) continue
-      const res = matchLineToStock(r, stock)
+      const res = matchLineToStock(r, stock.filter(st => !used.has(st.id)))
+      if (res.reserved) used.add(res.reserved.id)
       if (res.reserved || res.candidates.length) m.set(r.id, res)
     }
     return m
   }, [rows, stock, matchOn])
-  const matchCount = matchById.size
+  const isMatched = (r) => !!matchById.get(r.id)?.reserved
+  const matchedRows = rows.filter(isMatched)
+  const matchCount = [...matchById.values()].filter(x => !x.reserved).length
+  const finalRows = rows.filter(r => !isMatched(r))
 
   const supplierLabel = (suppliers.find(s => s.id === supplierId)?.name) || supplierName || ''
   const bookKey = bookKeyForSupplier(supplierLabel)
-  const cost = useMemo(() => (bookKey ? prBookCost(rows.filter(r => r.size.trim() || r.item_type.trim()), bookKey) : null), [rows, bookKey])
+  // Per-line cost is shown on every line; the PR total counts only the lines
+  // that are still being ORDERED (a line matched to a yard stone is not).
+  const costAll = useMemo(() => (bookKey ? prBookCost(rows.filter(r => r.size.trim() || r.item_type.trim()), bookKey) : null), [rows, bookKey])
+  const cost = useMemo(() => {
+    if (!bookKey) return null
+    const c = prBookCost(rows.filter(r => !matchById.get(r.id)?.reserved && (r.size.trim() || r.item_type.trim())), bookKey)
+    return { ...c, byId: costAll ? costAll.byId : c.byId }
+  }, [rows, bookKey, matchById, costAll])
+  // Money saved by using stock: what the matched lines would have cost in the
+  // book, from the match record (so it survives the line leaving the PR).
+  const savedTotal = matchLog.reduce((sum, l) => sum + (Number(l.saved_amount) || 0), 0)
+  const savedUnpriced = matchLog.filter(l => l.saved_amount == null).length
 
   const tagOf = (st) => (st?.yard_tag != null ? `#${fmtYardTag(st.yard_tag)}` : 'the unnumbered stone')
   const pieceWord = (fam) => (fam === 'base' ? 'base' : fam === 'backer' ? 'backer' : 'die')
@@ -197,7 +228,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
     const piece = pieceWord(fam)
     const who = r.family_name || r.order_number || orderNoById.get(r.order_id) || 'this order'
     const where = yardStoneWhere(cand.stock)
-    const ok = window.confirm(`Use yard stone ${tagOf(cand.stock)}${where ? ` (${where})` : ''} as the ${piece.toUpperCase()} for ${who}?\n\nIt is reserved to the order, the order's ${piece} reads In stock, and this line comes off the PR.`)
+const ok = window.confirm(`Use yard stone ${tagOf(cand.stock)}${where ? ` (${where})` : ''} as the ${piece.toUpperCase()} for ${who}?\n\nIt is reserved to the order and the order's ${piece} reads In stock. The line stays on this screen marked MATCHED, and is left off the final PR that goes to the vendor. Remove match puts the stone back in stock.`)
     if (!ok) return
     setMatchBusy(r.id)
     try {
@@ -208,25 +239,82 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
         const p = await setOrderPieceInStock(r.order_id, piece)
         if (!p.ok) warn = ` The order's ${piece} status did not update (${p.error}); set it to In stock on the order.`
       }
-      const d = await dropLineFromPR(r)
-      if (!d.ok) warn += ` The line could not be removed from the PR (${d.error}); remove it by hand.`
+      // A line for several stones gives one up now; a single-stone line STAYS
+      // on the list, marked MATCHED with the stock number, until the PR is
+      // saved (Final PR leaves it off the vendor sheet).
+      const qty = Math.max(1, Number(r.quantity) || 1)
+      if (qty > 1) {
+        const d = await dropLineFromPR(r)
+        if (!d.ok) warn += ` The line's quantity could not be lowered (${d.error}); lower it by hand.`
+      }
+      const c = costAll ? costAll.byId.get(r.id) : null
+      const rec = await addStockMatch({
+        orderId: r.order_id, bulkOrderId: bulkOrderId || null, poNumber: poNumber || null,
+        stockId: cand.stock.id, yardTag: cand.stock.yard_tag ?? null, piece, family: r.family_name || null,
+        lineSpec: JSON.stringify({ item_type: r.item_type, size: r.size, color: r.color, specs: r.specs }),
+        stoneSpec: yardStoneSpecLine(cand.stock) || null, supplier: supplierLabel || null,
+        savedAmount: c && c.ok ? c.unit : null, savedBasis: c && c.ok ? (c.tier === 'exact' && !c.assumedColor ? 'printed row' : 'book rate') : null,
+        by: createdBy || null,
+      })
+      if (rec.ok) setMatchLog(l => [rec.row, ...l])
+      else warn += ` The match was made but its record did not save (${rec.error}).`
       Promise.resolve(logOrderActivity(r.order_id, {
         type: 'change', field: 'Stone', newValue: `${piece} from the yard`,
-        note: `Yard stone ${tagOf(cand.stock)} matched on ${poNumber || 'a new PR'}: reserved as the ${piece}, taken off the PR`, actor: createdBy || null,
+        note: `Yard stone ${tagOf(cand.stock)} matched on ${poNumber || 'a new PR'}: reserved as the ${piece}, not ordered`, actor: createdBy || null,
       })).catch(() => {})
-      setNote(`${tagOf(cand.stock)} is now the ${piece} for ${who}. ${d.ok && d.left > 0 ? `The line still orders ${d.left}.` : 'Line removed from the PR.'}${warn}`)
+      setNote(`${tagOf(cand.stock)} is now the ${piece} for ${who}. ${qty > 1 ? `The line still orders ${qty - 1}.` : 'The line stays here marked MATCHED and is left off the final PR.'}${warn}`)
       await loadStock()
     } catch (e) { setErr(String(e?.message || e)) }
     setMatchBusy(null)
   }
-  const dropReserved = async (r) => {
-    if (matchBusy) return
+  // REMOVE MATCH: the yard stone goes back to available stock, the order's
+  // piece goes back to what a line on this PR means (Ordered once the PR is
+  // out, Not ordered while it is a draft), and the record is closed. With
+  // `log` (a match whose line already left the PR) the line is put back.
+  const removeMatch = async ({ stockId, yardTag, orderId, piece, who, rowId = null, log = null }) => {
+    if (matchBusy || !stockId) return
     setErr(null); setNote(null)
-    setMatchBusy(r.id)
-    const d = await dropLineFromPR(r)
+    const tag = yardTag != null ? `#${fmtYardTag(yardTag)}` : 'the unnumbered stone'
+    const back = ['submitted', 'ordered', 'partially_received'].includes(prStatus) ? 'ordered' : 'not_ordered'
+    const ok = window.confirm(`Remove the match between yard stone ${tag} and ${who}?\n\nThe stone goes back into available stock, and the order's ${piece} reads ${back === 'ordered' ? 'Ordered' : 'Not ordered'} again${log ? ', and its line is put back on this PR' : ''}.\n\nOnly do this if the stone is NOT being used for this order.`)
+    if (!ok) return
+    setMatchBusy(rowId || stockId)
+    try {
+      const rel = await releaseInventoryItem({ id: stockId })
+      if (!rel.ok) throw new Error(`Could not put the stone back in stock: ${rel.error}`)
+      let warn = ''
+      if (orderId && piece !== 'backer') {
+        const p = await setOrderPieceStatus(orderId, piece, back)
+        if (!p.ok) warn = ` The order's ${piece} status did not update (${p.error}); set it on the order.`
+      }
+      const rm = await removeStockMatch({ stockId, orderId, by: createdBy || null })
+      if (!rm.ok) warn += ` The match record did not close (${rm.error}).`
+      setMatchLog(l => l.filter(x => x.stock_id !== stockId))
+      if (log) {
+        let spec = {}
+        try { spec = JSON.parse(log.line_spec || '{}') || {} } catch { spec = {} }
+        addRow({ family_name: log.family || '', order_id: orderId || null, item_type: spec.item_type || (piece === 'base' ? 'Base' : 'Die'), size: spec.size || '', color: spec.color || '', specs: spec.specs || '' })
+      }
+      if (orderId) Promise.resolve(logOrderActivity(orderId, {
+        type: 'change', field: 'Stone', newValue: `${piece} match removed`,
+        note: `Yard stone ${tag} match removed on ${poNumber || 'a new PR'}: the stone is back in stock`, actor: createdBy || null,
+      })).catch(() => {})
+      setNote(`${tag} is back in available stock. ${who} is on the PR to be ordered${log ? ' (line put back, check it)' : ''}.${warn}`)
+      await loadStock()
+    } catch (e) { setErr(String(e?.message || e)) }
     setMatchBusy(null)
-    if (!d.ok) { setErr(d.error); return }
-    setNote(`${r.family_name || 'The line'}: taken off the PR. The stone is already reserved in the yard.`)
+  }
+
+  // Leaving without saving: lines already matched to a yard stone must not
+  // stay on a saved PR where they could be ordered a second time.
+  const handleClose = async () => {
+    const stuck = matchedRows.filter(r => !r.isNew)
+    if (stuck.length) {
+      const ok = window.confirm(`${stuck.length} line${stuck.length === 1 ? ' is' : 's are'} matched to yard stones but still on this PR (${stuck.map(r => r.family_name || 'line').join(', ')}).\n\nOK = take ${stuck.length === 1 ? 'it' : 'them'} off the PR now so nothing is ordered twice.\nCancel = stay here.`)
+      if (!ok) return
+      for (const r of stuck) { const d = await deleteBulkOrderItem(r.id); if (!d.ok) { setErr(d.error); return } }
+    }
+    onClose?.()
   }
 
   // ── Rail derivations ──
@@ -291,8 +379,13 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
     setErr(null)
     const supplier = suppliers.find(s => s.id === supplierId) || (isEdit && supplierName ? { id: supplierId || null, name: supplierName } : null)
     if (!supplier) { setErr('Pick or create a supplier.'); return }
-    const lines = realRows()
-    if (!lines.length) { setErr('Add at least one line item.'); return }
+    const lines = realRows().filter(r => !isMatched(r))
+    if (!lines.length && !matchedRows.length) { setErr('Add at least one line item.'); return }
+    if (!lines.length && !isEdit) { setErr('Every line is matched to a yard stone, so there is nothing to order. Cancel to leave; the stones stay reserved.'); return }
+    if (matchedRows.length && view !== 'final') {
+      const ok = window.confirm(`${matchedRows.length} line${matchedRows.length === 1 ? ' is' : 's are'} matched to yard stones (${matchedRows.map(r => `${r.family_name || 'line'} ${tagOf(matchById.get(r.id).reserved)}`).join(', ')}).\n\nSaving takes ${matchedRows.length === 1 ? 'it' : 'them'} off the PR so ${matchedRows.length === 1 ? 'it is' : 'they are'} not ordered. The stones stay reserved and the match record is kept.\n\nOK = save the final PR.  Cancel = keep reviewing (Final PR shows the sheet first).`)
+      if (!ok) return
+    }
     setSaving(true)
     try {
       if (!isEdit) {
@@ -304,6 +397,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
           lines: lines.map(l => ({ ...l, spec_text: l.spec_text || null })),
         })
         if (!r.ok) throw new Error(r.error)
+        await attachStockMatchesToPR(matchLog.filter(l => !l.bulk_order_id).map(l => l.id), r.bulkOrderId).catch(() => {})
         setSaving(false); onSaved?.(r.bulkOrderId); return
       }
       // Edit: header patch + incremental line ops.
@@ -315,11 +409,12 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
         if (notes !== headerOrig.notes) hp.notes = [notes?.trim() || null, createdBy ? `Created by ${createdBy}` : null].filter(Boolean).join(' · ')
         if (Object.keys(hp).length) { const u = await updatePRHeader(bulkOrderId, hp); if (!u.ok) throw new Error(u.error) }
       }
-      const liveIds = new Set(rows.map(r => r.id))
+      const keep = rows.filter(r => !isMatched(r))
+      const liveIds = new Set(keep.map(r => r.id))
       for (const id of Object.keys(orig)) {
         if (!liveIds.has(id)) { const d = await deleteBulkOrderItem(id); if (!d.ok) throw new Error(d.error) }
       }
-      for (const r of rows) {
+      for (const r of keep) {
         if (r.isNew) {
           if (!(r.family_name.trim() || r.size.trim() || r.specs.trim() || r.color.trim() || r.order_id)) continue
           const a = await addBulkOrderItem(bulkOrderId, r, 'stone')
@@ -360,7 +455,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
         </div>
         <div className="prw-top-r">
           {err && <span className="prw-err">{err}</span>}
-          <button type="button" className="sb-btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="button" className="sb-btn-secondary" onClick={handleClose} disabled={saving}>Cancel</button>
           <button type="button" className="sb-btn-primary" onClick={save} disabled={saving || loading}>
             {saving ? 'Saving…' : isRecord ? 'Record PR' : 'Save PR'}
           </button>
@@ -392,12 +487,22 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
           <input className="sb-input" placeholder="PR notes (prints on the sheet)" value={notes} onChange={e => setNotes(e.target.value)} /></div>
       </div>
 
-      {(note || (matchOn && matchCount > 0)) && (
+      {matchOn && (
         <div className="prw-matchbar">
-          {matchOn && matchCount > 0 && <span><b>{matchCount}</b> line{matchCount === 1 ? '' : 's'} may already be in the yard. Check the stone, then Confirm match so it is not ordered twice.</span>}
+          <div className="prw-views" role="tablist">
+            <button type="button" className={`prw-view${view === 'review' ? ' on' : ''}`} onClick={() => setView('review')}>Review · all {rows.length} lines</button>
+            <button type="button" className={`prw-view${view === 'final' ? ' on' : ''}`} onClick={() => setView('final')}>Final PR · {finalRows.length} to order</button>
+          </div>
+          {view === 'review' && matchCount > 0 && <span><b>{matchCount}</b> line{matchCount === 1 ? '' : 's'} may already be in the yard.</span>}
+          {matchedRows.length > 0 && <span className="prw-matchbar-done"><b>{matchedRows.length}</b> matched: {matchedRows.map(r => `${r.family_name || 'line'} ${tagOf(matchById.get(r.id).reserved)}`).join(' · ')}</span>}
+          {matchLog.length > 0 && <span className="prw-saved" title="What the matched lines would have cost in the supplier's price book">Saved by using stock <b>{fmtUSD(savedTotal)}</b>{savedUnpriced ? ` · ${savedUnpriced} not priced` : ''}</span>}
+          {view === 'review' && (matchCount > 0 || matchedRows.length > 0) && (
+            <button type="button" className="prw-mini prw-hide" onClick={() => { setHideMatches(v => !v); setFolded(new Set()) }}>{hideMatches ? 'Show yard matches' : 'Hide yard matches'}</button>
+          )}
           {note && <span className="prw-matchbar-note">{note}</span>}
         </div>
       )}
+      {!matchOn && note && <div className="prw-matchbar"><span className="prw-matchbar-note">{note}</span></div>}
 
       <div className="prw-body">
         {/* ── LEFT: the PR lines ── */}
@@ -413,11 +518,13 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                   {bookKey && <th className="prw-c-cost">Cost</th>}<th />
                 </tr></thead>
                 <tbody>
-                  {rows.map(r => {
-                    const m = matchById.get(r.id) || null
+                  {(view === 'final' ? finalRows : rows).map(r => {
+                    const m = view === 'final' ? null : (matchById.get(r.id) || null)
                     const tone = m ? (m.reserved ? 'res' : m.best.strength === 'exact' ? 'exact' : 'near') : null
                     const c = cost ? cost.byId.get(r.id) : null
                     const shown = m ? (moreFor === r.id ? m.candidates : m.candidates.slice(0, 2)) : []
+                    // Folded = the yard strip under the line is hidden (all at once, or this line).
+                    const open = !!m && (hideMatches ? folded.has(r.id) : !folded.has(r.id))
                     return (
                     <Fragment key={r.id}>
                     <tr className={`${r.is_stock ? 'prw-row-stock' : ''}${tone ? ` prw-row-m prw-row-m-${tone}` : ''}`}>
@@ -430,14 +537,19 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                       <td><input className="sb-input prw-qty" type="number" min="1" value={r.quantity} onChange={e => setRow(r.id, { quantity: e.target.value })} /></td>
                       <td className="prw-c-stock">
                         {m && (
-                          <span className={`prw-mpill prw-mpill-${tone}`} title={m.reserved ? 'A yard stone is already reserved to this order' : `${m.candidates.length} yard stone${m.candidates.length === 1 ? '' : 's'} could fill this line`}>
+                          <button type="button" className={`prw-mpill prw-mpill-${tone}`} onClick={() => toggleFold(r.id)}
+                            title={`${m.reserved ? 'Matched: this yard stone is reserved to the order' : `${m.candidates.length} yard stone${m.candidates.length === 1 ? '' : 's'} could fill this line`}. Click to ${open ? 'hide' : 'show'} the yard strip.`}>
                             {m.reserved
-                              ? `IN YARD${m.reserved.yard_tag != null ? ` #${fmtYardTag(m.reserved.yard_tag)}` : ''}`
+                              ? `MATCHED${m.reserved.yard_tag != null ? ` #${fmtYardTag(m.reserved.yard_tag)}` : ''}`
                               : `${m.best.stock.yard_tag != null ? `#${fmtYardTag(m.best.stock.yard_tag)}` : 'MATCH'}${m.candidates.length > 1 ? ` +${m.candidates.length - 1}` : ''}`}
-                          </span>
+                            {open ? ' ▾' : ' ▸'}
+                          </button>
                         )}
-                        <button type="button" className={`prw-stock${r.is_stock ? ' on' : ''}`} title="Stock = ordered to have; lands as available yard stock on receive"
-                          onClick={() => toggleStock(r)}>{r.is_stock ? 'STOCK' : '—'}</button>
+                        {!(m && m.reserved) && (
+                          <button type="button" className={`prw-stock${r.is_stock ? ' on' : ''}`}
+                            title={r.is_stock ? 'This line is ordered for stock. Click to make it an order line again (the family comes back).' : 'Order this line for STOCK instead of a family: it lands as available yard stock on receive. This does not hide anything.'}
+                            onClick={() => toggleStock(r)}>{r.is_stock ? 'STOCK ×' : 'for stock?'}</button>
+                        )}
                       </td>
                       <td className="prw-c-link">
                         {r.order_id
@@ -458,17 +570,19 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                       )}
                       <td><button type="button" className="prw-rm" title="Remove line" onClick={() => removeRow(r.id)}>×</button></td>
                     </tr>
-                    {m && (
+                    {m && open && (
                       <tr className={`prw-mrow prw-mrow-${tone}`}>
                         <td colSpan={bookKey ? 10 : 9}>
                           <div className="prw-mbox">
                             {m.reserved && (
                               <div className="prw-mline">
-                                <span className="prw-mtag prw-mtag-res">ALREADY RESERVED</span>
+                                <span className="prw-mtag prw-mtag-res">MATCHED · NOT ORDERED</span>
                                 <span className="prw-mnum">{m.reserved.yard_tag != null ? `#${fmtYardTag(m.reserved.yard_tag)}` : 'no number'}</span>
                                 <span className="prw-mspec">{yardStoneSpecLine(m.reserved) || '—'}</span>
                                 <span className="prw-mwhere">{yardStoneWhere(m.reserved) || 'location not set'}</span>
-                                <button type="button" className="prw-mbtn" disabled={!!matchBusy} onClick={() => dropReserved(r)}>{matchBusy === r.id ? 'Working…' : 'Take line off the PR'}</button>
+                                <button type="button" className="prw-mbtn prw-mbtn-undo" disabled={!!matchBusy}
+                                  title="The stone goes back into available stock and this line is ordered again"
+                                  onClick={() => removeMatch({ stockId: m.reserved.id, yardTag: m.reserved.yard_tag, orderId: r.order_id, piece: pieceWord(m.family), who: r.family_name || r.order_number || orderNoById.get(r.order_id) || 'this order', rowId: r.id })}>{matchBusy === r.id ? 'Working…' : 'Remove match'}</button>
                               </div>
                             )}
                             {!m.reserved && shown.map(cd => (
@@ -499,6 +613,34 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                 <button type="button" className="prw-add" onClick={() => addRow()}>+ Add line</button>
                 <button type="button" className="prw-add" onClick={() => addRow({ is_stock: true, family_name: 'Stock' })}>+ Add stock line</button>
               </div>
+              {view === 'final' && (
+                <div className="prw-finalnote">
+                  This is the sheet the vendor gets: {finalRows.length} line{finalRows.length === 1 ? '' : 's'}.
+                  {matchedRows.length > 0 ? ` ${matchedRows.length} matched line${matchedRows.length === 1 ? ' is' : 's are'} left off; Save PR takes ${matchedRows.length === 1 ? 'it' : 'them'} off the PR for good.` : ' No matched lines are waiting.'}
+                </div>
+              )}
+              {matchLog.length > 0 && (
+                <div className="prw-used">
+                  <div className="prw-used-h">Yard stones used on this PR · {matchLog.length} <span>saved {fmtUSD(savedTotal)} against the {bookKey ? bookName(bookKey) : 'supplier'} book{savedUnpriced ? ` (${savedUnpriced} not priced)` : ''}</span></div>
+                  {matchLog.map(l => {
+                    let spec = {}
+                    try { spec = JSON.parse(l.line_spec || '{}') || {} } catch { spec = {} }
+                    const onList = rows.some(r => matchById.get(r.id)?.reserved?.id === l.stock_id)
+                    return (
+                      <div key={l.id} className="prw-used-row">
+                        <span className="prw-mnum">{l.yard_tag != null ? `#${fmtYardTag(l.yard_tag)}` : 'no number'}</span>
+                        <span className="prw-used-fam">{l.family || 'Order'}<small>{(l.piece || 'stone').toUpperCase()} · {[spec.size, spec.color, spec.specs].filter(Boolean).join(' · ') || 'line not recorded'}</small></span>
+                        <span className="prw-used-stone">{l.stone_spec || ''}<small>matched {String(l.matched_at || '').slice(0, 10)}{l.matched_by ? ` · ${l.matched_by}` : ''}</small></span>
+                        <span className="prw-used-amt">{l.saved_amount != null ? fmtUSD(Number(l.saved_amount)) : '—'}</span>
+                        {!onList && matchOn
+                          ? <button type="button" className="prw-mbtn prw-mbtn-undo" disabled={!!matchBusy}
+                              onClick={() => removeMatch({ stockId: l.stock_id, yardTag: l.yard_tag, orderId: l.order_id, piece: l.piece || 'die', who: l.family || 'this order', log: l })}>{matchBusy === l.stock_id ? 'Working…' : 'Remove match'}</button>
+                          : <span className="prw-nolink" />}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
               {cost && (cost.priced > 0 || cost.unpriced > 0) && (
                 <div className="prw-costfoot">
                   <span className="prw-costfoot-l">{bookName(bookKey)} book cost{bookEdition(bookKey) ? ` · ${bookEdition(bookKey)}` : ''}</span>
@@ -508,6 +650,7 @@ export default function StonePRWorkspace({ mode = 'new', bulkOrderId = null, onC
                     {cost.estimated ? ` · ${cost.estimated} by the book rate (~)` : ''}
                     {cost.assumed ? ` · ${cost.assumed} with no readable color (~, lowest column)` : ''}
                     {cost.unpriced ? ` · ${cost.unpriced} not priced (hover the dash)` : ''}
+                    {matchedRows.length ? ` · ${matchedRows.length} matched line${matchedRows.length === 1 ? '' : 's'} not counted` : ''}
                     . Listed price for the size and color; shaped tops, extra polish and freight are not in it.
                   </span>
                 </div>
@@ -612,7 +755,7 @@ const PRW_CSS = `
   .prw-mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; }
   .prw-c-fam { width: 15%; } .prw-c-color { width: 11%; } .prw-c-type { width: 9%; } .prw-c-size { width: 17%; }
   .prw-c-qty { width: 58px; } .prw-qty { text-align: center; }
-  .prw-c-stock { width: 92px; text-align: center; } .prw-c-link { width: 96px; }
+  .prw-c-stock { width: 118px; text-align: center; } .prw-c-link { width: 96px; }
   .prw-c-cost { width: 78px; text-align: right; white-space: nowrap; }
   .prw-cost { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; font-weight: 700; color: #2a2a2a; }
   .prw-cost-head { margin-left: 14px; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 17px; font-weight: 700; color: #9A7209; white-space: nowrap; }
@@ -646,8 +789,26 @@ const PRW_CSS = `
   .prw-mbtn:disabled { opacity: 0.55; cursor: default; }
   .prw-mmore { align-self: flex-start; background: none; border: none; padding: 0; font: inherit; font-size: 12px; font-weight: 700; color: #6b5d3a; cursor: pointer; text-decoration: underline; }
   @media (max-width: 1100px) { .prw-mline { grid-template-columns: auto auto minmax(0, 1fr); } .prw-mwhere { grid-column: 1 / -1; } }
+  .prw-views { display: inline-flex; gap: 3px; padding: 3px; background: #dcebdf; border-radius: 999px; }
+  .prw-view { font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 13px; border: none; border-radius: 999px; background: transparent; color: #1f5c33; cursor: pointer; white-space: nowrap; }
+  .prw-view.on { background: #fff; color: #16150F; font-weight: 700; box-shadow: 0 1px 2px rgba(15,20,25,0.1); }
+  .prw-matchbar-done { min-width: 0; overflow-wrap: anywhere; }
+  .prw-saved { background: #1f7a3d; color: #fff; border-radius: 999px; padding: 3px 12px; font-size: 12.5px; white-space: nowrap; }
+  .prw-saved b { font-family: var(--font-m, 'JetBrains Mono'), monospace; }
+  .prw-hide { margin-left: auto; }
+  button.prw-mpill { border: none; cursor: pointer; font-family: var(--font-m, 'JetBrains Mono'), monospace; }
+  .prw-mbtn-undo { color: #b3261e; border-color: #e3b5b1; }
+  .prw-finalnote { margin-top: 12px; font-size: 13px; color: #1f5c33; background: #eef6ef; border: 1px solid #cfe3d3; border-radius: 9px; padding: 9px 12px; overflow-wrap: anywhere; }
+  .prw-used { margin-top: 14px; border: 1px solid #cfe3d3; border-radius: 10px; padding: 10px 12px; background: #f7fbf8; }
+  .prw-used-h { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: #1f5c33; margin-bottom: 6px; display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+  .prw-used-h span { font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--sb-text-muted, #6f685c); }
+  .prw-used-row { display: grid; grid-template-columns: 64px minmax(0, 1.2fr) minmax(0, 1.4fr) 84px auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid #e3eee6; font-size: 12.5px; min-width: 0; }
+  .prw-used-fam, .prw-used-stone { min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
+  .prw-used-stone { font-weight: 400; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12px; }
+  .prw-used-row small { display: block; font-weight: 400; font-size: 11.5px; color: var(--sb-text-muted, #6f685c); font-family: var(--font-b, inherit); }
+  .prw-used-amt { text-align: right; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-weight: 700; color: #1f7a3d; white-space: nowrap; }
   .prw-row-stock td { background: #f6f3ea; }
-  .prw-stock { font: inherit; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; border-radius: 999px; border: 1px solid var(--sb-border, #d8d2c4); background: #fff; color: #9a948a; padding: 3px 9px; cursor: pointer; }
+  .prw-stock { font: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; white-space: nowrap; border-radius: 999px; border: 1px solid var(--sb-border, #d8d2c4); background: #fff; color: #9a948a; padding: 3px 9px; cursor: pointer; }
   .prw-stock.on { background: #6b5d3a; border-color: #6b5d3a; color: #fff; }
   .prw-linked { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 11px; font-weight: 700; color: #1f7a3d; background: #e7f3ea; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
   .prw-unlink { background: none; border: none; color: #1f7a3d; font-size: 13px; cursor: pointer; line-height: 1; padding: 0; }

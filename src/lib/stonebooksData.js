@@ -11579,13 +11579,18 @@ export async function getOrderSpecRow(orderId) {
 // via the milestone-backed setter (the Orders table + schedule read that).
 const _STONE_SIMPLE_RANK = { not_ordered: 0, ordered: 1, in_stock: 2 }
 const _stoneToSimple = (s) => s === 'not_ordered' ? 'not_ordered' : (s === 'in_stock' || s === 'received' || s === 'arrived') ? 'in_stock' : 'ordered'
-export async function setOrderPieceInStock(orderId, piece) {
+export async function setOrderPieceInStock(orderId, piece) { return setOrderPieceStatus(orderId, piece, 'in_stock') }
+// The same write for any simple piece status (not_ordered | ordered |
+// in_stock). "Remove match" on a Stone PR uses it to put a piece back to what
+// it was before a yard stone was matched to it (PR-MATCH-2, 2026-11-13).
+export async function setOrderPieceStatus(orderId, piece, status = 'in_stock') {
   if (!orderId) return { ok: false, error: 'Missing order.' }
+  if (!(status in _STONE_SIMPLE_RANK)) return { ok: false, error: 'Unknown stone status.' }
   const col = piece === 'base' ? 'base_stone_status' : 'die_stone_status'
   const { data: o, error: readErr } = await supabase.from('orders')
     .select('id, die_stone_status, base_stone_status, base_config, shape, pricing').eq('id', orderId).single()
   if (readErr || !o) return { ok: false, error: readErr?.message || 'Order not found.' }
-  const r = await bulkUpdateOrders([orderId], { [col]: 'in_stock' })
+  const r = await bulkUpdateOrders([orderId], { [col]: status })
   if (!r.ok) return r
   try {
     const job = await getJobByOrderId(orderId)
@@ -11595,10 +11600,10 @@ export async function setOrderPieceInStock(orderId, piece) {
       // base piece to wait on. A renamed base line on the contract counts too.
       const hasBase = piece === 'base' || orderHasBase(o.base_config, SHAPES.find(sh => sh.code === o.shape))
         || !!o.pricing?.lineItemLabels?.['base-block']
-      const die = piece === 'die' ? 'in_stock' : (o.die_stone_status || cur)
+      const die = piece === 'die' ? status : (o.die_stone_status || cur)
       // The other piece keeps its own status; a legacy order with no per-piece
       // base status reads the combined status (exactly what the quick-edit seeds).
-      const base = piece === 'base' ? 'in_stock' : (hasBase ? (o.base_stone_status || cur) : null)
+      const base = piece === 'base' ? status : (hasBase ? (o.base_stone_status || cur) : null)
       const combined = [die, base].filter(Boolean).reduce((a, b) => (_STONE_SIMPLE_RANK[b] < _STONE_SIMPLE_RANK[a] ? b : a))
       if (combined !== cur) await setOrderStoneStatus(job.id, combined)
     }
