@@ -509,7 +509,8 @@ const ok = window.confirm(`Use yard stone ${tagOf(cand.stock)}${where ? ` (${whe
         <div className="prw-left">
           {loading ? <div className="sb-empty">Loading the PR…</div> : (
             <>
-              <table className="prw-table">
+              {/* Final PR = the vendor sheet: every line reads in capitals (display only, the saved text is not rewritten). */}
+              <table className={`prw-table${view === 'final' ? ' prw-table-final' : ''}`}>
                 <thead><tr>
                   <th className="prw-c-fam">Family</th><th className="prw-c-color">Color</th>
                   <th className="prw-c-type">Type</th><th className="prw-c-size">Size</th>
@@ -752,6 +753,8 @@ const PRW_CSS = `
   .prw-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sb-text-muted, #8a7f6c); padding: 4px 6px; }
   .prw-table td { padding: 4px 6px; vertical-align: middle; }
   .prw-table .sb-input { font-size: 13px; width: 100%; }
+  .prw-table-final .sb-input { text-transform: uppercase; }
+  .prw-table-final .sb-input::placeholder { text-transform: none; }
   .prw-mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; }
   .prw-c-fam { width: 15%; } .prw-c-color { width: 11%; } .prw-c-type { width: 9%; } .prw-c-size { width: 17%; }
   .prw-c-qty { width: 58px; } .prw-qty { text-align: center; }

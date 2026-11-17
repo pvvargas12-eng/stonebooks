@@ -73,13 +73,16 @@ function parseCreatedBy(notes) {
 // line has no stored size).
 function structuredOf(it, lineSpec) {
   const isStock = !!it.is_stock || String(it.family_name || '').trim().toLowerCase() === 'stock'
+  // The vendor sheet reads in capitals on every line (Paul 2026-11-17), however
+  // the line was typed. Print and PDF both go through here.
+  const up = (s) => String(s ?? '').toUpperCase()
   return {
-    family: isStock ? 'STOCK' : (it.family_name || '—'),
+    family: isStock ? 'STOCK' : up(it.family_name || '—'),
     isStock,
-    color: it.color || '—',
-    type: it.item_type || (isStock ? 'Stock' : isBaseSpec(lineSpec[it.id]) ? 'Base' : 'Die'),
-    size: it.size || '—',
-    specs: it.specs || it.spec_text || [it.top, it.sides].filter(Boolean).join('; ') || (!it.size ? (lineSpec[it.id] || '—') : '—'),
+    color: up(it.color || '—'),
+    type: up(it.item_type || (isStock ? 'Stock' : isBaseSpec(lineSpec[it.id]) ? 'Base' : 'Die')),
+    size: up(it.size || '—'),
+    specs: up(it.specs || it.spec_text || [it.top, it.sides].filter(Boolean).join('; ') || (!it.size ? (lineSpec[it.id] || '—') : '—')),
   }
 }
 
