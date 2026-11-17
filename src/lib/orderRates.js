@@ -96,13 +96,13 @@ export const liveRates = {
 
 // Base finish options for the new form (spec attributes; only SB carries a charge).
 export const BASE_FINISHES = [
-  { code: 'SB',  label: 'SB (sawn)' },
+  { code: 'SB',  label: 'SB (Sawback)' },
   { code: 'RB',  label: 'RB (rock pitch)' },
   { code: 'BRP', label: 'BRP (balance rock pitch)' },
   { code: 'AP',  label: 'All Polish' },
   // Paul 2026-10-16: the base options are saw back, BRP, all sawn. AS = every
   // side sawn — priced like SB over the base PERIMETER instead of the length.
-  { code: 'AS',  label: 'AS (all sawn)' },
+  { code: 'AS',  label: 'All Sawn' },
 ]
 
 // Monument "Type" → shape filter for the type dropdown (form-facing labels).

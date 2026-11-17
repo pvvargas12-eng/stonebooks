@@ -12,6 +12,7 @@ import StonePRPrint from './StonePRPrint'
 import StonePREditor from './StonePREditor'
 import StonePRWorkspace from './StonePRWorkspace'
 import PRAckModal from './PRAckModal'
+import PREmailModal from './PREmailModal'
 
 const fmtDate = (d) => {
   if (!d) return '—'
@@ -39,6 +40,9 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [editId, setEditId] = useState(null)
   // PR-ACK (Paul 2026-09-17): the vendor acknowledgement compare/confirm modal.
   const [ackPr, setAckPr] = useState(null)
+  // PR-EMAIL (Paul 2026-11-17): the vendor email preview. Opens by itself
+  // right after Submit, and from the Email link on any live PR.
+  const [emailPr, setEmailPr] = useState(null)
   const [banner, setBanner] = useState(null)
   const [busyId, setBusyId] = useState(null)
 
@@ -73,7 +77,8 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
     const text = kind === 'stone'
       ? `${pr.po_number || 'PR'} submitted — marked ${r.marked} of ${r.orderCount} order${r.orderCount === 1 ? '' : 's'} as stone ordered.${r.milestoneError ? ` (Note: ${r.milestoneError})` : ''}`
       : `${pr.po_number || 'PR'} submitted to the supplier.`
-    setBanner({ kind: 'ok', text })
+    setBanner({ kind: 'ok', text: `${text} Check the email to the vendor before it goes.` })
+    setEmailPr(pr)
     load()
   }
   const doCancel = async (pr) => {
@@ -119,7 +124,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
       <div className="ipr-head">
         <span className="ipr-sub">
           {kind === 'stone'
-            ? 'Stone purchase requests — print + send to a supplier, then Submit to mark its orders “stone ordered.” Recorded PRs document outside purchases and never touch orders.'
+            ? 'Stone purchase requests — Submit marks its orders “stone ordered” and opens the email to the vendor for you to check before it goes. Recorded PRs document outside purchases and never touch orders.'
             : `${K.noun} purchase requests — print + send to your ${K.label.toLowerCase()} supplier.`}
         </span>
         <span className="ipr-head-btns">
@@ -167,6 +172,9 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
                     </td>
                     <td className="ipr-actions">
                       <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setPrintId(pr.id)}>Print</button>
+                      {!pr.recorded && st !== 'cancelled' && (
+                        <button type="button" className="ipr-link" disabled={busyId === pr.id} title="Preview the email to the vendor, with the sheet attached, before it is sent" onClick={() => setEmailPr(pr)}>Email</button>
+                      )}
                       {!pr.recorded && st !== 'draft' && st !== 'cancelled' && (
                         <button type="button" className="ipr-link" disabled={busyId === pr.id} onClick={() => setAckPr(pr)}>Ack</button>
                       )}
@@ -203,6 +211,11 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
           onSaved={() => { setShowRecord(false); setBanner({ kind: 'ok', text: 'Recorded — the PR is on the books as Ordered and receivable. No order was touched; check Reconcile for differences.' }); load() }} />
       )}
       {printId && <StonePRPrint bulkOrderId={printId} kind={kind} onClose={() => setPrintId(null)} />}
+      {emailPr && (
+        <PREmailModal bulkOrderId={emailPr.id} kind={kind}
+          onClose={() => setEmailPr(null)}
+          onSent={(where) => setBanner({ kind: 'ok', text: `${emailPr.po_number || 'PR'} emailed to ${where}.` })} />
+      )}
       {ackPr && (
         <PRAckModal pr={ackPr}
           onClose={() => setAckPr(null)}

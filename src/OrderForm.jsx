@@ -34,6 +34,8 @@ import BaseSection from './components/BaseSection'
 import { composeGraveLocation } from './lib/monumentCatalog'
 import { getActiveStoneColors } from './lib/salesOptions'
 import DieOverrideField from './components/DieOverrideField'
+import SizeBoxes3 from './components/SizeBoxes3'
+import { dieBoxLabels, dieDimsOf, dieSizePatch } from './lib/typedSize'
 import {
   SHAPES, TOP_SHAPES, GRANITE_COLORS, POLISH_LEVELS,
   LASER_SIZES, BLING_SIZES, VASE_SIZES, PHOTO_TYPES, PHOTO_SIZES, SHAPE_CARVED_DESIGNS,
@@ -46,10 +48,6 @@ import {
 // Shapes that carry a monument top — same set the SalesMode wizard gates on.
 const TOP_SHAPE_TYPES = ['slant', 'double-slant', 'die', 'double-die', 'civic', 'custom']
 
-// Feet-inches 3-dimension label for the die size dropdown (the die standardSizes
-// carry w/d/t; their label string drops the middle one). Matches SalesMode.
-const ofFtIn = (n) => { n = Number(n); return n ? `${Math.floor(n / 12)}-${n % 12}` : '' }
-const ofDims3 = (s) => [ofFtIn(s?.w), ofFtIn(s?.d), ofFtIn(s?.t)].filter(Boolean).join(' × ')
 
 // ── Type config — drives which cards render per job type ────────────────────
 const ORDER_TYPES = {
@@ -899,7 +897,6 @@ export function MonumentCard({ order, update, updatePricing }) {
   const shapeObj = SHAPES.find(s => s.code === order.shape) || null
   const typeCode = MONUMENT_TYPES.find(t => t.shapeCodes.includes(order.shape))?.code || ''
   const typeObj = MONUMENT_TYPES.find(t => t.code === typeCode) || null
-  const isCustomSize = !!order.shape && !order.standardSizeCode
 
   const onType = (code) => {
     const t = MONUMENT_TYPES.find(x => x.code === code)
@@ -934,12 +931,15 @@ export function MonumentCard({ order, update, updatePricing }) {
   const colorHint = order.graniteColor === 'custom'
     ? 'Custom color — set the % upcharge below.'
     : selColor?.premium > 0 ? `${selColor.label}: +${Math.round(selColor.premium * 100)}% premium` : 'Pick from the list or type any color.'
-  const onSize = (code) => {
-    if (code === 'custom' || code === '') { update({ standardSizeCode: null }); return }
-    const std = shapeObj?.standardSizes.find(s => s.code === code)
-    if (!std) return
-    update({ standardSizeCode: code, width: std.w, depth: std.d, thickness: std.t, height: std.t })
-  }
+  // TYPED-SIZE (Paul 2026-11-17): the die size is typed, never picked. A typed
+  // size that is printed on the price sheet keeps its printed price
+  // (dieSizePatch resolves standardSizeCode); any other size is a custom die.
+  const dieDims = dieDimsOf(order)
+  const stdDie = order.standardSizeCode ? shapeObj?.standardSizes?.find(s => s.code === order.standardSizeCode) : null
+  const dieLine = shapeObj ? computeFormLineItems(order).find(it => it.code === 'base-stone') : null
+  const dieNote = !shapeObj || dieDims.some(v => v == null) ? null
+    : stdDie ? `Price sheet size: ${fmtUSD(stdDie.price)}`
+    : `Not a price sheet size, priced as a custom die: ${fmtUSD(dieLine?.amount || 0)}. Check it on the line items.`
 
   // Base — the shared <BaseSection> owns size/custom/fit/height/finish/overrides.
   const bc = order.baseConfig || {}
@@ -984,14 +984,11 @@ export function MonumentCard({ order, update, updatePricing }) {
       )}
 
       {shapeObj && (
-        <Grid cols={2}>
-          <SelectField label="Die size" value={isCustomSize ? 'custom' : order.standardSizeCode} onChange={onSize}
-            options={[
-              ...(shapeObj.standardSizes || []).map(s => ({ value: s.code, label: `${shapeObj.requiresBase ? ofDims3(s) : s.label} — ${fmtUSD(s.price)}` })),
-              { value: 'custom', label: 'Custom size…' },
-            ]}
-            placeholder="Select size…" />
-        </Grid>
+        <div className="of-sub">
+          <span className="of-sub-title">Die size</span>
+          <SizeBoxes3 labels={dieBoxLabels(order.shape)} values={dieDims} note={dieNote}
+            onChange={dims => update(dieSizePatch(order.shape, dims))} />
+        </div>
       )}
 
       {/* Top shape — ported from the wizard (same TOP_SHAPES source, same gated
@@ -1006,19 +1003,13 @@ export function MonumentCard({ order, update, updatePricing }) {
         </Grid>
       )}
 
-      {isCustomSize && shapeObj && (
-        <div className="of-sub">
-          <span className="of-sub-title">Custom die size — face = length × height @ $4.55/sq in</span>
-          <Grid cols={3}>
-            <NumberField label="Length (L)" value={order.width} onChange={v => update({ width: v })} suffix="in" />
-            <NumberField label="Thickness (front-to-back)" value={order.depth} onChange={v => update({ depth: v })} suffix="in" hint="8/10/12 sets the polish-side rate" />
-            <NumberField label="Height (H)" value={order.height} onChange={v => update({ height: v })} suffix="in" />
-          </Grid>
-        </div>
+      {/* "Polish die sides" is gone from new orders (Paul 2026-11-17: the
+          Finish / polish pick already says it). An older order that carries
+          the charge still shows the tick so it can be taken off. */}
+      {order.pricing?.polishDieSides && (
+        <CheckRow checked onChange={v => updatePricing({ polishDieSides: v })}
+          label="Polish die sides" hint="older charge on this order: untick to remove it (Finish / polish covers it now)" />
       )}
-
-      <CheckRow checked={order.pricing?.polishDieSides} onChange={v => updatePricing({ polishDieSides: v })}
-        label="Polish die sides" hint="adds per-foot polish charge by die height" />
 
       {/* Die description override — available for ANY die shape, independent of
           base inclusion (writes baseConfig.dieTextOverride). */}

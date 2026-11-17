@@ -507,7 +507,7 @@ export function buildDieSpec(order) {
 // charges compute separately from baseConfig.finish and are NOT touched here, so no
 // total moves.
 const BASE_TOP_FINISH_LABEL  = { pol: 'POL TOP', frost: 'FROST TOP' }
-const BASE_BACK_FINISH_LABEL = { SB: 'SB', RB: 'RB', BRP: 'BRP', AP: 'ALL POL' }
+const BASE_BACK_FINISH_LABEL = { SB: 'SB', RB: 'RB', BRP: 'BRP', AP: 'ALL POL', AS: 'ALL SAWN' }
 // The wizard's combo sides bundle a TOP + BACK finish into one label ("Polish Top
 // BRP"). Split them so the top finish isn't printed twice and the back reads as a
 // clean code (matches the contract's intended "… · POL TOP, BRP").

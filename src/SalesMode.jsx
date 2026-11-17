@@ -22,7 +22,7 @@ import { supabase } from './lib/supabase'
 // were defined here verbatim before; SalesMode now imports + re-exports them.
 import {
   ftIn, SHAPES, TOP_SHAPES, SIDES_OPTIONS, BASE_SIDES_OPTIONS, POLISH_TO_SIDES_DEFAULT,
-  POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dimsFromWDT, dieSize3, dieTopLabel,
+  POLISH_LEVELS, BASE_SIZES, BASE_HEIGHTS, GRANITE_COLORS, dieSize3, dieTopLabel,
   buildDieSpec, buildBaseSpec, displayGraniteColor, displayColorLabel, effectiveColorPremium,
   nearestFittingBaseSize, composeGraveLocation,
 } from './lib/monumentCatalog'
@@ -31,6 +31,8 @@ import {
 // saved-order lookups (see lib/salesOptions.js).
 import { getActiveStoneColors, colorSwatchUrl } from './lib/salesOptions'
 import BaseSection from './components/BaseSection'
+import SizeBoxes3 from './components/SizeBoxes3'
+import { dieBoxLabels, dieDimsOf, dieSizePatch } from './lib/typedSize'
 import DieOverrideField from './components/DieOverrideField'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
 // Single boundary call between the sales wizard and the operational layer.
@@ -3322,7 +3324,7 @@ export function ShapeStep({ order, update }) {
     update({
       shape: code,
       standardSizeCode: null,
-      width: null, depth: null, thickness: null,
+      width: null, depth: null, thickness: null, height: null,
       // Auto-include base when shape requires it (dies always need a base)
       baseConfig: {
         ...order.baseConfig,
@@ -3333,22 +3335,11 @@ export function ShapeStep({ order, update }) {
     })
   }
 
-  // ---- Pick a standard size --------------------------------------------------
-  const pickStandardSize = (sizeCode) => {
-    if (sizeCode === 'custom') {
-      // Switch to custom — keep current dims but unset the standardSizeCode
-      update({ standardSizeCode: null })
-      return
-    }
-    const sz = shape.standardSizes.find(s => s.code === sizeCode)
-    if (!sz) return
-    update({
-      standardSizeCode: sizeCode,
-      width: sz.w, depth: sz.d, thickness: sz.t,
-    })
-  }
-
-  const isCustomSize = !order.standardSizeCode && !!order.shape
+  // ---- Size: typed, never picked (TYPED-SIZE, Paul 2026-11-17) -------------------
+  // A typed size that is printed on the price sheet resolves to that printed
+  // size (same price as the old size cards); any other size is a custom die.
+  const dieDims = dieDimsOf(order)
+  const stdDie = shape && order.standardSizeCode ? shape.standardSizes.find(s => s.code === order.standardSizeCode) : null
 
   // ---- Update base config -----------------------------------------------------
   const updateBase = (patch) => update({ baseConfig: { ...order.baseConfig, ...patch } })
@@ -3359,8 +3350,8 @@ export function ShapeStep({ order, update }) {
         <div className="sm-step-eyebrow">Step · Stone shape & size</div>
         <h1 className="sm-step-title">Shape &amp; Size</h1>
         <p className="sm-step-lede">
-          Pick the shape category, then a standard size or "Custom." Sizes shown
-          in feet-inches notation (2-0 means 2 feet 0 inches = 24″).
+          Pick the shape category, then type the size. Each box takes
+          feet-inches (2-0 means 2 feet 0 inches) or plain inches (24).
         </p>
       </div>
 
@@ -3380,70 +3371,12 @@ export function ShapeStep({ order, update }) {
         </div>
       </Section>
 
-      {/* ---- 2. STANDARD SIZE ----------------------------------------------- */}
-      {shape && shape.standardSizes.length > 0 && (
-        <Section title="Standard size" eyebrow={`${shape.label} sizes from the pricing sheet`}>
-          <div className="sm-size-grid">
-            {shape.standardSizes.map(sz => (
-              <button
-                key={sz.code}
-                type="button"
-                className={`sm-size-card ${order.standardSizeCode === sz.code ? 'on' : ''}`}
-                onClick={() => pickStandardSize(sz.code)}
-              >
-                <div className="sm-size-label">{shape.requiresBase ? dimsFromWDT(sz) : sz.label}</div>
-                <div className="sm-size-meta">{sz.w}″ × {sz.d}″ × {sz.t}″</div>
-              </button>
-            ))}
-            <button
-              type="button"
-              className={`sm-size-card sm-size-card-custom ${isCustomSize ? 'on' : ''}`}
-              onClick={() => pickStandardSize('custom')}
-            >
-              <div className="sm-size-label">Custom…</div>
-              <div className="sm-size-meta">Enter any size</div>
-            </button>
-          </div>
-
-          {isCustomSize && (
-            <div className="sm-grid-3" style={{ marginTop: 16 }}>
-              <Field label="Width (inches)">
-                <TextInput type="number" value={order.width ?? ''}
-                  onChange={v => update({ width: v === '' ? null : Number(v) })}
-                  placeholder="e.g. 36" />
-              </Field>
-              <Field label="Depth (front-to-back)">
-                <TextInput type="number" value={order.depth ?? ''}
-                  onChange={v => update({ depth: v === '' ? null : Number(v) })}
-                  placeholder="e.g. 12" />
-              </Field>
-              <Field label={shape.code === 'die' || shape.code === 'double-die' ? 'Height (inches)' : 'Thickness (inches)'}>
-                <TextInput type="number" value={order.thickness ?? ''}
-                  onChange={v => update({ thickness: v === '' ? null : Number(v) })}
-                  placeholder="e.g. 28" />
-              </Field>
-            </div>
-          )}
-        </Section>
-      )}
-
-      {/* For Mausoleum/Civic and Custom: dimensions are always entered freely */}
-      {shape && shape.standardSizes.length === 0 && (
-        <Section title="Dimensions" eyebrow="Custom — enter the size">
-          <div className="sm-grid-3">
-            <Field label="Width (inches)">
-              <TextInput type="number" value={order.width ?? ''}
-                onChange={v => update({ width: v === '' ? null : Number(v) })} />
-            </Field>
-            <Field label="Depth (inches)">
-              <TextInput type="number" value={order.depth ?? ''}
-                onChange={v => update({ depth: v === '' ? null : Number(v) })} />
-            </Field>
-            <Field label="Height (inches)">
-              <TextInput type="number" value={order.thickness ?? ''}
-                onChange={v => update({ thickness: v === '' ? null : Number(v) })} />
-            </Field>
-          </div>
+      {/* ---- 2. SIZE (typed) -------------------------------------------------- */}
+      {shape && (
+        <Section title="Size" eyebrow={`${shape.label}: type the size`}>
+          <SizeBoxes3 labels={dieBoxLabels(shape.code)} values={dieDims}
+            note={dieDims.some(v => v == null) ? null : (stdDie ? 'A price sheet size.' : 'Not a price sheet size: it prices as a custom stone. Check the price on the pricing step.')}
+            onChange={dims => update(dieSizePatch(shape.code, dims))} />
         </Section>
       )}
 

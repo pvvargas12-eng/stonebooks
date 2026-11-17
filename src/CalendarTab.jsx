@@ -32,6 +32,7 @@ import {
   getActiveStaffUser, todayISO, properName,
 } from './lib/stonebooksData'
 import { getActiveEmployees, loadEmployees } from './lib/employees'
+import { getCalendarHistory } from './lib/calendarHistory'
 
 // ── Pure date math on ISO strings (argful Date only — render-safe) ──────────
 const pad2 = (n) => String(n).padStart(2, '0')
@@ -103,6 +104,8 @@ const LAYERS = [
   { key: 'tasks', label: 'Tasks' },
   { key: 'orders', label: 'Order due' },
   { key: 'rems', label: 'Reminders' },
+  // CAL-DONE (Paul 2026-11-17): past days show what got done and what was sold.
+  { key: 'done', label: 'Work done + sales' },
 ]
 const OFFSETS = [
   { key: 'on', label: 'On the day', days: 0 },
@@ -124,14 +127,15 @@ const FOCUS = [
 ]
 const FOCUS_BY_KEY = new Map(FOCUS.map(f => [f.key, f]))
 
-export default function CalendarTab({ onOpenOrder }) {
+// preloadHistory = smoke mounts only: sample work-done / sales rows, no read.
+export default function CalendarTab({ onOpenOrder, preloadHistory = null }) {
   const [today] = useState(() => todayISO())
   const [view, setView] = useState(() => { try { return localStorage.getItem('sb_cal_view') === 'week' ? 'week' : 'month' } catch { return 'month' } })
   const [anchor, setAnchor] = useState(() => todayISO())
   const [scope, setScope] = useState(() => { try { return localStorage.getItem('sb_cal_scope') || 'all' } catch { return 'all' } })
   const [layers, setLayers] = useState(() => {
-    try { const v = JSON.parse(localStorage.getItem('sb_cal_layers') || 'null'); if (v && typeof v === 'object') return { runs: true, tasks: true, orders: true, rems: true, ...v } } catch { /* defaults */ }
-    return { runs: true, tasks: true, orders: true, rems: true }
+    try { const v = JSON.parse(localStorage.getItem('sb_cal_layers') || 'null'); if (v && typeof v === 'object') return { runs: true, tasks: true, orders: true, rems: true, done: true, ...v } } catch { /* defaults */ }
+    return { runs: true, tasks: true, orders: true, rems: true, done: true }
   })
   const me = useMemo(() => getActiveStaffUser() || null, [])
   const [staff, setStaff] = useState([])
@@ -173,6 +177,7 @@ export default function CalendarTab({ onOpenOrder }) {
   const [dues, setDues] = useState([])
   const [rems, setRems] = useState([])
   const [focusMap, setFocusMap] = useState({})
+  const [history, setHistory] = useState({ work: [], sales: [] })   // what happened on past days
   const [loading, setLoading] = useState(true)
   const [nonce, setNonce] = useState(0)
   const reload = () => setNonce(n => n + 1)
@@ -186,17 +191,43 @@ export default function CalendarTab({ onOpenOrder }) {
       listOrderDueDates({ from: range.start, to: range.end }).catch(() => []),
       listCalendarReminders().catch(() => []),
       getDayFocusRange(range.start, range.end).catch(() => ({})),
-    ]).then(([b, t, d, r, f]) => {
+      // Days up to today only: nothing has been done on a day that has not come.
+      preloadHistory ? Promise.resolve(preloadHistory) : range.start <= today
+        ? getCalendarHistory({ from: range.start, to: range.end < today ? range.end : today }).catch(() => ({ work: [], sales: [] }))
+        : Promise.resolve({ work: [], sales: [] }),
+    ]).then(([b, t, d, r, f, h]) => {
       if (!alive) return
       setBatches((b || []).filter(x => x.status !== 'cancelled'))
       setTasks((t || []).filter(x => x.status !== 'done' && x.due_date))
       setDues(d || [])
       setRems(r || [])
       setFocusMap(f || {})
+      setHistory(h || { work: [], sales: [] })
       setLoading(false)
     })
     return () => { alive = false }
-  }, [range.start, range.end, nonce])
+  }, [range.start, range.end, nonce, today, preloadHistory])
+
+  // ── What happened, per day (CAL-DONE) ─────────────────────────────────────
+  // Not on the Personal calendar (that one is my own events and tasks).
+  const doneByDay = useMemo(() => {
+    const m = new Map()
+    if (!layers.done || scope === 'personal') return m
+    const at = (day) => { if (!m.has(day)) m.set(day, { work: [], sales: [] }); return m.get(day) }
+    for (const w of history.work) at(w.day).work.push(w)
+    for (const s of history.sales) at(s.day).sales.push(s)
+    for (const v of m.values()) {
+      v.work.sort((a, b) => a.what.localeCompare(b.what) || a.name.localeCompare(b.name))
+      v.sales.sort((a, b) => a.name.localeCompare(b.name))
+    }
+    return m
+  }, [history, layers.done, scope])
+  // "2 set · 1 carved" — the count per kind of work, in a fixed order.
+  const doneWords = (work) => {
+    const n = (t) => work.filter(w => w.type === t).length
+    const set = n('set') + n('door'), bronze = n('bronze'), carved = n('carved'), blasted = n('blasted')
+    return [set ? `${set} set` : '', bronze ? `${bronze} bronze` : '', carved ? `${carved} carved` : '', blasted ? `${blasted} blasted` : ''].filter(Boolean)
+  }
 
   // ── Scope filters ─────────────────────────────────────────────────────────
   const batchInScope = (b) => {
@@ -351,7 +382,9 @@ export default function CalendarTab({ onOpenOrder }) {
     const isToday = day === today
     const focusKey = showFocusBand ? focusMap[day] : null
     const focus = focusKey ? FOCUS_BY_KEY.get(focusKey) : null
-    const cap = view === 'week' ? 14 : (focus ? 2 : 3)
+    const done = doneByDay.get(day) || null
+    const words = done ? doneWords(done.work) : []
+    const cap = view === 'week' ? 14 : Math.max(1, (focus ? 2 : 3) - (done ? 1 : 0))
     const shown = chips.slice(0, cap)
     const more = chips.length - shown.length
     const cellStyle = focus ? { background: hexTint(focus.color, inMonth ? 0.15 : 0.07) } : undefined
@@ -375,6 +408,18 @@ export default function CalendarTab({ onOpenOrder }) {
             onClick={e => { e.stopPropagation(); setFocusPanel({ day, focusKey }) }}>
             {focus.label.toUpperCase()}
           </button>
+        )}
+        {done && (
+          <div className="cal2-done" title={`${[...done.work.map(w => `${w.what}: ${w.name}`), ...done.sales.map(s => `Sale: ${s.name}`)].join('\n')}`}>
+            {words.map(wd => <span key={wd} className="cal2-done-work">{wd}</span>)}
+            {done.sales.length > 0 && <span className="cal2-done-sales">{done.sales.length} sale{done.sales.length === 1 ? '' : 's'}</span>}
+          </div>
+        )}
+        {done && view === 'week' && (
+          <div className="cal2-donelist">
+            {done.work.map((w, i) => <div key={`w${i}`} className="cal2-doneline"><b>{w.what}</b> {w.name}</div>)}
+            {done.sales.map((s, i) => <div key={`s${i}`} className="cal2-doneline cal2-doneline-sale"><b>Sale</b> {s.name}</div>)}
+          </div>
         )}
         <div className="cal2-chips">
           {shown.map((c, i) => {
@@ -475,6 +520,8 @@ export default function CalendarTab({ onOpenOrder }) {
         {showFocusBand && FOCUS.map(f => (
           <span key={f.key} className="cal2-key-chip"><i style={{ background: f.color }} />{f.label} day</span>
         ))}
+        <span className="cal2-key-chip"><i style={{ background: '#E4F2E9', border: '1px solid #1D7A55' }} />Work done</span>
+        <span className="cal2-key-chip"><i style={{ background: '#F7ECD4', border: '1px solid #9A7209' }} />Sales signed</span>
         <span className="cal2-key-chip"><span className="cal2-chip-rpt" style={{ color: '#6b6256', fontSize: 13 }}>&#10227;</span>Repeats</span>
       </div>
 
@@ -540,7 +587,7 @@ export default function CalendarTab({ onOpenOrder }) {
             <div className="cal2-panel-head">
               <div>
                 <div className="cal2-panel-title">{fmtLong(peekDay)}</div>
-                <div className="cal2-panel-sub">{(chipsByDay.get(peekDay) || []).length} item{(chipsByDay.get(peekDay) || []).length === 1 ? '' : 's'}</div>
+                <div className="cal2-panel-sub">{(chipsByDay.get(peekDay) || []).length} on the calendar{doneByDay.get(peekDay) ? ` · ${doneByDay.get(peekDay).work.length} done · ${doneByDay.get(peekDay).sales.length} sold` : ''}</div>
               </div>
               <button type="button" className="cal2-navbtn" onClick={() => setPeekDay(null)}>&#215;</button>
             </div>
@@ -566,7 +613,38 @@ export default function CalendarTab({ onOpenOrder }) {
               </div>
             )}
             <div className="cal2-panel-body">
-              {(chipsByDay.get(peekDay) || []).length === 0 && <div className="cal2-rems-empty">Nothing on this day yet.</div>}
+              {doneByDay.get(peekDay) && (() => {
+                const d = doneByDay.get(peekDay)
+                return (
+                  <div className="cal2-donebox">
+                    <div className="cal2-donebox-head">
+                      What happened this day
+                      <span>{[...doneWords(d.work), d.sales.length ? `${d.sales.length} sale${d.sales.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')}</span>
+                    </div>
+                    {d.work.map((w, i) => (
+                      <div key={`w${i}`} className="cal2-prow">
+                        <span className="cal2-ptag cal2-ptag-done">{w.what}</span>
+                        <div className="cal2-prow-main">
+                          <div className="cal2-prow-title">{w.name}</div>
+                          {w.orderNo && <div className="cal2-prow-sub">{w.orderNo}</div>}
+                        </div>
+                        {w.orderId && onOpenOrder && <button type="button" className="cal2-rem-open" onClick={() => onOpenOrder(w.orderId)}>Open</button>}
+                      </div>
+                    ))}
+                    {d.sales.map((s, i) => (
+                      <div key={`s${i}`} className="cal2-prow">
+                        <span className="cal2-ptag cal2-ptag-sale">Sale signed</span>
+                        <div className="cal2-prow-main">
+                          <div className="cal2-prow-title">{s.name}</div>
+                          {s.orderNo && <div className="cal2-prow-sub">{s.orderNo}</div>}
+                        </div>
+                        {s.orderId && onOpenOrder && <button type="button" className="cal2-rem-open" onClick={() => onOpenOrder(s.orderId)}>Open</button>}
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+              {(chipsByDay.get(peekDay) || []).length === 0 && !doneByDay.get(peekDay) && <div className="cal2-rems-empty">Nothing on this day yet.</div>}
               {(chipsByDay.get(peekDay) || []).map((c, i) => (
                 <div key={`${c.t}-${c.id}-${i}`} className="cal2-prow">
                   <span className={`cal2-ptag cal2-${c.t}`}>{c.t === 'batch' ? c.tag : c.t === 'order' ? 'Order due' : c.t === 'task' ? (c.check ? 'Check job' : 'Task') : 'Reminder'}</span>
@@ -1153,6 +1231,7 @@ const CSS = `
   .cal2-layer-tasks.on .dot { background: #234C8A; }
   .cal2-layer-orders.on .dot { background: #B3261E; }
   .cal2-layer-rems.on .dot { background: #9A7209; }
+  .cal2-layer-done.on .dot { background: #1D7A55; }
   .cal2-duejump { font: inherit; font-size: 12.5px; font-weight: 800; margin-left: auto; padding: 7px 14px; border-radius: 999px; border: 1px solid #B3261E; background: #B3261E; color: #fff; cursor: pointer; animation: cal2pulse 2.2s ease-in-out infinite; }
   @keyframes cal2pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(179,38,30,0.35); } 50% { box-shadow: 0 0 0 7px rgba(179,38,30,0); } }
 
@@ -1193,6 +1272,20 @@ const CSS = `
   .cal2-order { background: #FDECEB; color: #8f1d17; border-left-color: #B3261E; }
   .cal2-chip.cal2-rem { background: #fff; color: #6d5106; border: 1.5px solid #9A7209; border-left-width: 3px; }
   .cal2-more { font-size: 10.5px; font-weight: 700; color: #9a9486; padding: 1px 2px; }
+  .cal2-done { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-bottom: 4px; min-width: 0; }
+  .cal2-done-work, .cal2-done-sales { font-size: 10px; font-weight: 800; border-radius: 5px; padding: 2px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal2-done-work { background: #E4F2E9; color: #17613f; }
+  .cal2-done-sales { background: #F7ECD4; color: #6d5106; }
+  .cal2-donelist { display: flex; flex-direction: column; gap: 2px; margin-bottom: 5px; min-width: 0; }
+  .cal2-doneline { font-size: 10.5px; color: #17613f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal2-doneline b { font-weight: 800; }
+  .cal2-doneline-sale { color: #6d5106; }
+  .cal2-donebox { background: #F6FAF7; border: 1px solid #D5E8DC; border-radius: 12px; padding: 10px 12px 4px; margin-bottom: 10px; }
+  .cal2-donebox-head { font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: #17613f; display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; margin-bottom: 2px; }
+  .cal2-donebox-head span { letter-spacing: 0; text-transform: none; font-size: 12px; font-weight: 700; color: #3a382f; overflow-wrap: anywhere; }
+  .cal2-ptag-done { background: #E4F2E9; color: #17613f; }
+  .cal2-ptag-sale { background: #F7ECD4; color: #6d5106; }
+  .cal2-prow-title, .cal2-prow-sub { overflow-wrap: anywhere; }
 
   .cal2-rems { margin-top: 26px; background: #fff; border: 1px solid #E6E1D4; border-radius: 18px; padding: 18px 20px; box-shadow: 0 10px 34px rgba(15,20,25,0.06); }
   .cal2-rems-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }

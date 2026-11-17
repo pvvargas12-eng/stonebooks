@@ -20,7 +20,6 @@ import {
 } from './lib/stonebooksData'
 import InventoryImportModal from './components/InventoryImportModal'
 import InventorySmartMatches from './components/InventorySmartMatches'
-import ShopPulse from './components/ShopPulse'
 import { takePendingSub } from './lib/deepLink'
 import InventoryProcurement from './components/InventoryProcurement'
 import InventoryReceiving from './components/InventoryReceiving'
@@ -39,7 +38,7 @@ const titleCase = (s) => String(s || '').replace(/\b\w/g, c => c.toUpperCase())
 const statusLabel = (s) => INVENTORY_STATUS_LABEL[s || 'available'] || titleCase(s)
 const cmpText = (a, b) => String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' })
 
-export default function InventoryTab({ onOpenOrder, canReset = false, onNavigate = null }) {
+export default function InventoryTab({ onOpenOrder, canReset = false }) {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState(null)
@@ -60,7 +59,10 @@ export default function InventoryTab({ onOpenOrder, canReset = false, onNavigate
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState(null)
   const [showImport, setShowImport] = useState(false)
-  const [view, setView] = useState(() => takePendingSub('inventory') || 'dashboard')   // 'dashboard' | 'yard' | 'matches' | 'procurement'
+  // The Dashboard left Inventory (Paul 2026-11-17: "irrelevant here, should be in
+  // reports"): it lives at Reports > Daily report. Inventory opens on the Yard; a
+  // saved or linked 'dashboard' view lands there too.
+  const [view, setView] = useState(() => { const v = takePendingSub('inventory'); return v && v !== 'dashboard' ? v : 'yard' })
   const [autoNewPR, setAutoNewPR] = useState(false)
   const setF = (patch) => setForm(f => ({ ...f, ...patch }))
 
@@ -223,11 +225,10 @@ export default function InventoryTab({ onOpenOrder, canReset = false, onNavigate
       <div className="sb-page-head inv-head">
         <div>
           <div className="sb-page-eyebrow">Inventory</div>
-          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'needs' ? 'Needs Ordering' : view === 'position' ? 'Stone Position' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'photos' ? 'Photos & Etching' : view === 'suppliers' ? 'Suppliers' : 'Dashboard'}</h1>
+          <h1 className="sb-page-title">{view === 'matches' ? 'Smart Matches' : view === 'needs' ? 'Needs Ordering' : view === 'position' ? 'Stone Position' : view === 'yard' ? 'Yard' : view === 'procurement' ? 'Procurement' : view === 'receiving' ? 'Receiving' : view === 'photos' ? 'Photos & Etching' : view === 'suppliers' ? 'Suppliers' : 'Yard'}</h1>
         </div>
         <div className="inv-head-actions">
           <div className="inv-seg">
-            <button type="button" className={`inv-seg-btn${view === 'dashboard' ? ' on' : ''}`} onClick={() => setView('dashboard')}>Dashboard</button>
             <button type="button" className={`inv-seg-btn${view === 'yard' ? ' on' : ''}`} onClick={() => setView('yard')}>Yard</button>
             <button type="button" className={`inv-seg-btn${view === 'matches' ? ' on' : ''}`} onClick={() => setView('matches')}>Smart Matches</button>
             <button type="button" className={`inv-seg-btn${view === 'needs' ? ' on' : ''}`} onClick={() => setView('needs')}>Needs Ordering</button>
@@ -260,27 +261,6 @@ export default function InventoryTab({ onOpenOrder, canReset = false, onNavigate
       {resetOpen && (
         <ResetDialog liveCount={rows.length} onClose={() => setResetOpen(false)}
           onDone={() => { setResetOpen(false); setOldRows(null); setOldOpen(false); load() }} />
-      )}
-
-      {view === 'dashboard' && (
-        // SHOP-PULSE (Paul 2026-11-10): the dark "command center" is replaced by
-        // the Dashboard he approved as a mockup. Its rows link out; the yard
-        // shortcuts ride as buttons beside Print.
-        <ShopPulse
-          eyebrow="Inventory · Dashboard"
-          onOpenOrder={onOpenOrder}
-          onGo={(key) => {
-            if (key === 'needs') { setView('needs'); return }
-            const map = { design: ['jobs', 'design'], foundations: ['jobs', 'foundations'], install: ['jobs', 'installation'], production: ['jobs', 'production'], collect: ['payments', 'collect'] }
-            const t = map[key]
-            if (t && onNavigate) onNavigate(t[0], t[1])
-          }}
-          actions={<>
-            <button type="button" className="spl-btn" onClick={() => setView('matches')}>Smart Matches</button>
-            <button type="button" className="spl-btn" onClick={() => { setAutoNewPR(true); setView('procurement') }}>Build PR</button>
-            <button type="button" className="spl-btn" onClick={() => setShowImport(true)}>Import</button>
-          </>}
-        />
       )}
 
       {view === 'procurement' && (

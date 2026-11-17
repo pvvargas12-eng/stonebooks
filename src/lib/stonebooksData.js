@@ -284,7 +284,7 @@ export async function saveEmailSignature({ html, text }) {
 // PDF attachments [{ filename, contentBase64, contentType }] and threading headers.
 // The shop signature is auto-appended to every send (includeSignature=false opts
 // out — e.g. for a re-send that already carries one).
-export async function sendShopEmail({ to, subject, html, text, attachments, orderId, customerId, inReplyTo, references, includeSignature = true } = {}) {
+export async function sendShopEmail({ to, cc, subject, html, text, attachments, orderId, customerId, inReplyTo, references, includeSignature = true } = {}) {
   let finalText = text, finalHtml = html
   if (includeSignature) {
     try {
@@ -301,7 +301,7 @@ export async function sendShopEmail({ to, subject, html, text, attachments, orde
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({
-        to, subject, html: finalHtml, text: finalText, attachments,
+        to, cc: cc || undefined, subject, html: finalHtml, text: finalText, attachments,
         order_id: orderId || null, customer_id: customerId || null,
         in_reply_to: inReplyTo || null, references: references || null,
       }),

@@ -27,15 +27,18 @@ import {
   SHAPES, BASE_SIZES, BASE_HEIGHTS, buildBaseSpec,
   nearestFittingBaseSize, snapHeightToTier,
 } from '../lib/monumentCatalog'
+import { baseDimsOf, baseSizePatch, suggestedBaseFor, baseStdHeight } from '../lib/typedSize'
+import SizeBoxes3 from './SizeBoxes3'
 
 // Mirror of orderRates.BASE_FINISHES — the codes are the source of truth there
 // (the SB/AP per-foot charges read baseConfig.finish in computeFormLineItems).
 // Kept local so this shared component imports only the catalog (no cycle).
 const FINISH_OPTS = [
-  { code: 'SB',  label: 'SB (sawn)' },
+  { code: 'SB',  label: 'SB (Sawback)' },
   { code: 'RB',  label: 'RB (rock pitch)' },
   { code: 'BRP', label: 'BRP (balance rock pitch)' },
   { code: 'AP',  label: 'All Polish' },
+  { code: 'AS',  label: 'All Sawn' },
 ]
 const TOP_OPTS = [{ code: 'pol', label: 'POL TOP' }, { code: 'frost', label: 'FROST TOP' }]
 const fmt$ = n => '$' + (Number(n) || 0).toLocaleString()
@@ -61,12 +64,14 @@ export default function BaseSection({ order, onChange, onPricing = null, dieLine
   const include = bc.include || requires
   const mode = bc.sizeCode === 'custom' ? 'custom' : 'selection'
 
-  // Fitting standard sizes (strictly larger than the die on both dims), nearest first.
-  const fitting = BASE_SIZES
-    .filter(b => (stoneW ? b.w > stoneW : true) && (stoneD ? b.d > stoneD : true))
-    .map(b => ({ ...b, overhang: (b.w - (stoneW || 0)) + (b.d - (stoneD || 0)) }))
-    .sort((a, z) => a.overhang - z.overhang)
-  const sizeOptions = fitting.map((b, i) => ({ value: b.code, label: `${i === 0 ? '★ ' : ''}${b.label} — ${fmt$(b.price)}` }))
+  // TYPED-SIZE (Paul 2026-11-17): the base size is typed in three boxes, like
+  // the die. A typed size printed on the price sheet keeps its printed price
+  // (sizeCode = that size); any other size is a custom base on rule v2.
+  const baseDims = baseDimsOf(bc)
+  const stdBase = bc.sizeCode && bc.sizeCode !== 'custom' ? BASE_SIZES.find(b => b.code === bc.sizeCode) : null
+  const onBaseDims = (next) => { const r = baseSizePatch(next); if (r.custom) setCustom(r.patch); else set(r.patch) }
+  // The smallest printed base larger than the die: one press fills the boxes.
+  const suggest = suggestedBaseFor(stoneW, stoneD)
 
   // Custom fit/price preview (fits the DIE footprint per the locked rule).
   const customFit = mode === 'custom' ? nearestFittingBaseSize(stoneW, stoneD) : null
@@ -81,14 +86,6 @@ export default function BaseSection({ order, onChange, onPricing = null, dieLine
   const v2W = Number(bc.width) || 0, v2D = Number(bc.depth) || 0
   const v2Price = (baseRuleV2 && v2W > 0 && v2D > 0 && v2Tier) ? Math.round((v2W / 12) * (v2D / 12) * v2Tier.upcharge) : null
 
-  const setMode = (m) => {
-    if (m === 'custom') setCustom({ sizeCode: 'custom' })
-    else set({ sizeCode: null, heightCode: null, heightInches: null })   // standard = no separate height upcharge
-  }
-  const setHeight = (v) => {
-    const inches = v === '' ? null : Number(v)
-    setCustom({ heightInches: inches, heightCode: snapHeightToTier(inches) })
-  }
 
   const effDie = (bc.dieTextOverride || '').trim() || dieLineText
 
@@ -111,38 +108,18 @@ export default function BaseSection({ order, onChange, onPricing = null, dieLine
 
       {include && (
         <div className="bsx-body">
-          {/* Mode */}
-          <div className="bsx-seg" role="tablist">
-            <button type="button" className={mode === 'selection' ? 'on' : ''} onClick={() => setMode('selection')}>From selection</button>
-            <button type="button" className={mode === 'custom' ? 'on' : ''} onClick={() => setMode('custom')}>Custom size</button>
-          </div>
-
-          {mode === 'selection' ? (
-            <label className="bsx-field">
-              <span>Base size <em>standard catalog price — height already included</em></span>
-              <select
-                value={bc.sizeCode && bc.sizeCode !== 'custom' ? bc.sizeCode : ''}
-                onChange={e => set({ sizeCode: e.target.value || null, heightCode: null, heightInches: null })}
-              >
-                <option value="">— pick a base size —</option>
-                {sizeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-              {sizeOptions.length === 0 && <span className="bsx-warn">No standard base is larger than the die — use Custom size.</span>}
-            </label>
-          ) : (
+          <div className="bsx-field"><span>Base size <em>type it: length, width, height</em></span></div>
+          <SizeBoxes3 labels={['Length (L)', 'Width (W)', 'Height (H)']} hints={['2-6 or 30', '1-0 or 12', '0-8 or 8']}
+            values={baseDims} onChange={onBaseDims} />
+          {stdBase && (
+            <div className="bsx-note">Price sheet size <strong>{stdBase.label}</strong>: {fmt$(stdBase.price)}, height included.</div>
+          )}
+          {mode === 'custom' && (
             <>
-              <div className="bsx-grid3">
-                <label className="bsx-field"><span>Base width (in)</span>
-                  <input type="number" value={bc.width ?? ''} onChange={e => setCustom({ width: e.target.value === '' ? null : Number(e.target.value) })} /></label>
-                <label className="bsx-field"><span>Base depth (in)</span>
-                  <input type="number" value={bc.depth ?? ''} onChange={e => setCustom({ depth: e.target.value === '' ? null : Number(e.target.value) })} /></label>
-                <label className="bsx-field"><span>Base height (in)</span>
-                  <input type="number" value={bc.heightInches ?? ''} onChange={e => setHeight(e.target.value)} /></label>
-              </div>
               {baseRuleV2 ? (
                 v2Price != null && (
                   <div className="bsx-note">
-                    Priced on its own footprint — {v2W}″ × {v2D}″ = {((v2W / 12) * (v2D / 12)).toFixed(2)} sq ft × {fmt$(v2Tier.upcharge)}/sq ft ({v2Tier.label} rate) = <strong>{fmt$(v2Price)}</strong>.
+                    Not a price sheet size, priced on its own footprint: {v2W}″ × {v2D}″ = {((v2W / 12) * (v2D / 12)).toFixed(2)} sq ft × {fmt$(v2Tier.upcharge)}/sq ft ({v2Tier.label} rate) = <strong>{fmt$(v2Price)}</strong>.
                   </div>
                 )
               ) : customFit && (
@@ -151,13 +128,19 @@ export default function BaseSection({ order, onChange, onPricing = null, dieLine
                   {tier ? ` · height ${bc.heightInches}″ → ${tier}″ tier (+${fmt$(tierUp)})` : ''}.
                 </div>
               )}
-              {lowHeight && <div className="bsx-warn">Height under 6″ — no priced tier applied. Enter 6″ or more.</div>}
-              {!baseRuleV2 && noFit && <div className="bsx-warn">⚠ No standard base fits this die footprint — needs a larger/custom base. Base price left unset; enter it on the line item.</div>}
+              {lowHeight && <div className="bsx-warn">Height under 6″: no priced tier applies. Enter 6″ or more.</div>}
+              {!baseRuleV2 && noFit && <div className="bsx-warn">No standard base fits this die footprint. Base price left unset; enter it on the line item.</div>}
             </>
+          )}
+          {suggest && suggest.code !== bc.sizeCode && (
+            <div className="bsx-suggest">
+              <span>Smallest price sheet base that fits this die: <strong>{suggest.label}</strong>, {fmt$(suggest.price)}</span>
+              <button type="button" onClick={() => onBaseDims([suggest.w, suggest.d, baseStdHeight(suggest)])}>Use it</button>
+            </div>
           )}
 
           <div className="bsx-grid2">
-            <label className="bsx-field"><span>Base finish <em>SB / AP carry a per-foot charge</em></span>
+            <label className="bsx-field"><span>Base finish <em>SB / All Sawn carry a per-foot charge</em></span>
               <select value={bc.finish || ''} onChange={e => set({ finish: e.target.value || null })}>
                 <option value="">— pick finish —</option>
                 {FINISH_OPTS.map(f => <option key={f.code} value={f.code}>{f.label}</option>)}
@@ -212,6 +195,10 @@ const BSX_CSS = `
   .bsx-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
   .bsx-note { font-size: 12.5px; color: #5a5a52; background: #f1efe8; border-radius: 6px; padding: 8px 11px; }
   .bsx-note strong { color: #2a2a2a; }
+  .bsx-suggest { font-size: 12.5px; color: #5a5a52; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; overflow-wrap: anywhere; }
+  .bsx-suggest strong { color: #2a2a2a; }
+  .bsx-suggest button { font: inherit; font-size: 12.5px; font-weight: 600; color: #9A7209; background: none; border: none; padding: 0; cursor: pointer; }
+  .bsx-suggest button:hover { text-decoration: underline; }
   .bsx-warn { font-size: 12.5px; color: #8a4b00; background: #fbf1da; border: 1px solid #ecd9a8; border-radius: 6px; padding: 8px 11px; }
   @media (max-width: 620px) { .bsx-grid2, .bsx-grid3 { grid-template-columns: 1fr; } }
 `

@@ -26,6 +26,8 @@ export default function ConfirmSend({
   // Filenames riding the email (strings or {filename}) — shown in the meta
   // block so the confirm step proves the WHOLE send, attachments included.
   attachments = null,
+  // Copy addresses riding the send (one comma list), shown under To.
+  cc = null,
 }) {
   const frameRef = useRef(null)
   const srcDoc = useMemo(() => {
@@ -61,6 +63,7 @@ export default function ConfirmSend({
         </div>
         <div className="sb-csend-meta">
           <div><span className="sb-csend-label">To</span><b>{to || '—'}</b></div>
+          {cc ? <div><span className="sb-csend-label">CC</span>{cc}</div> : null}
           <div><span className="sb-csend-label">Subject</span>{subject || '—'}</div>
           {Array.isArray(attachments) && attachments.length > 0 && (
             <div>

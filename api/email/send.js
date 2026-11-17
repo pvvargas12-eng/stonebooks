@@ -53,9 +53,11 @@ export default async function handler(req, res) {
 
   let body = req.body
   if (typeof body === 'string') { try { body = JSON.parse(body) } catch { return res.status(400).json({ error: 'invalid_json' }) } }
-  const { to, subject, html, text, attachments, order_id, customer_id, in_reply_to, references } = body || {}
+  const { to, cc, subject, html, text, attachments, order_id, customer_id, in_reply_to, references } = body || {}
   const toList = (Array.isArray(to) ? to : (to ? [to] : [])).map(s => String(s).trim()).filter(Boolean)
   if (!toList.length) return res.status(400).json({ error: 'missing_to' })
+  // CC (PR-EMAIL 2026-11-17): optional copy addresses, an array or one comma list.
+  const ccList = (Array.isArray(cc) ? cc : String(cc || '').split(/[,;]+/)).map(s => String(s).trim()).filter(Boolean)
 
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -109,6 +111,7 @@ export default async function handler(req, res) {
     info = await transporter.sendMail({
       from: GMAIL_ADDRESS,
       to: toList.join(', '),
+      cc: ccList.length ? ccList.join(', ') : undefined,
       subject: subject || '(no subject)',
       text: text || (html ? stripTags(html) : undefined),
       html: html || undefined,
