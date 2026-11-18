@@ -3179,6 +3179,28 @@ export async function getBringUpReady() {
   return { count, readyByTrack, byJob }
 }
 
+// Jobs (of the ids given) whose layout is APPROVED — the same test as
+// getBringUpReady's designOk (proof_approved / bronze_proof_approved done, or
+// the current proof carries approved_at), for pieces already ON the floor.
+// Returns a Set, or null when the read failed (callers then show no blocker
+// rather than a false one).
+export async function getDesignApprovedJobIds(jobIds = []) {
+  const ids = [...new Set((jobIds || []).filter(Boolean))]
+  const ok = new Set()
+  if (!ids.length) return ok
+  const proofs = await getCurrentProofsByJob()
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await supabase.from('job_milestones')
+      .select('job_id, milestone_key, status')
+      .in('job_id', ids.slice(i, i + 150))
+      .in('milestone_key', ['proof_approved', 'bronze_proof_approved'])
+    if (error) { console.warn('[floor] design approved:', error.message); return null }
+    for (const m of (data || [])) if (m.status === 'done') ok.add(m.job_id)
+  }
+  for (const id of ids) if (proofs.get(id)?.approved_at) ok.add(id)
+  return ok
+}
+
 // ── RECORD PAYMENT (append-only) ─────────────────────────────────────────────
 // Append a payment to the order's payments[] JSONB. Money records are
 // APPEND-ONLY here: this never edits or deletes an existing payment (voiding /

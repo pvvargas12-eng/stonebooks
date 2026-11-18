@@ -1,5 +1,13 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Round FLOOR-REMOVE + NO-LAYOUT-BLOCKER (2026-11-18)
+
+Paul (floor card menu screenshot): "I need to be able to remove stones from the production queue, I'm not ready to work on some; also I want to see a blocker if there is a stone on the production queue without an approved layout."
+
+- **Remove from production** (red, first item in the card's dots menu, new-stone pieces on the floor, confirm first): `removeStoneFromProduction(componentId)` in floorLines deletes the stone's `floor_line_items` row AND takes it off the board (`setComponentOnFloor(false)`), every die of the order together. "Return to queue" only took it off the board and left it on the line, so the line strip, the planner and the count still carried it. The stone goes back to the pool that + Add and the Line Planner read; nothing on the order or its milestones is written.
+- **BLOCKER: NO APPROVED LAYOUT** (red line on the card, amber card border like any blocker): `getDesignApprovedJobIds(jobIds)` in stonebooksData = the same test as `getBringUpReady`'s designOk (`proof_approved` / `bronze_proof_approved` done, or the current proof has `approved_at`), read for the pieces ON the floor (every track but doors). A failed read shows no blocker rather than a false one. It is a warning only: it does not stop the Brought to Line button. Same select shape as getBringUpReady, no new columns.
+- Verified on the dev server through a temporary `/smoke-floor` route over sample pieces (removed; `preload.designOk` = smoke mounts only): the blocker on the two unapproved cards and not on the approved ones, the menu item. Lint 0 errors, build green. **Not seen by me: the real remove write and the blocker over live jobs, behind sign-in. Not built: the same two things on the phone floor, and the blocker on the printed floor sheet.**
+
 ## Round APPROVAL-CHASE (2026-11-18)
 
 Paul: "the design process is not great about sending customers the e-link, look at it and see how it can be better and how we can track." Read-only prod counts first: 37 approval links ever, 9 signed through the link vs 318 jobs marked proof approved; 33 current layouts on signed open orders with no link ever made; 16 links opened and never signed (15 expired); 12 links with no email stamp. He picked "approval link only" (the lead follow-up queue was offered and NOT built).

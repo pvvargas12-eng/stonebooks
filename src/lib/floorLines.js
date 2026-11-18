@@ -179,6 +179,20 @@ export async function removeLineItem(itemId) {
   return error ? { ok: false, error: error.message } : { ok: true }
 }
 
+// TAKE A STONE OUT OF PRODUCTION (Paul 2026-11-18: "I need to be able to
+// remove stones from the production queue, I'm not ready to work on some").
+// Off the board AND off its line, so the line's count, the planner and the
+// phone stop showing it. It goes back to the pool the planner adds from.
+// Nothing on the order or its milestones is written.
+export async function removeStoneFromProduction(componentId, { by = null } = {}) {
+  if (!componentId) return { ok: false, error: 'Missing stone' }
+  const { error } = await supabase.from('floor_line_items').delete().eq('component_id', componentId)
+  if (error) return { ok: false, error: error.message }
+  const actor = by || await getCurrentStaffName().catch(() => null)
+  const r = await setComponentOnFloor(componentId, false, { actor, source: 'line' })
+  return r && r.ok === false ? r : { ok: true }
+}
+
 // MOVE A STONE TO THE NEXT LINE (Paul 2026-10-21: "I want to be able to move
 // stones to the next week or the next line, like Rubinstein and Flores — I
 // want them on the next queue"). Finds the stone's line, moves its row to the

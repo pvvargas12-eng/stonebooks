@@ -16,13 +16,13 @@ import {
   advanceComponent, reverseComponent, overrideComponentPhase,
   qcApproveComponent, qcDenyComponent, clearComponentQcIssue,
   setComponentBlocker, setComponentNotes, setComponentOnFloor, permitStatusLabel,
-  getBringUpReady,
+  getBringUpReady, getDesignApprovedJobIds,
   addComponentExtraPhase, moveComponentExtraPhase, removeComponentExtraPhase,
   fmtUSD, getOrderBalancesByIds, getPaidTotalsByCemeteryOrder,
 } from '../lib/stonebooksData'
 import { TRACK_LABEL, phaseLabel, QC_PHASE, trackPhases, boardPhases, advanceVerb, phaseIndex, isOnBoard, doorNameOf, nextPhase, prevPhase } from '../lib/jobComponents'
 import { JOBCC_BASE_CSS } from './jobccBase'
-import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney, moveStoneToNextLine } from '../lib/floorLines'
+import { reconcileFloorLines, activeLines, lineLabel, itemTone, createFloorLine, DEFAULT_LINE_CAPACITY, attachLineMoney, moveStoneToNextLine, removeStoneFromProduction } from '../lib/floorLines'
 import { openPrintSheet, openPrintSheetAsync } from '../lib/weekPrintSheet'
 import { buildFloorPrintHtml, buildLineSheetsHtml, pieceFacts, lineSheetFrom } from '../lib/floorPrintSheet'
 import LinePlanner from './LinePlanner'
@@ -346,18 +346,23 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
   // complete, the on-deck line auto-starts, stray on-floor dies join the
   // active line. The first column IS the running line(s).
   const [lines, setLines] = useState(null)
+  // Jobs on the floor whose layout is approved. null = not known (no blocker
+  // is shown rather than a false one).
+  const [designOk, setDesignOk] = useState(null)
   const [capDismissed, setCapDismissed] = useState('')   // `${lineId}:${count}` Paul waved off
   const [lineBusy, setLineBusy] = useState(false)
 
   const load = useCallback(async () => {
     // `preload` = smoke mounts only: sample pieces, no reads, no line reconcile.
-    if (preload) { setComponents(preload.components || []); setCemPaid(preload.cemPaid || {}); setLines([]); const t0 = new Date(); t0.setHours(0, 0, 0, 0); setTodayMs(t0.getTime()); return }
+    if (preload) { setComponents(preload.components || []); setCemPaid(preload.cemPaid || {}); setLines([]); setDesignOk(preload.designOk || null); const t0 = new Date(); t0.setHours(0, 0, 0, 0); setTodayMs(t0.getTime()); return }
     try {
       const [d, rec] = await Promise.all([
         getProductionComponents(),
         getBringUpReady().catch(() => ({ count: 0, readyByTrack: {}, byJob: new Map() })),
       ])
       setComponents(d || []); setRecs(rec); setErr(null)
+      getDesignApprovedJobIds((d || []).filter(c => c.on_floor && c.track !== 'door').map(c => c.job_id))
+        .then(s => setDesignOk(s)).catch(() => setDesignOk(null))
       const t = new Date(); t.setHours(0, 0, 0, 0); setTodayMs(t.getTime())
       if ((d || []).some(c => c.track === 'door' && c.cemetery_order_id)) getPaidTotalsByCemeteryOrder().then(m => setCemPaid(m || {})).catch(() => {})
       const ls = await reconcileFloorLines({ floorComps: d || [] }).catch(e => { console.warn('[lines] reconcile:', e?.message); return [] })
@@ -658,6 +663,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
                         same step share a card; every verb moves both. */}
                     {groupByOrder(cards).map(g => (
                       <ComponentCard key={g.rep.id} comp={g.rep} pieces={g.pieces} todayMs={todayMs} onChanged={load}
+                        noLayout={!!designOk && g.rep.track !== 'door' && !!g.rep.job_id && !designOk.has(g.rep.job_id)}
                         lineTag={g.pieces.map(p => lineTagById.get(p.id)).filter(Boolean).join(' · ') || null} onPeek={setPeek}
                         onOpenJob={onOpenJob} onOpenOrderDetail={onOpenOrderDetail} />
                     ))}
@@ -777,7 +783,7 @@ function AlsoCard({ comp, phase, onChanged, setErr, onPeek = null }) {
   )
 }
 
-function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail, lineTag = null, onPeek = null, pieces = null }) {
+function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail, lineTag = null, onPeek = null, pieces = null, noLayout = false }) {
   // `pieces` = every die of this order at this step (a double die has two);
   // the card faces the first and every verb runs on all of them.
   const all = (pieces && pieces.length) ? pieces : [comp]
@@ -808,7 +814,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
   const openMode = (m) => { setMode(m); setText(m === 'note' ? (comp.notes || '') : m === 'block' ? (comp.blocker || '') : ''); setMenu(false); setErr(null) }
 
   return (
-    <div className={`pf-card ${held ? 'pf-card-held' : comp.blocker ? 'pf-card-blocked' : ''}`}>
+    <div className={`pf-card ${held ? 'pf-card-held' : (comp.blocker || noLayout) ? 'pf-card-blocked' : ''}`}>
       <div className="pf-card-top">
         {comp.order_id && onPeek
           ? <button type="button" className="pf-card-fam pf-card-fam-btn" title="Preview the order" onClick={() => onPeek(comp.order_id)}>{famOf(comp)}</button>
@@ -830,6 +836,7 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
 
       {held && <div className="pf-card-issue">⚠ HELD — {comp.qc_issue}</div>}
       {comp.blocker && !held && <div className="pf-card-blk">⛔ {comp.blocker}</div>}
+      {noLayout && <div className="pf-card-blk pf-card-nolayout" title="No approved layout on this job: the proof is not marked approved and the customer has not signed the approval link">BLOCKER: NO APPROVED LAYOUT</div>}
       {notPaidInFull(comp) && <div className="pf-card-ctx pf-card-ctx-red">NOT PAID IN FULL</div>}
       {permit && <div className={`pf-card-ctx pf-card-ctx-${permitTone(comp)}`}>🔒 Permit: {permit}</div>}
       {comp.notes && mode !== 'note' && <div className="pf-card-note">📝 {comp.notes}</div>}
@@ -876,6 +883,13 @@ function ComponentCard({ comp, todayMs, onChanged, onOpenJob, onOpenOrderDetail,
 
       {menu && !mode && (
         <div className="pf-menu">
+          {comp.track === 'new_stone' && comp.on_floor && (
+            <button type="button" className="pf-menu-remove"
+              title="Off the board and off its line. It goes back to the pool you add from; nothing on the order changes."
+              onClick={() => { if (window.confirm(`Remove ${famOf(comp)} from production? It comes off the board and off its line. You can add it back later with + Add.`)) run((a, id) => removeStoneFromProduction(id, { by: a })) }}>
+              Remove from production
+            </button>
+          )}
           <button type="button" onClick={() => openMode('override')}>Override phase</button>
           {comp.on_floor && !(comp.track === 'door' && comp.cemetery_order_id) && <button type="button" onClick={() => run((a, id) => setComponentOnFloor(id, false, { actor: a }))}>↩ Return to queue</button>}
           {comp.track === 'new_stone' && lineTag && (
@@ -1123,6 +1137,8 @@ const PF_CSS = `
   .pf-menu { display: flex; flex-direction: column; gap: 2px; margin-top: 7px; border-top: 1px solid #232a35; padding-top: 7px; }
   .pf-menu button { font: inherit; font-size: 11.5px; text-align: left; background: none; border: none; color: #c7cedb; cursor: pointer; padding: 3px 4px; border-radius: 5px; }
   .pf-menu button:hover { background: #1a212b; color: #f4f6fa; }
+  .pf-menu button.pf-menu-remove { color: #f87171; font-weight: 700; }
+  .pf-card-nolayout { color: #f87171; font-weight: 800; letter-spacing: .03em; overflow-wrap: anywhere; }
 
   /* ── LINES-1: the Line Planner button + the line strip ── */
   .pf-printbtn { border-color: #C9A468 !important; color: #C9A468 !important; font-weight: 700; }
