@@ -11,7 +11,13 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { rowToOrder } from '../SalesMode'
-import { getActiveStoneOrders, getInventoryStock, listOpenPRCoverage, getStoneProgressByOrder, reconcileMarkStoneStatus } from '../lib/stonebooksData'
+import {
+  getActiveStoneOrders, getInventoryStock, listOpenPRCoverage, getStoneProgressByOrder, reconcileMarkStoneStatus,
+  rowTotalPaid, setOrderPieceInStock, allocateInventoryItem, getCurrentStaffName, fmtYardTag,
+} from '../lib/stonebooksData'
+import { isOrderRow } from '../lib/leads'
+import { yardStoneSpecLine, yardStoneWhere } from '../lib/yardStone'
+import { listNeedsOrderingDismissals, dismissNeedsOrdering, restoreNeedsOrdering } from '../lib/needsOrdering'
 import { resolveStoneNeeds, matchNeedsToStock } from '../lib/inventoryMatch'
 import { prLineFromNeed } from '../lib/prKinds'
 import StonePRBuilder from './StonePRBuilder'
@@ -83,12 +89,17 @@ function coveredByPR(need, prItems) {
 // reserved for manual wording overrides made later in the PR editor. need_key keeps
 // die + base of the same order as distinct addable lines.
 const lineFromNeed = (n) => ({ family_name: n.family, order_id: n.orderId, color: n.color, size: n.size, top: n.top, sides: n.sides, need_key: n.key, quantity: 1 })
+// Which order piece a line is. Backers and bronze have no piece status on the
+// order, so "in stock" on those is a removal with the reason written down.
+const pieceOf = (need) => (need.kind === 'base' ? 'base' : need.kind === 'stone' && need.itemType !== 'bronze' ? 'die' : null)
+const tagOf = (st) => (st?.yard_tag != null ? `#${fmtYardTag(st.yard_tag)}` : 'no number')
 const sortNeeds = (arr) => arr.slice().sort((a, b) =>
   (b.rush ? 1 : 0) - (a.rush ? 1 : 0) ||
   String(a.neededBy || '9999-99-99').localeCompare(String(b.neededBy || '9999-99-99')) ||
   String(a.family).localeCompare(String(b.family)))
 
-export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
+// preload = smoke mounts only: sample orders / yard / PR lines, no reads.
+export default function InventoryNeedsOrdering({ onOpenOrder, preload = null }) {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [data, setData] = useState(null)
@@ -98,11 +109,21 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
 
   const load = useCallback(async () => {
     try {
-      const [ordRes, stockRes, covRes] = await Promise.all([getActiveStoneOrders(), getInventoryStock(), listOpenPRCoverage()])
+      const [ordRes, stockRes, covRes, disRes] = preload
+        ? [{ ok: true, rows: preload.orders || [] }, { ok: true, rows: preload.stock || [] }, { items: preload.prItems || [] }, { ok: true, rows: preload.dismissals || [] }]
+        : await Promise.all([getActiveStoneOrders(), getInventoryStock(), listOpenPRCoverage(), listNeedsOrderingDismissals()])
       const prItems = covRes.items || []
+      // NEEDS-ORDERING-2 (Paul 2026-11-18: "there's some leads like Suriel, those
+      // should not show up here"). An ORDER is signed + money down (the one
+      // lead rule, lib/leads.isOrderRow); anything else is a lead and nothing
+      // is bought for a lead.
+      const allRows = ordRes.rows || []
+      const realRows = allRows.filter(r => isOrderRow(r, rowTotalPaid(r)))
+      const rawById = new Map(realRows.map(r => [r.id, r]))
+      const dismissed = new Map((disRes.rows || []).map(d => [d.need_key, d]))
       const nowMs = Date.now()
       const orderMeta = {}
-      const orders = (ordRes.rows || []).map(r => {
+      const orders = realRows.map(r => {
         const o = rowToOrder(r, null, null); o.family = familyOf(r)
         // Age of the order — signed date first (created as fallback), the
         // same green/amber/red bands as the production age circles.
@@ -117,20 +138,30 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
       const stock = stockRes.rows || []
       // Orders whose stone is already marked ordered / received / in stock on
       // the ORDER — those needs are OFF this list (Paul's #1 complaint).
-      const progress = await getStoneProgressByOrder(orders.map(o => o.id))
+      const progress = preload ? new Map() : await getStoneProgressByOrder(orders.map(o => o.id))
       const matched = matchNeedsToStock(resolveStoneNeeds(orders), stock)
 
-      const stones = [], bronze = []
-      let coveredYard = 0, coveredAlloc = 0, coveredPR = 0, coveredMarked = 0
+      const stones = [], bronze = [], inYard = [], removed = []
+      let coveredAlloc = 0, coveredPR = 0, coveredMarked = 0
       for (const m of matched) {
         const need = m.need
         const meta = orderMeta[need.orderId] || {}
-        const row = { ...need, neededBy: meta.neededBy, rush: meta.rush, ageDays: meta.ageDays, ageTone: meta.ageTone, near: m.best?.strength === 'near' ? m.best : null }
+        const row = { ...need, neededBy: meta.neededBy, rush: meta.rush, ageDays: meta.ageDays, ageTone: meta.ageTone, near: m.best?.strength === 'near' ? m.best : null, candidates: m.fulfilled ? [] : (m.candidates || []) }
         if (progress.has(need.orderId)) { coveredMarked++; continue }
+        // The PIECE is marked on the order (die or base on its own): the base
+        // of an order can be in stock while its die still needs ordering.
+        const raw = rawById.get(need.orderId)
+        const piece = pieceOf(need)
+        const pieceStatus = piece === 'base' ? raw?.base_stone_status : piece === 'die' ? raw?.die_stone_status : null
+        if (pieceStatus === 'in_stock' || pieceStatus === 'ordered') { coveredMarked++; continue }
         if (m.fulfilled) { coveredAlloc++; continue }
         const po = coveredByPR(need, prItems)
         if (po) { coveredPR++; continue }
-        if (m.best?.strength === 'exact') { coveredYard++; continue }
+        const dis = dismissed.get(need.key)
+        if (dis) { removed.push({ ...row, dismissal: dis }); continue }
+        // An exact yard match is not "needs ordering", but nothing has reserved
+        // that stone yet: it gets its own group with the Allocate button.
+        if (m.best?.strength === 'exact') { inYard.push(row); continue }
         ;(need.itemType === 'bronze' ? bronze : stones).push(row)
       }
 
@@ -161,13 +192,15 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
 
       setData({
         stones: sortNeeds(stones), bronze: sortNeeds(bronze), photos: sortNeeds(photos), etchings: sortNeeds(etchings),
-        covered: { yard: coveredYard, alloc: coveredAlloc, pr: coveredPR, marked: coveredMarked },
-        scanned: orders.length,
+        inYard: sortNeeds(inYard), removed: sortNeeds(removed),
+        covered: { yard: inYard.length, alloc: coveredAlloc, pr: coveredPR, marked: coveredMarked },
+        scanned: orders.length, leadsOff: allRows.length - realRows.length,
+        dismissErr: disRes.ok ? null : disRes.error,
       })
       setErr((!ordRes.ok && !stockRes.ok) ? (ordRes.error || stockRes.error) : null)
     } catch (e) { setErr(String(e?.message || e)); setData(null) }
     setLoading(false)
-  }, [])
+  }, [preload])
   useEffect(() => { load() }, [load])
 
   // Search (Paul 2026-07-28: "i cant even search in needs ordering").
@@ -187,7 +220,59 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
     if (n.has(key)) n.delete(key); else n.add(key)
     return n
   })
-  const selRows = useMemo(() => data ? [...data.stones, ...data.bronze].filter(r => sel.has(r.key)) : [], [data, sel])
+  const selRows = useMemo(() => data ? [...data.inYard, ...data.stones, ...data.bronze].filter(r => sel.has(r.key)) : [], [data, sel])
+
+  // ── One-line actions (NEEDS-ORDERING-2) ────────────────────────────────────
+  const [busyKey, setBusyKey] = useState(null)
+  const [banner, setBanner] = useState(null)
+  const [allocFor, setAllocFor] = useState(null)      // row key showing its yard stones
+  const [showRemoved, setShowRemoved] = useState(false)
+  const what = (r) => (r.kind === 'base' ? 'base' : r.kind === 'backer' ? 'backer' : 'stone')
+
+  // In stock = the piece is here already. Die / base: the order's own piece
+  // status (the Monument card's write, so Sales and the job follow). Backer /
+  // bronze carry no piece status, so the line is removed with the reason kept.
+  const markInStock = async (r) => {
+    const piece = pieceOf(r)
+    if (!window.confirm(`Mark the ${what(r)} for ${r.family} as in stock?\n\n${piece ? `The order's ${piece} status becomes In stock` : 'The line is taken off this list with the reason "in stock"'}. It leaves Needs Ordering.`)) return
+    setBusyKey(r.key); setBanner(null)
+    const res = piece
+      ? await setOrderPieceInStock(r.orderId, piece)
+      : await dismissNeedsOrdering({ needKey: r.key, orderId: r.orderId, kind: r.kind, reason: 'in stock', by: await getCurrentStaffName().catch(() => null) })
+    setBusyKey(null)
+    if (!res?.ok) { setBanner({ kind: 'err', text: `Could not mark it: ${res?.error || 'failed'}` }); return }
+    setBanner({ kind: 'ok', text: `${r.family}: ${what(r)} marked in stock.` })
+    load()
+  }
+  // Allocate = reserve THIS yard stone to the order, and the piece reads In stock.
+  const allocate = async (r, cand) => {
+    if (!window.confirm(`Allocate yard stone ${tagOf(cand.stock)}${yardStoneWhere(cand.stock) ? ` (${yardStoneWhere(cand.stock)})` : ''} to ${r.family}?\n\nThe stone is reserved to the order${pieceOf(r) ? ` and the order's ${pieceOf(r)} reads In stock` : ''}.`)) return
+    setBusyKey(r.key); setBanner(null)
+    const res = await allocateInventoryItem(cand.stock, { orderId: r.orderId, family: r.family })
+    if (!res.ok) { setBusyKey(null); setBanner({ kind: 'err', text: `Could not allocate: ${res.error}` }); return }
+    let warn = ''
+    if (pieceOf(r)) { const p = await setOrderPieceInStock(r.orderId, pieceOf(r)); if (!p?.ok) warn = ` The stone is reserved, but the order's status did not update (${p?.error || 'failed'}).` }
+    setBusyKey(null); setAllocFor(null)
+    setBanner({ kind: warn ? 'err' : 'ok', text: `${tagOf(cand.stock)} is reserved to ${r.family}.${warn}` })
+    load()
+  }
+  const removeRow = async (r) => {
+    setBusyKey(r.key); setBanner(null)
+    const res = await dismissNeedsOrdering({ needKey: r.key, orderId: r.orderId, kind: r.kind, reason: 'removed by hand', by: await getCurrentStaffName().catch(() => null) })
+    setBusyKey(null)
+    if (!res.ok) { setBanner({ kind: 'err', text: `Could not remove it: ${res.error}` }); return }
+    setBanner({ kind: 'ok', text: `${r.family} (${what(r)}) is off the list. It sits under Removed at the bottom; Put back returns it.` })
+    setShowRemoved(true)
+    load()
+  }
+  const putBack = async (r) => {
+    setBusyKey(r.key); setBanner(null)
+    const res = await restoreNeedsOrdering(r.key)
+    setBusyKey(null)
+    if (!res.ok) { setBanner({ kind: 'err', text: `Could not put it back: ${res.error}` }); return }
+    load()
+  }
+  const rowActs = { busyKey, allocFor, onToggleAlloc: (k) => setAllocFor(cur => (cur === k ? null : k)), onAllocatePick: allocate, onInStock: markInStock, onRemove: removeRow }
   const bulkStatus = async (code, label) => {
     if (!selRows.length || bulkBusy) return
     setBulkBusy(true); setBulkErr(null)
@@ -213,6 +298,8 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
   const fBronze = data.bronze.filter(matchQ)
   const fPhotos = data.photos.filter(matchQ)
   const fEtchings = data.etchings.filter(matchQ)
+  const fInYard = data.inYard.filter(matchQ)
+  const fRemoved = data.removed.filter(matchQ)
   return (
     <div className="ino">
       <style>{INO_CSS}</style>
@@ -220,8 +307,8 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
       <div className="ino-summary">
         <span className="ino-sum-big">{mustOrderCount}</span><span className="ino-sum-lab">need ordering</span>
         <span className="ino-sum-sep" />
-        <span className="ino-covered">Covered: {c.marked} marked on the order · {c.pr} on a PR · {c.yard} in yard · {c.alloc} allocated</span>
-        <span className="ino-summary-meta">{data.scanned} active orders</span>
+        <span className="ino-covered">Covered: {c.marked} marked on the order · {c.pr} on a PR · {c.yard} in yard · {c.alloc} allocated{data.removed.length ? ` · ${data.removed.length} removed by hand` : ''}</span>
+        <span className="ino-summary-meta">{data.scanned} active orders{data.leadsOff ? ` · ${data.leadsOff} lead${data.leadsOff === 1 ? '' : 's'} left off` : ''}</span>
       </div>
 
       <div className="ino-toolbar">
@@ -247,6 +334,11 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
         </div>
       )}
       {bulkErr && <div className="ino-bulkerr">{bulkErr}</div>}
+      {banner && <div className={`ino-banner ino-banner-${banner.kind}`}>{banner.text}<button type="button" onClick={() => setBanner(null)}>×</button></div>}
+      {data.dismissErr && <div className="ino-bulkerr">Removed lines are not saved yet ({data.dismissErr}).</div>}
+
+      <Group title="In the yard, not allocated yet" tone="yard" rows={fInYard} onOpenOrder={onOpenOrder}
+        sel={sel} onToggleSel={toggleSel} {...rowActs} />
 
       {mustOrderCount === 0 ? (
         <div className="sb-empty">✓ Nothing needs ordering — every open order’s needs are marked on the order, on a PR, in the yard, or allocated.</div>
@@ -255,12 +347,12 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
           <Group title="Stones" tone="stone" rows={fStones}
             onBuildAll={fStones.length ? () => openBuilder('stone', fStones.map(lineFromNeed)) : null}
             onBuildRow={(r) => openBuilder('stone', [lineFromNeed(r)])}
-            onAllocate={onOpenMatches} onOpenOrder={onOpenOrder}
-            sel={sel} onToggleSel={toggleSel} />
+            onOpenOrder={onOpenOrder}
+            sel={sel} onToggleSel={toggleSel} {...rowActs} />
 
           <Group title="Bronze" tone="bronze" rows={fBronze}
-            buildDisabledLabel="Bronze PR — coming soon" onAllocate={onOpenMatches} onOpenOrder={onOpenOrder}
-            sel={sel} onToggleSel={toggleSel} />
+            buildDisabledLabel="Bronze PR — coming soon" onOpenOrder={onOpenOrder}
+            sel={sel} onToggleSel={toggleSel} {...rowActs} />
 
           <PhotoGroup rows={fPhotos} onOpenOrder={onOpenOrder}
             onBuildAll={fPhotos.length ? () => openBuilder('photo', fPhotos.map(n => prLineFromNeed('photo', n))) : null}
@@ -271,10 +363,36 @@ export default function InventoryNeedsOrdering({ onOpenMatches, onOpenOrder }) {
             onBuildAll={fEtchings.length ? () => openBuilder('etching', fEtchings.map(n => prLineFromNeed('etching', n))) : null}
             onBuildRow={(r) => openBuilder('etching', [prLineFromNeed('etching', r)])} />
 
-          {q.trim() && fStones.length + fBronze.length + fPhotos.length + fEtchings.length === 0 && (
+          {q.trim() && fStones.length + fBronze.length + fPhotos.length + fEtchings.length + fInYard.length + fRemoved.length === 0 && (
             <div className="sb-empty">Nothing matches “{q.trim()}”.</div>
           )}
         </>
+      )}
+
+      {data.removed.length > 0 && (
+        <section className="ino-group">
+          <button type="button" className="ino-removed-head" onClick={() => setShowRemoved(v => !v)}>
+            Removed from this list by hand <span className="ino-group-count">{data.removed.length}</span> <span className="ino-muted">{showRemoved ? 'hide' : 'show'}</span>
+          </button>
+          {showRemoved && (
+            <div className="ino-rows">
+              {fRemoved.map(r => (
+                <div key={r.key} className="ino-row ino-row-removed">
+                  <div className="ino-row-main">
+                    <span className="ino-fam">{r.family}</span>
+                    <RowMeta r={r} />
+                    <span className="ino-spec">{r.spec}</span>
+                    <span className="ino-near">{r.dismissal?.reason || 'removed'}{r.dismissal?.dismissed_by ? ` · ${r.dismissal.dismissed_by}` : ''}{r.dismissal?.created_at ? ` · ${fmtDate(r.dismissal.created_at)}` : ''}</span>
+                  </div>
+                  <div className="ino-row-actions">
+                    <button type="button" className="ino-act" disabled={busyKey === r.key} onClick={() => putBack(r)}>Put back</button>
+                    {onOpenOrder && r.orderId && <button type="button" className="ino-act ino-act-link" onClick={() => onOpenOrder(r.orderId)}>Open order</button>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
 
       {builderLines && (
@@ -299,7 +417,7 @@ function RowMeta({ r }) {
   )
 }
 
-function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOrder, buildDisabledLabel, sel, onToggleSel }) {
+function Group({ title, tone, rows, onBuildAll, onBuildRow, onOpenOrder, buildDisabledLabel, sel, onToggleSel, busyKey = null, allocFor = null, onToggleAlloc, onAllocatePick, onInStock, onRemove }) {
   if (!rows.length) return null
   return (
     <section className="ino-group">
@@ -311,7 +429,8 @@ function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOr
       </div>
       <div className="ino-rows">
         {rows.map(r => (
-          <div key={r.key} className={`ino-row ${r.rush ? 'ino-row-rush' : ''}${sel?.has(r.key) ? ' ino-row-sel' : ''}`}>
+          <div key={r.key} className="ino-rowwrap">
+          <div className={`ino-row ${r.rush ? 'ino-row-rush' : ''}${sel?.has(r.key) ? ' ino-row-sel' : ''}`}>
             <div className="ino-row-main">
               {onToggleSel && (
                 <input type="checkbox" className="ino-check" checked={!!sel?.has(r.key)} onChange={() => onToggleSel(r.key)}
@@ -324,9 +443,29 @@ function Group({ title, tone, rows, onBuildAll, onBuildRow, onAllocate, onOpenOr
             </div>
             <div className="ino-row-actions">
               {onBuildRow && <button type="button" className="ino-act ino-act-go" onClick={() => onBuildRow(r)}>Build PR</button>}
-              {r.near && onAllocate && <button type="button" className="ino-act" onClick={onAllocate}>Allocate from yard</button>}
+              {onAllocatePick && r.candidates?.length > 0 && (
+                <button type="button" className={`ino-act ino-act-yard${allocFor === r.key ? ' on' : ''}`} disabled={busyKey === r.key}
+                  title="Reserve a stone that is in the yard to this order" onClick={() => onToggleAlloc(r.key)}>Allocate ({r.candidates.length})</button>
+              )}
+              {onInStock && <button type="button" className="ino-act" disabled={busyKey === r.key} title="It is here already: mark it in stock, it leaves this list" onClick={() => onInStock(r)}>In stock</button>}
+              {onRemove && <button type="button" className="ino-act ino-act-rm" disabled={busyKey === r.key} title="Take this line off the list (Put back returns it)" onClick={() => onRemove(r)}>Remove</button>}
               {onOpenOrder && r.orderId && <button type="button" className="ino-act ino-act-link" onClick={() => onOpenOrder(r.orderId)}>Open order</button>}
             </div>
+          </div>
+          {allocFor === r.key && r.candidates?.length > 0 && (
+            <div className="ino-yardbox">
+              {r.candidates.slice(0, 8).map(cd => (
+                <div key={cd.stock.id} className="ino-yardline">
+                  <span className={`ino-ytag ino-ytag-${cd.strength}`}>{cd.strength === 'exact' ? 'EXACT' : 'NEAR'}</span>
+                  <span className="ino-ynum">{tagOf(cd.stock)}</span>
+                  <span className="ino-yspec">{yardStoneSpecLine(cd.stock) || '—'}{cd.why?.length ? ` · ${cd.why.join(' · ')}` : ''}</span>
+                  <span className="ino-ywhere">{yardStoneWhere(cd.stock) || 'location not set'}</span>
+                  <button type="button" className="ino-act ino-act-go" disabled={busyKey === r.key} onClick={() => onAllocatePick(r, cd)}>{busyKey === r.key ? 'Working…' : 'Allocate this one'}</button>
+                </div>
+              ))}
+              {r.candidates.length > 8 && <div className="ino-muted">{r.candidates.length - 8} more in the yard: see Smart Matches.</div>}
+            </div>
+          )}
           </div>
         ))}
       </div>
@@ -426,6 +565,7 @@ const INO_CSS = `
 
   .ino-group { margin-bottom: 22px; }
   .ino-group-head { display: flex; align-items: center; gap: 10px; padding: 8px 13px; border-radius: 9px; margin-bottom: 10px; border-left: 4px solid; }
+  .ino-head-yard { background: #e9f3ec; border-left-color: #1f7a3d; }
   .ino-head-stone { background: #f1ede4; border-left-color: #8a7340; }
   .ino-head-bronze { background: #f3ece2; border-left-color: #a6701f; }
   .ino-head-photo { background: #f3eef7; border-left-color: #8a5cc4; }
@@ -449,7 +589,27 @@ const INO_CSS = `
   .ino-near { font-size: 11.5px; color: #c9962a; }
   .ino-warn { font-size: 11.5px; font-weight: 600; color: #b3261e; }
   .ino-ok { font-size: 11.5px; font-weight: 600; color: #1f7a3d; }
-  .ino-row-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .ino-row-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
+  .ino-rowwrap { display: flex; flex-direction: column; min-width: 0; }
+  .ino-row-main > * { min-width: 0; overflow-wrap: anywhere; }
+  .ino-act:disabled { opacity: 0.5; cursor: default; }
+  .ino-act-yard { border-color: #1f7a3d; color: #1f7a3d; }
+  .ino-act-yard.on { background: #1f7a3d; color: #fff; }
+  .ino-act-rm { color: #b3261e; }
+  .ino-row-removed { background: #faf8f3; }
+  .ino-removed-head { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: #f1ede4; border: none; border-left: 4px solid #b3a890; border-radius: 9px; padding: 8px 13px; margin-bottom: 10px; font: inherit; font-size: 14px; font-weight: 700; color: var(--sb-text, #2a2a2a); cursor: pointer; }
+  .ino-banner { display: flex; align-items: center; gap: 10px; border-radius: 9px; padding: 9px 13px; margin-bottom: 14px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .ino-banner button { margin-left: auto; background: none; border: none; font-size: 17px; line-height: 1; color: inherit; opacity: 0.6; cursor: pointer; }
+  .ino-banner-ok { background: #e7f3ea; color: #1f7a3d; }
+  .ino-banner-err { background: #fdeced; color: #b3261e; }
+  .ino-yardbox { margin: -2px 0 2px 26px; border: 1px solid #cfe3d3; border-top: none; background: #f4faf5; border-radius: 0 0 10px 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .ino-yardline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; min-width: 0; }
+  .ino-ytag { font-size: 10px; font-weight: 800; border-radius: 5px; padding: 2px 7px; }
+  .ino-ytag-exact { background: #1f7a3d; color: #fff; }
+  .ino-ytag-near { background: #f3e2b0; color: #7a5a06; }
+  .ino-ynum { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-weight: 700; }
+  .ino-yspec { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; color: #3a382f; }
+  .ino-ywhere { color: #6b6256; overflow-wrap: anywhere; }
   .ino-act { font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 11px; border-radius: 7px; border: 1px solid var(--sb-border, #d8d2c4); background: var(--sb-surface, #fff); color: #6b5d3a; cursor: pointer; white-space: nowrap; }
   .ino-act-go { background: #1f7a3d; border-color: #1f7a3d; color: #fff; }
   .ino-act-go:hover { background: #1a6a35; }

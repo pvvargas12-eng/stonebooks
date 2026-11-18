@@ -32,6 +32,7 @@ import {
 import { getActiveStoneColors, colorSwatchUrl } from './lib/salesOptions'
 import BaseSection from './components/BaseSection'
 import SizeBoxes3 from './components/SizeBoxes3'
+import ConfirmSend from './components/ConfirmSend'
 import { dieBoxLabels, dieDimsOf, dieSizePatch } from './lib/typedSize'
 import DieOverrideField from './components/DieOverrideField'
 // Sprint J1-P1 commit 6 — operational job creation on contract conversion.
@@ -12103,6 +12104,23 @@ export function ReceiptActions({ order, payment, grandTotalOverride, hidePreview
   }
   // REAL send through the shop Gmail (sendShopEmail) with the receipt PDF attached
   // as base64 — not mailto. Surfaces the true send error if the backend isn't ready.
+  // SEND-GATE (2026-11-18, the send-safety rule): Email builds the receipt and
+  // the letter, then ConfirmSend shows the exact email. Nothing goes out before
+  // the gold button there.
+  const [draft, setDraft] = useState(null)
+  const sendDraft = async (edited) => {
+    if (!draft) return
+    setBusy('email'); setErr(null)
+    try {
+      const res = await sendShopEmail({
+        to: draft.to, subject: draft.subject, text: edited?.text || draft.text, html: edited?.html || draft.html,
+        attachments: [{ filename: draft.filename, contentBase64: draft.contentBase64, contentType: 'application/pdf' }],
+        orderId: order.id || null, customerId: order.customer?.id || null,
+      })
+      if (res?.ok) setSent(true)
+      else setErr(res?.error || 'Email send failed.')
+    } catch (e) { setErr(e.message || 'Email failed') } finally { setBusy(null); setDraft(null) }
+  }
   const handleEmail = async () => {
     setBusy('email'); setErr(null); setSent(false)
     try {
@@ -12115,13 +12133,7 @@ export function ReceiptActions({ order, payment, grandTotalOverride, hidePreview
       const subject = `Payment receipt — ${orderNum}`
       const text = `Hi ${firstName},\n\nThank you — we've received your payment, and your receipt for order ${orderNum} is attached for your records.\n\nIt's our privilege to serve your family. Please don't hesitate to reach out with any questions.`
       const html = `<p>Hi ${firstName},</p><p>Thank you — we've received your payment, and your receipt for order ${orderNum} is attached for your records.</p><p>It's our privilege to serve your family. Please don't hesitate to reach out with any questions.</p>`
-      const res = await sendShopEmail({
-        to, subject, text, html,
-        attachments: [{ filename, contentBase64, contentType: 'application/pdf' }],
-        orderId: order.id || null, customerId: order.customer?.id || null,
-      })
-      if (res?.ok) setSent(true)
-      else setErr(res?.error || 'Email send failed.')
+      setDraft({ to, subject, text, html, filename, contentBase64 })
     } catch (e) { setErr(e.message || 'Email failed') } finally { setBusy(null) }
   }
   const closePreview = () => {
@@ -12152,6 +12164,11 @@ export function ReceiptActions({ order, payment, grandTotalOverride, hidePreview
       </div>
       {err && <div className="sm-pdf-err">⚠ {err}</div>}
       {sent && <div className="sm-helper" style={{ color: '#2d7a4f', marginTop: 6 }}>Receipt emailed to {order.customer?.email}.</div>}
+      {draft && (
+        <ConfirmSend open to={draft.to} subject={draft.subject} html={draft.html} text={draft.text}
+          attachments={[draft.filename]} busy={busy === 'email'} confirmLabel="Send receipt"
+          onConfirm={sendDraft} onClose={() => { if (busy !== 'email') setDraft(null) }} />
+      )}
 
       {previewUrl && (
         <div className="sm-pdf-preview-overlay" onClick={closePreview}>
@@ -12735,15 +12752,28 @@ function RemoteSigningSection({ order, locked }) {
     catch { setErr('Copy failed — select the link and copy manually.') }
   }
 
-  // One-click email with the payment terms baked in (Paul, 2026-07-07):
-  // NEW STONE / BRONZE → 50% deposit due; every other job → paid in full.
+  // Email with the payment terms baked in (Paul, 2026-07-07): NEW STONE /
+  // BRONZE → 50% deposit due; every other job → paid in full. SEND-GATE
+  // (2026-11-18): the button builds the letter and ConfirmSend shows it first.
   const [emailBusy, setEmailBusy] = useState(false)
   const [emailMsg, setEmailMsg] = useState(null)
-  const emailSigningLink = async () => {
+  const [linkDraft, setLinkDraft] = useState(null)
+  const sendLinkDraft = async (edited) => {
+    if (!linkDraft) return
+    setEmailBusy(true)
+    const r = await sendShopEmail({
+      to: linkDraft.to, subject: linkDraft.subject, html: edited?.html || linkDraft.html, text: edited?.text || linkDraft.text,
+      orderId: order.id, customerId: order.customer?.id || null,
+    })
+    setEmailBusy(false); setLinkDraft(null)
+    if (r.ok) setEmailMsg(`Sent to ${linkDraft.to}.`)
+    else setErr(r.error || 'Email failed — copy the link and send it yourself.')
+  }
+  const emailSigningLink = () => {
     const to = order.customer?.email
     if (!to) { setErr('No customer email on the order — add one, or copy the link and send it yourself.'); return }
     if (!result?.url) return
-    setEmailBusy(true); setEmailMsg(null); setErr(null)
+    setEmailMsg(null); setErr(null)
     const svc = order.serviceTypes || []
     const depositLine = (svc.includes('NEW_STONE') || svc.includes('BRONZE'))
       ? 'A 50% deposit is due to place your order; the remaining balance is due before carving work begins.'
@@ -12758,14 +12788,10 @@ function RemoteSigningSection({ order, locked }) {
       `<p style="margin:18px 0"><a href="${result.url}" style="background:#1e2d3d;color:#ffffff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700">Review &amp; sign your contract →</a></p>` +
       `<p style="margin:0 0 10px;color:#6b7682;font-size:12.5px">This link expires${expires}.</p>` +
       `<p style="margin:0">Thank you,<br>Shevchenko Monuments · 732-442-1286</p></div>`
-    const r = await sendShopEmail({
+    setLinkDraft({
       to, subject, html,
       text: `Please review and sign your contract: ${result.url}\n\n${depositLine}\n\nThis link expires${expires}.\n\nShevchenko Monuments · 732-442-1286`,
-      orderId: order.id, customerId: order.customer?.id || null,
     })
-    setEmailBusy(false)
-    if (r.ok) setEmailMsg(`Sent to ${to}.`)
-    else setErr(r.error || 'Email failed — copy the link and send it yourself.')
   }
 
   // R5 per-request actions.
@@ -12846,6 +12872,11 @@ function RemoteSigningSection({ order, locked }) {
             </a>
           </div>
           {emailMsg && <div className="sm-helper" style={{ marginTop: 8, color: '#2d7a4f', fontWeight: 600 }}>✓ {emailMsg}</div>}
+          {linkDraft && (
+            <ConfirmSend open to={linkDraft.to} subject={linkDraft.subject} html={linkDraft.html} text={linkDraft.text}
+              busy={emailBusy} confirmLabel="Send signing link"
+              onConfirm={sendLinkDraft} onClose={() => { if (!emailBusy) setLinkDraft(null) }} />
+          )}
           <div className="sm-helper" style={{ marginTop: 8 }}>
             {result.expiresText ? `Link expires ${result.expiresText}.` : 'Link expires in 14 days.'}{' '}
             The email includes the payment terms (50% deposit for new stones &amp; bronze markers; paid in full for other work). Signing marks the order contracted and files the signed copy here.

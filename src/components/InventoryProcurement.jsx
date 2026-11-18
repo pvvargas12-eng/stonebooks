@@ -26,6 +26,11 @@ function statusOf(pr) {
   if (pr.status === 'draft') return 'draft'
   return 'ordered'
 }
+// Days since the vendor got the PR (emailed, else the PR date). A PR with no
+// acknowledgement after ACK_LATE_DAYS reads late.
+const ACK_LATE_DAYS = 3
+const daysSince = (v, nowMs) => { if (!v) return null; const t = new Date(String(v).length <= 10 ? `${v}T12:00:00` : v).getTime(); return Number.isFinite(t) ? Math.max(0, Math.floor((nowMs - t) / 86400000)) : null }
+const shortDate = (v) => { const d = new Date(v); return isNaN(d) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }
 const STATUS_LABEL = { draft: 'Draft', submitted: 'Submitted', ordered: 'Ordered', received: 'Received', cancelled: 'Cancelled' }
 
 export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew }) {
@@ -45,6 +50,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
   const [emailPr, setEmailPr] = useState(null)
   const [banner, setBanner] = useState(null)
   const [busyId, setBusyId] = useState(null)
+  const [nowMs] = useState(() => Date.now())
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -151,6 +157,8 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
             <tbody>
               {prs.map(pr => {
                 const st = statusOf(pr)
+                const waitDays = daysSince(pr.emailed_at || pr.placed_at, nowMs)
+                const ackLate = waitDays != null && waitDays >= ACK_LATE_DAYS
                 return (
                   <tr key={pr.id}>
                     <td className="ipr-mono">{pr.po_number || '—'}</td>
@@ -163,8 +171,15 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
                       {pr.recorded && <span className="ipr-pill ipr-pill-recorded" title="Recorded outside purchase — never writes to orders">REC</span>}
                       {/* PR-ACK: a submitted/ordered PR isn't official until the
                           vendor's acknowledgement is compared + confirmed. */}
+                      {!pr.recorded && pr.emailed_at && (
+                        <span className="ipr-pill ipr-pill-emailed" title={`Emailed ${shortDate(pr.emailed_at)}${pr.emailed_to ? ` to ${pr.emailed_to}` : ''}${pr.emailed_by ? ` by ${pr.emailed_by}` : ''}`}>EMAILED {shortDate(pr.emailed_at).toUpperCase()}</span>
+                      )}
+                      {!pr.recorded && (st === 'submitted' || st === 'ordered') && !pr.emailed_at && (
+                        <button type="button" className="ipr-pill ipr-pill-notsent" title="This PR has not been emailed from Stonebooks. Click to open the email to the vendor." onClick={() => setEmailPr(pr)}>NOT EMAILED</button>
+                      )}
                       {!pr.recorded && (st === 'submitted' || st === 'ordered') && !pr.ack_confirmed_at && (
-                        <button type="button" className="ipr-pill ipr-pill-noack" title="Upload the vendor's order acknowledgement and confirm the data" onClick={() => setAckPr(pr)}>NO ACK</button>
+                        <button type="button" className={`ipr-pill ipr-pill-noack${ackLate ? ' ipr-pill-noack-late' : ''}`}
+                          title={`${ackLate ? `No acknowledgement after ${waitDays} days: call or email the vendor. ` : ''}Upload the vendor's order acknowledgement and confirm the data`} onClick={() => setAckPr(pr)}>NO ACK{ackLate ? ` · ${waitDays} DAYS` : ''}</button>
                       )}
                       {!pr.recorded && pr.ack_confirmed_at && (
                         <button type="button" className="ipr-pill ipr-pill-ack" title={`Acknowledgement confirmed by ${pr.ack_confirmed_by || 'staff'}`} onClick={() => setAckPr(pr)}>ACK ✓</button>
@@ -214,7 +229,7 @@ export default function InventoryProcurement({ autoNew = false, onConsumeAutoNew
       {emailPr && (
         <PREmailModal bulkOrderId={emailPr.id} kind={kind}
           onClose={() => setEmailPr(null)}
-          onSent={(where) => setBanner({ kind: 'ok', text: `${emailPr.po_number || 'PR'} emailed to ${where}.` })} />
+          onSent={(where) => { setBanner({ kind: 'ok', text: `${emailPr.po_number || 'PR'} emailed to ${where}.` }); load() }} />
       )}
       {ackPr && (
         <PRAckModal pr={ackPr}
@@ -255,6 +270,9 @@ const IPR_CSS = `
   .ipr-pill-cancelled { background: #f3e6e5; color: #b3261e; }
   .ipr-pill-recorded { background: #ede8f7; color: #6d49b8; margin-left: 5px; }
   .ipr-pill-noack { background: #fdeced; color: #b3261e; margin-left: 5px; border: none; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+  .ipr-pill-noack-late { background: #b3261e; color: #fff; }
+  .ipr-pill-emailed { background: #e7f3ea; color: #1f7a3d; margin-left: 5px; }
+  .ipr-pill-notsent { background: #fbf1da; color: #8a4b00; margin-left: 5px; border: none; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
   .ipr-pill-noack:hover { background: #b3261e; color: #fff; }
   .ipr-pill-ack { background: #e7f3ea; color: #1f7a3d; margin-left: 5px; border: none; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
   .ipr-pill-ack:hover { background: #1f7a3d; color: #fff; }

@@ -11,7 +11,8 @@
 // sent before that gold button. No order or PR row is written here.
 // =============================================================================
 import { useState, useEffect, useRef } from 'react'
-import { getBulkOrderWithItems, listSuppliers, sendShopEmail } from '../lib/stonebooksData'
+import { getBulkOrderWithItems, listSuppliers, sendShopEmail, updateSupplier, getCurrentStaffName } from '../lib/stonebooksData'
+import { markPREmailed } from '../lib/needsOrdering'
 import { resolveSpecsForPR, prKind } from '../lib/prKinds'
 import { buildPRPdf, orderedRowsOf, structuredOf } from '../lib/prSheet'
 import ConfirmSend from './ConfirmSend'
@@ -57,6 +58,8 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
   const [message, setMessage] = useState('')
   const [gate, setGate] = useState(false)
   const [sent, setSent] = useState(null)
+  const [supplier, setSupplier] = useState(null)       // the supplier row, when the PR has one
+  const [saveAddr, setSaveAddr] = useState(true)       // keep a typed address on the supplier
   const urlRef = useRef(null)
 
   useEffect(() => {
@@ -79,6 +82,7 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
         const supplier = (sup.rows || []).find(s => s.id === o.supplier_id) || (sup.rows || []).find(s => String(s.name || '').toLowerCase() === String(o.supplier_name || '').toLowerCase())
         setState({ order: o, rows, pieces, doc: b.doc, filename: b.filename })
         setUrl(blobUrl)
+        setSupplier(supplier || null)
         setTo(supplier?.email || '')
         setSubject(`Purchase Request ${o.po_number || ''} - Shevchenko Monuments`.replace(/\s+/g, ' ').trim())
         setMessage(defaultMessage(o, rows.length, pieces))
@@ -102,6 +106,8 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
   const toValid = toList.length > 0 && toList.every(a => EMAIL_RE.test(a))
   const ccValid = ccList.every(a => EMAIL_RE.test(a))
   const o = state?.order || {}
+  // The To box differs from what the supplier has on file (or it has none).
+  const addrChanged = !!supplier?.id && toValid && toList.join(', ').toLowerCase() !== String(supplier.email || '').trim().toLowerCase()
 
   // The letter: the typed message, then every line of the sheet in a table so
   // the lines can be checked in the preview without opening the PDF.
@@ -131,7 +137,16 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
       })
       if (!res?.ok) { setErr(res?.error || 'The email did not send.'); setGate(false); return }
       const where = `${toList.join(', ')}${ccList.length ? ` (CC ${ccList.join(', ')})` : ''}`
-      setSent(where); setGate(false); onSent?.(where)
+      // Stamp the PR, and keep a newly typed vendor address for next time.
+      // Both are best-effort: the email is already out.
+      const by = await getCurrentStaffName().catch(() => null)
+      const stamp = await markPREmailed(bulkOrderId, { to: toList.join(', '), by })
+      let note = stamp.ok ? '' : ` The PR could not be stamped as emailed (${stamp.error}).`
+      if (addrChanged && saveAddr && supplier?.id) {
+        const u = await updateSupplier(supplier.id, { email: toList.join(', ') })
+        note += u.ok ? ` Saved as the email for ${supplier.name}.` : ` The address was not saved on the supplier (${u.error}).`
+      }
+      setSent(`${where}.${note}`); setGate(false); onSent?.(where)
     } catch (e) {
       setErr(e?.message || 'The email did not send.'); setGate(false)
     } finally {
@@ -150,6 +165,7 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
             <div className="pre-eyebrow">Email to vendor</div>
             <div className="pre-title"><span className="pre-mono">{o.po_number || 'Purchase request'}</span>{o.supplier_name ? <span className="pre-sup">{o.supplier_name}</span> : null}</div>
             {state && <div className="pre-sub">{state.rows.length} line{state.rows.length === 1 ? '' : 's'} · {state.pieces} piece{state.pieces === 1 ? '' : 's'} · the sheet below is attached as {state.filename}</div>}
+            {o.emailed_at && <div className="pre-sub pre-sub-warn">Already emailed {new Date(o.emailed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}{o.emailed_to ? ` to ${o.emailed_to}` : ''}{o.emailed_by ? ` by ${o.emailed_by}` : ''}. Sending again sends a second copy.</div>}
           </div>
           <button type="button" className="pre-x" onClick={onClose} aria-label="Close">×</button>
         </div>
@@ -157,6 +173,10 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
         <div className="pre-form">
           <label className="pre-row"><span>To</span>
             <input type="text" value={to} onChange={e => setTo(e.target.value)} placeholder="vendor email (set it once under Inventory, Suppliers)" /></label>
+          {addrChanged && (
+            <label className="pre-save"><input type="checkbox" checked={saveAddr} onChange={e => setSaveAddr(e.target.checked)} />
+              <span>{supplier.email ? `Replace the email on file for ${supplier.name} (${supplier.email}) with this one` : `Save this as the email for ${supplier.name}`}</span></label>
+          )}
           <div className="pre-row">
             <label className="pre-cc-tick"><input type="checkbox" checked={ccOn} onChange={e => { setCcOn(e.target.checked); saveCc(e.target.checked, cc) }} /><span>CC</span></label>
             <input type="text" value={cc} disabled={!ccOn} onChange={e => { setCc(e.target.value); saveCc(ccOn, e.target.value) }} placeholder="copy these people, separated by commas" />
@@ -174,7 +194,7 @@ export default function PREmailModal({ bulkOrderId, kind = 'stone', onClose, onS
         </div>
 
         {err && <div className="pre-msg pre-msg-err">{err}</div>}
-        {sent && <div className="pre-msg pre-msg-ok">Sent to {sent}.</div>}
+        {sent && <div className="pre-msg pre-msg-ok">Sent to {sent}</div>}
 
         <div className="pre-body">
           {busy === 'build' && <div className="pre-wait">Building the sheet…</div>}
@@ -212,6 +232,9 @@ const PRE_CSS = `
   .pre-mono{ font-family:var(--font-m,'JetBrains Mono'),monospace; font-size:18px; overflow-wrap:anywhere; }
   .pre-sup{ font-size:15px; font-weight:400; color:var(--sb-text-muted,#73777e); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
   .pre-sub{ font-size:12.5px; color:var(--sb-text-muted,#73777e); margin-top:4px; overflow-wrap:anywhere; }
+  .pre-sub-warn{ color:#8a4b00; font-weight:600; }
+  .pre-save{ display:flex; align-items:center; gap:7px; font-size:12px; color:var(--sb-text-muted,#73777e); margin-left:80px; cursor:pointer; min-width:0; overflow-wrap:anywhere; }
+  .pre-save input{ width:15px; height:15px; accent-color:#9A7209; flex:none; }
   .pre-x{ border:none; background:none; font-size:24px; line-height:1; color:var(--sb-text-muted,#73777e); cursor:pointer; padding:2px 6px; }
   .pre-form{ display:flex; flex-direction:column; gap:8px; padding:12px 20px; border-bottom:.5px solid var(--sb-border,#e4e0d8); }
   .pre-row{ display:flex; align-items:center; gap:10px; min-width:0; }

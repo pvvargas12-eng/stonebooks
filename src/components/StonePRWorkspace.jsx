@@ -25,7 +25,7 @@ import {
 import { addStockMatch, removeStockMatch, attachStockMatchesToPR, listStockMatches } from '../lib/stockMatches'
 import { rowToOrder } from '../SalesMode'
 import { resolveStoneNeeds, matchLineToStock } from '../lib/inventoryMatch'
-import { yardStoneSpecLine, yardStoneWhere } from '../lib/yardStone'
+import { yardStoneSpecLine, yardStoneWhere, parseSizeInput } from '../lib/yardStone'
 import { bookKeyForSupplier, bookName, bookEdition, prBookCost } from '../lib/prCost'
 
 const TYPE_SUGGESTIONS = ['Die', 'Base', 'Backer', 'Grass', 'Hickey', 'Slant', 'Upright', 'Marker', 'Bench', 'Vase', 'Other']
@@ -533,7 +533,9 @@ const ok = window.confirm(`Use yard stone ${tagOf(cand.stock)}${where ? ` (${whe
                         placeholder={r.is_stock ? 'Stock' : 'Family'} onChange={e => setRow(r.id, { family_name: e.target.value })} /></td>
                       <td><input className="sb-input" value={r.color} placeholder="Md Barre" onChange={e => setRow(r.id, { color: e.target.value })} /></td>
                       <td><input className="sb-input" list="prw-types" value={r.item_type} placeholder="Die" onChange={e => setRow(r.id, { item_type: e.target.value })} /></td>
-                      <td><input className="sb-input prw-mono" value={r.size} placeholder="2-0 x 1-0 x 0-8" onChange={e => setRow(r.id, { size: e.target.value })} /></td>
+                      <td><input className={`sb-input prw-mono${r.size.trim() && !parseSizeInput(r.size).ok ? ' prw-badsize' : ''}`} value={r.size} placeholder="2-0 x 1-0 x 0-8"
+                        title={r.size.trim() && !parseSizeInput(r.size).ok ? 'This size does not read (a stray space or letter). Fix it so the line prices and matches the yard: 2-0 x 1-0 x 0-8' : undefined}
+                        onChange={e => setRow(r.id, { size: e.target.value })} /></td>
                       <td><input className="sb-input prw-mono" value={r.specs} placeholder="Pol Top; Saw Back; BRP" onChange={e => setRow(r.id, { specs: e.target.value })} /></td>
                       <td><input className="sb-input prw-qty" type="number" min="1" value={r.quantity} onChange={e => setRow(r.id, { quantity: e.target.value })} /></td>
                       <td className="prw-c-stock">
@@ -753,6 +755,7 @@ const PRW_CSS = `
   .prw-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sb-text-muted, #8a7f6c); padding: 4px 6px; }
   .prw-table td { padding: 4px 6px; vertical-align: middle; }
   .prw-table .sb-input { font-size: 13px; width: 100%; }
+  .prw-table .sb-input.prw-badsize { border-color: #b3261e; background: #fdf3f2; }
   .prw-table-final .sb-input { text-transform: uppercase; }
   .prw-table-final .sb-input::placeholder { text-transform: none; }
   .prw-mono { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 12.5px; }
