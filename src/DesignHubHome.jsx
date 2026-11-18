@@ -31,9 +31,10 @@ import {
   getProofVersionsByOrder, getProofVersions, uploadProofLayout, createProofVersion,
   sendShopEmail, markApprovalLinkEmailed, addShopTask,
   getJobByOrderId, deriveDesignStatus, listCurrentProofRefs,
+  createApprovalLink, getOrderById, rowBalanceDue, logOrderActivity,
 } from './lib/stonebooksData'
 import { DEPARTMENTS } from './lib/employees'
-import { generateEstimatePDF, rowToOrder } from './SalesMode'
+import { generateEstimatePDF, generateApprovalSheetPDF, rowToOrder } from './SalesMode'
 
 // ── small helpers (no Date in render — todayISO comes from an effect) ────────
 const pad = (n) => String(n).padStart(2, '0')
@@ -110,7 +111,8 @@ const svcTag = (o) => {
 }
 const TASK_CAP = 10   // visible manual-task cap; overflow shows "+N more"
 
-export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJob, currentProofOrderIds, onOpenJob, onOpenOrder, onReload }) {
+// preloadLinks = smoke mounts only: sample approval links, no read.
+export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJob, currentProofOrderIds, onOpenJob, onOpenOrder, onReload, preloadLinks = null }) {
   const [todayISO, setTodayISO] = useState('')
   useEffect(() => { setTodayISO(todayStr()) }, [])
   const nowMs = todayISO ? msFrom(todayISO) : null
@@ -182,14 +184,14 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
   const [approvalByOrder, setApprovalByOrder] = useState({})
   useEffect(() => {
     let alive = true
-    listAllApprovalLinks().then(links => {
+    ;(preloadLinks ? Promise.resolve(preloadLinks) : listAllApprovalLinks()).then(links => {
       if (!alive) return
       const m = {}
       for (const l of (links || [])) if (l.order_id && !m[l.order_id]) m[l.order_id] = l
       setApprovalByOrder(m)
     }).catch(() => { /* badges are additive */ })
     return () => { alive = false }
-  }, [])
+  }, [preloadLinks])
   const APPROVAL_LAB = { pending: 'Sent', viewed: 'Viewed by family', signed: 'Approved', changes_requested: 'Changes requested', expired: 'Link expired', revoked: 'Revoked' }
   // Tile-row numbers: latest link per order, bucketed by its display status.
   const approvalCounts = useMemo(() => {
@@ -213,6 +215,9 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     for (const l of Object.values(approvalByOrder)) {
       const s = l.displayStatus || l.status
       if (s !== 'pending' && s !== 'viewed') continue
+      // A link with no email on record was never "sent" — it sits under
+      // Not sent to the customer instead.
+      if (s === 'pending' && !l.emailed_at) continue
       const last = l.viewed_at || l.emailed_at || l.created_at
       const ms = Date.parse(last || '')
       if (Number.isNaN(ms)) continue
@@ -251,9 +256,24 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     const res = await sendShopEmail({ to: to.trim(), subject, text: body, orderId: link.order_id })
     if (!res?.ok) { setFollowup(f => ({ ...f, busy: false, error: res?.error || 'Could not send.' })); return }
     await markApprovalLinkEmailed(link.id, to.trim()).catch(() => {})
+    // The links are read once per mount, so stamp the copy on screen too.
+    const sentAt = new Date().toISOString()
+    setApprovalByOrder(m => (m[link.order_id]?.id === link.id
+      ? { ...m, [link.order_id]: { ...m[link.order_id], emailed_at: sentAt, emailed_to: to.trim() } } : m))
+    const actor = await getCurrentStaffName().catch(() => null)
+    logOrderActivity(link.order_id, {
+      type: 'change', field: 'Approval link', newValue: 'emailed',
+      note: `${followup.kind === 'approval' ? 'Approval link' : 'Approval follow-up'} emailed to ${to.trim()} (from Design Hub)`, actor,
+    }).catch(() => {})
+    // Sending the approval email IS the "layout sent" moment. Never downgrade
+    // an approved / cut job on a re-send.
+    const sentJob = followup.job || layoutRows.find(r => r.order?.id === link.order_id)?.job || null
+    if (followup.kind === 'approval' && sentJob?.id && !['layout_approved', 'cut'].includes(deriveDesignStatus(sentJob))) {
+      await setOrderDesignStatus(sentJob.id, 'layout_sent').catch(() => {})
+    }
     setFollowup(null)
     await onReload?.()
-  }, [followup, onReload])
+  }, [followup, onReload, layoutRows])
   const taskAdminCall = useCallback(async (link, days) => {
     if (taskedLinkIds.has(link.id)) return
     const fam = properName(link.order?.primary_lastname || '') || (link.order?.order_number || 'the family')
@@ -283,26 +303,104 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
   // page"). Re-sends the order's ACTIVE link through the same preview-first
   // composer; the FIRST send needs the approval packet, which only the order
   // page builds — so that path routes there instead of half-working here.
-  const openApprovalEmail = useCallback((order) => {
+  // APPROVAL-CHASE (2026-11-18): the first send used to route to the order
+  // page ("the packet is only built there"), so layouts sat unsent. The hub
+  // now builds the same unsigned packet (generateApprovalSheetPDF over the
+  // current proof version + the live order), mints the link, and opens the
+  // preview. Creating the link emails nobody; the composer's Send does.
+  const [sendBusyId, setSendBusyId] = useState(null)
+  const [sendErr, setSendErr] = useState(null)   // { orderId, msg }
+  const sendForApproval = useCallback(async (order, job) => {
+    if (!order?.id || sendBusyId) return
+    setSendBusyId(order.id); setSendErr(null)
+    const fail = (msg) => setSendErr({ orderId: order.id, msg })
+    try {
+      const [full, jobVers, ordVers] = await Promise.all([
+        getOrderById(order.id),
+        job?.id ? getProofVersions(job.id) : Promise.resolve([]),
+        getProofVersionsByOrder(order.id),
+      ])
+      const versions = [...(jobVers || []), ...(ordVers || [])]
+      const v = versions.find(p => p.is_current) || versions[0]
+      if (!full) { fail('Could not read the order.'); return }
+      if (!v) { fail('No layout on file for this order. Upload one first.'); return }
+      if (v.approved_at) { fail('This layout is already approved.'); return }
+      const fallbackImageUrl = versions.find(p => p.layout_image_url)?.layout_image_url || null
+      const out = await generateApprovalSheetPDF(v, { order: full, balance: rowBalanceDue(full), fallbackImageUrl, returnDoc: true })
+      if (!out?.doc) { fail('The approval packet could not be built.'); return }
+      const pdfBase64 = out.doc.output('datauristring').split(',')[1]
+      const res = await createApprovalLink({ orderId: order.id, proofVersionId: v.id, pdfBase64, sigFieldRects: out.sigRect })
+      if (!res.ok) { fail(res.error || 'Could not create the approval link.'); return }
+      const actor = await getCurrentStaffName().catch(() => null)
+      logOrderActivity(order.id, { type: 'change', field: 'Approval link', newValue: 'created', note: 'Approval link created from the Design Hub — email preview opened (nothing sent yet)', actor }).catch(() => {})
+      const email = full.customer?.email || ''
+      const link = {
+        id: res.linkId, order_id: order.id, share_url: res.url, status: 'pending', displayStatus: 'pending',
+        expires_at: res.expiresAt || null, created_at: new Date().toISOString(), emailed_at: null, viewed_at: null,
+        order: { id: order.id, order_number: full.order_number, primary_lastname: full.primary_lastname, customer: { email } },
+      }
+      setApprovalByOrder(m => ({ ...m, [order.id]: link }))
+      const fam = properName(full.primary_lastname || full.customer?.last_name || '') || 'your family'
+      const num = full.order_number || ''
+      setFollowup({
+        kind: 'approval', link, job: job || null, days: null, status: 'pending', to: email,
+        subject: `The layout for ${fam}'s memorial${num ? ` — ${num}` : ''}`,
+        body: `Hello,\n\nThe layout for ${fam}'s memorial is ready for your review. You can view it, approve it, or ask for changes here:\n\n${res.url}\n\nNothing goes to production until you approve it. If anything in the layout should be different, reply to this email and we'll take care of it.\n\nThank you.`,
+        busy: false, error: null,
+      })
+    } catch (e) {
+      fail(e?.message || 'Could not prepare the approval.')
+    } finally { setSendBusyId(null) }
+  }, [sendBusyId])
+
+  const openApprovalEmail = useCallback((order, job) => {
     const l = order?.id ? approvalByOrder[order.id] : null
     const s = l ? (l.displayStatus || l.status) : null
-    if (!l || !['pending', 'viewed'].includes(s)) {
-      if (window.confirm('Layout saved. Send it for approval now? The first send builds the approval packet from the order page — open the Design card?')) {
-        rememberScroll(); onOpenOrder?.(order.id, 'design')
-      }
-      return
-    }
+    if (!l || !['pending', 'viewed'].includes(s)) { sendForApproval(order, job); return }
     const fam = properName(order?.primary_lastname || '') || 'your family'
     const num = order?.order_number || ''
     const url = l.share_url || ''
     setFollowup({
-      kind: 'approval', link: { ...l, order }, days: null, status: s,
+      kind: 'approval', link: { ...l, order }, job: job || null, days: null, status: s,
       to: order?.customer?.email || l.order?.customer?.email || '',
       subject: `The layout for ${fam}'s memorial${num ? ` — ${num}` : ''}`,
       body: `Hello,\n\nThe layout for ${fam}'s memorial is ready for your review. You can view it, approve it, or ask for changes here:\n\n${url}\n\nNothing goes to production until you approve it. If anything in the layout should be different, reply to this email and we'll take care of it.\n\nThank you.`,
       busy: false, error: null,
     })
-  }, [approvalByOrder, onOpenOrder])
+  }, [approvalByOrder, sendForApproval])
+
+  // APPROVAL TRACKING — the two piles nothing showed before: a layout that is
+  // on file and was never sent (or has a link with no email on record), and a
+  // link that ran out with no answer. Rows = contracted work waiting on the
+  // customer (state need_approval) only.
+  const tracking = useMemo(() => {
+    const notSent = [], expired = []
+    if (nowMs == null) return { notSent, expired }
+    const daysSince = (iso) => { const t = Date.parse(iso || ''); return Number.isNaN(t) ? null : Math.max(0, Math.floor((nowMs + 86400000 - t) / 86400000)) }
+    for (const r of layoutRows) {
+      if (r.state !== 'need_approval' || !r.order?.id) continue
+      const l = approvalByOrder[r.order.id] || null
+      const s = l ? (l.displayStatus || l.status) : null
+      const proof = currentProofsByJob?.get(r.job.id) || null
+      if (!l || s === 'revoked' || s === 'signed' || s === 'changes_requested') {
+        // signed / changes requested with the row still waiting = a newer
+        // layout went up after that answer and has not gone out.
+        notSent.push({ row: r, link: null, days: daysSince(proof?.uploaded_at), why: l ? 'new' : 'never' })
+      } else if (s === 'pending' && !l.emailed_at) {
+        notSent.push({ row: r, link: l, days: daysSince(l.created_at), why: 'noemail' })
+      } else if (s === 'expired') {
+        expired.push({ row: r, link: l, days: daysSince(l.expires_at), opened: !!l.viewed_at })
+      }
+    }
+    const byDays = (a, b) => (b.days ?? -1) - (a.days ?? -1)
+    return { notSent: notSent.sort(byDays), expired: expired.sort(byDays) }
+  }, [layoutRows, approvalByOrder, currentProofsByJob, nowMs])
+  const [trackAll, setTrackAll] = useState(false)
+  const expiresIn = (l) => {
+    if (!l?.expires_at || nowMs == null) return null
+    const d = Math.ceil((Date.parse(l.expires_at) - nowMs) / 86400000)
+    return Number.isNaN(d) ? null : d
+  }
 
   // Revision notes (the customer's words) for revision rows + tasks.
   const [changeNotes, setChangeNotes] = useState({})
@@ -557,7 +655,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
     // The option Paul asked for (2026-08-04): straight from the upload to the
     // approval-email preview. Contracted rows only — estimates have nobody to
     // approve yet. Cancel on the composer declines; nothing sends itself.
-    if (job && order?.id) openApprovalEmail(order)
+    if (job && order?.id) openApprovalEmail(order, job)
   }, [uploadFor, onReload, openApprovalEmail])
   const hasLayout = (orderId) => !!(currentProofOrderIds && currentProofOrderIds.has(orderId))
 
@@ -635,7 +733,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
               order). CLICK a stat to filter the list to those orders. */}
           <div className="sb-dh2-pulse">
             <span className="sb-dh2-pulse-lab">Approvals</span>
-            {[['pending', 'Sent, waiting'], ['viewed', 'Viewed by family'], ['changes_requested', 'Changes requested'], ['signed', 'Approved']].map(([code, lab]) => (
+            {[['pending', 'Sent, waiting'], ['viewed', 'Viewed by family'], ['changes_requested', 'Changes requested'], ['expired', 'Link expired'], ['signed', 'Approved']].map(([code, lab]) => (
               <button key={code} type="button"
                 className={`sb-dh2-pulse-stat sb-dh2-link-${code}${approvalFilter === code ? ' on' : ''}`}
                 onClick={() => togglePulse(code)}
@@ -645,6 +743,63 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
             ))}
             {approvalFilter && <button type="button" className="sb-dh2-pulse-clear" onClick={() => setApprovalFilter(null)}>Clear</button>}
           </div>
+
+          {/* APPROVAL TRACKING — not sent yet + links that ran out */}
+          {(tracking.notSent.length > 0 || tracking.expired.length > 0) && (() => {
+            const CAP = 8
+            const rowOf = (t, kind) => {
+              const o = t.row.order
+              const busy = sendBusyId === o.id
+              const d = t.days
+              const ago = d == null ? '' : d === 0 ? 'today' : `${d} day${d === 1 ? '' : 's'} ago`
+              const what = kind === 'expired'
+                ? `link ran out ${ago}${t.opened ? ' — the family OPENED it and never answered' : ' — never opened'}`
+                : t.why === 'noemail' ? `link made ${ago}, no email on record`
+                : t.why === 'new' ? `a newer layout went up ${ago} and has not been sent`
+                : `layout uploaded ${ago}, never sent`
+              return (
+                <div key={o.id} className="sb-dh2-track-row">
+                  <span className="sb-dh2-track-fam" title={familyOf(o)}>{familyOf(o)}</span>
+                  <span className="sb-dh2-track-num">{o.order_number || ''}</span>
+                  <span className="sb-dh2-track-what">{what}</span>
+                  <button type="button" className="sb-dh2-createbtn" disabled={!!sendBusyId}
+                    title="Builds the approval packet and opens the email preview. Nothing sends before you press Send there."
+                    onClick={() => (t.link && kind !== 'expired' ? openApprovalEmail(o, t.row.job) : sendForApproval(o, t.row.job))}>
+                    {busy ? 'Building…' : kind === 'expired' ? 'Send a fresh link' : t.link ? 'Email the link' : 'Send for approval'}
+                  </button>
+                  <button type="button" className="sb-dh2-jobbtn"
+                    onClick={() => { rememberScroll(); onOpenOrder?.(o.id, 'design') }}>
+                    Open order
+                  </button>
+                  {sendErr?.orderId === o.id && <span className="sb-dh2-track-err">{sendErr.msg}</span>}
+                </div>
+              )
+            }
+            const ns = trackAll ? tracking.notSent : tracking.notSent.slice(0, CAP)
+            const ex = trackAll ? tracking.expired : tracking.expired.slice(0, CAP)
+            const hidden = (tracking.notSent.length - ns.length) + (tracking.expired.length - ex.length)
+            return (
+              <div className="sb-dh2-track">
+                {tracking.notSent.length > 0 && (
+                  <>
+                    <div className="sb-dh2-track-head">Not sent to the customer — {tracking.notSent.length} layout{tracking.notSent.length === 1 ? '' : 's'}</div>
+                    {ns.map(t => rowOf(t, 'notsent'))}
+                  </>
+                )}
+                {tracking.expired.length > 0 && (
+                  <>
+                    <div className="sb-dh2-track-head">Link ran out with no answer — {tracking.expired.length}</div>
+                    {ex.map(t => rowOf(t, 'expired'))}
+                  </>
+                )}
+                {(hidden > 0 || trackAll) && (tracking.notSent.length > CAP || tracking.expired.length > CAP) && (
+                  <button type="button" className="sb-dh2-pulse-clear" style={{ alignSelf: 'flex-start' }} onClick={() => setTrackAll(a => !a)}>
+                    {trackAll ? 'Show fewer' : `Show all (${hidden} more)`}
+                  </button>
+                )}
+              </div>
+            )
+          })()}
 
           {/* REACH OUT — approvals sitting 3+ days in Sent/Viewed with no
               answer. The family is waiting on silence; call them. */}
@@ -660,6 +815,7 @@ export default function DesignHubHome({ jobs = [], orders = [], currentProofsByJ
                     {status === 'viewed'
                       ? `family OPENED it ${days}d ago and hasn't answered`
                       : `sent ${days}d ago, never opened`}
+                    {(() => { const n = expiresIn(link); return n == null ? '' : n <= 0 ? ' · link runs out today' : ` · link runs out in ${n} day${n === 1 ? '' : 's'}` })()}
                   </span>
                   <button type="button" className="sb-dh2-createbtn"
                     title="Preview a nudge email before anything sends"
@@ -1087,6 +1243,14 @@ const CSS = `
   .sb-dh2-stale-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .sb-dh2-stale-fam { font-weight: 700; min-width: 110px; }
   .sb-dh2-stale-what { flex: 1; font-size: 13px; color: #7a2a25; }
+  .sb-dh2-track { background: #fdf6e3; border: 1px solid #e6d6a8; border-left: 4px solid #b8842a; border-radius: 12px; padding: 11px 14px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .sb-dh2-track-head { font-size: 11.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #8b6418; }
+  .sb-dh2-track-head:not(:first-child) { margin-top: 6px; }
+  .sb-dh2-track-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+  .sb-dh2-track-fam { font-weight: 700; width: 150px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-dh2-track-num { font-size: 12px; color: #8a8472; width: 82px; white-space: nowrap; }
+  .sb-dh2-track-what { flex: 1; min-width: 180px; font-size: 13px; color: #6b5320; overflow-wrap: anywhere; }
+  .sb-dh2-track-err { flex-basis: 100%; font-size: 12.5px; color: #b3261e; overflow-wrap: anywhere; }
   .sb-dh2-linkbadge { font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
   .sb-dh2-link-pending { color: #1d6fa8; background: rgba(29,111,168,.12); }
   .sb-dh2-link-viewed { color: #5b3e96; background: rgba(91,62,150,.12); }

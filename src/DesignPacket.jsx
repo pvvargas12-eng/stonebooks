@@ -60,6 +60,7 @@ import {
   getProofSignatureSignedUrl,
   addJobEvent,
   createApprovalLink,
+  markApprovalLinkEmailed,
   sendShopEmail,
   logOrderActivity,
   setOrderDesignStatus,
@@ -1190,7 +1191,7 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
       if (!res.ok) { setEsign({ step: 'err', error: res.error || 'Could not create the approval link.' }); return }
       const fam = order?.primary_lastname || order?.customer?.last_name || 'your'
       setEsign({
-        step: 'email', url: res.url, busy: false, error: null, sent: false,
+        step: 'email', url: res.url, linkId: res.linkId || null, busy: false, error: null, sent: false,
         to: order?.customer?.email || '',
         subject: `Layout approval — ${fam}`,
         body: `Hello,\n\nYour design is ready for your review and approval. Please open the link below, review it, and approve it (or request changes):\n\n${res.url}\n\nThank you,\nShevchenko Monuments\n732-442-1286`,
@@ -1207,6 +1208,7 @@ export default function DesignPacket({ job, onBack, tab = 'design', onChangeTab,
     const r = await sendShopEmail({ to, subject: esign.subject, text: esign.body, orderId: order?.id || null, customerId: order?.customer_id || null })
     if (!r.ok) { setEsign(s => ({ ...s, busy: false, error: r.error || 'Send failed.' })); return }
     setEsign(s => ({ ...s, busy: false, sent: true }))
+    if (esign.linkId) markApprovalLinkEmailed(esign.linkId, to).catch(() => {})
     const who = await getCurrentStaffName()
     if (order?.id) logOrderActivity(order.id, { type: 'change', field: 'Approval link', newValue: 'emailed', note: `Approval link emailed to ${to} (from Design Hub)`, actor: who }).catch(() => {})
     if (job?.id) addJobEvent(job.id, { eventType: 'email_sent', note: `Approval link emailed to ${to}`, createdBy: who }).catch(() => {})

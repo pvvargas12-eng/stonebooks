@@ -1,5 +1,16 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Round APPROVAL-CHASE (2026-11-18)
+
+Paul: "the design process is not great about sending customers the e-link, look at it and see how it can be better and how we can track." Read-only prod counts first: 37 approval links ever, 9 signed through the link vs 318 jobs marked proof approved; 33 current layouts on signed open orders with no link ever made; 16 links opened and never signed (15 expired); 12 links with no email stamp. He picked "approval link only" (the lead follow-up queue was offered and NOT built).
+
+- **What already existed in the Design Hub (`src/DesignHubHome.jsx`):** the Approvals pulse, the red Reach out list (3+ days, Follow-up email with a preview, Task admin to call at 7+ days), and the preview after an upload. The three real gaps were below.
+- **First send from the hub:** `sendForApproval(order, job)` builds the same unsigned packet the order page builds (`generateApprovalSheetPDF` over the current proof version + `getOrderById`), calls `createApprovalLink`, then opens the existing preview-first composer. The upload flow used to stop at a confirm box and route to the order page for the first send; it now goes straight to the preview. Creating the link emails nobody.
+- **Approval tracking panel (amber, above Reach out), rows = state `need_approval` only:** **Not sent to the customer** (no link, or the latest link is revoked / already answered while a newer layout waits → Send for approval; a live link with no `emailed_at` → Email the link) and **Link ran out with no answer** (says whether the family opened it → Send a fresh link). Oldest first, 8 shown then Show all. Errors print under the row.
+- **Smaller:** the pulse gained **Link expired**; Reach out rows say "link runs out in N days" and no longer list a link that has no email on record; a send from the hub stamps the on-screen link, logs an order activity line, and an approval send sets the design status to layout sent (never downgrading approved / cut). **Fix:** the Design Packet's e-sign email never called `markApprovalLinkEmailed`, which is part of why links read "never emailed"; it does now. Links emailed that way before today still read "no email on record".
+- No migration, no select edited. Verified on the dev server through a temporary `/smoke-chase` route over sample rows (removed; `preloadLinks` prop = smoke mounts only): both groups, the expired pulse, the read-error line, the composer from Email the link. Lint 0 errors, build green. **Not seen by me: the real packet build + link creation and a real send, all behind sign-in.**
+- **Not built (offered):** reminder drafts on a schedule, a task before a link expires, text-message sends, and the whole lead follow-up queue (345 open leads, 308 with no follow-up date at the time).
+
 ## Round NEEDS-ORDERING-2 + PR-EMAIL-2 + SEND-GATE (2026-11-18)
 
 Paul (Needs Ordering screenshots): "there's some leads like Suriel, those should not show up here; I want a button here to allocate because a lot of these are in stock like flat grass markers; I want to reconcile it here or remove it from this list" + "ok make those fixes" (the follow-ups offered after the 11-17 round).
