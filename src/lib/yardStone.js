@@ -21,7 +21,7 @@ const BASE_FINISHES = [
 export const YARD_TYPES = [
   { code: 'die', label: 'Die' }, { code: 'base', label: 'Base' }, { code: 'slant', label: 'Slant' },
   { code: 'hickey', label: 'Hickey' }, { code: 'grass', label: 'Grass' }, { code: 'backer', label: 'Backer' },
-  { code: 'other', label: 'Other' },
+  { code: 'vase', label: 'Vase' }, { code: 'other', label: 'Other' },
 ]
 export const yardTypeLabel = (code) => YARD_TYPES.find(t => t.code === String(code || '').toLowerCase())?.label
   || (code ? String(code).replace(/\b\w/g, c => c.toUpperCase()) : '')
@@ -38,6 +38,7 @@ export const YARD_CATEGORIES = [
   { code: 'double_upright', label: 'Double upright', type: 'die' },
   { code: 'base',           label: 'Base',           type: 'base' },
   { code: 'backer',         label: 'Backer',         type: 'backer' },
+  { code: 'vase',           label: 'Vase',           type: 'vase' },
   { code: 'other',          label: 'Other',          type: 'other' },
 ]
 export const categoryToType = (code) => YARD_CATEGORIES.find(c => c.code === code)?.type || 'other'

@@ -1,5 +1,14 @@
 # Stonebooks CRM — Shevchenko Monuments
 
+## Round PLANNER-SEARCH-ALL + VASE (2026-11-19)
+
+Paul (Line Planner screenshot, "samue" → Nothing ready matches): "Samuelson I can't search it; there's others I need to be able to search and add to my list. Also in inventory remove bevel option and allow me to add vases."
+
+- **Why Samuelson (E-26-0851, double die) was missing:** the planner's rail is the READY pool only, and the order's Die status reads **ordered** (the Monument card wins over the done `stone_received` milestone, the 10-21 Kyriakatos rule). Nothing was wrong with the search.
+- **Search reaches past the ready list (`LinePlanner.jsx`):** with words in the box, under the ready matches come **Not ready — you can still add it** (free dies failing a gate; the reason in red: STONE ORDERED, NOT HERE / STONE NOT ORDERED / STONE NOT HERE / NO APPROVED LAYOUT / NOT SIGNED OR NO DEPOSIT; the same → L button) and **Already placed** (ON LINE N / ON THE FLOOR, no button). The empty-box rail, the ready count and Add top N are unchanged (ready only). No select edited.
+- **Inventory:** `bevel` is out of `INVENTORY_ITEM_TYPES` (desktop Add / filter / inline edit / Receive PR; prod had zero bevel rows; the importer still maps the word for old sheets). **Vase** was already a desktop type; it is now also a phone category chip (`YARD_CATEGORIES` / `YARD_TYPES`, type `vase`: size, color, specs, no shape or polish chips).
+- Lint 0 errors, build green. **Not seen by me in the browser: no smoke route this round; the planner rows and the phone Vase chip are behind sign-in. Not built: the same search on the phone's + ADD STONE sheet.**
+
 ## Round FLOOR-REMOVE + NO-LAYOUT-BLOCKER (2026-11-18)
 
 Paul (floor card menu screenshot): "I need to be able to remove stones from the production queue, I'm not ready to work on some; also I want to see a blocker if there is a stone on the production queue without an approved layout."

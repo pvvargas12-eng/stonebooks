@@ -113,14 +113,17 @@ export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = n
   // meeting the bring-up gates (design approved · stone here/in stock ·
   // contracted) — due date first, then oldest signing.
   const phases = boardPhases('new_stone')
-  const pool = comps
-    .filter(c => c.track === 'new_stone' && c.component_type !== 'base' && !c.on_floor && isStoneOrder(c.order)
-      && phases.includes(c.current_phase) && !onLine.has(c.id) && c.job_id && recs.byJob.get(c.job_id)?.ready)
-    .sort((a, b) => {
-      const da = dueOf(a) || '9999-12-31', db = dueOf(b) || '9999-12-31'
-      if (da !== db) return da < db ? -1 : 1
-      return String(a.order?.signed_at || a.order?.created_at || '').localeCompare(String(b.order?.signed_at || b.order?.created_at || ''))
-    })
+  const byDue = (a, b) => {
+    const da = dueOf(a) || '9999-12-31', db = dueOf(b) || '9999-12-31'
+    if (da !== db) return da < db ? -1 : 1
+    return String(a.order?.signed_at || a.order?.created_at || '').localeCompare(String(b.order?.signed_at || b.order?.created_at || ''))
+  }
+  const isReady = (c) => !!recs.byJob.get(c.job_id)?.ready
+  // Every new-stone die of a stone order, then the ones free to add (off the
+  // board, on no line).
+  const stoneDies = comps.filter(c => c.track === 'new_stone' && c.component_type !== 'base' && isStoneOrder(c.order) && c.job_id)
+  const free = stoneDies.filter(c => !c.on_floor && phases.includes(c.current_phase) && !onLine.has(c.id))
+  const pool = free.filter(isReady).sort(byDue)
   const matches = (c) => {
     const t = q.trim().toLowerCase()
     if (!t) return true
@@ -128,6 +131,28 @@ export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = n
   }
   const poolGroups = groupByOrder(pool)
   const poolShown = poolGroups.filter(g => matches(g.lead))
+  // SEARCH REACHES PAST THE READY LIST (Paul 2026-11-19, Samuelson: "I can't
+  // search it, there's others I need to be able to search and add"). With
+  // words in the box, stones that fail a gate show under the ready ones with
+  // the reason in red and the same add button; stones already on a line or
+  // on the floor show where they are (no button).
+  const searching = !!q.trim()
+  const whyNot = (c) => {
+    const r = recs.byJob.get(c.job_id)
+    if (!r) return ['NOT CHECKED']
+    const out = []
+    if (!r.stoneOk) out.push(r.dieStatus === 'ordered' ? 'STONE ORDERED, NOT HERE' : r.dieStatus === 'not_ordered' ? 'STONE NOT ORDERED' : 'STONE NOT HERE')
+    if (!r.designOk) out.push('NO APPROVED LAYOUT')
+    if (!r.contracted) out.push('NOT SIGNED OR NO DEPOSIT')
+    return out
+  }
+  const notReadyShown = searching ? groupByOrder(free.filter(c => !isReady(c)).sort(byDue)).filter(g => matches(g.lead)) : []
+  const whereOf = (c) => {
+    const l = all.find(x => x.items.some(it => it.component_id === c.id))
+    if (l) return `ON ${lineLabel(l).toUpperCase()}${l.status === 'complete' ? ' (CLOSED)' : ''}`
+    return c.on_floor ? 'ON THE FLOOR' : 'PAST THE LINE'
+  }
+  const placedShown = searching ? groupByOrder(stoneDies.filter(c => !free.includes(c))).filter(g => matches(g.lead)) : []
 
   // Fill target = the first unstarted line with room; else the last unstarted
   // line; else nothing (the + New line button is the answer).
@@ -329,7 +354,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = n
                 </button>
               )}
               {!target && <span className="lp-pool-hint">Every line is running — hit + New line to plan the next one.</span>}
-              <input className="pf-input lp-search" type="search" placeholder="Search family, order #, cemetery…" value={q} onChange={e => setQ(e.target.value)} />
+              <input className="pf-input lp-search" type="search" placeholder="Search any stone: family, order #, cemetery…" value={q} onChange={e => setQ(e.target.value)} />
             </div>
             <div className="lp-pool-list">
               {poolShown.slice(0, 80).map(g => {
@@ -346,6 +371,34 @@ export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = n
                 )
               })}
               {poolShown.length === 0 && <div className="lp-empty">{q ? 'Nothing ready matches.' : 'Nothing ready and unassigned — every ready stone is on a line.'}</div>}
+              {notReadyShown.length > 0 && <div className="lp-pool-sub">Not ready — you can still add it</div>}
+              {notReadyShown.slice(0, 40).map(g => {
+                const c = g.lead
+                return (
+                  <div key={g.key} className="lp-row lp-row-nr">
+                    {c.order_id
+                      ? <button type="button" className="lp-row-fam lp-row-btn" title="Preview the order" onClick={() => setPeek(c.order_id)}>{famOf(c)}</button>
+                      : <span className="lp-row-fam">{famOf(c)}</span>}
+                    <span className="lp-row-meta">{[g.comps.length > 1 ? `${g.comps.length} dies` : null, c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
+                    <span className={`lp-due lp-due-${dueTone(dueOf(c), todayMs)}`}>{dueOf(c) ? fmtDate(dueOf(c)) : 'no due date'}</span>
+                    {target && <button type="button" className="pf-btn pf-btn-gold" disabled={busy} onClick={() => addTo(target, g.comps)}>→ L{target.number}</button>}
+                    <span className="lp-why">{whyNot(c).join(' · ')}</span>
+                  </div>
+                )
+              })}
+              {placedShown.length > 0 && <div className="lp-pool-sub">Already placed</div>}
+              {placedShown.slice(0, 20).map(g => {
+                const c = g.lead
+                return (
+                  <div key={g.key} className="lp-row">
+                    {c.order_id
+                      ? <button type="button" className="lp-row-fam lp-row-btn" title="Preview the order" onClick={() => setPeek(c.order_id)}>{famOf(c)}</button>
+                      : <span className="lp-row-fam">{famOf(c)}</span>}
+                    <span className="lp-row-meta">{[c.size, orderNoOf(c), cemOf(c)].filter(Boolean).join(' · ')}</span>
+                    <span className="lp-where">{whereOf(c)}</span>
+                  </div>
+                )
+              })}
             </div>
           </aside>
         </div>
@@ -414,6 +467,10 @@ const LP_CSS = `
   .lp-row-btn { font: inherit; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .lp-row-btn:hover { color: #fbbf24; }
   .lp-row-meta { flex: 1 1 120px; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .lp-pool-sub { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #8b95a5; margin-top: 6px; }
+  .lp-row-nr { flex-wrap: wrap; border-color: #5a2a2a; }
+  .lp-why { flex: 1 1 100%; min-width: 0; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; font-weight: 800; color: #f87171; overflow-wrap: anywhere; }
+  .lp-where { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; font-weight: 800; color: #60a5fa; background: rgba(96,165,250,.14); border-radius: 999px; padding: 2px 7px; white-space: nowrap; flex: 0 0 auto; }
   .lp-due { font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; font-weight: 800; border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
   .lp-due-r { color: #f87171; background: rgba(248,113,113,.16); } .lp-due-a { color: #fbbf24; background: rgba(251,191,36,.14); } .lp-due-g { color: #34d399; background: rgba(52,211,153,.14); } .lp-due-none { color: #6f7a8a; background: #0e1116; }
   .lp-tone { font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; border-radius: 999px; padding: 2px 7px; white-space: nowrap; border: 1px solid transparent; }
