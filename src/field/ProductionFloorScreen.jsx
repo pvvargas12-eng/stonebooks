@@ -26,6 +26,7 @@ import { boardPhases, phaseLabel, phaseIndex, nextPhase, prevPhase, QC_PHASE, TR
 // Assembly lines (LINES-1, Paul 2026-10-08: "I need this updated in
 // stonebooks field to view the lines — active then other ones"). Read-only
 // on the phone: the strip + the L1 #07 tags; building lives on the desktop.
+import DoorOrderLines from './DoorOrderLines'
 import { listFloorLines, lineLabel, itemTone, addStonesToLine, removeLineItem, moveStoneToNextLine, closeFloorLine, createFloorLine } from '../lib/floorLines'
 
 const LINE_TONE = {
@@ -360,6 +361,8 @@ export default function ProductionFloorScreen({ who, undo, onOpenJob, onBack = n
 
           {/* THE LINES — active first, then on deck / planning. Tap a line
               to see every stone on it with where it physically is. */}
+          {!loading && track === 'door' && <DoorOrderLines comps={comps} who={who} undo={undo} onChanged={load} />}
+
           {!loading && track === 'new_stone' && liveLines.length > 0 && (
             <div style={{ margin: '0 2px 14px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>

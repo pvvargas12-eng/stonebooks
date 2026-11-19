@@ -1525,7 +1525,7 @@ export default function OrderDetail({ orderId, onBack, backLabel = 'Orders', onE
       const pieces = [dieS, baseS].filter(Boolean)
       const combined = pieces.reduce((a, b) => (STONE_SIMPLE_RANK[b] < STONE_SIMPLE_RANK[a] ? b : a))
       const cur = stoneToSimple(deriveStoneStatus(job))
-      if (combined !== cur) await setOrderStoneStatus(job.id, combined)
+      if (combined !== cur) await setOrderStoneStatus(job.id, combined, { syncPieces: false })
     }
     await refreshOrder(); await refreshJob?.()
     const staff = await getCurrentStaffName()

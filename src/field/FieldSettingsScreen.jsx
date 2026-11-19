@@ -11,7 +11,7 @@ import { updateEmployee, loadEmployees } from '../lib/employees'
 import { signOut } from '../lib/auth'
 import { clearFieldWho } from './fieldIdentity'
 import { fieldLinkFor } from './fieldLink'
-import { editableTabsFor, resolveTabs, defaultTabsFor, MAX_BAR_TABS } from './fieldTabs'
+import { editableTabsFor, resolveTabs, defaultTabsFor, MAX_BAR_TABS, NO_TODAY, todayHidden } from './fieldTabs'
 
 export default function FieldSettingsScreen({ who, undo, onBack, onOpenPrefs, onSwitchPerson, onTabsSaved }) {
   const [copied, setCopied] = useState(false)
@@ -19,7 +19,8 @@ export default function FieldSettingsScreen({ who, undo, onBack, onOpenPrefs, on
   const [picked, setPicked] = useState(() => resolveTabs(who).filter(k => k !== 'today' && k !== 'more'))
   const [savedNote, setSavedNote] = useState(false)
   const [busy, setBusy] = useState(false)
-  const maxMid = MAX_BAR_TABS - 2
+  const [showToday, setShowToday] = useState(() => !todayHidden(who))
+  const maxMid = MAX_BAR_TABS - (showToday ? 2 : 1)
   const choices = editableTabsFor(who)
   const isDefault = JSON.stringify(resolveTabs(who)) === JSON.stringify(defaultTabsFor(who)) && !who.fieldTabs
 
@@ -33,7 +34,7 @@ export default function FieldSettingsScreen({ who, undo, onBack, onOpenPrefs, on
   const saveTabs = async () => {
     if (busy || picked.length === 0) return
     setBusy(true)
-    const res = await updateEmployee(who.empId, { fieldTabs: picked })
+    const res = await updateEmployee(who.empId, { fieldTabs: showToday ? picked.slice(0, maxMid) : [...picked.slice(0, maxMid), NO_TODAY] })
     if (res?.ok) {
       await loadEmployees().catch(() => {})
       setSavedNote(true)
@@ -99,9 +100,16 @@ export default function FieldSettingsScreen({ who, undo, onBack, onOpenPrefs, on
       </div>
       <div className="fl-row" style={{ cursor: 'default' }}>
         <div style={{ fontSize: 12.5, color: '#8A7F6C', lineHeight: 1.5, marginBottom: 6 }}>
-          Today and More are always there. Pick up to {maxMid} for the middle —
+          More is always there. Turn Today off if you do not use it. Pick up to {maxMid} more —
           everything else stays one tap away in More.{isDefault ? ' You are on your role default.' : ''}
         </div>
+        <button type="button" className="fl-rowline" style={{ minHeight: 50 }}
+          onClick={() => { setSavedNote(false); setShowToday(v => !v) }}>
+          <span style={{ flex: 1, textAlign: 'left', fontSize: 14.5, fontWeight: 800, color: '#16150F' }}>
+            Today<span style={{ fontWeight: 600, color: '#8A7F6C' }}> — the first tab</span>
+          </span>
+          <span className={`fl-toggle${showToday ? ' on' : ''}`} aria-hidden="true"><i /></span>
+        </button>
         {choices.map(t => {
           const on = picked.includes(t.key)
           return (

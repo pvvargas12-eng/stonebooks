@@ -436,6 +436,8 @@ export default function FieldApp() {
   // underneath: owner six, Production/Installation get the FLOOR tab, other
   // crew get Find. Today anchors first, More holds the overflow, always.
   const TAB_DEFS = resolveTabs(who).map(k => [k, TAB_REGISTRY.find(t => t.key === k)?.label || k.toUpperCase()])
+  // Today turned off for this person: the app opens on their first tab.
+  if (tab === 'today' && !TAB_DEFS.some(t => t[0] === 'today')) setTab(TAB_DEFS[0][0])
 
   // One screen per tab key (plain render function — the tabs you have
   // opened stay mounted, the rest are not built until first visit).

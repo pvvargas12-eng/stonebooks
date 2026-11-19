@@ -11,7 +11,7 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   getCemeteryOrders,
   getDistinctCemeteryNames,
-  getPaidTotalsByCemeteryOrder,
+  getPaidTotalsByCemeteryOrder, getDoorProgressByCemeteryOrder,
   getCemeteryPricingForOrder,
   getDoorPrice,
   setCemeteryOrderArchived,
@@ -40,7 +40,7 @@ const PAY_PILL = {
 }
 // Actions sizes to its buttons (Invoice · Pricing · Archive · Delete) so they
 // never run into Updated; Cemetery is the only column that gives.
-const GRID = '108px minmax(140px,1fr) 56px 104px 118px 150px 84px max-content'
+const GRID = '108px minmax(140px,1fr) 128px 104px 118px 150px 84px max-content'
 
 const rowTotal = (o) => {
   if (o.total_amount != null) return Number(o.total_amount)
@@ -52,6 +52,7 @@ const payStateOf = (total, paid) => (total > 0 && paid >= total ? 'paid' : (paid
 export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrder, onOpenJob, staffName, initialSelectedId = null, onConsumeInitialSelected }) {
   const [orders, setOrders] = useState([])
   const [paidTotals, setPaidTotals] = useState({})
+  const [doorProg, setDoorProg] = useState({})   // order id → { total, complete, steps }
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
   const [cemeteryFilter, setCemeteryFilter] = useState('all')
@@ -84,6 +85,8 @@ export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrd
     ]).then(([rows, paid]) => {
       if (cancelled) return
       setOrders(rows); setPaidTotals(paid || {}); setLoading(false)
+      getDoorProgressByCemeteryOrder((rows || []).filter(o => o.status !== 'draft').map(o => o.id))
+        .then(m => { if (!cancelled) setDoorProg(m || {}) }).catch(() => {})
     })
     return () => { cancelled = true }
   }, [statusFilter, cemeteryFilter, selectedId])  // reloads when returning from detail
@@ -188,7 +191,11 @@ export default function CemeteryOrdersTab({ onNewOrder, onResumeDraft, onEditOrd
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRow(o) } }}>
                 <div className="sb-mono col-ordnum">{o.order_number || <span className="col-muted">draft</span>}</div>
                 <div className="col-cem">{o.cemetery_name}</div>
-                <div className="col-r">{(o.doors || []).length}</div>
+                <div className="col-r" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {doorProg[o.id]?.total
+                    ? <span style={{ fontWeight: 700, color: doorProg[o.id].complete >= doorProg[o.id].total ? '#2d7a4f' : undefined }}>{doorProg[o.id].complete} of {doorProg[o.id].total} complete</span>
+                    : (o.doors || []).length}
+                </div>
                 <div className="col-r sb-mono">{fmtUSD(total)}</div>
                 <div><span className="col-pill col-pill-status" style={{ '--pill-color': stt.color }}>{stt.label}</span></div>
                 <div>

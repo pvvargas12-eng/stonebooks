@@ -36,8 +36,16 @@ export function defaultTabsFor(who) {
 // Stored prefs -> a safe, ordered bar: known keys only, role-gated, deduped,
 // today first / more last, capped. Garbage in the column can never brick the
 // nav — worst case the person gets their role default back.
+// TODAY CAN BE TURNED OFF (Paul 2026-11-19: "the today tab is useless for
+// me"). The person's saved list carries the marker 'no_today'; the bar then
+// starts on their first tab and has room for one more. An older app build
+// ignores the marker (unknown key) and keeps showing Today.
+export const NO_TODAY = 'no_today'
+export const todayHidden = (who) => Array.isArray(who?.fieldTabs) && who.fieldTabs.includes(NO_TODAY)
+
 export function resolveTabs(who) {
   const stored = who?.fieldTabs
+  const noToday = todayHidden(who)
   if (!Array.isArray(stored) || stored.length === 0) return defaultTabsFor(who)
   const mid = [...new Set(stored)]
     .filter(k => KEYS.has(k) && k !== 'today' && k !== 'more')
@@ -46,9 +54,9 @@ export function resolveTabs(who) {
       return !(t?.ownerOnly && !who?.isOwner)
     })
     .sort((a, b) => ORDER[a] - ORDER[b])
-    .slice(0, MAX_BAR_TABS - 2)
+    .slice(0, MAX_BAR_TABS - (noToday ? 1 : 2))
   if (mid.length === 0) return defaultTabsFor(who)
-  return ['today', ...mid, 'more']
+  return noToday ? [...mid, 'more'] : ['today', ...mid, 'more']
 }
 
 // The customizable middle choices for this role (the tab editor's list).

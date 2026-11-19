@@ -4,13 +4,15 @@
 // FIELD-3: read-only glance list of cemetery_orders (door work placed by a
 // cemetery, separate from family sales). Same row math as the desktop
 // CemeteryOrdersTab — total_amount wins, else doors re-priced through the
-// pricing snapshot; per-order door progress comes from the spawned
-// mausoleum_door jobs (jobs.cemetery_order_id). No drill: cemetery orders have
-// no phone detail view, the desktop owns the workflow.
+// pricing snapshot. DOOR-COMPLETE (2026-11-19): door progress is the doors'
+// own production step (job_components), and the Door orders block on top moves
+// them — one door, or every door at the same step together.
 // =============================================================================
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import { fmtUSD, getCemeteryPricingForOrder, getDoorPrice } from '../lib/stonebooksData'
+import { fmtUSD, getCemeteryPricingForOrder, getDoorPrice, getProductionComponents } from '../lib/stonebooksData'
+import DoorOrderLines from './DoorOrderLines'
+import { doorLinesFrom } from '../lib/jobComponents'
 
 // Same lifecycle labels as the desktop CO_STATUS map (legacy 'paid' reads as
 // completed there too). Chip tones per spec: in_production info, rest neutral.
@@ -31,8 +33,12 @@ function rowTotal(o) {
 
 export default function CemOrdersScreen({ who, undo, onOpenJob, onBack }) {
   const [rows, setRows] = useState(null)          // null = loading
-  const [doorJobs, setDoorJobs] = useState({})    // cemetery_order_id -> { closed, total }
+  const [comps, setComps] = useState(null)        // the floor pieces (doors among them)
   const [err, setErr] = useState(null)
+  const loadComps = useCallback(async () => { setComps(await getProductionComponents().catch(() => [])) }, [])
+  useEffect(() => { loadComps() }, [loadComps])  // eslint-disable-line react-hooks/set-state-in-effect
+  const doorJobs = {}
+  for (const g of doorLinesFrom(comps)) doorJobs[g.co.id] = { closed: g.complete, total: g.total }
 
   useEffect(() => {
     let cancelled = false
@@ -47,21 +53,6 @@ export default function CemOrdersScreen({ who, undo, onOpenJob, onBack }) {
         if (cancelled) return
         const live = (data || []).filter(o => !o.archived)
         setRows(live)
-        const ids = live.map(o => o.id)
-        if (ids.length) {
-          const { data: jobs, error: jErr } = await supabase
-            .from('jobs')
-            .select('id, cemetery_order_id, overall_status')
-            .in('cemetery_order_id', ids)
-          if (jErr || cancelled) return   // progress lines just stay off
-          const map = {}
-          for (const j of jobs || []) {
-            const m = map[j.cemetery_order_id] || (map[j.cemetery_order_id] = { closed: 0, total: 0 })
-            m.total += 1
-            if (j.overall_status === 'closed') m.closed += 1
-          }
-          if (!cancelled) setDoorJobs(map)
-        }
       } catch (e) {
         if (!cancelled) setErr(e?.message || 'Could not load cemetery orders.')
       }
@@ -82,6 +73,10 @@ export default function CemOrdersScreen({ who, undo, onOpenJob, onBack }) {
         <div className="fl-greet-sub">Door work, by order</div>
       </div>
 
+      {comps != null && doorLinesFrom(comps).length > 0 && (
+        <DoorOrderLines comps={comps} who={who} undo={undo} onChanged={loadComps} />
+      )}
+      {!err && rows !== null && rows.length > 0 && <div className="fl-label" style={{ margin: '0 2px 6px' }}>All orders</div>}
       {err && <div className="fl-empty">{err}</div>}
       {!err && rows === null && <div className="fl-empty">Loading cemetery orders&#8230;</div>}
       {!err && rows !== null && rows.length === 0 && (
@@ -124,7 +119,7 @@ function CemOrderRow({ order: o, progress }) {
       </div>
       {progress && progress.total > 0 && (
         <div className="fl-cem" style={allClosed ? { color: '#14775A' } : undefined}>
-          {progress.closed} of {totalDoors} doors closed
+          {progress.closed} of {totalDoors} doors complete
         </div>
       )}
     </div>

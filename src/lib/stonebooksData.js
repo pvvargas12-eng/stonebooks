@@ -2381,7 +2381,30 @@ async function _syncInscriptionFloorCut(jobId) {
 }
 // Stone writes resolve the job's vocabulary first (bronze vs standard) —
 // same key-fetch-first pattern as setOrderDesignStatus.
-export async function setOrderStoneStatus(jobId, code, { syncFloor = true } = {}) {
+// ONE STONE STATUS, TWO FIELDS (Paul 2026-11-19, Samuelson: Stone / Bronze
+// said Arrived while the Monument card's Die status still said Ordered, so the
+// line planner called it not ready — "that's an incongruity bug"). A pick on
+// the combined status now carries to the order's per-piece statuses: any
+// "here" code → In stock, Ordered / Needs pickup → Ordered, Not ordered →
+// Not ordered. Pieces with no status of their own stay blank. The per-piece
+// editors pass syncPieces:false (they set one piece on purpose).
+const _STONE_HERE_CODES = new Set(['in_stock', 'arrived', 'received', 'needs_stencil_cut', 'needs_blasting', 'blasted'])
+async function _syncOrderPiecesFromStoneStatus(jobId, code) {
+  const simple = _STONE_HERE_CODES.has(code) ? 'in_stock'
+    : code === 'not_ordered' ? 'not_ordered'
+    : (code === 'ordered' || code === 'needs_pickup') ? 'ordered' : null
+  if (!simple) return
+  const { data: j } = await supabase.from('jobs').select('order_id').eq('id', jobId).maybeSingle()
+  if (!j?.order_id) return
+  const { data: o } = await supabase.from('orders').select('id, die_stone_status, base_stone_status').eq('id', j.order_id).maybeSingle()
+  if (!o) return
+  const patch = {}
+  if (o.die_stone_status && o.die_stone_status !== simple) patch.die_stone_status = simple
+  if (o.base_stone_status && o.base_stone_status !== simple) patch.base_stone_status = simple
+  if (Object.keys(patch).length) await bulkUpdateOrders([o.id], patch)
+}
+
+export async function setOrderStoneStatus(jobId, code, { syncFloor = true, syncPieces = true } = {}) {
   if (!jobId) return { ok: false, error: 'Invalid status change' }
   const { data, error } = await supabase
     .from('job_milestones')
@@ -2406,6 +2429,9 @@ export async function setOrderStoneStatus(jobId, code, { syncFloor = true } = {}
   // twin of the bronze/inscription floor syncs. Forward-only, dies only.
   if (!isBronze && syncFloor && _STONE_CODE_TO_FLOOR[code]) {
     try { await _syncNewStoneFloor(jobId, code) } catch (e) { console.warn('[stone] floor sync:', e?.message) }
+  }
+  if (!isBronze && syncPieces) {
+    try { await _syncOrderPiecesFromStoneStatus(jobId, code) } catch (e) { console.warn('[stone] piece sync:', e?.message) }
   }
   return res
 }
@@ -6926,7 +6952,42 @@ export async function setComponentPhase(id, newPhase, { actor = null, eventType 
   if (c.track === 'bronze' && c.job_id && source !== 'stone-status') await _rollupBronzeStatus(c.job_id)
   await _queueInstallOnReadyToSet(c, newPhase, { actor, source })
   await _closeoutOnInscriptionComplete(c, newPhase)
+  if (c.track === 'door' && c.cemetery_order_id) await _syncCemeteryOrderDoorsDone(c.cemetery_order_id)
   return r
+}
+
+// DOOR-COMPLETE: every door of a cemetery order at Completed → the order reads
+// Completed; a door moved back out → In production again. Only those two
+// statuses flip (draft / invoiced / cancelled are never touched). Best-effort.
+async function _syncCemeteryOrderDoorsDone(coId) {
+  try {
+    const { data: comps } = await supabase.from('job_components').select('current_phase').eq('cemetery_order_id', coId).eq('track', 'door')
+    if (!comps || !comps.length) return
+    const all = comps.every(x => x.current_phase === 'door_complete')
+    const { data: co } = await supabase.from('cemetery_orders').select('id, status').eq('id', coId).maybeSingle()
+    if (!co) return
+    const next = all && (co.status === 'submitted' || co.status === 'in_production') ? 'completed'
+      : (!all && co.status === 'completed') ? 'in_production' : null
+    if (next) await supabase.from('cemetery_orders').update({ status: next }).eq('id', coId)
+  } catch (e) { console.warn('[doors] order status:', e?.message) }
+}
+
+// "N of M doors complete" per cemetery order, plus the count at each step.
+export async function getDoorProgressByCemeteryOrder(ids = []) {
+  const list = [...new Set((ids || []).filter(Boolean))]
+  const out = {}
+  for (let i = 0; i < list.length; i += 150) {
+    const { data, error } = await supabase.from('job_components')
+      .select('cemetery_order_id, current_phase').eq('track', 'door').in('cemetery_order_id', list.slice(i, i + 150))
+    if (error) { console.warn('[doors] progress:', error.message); return out }
+    for (const c of (data || [])) {
+      const m = out[c.cemetery_order_id] || (out[c.cemetery_order_id] = { total: 0, complete: 0, steps: {} })
+      m.total++
+      if (c.current_phase === 'door_complete') m.complete++
+      m.steps[c.current_phase] = (m.steps[c.current_phase] || 0) + 1
+    }
+  }
+  return out
 }
 // Pull a piece onto the board (optionally straight into a phase column) or
 // send it back to the queue log. The board only shows on_floor pieces —
@@ -11627,7 +11688,7 @@ export async function setOrderPieceStatus(orderId, piece, status = 'in_stock') {
       // base status reads the combined status (exactly what the quick-edit seeds).
       const base = piece === 'base' ? status : (hasBase ? (o.base_stone_status || cur) : null)
       const combined = [die, base].filter(Boolean).reduce((a, b) => (_STONE_SIMPLE_RANK[b] < _STONE_SIMPLE_RANK[a] ? b : a))
-      if (combined !== cur) await setOrderStoneStatus(job.id, combined)
+      if (combined !== cur) await setOrderStoneStatus(job.id, combined, { syncPieces: false })
     }
   } catch (e) { console.warn('[yard] combined stone status:', e?.message) }
   return { ok: true }

@@ -162,8 +162,8 @@ function LineZone({ line, compById, onPlanner, onPrint }) {
 // submitted cemetery order: a tile per door toned by its step, the counts, the
 // money, and one button that moves the doors sitting at the furthest-behind
 // step forward together. Click a tile to move that one door by itself.
-const DOOR_TONE = { pickup_doors: 'ready', cut_stencil: 'up', stick_stencil: 'cut', blast: 'blast', quality_check: 'blast', drop_off_doors: 'out' }
-const DOOR_STEP_WORD = { pickup_doors: 'to pick up', cut_stencil: 'cut stencil', stick_stencil: 'stick stencil', blast: 'blasted', quality_check: 'quality check', drop_off_doors: 'to drop off' }
+const DOOR_TONE = { pickup_doors: 'ready', cut_stencil: 'up', stick_stencil: 'cut', blast: 'blast', quality_check: 'blast', drop_off_doors: 'blast', door_complete: 'out' }
+const DOOR_STEP_WORD = { pickup_doors: 'to pick up', cut_stencil: 'cut stencil', stick_stencil: 'stick stencil', blast: 'blasted', quality_check: 'quality check', drop_off_doors: 'to drop off', door_complete: 'complete' }
 function DoorLineZone({ co, doors, paid, onChanged, onOpenCemeteryOrder, setErr }) {
   const [sel, setSel] = useState(null)     // component id of the picked door
   const [busy, setBusy] = useState(false)
@@ -235,7 +235,7 @@ function DoorLineZone({ co, doors, paid, onChanged, onOpenCemeteryOrder, setErr 
         </div>
       )}
       <div className="pf-line-foot">
-        <span>{done === total ? 'Every door is at Drop Off Doors. Close the door jobs when they are back at the cemetery.' : `${done} of ${total} at Drop Off Doors. Click a door to move it by itself.`}</span>
+        <span><b>{done} of {total} doors complete.</b> {done === total ? 'This order is finished.' : 'Click a door to move it by itself.'}</span>
         {nextP && (
           <button type="button" className="pf-btn pf-btn-go pf-door-all" disabled={busy || behind.some(d => d.qc_issue)}
             title={behind.some(d => d.qc_issue) ? 'A door here is held at quality check' : `Moves the ${behind.length} door${behind.length === 1 ? '' : 's'} at ${phaseLabel(behindPhase)} forward together`}
@@ -349,6 +349,7 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
   // Jobs on the floor whose layout is approved. null = not known (no blocker
   // is shown rather than a false one).
   const [designOk, setDesignOk] = useState(null)
+  const [showDoneDoors, setShowDoneDoors] = useState(false)
   const [capDismissed, setCapDismissed] = useState('')   // `${lineId}:${count}` Paul waved off
   const [lineBusy, setLineBusy] = useState(false)
 
@@ -434,6 +435,9 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
     for (const g of byCo.values()) { g.doors.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)); doorLines.push(g) }
     doorLines.sort((a, b) => String(b.co?.submitted_at || '').localeCompare(String(a.co?.submitted_at || '')))
   }
+  const doorLineDone = (g) => g.doors.length > 0 && g.doors.every(d => d.current_phase === 'door_complete')
+  const doorLinesLive = doorLines.filter(g => !doorLineDone(g))
+  const doorLinesDone = doorLines.filter(doorLineDone)
   // BRING-UP CONDITIONS (Paul 2026-07-23): design approved + stone here/in
   // stock + contracted. The red number on each track's first column = queued
   // pieces meeting them (need adding); the white number stays "on the board".
@@ -615,13 +619,22 @@ export default function ProductionBoard({ onOpenJob, onOpenOrderDetail, onOpenSa
       {/* Cemetery order lines — one strip per submitted order (DOOR-LINES). */}
       {track === 'door' && !loading && (
         <section className="pf-lines">
-          {doorLines.map(g => (
+          {doorLinesLive.map(g => (
             <DoorLineZone key={g.co.id} co={g.co} doors={g.doors} paid={cemPaid[g.co.id] || 0}
               onChanged={load} onOpenCemeteryOrder={onOpenCemeteryOrder} setErr={setErr} />
           ))}
-          {!doorLines.length && (
-            <div className="pf-line pf-line-none">No cemetery order is in production. Submit one from Cemetery Orders and its doors show here as a line.</div>
+          {!doorLinesLive.length && (
+            <div className="pf-line pf-line-none">{doorLinesDone.length ? 'Every door order is complete.' : 'No cemetery order is in production. Submit one from Cemetery Orders and its doors show here as a line.'}</div>
           )}
+          {doorLinesDone.length > 0 && (
+            <button type="button" className="pf-funnel-link" style={{ gridColumn: '1 / -1', justifySelf: 'start' }} onClick={() => setShowDoneDoors(v => !v)}>
+              {showDoneDoors ? 'Hide' : 'Show'} completed door orders ({doorLinesDone.length})
+            </button>
+          )}
+          {showDoneDoors && doorLinesDone.map(g => (
+            <DoorLineZone key={g.co.id} co={g.co} doors={g.doors} paid={cemPaid[g.co.id] || 0}
+              onChanged={load} onOpenCemeteryOrder={onOpenCemeteryOrder} setErr={setErr} />
+          ))}
         </section>
       )}
 

@@ -34,6 +34,13 @@ const LINE_SELECT = `id, number, label, track, week_start, capacity, started_at,
 
 const BLASTED_IDX = phaseIndex('new_stone', 'ready_to_set')
 
+// ONE LINE A WEEK (Paul 2026-11-19: "should be 1 line a week, this is the third
+// or fourth week and it's still on line one"). A line belongs to the Monday
+// week it started in; the reconcile closes a running line once its week is
+// over, and what was not blasted moves on (see closeFloorLine).
+export const mondayOf = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x }
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
 // A stone is "out" (blasted) when its component reached ready_to_set — or the
 // component is gone (job closed / reconciled away), which can't hold a line open.
 export const itemIsBlasted = (it) => !it.component || phaseIndex('new_stone', it.component.current_phase) >= BLASTED_IDX
@@ -242,7 +249,8 @@ export async function startFloorLine(lineId, { by = null } = {}) {
   const { data: line, error } = await supabase.from('floor_lines').select(LINE_SELECT).eq('id', lineId).single()
   if (error || !line) return { ok: false, error: error?.message || 'Line not found' }
   if (!line.started_at) {
-    const { error: e2 } = await supabase.from('floor_lines').update({ started_at: new Date().toISOString() }).eq('id', lineId)
+    const { error: e2 } = await supabase.from('floor_lines')
+      .update({ started_at: new Date().toISOString(), ...(line.week_start ? {} : { week_start: isoDay(mondayOf(new Date())) }) }).eq('id', lineId)
     if (e2) return { ok: false, error: e2.message }
   }
   for (const it of sortItems(line.items)) {
@@ -268,24 +276,54 @@ export async function completeFloorLine(lineId) {
 // none), the line is stamped complete, and the reconcile pass that follows
 // starts the next line — the pieces already up stay on the board at their
 // step, so the running line simply changes its number.
-export async function closeFloorLine(lineId) {
+// THE CAP HOLDS ON THE WAY OUT (Paul 2026-11-19: "27 on one line is too
+// much"). Stones physically up on the line all follow to the next line — they
+// are in progress. Stones still waiting to be brought up fill the next line
+// only to its cap; the rest go to the line after (made when there is none) and
+// come off the board until that line starts.
+export async function closeFloorLine(lineId, { by = null, reconcile = true } = {}) {
   const lines = await listFloorLines()
   const line = lines.find(l => l.id === lineId)
   if (!line) return { ok: false, error: 'Line not found' }
   if (line.completed_at) return { ok: true, moved: 0 }
-  const open = (line.items || []).filter(it => !itemIsBlasted(it))
+  const track = line.track || 'new_stone'
+  const open = sortItems(line.items).filter(it => !itemIsBlasted(it))
+  const up = open.filter(itemIsUp)
+  const waiting = open.filter(it => !itemIsUp(it))
   let moved = 0
   if (open.length) {
-    let to = lines.find(l => l.number > line.number && l.status !== 'complete') || null
-    if (!to) { const r = await createFloorLine({ track: line.track || 'new_stone' }); if (!r.ok) return r; to = r.line }
-    for (const it of open) {
-      const r = await moveLineItem(it.id, to.id)
-      if (r.ok) moved++
+    const actor = by || await getCurrentStaffName().catch(() => null)
+    const later = lines.filter(l => l.number > line.number && l.status !== 'complete')
+      .map(l => ({ id: l.id, started: !!l.started_at, n: l.counts.open, cap: l.capacity || DEFAULT_LINE_CAPACITY }))
+    const newLine = async () => {
+      const r = await createFloorLine({ track })
+      if (!r.ok) return null
+      const t = { id: r.line.id, started: false, n: 0, cap: DEFAULT_LINE_CAPACITY }
+      later.push(t)
+      return t
+    }
+    const first = later[0] || await newLine()
+    if (!first) return { ok: false, error: 'Could not make the next line.' }
+    for (const it of up) {
+      const r = await moveLineItem(it.id, first.id)
+      if (r.ok) { moved++; first.n++ }
+    }
+    let i = 0
+    for (const it of waiting) {
+      while (later[i] && later[i].n >= later[i].cap) i++
+      const t = later[i] || await newLine()
+      if (!t) break
+      const r = await moveLineItem(it.id, t.id)
+      if (!r.ok) continue
+      moved++; t.n++
+      if (t !== first && !t.started && it.component?.on_floor) {
+        await setComponentOnFloor(it.component_id, false, { actor, source: 'line' }).catch(() => {})
+      }
     }
   }
   const r = await completeFloorLine(lineId)
   if (!r.ok) return r
-  await reconcileFloorLines({ track: line.track || 'new_stone' })
+  if (reconcile) await reconcileFloorLines({ track })
   return { ok: true, moved }
 }
 
@@ -308,6 +346,17 @@ export async function reconcileFloorLines({ track = 'new_stone', floorComps = nu
       const r = await completeFloorLine(l.id)
       if (r.ok) changed = true
     }
+  }
+  if (changed) { lines = await listFloorLines({ track }); changed = false }
+
+  // 1b. ONE LINE A WEEK: a running line that started before this week's
+  //     Monday is closed — its unblasted stones move on (cap respected), and
+  //     step 2 starts the next line, which becomes this week's line.
+  const monday = mondayOf(new Date())
+  for (const l of lines) {
+    if (l.status !== 'active' || !l.started_at || new Date(l.started_at) >= monday) continue
+    const r = await closeFloorLine(l.id, { by: 'auto', reconcile: false })
+    if (r.ok) changed = true
   }
   if (changed) { lines = await listFloorLines({ track }); changed = false }
 

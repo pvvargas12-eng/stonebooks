@@ -18,6 +18,7 @@ import {
   getFinancialRecords,
   recordPayment, updateFinancialRecord, voidFinancialRecord,
   setCemeteryOrderQuoteStatus, appendQuoteEvent, getCurrentStaffName,
+  getJobComponents, advanceComponent, reverseComponent, qcApproveComponent,
   PAYMENT_METHODS,
   paymentMethodLabel,
   fmtUSD,
@@ -26,6 +27,7 @@ import {
   missingCheckRef,
 } from './lib/stonebooksData'
 import { ReceiptActions, SALES_REPS } from './SalesMode'
+import { phaseLabel, nextPhase, prevPhase, QC_PHASE, DOOR_DONE_PHASE } from './lib/jobComponents'
 import ReceiptPreviewModal from './components/ReceiptPreviewModal'
 import JobPnLPanel from './JobPnLPanel'
 import JobDimensionsPanel from './JobDimensionsPanel'
@@ -55,6 +57,9 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const [order, setOrder] = useState(null)
   const [jobs, setJobs] = useState([])
   const [payments, setPayments] = useState([])
+  const [doorComps, setDoorComps] = useState([])   // the doors' production pieces, by sort_order
+  const [doorBusy, setDoorBusy] = useState(false)
+  const [doorErr, setDoorErr] = useState(null)
   const [loading, setLoading] = useState(true)
 
   const [payOpen, setPayOpen] = useState(false)
@@ -68,12 +73,14 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const [invoiceOpen, setInvoiceOpen] = useState(false)      // CEM-INVOICE preview
 
   const reload = useCallback(async () => {
-    const [o, js, pays] = await Promise.all([
+    const [o, js, pays, comps] = await Promise.all([
       getCemeteryOrder(orderId),
       getJobsForCemeteryOrder(orderId),
       getFinancialRecords({ recordType: 'payment_received', cemeteryOrderId: orderId }),
+      getJobComponents({ cemeteryOrderId: orderId }).catch(() => []),
     ])
     setOrder(o); setJobs(js || []); setPayments(pays || []); setLoading(false)
+    setDoorComps((comps || []).filter(c => c.track === 'door'))
     return o
   }, [orderId])
 
@@ -120,6 +127,19 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
   const isCancelled = order.status === 'cancelled'
   const isDraftOrder = order.status === 'draft'
   const canRecordPayment = !isCancelled && total > 0 && balance > 0
+  // DOOR-COMPLETE: production per door, N of M complete.
+  const compOfDoor = (i) => doorComps.find(c => (c.sort_order ?? 0) === i) || null
+  const doorsComplete = doorComps.filter(c => c.current_phase === DOOR_DONE_PHASE).length
+  const moveDoor = async (c, dir) => {
+    if (doorBusy || !c) return
+    setDoorBusy(true); setDoorErr(null)
+    const actor = await getCurrentStaffName().catch(() => null)
+    const r = dir < 0 ? await reverseComponent(c.id, { actor })
+      : c.current_phase === QC_PHASE ? await qcApproveComponent(c.id, { actor }) : await advanceComponent(c.id, { actor })
+    if (r && r.ok === false) setDoorErr(r.error || 'That move failed.')
+    await reload()
+    setDoorBusy(false)
+  }
   const orderExtras = (Array.isArray(order.extra_charges) ? order.extra_charges : []).filter(x => x?.label || Number(x?.price))
 
   const downloadPacket = async () => {
@@ -247,7 +267,10 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
       </div>
 
       {/* Doors */}
-      <h2 className="cod-h2">Doors ({doors.length})</h2>
+      <h2 className="cod-h2">Doors ({doors.length}){doorComps.length > 0 && (
+        <span className={`cod-doorprog${doorsComplete >= doorComps.length ? ' done' : ''}`}>{doorsComplete} of {doorComps.length} doors complete</span>
+      )}</h2>
+      {doorErr && <div className="cod-doorerr">{doorErr}</div>}
       {doors.map((d, i) => {
         const map = itemMapFor(d)
         return (
@@ -257,6 +280,18 @@ export default function CemeteryOrderDetail({ orderId, onBack, onOpenJob, onResu
               {isSplit && d.location && <span className="cod-loc">{d.location}</span>}
               <span className="cod-door-sub">{fmtUSD(getDoorPrice(d, pricing))}</span>
             </div>
+            {compOfDoor(i) && (() => {
+              const c = compOfDoor(i)
+              const nx = nextPhase('door', c.current_phase), pv = prevPhase('door', c.current_phase)
+              return (
+                <div className="cod-door-step">
+                  <span className={`cod-step-pill${c.current_phase === DOOR_DONE_PHASE ? ' done' : ''}`}>{phaseLabel(c.current_phase)}</span>
+                  {c.qc_issue && <span className="cod-step-held">Held: {c.qc_issue}</span>}
+                  {pv && <button type="button" className="cod-step-btn" disabled={doorBusy} onClick={() => moveDoor(c, -1)}>Back to {phaseLabel(pv)}</button>}
+                  {nx && <button type="button" className="cod-step-btn go" disabled={doorBusy || !!c.qc_issue} onClick={() => moveDoor(c, 1)}>Mark {phaseLabel(nx)}</button>}
+                </div>
+              )
+            })()}
             <div className="cod-door-items">
               {(d.selectedItems || []).map(s => {
                 const k = keyOf(s)
@@ -524,6 +559,17 @@ const styles = `
   .cod-h2{ font-size:16px; font-weight:600; margin:24px 0 10px; }
   .cod-door{ border:.5px solid var(--sb-border); border-radius:8px; padding:14px 16px; margin-bottom:10px; background:var(--sb-surface); }
   .cod-door-head{ display:flex; align-items:center; gap:10px; }
+  .cod-doorprog{ margin-left:12px; font-size:12px; font-weight:700; color:#534AB7; background:rgba(83,74,183,.1); border-radius:999px; padding:3px 10px; vertical-align:middle; white-space:nowrap; }
+  .cod-doorprog.done{ color:#2d7a4f; background:rgba(45,122,79,.12); }
+  .cod-doorerr{ color:#b54040; font-size:12.5px; margin:0 0 8px; overflow-wrap:anywhere; }
+  .cod-door-step{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0 4px; min-width:0; }
+  .cod-step-pill{ font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:#534AB7; background:rgba(83,74,183,.1); border-radius:999px; padding:2px 9px; white-space:nowrap; }
+  .cod-step-pill.done{ color:#2d7a4f; background:rgba(45,122,79,.12); }
+  .cod-step-held{ font-size:12px; color:#b54040; min-width:0; overflow-wrap:anywhere; }
+  .cod-step-btn{ font:inherit; font-size:12px; font-weight:600; border:1px solid #d8d2c4; background:#fff; border-radius:6px; padding:3px 10px; cursor:pointer; white-space:nowrap; }
+  .cod-step-btn.go{ border-color:#b8842a; color:#8a6210; }
+  .cod-step-btn:disabled{ opacity:.5; cursor:default; }
+  @media print{ .cod-door-step, .cod-doorprog{ display:none; } }
   .cod-loc{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; background:var(--sb-accent,#b8842a); color:#fff; border-radius:3px; padding:1px 7px; }
   .cod-door-sub{ margin-left:auto; font-weight:600; font-variant-numeric:tabular-nums; }
   .cod-door-items{ margin-top:8px; }

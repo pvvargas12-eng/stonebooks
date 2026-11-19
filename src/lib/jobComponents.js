@@ -25,7 +25,7 @@ export const TRACK_PHASES = {
   // 20261007_floor_cut_retired.sql.
   new_stone:   ['ready_to_bring_up', 'brought_to_line', 'stencil_cut', 'stencil_stuck', 'ready_to_set'],
   inscription: ['needs_rubbing', 'stencil_cut', 'inscription_complete'],
-  door:        ['pickup_doors', 'cut_stencil', 'stick_stencil', 'blast', 'quality_check', 'drop_off_doors'],
+  door:        ['pickup_doors', 'cut_stencil', 'stick_stencil', 'blast', 'quality_check', 'drop_off_doors', 'door_complete'],
   bronze:      ['bronze_on_order', 'bronze_received', 'mounted_on_base', 'delivered'],
 }
 
@@ -40,7 +40,7 @@ export const PHASE_LABEL = {
   quality_check: 'Quality Check', ready_to_set: 'Ready to Install',
   needs_rubbing: 'Needs Rubbing from Cemetery', inscription_complete: 'Inscription Complete',
   pickup_doors: 'Pickup Doors', cut_stencil: 'Cut Stencil', stick_stencil: 'Stick Stencil',
-  drop_off_doors: 'Drop Off Doors',
+  drop_off_doors: 'Drop Off Doors', door_complete: 'Completed',
   bronze_on_order: 'Bronze on Order', bronze_received: 'Bronze Received',
   mounted_on_base: 'Mounted on Base', delivered: 'Delivered',
 }
@@ -49,6 +49,10 @@ export const INITIAL_PHASE = { new_stone: 'ready_to_bring_up', inscription: 'nee
 // Quality Check is a hold-gate on DOORS only now (Paul 2026-08-03 removed it
 // from stones; inscriptions never had one).
 export const QC_PHASE = 'quality_check'
+// DOOR-COMPLETE (Paul 2026-11-19: "when they are completed they get marked
+// complete"). The last door step. A completed door is off the board (no
+// column); its order's line counts it as "N of M complete".
+export const DOOR_DONE_PHASE = 'door_complete'
 export const TRACKS_WITH_QC = new Set(['door'])
 
 // The ADVANCE button says what you're DOING, never "Advance" (Paul, from the
@@ -76,20 +80,40 @@ export const trackPhases = (track) => TRACK_PHASES[track] || []
 // on the installation list") — blasting out of the queue moves the piece off
 // the board and its job onto install_list.
 export const boardPhases = (track) =>
-  track === 'new_stone' ? trackPhases(track).filter(p => p !== 'ready_to_set') : trackPhases(track)
+  track === 'new_stone' ? trackPhases(track).filter(p => p !== 'ready_to_set')
+    : track === 'door' ? trackPhases(track).filter(p => p !== 'door_complete') : trackPhases(track)
 export const trackLabel = (track) => TRACK_LABEL[track] || track
 // IS THIS PIECE ON THE BOARD? Stones / inscriptions / bronzes are hand-picked
 // (on_floor). A CEMETERY ORDER's doors are on the board the moment the order
 // is submitted to production (Paul 2026-11-10: "I made an order yesterday, it
 // should show up here in production floor") — nobody pulls 6 doors up one by
 // one; the order IS the line. Read-time rule, nothing is written.
-export const isOnBoard = (c) => !!c && (!!c.on_floor || (c.track === 'door' && !!c.cemetery_order_id))
+export const isOnBoard = (c) => !!c && (c.track === 'door' && c.cemetery_order_id
+  ? c.current_phase !== 'door_complete'
+  : !!c.on_floor)
 // The door's name as the office typed it: the first line of its inscription
 // text (the crypt name), else "Door N". `doors` = cemetery_orders.doors.
 export const doorNameOf = (c) => {
   const d = Array.isArray(c?.cemetery_order?.doors) ? c.cemetery_order.doors[c.sort_order] : null
   const first = String(d?.inscriptionText || '').split(/\r?\n/)[0].replace(/\s+/g, ' ').trim()
   return first || c?.label || `Door ${(Number(c?.sort_order) || 0) + 1}`
+}
+// A cemetery order's doors as one line each: [{ co, doors, total, complete }],
+// newest order first, doors in the order they were entered.
+export const doorLinesFrom = (comps) => {
+  const byCo = new Map()
+  for (const c of (comps || [])) {
+    if (c.track !== 'door' || !c.cemetery_order_id) continue
+    if (!byCo.has(c.cemetery_order_id)) byCo.set(c.cemetery_order_id, { co: c.cemetery_order || { id: c.cemetery_order_id }, doors: [] })
+    byCo.get(c.cemetery_order_id).doors.push(c)
+  }
+  const out = [...byCo.values()]
+  for (const g of out) {
+    g.doors.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    g.total = g.doors.length
+    g.complete = g.doors.filter(d => d.current_phase === DOOR_DONE_PHASE).length
+  }
+  return out.sort((a, b) => String(b.co?.submitted_at || '').localeCompare(String(a.co?.submitted_at || '')))
 }
 export const phaseIndex = (track, code) => trackPhases(track).indexOf(code)
 export const isValidPhase = (track, code) => phaseIndex(track, code) >= 0

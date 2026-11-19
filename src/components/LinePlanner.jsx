@@ -331,6 +331,7 @@ export default function LinePlanner({ onBack, onOpenOrderDetail, onOpenSales = n
       {lines == null ? <div className="jobcc-empty">Loading…</div> : (
         <div className="lp-body">
           <section className="lp-lines" aria-label="Lines in order">
+            <div className="lp-weeknote">One line a week. On Monday the running line closes by itself: stones already up follow to the next line, stones not brought up fill it to its limit and the rest wait on the line after.</div>
             {live.map(renderLine)}
             {live.length === 0 && <div className="lp-empty">No lines yet. Hit + New line, then fill it from the recommended list.</div>}
             {done.length > 0 && (
@@ -467,6 +468,7 @@ const LP_CSS = `
   .lp-row-btn { font: inherit; background: none; border: none; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted rgba(139,149,165,0.6); text-underline-offset: 3px; }
   .lp-row-btn:hover { color: #fbbf24; }
   .lp-row-meta { flex: 1 1 120px; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; color: #8b95a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .lp-weeknote { font-size: 11.5px; color: #8b95a5; padding: 0 2px; overflow-wrap: anywhere; }
   .lp-pool-sub { font-size: 10.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #8b95a5; margin-top: 6px; }
   .lp-row-nr { flex-wrap: wrap; border-color: #5a2a2a; }
   .lp-why { flex: 1 1 100%; min-width: 0; font-family: var(--font-m, 'JetBrains Mono'), monospace; font-size: 10px; font-weight: 800; color: #f87171; overflow-wrap: anywhere; }
